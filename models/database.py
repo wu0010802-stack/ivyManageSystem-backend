@@ -324,6 +324,25 @@ class BonusSetting(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class ClassBonusSetting(Base):
+    """
+    班級獎金設定表 - 紀錄各班級每月的目標與人數
+    """
+    __tablename__ = "class_bonus_settings"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    year = Column(Integer, nullable=False, comment="年")
+    month = Column(Integer, nullable=False, comment="月")
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False, comment="班級ID")
+    
+    target_enrollment = Column(Integer, default=0, comment="目標人數")
+    current_enrollment = Column(Integer, default=0, comment="在籍人數")
+    
+    created_at = Column(DateTime, default=datetime.now)
+
+
+
 class Student(Base):
     """
     學生表 - 儲存學生基本資料

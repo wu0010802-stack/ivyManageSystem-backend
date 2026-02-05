@@ -181,10 +181,19 @@ class SalaryEngine:
             
             # 獎金計算
             if bonus_settings:
+                # 決定節慶獎金基數
+                base_amount = bonus_settings.get('festival_base', 0)
+                position_bonus_base = bonus_settings.get('position_bonus_base', {})
+                
+                # 如果有設定該職位的基數，則優先使用
+                emp_title = employee.get('title')
+                if position_bonus_base and emp_title and emp_title in position_bonus_base:
+                    base_amount = position_bonus_base[emp_title]
+
                 bonus = self.calculate_bonus(
                     bonus_settings.get('target', 0),
                     bonus_settings.get('current', 0),
-                    bonus_settings.get('festival_base', 0),
+                    base_amount,
                     bonus_settings.get('overtime_per', 500)
                 )
                 breakdown.festival_bonus = bonus['festival_bonus']

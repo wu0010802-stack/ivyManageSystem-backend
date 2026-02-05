@@ -95,13 +95,21 @@ class EmployeeUpdate(BaseModel):
     hire_date: Optional[str] = None
 
 
+class ClassBonusParam(BaseModel):
+    classroom_id: int
+    target_enrollment: int
+    current_enrollment: int
+
+
 class BonusSettings(BaseModel):
     year: int
     month: int
-    target_enrollment: int
-    current_enrollment: int
+    target_enrollment: int = 160  # Default global target
+    current_enrollment: int = 133 # Default global current
     festival_bonus_base: float = 0
     overtime_bonus_per_student: float = 500
+    class_params: List[ClassBonusParam] = []
+    position_bonus_base: Optional[Dict[str, float]] = None
 
 
 class InsuranceTableImport(BaseModel):
@@ -846,11 +854,29 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "code": at.code
         })
 
+    # 取得班級與老師對應
+    classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+    emp_class_map = {} # emp_id -> classroom_id
+    for c in classrooms:
+        if c.head_teacher_id:
+            emp_class_map[c.head_teacher_id] = c.id
+        if c.assistant_teacher_id:
+            emp_class_map[c.assistant_teacher_id] = c.id
+
     results = []
-    bonus_settings = None
     
+    # 建立班級參數對照表
+    class_bonus_map = {}
+    if request.bonus_settings and request.bonus_settings.class_params:
+        for p in request.bonus_settings.class_params:
+            class_bonus_map[p.classroom_id] = {
+                "target": p.target_enrollment,
+                "current": p.current_enrollment
+            }
+    
+    global_bonus_settings = None
     if request.bonus_settings:
-        bonus_settings = {
+        global_bonus_settings = {
             "target": request.bonus_settings.target_enrollment,
             "current": request.bonus_settings.current_enrollment,
             "festival_base": request.bonus_settings.festival_bonus_base,
@@ -871,6 +897,21 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "insurance_salary": emp.insurance_salary_level or emp.base_salary
         }
         
+        # 決定該員工適用的獎金設定
+        emp_bonus_settings = None
+        if global_bonus_settings:
+            # 預設使用全域設定
+            emp_bonus_settings = global_bonus_settings.copy()
+            
+            # 如果是班導師或副班導，且有該班級的設定，則覆蓋目標與在籍人數
+            # 只有正職才有節慶獎金，才藝老師(hourly)通常不領此類獎金，但邏輯保留給引擎判斷
+            if emp.id in emp_class_map:
+                class_id = emp_class_map[emp.id]
+                if class_id in class_bonus_map:
+                    class_params = class_bonus_map[class_id]
+                    emp_bonus_settings["target"] = class_params["target"]
+                    emp_bonus_settings["current"] = class_params["current"]
+
         # 取得該員工的津貼列表
         emp_allowances = allowance_map.get(emp.id, [])
 
@@ -878,7 +919,7 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             emp_dict, 
             request.year, 
             request.month, 
-            bonus_settings=bonus_settings,
+            bonus_settings=emp_bonus_settings,
             allowances=emp_allowances
         )
         results.append(breakdown.__dict__)
