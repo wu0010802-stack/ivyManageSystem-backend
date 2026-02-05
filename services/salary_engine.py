@@ -131,7 +131,8 @@ class SalaryEngine:
         month: int,
         attendance: AttendanceResult = None,
         bonus_settings: dict = None,
-        leave_deduction: float = 0
+        leave_deduction: float = 0,
+        allowances: List[dict] = None
     ) -> SalaryBreakdown:
         """計算單一員工薪資"""
         
@@ -153,11 +154,30 @@ class SalaryEngine:
         else:
             # 正職員工
             breakdown.base_salary = employee.get('base_salary', 0)
-            breakdown.supervisor_allowance = employee.get('supervisor_allowance', 0)
-            breakdown.teacher_allowance = employee.get('teacher_allowance', 0)
-            breakdown.meal_allowance = employee.get('meal_allowance', 0)
-            breakdown.transportation_allowance = employee.get('transportation_allowance', 0)
-            breakdown.other_allowance = employee.get('other_allowance', 0)
+            
+            # 處理津貼 (從 normalized 列表)
+            if allowances:
+                for allowance in allowances:
+                    amount = allowance.get('amount', 0)
+                    name = allowance.get('name', '')
+                    
+                    if '主管' in name:
+                        breakdown.supervisor_allowance += amount
+                    elif '導師' in name:
+                        breakdown.teacher_allowance += amount
+                    elif '伙食' in name:
+                        breakdown.meal_allowance += amount
+                    elif '交通' in name:
+                        breakdown.transportation_allowance += amount
+                    else:
+                        breakdown.other_allowance += amount
+            
+            # 相容舊版欄位 (如果有值則累加)
+            breakdown.supervisor_allowance += employee.get('supervisor_allowance', 0)
+            breakdown.teacher_allowance += employee.get('teacher_allowance', 0)
+            breakdown.meal_allowance += employee.get('meal_allowance', 0)
+            breakdown.transportation_allowance += employee.get('transportation_allowance', 0)
+            breakdown.other_allowance += employee.get('other_allowance', 0)
             
             # 獎金計算
             if bonus_settings:

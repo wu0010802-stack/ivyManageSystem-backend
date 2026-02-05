@@ -50,6 +50,8 @@ class Employee(Base):
     
     # 員工類型
     employee_type = Column(String(20), default=EmployeeType.REGULAR.value, comment="員工類型：regular/hourly")
+    title = Column(String(50), nullable=True, comment="職稱")
+    class_name = Column(String(50), nullable=True, comment="班級名稱")
     
     # 薪資相關
     base_salary = Column(Float, default=0, comment="底薪")
@@ -331,20 +333,146 @@ class Student(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     student_id = Column(String(20), unique=True, nullable=False, comment="學號")
     name = Column(String(50), nullable=False, comment="姓名")
+    gender = Column(String(10), nullable=True, comment="性別")
     birthday = Column(Date, nullable=True, comment="生日")
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=True, comment="班級")
     enrollment_date = Column(Date, nullable=True, comment="入學日期")
-    
+    graduation_date = Column(Date, nullable=True, comment="畢業日期")
+    status = Column(String(20), nullable=True, comment="狀態")
+
     # 聯絡資訊
     parent_name = Column(String(50), nullable=True, comment="家長姓名")
-    phone = Column(String(20), nullable=True, comment="聯絡電話")
-    address = Column(String(100), nullable=True, comment="地址")
-    
+    parent_phone = Column(String(20), nullable=True, comment="聯絡電話")
+    address = Column(String(200), nullable=True, comment="地址")
+    notes = Column(Text, nullable=True, comment="備註")
+
     # 狀態
     is_active = Column(Boolean, default=True, comment="是否在讀")
-    
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+
+class ClassGrade(Base):
+    """
+    年級表 - 大班、中班、小班、幼幼班
+    """
+    __tablename__ = "class_grades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(50), unique=True, nullable=False, comment="年級名稱")
+    age_range = Column(String(20), nullable=True, comment="年齡範圍")
+    sort_order = Column(Integer, default=0, comment="排序")
+    is_active = Column(Boolean, default=True, comment="是否啟用")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class Classroom(Base):
+    """
+    班級表 - 儲存班級資料
+    """
+    __tablename__ = "classrooms"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(50), unique=True, nullable=False, comment="班級名稱")
+    grade_id = Column(Integer, ForeignKey("class_grades.id"), nullable=True, comment="年級")
+    capacity = Column(Integer, default=30, comment="班級容量")
+    current_count = Column(Integer, default=0, comment="目前人數")
+
+    # 老師
+    head_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, comment="班導師")
+    assistant_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, comment="副班導")
+
+    is_active = Column(Boolean, default=True, comment="是否啟用")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ============================================
+# 第三正規化：類型表
+# ============================================
+
+class AllowanceType(Base):
+    """津貼類型表"""
+    __tablename__ = "allowance_types"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(30), unique=True, nullable=False, comment="代碼")
+    name = Column(String(50), nullable=False, comment="名稱")
+    description = Column(String(200), comment="說明")
+    is_taxable = Column(Boolean, default=True, comment="是否課稅")
+    sort_order = Column(Integer, default=0, comment="排序")
+    is_active = Column(Boolean, default=True, comment="是否啟用")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class DeductionType(Base):
+    """扣款類型表"""
+    __tablename__ = "deduction_types"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(30), unique=True, nullable=False, comment="代碼")
+    name = Column(String(50), nullable=False, comment="名稱")
+    description = Column(String(200), comment="說明")
+    category = Column(String(20), default='other', comment="分類: insurance/attendance/leave/other")
+    is_employer_paid = Column(Boolean, default=False, comment="是否雇主負擔")
+    sort_order = Column(Integer, default=0, comment="排序")
+    is_active = Column(Boolean, default=True, comment="是否啟用")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class BonusType(Base):
+    """獎金類型表"""
+    __tablename__ = "bonus_types"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(30), unique=True, nullable=False, comment="代碼")
+    name = Column(String(50), nullable=False, comment="名稱")
+    description = Column(String(200), comment="說明")
+    is_separate_transfer = Column(Boolean, default=False, comment="是否獨立轉帳")
+    sort_order = Column(Integer, default=0, comment="排序")
+    is_active = Column(Boolean, default=True, comment="是否啟用")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class EmployeeAllowance(Base):
+    """員工津貼設定表 (正規化後)"""
+    __tablename__ = "employee_allowances"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)
+    allowance_type_id = Column(Integer, ForeignKey("allowance_types.id"), nullable=False)
+    amount = Column(Float, default=0, comment="金額")
+    effective_date = Column(Date, comment="生效日期")
+    end_date = Column(Date, comment="結束日期")
+    remark = Column(Text, comment="備註")
+    is_active = Column(Boolean, default=True, comment="是否啟用")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SalaryItem(Base):
+    """薪資明細項目表 (正規化後)"""
+    __tablename__ = "salary_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    salary_record_id = Column(Integer, ForeignKey("salary_records.id", ondelete="CASCADE"), nullable=False)
+    item_category = Column(String(20), nullable=False, comment="分類: allowance/deduction/bonus")
+    item_type_id = Column(Integer, nullable=False, comment="類型ID")
+    item_code = Column(String(30), nullable=False, comment="類型代碼")
+    item_name = Column(String(50), nullable=False, comment="項目名稱")
+    amount = Column(Float, default=0, comment="金額")
+    quantity = Column(Integer, default=1, comment="數量")
+    unit_amount = Column(Float, comment="單位金額")
+    is_employer_paid = Column(Boolean, default=False, comment="是否雇主負擔")
+    remark = Column(Text, comment="備註")
+    created_at = Column(DateTime, default=datetime.now)
 
 
 # 預設資料庫連線字串 (PostgreSQL)

@@ -15,7 +15,10 @@ import shutil
 from services.attendance_parser import AttendanceParser, parse_attendance_file
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
-from models.database import init_database, get_session, Employee, Attendance, SalaryRecord, Student
+from models.database import (
+    init_database, get_session, Employee, Attendance, SalaryRecord, Student, Classroom, ClassGrade,
+    AllowanceType, DeductionType, BonusType, EmployeeAllowance, SalaryItem
+)
 
 app = FastAPI(
     title="幼稚園考勤薪資系統",
@@ -51,6 +54,8 @@ class EmployeeCreate(BaseModel):
     name: str
     id_number: Optional[str] = None
     employee_type: str = "regular"
+    title: Optional[str] = None
+    class_name: Optional[str] = None
     base_salary: float = 0
     hourly_rate: float = 0
     supervisor_allowance: float = 0
@@ -72,6 +77,8 @@ class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
     id_number: Optional[str] = None
     employee_type: Optional[str] = None
+    title: Optional[str] = None
+    class_name: Optional[str] = None
     base_salary: Optional[float] = None
     hourly_rate: Optional[float] = None
     supervisor_allowance: Optional[float] = None
@@ -111,21 +118,56 @@ class CalculateSalaryRequest(BaseModel):
 class StudentCreate(BaseModel):
     student_id: str
     name: str
+    gender: Optional[str] = None
     birthday: Optional[str] = None
+    classroom_id: Optional[int] = None
     enrollment_date: Optional[str] = None
     parent_name: Optional[str] = None
-    phone: Optional[str] = None
+    parent_phone: Optional[str] = None
     address: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class StudentUpdate(BaseModel):
     student_id: Optional[str] = None
     name: Optional[str] = None
+    gender: Optional[str] = None
     birthday: Optional[str] = None
+    classroom_id: Optional[int] = None
     enrollment_date: Optional[str] = None
     parent_name: Optional[str] = None
-    phone: Optional[str] = None
+    parent_phone: Optional[str] = None
     address: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class AllowanceTypeCreate(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+    is_taxable: bool = True
+    sort_order: int = 0
+
+class DeductionTypeCreate(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+    category: str = 'other'
+    is_employer_paid: bool = False
+    sort_order: int = 0
+
+class BonusTypeCreate(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+    is_separate_transfer: bool = False
+    sort_order: int = 0
+
+class EmployeeAllowanceCreate(BaseModel):
+    allowance_type_id: int
+    amount: float
+    effective_date: Optional[str] = None
+    remark: Optional[str] = None
 
 
 # ============ API Routes ============
@@ -151,6 +193,8 @@ async def get_employees():
                 "name": e.name,
                 "id_number": e.id_number,
                 "employee_type": e.employee_type,
+                "title": e.title,
+                "class_name": e.class_name,
                 "base_salary": e.base_salary,
                 "hourly_rate": e.hourly_rate,
                 "supervisor_allowance": e.supervisor_allowance,
@@ -186,6 +230,8 @@ async def get_employee(employee_id: int):
             "name": employee.name,
             "id_number": employee.id_number,
             "employee_type": employee.employee_type,
+            "title": employee.title,
+            "class_name": employee.class_name,
             "base_salary": employee.base_salary,
             "hourly_rate": employee.hourly_rate,
             "supervisor_allowance": employee.supervisor_allowance,
@@ -303,10 +349,12 @@ async def get_students():
                 "id": s.id,
                 "student_id": s.student_id,
                 "name": s.name,
+                "gender": s.gender,
                 "birthday": s.birthday.isoformat() if s.birthday else None,
+                "classroom_id": s.classroom_id,
                 "enrollment_date": s.enrollment_date.isoformat() if s.enrollment_date else None,
                 "parent_name": s.parent_name,
-                "phone": s.phone,
+                "parent_phone": s.parent_phone,
                 "address": s.address,
                 "is_active": s.is_active
             })
@@ -327,11 +375,14 @@ async def get_student(student_id: int):
             "id": student.id,
             "student_id": student.student_id,
             "name": student.name,
+            "gender": student.gender,
             "birthday": student.birthday.isoformat() if student.birthday else None,
+            "classroom_id": student.classroom_id,
             "enrollment_date": student.enrollment_date.isoformat() if student.enrollment_date else None,
             "parent_name": student.parent_name,
-            "phone": student.phone,
+            "parent_phone": student.parent_phone,
             "address": student.address,
+            "notes": student.notes,
             "is_active": student.is_active
         }
     finally:
@@ -431,6 +482,152 @@ async def delete_student(student_id: int):
         session.close()
 
 
+# --- 班級管理 ---
+
+@app.get("/api/classrooms")
+async def get_classrooms():
+    """取得所有班級列表（含老師和學生數）"""
+    session = get_session()
+    try:
+        classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+        result = []
+        for c in classrooms:
+            # 取得年級名稱
+            grade = session.query(ClassGrade).filter(ClassGrade.id == c.grade_id).first() if c.grade_id else None
+
+            # 取得班導師
+            head_teacher = session.query(Employee).filter(Employee.id == c.head_teacher_id).first() if c.head_teacher_id else None
+
+            # 取得副班導
+            assistant_teacher = session.query(Employee).filter(Employee.id == c.assistant_teacher_id).first() if c.assistant_teacher_id else None
+
+            # 取得學生數
+            student_count = session.query(Student).filter(
+                Student.classroom_id == c.id,
+                Student.is_active == True
+            ).count()
+
+            result.append({
+                "id": c.id,
+                "name": c.name,
+                "grade_id": c.grade_id,
+                "grade_name": grade.name if grade else None,
+                "capacity": c.capacity,
+                "current_count": student_count,
+                "head_teacher_id": c.head_teacher_id,
+                "head_teacher_name": head_teacher.name if head_teacher else None,
+                "assistant_teacher_id": c.assistant_teacher_id,
+                "assistant_teacher_name": assistant_teacher.name if assistant_teacher else None,
+                "is_active": c.is_active
+            })
+        return result
+    finally:
+        session.close()
+
+
+@app.get("/api/classrooms/{classroom_id}")
+async def get_classroom(classroom_id: int):
+    """取得單一班級詳細資料（含學生列表）"""
+    session = get_session()
+    try:
+        classroom = session.query(Classroom).filter(Classroom.id == classroom_id).first()
+        if not classroom:
+            raise HTTPException(status_code=404, detail="找不到該班級")
+
+        # 取得年級
+        grade = session.query(ClassGrade).filter(ClassGrade.id == classroom.grade_id).first() if classroom.grade_id else None
+
+        # 取得老師
+        head_teacher = session.query(Employee).filter(Employee.id == classroom.head_teacher_id).first() if classroom.head_teacher_id else None
+        assistant_teacher = session.query(Employee).filter(Employee.id == classroom.assistant_teacher_id).first() if classroom.assistant_teacher_id else None
+
+        # 取得學生列表
+        students = session.query(Student).filter(
+            Student.classroom_id == classroom_id,
+            Student.is_active == True
+        ).all()
+
+        student_list = [{
+            "id": s.id,
+            "student_id": s.student_id,
+            "name": s.name,
+            "gender": s.gender
+        } for s in students]
+
+        return {
+            "id": classroom.id,
+            "name": classroom.name,
+            "grade_id": classroom.grade_id,
+            "grade_name": grade.name if grade else None,
+            "capacity": classroom.capacity,
+            "current_count": len(student_list),
+            "head_teacher_id": classroom.head_teacher_id,
+            "head_teacher_name": head_teacher.name if head_teacher else None,
+            "assistant_teacher_id": classroom.assistant_teacher_id,
+            "assistant_teacher_name": assistant_teacher.name if assistant_teacher else None,
+            "students": student_list,
+            "is_active": classroom.is_active
+        }
+    finally:
+        session.close()
+
+
+@app.put("/api/classrooms/{classroom_id}")
+async def update_classroom(classroom_id: int, head_teacher_id: Optional[int] = None, assistant_teacher_id: Optional[int] = None):
+    """更新班級老師"""
+    session = get_session()
+    try:
+        classroom = session.query(Classroom).filter(Classroom.id == classroom_id).first()
+        if not classroom:
+            raise HTTPException(status_code=404, detail="找不到該班級")
+
+        if head_teacher_id is not None:
+            classroom.head_teacher_id = head_teacher_id if head_teacher_id > 0 else None
+        if assistant_teacher_id is not None:
+            classroom.assistant_teacher_id = assistant_teacher_id if assistant_teacher_id > 0 else None
+
+        session.commit()
+        return {"message": "班級更新成功", "id": classroom.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
+    finally:
+        session.close()
+
+
+@app.get("/api/grades")
+async def get_grades():
+    """取得所有年級"""
+    session = get_session()
+    try:
+        grades = session.query(ClassGrade).filter(ClassGrade.is_active == True).order_by(ClassGrade.sort_order.desc()).all()
+        return [{
+            "id": g.id,
+            "name": g.name,
+            "age_range": g.age_range
+        } for g in grades]
+    finally:
+        session.close()
+
+
+@app.get("/api/teachers")
+async def get_teachers():
+    """取得所有可作為老師的員工"""
+    session = get_session()
+    try:
+        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        return [{
+            "id": e.id,
+            "employee_id": e.employee_id,
+            "name": e.name,
+            "title": e.title if hasattr(e, 'title') else None
+        } for e in employees]
+    finally:
+        session.close()
+
+
 # --- 考勤處理 ---
 
 @app.post("/api/attendance/upload")
@@ -476,6 +673,128 @@ async def download_anomaly_report():
     return FileResponse(file_path, filename="考勤異常清單.xlsx")
 
 
+# --- 設定管理 (津貼/扣款/獎金) ---
+
+@app.get("/api/config/allowance-types")
+async def get_allowance_types():
+    session = get_session()
+    try:
+        return session.query(AllowanceType).filter(AllowanceType.is_active == True).order_by(AllowanceType.sort_order).all()
+    finally:
+        session.close()
+
+@app.post("/api/config/allowance-types")
+async def create_allowance_type(item: AllowanceTypeCreate):
+    session = get_session()
+    try:
+        new_item = AllowanceType(**item.dict())
+        session.add(new_item)
+        session.commit()
+        return {"message": "新增成功", "id": new_item.id}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@app.get("/api/config/deduction-types")
+async def get_deduction_types():
+    session = get_session()
+    try:
+        return session.query(DeductionType).filter(DeductionType.is_active == True).order_by(DeductionType.sort_order).all()
+    finally:
+        session.close()
+
+@app.post("/api/config/deduction-types")
+async def create_deduction_type(item: DeductionTypeCreate):
+    session = get_session()
+    try:
+        new_item = DeductionType(**item.dict())
+        session.add(new_item)
+        session.commit()
+        return {"message": "新增成功", "id": new_item.id}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@app.get("/api/config/bonus-types")
+async def get_bonus_types():
+    session = get_session()
+    try:
+        return session.query(BonusType).filter(BonusType.is_active == True).order_by(BonusType.sort_order).all()
+    finally:
+        session.close()
+
+@app.post("/api/config/bonus-types")
+async def create_bonus_type(item: BonusTypeCreate):
+    session = get_session()
+    try:
+        new_item = BonusType(**item.dict())
+        session.add(new_item)
+        session.commit()
+        return {"message": "新增成功", "id": new_item.id}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+# --- 員工津貼管理 ---
+
+@app.get("/api/employees/{employee_id}/allowances")
+async def get_employee_allowances(employee_id: int):
+    session = get_session()
+    try:
+        allowances = session.query(EmployeeAllowance, AllowanceType).join(AllowanceType).filter(
+            EmployeeAllowance.employee_id == employee_id,
+            EmployeeAllowance.is_active == True
+        ).all()
+        
+        return [{
+            "id": ea.id,
+            "allowance_type_id": at.id,
+            "name": at.name,
+            "amount": ea.amount,
+            "effective_date": ea.effective_date,
+            "remark": ea.remark
+        } for ea, at in allowances]
+    finally:
+        session.close()
+
+@app.post("/api/employees/{employee_id}/allowances")
+async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate):
+    session = get_session()
+    try:
+        # 簡單處理：如果已存在相同類型則更新，否則新增
+        existing = session.query(EmployeeAllowance).filter(
+            EmployeeAllowance.employee_id == employee_id,
+            EmployeeAllowance.allowance_type_id == data.allowance_type_id,
+            EmployeeAllowance.is_active == True
+        ).first()
+
+        if existing:
+            existing.amount = data.amount
+            existing.effective_date = data.effective_date
+            existing.remark = data.remark
+        else:
+            new_allowance = EmployeeAllowance(
+                employee_id=employee_id,
+                **data.dict()
+            )
+            session.add(new_allowance)
+        
+        session.commit()
+        return {"message": "儲存成功"}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
 # --- 勞健保 ---
 
 @app.post("/api/insurance/import")
@@ -511,6 +830,22 @@ async def calculate_salaries(request: CalculateSalaryRequest):
     session = get_session()
     employees = session.query(Employee).filter(Employee.is_active == True).all()
     
+    # 預先抓取所有員工的津貼設定
+    all_allowances = session.query(EmployeeAllowance, AllowanceType).join(AllowanceType).filter(
+        EmployeeAllowance.is_active == True
+    ).all()
+    
+    # 將津貼依照 employee_id 分組
+    allowance_map = {}
+    for ea, at in all_allowances:
+        if ea.employee_id not in allowance_map:
+            allowance_map[ea.employee_id] = []
+        allowance_map[ea.employee_id].append({
+            "name": at.name,
+            "amount": ea.amount,
+            "code": at.code
+        })
+
     results = []
     bonus_settings = None
     
@@ -536,11 +871,19 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "insurance_salary": emp.insurance_salary_level or emp.base_salary
         }
         
+        # 取得該員工的津貼列表
+        emp_allowances = allowance_map.get(emp.id, [])
+
         breakdown = salary_engine.calculate_salary(
-            emp_dict, request.year, request.month, bonus_settings=bonus_settings
+            emp_dict, 
+            request.year, 
+            request.month, 
+            bonus_settings=bonus_settings,
+            allowances=emp_allowances
         )
         results.append(breakdown.__dict__)
     
+    session.close() # Explicitly close session
     return {"message": "薪資結算完成", "results": results}
 
 
