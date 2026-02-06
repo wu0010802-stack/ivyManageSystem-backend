@@ -19,6 +19,7 @@ from models.database import (
     init_database, get_session, Employee, Attendance, SalaryRecord, Student, Classroom, ClassGrade,
     AllowanceType, DeductionType, BonusType, EmployeeAllowance, SalaryItem
 )
+from typing import Dict
 
 app = FastAPI(
     title="幼稚園考勤薪資系統",
@@ -55,7 +56,7 @@ class EmployeeCreate(BaseModel):
     id_number: Optional[str] = None
     employee_type: str = "regular"
     title: Optional[str] = None
-    class_name: Optional[str] = None
+    classroom_id: Optional[int] = None
     base_salary: float = 0
     hourly_rate: float = 0
     supervisor_allowance: float = 0
@@ -78,7 +79,7 @@ class EmployeeUpdate(BaseModel):
     id_number: Optional[str] = None
     employee_type: Optional[str] = None
     title: Optional[str] = None
-    class_name: Optional[str] = None
+    classroom_id: Optional[int] = None
     base_salary: Optional[float] = None
     hourly_rate: Optional[float] = None
     supervisor_allowance: Optional[float] = None
@@ -206,7 +207,8 @@ async def get_employees():
                 "id_number": e.id_number,
                 "employee_type": e.employee_type,
                 "title": e.title,
-                "class_name": e.class_name,
+                "position": e.position,
+                "classroom_id": e.classroom_id,
                 "base_salary": e.base_salary,
                 "hourly_rate": e.hourly_rate,
                 "supervisor_allowance": e.supervisor_allowance,
@@ -243,7 +245,8 @@ async def get_employee(employee_id: int):
             "id_number": employee.id_number,
             "employee_type": employee.employee_type,
             "title": employee.title,
-            "class_name": employee.class_name,
+            "position": employee.position,
+            "classroom_id": employee.classroom_id,
             "base_salary": employee.base_salary,
             "hourly_rate": employee.hourly_rate,
             "supervisor_allowance": employee.supervisor_allowance,
@@ -849,12 +852,12 @@ async def calculate_salaries(request: CalculateSalaryRequest):
     """一鍵結算薪資"""
     session = get_session()
     employees = session.query(Employee).filter(Employee.is_active == True).all()
-    
+
     # 預先抓取所有員工的津貼設定
     all_allowances = session.query(EmployeeAllowance, AllowanceType).join(AllowanceType).filter(
         EmployeeAllowance.is_active == True
     ).all()
-    
+
     # 將津貼依照 employee_id 分組
     allowance_map = {}
     for ea, at in all_allowances:
@@ -866,18 +869,54 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "code": at.code
         })
 
-    # 取得班級與老師對應
+    # 取得班級資料（含年級）
     classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
-    emp_class_map = {} # emp_id -> classroom_id
+
+    # 取得年級對照表
+    grades = session.query(ClassGrade).all()
+    grade_map = {g.id: g.name for g in grades}
+
+    # 建立班級詳細資訊對照表
+    classroom_info_map = {}  # classroom_id -> classroom info
+    for c in classrooms:
+        # 計算班級實際人數
+        student_count = session.query(Student).filter(
+            Student.classroom_id == c.id,
+            Student.is_active == True
+        ).count()
+
+        classroom_info_map[c.id] = {
+            "id": c.id,
+            "name": c.name,
+            "grade_id": c.grade_id,
+            "grade_name": grade_map.get(c.grade_id, ''),
+            "head_teacher_id": c.head_teacher_id,
+            "assistant_teacher_id": c.assistant_teacher_id,
+            "art_teacher_id": c.art_teacher_id,
+            "has_assistant": c.assistant_teacher_id is not None,
+            "current_enrollment": student_count
+        }
+
+    # 建立員工角色對照表: emp_id -> [(classroom_id, role), ...]
+    # 一個員工可能在多個班級擔任不同角色（如美師跨班）
+    emp_role_map: Dict[int, list] = {}
     for c in classrooms:
         if c.head_teacher_id:
-            emp_class_map[c.head_teacher_id] = c.id
+            if c.head_teacher_id not in emp_role_map:
+                emp_role_map[c.head_teacher_id] = []
+            emp_role_map[c.head_teacher_id].append((c.id, 'head_teacher'))
         if c.assistant_teacher_id:
-            emp_class_map[c.assistant_teacher_id] = c.id
+            if c.assistant_teacher_id not in emp_role_map:
+                emp_role_map[c.assistant_teacher_id] = []
+            emp_role_map[c.assistant_teacher_id].append((c.id, 'assistant_teacher'))
+        if c.art_teacher_id:
+            if c.art_teacher_id not in emp_role_map:
+                emp_role_map[c.art_teacher_id] = []
+            emp_role_map[c.art_teacher_id].append((c.id, 'art_teacher'))
 
     results = []
-    
-    # 建立班級參數對照表
+
+    # 建立班級參數對照表 (用於覆蓋在籍人數)
     class_bonus_map = {}
     if request.bonus_settings and request.bonus_settings.class_params:
         for p in request.bonus_settings.class_params:
@@ -885,7 +924,8 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 "target": p.target_enrollment,
                 "current": p.current_enrollment
             }
-    
+
+    # 舊版獎金設定 (相容性保留)
     global_bonus_settings = None
     if request.bonus_settings:
         global_bonus_settings = {
@@ -894,12 +934,14 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "festival_base": request.bonus_settings.festival_bonus_base,
             "overtime_per": request.bonus_settings.overtime_bonus_per_student
         }
-    
+
     for emp in employees:
         emp_dict = {
             "name": emp.name,
             "employee_id": emp.employee_id,
             "employee_type": emp.employee_type,
+            "position": emp.position,
+            "title": emp.title,
             "base_salary": emp.base_salary,
             "hourly_rate": emp.hourly_rate,
             "supervisor_allowance": emp.supervisor_allowance,
@@ -908,35 +950,106 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "transportation_allowance": emp.transportation_allowance,
             "insurance_salary": emp.insurance_salary_level or emp.base_salary
         }
-        
-        # 決定該員工適用的獎金設定
-        emp_bonus_settings = None
-        if global_bonus_settings:
-            # 預設使用全域設定
-            emp_bonus_settings = global_bonus_settings.copy()
-            
-            # 如果是班導師或副班導，且有該班級的設定，則覆蓋目標與在籍人數
-            # 只有正職才有節慶獎金，才藝老師(hourly)通常不領此類獎金，但邏輯保留給引擎判斷
-            if emp.id in emp_class_map:
-                class_id = emp_class_map[emp.id]
-                if class_id in class_bonus_map:
-                    class_params = class_bonus_map[class_id]
-                    emp_bonus_settings["target"] = class_params["target"]
-                    emp_bonus_settings["current"] = class_params["current"]
 
         # 取得該員工的津貼列表
         emp_allowances = allowance_map.get(emp.id, [])
 
-        breakdown = salary_engine.calculate_salary(
-            emp_dict, 
-            request.year, 
-            request.month, 
-            bonus_settings=emp_bonus_settings,
-            allowances=emp_allowances
-        )
+        # 建立 classroom_context（新版節慶獎金計算）
+        classroom_context = None
+        if emp.id in emp_role_map:
+            roles = emp_role_map[emp.id]
+
+            # 美師可能跨多個班級，需要累計多班獎金
+            # 其他角色通常只有一個班級
+            if len(roles) == 1:
+                # 單一班級
+                classroom_id, role = roles[0]
+                classroom_info = classroom_info_map.get(classroom_id)
+                if classroom_info:
+                    # 檢查是否有手動設定的在籍人數
+                    current = class_bonus_map.get(classroom_id, {}).get('current', classroom_info['current_enrollment'])
+
+                    classroom_context = {
+                        'role': role,
+                        'grade_name': classroom_info['grade_name'],
+                        'current_enrollment': current,
+                        'has_assistant': classroom_info['has_assistant'],
+                        'is_shared_assistant': False
+                    }
+            else:
+                # 多班級（美師）：計算所有班級的平均在籍人數
+                # 或者取第一個班級作為代表（可依需求調整）
+                # 這裡採用：依各班計算後加總
+                total_bonus = 0
+                for classroom_id, role in roles:
+                    classroom_info = classroom_info_map.get(classroom_id)
+                    if classroom_info:
+                        current = class_bonus_map.get(classroom_id, {}).get('current', classroom_info['current_enrollment'])
+
+                        # 使用 salary_engine 計算單班獎金
+                        bonus_result = salary_engine.calculate_festival_bonus_v2(
+                            position=emp.position or '',
+                            role=role,
+                            grade_name=classroom_info['grade_name'],
+                            current_enrollment=current,
+                            has_assistant=classroom_info['has_assistant'],
+                            is_shared_assistant=(role == 'art_teacher')
+                        )
+                        total_bonus += bonus_result['festival_bonus']
+
+                # 對於多班美師，不使用 classroom_context，直接設定獎金
+                # 在下面會特別處理
+                emp_dict['_calculated_festival_bonus'] = total_bonus
+
+        # 決定獎金設定方式
+        if '_calculated_festival_bonus' in emp_dict:
+            # 多班美師：直接使用已計算的獎金
+            breakdown = salary_engine.calculate_salary(
+                emp_dict,
+                request.year,
+                request.month,
+                bonus_settings=None,
+                allowances=emp_allowances,
+                classroom_context=None
+            )
+            breakdown.festival_bonus = emp_dict['_calculated_festival_bonus']
+            # 重新計算應發總額
+            breakdown.gross_salary = (
+                breakdown.base_salary +
+                breakdown.supervisor_allowance +
+                breakdown.teacher_allowance +
+                breakdown.meal_allowance +
+                breakdown.transportation_allowance +
+                breakdown.other_allowance +
+                breakdown.festival_bonus +
+                breakdown.overtime_bonus +
+                breakdown.performance_bonus +
+                breakdown.special_bonus
+            )
+            breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+        elif classroom_context:
+            # 使用新版計算（有 classroom_context）
+            breakdown = salary_engine.calculate_salary(
+                emp_dict,
+                request.year,
+                request.month,
+                bonus_settings=None,
+                allowances=emp_allowances,
+                classroom_context=classroom_context
+            )
+        else:
+            # 使用舊版計算（沒有班級角色，如園長、行政等）
+            breakdown = salary_engine.calculate_salary(
+                emp_dict,
+                request.year,
+                request.month,
+                bonus_settings=global_bonus_settings,
+                allowances=emp_allowances
+            )
+
         results.append(breakdown.__dict__)
-    
-    session.close() # Explicitly close session
+
+    session.close()
     return {"message": "薪資結算完成", "results": results}
 
 
