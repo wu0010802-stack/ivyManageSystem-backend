@@ -133,7 +133,9 @@ class StudentCreate(BaseModel):
     parent_name: Optional[str] = None
     parent_phone: Optional[str] = None
     address: Optional[str] = None
+    address: Optional[str] = None
     notes: Optional[str] = None
+    status_tag: Optional[str] = None
 
 
 class StudentUpdate(BaseModel):
@@ -146,7 +148,9 @@ class StudentUpdate(BaseModel):
     parent_name: Optional[str] = None
     parent_phone: Optional[str] = None
     address: Optional[str] = None
+    address: Optional[str] = None
     notes: Optional[str] = None
+    status_tag: Optional[str] = None
 
 
 class AllowanceTypeCreate(BaseModel):
@@ -364,6 +368,8 @@ async def get_students():
                 "parent_name": s.parent_name,
                 "parent_phone": s.parent_phone,
                 "address": s.address,
+                "address": s.address,
+                "status_tag": s.status_tag,
                 "is_active": s.is_active
             })
         return result
@@ -515,9 +521,13 @@ async def get_classrooms():
                 Student.is_active == True
             ).count()
 
+            # 取得美師
+            art_teacher = session.query(Employee).filter(Employee.id == c.art_teacher_id).first() if c.art_teacher_id else None
+
             result.append({
                 "id": c.id,
                 "name": c.name,
+                "class_code": c.class_code,
                 "grade_id": c.grade_id,
                 "grade_name": grade.name if grade else None,
                 "capacity": c.capacity,
@@ -526,6 +536,8 @@ async def get_classrooms():
                 "head_teacher_name": head_teacher.name if head_teacher else None,
                 "assistant_teacher_id": c.assistant_teacher_id,
                 "assistant_teacher_name": assistant_teacher.name if assistant_teacher else None,
+                "art_teacher_id": c.art_teacher_id,
+                "art_teacher_name": art_teacher.name if art_teacher else None,
                 "is_active": c.is_active
             })
         return result

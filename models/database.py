@@ -51,6 +51,7 @@ class Employee(Base):
     # 員工類型
     employee_type = Column(String(20), default=EmployeeType.REGULAR.value, comment="員工類型：regular/hourly")
     title = Column(String(50), nullable=True, comment="職稱")
+    position = Column(String(50), nullable=True, comment="職稱分類 (園長/幼兒園教師/教保員等)")
     class_name = Column(String(50), nullable=True, comment="班級名稱")
     
     # 薪資相關
@@ -367,6 +368,7 @@ class Student(Base):
 
     # 狀態
     is_active = Column(Boolean, default=True, comment="是否在讀")
+    status_tag = Column(String(50), nullable=True, comment="狀態標籤 (新生/不足齡/特殊生等)")
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -403,6 +405,9 @@ class Classroom(Base):
     # 老師
     head_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, comment="班導師")
     assistant_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, comment="副班導")
+    art_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, comment="美師")
+    
+    class_code = Column(String(20), nullable=True, comment="班級代號 (如 114-11)")
 
     is_active = Column(Boolean, default=True, comment="是否啟用")
 
@@ -495,7 +500,7 @@ class SalaryItem(Base):
 
 
 # 預設資料庫連線字串 (PostgreSQL)
-DEFAULT_DATABASE_URL = "postgresql://yilunwu@localhost:5432/kindergarten_payroll"
+DEFAULT_DATABASE_URL = "postgresql://yilunwu@localhost:5432/ivymanagement"
 
 
 # 資料庫初始化函數
