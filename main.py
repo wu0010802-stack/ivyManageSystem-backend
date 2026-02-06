@@ -56,6 +56,7 @@ class EmployeeCreate(BaseModel):
     id_number: Optional[str] = None
     employee_type: str = "regular"
     title: Optional[str] = None
+    position: Optional[str] = None  # Added position field
     classroom_id: Optional[int] = None
     base_salary: float = 0
     hourly_rate: float = 0
@@ -71,6 +72,7 @@ class EmployeeCreate(BaseModel):
     work_start_time: str = "08:00"
     work_end_time: str = "17:00"
     hire_date: Optional[str] = None
+    is_office_staff: bool = False
 
 
 class EmployeeUpdate(BaseModel):
@@ -79,6 +81,7 @@ class EmployeeUpdate(BaseModel):
     id_number: Optional[str] = None
     employee_type: Optional[str] = None
     title: Optional[str] = None
+    position: Optional[str] = None  # Added position field
     classroom_id: Optional[int] = None
     base_salary: Optional[float] = None
     hourly_rate: Optional[float] = None
@@ -94,6 +97,7 @@ class EmployeeUpdate(BaseModel):
     work_start_time: Optional[str] = None
     work_end_time: Optional[str] = None
     hire_date: Optional[str] = None
+    is_office_staff: Optional[bool] = None
 
 
 class ClassBonusParam(BaseModel):
@@ -128,10 +132,17 @@ class GradeTargetConfig(BaseModel):
     sharedAssistant: int = 0
 
 
+class OfficeFestivalBonusBase(BaseModel):
+    """司機/美編節慶獎金基數"""
+    driver: float = 1000    # 司機
+    designer: float = 1000  # 美編
+
+
 class BonusConfig(BaseModel):
     """完整獎金設定"""
     bonusBase: BonusBaseConfig = BonusBaseConfig()
     targetEnrollment: Dict[str, GradeTargetConfig] = {}
+    officeFestivalBonusBase: Optional[OfficeFestivalBonusBase] = None
 
 
 class ClassEnrollment(BaseModel):
@@ -153,6 +164,8 @@ class CalculateSalaryRequest(BaseModel):
     bonus_config: Optional[BonusConfig] = None
     class_enrollments: Optional[List[ClassEnrollment]] = None
     overtime_bonus_per_student: float = 400
+    # 辦公室人員用全校超額目標
+    school_wide_overtime_target: int = 0
 
 
 class StudentCreate(BaseModel):
@@ -254,7 +267,8 @@ async def get_employees():
                 "work_start_time": e.work_start_time,
                 "work_end_time": e.work_end_time,
                 "hire_date": e.hire_date.isoformat() if e.hire_date else None,
-                "is_active": e.is_active
+                "is_active": e.is_active,
+                "is_office_staff": e.is_office_staff or False
             })
         return result
     finally:
@@ -292,7 +306,8 @@ async def get_employee(employee_id: int):
             "work_start_time": employee.work_start_time,
             "work_end_time": employee.work_end_time,
             "hire_date": employee.hire_date.isoformat() if employee.hire_date else None,
-            "is_active": employee.is_active
+            "is_active": employee.is_active,
+            "is_office_staff": employee.is_office_staff or False
         }
     finally:
         session.close()
@@ -537,7 +552,8 @@ async def get_classrooms():
     """取得所有班級列表（含老師和學生數）"""
     session = get_session()
     try:
-        classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+        # 依班級 ID 排序，確保順序一致
+        classrooms = session.query(Classroom).filter(Classroom.is_active == True).order_by(Classroom.id).all()
         result = []
         for c in classrooms:
             # 取得年級名稱
@@ -627,7 +643,12 @@ async def get_classroom(classroom_id: int):
 
 
 @app.put("/api/classrooms/{classroom_id}")
-async def update_classroom(classroom_id: int, head_teacher_id: Optional[int] = None, assistant_teacher_id: Optional[int] = None):
+async def update_classroom(
+    classroom_id: int,
+    head_teacher_id: Optional[int] = None,
+    assistant_teacher_id: Optional[int] = None,
+    art_teacher_id: Optional[int] = None
+):
     """更新班級老師"""
     session = get_session()
     try:
@@ -639,9 +660,11 @@ async def update_classroom(classroom_id: int, head_teacher_id: Optional[int] = N
             classroom.head_teacher_id = head_teacher_id if head_teacher_id > 0 else None
         if assistant_teacher_id is not None:
             classroom.assistant_teacher_id = assistant_teacher_id if assistant_teacher_id > 0 else None
+        if art_teacher_id is not None:
+            classroom.art_teacher_id = art_teacher_id if art_teacher_id > 0 else None
 
         session.commit()
-        return {"message": "班級更新成功", "id": classroom.id}
+        return {"message": "班級更新成功", "id": classroom.id, "name": classroom.name}
     except HTTPException:
         raise
     except Exception as e:
@@ -959,6 +982,10 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 emp_role_map[c.art_teacher_id] = []
             emp_role_map[c.art_teacher_id].append((c.id, 'art_teacher'))
 
+    # 計算全校在籍人數（用於辦公室人員）
+    total_school_enrollment = sum(info['current_enrollment'] for info in classroom_info_map.values())
+    school_wide_overtime_target = request.school_wide_overtime_target
+
     results = []
 
     # 舊版相容：建立班級參數對照表
@@ -993,7 +1020,9 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "teacher_allowance": emp.teacher_allowance,
             "meal_allowance": emp.meal_allowance,
             "transportation_allowance": emp.transportation_allowance,
-            "insurance_salary": emp.insurance_salary_level or emp.base_salary
+            "insurance_salary": emp.insurance_salary_level or emp.base_salary,
+            "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
+            "is_office_staff": emp.is_office_staff or False
         }
 
         # 取得該員工的津貼列表
@@ -1001,12 +1030,66 @@ async def calculate_salaries(request: CalculateSalaryRequest):
 
         # 建立 classroom_context（新版節慶獎金計算）
         classroom_context = None
+        is_office_staff = emp.is_office_staff or False
+
         if emp.id in emp_role_map:
             roles = emp_role_map[emp.id]
 
+            # 檢查是否為司機或美編（特殊處理：節慶獎金用全校比例，無超額獎金）
+            office_festival_base = salary_engine.get_office_festival_bonus_base(emp.position or '')
+
+            if office_festival_base is not None:
+                # 司機/美編：節慶獎金用全校比例計算，無超額獎金
+                is_eligible = salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+                school_festival_bonus = 0
+
+                if is_eligible and school_wide_overtime_target > 0:
+                    school_ratio = total_school_enrollment / school_wide_overtime_target
+                    school_festival_bonus = office_festival_base * school_ratio
+
+                emp_dict['_calculated_festival_bonus'] = round(school_festival_bonus)
+                emp_dict['_calculated_overtime_bonus'] = 0  # 司機/美編無超額獎金
+
+            # 辦公室人員有帶班：節慶獎金用全校計算，超額獎金用班級計算
+            elif is_office_staff and len(roles) > 0:
+                # 檢查是否符合領取節慶獎金資格（入職滿3個月）
+                is_eligible = salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+
+                school_festival_bonus = 0
+                total_overtime_bonus = 0
+
+                if is_eligible:
+                    # 節慶獎金：用全校人數計算
+                    if school_wide_overtime_target > 0:
+                        # 取得獎金基數（依職位和角色）
+                        first_classroom_id, first_role = roles[0]
+                        first_classroom_info = classroom_info_map.get(first_classroom_id)
+                        if first_classroom_info:
+                            role_for_bonus = first_role if first_role != 'art_teacher' else 'assistant_teacher'
+                            bonus_base = salary_engine.get_festival_bonus_base(emp.position or '', role_for_bonus)
+                            # 全校比例 = 全校在籍 / 全校目標
+                            school_ratio = total_school_enrollment / school_wide_overtime_target
+                            school_festival_bonus = bonus_base * school_ratio
+
+                    # 超額獎金：依各班計算後加總
+                    for classroom_id, role in roles:
+                        classroom_info = classroom_info_map.get(classroom_id)
+                        if classroom_info:
+                            overtime_result = salary_engine.calculate_overtime_bonus(
+                                role=role,
+                                grade_name=classroom_info['grade_name'],
+                                current_enrollment=classroom_info['current_enrollment'],
+                                has_assistant=classroom_info['has_assistant'],
+                                is_shared_assistant=(role == 'art_teacher')
+                            )
+                            total_overtime_bonus += overtime_result['overtime_bonus']
+
+                emp_dict['_calculated_festival_bonus'] = round(school_festival_bonus)
+                emp_dict['_calculated_overtime_bonus'] = total_overtime_bonus
+
             # 美師可能跨多個班級，需要累計多班獎金
             # 其他角色通常只有一個班級
-            if len(roles) == 1:
+            elif len(roles) == 1:
                 # 單一班級
                 classroom_id, role = roles[0]
                 classroom_info = classroom_info_map.get(classroom_id)
@@ -1019,31 +1102,41 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                         'is_shared_assistant': False
                     }
             else:
-                # 多班級（美師）：依各班計算後加總
+                # 多班級：依各班計算後加總
+                # 判斷是否為「2班共用副班導」- assistant_teacher 跨多班
+                assistant_class_count = sum(1 for _, r in roles if r == 'assistant_teacher')
+                is_shared_assistant = assistant_class_count > 1
+
                 total_festival_bonus = 0
                 total_overtime_bonus = 0
-                for classroom_id, role in roles:
-                    classroom_info = classroom_info_map.get(classroom_id)
-                    if classroom_info:
-                        # 使用 salary_engine 計算單班獎金
-                        bonus_result = salary_engine.calculate_festival_bonus_v2(
-                            position=emp.position or '',
-                            role=role,
-                            grade_name=classroom_info['grade_name'],
-                            current_enrollment=classroom_info['current_enrollment'],
-                            has_assistant=classroom_info['has_assistant'],
-                            is_shared_assistant=(role == 'art_teacher')
-                        )
-                        total_festival_bonus += bonus_result['festival_bonus']
-                        total_overtime_bonus += bonus_result['overtime_bonus']
 
-                # 對於多班美師，不使用 classroom_context，直接設定獎金
+                # 檢查是否符合領取節慶獎金資格（入職滿3個月）
+                is_eligible = salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+
+                if is_eligible:
+                    for classroom_id, role in roles:
+                        classroom_info = classroom_info_map.get(classroom_id)
+                        if classroom_info:
+                            # 使用 salary_engine 計算單班獎金
+                            # 共用副班導使用 shared_assistant 目標人數
+                            bonus_result = salary_engine.calculate_festival_bonus_v2(
+                                position=emp.position or '',
+                                role=role,
+                                grade_name=classroom_info['grade_name'],
+                                current_enrollment=classroom_info['current_enrollment'],
+                                has_assistant=classroom_info['has_assistant'],
+                                is_shared_assistant=(is_shared_assistant and role == 'assistant_teacher')
+                            )
+                            total_festival_bonus += bonus_result['festival_bonus']
+                            total_overtime_bonus += bonus_result['overtime_bonus']
+
+                # 對於多班員工，不使用 classroom_context，直接設定獎金
                 emp_dict['_calculated_festival_bonus'] = total_festival_bonus
                 emp_dict['_calculated_overtime_bonus'] = total_overtime_bonus
 
         # 決定獎金設定方式
         if '_calculated_festival_bonus' in emp_dict:
-            # 多班美師：直接使用已計算的獎金
+            # 多班員工（共用副班導/美師等）：直接使用已計算的獎金
             breakdown = salary_engine.calculate_salary(
                 emp_dict,
                 request.year,

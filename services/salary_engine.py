@@ -4,7 +4,8 @@
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import date
+from datetime import date, datetime
+from dateutil.relativedelta import relativedelta
 from .insurance_service import InsuranceService, InsuranceCalculation
 from .attendance_parser import AttendanceResult
 
@@ -98,8 +99,9 @@ class SalaryEngine:
 
     # 節慶獎金目標人數 (依年級和教師配置)
     # 格式: grade_name -> { teacher_count -> target }
-    # 2 teachers = 班導+副班導, 1 teacher = 只有班導
-    # shared_assistant = 美師(2班共用助理)
+    # 2_teachers = 班導+副班導 (1班1副班導)
+    # 1_teacher = 只有班導 (無副班導)
+    # shared_assistant = 2班共用同一個副班導
     TARGET_ENROLLMENT = {
         '大班': {'2_teachers': 27, '1_teacher': 14, 'shared_assistant': 20},
         '中班': {'2_teachers': 25, '1_teacher': 13, 'shared_assistant': 18},
@@ -133,6 +135,19 @@ class SalaryEngine:
         '副組長': 1500
     }
 
+    # 主管節慶獎金基數（依職稱）
+    SUPERVISOR_FESTIVAL_BONUS = {
+        '園長': 6500,
+        '主任': 3500,
+        '組長': 2000
+    }
+
+    # 司機/美編節慶獎金基數（全校比例計算，無超額獎金）
+    OFFICE_FESTIVAL_BONUS_BASE = {
+        '司機': 1000,
+        '美編': 1000
+    }
+
     def __init__(self):
         self.insurance_service = InsuranceService()
         self.deduction_rules = {
@@ -148,6 +163,10 @@ class SalaryEngine:
         self._overtime_per_person = self.OVERTIME_BONUS_PER_PERSON.copy()
         # 可被覆蓋的設定 - 主管紅利
         self._supervisor_dividend = self.SUPERVISOR_DIVIDEND.copy()
+        # 可被覆蓋的設定 - 主管節慶獎金基數
+        self._supervisor_festival_bonus = self.SUPERVISOR_FESTIVAL_BONUS.copy()
+        # 可被覆蓋的設定 - 司機/美編節慶獎金基數
+        self._office_festival_bonus_base = self.OFFICE_FESTIVAL_BONUS_BASE.copy()
 
     def set_bonus_config(self, bonus_config: dict):
         """
@@ -235,7 +254,24 @@ class SalaryEngine:
                 '組長': sd.get('leader', 3000),
                 '副組長': sd.get('viceLeader', 1500)
             }
-    
+
+        # 更新主管節慶獎金基數
+        if 'supervisorFestivalBonus' in bonus_config:
+            sfb = bonus_config['supervisorFestivalBonus']
+            self._supervisor_festival_bonus = {
+                '園長': sfb.get('principal', 6500),
+                '主任': sfb.get('director', 3500),
+                '組長': sfb.get('leader', 2000)
+            }
+
+        # 更新司機/美編節慶獎金基數
+        if 'officeFestivalBonusBase' in bonus_config:
+            ofb = bonus_config['officeFestivalBonusBase']
+            self._office_festival_bonus_base = {
+                '司機': ofb.get('driver', 1000),
+                '美編': ofb.get('designer', 1000)
+            }
+
     def set_deduction_rules(self, rules: dict):
         """設定扣款規則"""
         self.deduction_rules.update(rules)
@@ -336,6 +372,50 @@ class SalaryEngine:
         """
         return self._supervisor_dividend.get(title, 0)
 
+    def get_supervisor_festival_bonus(self, title: str) -> Optional[float]:
+        """
+        取得主管節慶獎金基數
+
+        Args:
+            title: 職稱 (園長/主任/組長)
+
+        Returns:
+            節慶獎金基數，若非主管職則返回 None
+        """
+        if title in self._supervisor_festival_bonus:
+            return self._supervisor_festival_bonus[title]
+        return None
+
+    def is_eligible_for_festival_bonus(self, hire_date, reference_date=None) -> bool:
+        """
+        檢查員工是否符合領取節慶獎金資格（入職滿3個月）
+
+        Args:
+            hire_date: 到職日期 (date 或 str 格式 'YYYY-MM-DD')
+            reference_date: 參考日期，預設為今天
+
+        Returns:
+            True 如果入職滿3個月，否則 False
+        """
+        if hire_date is None:
+            return True  # 如果沒有到職日期資料，預設可以領
+
+        if isinstance(hire_date, str):
+            try:
+                hire_date = datetime.strptime(hire_date, '%Y-%m-%d').date()
+            except ValueError:
+                return True  # 日期格式錯誤，預設可以領
+
+        if reference_date is None:
+            reference_date = date.today()
+        elif isinstance(reference_date, str):
+            reference_date = datetime.strptime(reference_date, '%Y-%m-%d').date()
+
+        # 計算入職滿3個月的日期
+        eligible_date = hire_date + relativedelta(months=3)
+
+        return reference_date >= eligible_date
+
     def get_overtime_target(self, grade_name: str, has_assistant: bool, is_shared_assistant: bool = False) -> int:
         """取得超額獎金目標人數"""
         if grade_name not in self._overtime_target:
@@ -355,6 +435,20 @@ class SalaryEngine:
         if role not in self._overtime_per_person:
             return 0
         return self._overtime_per_person[role].get(grade_name, 0)
+
+    def get_office_festival_bonus_base(self, position: str) -> Optional[float]:
+        """
+        取得司機/美編節慶獎金基數
+
+        Args:
+            position: 職位 (司機/美編)
+
+        Returns:
+            節慶獎金基數，若非司機/美編則返回 None
+        """
+        if position in self._office_festival_bonus_base:
+            return self._office_festival_bonus_base[position]
+        return None
 
     def calculate_overtime_bonus(
         self,
@@ -541,9 +635,26 @@ class SalaryEngine:
             breakdown.transportation_allowance += employee.get('transportation_allowance', 0)
             breakdown.other_allowance += employee.get('other_allowance', 0)
 
+            # 檢查是否符合領取節慶獎金資格（入職滿3個月）
+            hire_date = employee.get('hire_date')
+            is_eligible = self.is_eligible_for_festival_bonus(hire_date)
+
             # 獎金計算
+            emp_title = employee.get('title', '')
+
+            # 檢查是否為主管（園長/主任/組長）- 有特別的節慶獎金基數
+            supervisor_festival_base = self.get_supervisor_festival_bonus(emp_title)
+
+            if supervisor_festival_base is not None:
+                # 主管使用固定的節慶獎金基數
+                if is_eligible:
+                    breakdown.festival_bonus = supervisor_festival_base
+                else:
+                    breakdown.festival_bonus = 0
+                # 主管無超額獎金
+                breakdown.overtime_bonus = 0
             # 優先使用新版計算 (classroom_context)
-            if classroom_context and employee.get('position'):
+            elif classroom_context and employee.get('position'):
                 bonus_result = self.calculate_festival_bonus_v2(
                     position=employee.get('position'),
                     role=classroom_context.get('role', ''),
@@ -552,15 +663,19 @@ class SalaryEngine:
                     has_assistant=classroom_context.get('has_assistant', False),
                     is_shared_assistant=classroom_context.get('is_shared_assistant', False)
                 )
-                breakdown.festival_bonus = bonus_result['festival_bonus']
-                breakdown.overtime_bonus = bonus_result['overtime_bonus']
+                # 入職未滿3個月，節慶獎金和超額獎金都不發
+                if is_eligible:
+                    breakdown.festival_bonus = bonus_result['festival_bonus']
+                    breakdown.overtime_bonus = bonus_result['overtime_bonus']
+                else:
+                    breakdown.festival_bonus = 0
+                    breakdown.overtime_bonus = 0
             elif bonus_settings:
                 # 舊版計算方式 (相容性保留)
                 base_amount = bonus_settings.get('festival_base', 0)
                 position_bonus_base = bonus_settings.get('position_bonus_base', {})
 
                 # 如果有設定該職位的基數，則優先使用
-                emp_title = employee.get('title')
                 if position_bonus_base and emp_title and emp_title in position_bonus_base:
                     base_amount = position_bonus_base[emp_title]
 
@@ -577,7 +692,6 @@ class SalaryEngine:
             breakdown.special_bonus = employee.get('special_bonus', 0)
 
             # 計算主管紅利
-            emp_title = employee.get('title', '')
             breakdown.supervisor_dividend = self.get_supervisor_dividend(emp_title)
 
             # 計算應發總額

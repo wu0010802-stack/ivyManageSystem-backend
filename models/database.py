@@ -79,6 +79,7 @@ class Employee(Base):
     
     # 狀態
     is_active = Column(Boolean, default=True, comment="是否在職")
+    is_office_staff = Column(Boolean, default=False, comment="是否為辦公室人員（超額獎金用全校計算）")
     hire_date = Column(Date, comment="到職日期")
     
     # 時間戳記
