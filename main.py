@@ -98,8 +98,8 @@ class EmployeeUpdate(BaseModel):
 
 class ClassBonusParam(BaseModel):
     classroom_id: int
-    target_enrollment: int
-    current_enrollment: int
+    target_enrollment: int = 0
+    current_enrollment: int = 0
 
 
 class BonusSettings(BaseModel):
@@ -113,6 +113,33 @@ class BonusSettings(BaseModel):
     position_bonus_base: Optional[Dict[str, float]] = None
 
 
+class BonusBaseConfig(BaseModel):
+    """獎金基數設定"""
+    headTeacherAB: float = 2000
+    headTeacherC: float = 1500
+    assistantTeacherAB: float = 1200
+    assistantTeacherC: float = 1200
+
+
+class GradeTargetConfig(BaseModel):
+    """單一年級目標人數設定"""
+    twoTeachers: int = 0
+    oneTeacher: int = 0
+    sharedAssistant: int = 0
+
+
+class BonusConfig(BaseModel):
+    """完整獎金設定"""
+    bonusBase: BonusBaseConfig = BonusBaseConfig()
+    targetEnrollment: Dict[str, GradeTargetConfig] = {}
+
+
+class ClassEnrollment(BaseModel):
+    """班級在籍人數"""
+    classroom_id: int
+    current_enrollment: int = 0
+
+
 class InsuranceTableImport(BaseModel):
     table_type: str = "labor"
     data: List[dict]
@@ -122,6 +149,10 @@ class CalculateSalaryRequest(BaseModel):
     year: int
     month: int
     bonus_settings: Optional[BonusSettings] = None
+    # 新版設定
+    bonus_config: Optional[BonusConfig] = None
+    class_enrollments: Optional[List[ClassEnrollment]] = None
+    overtime_bonus_per_student: float = 400
 
 
 class StudentCreate(BaseModel):
@@ -853,6 +884,11 @@ async def calculate_salaries(request: CalculateSalaryRequest):
     session = get_session()
     employees = session.query(Employee).filter(Employee.is_active == True).all()
 
+    # 如果有新版獎金設定，先套用到 salary_engine
+    if request.bonus_config:
+        bonus_config_dict = request.bonus_config.dict() if hasattr(request.bonus_config, 'dict') else request.bonus_config
+        salary_engine.set_bonus_config(bonus_config_dict)
+
     # 預先抓取所有員工的津貼設定
     all_allowances = session.query(EmployeeAllowance, AllowanceType).join(AllowanceType).filter(
         EmployeeAllowance.is_active == True
@@ -876,14 +912,23 @@ async def calculate_salaries(request: CalculateSalaryRequest):
     grades = session.query(ClassGrade).all()
     grade_map = {g.id: g.name for g in grades}
 
+    # 建立班級在籍人數對照表（從前端傳入）
+    enrollment_map = {}
+    if request.class_enrollments:
+        for ce in request.class_enrollments:
+            enrollment_map[ce.classroom_id] = ce.current_enrollment
+
     # 建立班級詳細資訊對照表
     classroom_info_map = {}  # classroom_id -> classroom info
     for c in classrooms:
-        # 計算班級實際人數
-        student_count = session.query(Student).filter(
-            Student.classroom_id == c.id,
-            Student.is_active == True
-        ).count()
+        # 優先使用前端傳入的在籍人數，否則從資料庫計算
+        if c.id in enrollment_map:
+            student_count = enrollment_map[c.id]
+        else:
+            student_count = session.query(Student).filter(
+                Student.classroom_id == c.id,
+                Student.is_active == True
+            ).count()
 
         classroom_info_map[c.id] = {
             "id": c.id,
@@ -916,7 +961,7 @@ async def calculate_salaries(request: CalculateSalaryRequest):
 
     results = []
 
-    # 建立班級參數對照表 (用於覆蓋在籍人數)
+    # 舊版相容：建立班級參數對照表
     class_bonus_map = {}
     if request.bonus_settings and request.bonus_settings.class_params:
         for p in request.bonus_settings.class_params:
@@ -966,40 +1011,35 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 classroom_id, role = roles[0]
                 classroom_info = classroom_info_map.get(classroom_id)
                 if classroom_info:
-                    # 檢查是否有手動設定的在籍人數
-                    current = class_bonus_map.get(classroom_id, {}).get('current', classroom_info['current_enrollment'])
-
                     classroom_context = {
                         'role': role,
                         'grade_name': classroom_info['grade_name'],
-                        'current_enrollment': current,
+                        'current_enrollment': classroom_info['current_enrollment'],
                         'has_assistant': classroom_info['has_assistant'],
                         'is_shared_assistant': False
                     }
             else:
-                # 多班級（美師）：計算所有班級的平均在籍人數
-                # 或者取第一個班級作為代表（可依需求調整）
-                # 這裡採用：依各班計算後加總
-                total_bonus = 0
+                # 多班級（美師）：依各班計算後加總
+                total_festival_bonus = 0
+                total_overtime_bonus = 0
                 for classroom_id, role in roles:
                     classroom_info = classroom_info_map.get(classroom_id)
                     if classroom_info:
-                        current = class_bonus_map.get(classroom_id, {}).get('current', classroom_info['current_enrollment'])
-
                         # 使用 salary_engine 計算單班獎金
                         bonus_result = salary_engine.calculate_festival_bonus_v2(
                             position=emp.position or '',
                             role=role,
                             grade_name=classroom_info['grade_name'],
-                            current_enrollment=current,
+                            current_enrollment=classroom_info['current_enrollment'],
                             has_assistant=classroom_info['has_assistant'],
                             is_shared_assistant=(role == 'art_teacher')
                         )
-                        total_bonus += bonus_result['festival_bonus']
+                        total_festival_bonus += bonus_result['festival_bonus']
+                        total_overtime_bonus += bonus_result['overtime_bonus']
 
                 # 對於多班美師，不使用 classroom_context，直接設定獎金
-                # 在下面會特別處理
-                emp_dict['_calculated_festival_bonus'] = total_bonus
+                emp_dict['_calculated_festival_bonus'] = total_festival_bonus
+                emp_dict['_calculated_overtime_bonus'] = total_overtime_bonus
 
         # 決定獎金設定方式
         if '_calculated_festival_bonus' in emp_dict:
@@ -1013,6 +1053,9 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 classroom_context=None
             )
             breakdown.festival_bonus = emp_dict['_calculated_festival_bonus']
+            breakdown.overtime_bonus = emp_dict.get('_calculated_overtime_bonus', 0)
+            # 計算主管紅利
+            breakdown.supervisor_dividend = salary_engine.get_supervisor_dividend(emp.title or '')
             # 重新計算應發總額
             breakdown.gross_salary = (
                 breakdown.base_salary +
@@ -1024,7 +1067,8 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 breakdown.festival_bonus +
                 breakdown.overtime_bonus +
                 breakdown.performance_bonus +
-                breakdown.special_bonus
+                breakdown.special_bonus +
+                breakdown.supervisor_dividend
             )
             breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
         elif classroom_context:

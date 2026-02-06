@@ -30,6 +30,7 @@ class SalaryBreakdown:
     overtime_bonus: float = 0
     performance_bonus: float = 0
     special_bonus: float = 0
+    supervisor_dividend: float = 0  # 主管紅利
     
     # 時薪制
     work_hours: float = 0
@@ -95,7 +96,7 @@ class SalaryEngine:
         }
     }
 
-    # 目標人數 (依年級和教師配置)
+    # 節慶獎金目標人數 (依年級和教師配置)
     # 格式: grade_name -> { teacher_count -> target }
     # 2 teachers = 班導+副班導, 1 teacher = 只有班導
     # shared_assistant = 美師(2班共用助理)
@@ -106,6 +107,32 @@ class SalaryEngine:
         '幼幼班': {'2_teachers': 15, '1_teacher': 7, 'shared_assistant': 12},
     }
 
+    # 超額獎金目標人數（與節慶獎金不同）
+    OVERTIME_TARGET = {
+        '大班': {'2_teachers': 25, '1_teacher': 13, 'shared_assistant': 20},
+        '中班': {'2_teachers': 23, '1_teacher': 12, 'shared_assistant': 18},
+        '小班': {'2_teachers': 21, '1_teacher': 11, 'shared_assistant': 16},
+        '幼幼班': {'2_teachers': 14, '1_teacher': 7, 'shared_assistant': 12},
+    }
+
+    # 超額獎金每人金額（依角色和年級）
+    OVERTIME_BONUS_PER_PERSON = {
+        'head_teacher': {
+            '大班': 400, '中班': 400, '小班': 400, '幼幼班': 450
+        },
+        'assistant_teacher': {
+            '大班': 100, '中班': 100, '小班': 100, '幼幼班': 150
+        }
+    }
+
+    # 主管紅利（依職稱）
+    SUPERVISOR_DIVIDEND = {
+        '園長': 5000,
+        '主任': 4000,
+        '組長': 3000,
+        '副組長': 1500
+    }
+
     def __init__(self):
         self.insurance_service = InsuranceService()
         self.deduction_rules = {
@@ -113,6 +140,101 @@ class SalaryEngine:
             'missing': {'amount': 50},
             'early': {'amount': 50}
         }
+        # 可被覆蓋的設定 - 節慶獎金
+        self._bonus_base = self.FESTIVAL_BONUS_BASE.copy()
+        self._target_enrollment = self.TARGET_ENROLLMENT.copy()
+        # 可被覆蓋的設定 - 超額獎金
+        self._overtime_target = self.OVERTIME_TARGET.copy()
+        self._overtime_per_person = self.OVERTIME_BONUS_PER_PERSON.copy()
+        # 可被覆蓋的設定 - 主管紅利
+        self._supervisor_dividend = self.SUPERVISOR_DIVIDEND.copy()
+
+    def set_bonus_config(self, bonus_config: dict):
+        """
+        設定獎金參數（從前端傳入）
+
+        Args:
+            bonus_config: {
+                'bonusBase': {
+                    'headTeacherAB': 2000,
+                    'headTeacherC': 1500,
+                    'assistantTeacherAB': 1200,
+                    'assistantTeacherC': 1200
+                },
+                'targetEnrollment': {
+                    '大班': {'twoTeachers': 27, 'oneTeacher': 14, 'sharedAssistant': 20},
+                    ...
+                }
+            }
+        """
+        if not bonus_config:
+            return
+
+        # 更新獎金基數
+        if 'bonusBase' in bonus_config:
+            bb = bonus_config['bonusBase']
+            self._bonus_base = {
+                'head_teacher': {
+                    'A': bb.get('headTeacherAB', 2000),
+                    'B': bb.get('headTeacherAB', 2000),
+                    'C': bb.get('headTeacherC', 1500),
+                },
+                'assistant_teacher': {
+                    'A': bb.get('assistantTeacherAB', 1200),
+                    'B': bb.get('assistantTeacherAB', 1200),
+                    'C': bb.get('assistantTeacherC', 1200),
+                }
+            }
+
+        # 更新節慶獎金目標人數
+        if 'targetEnrollment' in bonus_config:
+            te = bonus_config['targetEnrollment']
+            self._target_enrollment = {}
+            for grade, targets in te.items():
+                self._target_enrollment[grade] = {
+                    '2_teachers': targets.get('twoTeachers', 0),
+                    '1_teacher': targets.get('oneTeacher', 0),
+                    'shared_assistant': targets.get('sharedAssistant', 0)
+                }
+
+        # 更新超額獎金目標人數
+        if 'overtimeTarget' in bonus_config:
+            ot = bonus_config['overtimeTarget']
+            self._overtime_target = {}
+            for grade, targets in ot.items():
+                self._overtime_target[grade] = {
+                    '2_teachers': targets.get('twoTeachers', 0),
+                    '1_teacher': targets.get('oneTeacher', 0),
+                    'shared_assistant': targets.get('sharedAssistant', 0)
+                }
+
+        # 更新超額獎金每人金額
+        if 'overtimePerPerson' in bonus_config:
+            op = bonus_config['overtimePerPerson']
+            self._overtime_per_person = {
+                'head_teacher': {
+                    '大班': op.get('headBig', 400),
+                    '中班': op.get('headMid', 400),
+                    '小班': op.get('headSmall', 400),
+                    '幼幼班': op.get('headBaby', 450)
+                },
+                'assistant_teacher': {
+                    '大班': op.get('assistantBig', 100),
+                    '中班': op.get('assistantMid', 100),
+                    '小班': op.get('assistantSmall', 100),
+                    '幼幼班': op.get('assistantBaby', 150)
+                }
+            }
+
+        # 更新主管紅利
+        if 'supervisorDividend' in bonus_config:
+            sd = bonus_config['supervisorDividend']
+            self._supervisor_dividend = {
+                '園長': sd.get('principal', 5000),
+                '主任': sd.get('director', 4000),
+                '組長': sd.get('leader', 3000),
+                '副組長': sd.get('viceLeader', 1500)
+            }
     
     def set_deduction_rules(self, rules: dict):
         """設定扣款規則"""
@@ -174,9 +296,9 @@ class SalaryEngine:
             獎金基數，若職位不適用則返回 0
         """
         grade = self.get_position_grade(position)
-        if not grade or role not in self.FESTIVAL_BONUS_BASE:
+        if not grade or role not in self._bonus_base:
             return 0
-        return self.FESTIVAL_BONUS_BASE[role].get(grade, 0)
+        return self._bonus_base[role].get(grade, 0)
 
     def get_target_enrollment(self, grade_name: str, has_assistant: bool, is_shared_assistant: bool = False) -> int:
         """
@@ -190,10 +312,10 @@ class SalaryEngine:
         Returns:
             目標人數
         """
-        if grade_name not in self.TARGET_ENROLLMENT:
+        if grade_name not in self._target_enrollment:
             return 0
 
-        targets = self.TARGET_ENROLLMENT[grade_name]
+        targets = self._target_enrollment[grade_name]
 
         if is_shared_assistant:
             return targets.get('shared_assistant', 0)
@@ -201,6 +323,85 @@ class SalaryEngine:
             return targets.get('2_teachers', 0)
         else:
             return targets.get('1_teacher', 0)
+
+    def get_supervisor_dividend(self, title: str) -> float:
+        """
+        取得主管紅利
+
+        Args:
+            title: 職稱 (園長/主任/組長/副組長)
+
+        Returns:
+            紅利金額，若非主管職則返回 0
+        """
+        return self._supervisor_dividend.get(title, 0)
+
+    def get_overtime_target(self, grade_name: str, has_assistant: bool, is_shared_assistant: bool = False) -> int:
+        """取得超額獎金目標人數"""
+        if grade_name not in self._overtime_target:
+            return 0
+
+        targets = self._overtime_target[grade_name]
+
+        if is_shared_assistant:
+            return targets.get('shared_assistant', 0)
+        elif has_assistant:
+            return targets.get('2_teachers', 0)
+        else:
+            return targets.get('1_teacher', 0)
+
+    def get_overtime_per_person(self, role: str, grade_name: str) -> float:
+        """取得超額獎金每人金額"""
+        if role not in self._overtime_per_person:
+            return 0
+        return self._overtime_per_person[role].get(grade_name, 0)
+
+    def calculate_overtime_bonus(
+        self,
+        role: str,
+        grade_name: str,
+        current_enrollment: int,
+        has_assistant: bool,
+        is_shared_assistant: bool = False
+    ) -> dict:
+        """
+        計算超額獎金
+
+        Args:
+            role: 角色 (head_teacher/assistant_teacher/art_teacher)
+            grade_name: 年級名稱
+            current_enrollment: 在籍人數
+            has_assistant: 班級是否有副班導
+            is_shared_assistant: 是否為共用美師
+
+        Returns:
+            包含 overtime_bonus, overtime_target, overtime_count, per_person 的字典
+        """
+        # 美師特別處理
+        if role == 'art_teacher':
+            is_shared_assistant = True
+            role_for_bonus = 'assistant_teacher'
+        else:
+            role_for_bonus = role
+
+        # 取得超額目標人數
+        overtime_target = self.get_overtime_target(grade_name, has_assistant, is_shared_assistant)
+
+        # 計算超額人數
+        overtime_count = max(0, current_enrollment - overtime_target)
+
+        # 取得每人金額
+        per_person = self.get_overtime_per_person(role_for_bonus, grade_name)
+
+        # 計算超額獎金
+        overtime_bonus = overtime_count * per_person
+
+        return {
+            'overtime_bonus': round(overtime_bonus),
+            'overtime_target': overtime_target,
+            'overtime_count': overtime_count,
+            'per_person': per_person
+        }
 
     def calculate_festival_bonus_v2(
         self,
@@ -223,7 +424,7 @@ class SalaryEngine:
             is_shared_assistant: 是否為共用美師 (美師)
 
         Returns:
-            包含 festival_bonus, target, ratio 的字典
+            包含 festival_bonus, overtime_bonus, target, ratio 等的字典
         """
         # 美師特別處理：用 shared_assistant 的目標人數
         if role == 'art_teacher':
@@ -236,10 +437,10 @@ class SalaryEngine:
         # 取得獎金基數
         base_amount = self.get_festival_bonus_base(position, role_for_bonus)
 
-        # 取得目標人數
+        # 取得節慶獎金目標人數
         target = self.get_target_enrollment(grade_name, has_assistant, is_shared_assistant)
 
-        # 計算比例和獎金
+        # 計算比例和節慶獎金
         if target > 0:
             ratio = current_enrollment / target
             festival_bonus = base_amount * ratio
@@ -247,11 +448,24 @@ class SalaryEngine:
             ratio = 0
             festival_bonus = 0
 
+        # 計算超額獎金
+        overtime_result = self.calculate_overtime_bonus(
+            role=role,
+            grade_name=grade_name,
+            current_enrollment=current_enrollment,
+            has_assistant=has_assistant,
+            is_shared_assistant=is_shared_assistant
+        )
+
         return {
             'festival_bonus': round(festival_bonus),
+            'overtime_bonus': overtime_result['overtime_bonus'],
             'target': target,
             'ratio': ratio,
-            'base_amount': base_amount
+            'base_amount': base_amount,
+            'overtime_target': overtime_result['overtime_target'],
+            'overtime_count': overtime_result['overtime_count'],
+            'overtime_per_person': overtime_result['per_person']
         }
     
     def calculate_salary(
@@ -339,6 +553,7 @@ class SalaryEngine:
                     is_shared_assistant=classroom_context.get('is_shared_assistant', False)
                 )
                 breakdown.festival_bonus = bonus_result['festival_bonus']
+                breakdown.overtime_bonus = bonus_result['overtime_bonus']
             elif bonus_settings:
                 # 舊版計算方式 (相容性保留)
                 base_amount = bonus_settings.get('festival_base', 0)
@@ -361,6 +576,10 @@ class SalaryEngine:
             breakdown.performance_bonus = employee.get('performance_bonus', 0)
             breakdown.special_bonus = employee.get('special_bonus', 0)
 
+            # 計算主管紅利
+            emp_title = employee.get('title', '')
+            breakdown.supervisor_dividend = self.get_supervisor_dividend(emp_title)
+
             # 計算應發總額
             breakdown.gross_salary = (
                 breakdown.base_salary +
@@ -372,7 +591,8 @@ class SalaryEngine:
                 breakdown.festival_bonus +
                 breakdown.overtime_bonus +
                 breakdown.performance_bonus +
-                breakdown.special_bonus
+                breakdown.special_bonus +
+                breakdown.supervisor_dividend
             )
 
             # 勞健保計算
