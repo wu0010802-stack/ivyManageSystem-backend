@@ -138,11 +138,42 @@ class OfficeFestivalBonusBase(BaseModel):
     designer: float = 1000  # 美編
 
 
+class SupervisorFestivalBonusConfig(BaseModel):
+    """主管節慶獎金基數設定"""
+    principal: float = 6500   # 園長
+    director: float = 3500    # 主任
+    leader: float = 2000      # 組長
+
+
+class SupervisorDividendConfig(BaseModel):
+    """主管紅利設定"""
+    principal: float = 5000   # 園長
+    director: float = 4000    # 主任
+    leader: float = 3000      # 組長
+    viceLeader: float = 1500  # 副組長
+
+
+class OvertimePerPersonConfig(BaseModel):
+    """超額獎金每人金額設定"""
+    headBig: float = 400
+    headMid: float = 400
+    headSmall: float = 400
+    headBaby: float = 450
+    assistantBig: float = 100
+    assistantMid: float = 100
+    assistantSmall: float = 100
+    assistantBaby: float = 150
+
+
 class BonusConfig(BaseModel):
     """完整獎金設定"""
     bonusBase: BonusBaseConfig = BonusBaseConfig()
     targetEnrollment: Dict[str, GradeTargetConfig] = {}
     officeFestivalBonusBase: Optional[OfficeFestivalBonusBase] = None
+    supervisorFestivalBonus: Optional[SupervisorFestivalBonusConfig] = None
+    supervisorDividend: Optional[SupervisorDividendConfig] = None
+    overtimePerPerson: Optional[OvertimePerPersonConfig] = None
+    overtimeTarget: Optional[Dict[str, GradeTargetConfig]] = None
 
 
 class ClassEnrollment(BaseModel):
@@ -1133,6 +1164,37 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 # 對於多班員工，不使用 classroom_context，直接設定獎金
                 emp_dict['_calculated_festival_bonus'] = total_festival_bonus
                 emp_dict['_calculated_overtime_bonus'] = total_overtime_bonus
+
+        else:
+            # 員工沒有帶班
+            # 檢查是否為司機或美編（特殊處理：節慶獎金用全校比例，無超額獎金）
+            office_festival_base = salary_engine.get_office_festival_bonus_base(emp.position or '')
+
+            if office_festival_base is not None:
+                # 司機/美編：節慶獎金用全校比例計算，無超額獎金
+                is_eligible = salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+                school_festival_bonus = 0
+
+                if is_eligible and school_wide_overtime_target > 0:
+                    school_ratio = total_school_enrollment / school_wide_overtime_target
+                    school_festival_bonus = office_festival_base * school_ratio
+
+                emp_dict['_calculated_festival_bonus'] = round(school_festival_bonus)
+                emp_dict['_calculated_overtime_bonus'] = 0  # 司機/美編無超額獎金
+
+            elif is_office_staff:
+                # 辦公室人員沒有帶班，但仍用全校比例計算節慶獎金
+                is_eligible = salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+                school_festival_bonus = 0
+
+                if is_eligible and school_wide_overtime_target > 0:
+                    # 使用副班導的獎金基數
+                    bonus_base = salary_engine.get_festival_bonus_base(emp.position or '', 'assistant_teacher')
+                    school_ratio = total_school_enrollment / school_wide_overtime_target
+                    school_festival_bonus = bonus_base * school_ratio
+
+                emp_dict['_calculated_festival_bonus'] = round(school_festival_bonus)
+                emp_dict['_calculated_overtime_bonus'] = 0  # 沒有帶班，無超額獎金
 
         # 決定獎金設定方式
         if '_calculated_festival_bonus' in emp_dict:

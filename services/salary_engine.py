@@ -190,7 +190,7 @@ class SalaryEngine:
             return
 
         # 更新獎金基數
-        if 'bonusBase' in bonus_config:
+        if 'bonusBase' in bonus_config and bonus_config['bonusBase']:
             bb = bonus_config['bonusBase']
             self._bonus_base = {
                 'head_teacher': {
@@ -206,7 +206,7 @@ class SalaryEngine:
             }
 
         # 更新節慶獎金目標人數
-        if 'targetEnrollment' in bonus_config:
+        if 'targetEnrollment' in bonus_config and bonus_config['targetEnrollment']:
             te = bonus_config['targetEnrollment']
             self._target_enrollment = {}
             for grade, targets in te.items():
@@ -217,7 +217,7 @@ class SalaryEngine:
                 }
 
         # 更新超額獎金目標人數
-        if 'overtimeTarget' in bonus_config:
+        if 'overtimeTarget' in bonus_config and bonus_config['overtimeTarget']:
             ot = bonus_config['overtimeTarget']
             self._overtime_target = {}
             for grade, targets in ot.items():
@@ -228,7 +228,7 @@ class SalaryEngine:
                 }
 
         # 更新超額獎金每人金額
-        if 'overtimePerPerson' in bonus_config:
+        if 'overtimePerPerson' in bonus_config and bonus_config['overtimePerPerson']:
             op = bonus_config['overtimePerPerson']
             self._overtime_per_person = {
                 'head_teacher': {
@@ -246,7 +246,7 @@ class SalaryEngine:
             }
 
         # 更新主管紅利
-        if 'supervisorDividend' in bonus_config:
+        if 'supervisorDividend' in bonus_config and bonus_config['supervisorDividend']:
             sd = bonus_config['supervisorDividend']
             self._supervisor_dividend = {
                 '園長': sd.get('principal', 5000),
@@ -256,7 +256,7 @@ class SalaryEngine:
             }
 
         # 更新主管節慶獎金基數
-        if 'supervisorFestivalBonus' in bonus_config:
+        if 'supervisorFestivalBonus' in bonus_config and bonus_config['supervisorFestivalBonus']:
             sfb = bonus_config['supervisorFestivalBonus']
             self._supervisor_festival_bonus = {
                 '園長': sfb.get('principal', 6500),
@@ -265,7 +265,7 @@ class SalaryEngine:
             }
 
         # 更新司機/美編節慶獎金基數
-        if 'officeFestivalBonusBase' in bonus_config:
+        if 'officeFestivalBonusBase' in bonus_config and bonus_config['officeFestivalBonusBase']:
             ofb = bonus_config['officeFestivalBonusBase']
             self._office_festival_bonus_base = {
                 '司機': ofb.get('driver', 1000),
