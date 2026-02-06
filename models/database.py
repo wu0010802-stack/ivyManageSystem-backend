@@ -52,7 +52,7 @@ class Employee(Base):
     employee_type = Column(String(20), default=EmployeeType.REGULAR.value, comment="員工類型：regular/hourly")
     title = Column(String(50), nullable=True, comment="職稱")
     position = Column(String(50), nullable=True, comment="職稱分類 (園長/幼兒園教師/教保員等)")
-    class_name = Column(String(50), nullable=True, comment="班級名稱")
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=True, comment="所屬班級")
     
     # 薪資相關
     base_salary = Column(Float, default=0, comment="底薪")
