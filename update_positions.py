@@ -1,4 +1,4 @@
-"""更新員工職稱分類"""
+"""更新員工職稱分類 - 修正版"""
 from models.database import init_database, Employee
 
 def update_positions():
@@ -8,19 +8,23 @@ def update_positions():
     try:
         print("開始更新員工職稱分類...")
 
-        # 職稱分類對照表 (根據圖片)
+        # 先清除所有 position
+        db.query(Employee).update({Employee.position: None})
+        db.flush()
+
+        # 正確的職稱分類對照表 (根據圖片)
         position_data = {
             "園長": ["呂麗珍"],
-            "幼兒園教師": ["呂姿妙", "林麗花", "郭攸秀", "蔡佩汶", "王品玲", "林慧慈", "陳晨晞"],
-            "教保員": ["呂宜凡", "孔祥盈", "林誓翎", "郭碧婷", "林家宜", "蔡宜倩", "林佳穎", "呂伐賢"],
-            "助理教保員": ["吳泷倫", "楊盼任", "陳益超"],
-            "司機": ["吳禹喬"],
-            "廚工": ["王麗慧", "陳紅伊", "王品嫻", "楊思瑜"],
-            "職員": ["潘諭慧", "楊恩慧", "張庭滋"]
+            "幼兒園教師": ["林姿妙", "林麗花"],
+            "教保員": ["郭攸秀", "蔡佩汶", "王雅玲", "林慧慈", "陳品蓁", "呂宜凡", "孔祥盈", "郭碧婷", "林家亘", "蔡宜倩", "林佳穎"],
+            "助理教保員": ["吳岱鎂", "楊盼任"],
+            "司機": ["吳逸倫", "陳益超"],
+            "廚工": ["王麗慧"],
+            "職員": ["吳逸喬", "陳紅伊", "王品嫻", "楊思瑜", "潘諭慧", "張庭滋"]
         }
 
-        # 先建立缺少的員工
         def get_or_create(name, position):
+            # 只用名字的前幾個字匹配（忽略英文名）
             emp = db.query(Employee).filter(Employee.name.like(f"{name}%")).first()
             if not emp:
                 count = db.query(Employee).count() + 1
@@ -35,7 +39,7 @@ def update_positions():
                 print(f"  新增: {name} ({position})")
             else:
                 emp.position = position
-                print(f"  更新: {name} -> {position}")
+                print(f"  更新: {emp.name} -> {position}")
             return emp
 
         for position, names in position_data.items():
