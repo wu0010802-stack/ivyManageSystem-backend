@@ -719,7 +719,8 @@ class SalaryEngine:
         bonus_settings: dict = None,
         leave_deduction: float = 0,
         allowances: List[dict] = None,
-        classroom_context: dict = None
+        classroom_context: dict = None,
+        office_staff_context: dict = None
     ) -> SalaryBreakdown:
         """
         計算單一員工薪資
@@ -803,6 +804,18 @@ class SalaryEngine:
                     breakdown.festival_bonus = 0
                 # 主管無超額獎金
                 breakdown.overtime_bonus = 0
+            # 辦公室人員（司機/美編/行政）使用全校比例計算
+            elif office_staff_context:
+                office_base = self.get_office_festival_bonus_base(emp_position, emp_title)
+                if office_base and is_eligible:
+                    school_enrollment = office_staff_context.get('school_enrollment', 0)
+                    school_target = self._school_wide_target or 160
+                    ratio = school_enrollment / school_target if school_target > 0 else 0
+                    breakdown.festival_bonus = round(office_base * ratio)
+                else:
+                    breakdown.festival_bonus = 0
+                # 辦公室人員無超額獎金
+                breakdown.overtime_bonus = 0
             # 優先使用新版計算 (classroom_context)
             elif classroom_context:
                 bonus_result = self.calculate_festival_bonus_v2(
@@ -879,7 +892,7 @@ class SalaryEngine:
             breakdown.missing_punch_count = att_ded['missing_punch_count']
         
         breakdown.leave_deduction = leave_deduction
-        
+
         # 計算扣款總額
         breakdown.total_deduction = (
             breakdown.labor_insurance +
@@ -891,7 +904,10 @@ class SalaryEngine:
             breakdown.leave_deduction +
             breakdown.other_deduction
         )
-        
+
+        # 計算實領薪資
+        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
         return breakdown
 
     def calculate_festival_bonus_breakdown(self, employee_id: int, year: int, month: int) -> dict:
@@ -900,7 +916,7 @@ class SalaryEngine:
         """
         session = _get_db_session()
         try:
-            from models.database import Employee, Classroom, ClassGrade, JobTitle # Ensure imports
+            from models.database import Employee, Classroom, ClassGrade, JobTitle, Student
 
             emp = session.query(Employee).get(employee_id)
             if not emp:
@@ -942,14 +958,13 @@ class SalaryEngine:
                 if is_eligible: remark = "主管固定津貼"
             
             # 2. Office Staff (Driver/Admin/Designer)
-            elif emp.is_office_staff: 
+            elif emp.is_office_staff:
                  office_base = self.get_office_festival_bonus_base(position, title_name)
-                 
+
                  category = "辦公室"
-                 
-                 # Calculate total school enrollment as approximation for current
-                 all_classrooms = session.query(Classroom).all()
-                 total_students = sum(c.current_count for c in all_classrooms)
+
+                 # Calculate total school enrollment dynamically from students table
+                 total_students = session.query(Student).filter(Student.is_active == True).count()
                  current_enrollment = total_students
                  
                  if office_base:
@@ -976,7 +991,10 @@ class SalaryEngine:
             elif classroom:
                 category = "帶班老師"
                 grade_name = classroom.grade.name if classroom.grade else ''
-                current_enrollment = classroom.current_count
+                current_enrollment = session.query(Student).filter(
+                    Student.classroom_id == classroom.id,
+                    Student.is_active == True
+                ).count()
                 
                 # Determine Role
                 role = 'assistant_teacher' # default
@@ -1029,7 +1047,7 @@ class SalaryEngine:
         """
         session = _get_db_session()
         try:
-            from models.database import Employee, Attendance, SalaryRecord, EmployeeAllowance, AllowanceType, Classroom, ClassGrade, JobTitle, SalaryItem
+            from models.database import Employee, Attendance, SalaryRecord, EmployeeAllowance, AllowanceType, Classroom, ClassGrade, JobTitle, SalaryItem, Student
 
             # 1. 取得員工資料
             emp = session.query(Employee).get(employee_id)
@@ -1097,13 +1115,16 @@ class SalaryEngine:
             # Construct AttendanceResult-like object or pass as dict to calculate_attendance_deduction?
             # calculate_salary expects AttendanceResult object
             attendance_result = AttendanceResult(
-                employee_id=emp.employee_id,
-                name=emp.name,
+                employee_name=emp.name,
+                total_days=len(attendances),
+                normal_days=len(attendances) - late_count - early_count,
                 late_count=late_count,
                 early_leave_count=early_count,
                 missing_punch_in_count=missing_in,
                 missing_punch_out_count=missing_out,
-                records=[] # Not needed for calculation logic currently
+                total_late_minutes=0,
+                total_early_minutes=0,
+                details=[]
             )
 
             # 4. 取得津貼
@@ -1126,6 +1147,8 @@ class SalaryEngine:
 
             # 5. 建構 Classroom Context (Festival Bonus V2)
             classroom_context = None
+            office_staff_context = None
+
             if emp.classroom_id:
                 classroom = session.query(Classroom).get(emp.classroom_id)
                 if classroom:
@@ -1135,16 +1158,29 @@ class SalaryEngine:
                         role = 'head_teacher'
                     elif classroom.art_teacher_id == emp.id:
                         role = 'art_teacher'
-                    
+
                     has_assistant = (classroom.assistant_teacher_id is not None and classroom.assistant_teacher_id > 0)
-                    
+
+                    # 動態計算班級學生人數
+                    student_count = session.query(Student).filter(
+                        Student.classroom_id == classroom.id,
+                        Student.is_active == True
+                    ).count()
+
                     classroom_context = {
                         'role': role,
                         'grade_name': classroom.grade.name if classroom.grade else '',
-                        'current_enrollment': classroom.current_count,
+                        'current_enrollment': student_count,
                         'has_assistant': has_assistant,
                         'is_shared_assistant': False # Default
                     }
+
+            # 5b. 辦公室人員（司機/美編/行政）使用全校比例
+            if emp.is_office_staff and not classroom_context:
+                total_students = session.query(Student).filter(Student.is_active == True).count()
+                office_staff_context = {
+                    'school_enrollment': total_students
+                }
 
             # 6. 計算薪資
             breakdown = self.calculate_salary(
@@ -1153,7 +1189,8 @@ class SalaryEngine:
                 month=month,
                 attendance=attendance_result,
                 allowances=allowances,
-                classroom_context=classroom_context
+                classroom_context=classroom_context,
+                office_staff_context=office_staff_context
             )
 
             # 7. 儲存 SalaryRecord

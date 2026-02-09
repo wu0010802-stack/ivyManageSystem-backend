@@ -48,8 +48,8 @@ def calculate_salaries(
     session = get_session()
     try:
         from services.salary_engine import SalaryEngine as Engine
-        engine = Engine(session)
-        
+        engine = Engine(load_from_db=True)
+
         # 1. Fetch all active employees
         employees = session.query(Employee).all() # Include inactive? Maybe not for new calculation, but for history?
         # Better to only calculate for employees active in that month or currently active
@@ -68,12 +68,17 @@ def calculate_salaries(
                     "employee_id": emp.id,
                     "employee_name": emp.name,
                     "base_salary": salary_record.base_salary,
-                    "total_allowances": salary_record.total_allowances, 
+                    "total_allowances": salary_record.total_allowances,
                     "festival_bonus": salary_record.festival_bonus,
+                    "overtime_bonus": salary_record.overtime_bonus,
+                    "supervisor_dividend": salary_record.supervisor_dividend,
                     "labor_insurance": salary_record.labor_insurance,
                     "health_insurance": salary_record.health_insurance,
-                    "total_deductions": salary_record.total_deduction, # singular in dataclass
-                    "net_pay": salary_record.net_salary # net_salary in dataclass
+                    "late_deduction": salary_record.late_deduction,
+                    "early_leave_deduction": salary_record.early_leave_deduction,
+                    "missing_punch_deduction": salary_record.missing_punch_deduction,
+                    "total_deductions": salary_record.total_deduction,
+                    "net_pay": salary_record.net_salary
                 })
             except Exception as e:
                 print(f"Error calculating for {emp.name}: {e}")
@@ -96,11 +101,11 @@ def get_festival_bonus(
     session = get_session()
     try:
         from services.salary_engine import SalaryEngine as Engine
-        engine = Engine(session)
-        
+        engine = Engine(load_from_db=True)
+
         employees = session.query(Employee).filter(Employee.is_active == True).all()
         results = []
-        
+
         for emp in employees:
              # This logic mimics the frontend legacy logic or calls backend engine if available
              # Assuming backend engine has a breakdown method or we reconstruct it here
@@ -948,6 +953,14 @@ async def get_employee(employee_id: int):
         
         display_title = employee.job_title_rel.name if employee.job_title_rel else employee.title
 
+        # Get classroom name if assigned
+        classroom_name = None
+        if employee.classroom_id:
+            classroom = session.query(Classroom).get(employee.classroom_id)
+            if classroom:
+                grade = session.query(ClassGrade).get(classroom.grade_id) if classroom.grade_id else None
+                classroom_name = f"{classroom.name} ({grade.name})" if grade else classroom.name
+
         return {
             "id": employee.id,
             "employee_id": employee.employee_id,
@@ -958,6 +971,7 @@ async def get_employee(employee_id: int):
             "job_title_id": employee.job_title_id,
             "position": employee.position,
             "classroom_id": employee.classroom_id,
+            "classroom_name": classroom_name,
             "base_salary": employee.base_salary,
             "hourly_rate": employee.hourly_rate,
             "supervisor_allowance": employee.supervisor_allowance,
