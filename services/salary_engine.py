@@ -37,7 +37,8 @@ class SalaryBreakdown:
     performance_bonus: float = 0
     special_bonus: float = 0
     supervisor_dividend: float = 0  # 主管紅利
-    
+    overtime_work_pay: float = 0   # 加班費
+
     # 時薪制
     work_hours: float = 0
     hourly_rate: float = 0
@@ -505,11 +506,11 @@ class SalaryEngine:
         Returns:
             紅利金額，若非主管職則返回 0
         """
-        # 同時檢查 title 和 position
-        if title in self._supervisor_dividend:
-            return self._supervisor_dividend[title]
+        # 同時檢查 position 和 title，優先使用 position
         if position in self._supervisor_dividend:
             return self._supervisor_dividend[position]
+        if title in self._supervisor_dividend:
+            return self._supervisor_dividend[title]
         return 0
 
     def get_supervisor_festival_bonus(self, title: str, position: str = '') -> Optional[float]:
@@ -523,11 +524,11 @@ class SalaryEngine:
         Returns:
             節慶獎金基數，若非主管職則返回 None
         """
-        # 同時檢查 title 和 position
-        if title in self._supervisor_festival_bonus:
-            return self._supervisor_festival_bonus[title]
+        # 同時檢查 position 和 title，優先使用 position
         if position in self._supervisor_festival_bonus:
             return self._supervisor_festival_bonus[position]
+        if title in self._supervisor_festival_bonus:
+            return self._supervisor_festival_bonus[title]
         return None
 
     def is_eligible_for_festival_bonus(self, hire_date, reference_date=None) -> bool:
@@ -591,7 +592,7 @@ class SalaryEngine:
         Returns:
             節慶獎金基數，若非司機/美編則返回 None
         """
-        # 同時檢查 position 和 title
+        # 同時檢查 position 和 title，優先使用 position
         if position in self._office_festival_bonus_base:
             return self._office_festival_bonus_base[position]
         if title in self._office_festival_bonus_base:
@@ -793,19 +794,65 @@ class SalaryEngine:
             emp_position = employee.get('position', '')
 
             # 檢查是否為主管（園長/主任/組長）- 有特別的節慶獎金基數
-            # 同時檢查 title 和 position
-            supervisor_festival_base = self.get_supervisor_festival_bonus(emp_title, emp_position)
+            # 檢查是否為主管（園長/主任/組長）- 有特別的節慶獎金基數
+            # 同時檢查 title 和 position (已在 helper 中優先檢查 position)
+            # 如果 position 為空，則視為不符合資格
+            if not emp_position:
+                 supervisor_festival_base = None
+                 # 也無法領取其他節慶獎金
+            else:
+                supervisor_festival_base = self.get_supervisor_festival_bonus(emp_title, emp_position)
 
             if supervisor_festival_base is not None:
-                # 主管使用固定的節慶獎金基數
-                if is_eligible:
-                    breakdown.festival_bonus = supervisor_festival_base
+                # 主管使用固定的節慶獎金基數 -> 改為全校比例
+                if is_eligible and emp_position:
+                    # Calculate ratio
+                    # Check if office_staff_context has enrollment, or fetch it?
+                    # process_salary_calculation only fetches office_staff_context if is_office_staff is true.
+                    # We need school enrollment for Supervisor too now.
+                    
+                    # Fetch school enrollment if not available (Lazy load or ensure it's fetched before)
+                    current_school_enrollment = 0
+                    if office_staff_context:
+                        current_school_enrollment = office_staff_context.get('school_enrollment', 0)
+                    else:
+                        # Need to fetch if not already. 
+                        # Ideally process_salary_calculation should prepare this. 
+                        # But for now let's query if needed OR rely on a passed context.
+                        # Let's modify process_salary_calculation to fetch school enrollment for everyone or specifically for supervisors too.
+                        # For this specific block, we assume we might need to fetch it if context is missing.
+                        # However, doing query here might break the "engine-only logic" if we want to keep DB access separated?
+                        # `process_salary_calculation` handles DB access. `calculate_salary` is pure logic.
+                        # But `process_salary_calculation` prepares `office_staff_context` only for office staff.
+                        # We should update `process_salary_calculation` to pass `school_context` or similar.
+                        # For now, let's assume we can pass it via `office_staff_context` or similar, 
+                        # OR simply rely on the fact that we can't query inside here easily without session.
+                        
+                        # Wait, `calculate_salary` doesn't have session access unless `self` has it? 
+                        # `SalaryEngine` has `load_config_from_db` but not a persistent session for calc.
+                        # So `process_salary_calculation` MUST provide the data.
+                        pass # Logic continues below
+                        
+                    # Let's assume process_salary_calculation will be updated to provide this in `office_staff_context` 
+                    # OR we create a new `school_context`.
+                    # For minimal change, let's use `office_staff_context` if available, or 0? 
+                    # If 0, bonus is 0? That's risky.
+                    # We MUST update process_salary_calculation to ensure `office_staff_context` (or renamed `school_context`) is passed for Supervisors.
+                    
+                    school_enrollment = 0
+                    if office_staff_context:
+                         school_enrollment = office_staff_context.get('school_enrollment', 0)
+                    
+                    school_target = self._school_wide_target or 160
+                    ratio = school_enrollment / school_target if school_target > 0 else 0
+                    
+                    breakdown.festival_bonus = round(supervisor_festival_base * ratio)
                 else:
                     breakdown.festival_bonus = 0
                 # 主管無超額獎金
                 breakdown.overtime_bonus = 0
             # 辦公室人員（司機/美編/行政）使用全校比例計算
-            elif office_staff_context:
+            elif office_staff_context and emp_position:
                 office_base = self.get_office_festival_bonus_base(emp_position, emp_title)
                 if office_base and is_eligible:
                     school_enrollment = office_staff_context.get('school_enrollment', 0)
@@ -817,7 +864,7 @@ class SalaryEngine:
                 # 辦公室人員無超額獎金
                 breakdown.overtime_bonus = 0
             # 優先使用新版計算 (classroom_context)
-            elif classroom_context:
+            elif classroom_context and emp_position:
                 bonus_result = self.calculate_festival_bonus_v2(
                     position=employee.get('position', ''),
                     role=classroom_context.get('role', ''),
@@ -855,7 +902,10 @@ class SalaryEngine:
             breakdown.special_bonus = employee.get('special_bonus', 0)
 
             # 計算主管紅利（同時檢查 title 和 position）
-            breakdown.supervisor_dividend = self.get_supervisor_dividend(emp_title, emp_position)
+            if emp_position:
+                 breakdown.supervisor_dividend = self.get_supervisor_dividend(emp_title, emp_position)
+            else:
+                 breakdown.supervisor_dividend = 0
 
             # 計算應發總額
             breakdown.gross_salary = (
@@ -946,16 +996,36 @@ class SalaryEngine:
             
             # Check Eligibility
             is_eligible = self.is_eligible_for_festival_bonus(emp.hire_date)
-            if not is_eligible:
+            
+            # Position check: If empty, not eligible for festival bonus
+            if not position:
+                is_eligible = False
+                remark = "無職位資料(不發放)"
+            elif not is_eligible:
                 remark = "未滿3個月"
 
             # 1. Supervisor (Principal/Director/Leader)
-            supervisor_base = self.get_supervisor_festival_bonus(title_name)
+            # Use position as primary key if available, fallback to title_name check only if position matches
+            supervisor_base = self.get_supervisor_festival_bonus(title_name, position)
             if supervisor_base:
                 category = "主管"
                 bonus_base = supervisor_base
-                festival_bonus = supervisor_base if is_eligible else 0
-                if is_eligible: remark = "主管固定津貼"
+                
+                # Calculate School Ratio for Supervisor
+                total_students = session.query(Student).filter(Student.is_active == True).count()
+                current_enrollment = total_students
+                
+                # Use configured school target if available, otherwise calculate or default
+                if hasattr(self, '_school_wide_target') and self._school_wide_target > 0:
+                    school_target = self._school_wide_target
+                else:
+                    school_target = 160 # Fallback default
+                
+                target_enrollment = school_target
+                ratio = current_enrollment / target_enrollment if target_enrollment > 0 else 0
+                
+                festival_bonus = round(supervisor_base * ratio) if is_eligible else 0
+                if is_eligible: remark = "全校比例(主管)"
             
             # 2. Office Staff (Driver/Admin/Designer)
             elif emp.is_office_staff:
@@ -1072,8 +1142,9 @@ class SalaryEngine:
                 'meal_allowance': emp.meal_allowance,
                 'transportation_allowance': emp.transportation_allowance,
                 'other_allowance': emp.other_allowance,
-                'insurance_salary': emp.insurance_salary_level,
-                'dependents': 0, # Should be stored on employee? Default 0
+                # Fallback to base_salary if insurance_salary_level is 0
+                'insurance_salary': emp.insurance_salary_level if emp.insurance_salary_level and emp.insurance_salary_level > 0 else emp.base_salary,
+                'dependents': emp.dependents,
                 'hire_date': emp.hire_date
             }
 
@@ -1176,11 +1247,46 @@ class SalaryEngine:
                     }
 
             # 5b. 辦公室人員（司機/美編/行政）使用全校比例
-            if emp.is_office_staff and not classroom_context:
+            # 主管現在也需要全校比例，所以只要是主管或辦公室人員都需要 office_staff_context
+            # Check if supervisor
+            is_supervisor = False
+            title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
+            if self.get_supervisor_festival_bonus(title_name, emp.position):
+                is_supervisor = True
+
+            if (emp.is_office_staff or is_supervisor) and not classroom_context:
                 total_students = session.query(Student).filter(Student.is_active == True).count()
                 office_staff_context = {
                     'school_enrollment': total_students
                 }
+
+            # 5c. 查詢已核准請假記錄，計算請假扣款
+            from models.database import LeaveRecord, OvertimeRecord as DBOvertimeRecord
+            LEAVE_DEDUCTION_RULES = {
+                "personal": 1.0, "sick": 0.5, "menstrual": 0.5,
+                "annual": 0.0, "maternity": 0.0, "paternity": 0.0,
+            }
+            approved_leaves = session.query(LeaveRecord).filter(
+                LeaveRecord.employee_id == emp.id,
+                LeaveRecord.is_approved == True,
+                LeaveRecord.start_date <= end_date,
+                LeaveRecord.end_date >= start_date
+            ).all()
+            leave_deduction_total = 0
+            daily_salary = emp.base_salary / 30 if emp.base_salary else 0
+            for lv in approved_leaves:
+                ratio = LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
+                leave_deduction_total += (lv.leave_hours / 8) * daily_salary * ratio
+            leave_deduction_total = round(leave_deduction_total)
+
+            # 5d. 查詢已核准加班記錄，計算加班費
+            approved_overtimes = session.query(DBOvertimeRecord).filter(
+                DBOvertimeRecord.employee_id == emp.id,
+                DBOvertimeRecord.is_approved == True,
+                DBOvertimeRecord.overtime_date >= start_date,
+                DBOvertimeRecord.overtime_date <= end_date
+            ).all()
+            overtime_work_pay_total = sum(o.overtime_pay or 0 for o in approved_overtimes)
 
             # 6. 計算薪資
             breakdown = self.calculate_salary(
@@ -1188,10 +1294,15 @@ class SalaryEngine:
                 year=year,
                 month=month,
                 attendance=attendance_result,
+                leave_deduction=leave_deduction_total,
                 allowances=allowances,
                 classroom_context=classroom_context,
                 office_staff_context=office_staff_context
             )
+            # 加入加班費
+            breakdown.overtime_work_pay = overtime_work_pay_total
+            breakdown.gross_salary += overtime_work_pay_total
+            breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
 
             # 7. 儲存 SalaryRecord
             # check if exists
@@ -1221,12 +1332,9 @@ class SalaryEngine:
             salary_record.overtime_bonus = breakdown.overtime_bonus
             salary_record.performance_bonus = breakdown.performance_bonus
             salary_record.special_bonus = breakdown.special_bonus
-            salary_record.bonus_amount = breakdown.supervisor_dividend # stored here? or special bonus?
-            # Supervisor dividend usually separate? Let's add loop for it or put in special_bonus
-            # Current model has no explicit 'supervisor_dividend' column, maybe put in special_bonus 
-            # or allow separate endpoint to manage it.
-            # For now, append to special_bonus or fetch logic
-            
+            salary_record.bonus_amount = breakdown.supervisor_dividend
+            salary_record.overtime_pay = breakdown.overtime_work_pay
+
             salary_record.work_hours = breakdown.work_hours
             salary_record.hourly_rate = breakdown.hourly_rate
             salary_record.hourly_total = breakdown.hourly_total

@@ -84,6 +84,7 @@ class Employee(Base):
     # 狀態
     is_active = Column(Boolean, default=True, comment="是否在職")
     is_office_staff = Column(Boolean, default=False, comment="是否為辦公室人員（超額獎金用全校計算）")
+    dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
     hire_date = Column(Date, comment="到職日期")
     
     # 時間戳記
@@ -91,9 +92,9 @@ class Employee(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
     # 關聯
-    attendances = relationship("Attendance", back_populates="employee")
-    leaves = relationship("LeaveRecord", back_populates="employee")
-    salaries = relationship("SalaryRecord", back_populates="employee")
+    attendances = relationship("Attendance", back_populates="employee", cascade="all, delete-orphan")
+    leaves = relationship("LeaveRecord", back_populates="employee", cascade="all, delete-orphan")
+    salaries = relationship("SalaryRecord", back_populates="employee", cascade="all, delete-orphan")
     
 
 class Attendance(Base):
@@ -160,6 +161,34 @@ class LeaveRecord(Base):
     employee = relationship("Employee", back_populates="leaves")
 
 
+class OvertimeRecord(Base):
+    """
+    加班記錄表 - 記錄員工加班時數與加班費
+    """
+    __tablename__ = "overtime_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+
+    overtime_date = Column(Date, nullable=False, comment="加班日期")
+    overtime_type = Column(String(20), nullable=False, comment="加班類型: weekday/weekend/holiday")
+
+    start_time = Column(DateTime, comment="加班開始時間")
+    end_time = Column(DateTime, comment="加班結束時間")
+    hours = Column(Float, default=0, comment="加班時數")
+
+    overtime_pay = Column(Float, default=0, comment="加班費（自動計算）")
+
+    is_approved = Column(Boolean, default=False, comment="是否核准")
+    approved_by = Column(String(50), comment="核准人")
+    reason = Column(Text, comment="加班原因")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="overtimes")
+
+
 class SalaryRecord(Base):
     """
     薪資記錄表 - 儲存每月結算結果
@@ -189,6 +218,9 @@ class SalaryRecord(Base):
     performance_bonus = Column(Float, default=0, comment="績效獎金")
     special_bonus = Column(Float, default=0, comment="特別獎金/紅利")
     
+    # 加班費
+    overtime_pay = Column(Float, default=0, comment="加班費")
+
     # 時薪員工專用
     work_hours = Column(Float, default=0, comment="工作時數（時薪制用）")
     hourly_rate = Column(Float, default=0, comment="時薪")

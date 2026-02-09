@@ -4,12 +4,14 @@
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import date
+from datetime import date, datetime
+import calendar as cal_module
 import pandas as pd
 import os
+import io
 import shutil
 
 from services.attendance_parser import AttendanceParser, parse_attendance_file
@@ -18,7 +20,8 @@ from services.salary_engine import SalaryEngine
 from models.database import (
     init_database, get_session, Employee, Attendance, SalaryRecord, Student, Classroom, ClassGrade,
     AllowanceType, DeductionType, BonusType, EmployeeAllowance, SalaryItem, JobTitle,
-    SystemConfig, AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate
+    SystemConfig, AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate,
+    LeaveRecord, OvertimeRecord
 )
 from typing import Dict
 
@@ -703,6 +706,7 @@ class EmployeeCreate(BaseModel):
     work_end_time: str = "17:00"
     hire_date: Optional[str] = None
     is_office_staff: bool = False
+    dependents: int = 0
 
 
 class EmployeeUpdate(BaseModel):
@@ -729,6 +733,7 @@ class EmployeeUpdate(BaseModel):
     work_end_time: Optional[str] = None
     hire_date: Optional[str] = None
     is_office_staff: Optional[bool] = None
+    dependents: Optional[int] = None
 
 
 class ClassBonusParam(BaseModel):
@@ -1441,10 +1446,20 @@ async def upload_attendance(file: UploadFile = File(...)):
         if '上班時間' in columns and '下班時間' in columns:
             session = get_session()
             try:
-                # 取得員工對照表
                 employees = session.query(Employee).filter(Employee.is_active == True).all()
                 emp_by_id = {str(emp.employee_id): emp for emp in employees}
                 emp_by_name = {emp.name: emp for emp in employees}
+                
+                # Pre-fetch Classrooms for Role Determination
+                from models.database import Classroom
+                all_classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+                head_teacher_map = {c.head_teacher_id for c in all_classrooms if c.head_teacher_id}
+                assistant_teacher_map = set()
+                for c in all_classrooms:
+                    if c.assistant_teacher_id:
+                        assistant_teacher_map.add(c.assistant_teacher_id)
+                    # Also check shared assistant logic if needed, but usually assistant_teacher_id covers it
+                    # If shared, multiple classrooms point to same assistant_id, set handles duplicates
 
                 results_data = {
                     "total": len(df),
@@ -1543,6 +1558,44 @@ async def upload_attendance(file: UploadFile = File(...)):
                             status = "missing" if status == "normal" else status + "+missing_in"
                         if is_missing_punch_out:
                             status = "missing" if status == "normal" else status + "+missing_out"
+
+                        # --- Duration Check (Override Logic) ---
+                        # Rules:
+                        # 1. Head Teacher (班導): Duration >= 9h (540m) -> Normal
+                        # 2. Assistant Teacher (副班導): Duration >= 9.5h (570m) -> Normal
+                        # 3. Driver (司機): Duration >= 8h (480m) -> Normal
+
+                        if punch_in_time and punch_out_time:
+                            duration_minutes = int((punch_out_time - punch_in_time).total_seconds() / 60)
+                            required_duration = 0
+                            
+                            # Determine Role
+                            # Check Classroom Map (Need to fetch classrooms first - added above)
+                            # Optimizing: We should fetch classrooms once outside the loop.
+                            # For now, let's assume we add the fetch outside.
+                            
+                            # Check if matches any classroom role
+                            is_head_teacher = employee.id in head_teacher_map
+                            is_assistant = employee.id in assistant_teacher_map
+                            
+                            title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
+                            is_driver = "司機" in title_str
+
+                            if is_assistant:
+                                required_duration = 570 # 9.5h
+                            elif is_head_teacher:
+                                required_duration = 540 # 9h
+                            elif is_driver:
+                                required_duration = 480 # 8h
+                            
+                            if required_duration > 0 and duration_minutes >= required_duration:
+                                # Requirements met, override status
+                                is_late = False
+                                is_early_leave = False
+                                status = "normal"
+                                late_minutes = 0
+                                early_leave_minutes = 0
+                                # Note: We keep punch times, just clear the "abnormal" flags
 
                         # 儲存到資料庫
                         department = str(row.get('部門', '')).strip()
@@ -2672,6 +2725,719 @@ async def calculate_salaries(request: CalculateSalaryRequest):
 
     session.close()
     return {"message": "薪資結算完成", "results": results}
+
+
+# ============ Leave Management Endpoints ============
+
+# 請假扣薪規則（依勞基法）
+LEAVE_DEDUCTION_RULES = {
+    "personal": 1.0,   # 事假: 全扣
+    "sick": 0.5,        # 病假: 扣半薪
+    "menstrual": 0.5,   # 生理假: 扣半薪
+    "annual": 0.0,      # 特休: 不扣
+    "maternity": 0.0,   # 產假: 不扣
+    "paternity": 0.0,   # 陪產假: 不扣
+}
+
+LEAVE_TYPE_LABELS = {
+    "personal": "事假",
+    "sick": "病假",
+    "menstrual": "生理假",
+    "annual": "特休",
+    "maternity": "產假",
+    "paternity": "陪產假",
+}
+
+
+class LeaveCreate(BaseModel):
+    employee_id: int
+    leave_type: str
+    start_date: date
+    end_date: date
+    leave_hours: float = 8
+    reason: Optional[str] = None
+
+
+class LeaveUpdate(BaseModel):
+    leave_type: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    leave_hours: Optional[float] = None
+    reason: Optional[str] = None
+
+
+@app.get("/api/leaves")
+def get_leaves(
+    employee_id: Optional[int] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None
+):
+    """查詢請假記錄"""
+    session = get_session()
+    try:
+        q = session.query(LeaveRecord, Employee).join(
+            Employee, LeaveRecord.employee_id == Employee.id
+        )
+        if employee_id:
+            q = q.filter(LeaveRecord.employee_id == employee_id)
+        if year and month:
+            _, last_day = cal_module.monthrange(year, month)
+            start = date(year, month, 1)
+            end = date(year, month, last_day)
+            q = q.filter(LeaveRecord.start_date <= end, LeaveRecord.end_date >= start)
+        elif year:
+            q = q.filter(LeaveRecord.start_date >= date(year, 1, 1), LeaveRecord.start_date <= date(year, 12, 31))
+
+        records = q.order_by(LeaveRecord.start_date.desc()).all()
+
+        results = []
+        for leave, emp in records:
+            results.append({
+                "id": leave.id,
+                "employee_id": leave.employee_id,
+                "employee_name": emp.name,
+                "leave_type": leave.leave_type,
+                "leave_type_label": LEAVE_TYPE_LABELS.get(leave.leave_type, leave.leave_type),
+                "start_date": leave.start_date.isoformat(),
+                "end_date": leave.end_date.isoformat(),
+                "leave_hours": leave.leave_hours,
+                "deduction_ratio": LEAVE_DEDUCTION_RULES.get(leave.leave_type, 1.0),
+                "reason": leave.reason,
+                "is_approved": leave.is_approved,
+                "approved_by": leave.approved_by,
+                "created_at": leave.created_at.isoformat() if leave.created_at else None,
+            })
+        return results
+    finally:
+        session.close()
+
+
+@app.post("/api/leaves")
+def create_leave(data: LeaveCreate):
+    """新增請假記錄"""
+    session = get_session()
+    try:
+        if data.leave_type not in LEAVE_DEDUCTION_RULES:
+            raise HTTPException(status_code=400, detail=f"無效的假別: {data.leave_type}")
+
+        emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="員工不存在")
+
+        leave = LeaveRecord(
+            employee_id=data.employee_id,
+            leave_type=data.leave_type,
+            start_date=data.start_date,
+            end_date=data.end_date,
+            leave_hours=data.leave_hours,
+            is_deductible=LEAVE_DEDUCTION_RULES[data.leave_type] > 0,
+            deduction_ratio=LEAVE_DEDUCTION_RULES[data.leave_type],
+            reason=data.reason,
+        )
+        session.add(leave)
+        session.commit()
+        return {"message": "請假記錄已新增", "id": leave.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.put("/api/leaves/{leave_id}")
+def update_leave(leave_id: int, data: LeaveUpdate):
+    """更新請假記錄"""
+    session = get_session()
+    try:
+        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        if not leave:
+            raise HTTPException(status_code=404, detail="請假記錄不存在")
+
+        update_data = data.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            if value is not None:
+                setattr(leave, key, value)
+        # Update deduction fields if leave_type changed
+        if data.leave_type and data.leave_type in LEAVE_DEDUCTION_RULES:
+            leave.is_deductible = LEAVE_DEDUCTION_RULES[data.leave_type] > 0
+            leave.deduction_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
+
+        session.commit()
+        return {"message": "請假記錄已更新"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.delete("/api/leaves/{leave_id}")
+def delete_leave(leave_id: int):
+    """刪除請假記錄"""
+    session = get_session()
+    try:
+        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        if not leave:
+            raise HTTPException(status_code=404, detail="請假記錄不存在")
+        session.delete(leave)
+        session.commit()
+        return {"message": "請假記錄已刪除"}
+    finally:
+        session.close()
+
+
+@app.put("/api/leaves/{leave_id}/approve")
+def approve_leave(leave_id: int, approved: bool = True, approved_by: str = "Admin"):
+    """核准/駁回請假"""
+    session = get_session()
+    try:
+        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        if not leave:
+            raise HTTPException(status_code=404, detail="請假記錄不存在")
+        leave.is_approved = approved
+        leave.approved_by = approved_by if approved else None
+        session.commit()
+        return {"message": "已核准" if approved else "已駁回"}
+    finally:
+        session.close()
+
+
+# ============ Overtime Management Endpoints ============
+
+def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str) -> float:
+    """依勞基法計算加班費"""
+    hourly_base = base_salary / 30 / 8
+
+    if overtime_type == "weekday":
+        # 平日: 前2小時 1.34x, 後2小時 1.67x
+        if hours <= 2:
+            return round(hourly_base * hours * 1.34)
+        else:
+            return round(hourly_base * 2 * 1.34 + hourly_base * (hours - 2) * 1.67)
+    else:
+        # 假日/國定假日: 全部 2x
+        return round(hourly_base * hours * 2)
+
+
+class OvertimeCreate(BaseModel):
+    employee_id: int
+    overtime_date: date
+    overtime_type: str  # weekday / weekend / holiday
+    start_time: Optional[str] = None  # HH:MM
+    end_time: Optional[str] = None    # HH:MM
+    hours: float
+    reason: Optional[str] = None
+
+
+class OvertimeUpdate(BaseModel):
+    overtime_date: Optional[date] = None
+    overtime_type: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    hours: Optional[float] = None
+    reason: Optional[str] = None
+
+
+OVERTIME_TYPE_LABELS = {
+    "weekday": "平日",
+    "weekend": "假日",
+    "holiday": "國定假日",
+}
+
+
+@app.get("/api/overtimes")
+def get_overtimes(
+    employee_id: Optional[int] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None
+):
+    """查詢加班記錄"""
+    session = get_session()
+    try:
+        q = session.query(OvertimeRecord, Employee).join(
+            Employee, OvertimeRecord.employee_id == Employee.id
+        )
+        if employee_id:
+            q = q.filter(OvertimeRecord.employee_id == employee_id)
+        if year and month:
+            _, last_day = cal_module.monthrange(year, month)
+            start = date(year, month, 1)
+            end = date(year, month, last_day)
+            q = q.filter(OvertimeRecord.overtime_date >= start, OvertimeRecord.overtime_date <= end)
+        elif year:
+            q = q.filter(OvertimeRecord.overtime_date >= date(year, 1, 1), OvertimeRecord.overtime_date <= date(year, 12, 31))
+
+        records = q.order_by(OvertimeRecord.overtime_date.desc()).all()
+
+        results = []
+        for ot, emp in records:
+            results.append({
+                "id": ot.id,
+                "employee_id": ot.employee_id,
+                "employee_name": emp.name,
+                "overtime_date": ot.overtime_date.isoformat(),
+                "overtime_type": ot.overtime_type,
+                "overtime_type_label": OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type),
+                "start_time": ot.start_time.strftime("%H:%M") if ot.start_time else None,
+                "end_time": ot.end_time.strftime("%H:%M") if ot.end_time else None,
+                "hours": ot.hours,
+                "overtime_pay": ot.overtime_pay,
+                "is_approved": ot.is_approved,
+                "approved_by": ot.approved_by,
+                "reason": ot.reason,
+                "created_at": ot.created_at.isoformat() if ot.created_at else None,
+            })
+        return results
+    finally:
+        session.close()
+
+
+@app.post("/api/overtimes")
+def create_overtime(data: OvertimeCreate):
+    """新增加班記錄（自動計算加班費）"""
+    session = get_session()
+    try:
+        if data.overtime_type not in OVERTIME_TYPE_LABELS:
+            raise HTTPException(status_code=400, detail=f"無效的加班類型: {data.overtime_type}")
+
+        emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="員工不存在")
+
+        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
+
+        start_dt = None
+        end_dt = None
+        if data.start_time:
+            h, m = map(int, data.start_time.split(":"))
+            start_dt = datetime.combine(data.overtime_date, datetime.min.time().replace(hour=h, minute=m))
+        if data.end_time:
+            h, m = map(int, data.end_time.split(":"))
+            end_dt = datetime.combine(data.overtime_date, datetime.min.time().replace(hour=h, minute=m))
+
+        ot = OvertimeRecord(
+            employee_id=data.employee_id,
+            overtime_date=data.overtime_date,
+            overtime_type=data.overtime_type,
+            start_time=start_dt,
+            end_time=end_dt,
+            hours=data.hours,
+            overtime_pay=pay,
+            reason=data.reason,
+        )
+        session.add(ot)
+        session.commit()
+        return {"message": "加班記錄已新增", "id": ot.id, "overtime_pay": pay}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.put("/api/overtimes/{overtime_id}")
+def update_overtime(overtime_id: int, data: OvertimeUpdate):
+    """更新加班記錄"""
+    session = get_session()
+    try:
+        ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
+        if not ot:
+            raise HTTPException(status_code=404, detail="加班記錄不存在")
+
+        update_data = data.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            if value is not None and key not in ('start_time', 'end_time'):
+                setattr(ot, key, value)
+
+        if data.start_time:
+            h, m = map(int, data.start_time.split(":"))
+            ot.start_time = datetime.combine(ot.overtime_date, datetime.min.time().replace(hour=h, minute=m))
+        if data.end_time:
+            h, m = map(int, data.end_time.split(":"))
+            ot.end_time = datetime.combine(ot.overtime_date, datetime.min.time().replace(hour=h, minute=m))
+
+        # Recalculate pay
+        emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()
+        if emp:
+            ot.overtime_pay = calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type)
+
+        session.commit()
+        return {"message": "加班記錄已更新", "overtime_pay": ot.overtime_pay}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.delete("/api/overtimes/{overtime_id}")
+def delete_overtime(overtime_id: int):
+    """刪除加班記錄"""
+    session = get_session()
+    try:
+        ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
+        if not ot:
+            raise HTTPException(status_code=404, detail="加班記錄不存在")
+        session.delete(ot)
+        session.commit()
+        return {"message": "加班記錄已刪除"}
+    finally:
+        session.close()
+
+
+@app.put("/api/overtimes/{overtime_id}/approve")
+def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "Admin"):
+    """核准/駁回加班"""
+    session = get_session()
+    try:
+        ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
+        if not ot:
+            raise HTTPException(status_code=404, detail="加班記錄不存在")
+        ot.is_approved = approved
+        ot.approved_by = approved_by if approved else None
+        session.commit()
+        return {"message": "已核准" if approved else "已駁回"}
+    finally:
+        session.close()
+
+
+# ============ Attendance Calendar Endpoint ============
+
+@app.get("/api/attendance/calendar")
+def get_attendance_calendar(
+    employee_id: int = Query(...),
+    year: int = Query(...),
+    month: int = Query(...)
+):
+    """取得員工月出勤日曆資料"""
+    session = get_session()
+    try:
+        emp = session.query(Employee).filter(Employee.id == employee_id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="員工不存在")
+
+        _, last_day = cal_module.monthrange(year, month)
+        start_date = date(year, month, 1)
+        end_date = date(year, month, last_day)
+
+        # Fetch attendance records
+        attendances = session.query(Attendance).filter(
+            Attendance.employee_id == employee_id,
+            Attendance.attendance_date >= start_date,
+            Attendance.attendance_date <= end_date
+        ).all()
+        att_map = {a.attendance_date: a for a in attendances}
+
+        # Fetch leave records
+        leaves = session.query(LeaveRecord).filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.start_date <= end_date,
+            LeaveRecord.end_date >= start_date,
+            LeaveRecord.is_approved == True
+        ).all()
+
+        # Build leave date map
+        leave_map = {}
+        for lv in leaves:
+            d = max(lv.start_date, start_date)
+            while d <= min(lv.end_date, end_date):
+                leave_map[d] = lv
+                d = date.fromordinal(d.toordinal() + 1)
+
+        # Fetch overtime records
+        overtimes = session.query(OvertimeRecord).filter(
+            OvertimeRecord.employee_id == employee_id,
+            OvertimeRecord.overtime_date >= start_date,
+            OvertimeRecord.overtime_date <= end_date,
+            OvertimeRecord.is_approved == True
+        ).all()
+        ot_map = {o.overtime_date: o for o in overtimes}
+
+        # Build daily data
+        days = []
+        work_days = 0
+        late_count = 0
+        leave_days = 0
+        overtime_hours = 0
+
+        for day_num in range(1, last_day + 1):
+            d = date(year, month, day_num)
+            att = att_map.get(d)
+            lv = leave_map.get(d)
+            ot = ot_map.get(d)
+
+            day_data = {
+                "date": d.isoformat(),
+                "weekday": d.weekday(),  # 0=Mon, 6=Sun
+                "punch_in": att.punch_in_time.strftime("%H:%M") if att and att.punch_in_time else None,
+                "punch_out": att.punch_out_time.strftime("%H:%M") if att and att.punch_out_time else None,
+                "status": att.status if att else None,
+                "is_late": att.is_late if att else False,
+                "late_minutes": att.late_minutes if att else 0,
+                "is_early_leave": att.is_early_leave if att else False,
+                "leave_type": lv.leave_type if lv else None,
+                "leave_type_label": LEAVE_TYPE_LABELS.get(lv.leave_type) if lv else None,
+                "leave_hours": lv.leave_hours if lv else 0,
+                "overtime_hours": ot.hours if ot else 0,
+                "overtime_type": ot.overtime_type if ot else None,
+                "remark": att.remark if att else None,
+            }
+            days.append(day_data)
+
+            # Summary stats
+            if att:
+                work_days += 1
+                if att.is_late:
+                    late_count += 1
+            if lv:
+                leave_days += lv.leave_hours / 8
+            if ot:
+                overtime_hours += ot.hours
+
+        return {
+            "employee_name": emp.name,
+            "employee_id": emp.employee_id,
+            "year": year,
+            "month": month,
+            "days": days,
+            "summary": {
+                "work_days": work_days,
+                "late_count": late_count,
+                "leave_days": round(leave_days, 1),
+                "overtime_hours": round(overtime_hours, 1),
+            }
+        }
+    finally:
+        session.close()
+
+
+# ============ Salary Slip Export & History Endpoints ============
+
+@app.get("/api/salaries/records")
+def get_salary_records(
+    year: int = Query(...),
+    month: int = Query(...)
+):
+    """查詢某月薪資記錄"""
+    session = get_session()
+    try:
+        records = session.query(SalaryRecord, Employee).join(
+            Employee, SalaryRecord.employee_id == Employee.id
+        ).filter(
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month
+        ).order_by(Employee.name).all()
+
+        results = []
+        for record, emp in records:
+            job_title = ''
+            if emp.job_title_rel:
+                job_title = emp.job_title_rel.name
+            elif emp.title:
+                job_title = emp.title
+
+            results.append({
+                "id": record.id,
+                "employee_id": emp.id,
+                "employee_code": emp.employee_id,
+                "employee_name": emp.name,
+                "job_title": job_title,
+                "base_salary": record.base_salary,
+                "supervisor_allowance": record.supervisor_allowance,
+                "teacher_allowance": record.teacher_allowance,
+                "meal_allowance": record.meal_allowance,
+                "transportation_allowance": record.transportation_allowance,
+                "other_allowance": record.other_allowance,
+                "festival_bonus": record.festival_bonus,
+                "overtime_bonus": record.overtime_bonus,
+                "performance_bonus": record.performance_bonus,
+                "special_bonus": record.special_bonus,
+                "supervisor_dividend": record.bonus_amount or 0,
+                "labor_insurance": record.labor_insurance_employee,
+                "health_insurance": record.health_insurance_employee,
+                "pension": record.pension_employee,
+                "late_deduction": record.late_deduction,
+                "early_leave_deduction": record.early_leave_deduction,
+                "missing_punch_deduction": record.missing_punch_deduction,
+                "leave_deduction": record.leave_deduction,
+                "other_deduction": record.other_deduction,
+                "gross_salary": record.gross_salary,
+                "total_deduction": record.total_deduction,
+                "net_salary": record.net_salary,
+                "is_finalized": record.is_finalized,
+            })
+
+        return results
+    finally:
+        session.close()
+
+
+@app.get("/api/salaries/{record_id}/export")
+def export_salary_slip(
+    record_id: int,
+    format: str = Query("pdf", regex="^(pdf)$")
+):
+    """匯出單人薪資單 PDF"""
+    from services.salary_slip import generate_salary_pdf
+
+    session = get_session()
+    try:
+        record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+
+        emp = session.query(Employee).filter(Employee.id == record.employee_id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="員工不存在")
+
+        pdf_bytes = generate_salary_pdf(record, emp, record.salary_year, record.salary_month)
+
+        filename = f"salary_{emp.name}_{record.salary_year}_{record.salary_month:02d}.pdf"
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+        )
+    finally:
+        session.close()
+
+
+@app.get("/api/salaries/export-all")
+def export_all_salaries(
+    year: int = Query(...),
+    month: int = Query(...),
+    format: str = Query("xlsx", regex="^(xlsx)$")
+):
+    """匯出全部員工薪資 Excel"""
+    from services.salary_slip import generate_salary_excel
+
+    session = get_session()
+    try:
+        records = session.query(SalaryRecord, Employee).join(
+            Employee, SalaryRecord.employee_id == Employee.id
+        ).filter(
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month
+        ).order_by(Employee.name).all()
+
+        if not records:
+            raise HTTPException(status_code=404, detail="該月份無薪資記錄")
+
+        excel_bytes = generate_salary_excel(records, year, month)
+
+        filename = f"salary_all_{year}_{month:02d}.xlsx"
+        return StreamingResponse(
+            io.BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+        )
+    finally:
+        session.close()
+
+
+@app.get("/api/salaries/history")
+def get_salary_history(
+    employee_id: int = Query(...),
+    months: int = Query(12, ge=1, le=60)
+):
+    """查詢員工歷史薪資"""
+    session = get_session()
+    try:
+        records = session.query(SalaryRecord).filter(
+            SalaryRecord.employee_id == employee_id
+        ).order_by(
+            SalaryRecord.salary_year.desc(),
+            SalaryRecord.salary_month.desc()
+        ).limit(months).all()
+
+        results = []
+        for r in records:
+            total_allowances = (
+                (r.supervisor_allowance or 0) +
+                (r.teacher_allowance or 0) +
+                (r.meal_allowance or 0) +
+                (r.transportation_allowance or 0) +
+                (r.other_allowance or 0)
+            )
+            total_bonus = (
+                (r.festival_bonus or 0) +
+                (r.overtime_bonus or 0) +
+                (r.performance_bonus or 0) +
+                (r.special_bonus or 0) +
+                (r.bonus_amount or 0)
+            )
+            results.append({
+                "id": r.id,
+                "year": r.salary_year,
+                "month": r.salary_month,
+                "base_salary": r.base_salary,
+                "total_allowances": total_allowances,
+                "total_bonus": total_bonus,
+                "labor_insurance": r.labor_insurance_employee,
+                "health_insurance": r.health_insurance_employee,
+                "attendance_deduction": (
+                    (r.late_deduction or 0) +
+                    (r.early_leave_deduction or 0) +
+                    (r.missing_punch_deduction or 0) +
+                    (r.leave_deduction or 0)
+                ),
+                "gross_salary": r.gross_salary,
+                "total_deduction": r.total_deduction,
+                "net_salary": r.net_salary,
+            })
+
+        return results
+    finally:
+        session.close()
+
+
+@app.get("/api/salaries/history-all")
+def get_salary_history_all(
+    year: int = Query(...)
+):
+    """查詢全部員工年度薪資概覽"""
+    session = get_session()
+    try:
+        records = session.query(SalaryRecord, Employee).join(
+            Employee, SalaryRecord.employee_id == Employee.id
+        ).filter(
+            SalaryRecord.salary_year == year
+        ).order_by(
+            Employee.name,
+            SalaryRecord.salary_month
+        ).all()
+
+        # Group by employee
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        emp_names = {}
+        for r, emp in records:
+            grouped[emp.id].append({
+                "month": r.salary_month,
+                "net_salary": r.net_salary,
+                "gross_salary": r.gross_salary,
+            })
+            emp_names[emp.id] = emp.name
+
+        results = []
+        for emp_id, months_data in grouped.items():
+            results.append({
+                "employee_id": emp_id,
+                "employee_name": emp_names[emp_id],
+                "months": months_data
+            })
+
+        return results
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
