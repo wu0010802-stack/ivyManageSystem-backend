@@ -50,9 +50,13 @@ class Employee(Base):
     
     # 員工類型
     employee_type = Column(String(20), default=EmployeeType.REGULAR.value, comment="員工類型：regular/hourly")
-    title = Column(String(50), nullable=True, comment="職稱")
-    position = Column(String(50), nullable=True, comment="職稱分類 (園長/幼兒園教師/教保員等)")
+    title = Column(String(50), nullable=True, comment="職稱 (Legacy)")
+    job_title_id = Column(Integer, ForeignKey("job_titles.id"), nullable=True, comment="職稱 ID")
+    position = Column(String(50), nullable=True, comment="職務 (Duty)")
     classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=True, comment="所屬班級")
+    
+    # 關聯
+    job_title_rel = relationship("JobTitle", backref="employees")
     
     # 薪資相關
     base_salary = Column(Float, default=0, comment="底薪")
@@ -498,6 +502,164 @@ class SalaryItem(Base):
     is_employer_paid = Column(Boolean, default=False, comment="是否雇主負擔")
     remark = Column(Text, comment="備註")
     created_at = Column(DateTime, default=datetime.now)
+
+
+class JobTitle(Base):
+    __tablename__ = "job_titles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    is_active = Column(Boolean, default=True)
+    sort_order = Column(Integer, default=0)
+
+
+class SystemConfig(Base):
+    """
+    系統設定表 - 存儲所有可配置的設定值
+    """
+    __tablename__ = "system_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_key = Column(String(100), unique=True, nullable=False, comment="設定鍵名")
+    config_value = Column(Text, nullable=False, comment="設定值 (JSON)")
+    config_type = Column(String(50), default="general", comment="設定類別")
+    description = Column(String(200), comment="設定說明")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AttendancePolicy(Base):
+    """
+    考勤政策表 - 存儲考勤扣款規則
+    """
+    __tablename__ = "attendance_policies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 工作時間
+    default_work_start = Column(String(5), default="08:00", comment="預設上班時間")
+    default_work_end = Column(String(5), default="17:00", comment="預設下班時間")
+    grace_minutes = Column(Integer, default=5, comment="遲到寬限時間(分)")
+
+    # 扣款規則
+    late_threshold = Column(Integer, default=2, comment="遲到幾次開始扣款")
+    late_deduction = Column(Float, default=50, comment="遲到每次扣款金額")
+    early_leave_deduction = Column(Float, default=50, comment="早退每次扣款金額")
+    missing_punch_deduction = Column(Float, default=50, comment="未打卡每次扣款金額")
+
+    # 節慶獎金資格
+    festival_bonus_months = Column(Integer, default=3, comment="入職滿幾個月可領節慶獎金")
+
+    is_active = Column(Boolean, default=True, comment="是否為目前使用的政策")
+    effective_date = Column(Date, comment="生效日期")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class BonusConfig(Base):
+    """
+    獎金設定表 - 存儲節慶獎金、超額獎金、主管紅利等設定
+    """
+    __tablename__ = "bonus_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_year = Column(Integer, nullable=False, comment="年度")
+
+    # === 節慶獎金基數 ===
+    # 班導
+    head_teacher_ab = Column(Float, default=2000, comment="班導A/B級獎金基數")
+    head_teacher_c = Column(Float, default=1500, comment="班導C級獎金基數")
+    # 副班導
+    assistant_teacher_ab = Column(Float, default=1200, comment="副班導A/B級獎金基數")
+    assistant_teacher_c = Column(Float, default=1200, comment="副班導C級獎金基數")
+
+    # 主管節慶獎金
+    principal_festival = Column(Float, default=6500, comment="園長節慶獎金")
+    director_festival = Column(Float, default=3500, comment="主任節慶獎金")
+    leader_festival = Column(Float, default=2000, comment="組長節慶獎金")
+
+    # 司機/美編/行政節慶獎金
+    driver_festival = Column(Float, default=1000, comment="司機節慶獎金基數")
+    designer_festival = Column(Float, default=1000, comment="美編節慶獎金基數")
+    admin_festival = Column(Float, default=2000, comment="行政節慶獎金基數")
+
+    # === 主管紅利 ===
+    principal_dividend = Column(Float, default=5000, comment="園長紅利")
+    director_dividend = Column(Float, default=4000, comment="主任紅利")
+    leader_dividend = Column(Float, default=3000, comment="組長紅利")
+    vice_leader_dividend = Column(Float, default=1500, comment="副組長紅利")
+
+    # === 超額獎金每人金額 ===
+    overtime_head_normal = Column(Float, default=400, comment="班導超額每人(大中小班)")
+    overtime_head_baby = Column(Float, default=450, comment="班導超額每人(幼幼班)")
+    overtime_assistant_normal = Column(Float, default=100, comment="副班導超額每人(大中小班)")
+    overtime_assistant_baby = Column(Float, default=150, comment="副班導超額每人(幼幼班)")
+
+    # === 全校目標 ===
+    school_wide_target = Column(Integer, default=160, comment="全校目標人數")
+
+    is_active = Column(Boolean, default=True, comment="是否為目前使用的設定")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class GradeTarget(Base):
+    """
+    年級目標人數表 - 存儲各年級的節慶獎金和超額獎金目標人數
+    """
+    __tablename__ = "grade_targets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_year = Column(Integer, nullable=False, comment="年度")
+    grade_name = Column(String(20), nullable=False, comment="年級名稱")
+
+    # 節慶獎金目標人數
+    festival_two_teachers = Column(Integer, default=0, comment="節慶-2老師目標")
+    festival_one_teacher = Column(Integer, default=0, comment="節慶-1老師目標")
+    festival_shared = Column(Integer, default=0, comment="節慶-共用副班導目標")
+
+    # 超額獎金目標人數
+    overtime_two_teachers = Column(Integer, default=0, comment="超額-2老師目標")
+    overtime_one_teacher = Column(Integer, default=0, comment="超額-1老師目標")
+    overtime_shared = Column(Integer, default=0, comment="超額-共用副班導目標")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class InsuranceRate(Base):
+    """
+    勞健保費率表
+    """
+    __tablename__ = "insurance_rates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rate_year = Column(Integer, nullable=False, comment="年度")
+
+    # 勞保費率
+    labor_rate = Column(Float, default=0.12, comment="勞保費率 12%")
+    labor_employee_ratio = Column(Float, default=0.20, comment="勞保員工負擔比例 20%")
+    labor_employer_ratio = Column(Float, default=0.70, comment="勞保雇主負擔比例 70%")
+    labor_government_ratio = Column(Float, default=0.10, comment="勞保政府負擔比例 10%")
+
+    # 健保費率
+    health_rate = Column(Float, default=0.0517, comment="健保費率 5.17%")
+    health_employee_ratio = Column(Float, default=0.30, comment="健保員工負擔比例 30%")
+    health_employer_ratio = Column(Float, default=0.60, comment="健保員工負擔比例 60%")
+
+    # 退休金
+    pension_employer_rate = Column(Float, default=0.06, comment="退休金雇主提撥比例 6%")
+
+    # 平均眷數
+    average_dependents = Column(Float, default=0.57, comment="平均眷數")
+
+    is_active = Column(Boolean, default=True, comment="是否為目前使用的費率")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 # 預設資料庫連線字串 (PostgreSQL)
