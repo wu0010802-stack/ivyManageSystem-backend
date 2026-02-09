@@ -35,7 +35,97 @@ class JobTitleCreate(BaseModel):
 
 # ... (omitted existing code) ...
 
-# ============ Job Title Endpoints ============
+# ============ Salary Calculation Endpoints ============
+
+@app.post("/api/salaries/calculate")
+def calculate_salaries(
+    year: int = Query(..., description="Calculate for which year"),
+    month: int = Query(..., description="Calculate for which month")
+):
+    """
+    Calculate or Recalculate salaries for all employees for a given month.
+    """
+    session = get_session()
+    try:
+        from services.salary_engine import SalaryEngine as Engine
+        engine = Engine(session)
+        
+        # 1. Fetch all active employees
+        employees = session.query(Employee).all() # Include inactive? Maybe not for new calculation, but for history?
+        # Better to only calculate for employees active in that month or currently active
+        # prioritizing currently active for now
+        employees = session.query(Employee).filter(Employee.is_active == True).all()
+
+        results = []
+        for emp in employees:
+            try:
+                # Calculate salary for this employee using new process method
+                # This fetches data, calculates, saves to DB, and returns breakdown
+                salary_record = engine.process_salary_calculation(emp.id, year, month)
+                
+                # Convert to dict for response
+                results.append({
+                    "employee_id": emp.id,
+                    "employee_name": emp.name,
+                    "base_salary": salary_record.base_salary,
+                    "total_allowances": salary_record.total_allowances, 
+                    "festival_bonus": salary_record.festival_bonus,
+                    "labor_insurance": salary_record.labor_insurance,
+                    "health_insurance": salary_record.health_insurance,
+                    "total_deductions": salary_record.total_deduction, # singular in dataclass
+                    "net_pay": salary_record.net_salary # net_salary in dataclass
+                })
+            except Exception as e:
+                print(f"Error calculating for {emp.name}: {e}")
+                # Log error but continue
+        
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@app.get("/api/salaries/festival-bonus")
+def get_festival_bonus(
+    year: int = Query(...),
+    month: int = Query(...)
+):
+    """
+    Return breakdown of festival bonus calculation
+    """
+    session = get_session()
+    try:
+        from services.salary_engine import SalaryEngine as Engine
+        engine = Engine(session)
+        
+        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        results = []
+        
+        for emp in employees:
+             # This logic mimics the frontend legacy logic or calls backend engine if available
+             # Assuming backend engine has a breakdown method or we reconstruct it here
+             # For now, let's reuse the calculate logic but expose the bonus details
+             
+             # Actually, the original app calculated bonus in JS (frontend/js/app.js:showFestivalBonusBreakdown)
+             # But here we want to move it to backend.
+             # We should use SalaryEngine to get the breakdown.
+             
+             # Let's see if SalaryEngine has a method or we need to invoke calculation
+             # For simplicity, we trigger calculation (simulation) and extract bonus parts
+             
+             # Re-instantiate engine to be safe
+             bonus_data = engine.calculate_festival_bonus_breakdown(emp.id, year, month)
+             results.append(bonus_data)
+
+        # Sort by category/name
+        return results
+    except Exception as e:
+        # If calculate_festival_bonus_breakdown doesn't exist yet, we might need to add it to SalaryEngine
+        # Or implement a basic version here
+        print(f"Error getting festival bonus: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
 
 @app.get("/api/config/titles")
 def get_job_titles():
@@ -58,6 +148,36 @@ def create_job_title(title: JobTitleCreate):
     session.add(new_title)
     session.commit()
     return {"message": "Job title created", "id": new_title.id}
+
+@app.put("/api/config/titles/{title_id}")
+def update_job_title(title_id: int, title: JobTitleCreate):
+    session = get_session()
+    # Check if name exists for OTHER titles
+    existing = session.query(JobTitle).filter(JobTitle.name == title.name, JobTitle.id != title_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Job title name already exists")
+        
+    db_title = session.query(JobTitle).filter(JobTitle.id == title_id).first()
+    if not db_title:
+        raise HTTPException(status_code=404, detail="Job title not found")
+        
+    db_title.name = title.name
+    # Ensure it's active if we are updating it
+    db_title.is_active = True
+    session.commit()
+    return {"message": "Job title updated"}
+
+@app.delete("/api/config/titles/{title_id}")
+def delete_job_title(title_id: int):
+    session = get_session()
+    db_title = session.query(JobTitle).filter(JobTitle.id == title_id).first()
+    if not db_title:
+        raise HTTPException(status_code=404, detail="Job title not found")
+        
+    # Soft delete
+    db_title.is_active = False
+    session.commit()
+    return {"message": "Job title deleted (soft delete)"}
 
 def seed_job_titles():
     session = get_session()
@@ -1786,6 +1906,38 @@ async def get_attendance_records(
     finally:
         session.close()
 
+@app.delete("/api/attendance/records/{employee_id}/{date_str}")
+def delete_single_attendance(employee_id: int, date_str: str):
+    """刪除單筆考勤記錄"""
+    session = get_session()
+    try:
+        from datetime import datetime
+        
+        # 嘗試解析日期
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            target_date = datetime.strptime(date_str, "%Y/%m/%d").date()
+            
+        record = session.query(Attendance).filter(
+            Attendance.employee_id == employee_id,
+            Attendance.attendance_date == target_date
+        ).first()
+        
+        if not record:
+            raise HTTPException(status_code=404, detail="找不到該筆考勤記錄")
+            
+        session.delete(record)
+        session.commit()
+        return {"message": "刪除成功"}
+        
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式錯誤")
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
 
 @app.get("/api/attendance/summary")
 async def get_attendance_summary(

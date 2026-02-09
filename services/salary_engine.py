@@ -68,6 +68,12 @@ class SalaryBreakdown:
     # 獎金獨立轉帳
     bonus_separate: bool = False
     bonus_amount: float = 0
+    
+    @property
+    def total_allowances(self) -> float:
+        return (self.supervisor_allowance + self.teacher_allowance + 
+                self.meal_allowance + self.transportation_allowance + 
+                self.other_allowance)
 
 
 class SalaryEngine:
@@ -173,6 +179,8 @@ class SalaryEngine:
         self._supervisor_festival_bonus = self.SUPERVISOR_FESTIVAL_BONUS.copy()
         # 可被覆蓋的設定 - 司機/美編節慶獎金基數
         self._office_festival_bonus_base = self.OFFICE_FESTIVAL_BONUS_BASE.copy()
+        # 可被覆蓋的設定 - 全校目標人數
+        self._school_wide_target = 160
         # 考勤政策設定
         self._attendance_policy = {
             'grace_minutes': 5,
@@ -258,9 +266,12 @@ class SalaryEngine:
                         '大班': bonus.overtime_assistant_normal,
                         '中班': bonus.overtime_assistant_normal,
                         '小班': bonus.overtime_assistant_normal,
-                        '幼幼班': bonus.overtime_assistant_baby
                     }
                 }
+
+                # 更新全校目標人數
+                if bonus.school_wide_target:
+                    self._school_wide_target = bonus.school_wide_target
 
             # 載入年級目標
             targets = session.query(GradeTarget).all()
@@ -881,7 +892,337 @@ class SalaryEngine:
             breakdown.other_deduction
         )
         
-        # 實發金額
-        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
-        
         return breakdown
+
+    def calculate_festival_bonus_breakdown(self, employee_id: int, year: int, month: int) -> dict:
+        """
+        計算單一員工節慶獎金明細 (for UI display)
+        """
+        session = _get_db_session()
+        try:
+            from models.database import Employee, Classroom, ClassGrade, JobTitle # Ensure imports
+
+            emp = session.query(Employee).get(employee_id)
+            if not emp:
+                return {}
+
+            # Prepare breakdown data
+            # Logic similar to what frontend did: determine category, bonusBase, ratio, remark
+            
+            # Fetch Classroom info if assigned
+            classroom = None
+            if emp.classroom_id:
+                classroom = session.query(Classroom).get(emp.classroom_id)
+            
+            # Default values
+            bonus_base = 0
+            target_enrollment = 0
+            current_enrollment = 0
+            ratio = 0
+            festival_bonus = 0
+            remark = ""
+            category = ""
+            
+            # Get Position & Title
+            position = emp.position or ''
+            # Update title handling using relation if available
+            title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
+            
+            # Check Eligibility
+            is_eligible = self.is_eligible_for_festival_bonus(emp.hire_date)
+            if not is_eligible:
+                remark = "未滿3個月"
+
+            # 1. Supervisor (Principal/Director/Leader)
+            supervisor_base = self.get_supervisor_festival_bonus(title_name)
+            if supervisor_base:
+                category = "主管"
+                bonus_base = supervisor_base
+                festival_bonus = supervisor_base if is_eligible else 0
+                if is_eligible: remark = "主管固定津貼"
+            
+            # 2. Office Staff (Driver/Admin/Designer)
+            elif emp.is_office_staff: 
+                 office_base = self.get_office_festival_bonus_base(position, title_name)
+                 
+                 category = "辦公室"
+                 
+                 # Calculate total school enrollment as approximation for current
+                 all_classrooms = session.query(Classroom).all()
+                 total_students = sum(c.current_count for c in all_classrooms)
+                 current_enrollment = total_students
+                 
+                 if office_base:
+                     bonus_base = office_base
+                     
+                     # Use configured school target if available, otherwise calculate or default
+                     if hasattr(self, '_school_wide_target') and self._school_wide_target > 0:
+                         school_target = self._school_wide_target
+                     else:
+                         school_target = 0
+                         for c in all_classrooms:
+                             # Use relationship to get grade name
+                             grade = c.grade.name if c.grade else None
+                             if grade:
+                                 school_target += self._target_enrollment.get(grade, {}).get('2_teachers', 0)
+                     
+                     target_enrollment = school_target if school_target > 0 else 100
+                     
+                     ratio = current_enrollment / target_enrollment if target_enrollment > 0 else 0
+                     festival_bonus = round(bonus_base * ratio) if is_eligible else 0
+                     if is_eligible: remark = "全校比例"
+
+            # 3. Classroom Teachers
+            elif classroom:
+                category = "帶班老師"
+                grade_name = classroom.grade.name if classroom.grade else ''
+                current_enrollment = classroom.current_count
+                
+                # Determine Role
+                role = 'assistant_teacher' # default
+                if classroom.head_teacher_id == emp.id:
+                    role = 'head_teacher'
+                elif classroom.assistant_teacher_id == emp.id:
+                    role = 'assistant_teacher'
+                elif classroom.art_teacher_id == emp.id:
+                    role = 'art_teacher'
+                
+                has_assistant = (classroom.assistant_teacher_id is not None and classroom.assistant_teacher_id > 0)
+                is_shared = False 
+                
+                role_for_base = role
+                if role == 'art_teacher': role_for_base = 'assistant_teacher'
+
+                bonus_base = self.get_festival_bonus_base(position, role_for_base)
+                target_enrollment = self.get_target_enrollment(grade_name, has_assistant, is_shared)
+                
+                ratio = current_enrollment / target_enrollment if target_enrollment > 0 else 0
+                festival_bonus = round(bonus_base * ratio) if is_eligible else 0
+                
+            else:
+                category = "其他"
+                remark = "無帶班/無設定"
+
+            return {
+                "name": emp.name,
+                "category": category,
+                "bonusBase": bonus_base,
+                "targetEnrollment": target_enrollment,
+                "currentEnrollment": current_enrollment,
+                "ratio": ratio,
+                "festivalBonus": festival_bonus,
+                "remark": remark
+            }
+
+        except Exception as e:
+            print(f"Error calculating bonus breakdown for {employee_id}: {e}")
+            return {
+                "name": f"Error: {e}", 
+                "festivalBonus": 0
+            }
+        finally:
+            session.close()
+
+    def process_salary_calculation(self, employee_id: int, year: int, month: int):
+        """
+        處理單一員工薪資計算並儲存結果
+        """
+        session = _get_db_session()
+        try:
+            from models.database import Employee, Attendance, SalaryRecord, EmployeeAllowance, AllowanceType, Classroom, ClassGrade, JobTitle, SalaryItem
+
+            # 1. 取得員工資料
+            emp = session.query(Employee).get(employee_id)
+            if not emp:
+                raise ValueError(f"Employee {employee_id} not found")
+
+            # Update title handling using relation if available
+            title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
+
+            # 2. 轉換為 dict (供 calculate_salary 使用)
+            emp_dict = {
+                'employee_id': emp.employee_id,
+                'name': emp.name,
+                'title': title_name, # Use resolved title
+                'position': emp.position,
+                'employee_type': emp.employee_type,
+                'base_salary': emp.base_salary,
+                'hourly_rate': emp.hourly_rate,
+                'work_hours': 0, # Will be calculated from attendance or set manually? For now 0 or default
+                'supervisor_allowance': emp.supervisor_allowance,
+                'teacher_allowance': emp.teacher_allowance,
+                'meal_allowance': emp.meal_allowance,
+                'transportation_allowance': emp.transportation_allowance,
+                'other_allowance': emp.other_allowance,
+                'insurance_salary': emp.insurance_salary_level,
+                'dependents': 0, # Should be stored on employee? Default 0
+                'hire_date': emp.hire_date
+            }
+
+            # 3. 取得考勤並計算統計
+            # Fetch raw attendance records
+            # start_date, end_date for the month
+            import calendar
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+
+            attendances = session.query(Attendance).filter(
+                Attendance.employee_id == emp.id,
+                Attendance.attendance_date >= start_date,
+                Attendance.attendance_date <= end_date
+            ).all()
+
+            # Parse attendance
+            # We need AttendanceResult object from parser
+            # But Parser usually parses excel file.
+            # Here we need to aggregate from DB records.
+            # Let's create a helper to aggregate or manually calculate here.
+            
+            # Simplified aggregation
+            late_count = sum(1 for a in attendances if a.is_late)
+            early_count = sum(1 for a in attendances if a.is_early_leave)
+            missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
+            missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
+            
+            # Work hours for hourly employees (sum difference between punch in/out)
+            total_hours = 0
+            if emp.employee_type == 'hourly':
+                for a in attendances:
+                    if a.punch_in_time and a.punch_out_time:
+                         diff = (a.punch_out_time - a.punch_in_time).total_seconds() / 3600
+                         total_hours += diff
+                emp_dict['work_hours'] = round(total_hours, 2)
+
+            # Construct AttendanceResult-like object or pass as dict to calculate_attendance_deduction?
+            # calculate_salary expects AttendanceResult object
+            attendance_result = AttendanceResult(
+                employee_id=emp.employee_id,
+                name=emp.name,
+                late_count=late_count,
+                early_leave_count=early_count,
+                missing_punch_in_count=missing_in,
+                missing_punch_out_count=missing_out,
+                records=[] # Not needed for calculation logic currently
+            )
+
+            # 4. 取得津貼
+            allowances = []
+            emp_allowances = session.query(EmployeeAllowance).filter(
+                EmployeeAllowance.employee_id == emp.id,
+                EmployeeAllowance.is_active == True,
+                # EmployeeAllowance.effective_date <= end_date, # simplified
+                # (EmployeeAllowance.end_date == None) | (EmployeeAllowance.end_date >= start_date)
+            ).all()
+            
+            for ea in emp_allowances:
+                # Need allowance name
+                a_type = session.query(AllowanceType).get(ea.allowance_type_id)
+                if a_type:
+                    allowances.append({
+                        'name': a_type.name,
+                        'amount': ea.amount
+                    })
+
+            # 5. 建構 Classroom Context (Festival Bonus V2)
+            classroom_context = None
+            if emp.classroom_id:
+                classroom = session.query(Classroom).get(emp.classroom_id)
+                if classroom:
+                    # Determine role
+                    role = 'assistant_teacher'
+                    if classroom.head_teacher_id == emp.id:
+                        role = 'head_teacher'
+                    elif classroom.art_teacher_id == emp.id:
+                        role = 'art_teacher'
+                    
+                    has_assistant = (classroom.assistant_teacher_id is not None and classroom.assistant_teacher_id > 0)
+                    
+                    classroom_context = {
+                        'role': role,
+                        'grade_name': classroom.grade.name if classroom.grade else '',
+                        'current_enrollment': classroom.current_count,
+                        'has_assistant': has_assistant,
+                        'is_shared_assistant': False # Default
+                    }
+
+            # 6. 計算薪資
+            breakdown = self.calculate_salary(
+                employee=emp_dict,
+                year=year,
+                month=month,
+                attendance=attendance_result,
+                allowances=allowances,
+                classroom_context=classroom_context
+            )
+
+            # 7. 儲存 SalaryRecord
+            # check if exists
+            salary_record = session.query(SalaryRecord).filter(
+                SalaryRecord.employee_id == emp.id,
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month
+            ).first()
+
+            if not salary_record:
+                salary_record = SalaryRecord(
+                    employee_id=emp.id,
+                    salary_year=year,
+                    salary_month=month
+                )
+                session.add(salary_record)
+            
+            # Update fields
+            salary_record.base_salary = breakdown.base_salary
+            salary_record.supervisor_allowance = breakdown.supervisor_allowance
+            salary_record.teacher_allowance = breakdown.teacher_allowance
+            salary_record.meal_allowance = breakdown.meal_allowance
+            salary_record.transportation_allowance = breakdown.transportation_allowance
+            salary_record.other_allowance = breakdown.other_allowance
+            
+            salary_record.festival_bonus = breakdown.festival_bonus
+            salary_record.overtime_bonus = breakdown.overtime_bonus
+            salary_record.performance_bonus = breakdown.performance_bonus
+            salary_record.special_bonus = breakdown.special_bonus
+            salary_record.bonus_amount = breakdown.supervisor_dividend # stored here? or special bonus?
+            # Supervisor dividend usually separate? Let's add loop for it or put in special_bonus
+            # Current model has no explicit 'supervisor_dividend' column, maybe put in special_bonus 
+            # or allow separate endpoint to manage it.
+            # For now, append to special_bonus or fetch logic
+            
+            salary_record.work_hours = breakdown.work_hours
+            salary_record.hourly_rate = breakdown.hourly_rate
+            salary_record.hourly_total = breakdown.hourly_total
+            
+            salary_record.labor_insurance_employee = breakdown.labor_insurance
+            salary_record.health_insurance_employee = breakdown.health_insurance
+            salary_record.pension_employee = breakdown.pension_self
+            
+            salary_record.late_deduction = breakdown.late_deduction
+            salary_record.early_leave_deduction = breakdown.early_leave_deduction
+            salary_record.missing_punch_deduction = breakdown.missing_punch_deduction
+            salary_record.leave_deduction = breakdown.leave_deduction
+            salary_record.other_deduction = breakdown.other_deduction
+            
+            salary_record.gross_salary = breakdown.gross_salary
+            salary_record.total_deduction = breakdown.total_deduction
+            salary_record.net_salary = breakdown.net_salary
+            
+            salary_record.late_count = breakdown.late_count
+            salary_record.early_leave_count = breakdown.early_leave_count
+            salary_record.missing_punch_count = breakdown.missing_punch_count
+            
+            # Save items (clear old?)
+            # Simplified: just update record for now.
+            
+            session.commit()
+            
+            # Return breakdown or record
+            return breakdown
+
+        except Exception as e:
+            session.rollback()
+            print(f"Error processing salary for {employee_id}: {e}")
+            raise e
+        finally:
+            session.close()

@@ -416,6 +416,8 @@ class Classroom(Base):
 
     is_active = Column(Boolean, default=True, comment="是否啟用")
 
+    grade = relationship("ClassGrade")
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
