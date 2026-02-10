@@ -7,7 +7,7 @@ import os
 import logging
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -665,6 +665,41 @@ class InsuranceRate(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ShiftType(Base):
+    """班別模板表"""
+    __tablename__ = "shift_types"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(50), unique=True, nullable=False, comment="班別名稱")
+    work_start = Column(String(5), nullable=False, comment="上班時間 HH:MM")
+    work_end = Column(String(5), nullable=False, comment="下班時間 HH:MM")
+    sort_order = Column(Integer, default=0, comment="排序")
+    is_active = Column(Boolean, default=True, comment="是否啟用")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ShiftAssignment(Base):
+    """每週排班表"""
+    __tablename__ = "shift_assignments"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "week_start_date", name="uq_shift_employee_week"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+    shift_type_id = Column(Integer, ForeignKey("shift_types.id"), nullable=False)
+    week_start_date = Column(Date, nullable=False, comment="該週週一日期")
+    notes = Column(Text, comment="備註")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="shift_assignments")
+    shift_type = relationship("ShiftType", backref="assignments")
 
 
 class User(Base):

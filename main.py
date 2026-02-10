@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from models.database import (
     init_database, get_session,
     AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate, JobTitle,
-    User, Employee,
+    User, Employee, ShiftType,
 )
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
@@ -29,6 +29,7 @@ from api.insurance import router as insurance_router, init_insurance_services
 from api.employee_allowances import router as employee_allowances_router
 from api.auth import router as auth_router
 from api.portal import router as portal_router
+from api.shifts import router as shifts_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -91,6 +92,7 @@ app.include_router(insurance_router)
 app.include_router(employee_allowances_router)
 app.include_router(auth_router)
 app.include_router(portal_router)
+app.include_router(shifts_router)
 
 # ---------------------------------------------------------------------------
 # Seed Data
@@ -198,6 +200,29 @@ def seed_default_configs():
 # ---------------------------------------------------------------------------
 
 
+def seed_shift_types():
+    """初始化預設班別"""
+    session = get_session()
+    try:
+        if session.query(ShiftType).count() == 0:
+            defaults = [
+                {"name": "早值", "work_start": "08:00", "work_end": "17:00", "sort_order": 1},
+                {"name": "正值(班導)", "work_start": "09:00", "work_end": "18:00", "sort_order": 2},
+                {"name": "正值(副班導)", "work_start": "07:00", "work_end": "16:30", "sort_order": 3},
+                {"name": "次值", "work_start": "08:30", "work_end": "18:00", "sort_order": 4},
+                {"name": "無值週", "work_start": "08:00", "work_end": "17:30", "sort_order": 5},
+                {"name": "早車", "work_start": "07:00", "work_end": "16:30", "sort_order": 6},
+                {"name": "晚車", "work_start": "08:30", "work_end": "18:00", "sort_order": 7},
+                {"name": "早上等接", "work_start": "07:30", "work_end": "17:00", "sort_order": 8},
+            ]
+            for st in defaults:
+                session.add(ShiftType(**st))
+            session.commit()
+            logger.info("Seeded default shift types.")
+    finally:
+        session.close()
+
+
 def seed_default_admin():
     """建立預設管理員帳號"""
     from utils.auth import hash_password
@@ -224,6 +249,7 @@ def on_startup():
     init_database()
     seed_job_titles()
     seed_default_configs()
+    seed_shift_types()
     seed_default_admin()
     salary_engine.load_config_from_db()
     logger.info("Application started successfully.")
