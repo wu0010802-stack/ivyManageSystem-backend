@@ -82,7 +82,7 @@ class SalaryEngine:
 
     # 預設扣款規則
     DEFAULT_LATE_DEDUCTION = 50       # 遲到每次扣款
-    DEFAULT_LATE_THRESHOLD = 2        # 遲到幾次開始扣
+    DEFAULT_LATE_THRESHOLD = 1        # 遲到幾次開始扣
     DEFAULT_MISSING_PUNCH = 50        # 未打卡扣款
     DEFAULT_EARLY_LEAVE = 50          # 早退扣款
 
