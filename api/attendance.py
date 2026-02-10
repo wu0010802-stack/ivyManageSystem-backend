@@ -112,7 +112,11 @@ async def upload_attendance(file: UploadFile = File(...)):
                 for idx, row in df.iterrows():
                     try:
                         # 取得員工
-                        emp_number = str(row.get('編號', '')).strip()
+                        raw_id = row.get('編號', '')
+                        emp_number = str(raw_id).strip()
+                        if emp_number.endswith('.0'):
+                            emp_number = emp_number[:-2]
+                            
                         emp_name = str(row.get('姓名', '')).strip()
                         employee = emp_by_id.get(emp_number) or emp_by_name.get(emp_name)
 
@@ -318,6 +322,135 @@ async def upload_attendance(file: UploadFile = File(...)):
 
             results, anomaly_df, summary_df = parse_attendance_file(file_path)
 
+            # SAVE TO DB Logic for Old Format
+            session = get_session()
+            try:
+                # Need employees map
+                employees = session.query(Employee).filter(Employee.is_active == True).all()
+                emp_by_name = {emp.name: emp for emp in employees}
+                
+                # Fetch Classroom context for role-based duration check (COPY OF NEW FORMAT LOGIC)
+                # Classroom is already imported globally
+                all_classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+                head_teacher_map = {c.head_teacher_id for c in all_classrooms if c.head_teacher_id}
+                assistant_teacher_map = set()
+                for c in all_classrooms:
+                    if c.assistant_teacher_id:
+                        assistant_teacher_map.add(c.assistant_teacher_id)
+
+                db_save_count = 0
+                
+                for emp_name, result in results.items():
+                    employee = emp_by_name.get(emp_name)
+                    if not employee:
+                        continue
+                        
+                    for detail in result.details:
+                        # detail: {date, punch_in, punch_out, is_late, ... status}
+                        # We need to apply the Duration Override Logic here too!
+                        
+                        p_in = detail['punch_in'] # time obj or None
+                        p_out = detail['punch_out'] # time obj or None
+                        a_date = detail['date'] # date obj
+                        
+                        # Re-calculate or use detail?
+                        # detail already has status from parser, but parser DOES NOT know about 9h/9.5h rules!
+                        # So we should re-eval status or apply override.
+                        
+                        status = detail['status']
+                        is_late = detail['is_late']
+                        is_early_leave = detail['is_early_leave']
+                        
+                        # --- Duration Check (Override Logic) ---
+                        if p_in and p_out:
+                            # Calculate duration
+                            # Convert to datetime for subtraction
+                            dt_in = datetime.combine(a_date, p_in)
+                            dt_out = datetime.combine(a_date, p_out)
+                            duration_minutes = int((dt_out - dt_in).total_seconds() / 60)
+                            
+                            required_duration = 0
+                            
+                            is_head_teacher = employee.id in head_teacher_map
+                            is_assistant = employee.id in assistant_teacher_map
+                            title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
+                            is_driver = "司機" in title_str
+
+                            if is_assistant:
+                                required_duration = 570
+                            elif is_head_teacher:
+                                required_duration = 540
+                            elif is_driver:
+                                required_duration = 480
+                            
+                            if required_duration > 0 and duration_minutes >= required_duration:
+                                status = "normal"
+                                is_late = False
+                                is_early_leave = False
+                                # Note: detail dict update is not strictly needed for DB, but good for consistency
+                        
+                        # Save to DB
+                        # Check existing
+                        existing = session.query(Attendance).filter(
+                            Attendance.employee_id == employee.id,
+                            Attendance.attendance_date == a_date
+                        ).first()
+                        
+                        # Convert time objects to datetime for DB (if needed? Model defines DateTime)
+                        # Actually Model defines DateTime for punch_in_time.
+                        # AttendanceParser returns time objects.
+                        # We need datetime.combine(date, time)
+                        
+                        db_p_in = datetime.combine(a_date, p_in) if p_in else None
+                        db_p_out = datetime.combine(a_date, p_out) if p_out else None
+                        
+                        if existing:
+                            existing.punch_in_time = db_p_in
+                            existing.punch_out_time = db_p_out
+                            existing.status = status
+                            existing.is_late = is_late
+                            existing.is_early_leave = is_early_leave
+                            existing.is_missing_punch_in = detail['is_missing_punch_in']
+                            existing.is_missing_punch_out = detail['is_missing_punch_out']
+                            existing.late_minutes = detail['late_minutes'] if not is_late else detail['late_minutes'] # Logic check: if override, late_min should be 0?
+                            # If overridden to normal, we should probably set late/early minutes to 0 in DB
+                            if status == "normal":
+                                existing.late_minutes = 0
+                                existing.early_leave_minutes = 0
+                            else:
+                                existing.late_minutes = detail['late_minutes']
+                                existing.early_leave_minutes = detail['early_minutes']
+                                
+                            existing.remark = "Legacy Upload"
+                        else:
+                            att = Attendance(
+                                employee_id=employee.id,
+                                attendance_date=a_date,
+                                punch_in_time=db_p_in,
+                                punch_out_time=db_p_out,
+                                status=status,
+                                is_late=is_late,
+                                is_early_leave=is_early_leave,
+                                is_missing_punch_in=detail['is_missing_punch_in'],
+                                is_missing_punch_out=detail['is_missing_punch_out'],
+                                late_minutes=0 if status == "normal" else detail['late_minutes'],
+                                early_leave_minutes=0 if status == "normal" else detail['early_minutes'],
+                                remark="Legacy Upload"
+                            )
+                            session.add(att)
+                        
+                        db_save_count += 1
+                        
+                session.commit()
+                # logger.info(f"Saved {db_save_count} records from legacy format")
+            
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Failed to save legacy records: {e}")
+                # We don't raise here to allow returning the analysis result, but maybe should warn?
+            finally:
+                session.close()
+
             anomaly_df.to_excel("output/anomaly_report.xlsx", index=False)
             summary_df.to_excel("output/attendance_summary.xlsx", index=False)
 
@@ -325,7 +458,7 @@ async def upload_attendance(file: UploadFile = File(...)):
             anomaly_data = anomaly_df.to_dict('records')
 
             return {
-                "message": "考勤記錄解析完成",
+                "message": f"考勤記錄解析並存檔完成 (已處理 {len(summary_data)} 人)",
                 "summary": summary_data,
                 "anomaly_count": len(anomaly_data),
                 "anomalies": anomaly_data[:20]
