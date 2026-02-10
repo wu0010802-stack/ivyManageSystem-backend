@@ -185,7 +185,7 @@ def delete_leave(leave_id: int):
 
 
 @router.put("/leaves/{leave_id}/approve")
-def approve_leave(leave_id: int, approved: bool = True, approved_by: str = "Admin"):
+def approve_leave(leave_id: int, approved: bool = True, approved_by: str = "管理員"):
     """核准/駁回請假"""
     session = get_session()
     try:

@@ -378,6 +378,104 @@ def create_my_leave(
         session.close()
 
 
+# ============ Leave Stats ============
+
+def _calculate_annual_leave_quota(hire_date: date) -> int:
+    """
+    根據勞基法計算特休天數 (週年制)
+    6個月以上1年未滿者，3日。
+    1年以上2年未滿者，7日。
+    2年以上3年未滿者，10日。
+    3年以上5年未滿者，每年14日。
+    5年以上10年未滿者，每年15日。
+    10年以上者，每1年加給1日，加至30日為止。
+    """
+    if not hire_date:
+        return 0
+
+    today = date.today()
+    
+    # Calculate tenure in months and years
+    # Simple approximation for months
+    months_diff = (today.year - hire_date.year) * 12 + today.month - hire_date.month
+    if today.day < hire_date.day:
+        months_diff -= 1
+        
+    years = months_diff // 12
+    
+    if months_diff < 6:
+        return 0
+    elif 6 <= months_diff < 12:
+        return 3
+    elif 1 <= years < 2:
+        return 7
+    elif 2 <= years < 3:
+        return 10
+    elif 3 <= years < 5:
+        return 14
+    elif 5 <= years < 10:
+        return 15
+    else:
+        # 10 years or more
+        extra_days = years - 10
+        total = 15 + extra_days
+        return min(total, 30)
+
+@router.get("/my-leave-stats")
+def get_my_leave_stats(
+    current_user: dict = Depends(get_current_user),
+):
+    """取得個人特休統計 (年資、特休天數、已休天數)"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        
+        # Calculate Seniority
+        hire_date = emp.hire_date
+        seniority_years = 0
+        seniority_months = 0
+        annual_leave_quota = 0
+        
+        if hire_date:
+            today = date.today()
+            months_diff = (today.year - hire_date.year) * 12 + today.month - hire_date.month
+            if today.day < hire_date.day:
+                months_diff -= 1
+            
+            seniority_years = months_diff // 12
+            seniority_months = months_diff % 12
+            annual_leave_quota = _calculate_annual_leave_quota(hire_date)
+
+        # Calculate used annual leave in current calendar year
+        # Note: This is a simplification. Ideally should track by "leave year" cycle.
+        # But for display purposes, we often show "This Year's Usage".
+        current_year = date.today().year
+        start_of_year = date(current_year, 1, 1)
+        end_of_year = date(current_year, 12, 31)
+        
+        used_leaves = session.query(LeaveRecord).filter(
+            LeaveRecord.employee_id == emp.id,
+            LeaveRecord.leave_type == "annual",
+            LeaveRecord.start_date >= start_of_year,
+            LeaveRecord.start_date <= end_of_year,
+            LeaveRecord.is_approved == True,  # Only count approved ones? Or all? Usually approved.
+        ).all()
+        
+        used_days = sum(lv.leave_hours for lv in used_leaves) / 8.0  # Assuming 8hr days
+        
+        return {
+            "hire_date": hire_date.isoformat() if hire_date else None,
+            "seniority_years": seniority_years,
+            "seniority_months": seniority_months,
+            "annual_leave_quota": annual_leave_quota,
+            "annual_leave_used_days": round(used_days, 1),
+            "start_of_calculation": start_of_year.isoformat(), 
+            "end_of_calculation": end_of_year.isoformat()
+        }
+    finally:
+        session.close()
+
+
 # ============ My Overtimes ============
 
 @router.get("/my-overtimes")

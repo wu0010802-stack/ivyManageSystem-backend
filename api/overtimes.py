@@ -220,7 +220,7 @@ def delete_overtime(overtime_id: int):
 
 
 @router.put("/overtimes/{overtime_id}/approve")
-def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "Admin"):
+def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員"):
     """核准/駁回加班"""
     session = get_session()
     try:
