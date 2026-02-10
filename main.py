@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from models.database import (
     init_database, get_session,
     AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate, JobTitle,
+    User, Employee,
 )
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
@@ -26,6 +27,8 @@ from api.leaves import router as leaves_router
 from api.overtimes import router as overtimes_router
 from api.insurance import router as insurance_router, init_insurance_services
 from api.employee_allowances import router as employee_allowances_router
+from api.auth import router as auth_router
+from api.portal import router as portal_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -86,6 +89,8 @@ app.include_router(leaves_router)
 app.include_router(overtimes_router)
 app.include_router(insurance_router)
 app.include_router(employee_allowances_router)
+app.include_router(auth_router)
+app.include_router(portal_router)
 
 # ---------------------------------------------------------------------------
 # Seed Data
@@ -193,11 +198,33 @@ def seed_default_configs():
 # ---------------------------------------------------------------------------
 
 
+def seed_default_admin():
+    """建立預設管理員帳號"""
+    from utils.auth import hash_password
+    session = get_session()
+    try:
+        if session.query(User).count() == 0:
+            emp = session.query(Employee).first()
+            if emp:
+                admin_user = User(
+                    employee_id=emp.id,
+                    username="admin",
+                    password_hash=hash_password("admin123"),
+                    role="admin",
+                )
+                session.add(admin_user)
+                session.commit()
+                logger.info(f"Seeded default admin user (linked to {emp.name}).")
+    finally:
+        session.close()
+
+
 @app.on_event("startup")
 def on_startup():
     init_database()
     seed_job_titles()
     seed_default_configs()
+    seed_default_admin()
     salary_engine.load_config_from_db()
     logger.info("Application started successfully.")
 

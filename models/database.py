@@ -667,6 +667,24 @@ class InsuranceRate(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class User(Base):
+    """用戶認證表"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), unique=True, nullable=False, comment="關聯員工ID")
+    username = Column(String(50), unique=True, nullable=False, comment="登入帳號")
+    password_hash = Column(String(255), nullable=False, comment="密碼雜湊")
+    role = Column(String(20), default="teacher", comment="角色: teacher/admin")
+    is_active = Column(Boolean, default=True, comment="帳號是否啟用")
+    last_login = Column(DateTime, comment="最後登入時間")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="user_account")
+
+
 if __name__ == "__main__":
     engine, Session = init_database()
     print("資料庫初始化完成！")
