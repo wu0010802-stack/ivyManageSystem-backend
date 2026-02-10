@@ -230,7 +230,7 @@ class OvertimeRecord(Base):
 
     overtime_pay = Column(Float, default=0, comment="加班費（自動計算）")
 
-    is_approved = Column(Boolean, default=False, comment="是否核准")
+    is_approved = Column(Boolean, nullable=True, default=None, comment="是否核准 (None=待審核, True=核准, False=駁回)")
     approved_by = Column(String(50), comment="核准人")
     reason = Column(Text, comment="加班原因")
 

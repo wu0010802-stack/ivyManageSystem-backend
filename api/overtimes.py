@@ -70,7 +70,8 @@ class OvertimeUpdate(BaseModel):
 def get_overtimes(
     employee_id: Optional[int] = None,
     year: Optional[int] = None,
-    month: Optional[int] = None
+    month: Optional[int] = None,
+    status: Optional[str] = None  # pending, approved, rejected
 ):
     """查詢加班記錄"""
     session = get_session()
@@ -87,6 +88,13 @@ def get_overtimes(
             q = q.filter(OvertimeRecord.overtime_date >= start, OvertimeRecord.overtime_date <= end)
         elif year:
             q = q.filter(OvertimeRecord.overtime_date >= date(year, 1, 1), OvertimeRecord.overtime_date <= date(year, 12, 31))
+
+        if status == "pending":
+            q = q.filter(OvertimeRecord.is_approved == None)
+        elif status == "approved":
+            q = q.filter(OvertimeRecord.is_approved == True)
+        elif status == "rejected":
+            q = q.filter(OvertimeRecord.is_approved == False)
 
         records = q.order_by(OvertimeRecord.overtime_date.desc()).all()
 
@@ -145,6 +153,7 @@ def create_overtime(data: OvertimeCreate):
             hours=data.hours,
             overtime_pay=pay,
             reason=data.reason,
+            is_approved=None,  # Explicitly set to Pending
         )
         session.add(ot)
         session.commit()
@@ -219,7 +228,7 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
         if not ot:
             raise HTTPException(status_code=404, detail="加班記錄不存在")
         ot.is_approved = approved
-        ot.approved_by = approved_by if approved else None
+        ot.approved_by = approved_by
         session.commit()
         return {"message": "已核准" if approved else "已駁回"}
     finally:

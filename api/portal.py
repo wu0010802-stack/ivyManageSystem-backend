@@ -453,7 +453,7 @@ def create_my_overtime(
             hours=data.hours,
             overtime_pay=pay,
             reason=data.reason,
-            is_approved=False,
+            is_approved=None,
         )
         session.add(ot)
         session.commit()
