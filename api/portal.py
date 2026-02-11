@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from models.database import (
     get_session, Employee, Attendance, LeaveRecord, OvertimeRecord, SalaryRecord,
+    Classroom, ShiftAssignment, ShiftType,
 )
 from utils.auth import get_current_user
 
@@ -79,6 +80,8 @@ def get_attendance_sheet(
     current_user: dict = Depends(get_current_user),
 ):
     """取得個人月考勤表"""
+    from datetime import datetime, timedelta
+
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
@@ -95,6 +98,41 @@ def get_attendance_sheet(
         # Build lookup
         record_map = {r.attendance_date: r for r in records}
 
+        # Determine employee role
+        all_classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+        head_teacher_ids = {c.head_teacher_id for c in all_classrooms if c.head_teacher_id}
+        assistant_teacher_ids = set()
+        for c in all_classrooms:
+            if c.assistant_teacher_id:
+                assistant_teacher_ids.add(c.assistant_teacher_id)
+
+        is_head_teacher = emp.id in head_teacher_ids
+        is_assistant = emp.id in assistant_teacher_ids
+        title_str = (emp.title or "") + (emp.job_title_rel.name if emp.job_title_rel else "")
+        is_driver = "司機" in title_str
+        uses_shift = is_head_teacher or is_assistant
+
+        # Pre-fetch shift assignments for this month's weeks
+        shift_schedule_map = {}  # week_monday -> {work_start, work_end, name}
+        if uses_shift:
+            # Get all Mondays that cover this month
+            first_monday = start - timedelta(days=start.weekday())
+            last_monday = end - timedelta(days=end.weekday())
+            assignments = session.query(ShiftAssignment).filter(
+                ShiftAssignment.employee_id == emp.id,
+                ShiftAssignment.week_start_date >= first_monday,
+                ShiftAssignment.week_start_date <= last_monday,
+            ).all()
+            shift_types = {st.id: st for st in session.query(ShiftType).all()}
+            for sa in assignments:
+                st = shift_types.get(sa.shift_type_id)
+                if st:
+                    shift_schedule_map[sa.week_start_date] = {
+                        "work_start": st.work_start,
+                        "work_end": st.work_end,
+                        "name": st.name,
+                    }
+
         # Also get leaves for this month
         leaves = session.query(LeaveRecord).filter(
             LeaveRecord.employee_id == emp.id,
@@ -109,7 +147,11 @@ def get_attendance_sheet(
                 leave_dates[d] = lv.leave_type
                 d = date.fromordinal(d.toordinal() + 1)
 
+        grace_minutes = 5
         days = []
+        total_work_hours = 0.0
+        work_hour_days = 0
+
         for day_num in range(1, last_day + 1):
             d = date(year, month, day_num)
             weekday = d.weekday()
@@ -132,19 +174,94 @@ def get_attendance_sheet(
                 "leave_type": None,
                 "leave_type_label": None,
                 "remark": None,
+                "shift_name": None,
+                "scheduled_start": None,
+                "scheduled_end": None,
+                "work_hours": None,
             }
+
+            # Look up shift for this day
+            week_monday = d - timedelta(days=d.weekday())
+            shift_info = shift_schedule_map.get(week_monday)
+            if shift_info:
+                row["shift_name"] = shift_info["name"]
+                row["scheduled_start"] = shift_info["work_start"]
+                row["scheduled_end"] = shift_info["work_end"]
 
             att = record_map.get(d)
             if att:
                 row["punch_in"] = att.punch_in_time.strftime("%H:%M") if att.punch_in_time else None
                 row["punch_out"] = att.punch_out_time.strftime("%H:%M") if att.punch_out_time else None
-                row["status"] = att.status or "normal"
-                row["is_late"] = att.is_late or False
-                row["late_minutes"] = att.late_minutes or 0
-                row["is_early_leave"] = att.is_early_leave or False
                 row["is_missing_punch_in"] = att.is_missing_punch_in or False
                 row["is_missing_punch_out"] = att.is_missing_punch_out or False
                 row["remark"] = att.remark
+
+                # Calculate work hours
+                if att.punch_in_time and att.punch_out_time:
+                    duration_min = (att.punch_out_time - att.punch_in_time).total_seconds() / 60
+                    row["work_hours"] = round(duration_min / 60, 1)
+                    total_work_hours += row["work_hours"]
+                    work_hour_days += 1
+
+                # Recalculate status based on role rules
+                if att.punch_in_time and att.punch_out_time:
+                    if uses_shift and shift_info:
+                        # Head/assistant teacher: compare to shift times
+                        shift_start = datetime.strptime(shift_info["work_start"], "%H:%M").time()
+                        shift_end = datetime.strptime(shift_info["work_end"], "%H:%M").time()
+                        shift_start_dt = datetime.combine(d, shift_start)
+                        shift_end_dt = datetime.combine(d, shift_end)
+                        grace_dt = shift_start_dt + timedelta(minutes=grace_minutes)
+
+                        is_late = att.punch_in_time > grace_dt
+                        is_early_leave = att.punch_out_time < shift_end_dt
+                        late_min = max(0, int((att.punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
+
+                        row["is_late"] = is_late
+                        row["late_minutes"] = late_min
+                        row["is_early_leave"] = is_early_leave
+
+                        if is_late and is_early_leave:
+                            row["status"] = "late+early_leave"
+                        elif is_late:
+                            row["status"] = "late"
+                        elif is_early_leave:
+                            row["status"] = "early_leave"
+                        else:
+                            row["status"] = "normal"
+                    else:
+                        # Non-teacher: duration-based check
+                        required_min = 480 if is_driver else 540
+                        duration_min = (att.punch_out_time - att.punch_in_time).total_seconds() / 60
+
+                        if duration_min >= required_min:
+                            row["status"] = "normal"
+                            row["is_late"] = False
+                            row["late_minutes"] = 0
+                            row["is_early_leave"] = False
+                        else:
+                            # Duration insufficient - use DB flags
+                            row["status"] = att.status or "normal"
+                            row["is_late"] = att.is_late or False
+                            row["late_minutes"] = att.late_minutes or 0
+                            row["is_early_leave"] = att.is_early_leave or False
+                elif uses_shift and not shift_info:
+                    # Teacher without shift assignment: fallback to DB flags
+                    row["status"] = att.status or "normal"
+                    row["is_late"] = att.is_late or False
+                    row["late_minutes"] = att.late_minutes or 0
+                    row["is_early_leave"] = att.is_early_leave or False
+                else:
+                    row["status"] = att.status or "normal"
+                    row["is_late"] = att.is_late or False
+                    row["late_minutes"] = att.late_minutes or 0
+                    row["is_early_leave"] = att.is_early_leave or False
+
+                if row["is_missing_punch_in"] or row["is_missing_punch_out"]:
+                    if row["status"] == "normal":
+                        row["status"] = "missing"
+                    elif "missing" not in row["status"]:
+                        row["status"] = row["status"] + "+missing"
 
             if d in leave_dates:
                 lt = leave_dates[d]
@@ -161,11 +278,13 @@ def get_attendance_sheet(
         early_leave_count = sum(1 for r in days if r["is_early_leave"])
         missing_punch_count = sum(1 for r in days if r["is_missing_punch_in"] or r["is_missing_punch_out"])
         leave_count = sum(1 for r in days if r["leave_type"] is not None)
+        avg_work_hours = round(total_work_hours / work_hour_days, 1) if work_hour_days > 0 else 0
 
         return {
             "employee_name": emp.name,
             "year": year,
             "month": month,
+            "uses_shift": uses_shift,
             "days": days,
             "summary": {
                 "total_work_days": total_work,
@@ -173,6 +292,7 @@ def get_attendance_sheet(
                 "early_leave_count": early_leave_count,
                 "missing_punch_count": missing_punch_count,
                 "leave_count": leave_count,
+                "avg_work_hours": avg_work_hours,
             },
         }
     finally:

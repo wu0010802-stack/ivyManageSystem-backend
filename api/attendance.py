@@ -14,7 +14,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from models.database import get_session, Employee, Attendance, Classroom, LeaveRecord, OvertimeRecord
+from models.database import get_session, Employee, Attendance, Classroom, LeaveRecord, OvertimeRecord, ShiftAssignment, ShiftType
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,19 @@ async def upload_attendance(file: UploadFile = File(...)):
                 for c in all_classrooms:
                     if c.assistant_teacher_id:
                         assistant_teacher_map.add(c.assistant_teacher_id)
+
+                # Pre-fetch shift assignments for shift-based checking
+                shift_assignments = session.query(ShiftAssignment).all()
+                shift_types = {st.id: st for st in session.query(ShiftType).all()}
+                shift_schedule_map = {}  # (employee_id, week_monday) -> {work_start, work_end, name}
+                for sa in shift_assignments:
+                    st = shift_types.get(sa.shift_type_id)
+                    if st:
+                        shift_schedule_map[(sa.employee_id, sa.week_start_date)] = {
+                            "work_start": st.work_start,
+                            "work_end": st.work_end,
+                            "name": st.name,
+                        }
 
                 results_data = {
                     "total": len(df),
@@ -201,38 +214,58 @@ async def upload_attendance(file: UploadFile = File(...)):
                         if is_missing_punch_out:
                             status = "missing" if status == "normal" else status + "+missing_out"
 
-                        # --- Duration Check (Override Logic) ---
+                        # --- Attendance Check Logic ---
                         # Rules:
-                        # 1. Head Teacher (班導): Duration >= 9h (540m) -> Normal
-                        # 2. Assistant Teacher (副班導): Duration >= 9.5h (570m) -> Normal
-                        # 3. Driver (司機): Duration >= 8h (480m) -> Normal
+                        # 1. Head Teacher (班導) / Assistant (副班導): Use shift schedule times
+                        # 2. Driver (司機): Duration >= 8h (480m) -> Normal (no lunch)
+                        # 3. All others: Duration >= 9h (540m) -> Normal (includes 1h lunch)
 
-                        if punch_in_time and punch_out_time:
+                        is_head_teacher = employee.id in head_teacher_map
+                        is_assistant = employee.id in assistant_teacher_map
+                        title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
+                        is_driver = "司機" in title_str
+
+                        if (is_head_teacher or is_assistant) and punch_in_time and punch_out_time:
+                            # Look up shift assignment for this week
+                            week_monday = attendance_date - timedelta(days=attendance_date.weekday())
+                            shift_key = (employee.id, week_monday)
+                            if shift_key in shift_schedule_map:
+                                shift = shift_schedule_map[shift_key]
+                                shift_start = datetime.strptime(shift["work_start"], "%H:%M").time()
+                                shift_end = datetime.strptime(shift["work_end"], "%H:%M").time()
+                                # Recalculate late/early based on shift times
+                                shift_start_dt = datetime.combine(attendance_date, shift_start)
+                                shift_end_dt = datetime.combine(attendance_date, shift_end)
+                                grace_dt_shift = shift_start_dt + timedelta(minutes=grace_minutes)
+
+                                is_late = punch_in_time > grace_dt_shift
+                                late_minutes = max(0, int((punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
+                                is_early_leave = punch_out_time < shift_end_dt
+
+                                if is_late and is_early_leave:
+                                    status = "late+early_leave"
+                                elif is_late:
+                                    status = "late"
+                                elif is_early_leave:
+                                    status = "early_leave"
+                                else:
+                                    status = "normal"
+                                early_leave_minutes = max(0, int((shift_end_dt - punch_out_time).total_seconds() / 60)) if is_early_leave else 0
+
+                        elif punch_in_time and punch_out_time:
+                            # Duration-based check for non-teacher roles
                             duration_minutes = int((punch_out_time - punch_in_time).total_seconds() / 60)
-                            required_duration = 0
+                            if is_driver:
+                                required_duration = 480  # 8h, no lunch
+                            else:
+                                required_duration = 540  # 9h (8h work + 1h lunch)
 
-                            # Check if matches any classroom role
-                            is_head_teacher = employee.id in head_teacher_map
-                            is_assistant = employee.id in assistant_teacher_map
-
-                            title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
-                            is_driver = "司機" in title_str
-
-                            if is_assistant:
-                                required_duration = 570  # 9.5h
-                            elif is_head_teacher:
-                                required_duration = 540  # 9h
-                            elif is_driver:
-                                required_duration = 480  # 8h
-
-                            if required_duration > 0 and duration_minutes >= required_duration:
-                                # Requirements met, override status
+                            if duration_minutes >= required_duration:
                                 is_late = False
                                 is_early_leave = False
                                 status = "normal"
                                 late_minutes = 0
                                 early_leave_minutes = 0
-                                # Note: We keep punch times, just clear the "abnormal" flags
 
                         # 儲存到資料庫
                         department = str(row.get('部門', '')).strip()
@@ -329,14 +362,24 @@ async def upload_attendance(file: UploadFile = File(...)):
                 employees = session.query(Employee).filter(Employee.is_active == True).all()
                 emp_by_name = {emp.name: emp for emp in employees}
                 
-                # Fetch Classroom context for role-based duration check (COPY OF NEW FORMAT LOGIC)
-                # Classroom is already imported globally
+                # Fetch Classroom context for role-based check
                 all_classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
                 head_teacher_map = {c.head_teacher_id for c in all_classrooms if c.head_teacher_id}
                 assistant_teacher_map = set()
                 for c in all_classrooms:
                     if c.assistant_teacher_id:
                         assistant_teacher_map.add(c.assistant_teacher_id)
+
+                # Pre-fetch shift assignments
+                shift_assignments = session.query(ShiftAssignment).all()
+                shift_types_map = {st.id: st for st in session.query(ShiftType).all()}
+                shift_schedule_map = {}
+                for sa in shift_assignments:
+                    st = shift_types_map.get(sa.shift_type_id)
+                    if st:
+                        shift_schedule_map[(sa.employee_id, sa.week_start_date)] = {
+                            "work_start": st.work_start, "work_end": st.work_end, "name": st.name,
+                        }
 
                 db_save_count = 0
                 
@@ -361,33 +404,48 @@ async def upload_attendance(file: UploadFile = File(...)):
                         is_late = detail['is_late']
                         is_early_leave = detail['is_early_leave']
                         
-                        # --- Duration Check (Override Logic) ---
-                        if p_in and p_out:
-                            # Calculate duration
-                            # Convert to datetime for subtraction
+                        # --- Attendance Check Logic ---
+                        is_head_teacher = employee.id in head_teacher_map
+                        is_assistant = employee.id in assistant_teacher_map
+                        title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
+                        is_driver = "司機" in title_str
+
+                        if (is_head_teacher or is_assistant) and p_in and p_out:
+                            # Use shift schedule times
+                            week_monday = a_date - timedelta(days=a_date.weekday())
+                            shift_key = (employee.id, week_monday)
+                            if shift_key in shift_schedule_map:
+                                shift = shift_schedule_map[shift_key]
+                                shift_start = datetime.strptime(shift["work_start"], "%H:%M").time()
+                                shift_end = datetime.strptime(shift["work_end"], "%H:%M").time()
+                                dt_in = datetime.combine(a_date, p_in)
+                                dt_out = datetime.combine(a_date, p_out)
+                                grace_dt = datetime.combine(a_date, shift_start) + timedelta(minutes=5)
+
+                                is_late = dt_in > grace_dt
+                                late_minutes = max(0, int((dt_in - datetime.combine(a_date, shift_start)).total_seconds() / 60)) if is_late else 0
+                                is_early_leave = dt_out < datetime.combine(a_date, shift_end)
+
+                                if is_late and is_early_leave:
+                                    status = "late+early_leave"
+                                elif is_late:
+                                    status = "late"
+                                elif is_early_leave:
+                                    status = "early_leave"
+                                else:
+                                    status = "normal"
+
+                        elif p_in and p_out:
+                            # Duration-based check for non-teacher roles
                             dt_in = datetime.combine(a_date, p_in)
                             dt_out = datetime.combine(a_date, p_out)
                             duration_minutes = int((dt_out - dt_in).total_seconds() / 60)
-                            
-                            required_duration = 0
-                            
-                            is_head_teacher = employee.id in head_teacher_map
-                            is_assistant = employee.id in assistant_teacher_map
-                            title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
-                            is_driver = "司機" in title_str
+                            required_duration = 480 if is_driver else 540
 
-                            if is_assistant:
-                                required_duration = 570
-                            elif is_head_teacher:
-                                required_duration = 540
-                            elif is_driver:
-                                required_duration = 480
-                            
-                            if required_duration > 0 and duration_minutes >= required_duration:
+                            if duration_minutes >= required_duration:
                                 status = "normal"
                                 is_late = False
                                 is_early_leave = False
-                                # Note: detail dict update is not strictly needed for DB, but good for consistency
                         
                         # Save to DB
                         # Check existing

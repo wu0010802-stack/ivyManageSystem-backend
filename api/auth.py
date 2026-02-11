@@ -42,7 +42,54 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+class ImpersonateRequest(BaseModel):
+    employee_id: int
+
+
 # ============ Public Routes ============
+
+@router.post("/impersonate")
+def impersonate_user(data: ImpersonateRequest, current_user: dict = Depends(get_current_user)):
+    """切換使用者身份（管理員限定）"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+    
+    session = get_session()
+    try:
+        # 1. 檢查目標員工是否存在
+        target_emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
+        if not target_emp:
+            raise HTTPException(status_code=404, detail="員工不存在")
+            
+        # 2. 尋找該員工的使用者帳號
+        target_user = session.query(User).filter(User.employee_id == data.employee_id).first()
+        
+        # 3. 如果沒有使用者帳號，我們先拒絕（或者可以動態建立一個臨時 token context，但這樣比較複雜）
+        # 目前假設只能切換到有帳號的員工（通常是老師）
+        if not target_user:
+            raise HTTPException(status_code=400, detail="該員工沒有使用者帳號，無法切換")
+            
+        # 4. 產生該使用者的 token
+        token = create_access_token({
+            "user_id": target_user.id,
+            "employee_id": target_user.employee_id,
+            "role": target_user.role,
+            "name": target_emp.name,
+        })
+        
+        return {
+            "token": token,
+            "user": {
+                "id": target_user.id,
+                "username": target_user.username,
+                "role": target_user.role,
+                "employee_id": target_user.employee_id,
+                "name": target_emp.name,
+                "title": (target_emp.job_title_rel.name if target_emp.job_title_rel else (target_emp.title or "")),
+            },
+        }
+    finally:
+        session.close()
 
 @router.post("/login")
 def login(data: LoginRequest):

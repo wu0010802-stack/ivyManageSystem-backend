@@ -483,7 +483,7 @@ def calculate_salaries_alt(
                     "total_allowances": salary_record.total_allowances,
                     "festival_bonus": salary_record.festival_bonus,
                     "overtime_bonus": salary_record.overtime_bonus,
-                    "overtime_pay": salary_record.overtime_pay,
+                    "overtime_pay": salary_record.overtime_work_pay,
                     "supervisor_dividend": salary_record.supervisor_dividend,
                     "labor_insurance": salary_record.labor_insurance,
                     "health_insurance": salary_record.health_insurance,
