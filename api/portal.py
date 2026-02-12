@@ -145,6 +145,29 @@ def get_attendance_sheet(
                         "name": st.name,
                     }
 
+        # Fetch Daily Shifts (Overrides)
+        daily_shift_map = {}
+        if uses_shift:
+            from models.database import DailyShift
+            daily_shifts = session.query(DailyShift).filter(
+                DailyShift.employee_id == emp.id,
+                DailyShift.date >= start,
+                DailyShift.date <= end,
+            ).all()
+            
+            # Ensure we have shift types if not already fetched
+            if 'shift_types' not in locals():
+                shift_types = {st.id: st for st in session.query(ShiftType).all()}
+
+            for ds in daily_shifts:
+                st = shift_types.get(ds.shift_type_id)
+                if st:
+                    daily_shift_map[ds.date] = {
+                        "work_start": st.work_start,
+                        "work_end": st.work_end,
+                        "name": st.name,
+                    }
+
         # Also get leaves for this month (approved only for status calculation)
         leaves = session.query(LeaveRecord).filter(
             LeaveRecord.employee_id == emp.id,
@@ -254,8 +277,13 @@ def get_attendance_sheet(
                      row["status"] = "holiday"
 
             # Look up shift for this day
-            week_monday = d - timedelta(days=d.weekday())
-            shift_info = shift_schedule_map.get(week_monday)
+            daily_override = daily_shift_map.get(d)
+            if daily_override:
+                shift_info = daily_override
+            else:
+                week_monday = d - timedelta(days=d.weekday())
+                shift_info = shift_schedule_map.get(week_monday)
+
             if shift_info:
                 row["shift_name"] = shift_info["name"]
                 row["scheduled_start"] = shift_info["work_start"]

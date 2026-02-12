@@ -14,7 +14,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from models.database import get_session, Employee, Attendance, Classroom, LeaveRecord, OvertimeRecord, ShiftAssignment, ShiftType
+from models.database import get_session, Employee, Attendance, Classroom, LeaveRecord, OvertimeRecord, ShiftAssignment, ShiftType, DailyShift
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,29 @@ async def upload_attendance(file: UploadFile = File(...)):
                             "work_end": st.work_end,
                             "name": st.name,
                         }
+
+                # Pre-fetch Daily Shifts
+                daily_shift_map = {} # (employee_id, date) -> {work_start, work_end, name}
+                
+                # Get date range from dataframe to optimize query
+                # Convert '日期' to datetime objects to find min/max
+                if '日期' in df.columns:
+                    temp_dates = pd.to_datetime(df['日期'], errors='coerce').dt.date.dropna()
+                    if not temp_dates.empty:
+                        min_date, max_date = temp_dates.min(), temp_dates.max()
+                        daily_shifts_query = session.query(DailyShift).filter(
+                            DailyShift.date >= min_date,
+                            DailyShift.date <= max_date
+                        ).all()
+                        
+                        for ds in daily_shifts_query:
+                            st = shift_types.get(ds.shift_type_id)
+                            if st:
+                                daily_shift_map[(ds.employee_id, ds.date)] = {
+                                    "work_start": st.work_start,
+                                    "work_end": st.work_end,
+                                    "name": st.name,
+                                }
 
                 results_data = {
                     "total": len(df),
@@ -223,32 +246,42 @@ async def upload_attendance(file: UploadFile = File(...)):
                         is_assistant = employee.id in assistant_teacher_map
                         title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
                         is_driver = "司機" in title_str
+                        # PRIORITY 1: Daily Override
+                        # PRIORITY 2: Weekly Shift Assignment
+                        # PRIORITY 3: Default Work Hours
 
-                        if (is_head_teacher or is_assistant) and punch_in_time and punch_out_time:
-                            # Look up shift assignment for this week
-                            week_monday = attendance_date - timedelta(days=attendance_date.weekday())
-                            shift_key = (employee.id, week_monday)
-                            if shift_key in shift_schedule_map:
-                                shift = shift_schedule_map[shift_key]
-                                shift_start = datetime.strptime(shift["work_start"], "%H:%M").time()
-                                shift_end = datetime.strptime(shift["work_end"], "%H:%M").time()
-                                # Recalculate late/early based on shift times
-                                shift_start_dt = datetime.combine(attendance_date, shift_start)
-                                shift_end_dt = datetime.combine(attendance_date, shift_end)
+                        daily_key = (employee.id, attendance_date)
+                        week_monday = attendance_date - timedelta(days=attendance_date.weekday())
+                        shift_key = (employee.id, week_monday)
 
-                                is_late = punch_in_time > shift_start_dt
-                                late_minutes = max(0, int((punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
-                                is_early_leave = punch_out_time < shift_end_dt
+                        shift_data = None
+                        
+                        if daily_key in daily_shift_map:
+                             shift_data = daily_shift_map[daily_key]
+                        elif (is_head_teacher or is_assistant) and shift_key in shift_schedule_map:
+                             shift_data = shift_schedule_map[shift_key]
 
-                                if is_late and is_early_leave:
-                                    status = "late+early_leave"
-                                elif is_late:
-                                    status = "late"
-                                elif is_early_leave:
-                                    status = "early_leave"
-                                else:
-                                    status = "normal"
-                                early_leave_minutes = max(0, int((shift_end_dt - punch_out_time).total_seconds() / 60)) if is_early_leave else 0
+                        if shift_data and punch_in_time and punch_out_time:
+                             # Use Shift Times
+                             shift_start = datetime.strptime(shift_data["work_start"], "%H:%M").time()
+                             shift_end = datetime.strptime(shift_data["work_end"], "%H:%M").time()
+                             
+                             shift_start_dt = datetime.combine(attendance_date, shift_start)
+                             shift_end_dt = datetime.combine(attendance_date, shift_end)
+
+                             is_late = punch_in_time > shift_start_dt
+                             late_minutes = max(0, int((punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
+                             is_early_leave = punch_out_time < shift_end_dt
+
+                             if is_late and is_early_leave:
+                                 status = "late+early_leave"
+                             elif is_late:
+                                 status = "late"
+                             elif is_early_leave:
+                                 status = "early_leave"
+                             else:
+                                 status = "normal"
+                             early_leave_minutes = max(0, int((shift_end_dt - punch_out_time).total_seconds() / 60)) if is_early_leave else 0
 
                         elif punch_in_time and punch_out_time:
                             # Duration-based check for non-teacher roles

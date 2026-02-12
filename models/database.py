@@ -709,6 +709,26 @@ class ShiftAssignment(Base):
     shift_type = relationship("ShiftType", backref="assignments")
 
 
+class DailyShift(Base):
+    """每日排班（調班/換班）表"""
+    __tablename__ = "daily_shifts"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "date", name="uq_daily_shift_employee_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+    shift_type_id = Column(Integer, ForeignKey("shift_types.id"), nullable=False)
+    date = Column(Date, nullable=False, comment="排班日期")
+    notes = Column(Text, comment="備註")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="daily_shifts")
+    shift_type = relationship("ShiftType", backref="daily_shifts")
+
+
 class User(Base):
     """用戶認證表"""
     __tablename__ = "users"

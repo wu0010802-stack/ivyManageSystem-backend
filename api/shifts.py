@@ -11,7 +11,7 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from models.database import get_session, ShiftType, ShiftAssignment, Employee
+from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,14 @@ class AssignmentItem(BaseModel):
 class BulkAssignmentRequest(BaseModel):
     week_start_date: str  # YYYY-MM-DD (must be a Monday)
     assignments: List[AssignmentItem]
+
+
+class DailyShiftCreate(BaseModel):
+    """每日排班（調班）請求"""
+    employee_id: int
+    shift_type_id: int
+    date: str  # YYYY-MM-DD
+    notes: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +213,111 @@ def save_assignments(data: BulkAssignmentRequest):
         session.commit()
         logger.info(f"Saved {count} shift assignments for week {week_date}")
         return {"message": f"已儲存 {count} 筆排班", "week_start_date": str(week_date)}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# 每日排班（調班/換班）
+# ---------------------------------------------------------------------------
+
+@router.get("/daily")
+def get_daily_shifts(
+    start_date: str,
+    end_date: str,
+    employee_id: Optional[int] = None
+):
+    """查詢日期範圍內的排班調動/每日排班"""
+    session = get_session()
+    try:
+        s_date = date.fromisoformat(start_date)
+        e_date = date.fromisoformat(end_date)
+        
+        query = session.query(DailyShift).filter(
+            DailyShift.date >= s_date,
+            DailyShift.date <= e_date
+        )
+        
+        if employee_id:
+            query = query.filter(DailyShift.employee_id == employee_id)
+            
+        daily_shifts = query.order_by(DailyShift.date).all()
+        
+        result = []
+        for ds in daily_shifts:
+            emp = session.query(Employee).get(ds.employee_id)
+            st = session.query(ShiftType).get(ds.shift_type_id)
+            result.append({
+                "id": ds.id,
+                "employee_id": ds.employee_id,
+                "employee_name": emp.name if emp else "",
+                "shift_type_id": ds.shift_type_id,
+                "shift_type_name": st.name if st else "",
+                "work_start": st.work_start if st else "",
+                "work_end": st.work_end if st else "",
+                "date": str(ds.date),
+                "notes": ds.notes or ""
+            })
+        return result
+    finally:
+        session.close()
+
+
+@router.post("/daily")
+def upsert_daily_shift(data: DailyShiftCreate):
+    """新增或更新每日排班（支援 UPSERT）"""
+    session = get_session()
+    try:
+        target_date = date.fromisoformat(data.date)
+        
+        # 檢查是否已存在
+        existing = session.query(DailyShift).filter(
+            DailyShift.employee_id == data.employee_id,
+            DailyShift.date == target_date
+        ).first()
+        
+        if existing:
+            existing.shift_type_id = data.shift_type_id
+            existing.notes = data.notes
+            msg = "Updated daily shift"
+        else:
+            new_shift = DailyShift(
+                employee_id=data.employee_id,
+                shift_type_id=data.shift_type_id,
+                date=target_date,
+                notes=data.notes
+            )
+            session.add(new_shift)
+            msg = "Created daily shift"
+            
+        session.commit()
+        logger.info(f"{msg}: {data.employee_id} on {target_date}")
+        return {"message": "已儲存"}
+        
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.delete("/daily/{shift_id}")
+def delete_daily_shift(shift_id: int):
+    """刪除每日排班（恢復為週排班或預設）"""
+    session = get_session()
+    try:
+        ds = session.query(DailyShift).get(shift_id)
+        if not ds:
+            raise HTTPException(status_code=404, detail="找不到該排班記錄")
+            
+        session.delete(ds)
+        session.commit()
+        return {"message": "已刪除"}
+    except HTTPException:
+        raise
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
