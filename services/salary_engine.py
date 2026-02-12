@@ -38,6 +38,7 @@ class SalaryBreakdown:
     special_bonus: float = 0
     supervisor_dividend: float = 0  # 主管紅利
     overtime_work_pay: float = 0   # 加班費
+    meeting_overtime_pay: float = 0 # 園務會議加班費
 
     # 時薪制
     work_hours: float = 0
@@ -52,14 +53,21 @@ class SalaryBreakdown:
     # 考勤扣款
     late_deduction: float = 0
     early_leave_deduction: float = 0
-    missing_punch_deduction: float = 0
+    missing_punch_deduction: float = 0   # 保留欄位但不再扣款
     leave_deduction: float = 0
+    auto_leave_deduction: float = 0      # 遲到2小時以上自動轉事假扣款
+    meeting_absence_deduction: float = 0 # 園務會議未出席扣節慶獎金
     other_deduction: float = 0
     
     # 考勤統計
     late_count: int = 0
     early_leave_count: int = 0
     missing_punch_count: int = 0
+    total_late_minutes: int = 0
+    total_early_minutes: int = 0
+    auto_leave_count: int = 0            # 遲到2小時以上自動轉事假次數
+    meeting_attended: int = 0            # 園務會議出席次數
+    meeting_absent: int = 0              # 園務會議缺席次數
     
     # 合計
     gross_salary: float = 0
@@ -81,10 +89,13 @@ class SalaryEngine:
     """薪資計算引擎"""
 
     # 預設扣款規則
-    DEFAULT_LATE_DEDUCTION = 50       # 遲到每次扣款
-    DEFAULT_LATE_THRESHOLD = 1        # 遲到幾次開始扣
-    DEFAULT_MISSING_PUNCH = 50        # 未打卡扣款
-    DEFAULT_EARLY_LEAVE = 50          # 早退扣款
+    DEFAULT_LATE_PER_MINUTE = 1       # 遲到每分鐘扣款（會被按比例覆蓋）
+    DEFAULT_EARLY_PER_MINUTE = 1      # 早退每分鐘扣款（會被按比例覆蓋）
+    DEFAULT_AUTO_LEAVE_THRESHOLD = 120  # 遲到超過幾分鐘轉事假半天
+    DEFAULT_MISSING_PUNCH = 0         # 未打卡不扣款（僅記錄）
+    DEFAULT_MEETING_PAY = 200         # 園務會議加班費
+    DEFAULT_MEETING_PAY_6PM = 100     # 6點下班者園務會議加班費
+    DEFAULT_MEETING_ABSENCE_PENALTY = 100  # 園務會議缺席扣節慶獎金
 
     # 節慶獎金職位等級對應
     # A級 = 幼兒園教師, B級 = 教保員, C級 = 助理教保員
@@ -164,9 +175,9 @@ class SalaryEngine:
     def __init__(self, load_from_db: bool = False):
         self.insurance_service = InsuranceService()
         self.deduction_rules = {
-            'late': {'threshold': 2, 'amount': 100},
-            'missing': {'amount': 50},
-            'early': {'amount': 50}
+            'late': {'per_minute': 1, 'auto_leave_threshold': 120},
+            'missing': {'amount': 0},   # 未打卡不扣款，僅記錄
+            'early': {'per_minute': 1}
         }
         # 可被覆蓋的設定 - 節慶獎金
         self._bonus_base = self.FESTIVAL_BONUS_BASE.copy()
@@ -182,13 +193,19 @@ class SalaryEngine:
         self._office_festival_bonus_base = self.OFFICE_FESTIVAL_BONUS_BASE.copy()
         # 可被覆蓋的設定 - 全校目標人數
         self._school_wide_target = 160
-        # 考勤政策設定
+        # 勞退自提固定 6%
+        self._pension_self_rate = 0.06
+        # 園務會議設定
+        self._meeting_pay = self.DEFAULT_MEETING_PAY
+        self._meeting_pay_6pm = self.DEFAULT_MEETING_PAY_6PM
+        self._meeting_absence_penalty = self.DEFAULT_MEETING_ABSENCE_PENALTY
+        # 考勤政策設定（無寬限期）
         self._attendance_policy = {
-            'grace_minutes': 5,
-            'late_threshold': 2,
-            'late_deduction': 50,
-            'early_leave_deduction': 50,
-            'missing_punch_deduction': 50,
+            'grace_minutes': 0,
+            'late_per_minute': 1,
+            'early_per_minute': 1,
+            'auto_leave_threshold': 120,
+            'missing_punch_deduction': 0,
             'festival_bonus_months': 3
         }
 
@@ -208,16 +225,19 @@ class SalaryEngine:
             if policy:
                 self._attendance_policy = {
                     'grace_minutes': policy.grace_minutes,
-                    'late_threshold': policy.late_threshold,
-                    'late_deduction': policy.late_deduction,
-                    'early_leave_deduction': policy.early_leave_deduction,
-                    'missing_punch_deduction': policy.missing_punch_deduction,
+                    'late_per_minute': getattr(policy, 'late_per_minute', 1) or 1,
+                    'early_per_minute': getattr(policy, 'early_per_minute', 1) or 1,
+                    'auto_leave_threshold': getattr(policy, 'auto_leave_threshold', 120) or 120,
+                    'missing_punch_deduction': 0,
                     'festival_bonus_months': policy.festival_bonus_months
                 }
                 self.deduction_rules = {
-                    'late': {'threshold': policy.late_threshold, 'amount': policy.late_deduction},
-                    'missing': {'amount': policy.missing_punch_deduction},
-                    'early': {'amount': policy.early_leave_deduction}
+                    'late': {
+                        'per_minute': self._attendance_policy['late_per_minute'],
+                        'auto_leave_threshold': self._attendance_policy['auto_leave_threshold']
+                    },
+                    'missing': {'amount': 0},
+                    'early': {'per_minute': self._attendance_policy['early_per_minute']}
                 }
 
             # 載入獎金設定
@@ -406,33 +426,66 @@ class SalaryEngine:
         """設定扣款規則"""
         self.deduction_rules.update(rules)
     
-    def calculate_attendance_deduction(self, attendance: AttendanceResult) -> dict:
-        """計算考勤扣款"""
+    def calculate_attendance_deduction(self, attendance: AttendanceResult, daily_salary: float = 0, base_salary: float = 0, late_details: list = None) -> dict:
+        """
+        計算考勤扣款
+        
+        新規則：
+        - 遲到/早退：按分鐘比例扣款（基於員工薪資，每分鐘 = 月薪 ÷ 30天 ÷ 8小時 ÷ 60分鐘）
+        - 無寬限期
+        - 遲到超過 2 小時（120 分鐘）：該次不扣分鐘費，改為請事假半天扣薪
+        - 未打卡：不扣款，僅記錄次數（供考核用）
+        """
         late_rule = self.deduction_rules.get('late', {})
-        missing_rule = self.deduction_rules.get('missing', {})
         early_rule = self.deduction_rules.get('early', {})
         
-        # 遲到扣款（累計制）
-        late_threshold = late_rule.get('threshold', 2)
-        late_amount = late_rule.get('amount', 100)
+        # 按薪資比例計算每分鐘扣款金額
+        # 每分鐘薪資 = 月薪 / (30天 × 8小時 × 60分鐘) = 月薪 / 14400
+        per_minute_rate = base_salary / 14400 if base_salary > 0 else 1
+        
+        auto_leave_threshold = late_rule.get('auto_leave_threshold', 120)
+        
         late_deduction = 0
-        if attendance.late_count >= late_threshold:
-            late_deduction = (attendance.late_count - late_threshold + 1) * late_amount
+        auto_leave_deduction = 0
+        auto_leave_count = 0
+        normal_late_minutes = 0
         
-        # 未打卡扣款
+        if late_details:
+            # 有逐筆遲到明細，逐筆判斷是否超過 2 小時
+            for minutes in late_details:
+                if minutes >= auto_leave_threshold:
+                    # 遲到超過 2 小時 → 請事假半天（扣 0.5 天日薪）
+                    auto_leave_count += 1
+                    auto_leave_deduction += daily_salary * 0.5
+                else:
+                    # 正常遲到 → 按薪資比例分鐘扣款
+                    normal_late_minutes += minutes
+                    late_deduction += minutes * per_minute_rate
+        else:
+            # 沒有逐筆明細，使用總分鐘數按比例計算
+            total_late_minutes = attendance.total_late_minutes
+            late_deduction = total_late_minutes * per_minute_rate
+            normal_late_minutes = total_late_minutes
+        
+        # 早退扣款（按薪資比例分鐘計算）
+        total_early_minutes = attendance.total_early_minutes
+        early_deduction = total_early_minutes * per_minute_rate
+        
+        # 未打卡：不扣款，僅記錄
         missing_count = attendance.missing_punch_in_count + attendance.missing_punch_out_count
-        missing_deduction = missing_count * missing_rule.get('amount', 50)
-        
-        # 早退扣款
-        early_deduction = attendance.early_leave_count * early_rule.get('amount', 50)
         
         return {
-            'late_deduction': late_deduction,
-            'missing_punch_deduction': missing_deduction,
-            'early_leave_deduction': early_deduction,
+            'late_deduction': round(late_deduction),
+            'missing_punch_deduction': 0,  # 不扣款
+            'early_leave_deduction': round(early_deduction),
+            'auto_leave_deduction': round(auto_leave_deduction),
+            'auto_leave_count': auto_leave_count,
             'late_count': attendance.late_count,
             'early_leave_count': attendance.early_leave_count,
-            'missing_punch_count': missing_count
+            'missing_punch_count': missing_count,
+            'total_late_minutes': attendance.total_late_minutes,
+            'total_early_minutes': total_early_minutes,
+            'normal_late_minutes': normal_late_minutes
         }
     
     def calculate_bonus(self, target: int, current: int, base_amount: float, overtime_per: float = 500) -> dict:
@@ -721,7 +774,8 @@ class SalaryEngine:
         leave_deduction: float = 0,
         allowances: List[dict] = None,
         classroom_context: dict = None,
-        office_staff_context: dict = None
+        office_staff_context: dict = None,
+        meeting_context: dict = None
     ) -> SalaryBreakdown:
         """
         計算單一員工薪資
@@ -735,11 +789,11 @@ class SalaryEngine:
             leave_deduction: 請假扣款
             allowances: 津貼列表
             classroom_context: 班級上下文 (新版節慶獎金用)
-                - role: 角色 (head_teacher/assistant_teacher/art_teacher)
-                - grade_name: 年級名稱
-                - current_enrollment: 在籍人數
-                - has_assistant: 是否有副班導
-                - is_shared_assistant: 是否為共用美師
+            office_staff_context: 辦公室人員上下文
+            meeting_context: 園務會議上下文
+                - attended: 出席次數
+                - absent: 缺席次數
+                - work_end_time: 員工下班時間 (HH:MM)
         """
 
         is_hourly = employee.get('employee_type') == 'hourly'
@@ -922,35 +976,69 @@ class SalaryEngine:
                 breakdown.supervisor_dividend
             )
 
-            # 勞健保計算
+            # 勞健保計算（勞退自提固定 6%）
             insurance = self.insurance_service.calculate(
                 employee.get('insurance_salary', breakdown.base_salary),
-                employee.get('dependents', 0)
+                employee.get('dependents', 0),
+                pension_self_rate=self._pension_self_rate
             )
             breakdown.labor_insurance = insurance.labor_employee
             breakdown.health_insurance = insurance.health_employee
             breakdown.pension_self = insurance.pension_employee
         
         # 考勤扣款
+        base_sal = employee.get('base_salary', 0) or 0
+        daily_salary = base_sal / 30 if base_sal else 0
+        late_details = employee.get('_late_details', None)  # 逐筆遲到分鐘數列表
         if attendance:
-            att_ded = self.calculate_attendance_deduction(attendance)
+            att_ded = self.calculate_attendance_deduction(
+                attendance, daily_salary=daily_salary, base_salary=base_sal, late_details=late_details
+            )
             breakdown.late_deduction = att_ded['late_deduction']
             breakdown.early_leave_deduction = att_ded['early_leave_deduction']
-            breakdown.missing_punch_deduction = att_ded['missing_punch_deduction']
+            breakdown.missing_punch_deduction = 0  # 不扣款
+            breakdown.auto_leave_deduction = att_ded['auto_leave_deduction']
+            breakdown.auto_leave_count = att_ded['auto_leave_count']
             breakdown.late_count = att_ded['late_count']
             breakdown.early_leave_count = att_ded['early_leave_count']
             breakdown.missing_punch_count = att_ded['missing_punch_count']
+            breakdown.total_late_minutes = att_ded['total_late_minutes']
+            breakdown.total_early_minutes = att_ded['total_early_minutes']
         
         breakdown.leave_deduction = leave_deduction
 
-        # 計算扣款總額
+        # 園務會議加班費與缺席扣款
+        if meeting_context:
+            attended = meeting_context.get('attended', 0)
+            absent = meeting_context.get('absent', 0)
+            work_end = meeting_context.get('work_end_time', '17:00')
+            
+            # 加班費：6點下班的員工每次 $100，其他 $200
+            if work_end == '18:00':
+                per_meeting_pay = self._meeting_pay_6pm
+            else:
+                per_meeting_pay = self._meeting_pay
+            
+            breakdown.meeting_overtime_pay = attended * per_meeting_pay
+            breakdown.meeting_attended = attended
+            breakdown.meeting_absent = absent
+            
+            # 缺席扣節慶獎金（每次 $100）
+            breakdown.meeting_absence_deduction = absent * self._meeting_absence_penalty
+        
+        # 將園務會議加班費加入應發總額
+        breakdown.gross_salary += breakdown.meeting_overtime_pay
+        # 將園務會議缺席從節慶獎金扣款
+        breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
+
+        # 計算扣款總額（未打卡不扣款）
         breakdown.total_deduction = (
             breakdown.labor_insurance +
             breakdown.health_insurance +
             breakdown.pension_self +
             breakdown.late_deduction +
             breakdown.early_leave_deduction +
-            breakdown.missing_punch_deduction +
+            breakdown.auto_leave_deduction +
             breakdown.leave_deduction +
             breakdown.other_deduction
         )
@@ -1168,11 +1256,17 @@ class SalaryEngine:
             # Here we need to aggregate from DB records.
             # Let's create a helper to aggregate or manually calculate here.
             
-            # Simplified aggregation
+            # Aggregation with minute-level detail
             late_count = sum(1 for a in attendances if a.is_late)
             early_count = sum(1 for a in attendances if a.is_early_leave)
             missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
             missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
+            total_late_minutes = sum(a.late_minutes or 0 for a in attendances if a.is_late)
+            total_early_minutes = sum(a.early_leave_minutes or 0 for a in attendances if a.is_early_leave)
+            
+            # 逐筆遲到分鐘數列表（用於判斷是否超過 2 小時要轉事假）
+            late_details = [a.late_minutes or 0 for a in attendances if a.is_late and (a.late_minutes or 0) > 0]
+            emp_dict['_late_details'] = late_details
             
             # Work hours for hourly employees (sum difference between punch in/out)
             total_hours = 0
@@ -1183,8 +1277,6 @@ class SalaryEngine:
                          total_hours += diff
                 emp_dict['work_hours'] = round(total_hours, 2)
 
-            # Construct AttendanceResult-like object or pass as dict to calculate_attendance_deduction?
-            # calculate_salary expects AttendanceResult object
             attendance_result = AttendanceResult(
                 employee_name=emp.name,
                 total_days=len(attendances),
@@ -1193,8 +1285,8 @@ class SalaryEngine:
                 early_leave_count=early_count,
                 missing_punch_in_count=missing_in,
                 missing_punch_out_count=missing_out,
-                total_late_minutes=0,
-                total_early_minutes=0,
+                total_late_minutes=total_late_minutes,
+                total_early_minutes=total_early_minutes,
                 details=[]
             )
 
@@ -1288,6 +1380,24 @@ class SalaryEngine:
             ).all()
             overtime_work_pay_total = sum(o.overtime_pay or 0 for o in approved_overtimes)
 
+            # 5e. 查詢園務會議記錄
+            from models.database import MeetingRecord
+            meeting_records = session.query(MeetingRecord).filter(
+                MeetingRecord.employee_id == emp.id,
+                MeetingRecord.meeting_date >= start_date,
+                MeetingRecord.meeting_date <= end_date
+            ).all()
+            
+            meeting_context = None
+            if meeting_records:
+                meeting_attended = sum(1 for m in meeting_records if m.attended)
+                meeting_absent = sum(1 for m in meeting_records if not m.attended)
+                meeting_context = {
+                    'attended': meeting_attended,
+                    'absent': meeting_absent,
+                    'work_end_time': emp.work_end_time or '17:00'
+                }
+
             # 6. 計算薪資
             breakdown = self.calculate_salary(
                 employee=emp_dict,
@@ -1297,7 +1407,8 @@ class SalaryEngine:
                 leave_deduction=leave_deduction_total,
                 allowances=allowances,
                 classroom_context=classroom_context,
-                office_staff_context=office_staff_context
+                office_staff_context=office_staff_context,
+                meeting_context=meeting_context
             )
             # 加入加班費
             breakdown.overtime_work_pay = overtime_work_pay_total
@@ -1334,6 +1445,8 @@ class SalaryEngine:
             salary_record.special_bonus = breakdown.special_bonus
             salary_record.bonus_amount = breakdown.supervisor_dividend
             salary_record.overtime_pay = breakdown.overtime_work_pay
+            salary_record.meeting_overtime_pay = breakdown.meeting_overtime_pay
+            salary_record.meeting_absence_deduction = breakdown.meeting_absence_deduction
 
             salary_record.work_hours = breakdown.work_hours
             salary_record.hourly_rate = breakdown.hourly_rate

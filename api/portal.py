@@ -197,7 +197,7 @@ def get_attendance_sheet(
         ).all()
         holiday_map = {h.date: h.name for h in holidays_query}
 
-        grace_minutes = 5
+        grace_minutes = 0
         days = []
         total_work_hours = 0.0
         work_hour_days = 0
@@ -273,9 +273,8 @@ def get_attendance_sheet(
                         shift_end = datetime.strptime(shift_info["work_end"], "%H:%M").time()
                         shift_start_dt = datetime.combine(d, shift_start)
                         shift_end_dt = datetime.combine(d, shift_end)
-                        grace_dt = shift_start_dt + timedelta(minutes=grace_minutes)
 
-                        is_late = att.punch_in_time > grace_dt
+                        is_late = att.punch_in_time > shift_start_dt
                         is_early_leave = att.punch_out_time < shift_end_dt
                         late_min = max(0, int((att.punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
 
@@ -822,17 +821,32 @@ def get_salary_preview(
                 (salary.festival_bonus or 0) +
                 (salary.overtime_bonus or 0) +
                 (salary.performance_bonus or 0) +
-                (salary.special_bonus or 0)
+                (salary.special_bonus or 0) +
+                (salary.bonus_amount or 0)
             )
             result["salary"] = {
                 "base_salary": salary.base_salary,
+                "supervisor_allowance": salary.supervisor_allowance or 0,
+                "teacher_allowance": salary.teacher_allowance or 0,
+                "meal_allowance": salary.meal_allowance or 0,
+                "transportation_allowance": salary.transportation_allowance or 0,
+                "other_allowance": salary.other_allowance or 0,
                 "total_allowances": total_allowances,
+                "festival_bonus": salary.festival_bonus or 0,
+                "overtime_bonus": salary.overtime_bonus or 0,
+                "performance_bonus": salary.performance_bonus or 0,
+                "special_bonus": salary.special_bonus or 0,
+                "supervisor_dividend": salary.bonus_amount or 0,
                 "total_bonus": total_bonus,
                 "overtime_pay": salary.overtime_pay or 0,
+                "meeting_overtime_pay": salary.meeting_overtime_pay or 0,
                 "labor_insurance": salary.labor_insurance_employee or 0,
                 "health_insurance": salary.health_insurance_employee or 0,
                 "late_deduction": salary.late_deduction or 0,
+                "early_leave_deduction": salary.early_leave_deduction or 0,
+                "attendance_deduction": (salary.late_deduction or 0) + (salary.early_leave_deduction or 0) + (salary.missing_punch_deduction or 0),
                 "leave_deduction": salary.leave_deduction or 0,
+                "meeting_absence_deduction": salary.meeting_absence_deduction or 0,
                 "other_deduction": salary.other_deduction or 0,
                 "gross_salary": salary.gross_salary,
                 "total_deduction": salary.total_deduction,

@@ -184,7 +184,7 @@ async def upload_attendance(file: UploadFile = File(...)):
                         # 計算考勤狀態
                         work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
                         work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
-                        grace_minutes = 5
+                        grace_minutes = 0
 
                         is_late = False
                         is_early_leave = False
@@ -196,8 +196,7 @@ async def upload_attendance(file: UploadFile = File(...)):
 
                         if punch_in_time:
                             work_start_dt = datetime.combine(attendance_date, work_start)
-                            grace_dt = work_start_dt + timedelta(minutes=grace_minutes)
-                            if punch_in_time > grace_dt:
+                            if punch_in_time > work_start_dt:
                                 is_late = True
                                 late_minutes = int((punch_in_time - work_start_dt).total_seconds() / 60)
                                 status = "late"
@@ -236,9 +235,8 @@ async def upload_attendance(file: UploadFile = File(...)):
                                 # Recalculate late/early based on shift times
                                 shift_start_dt = datetime.combine(attendance_date, shift_start)
                                 shift_end_dt = datetime.combine(attendance_date, shift_end)
-                                grace_dt_shift = shift_start_dt + timedelta(minutes=grace_minutes)
 
-                                is_late = punch_in_time > grace_dt_shift
+                                is_late = punch_in_time > shift_start_dt
                                 late_minutes = max(0, int((punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
                                 is_early_leave = punch_out_time < shift_end_dt
 
@@ -420,9 +418,8 @@ async def upload_attendance(file: UploadFile = File(...)):
                                 shift_end = datetime.strptime(shift["work_end"], "%H:%M").time()
                                 dt_in = datetime.combine(a_date, p_in)
                                 dt_out = datetime.combine(a_date, p_out)
-                                grace_dt = datetime.combine(a_date, shift_start) + timedelta(minutes=5)
 
-                                is_late = dt_in > grace_dt
+                                is_late = dt_in > datetime.combine(a_date, shift_start)
                                 late_minutes = max(0, int((dt_in - datetime.combine(a_date, shift_start)).total_seconds() / 60)) if is_late else 0
                                 is_early_leave = dt_out < datetime.combine(a_date, shift_end)
 
@@ -594,7 +591,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest):
                 # 計算考勤狀態
                 work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
                 work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
-                grace_minutes = 5
+                grace_minutes = 0
 
                 is_late = False
                 is_early_leave = False
@@ -607,8 +604,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest):
                 # 檢查遲到
                 if punch_in_time:
                     work_start_dt = datetime.combine(attendance_date, work_start)
-                    grace_dt = work_start_dt + timedelta(minutes=grace_minutes)
-                    if punch_in_time > grace_dt:
+                    if punch_in_time > work_start_dt:
                         is_late = True
                         late_minutes = int((punch_in_time - work_start_dt).total_seconds() / 60)
                         status = "late"
@@ -809,7 +805,7 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate):
         # 計算考勤狀態
         work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
         work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
-        grace_minutes = 5
+        grace_minutes = 0
 
         is_late = False
         is_early_leave = False
@@ -821,8 +817,7 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate):
 
         if punch_in_time:
             work_start_dt = datetime.combine(attendance_date, work_start)
-            grace_dt = work_start_dt + timedelta(minutes=grace_minutes)
-            if punch_in_time > grace_dt:
+            if punch_in_time > work_start_dt:
                 is_late = True
                 late_minutes = int((punch_in_time - work_start_dt).total_seconds() / 60)
                 status = "late"

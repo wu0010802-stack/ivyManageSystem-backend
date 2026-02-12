@@ -264,6 +264,8 @@ class SalaryRecord(Base):
     special_bonus = Column(Float, default=0, comment="特別獎金/紅利")
 
     overtime_pay = Column(Float, default=0, comment="加班費")
+    meeting_overtime_pay = Column(Float, default=0, comment="園務會議加班費")
+    meeting_absence_deduction = Column(Float, default=0, comment="園務會議缺席扣節慶獎金")
 
     work_hours = Column(Float, default=0, comment="工作時數（時薪制用）")
     hourly_rate = Column(Float, default=0, comment="時薪")
@@ -732,6 +734,27 @@ class Holiday(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class MeetingRecord(Base):
+    """園務會議記錄表"""
+    __tablename__ = "meeting_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+
+    meeting_date = Column(Date, nullable=False, comment="會議日期")
+    meeting_type = Column(String(30), default="staff_meeting", comment="會議類型: staff_meeting")
+    attended = Column(Boolean, default=True, comment="是否出席")
+    overtime_hours = Column(Float, default=0, comment="加班時數")
+    overtime_pay = Column(Float, default=0, comment="加班費")
+
+    remark = Column(Text, comment="備註")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="meeting_records")
 
 
 class SchoolEvent(Base):

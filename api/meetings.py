@@ -1,0 +1,287 @@
+"""
+園務會議記錄 API
+"""
+
+from datetime import date, datetime
+from typing import List, Optional
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+
+from models.database import get_session, MeetingRecord, Employee
+
+router = APIRouter(prefix="/api", tags=["meetings"])
+
+
+# ============ Pydantic Models ============
+
+class MeetingRecordCreate(BaseModel):
+    employee_id: int
+    meeting_date: str  # YYYY-MM-DD
+    meeting_type: str = "staff_meeting"
+    attended: bool = True
+    overtime_hours: float = 0
+    overtime_pay: float = 0
+    remark: Optional[str] = None
+
+
+class MeetingRecordUpdate(BaseModel):
+    attended: Optional[bool] = None
+    overtime_hours: Optional[float] = None
+    overtime_pay: Optional[float] = None
+    remark: Optional[str] = None
+
+
+class MeetingBatchCreate(BaseModel):
+    """批次建立園務會議記錄（同一天所有員工）"""
+    meeting_date: str  # YYYY-MM-DD
+    meeting_type: str = "staff_meeting"
+    attendees: List[int]  # 出席的 employee IDs
+    absentees: List[int] = []  # 缺席的 employee IDs
+    overtime_hours: float = 0
+    remark: Optional[str] = None
+
+
+# ============ Routes ============
+
+@router.get("/meetings")
+def get_meetings(
+    year: int = Query(...),
+    month: int = Query(...),
+    employee_id: Optional[int] = Query(None)
+):
+    """查詢園務會議記錄"""
+    session = get_session()
+    try:
+        import calendar
+        _, last_day = calendar.monthrange(year, month)
+        start_date = date(year, month, 1)
+        end_date = date(year, month, last_day)
+
+        query = session.query(MeetingRecord, Employee).join(
+            Employee, MeetingRecord.employee_id == Employee.id
+        ).filter(
+            MeetingRecord.meeting_date >= start_date,
+            MeetingRecord.meeting_date <= end_date
+        )
+
+        if employee_id:
+            query = query.filter(MeetingRecord.employee_id == employee_id)
+
+        records = query.order_by(MeetingRecord.meeting_date, Employee.name).all()
+
+        results = []
+        for record, emp in records:
+            results.append({
+                "id": record.id,
+                "employee_id": emp.id,
+                "employee_name": emp.name,
+                "meeting_date": record.meeting_date.isoformat(),
+                "meeting_type": record.meeting_type,
+                "attended": record.attended,
+                "overtime_hours": record.overtime_hours,
+                "overtime_pay": record.overtime_pay,
+                "remark": record.remark,
+            })
+
+        return results
+    finally:
+        session.close()
+
+
+@router.post("/meetings")
+def create_meeting(data: MeetingRecordCreate):
+    """建立單筆園務會議記錄"""
+    session = get_session()
+    try:
+        meeting_date = datetime.strptime(data.meeting_date, "%Y-%m-%d").date()
+        
+        # 檢查是否已存在
+        existing = session.query(MeetingRecord).filter(
+            MeetingRecord.employee_id == data.employee_id,
+            MeetingRecord.meeting_date == meeting_date,
+            MeetingRecord.meeting_type == data.meeting_type
+        ).first()
+        
+        if existing:
+            raise HTTPException(status_code=400, detail="該員工此日期已有記錄")
+
+        record = MeetingRecord(
+            employee_id=data.employee_id,
+            meeting_date=meeting_date,
+            meeting_type=data.meeting_type,
+            attended=data.attended,
+            overtime_hours=data.overtime_hours,
+            overtime_pay=data.overtime_pay,
+            remark=data.remark
+        )
+        session.add(record)
+        session.commit()
+
+        return {"message": "建立成功", "id": record.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.post("/meetings/batch")
+def create_meetings_batch(data: MeetingBatchCreate):
+    """批次建立園務會議記錄（一次建立同日所有員工）"""
+    session = get_session()
+    try:
+        meeting_date = datetime.strptime(data.meeting_date, "%Y-%m-%d").date()
+
+        # 先刪除該日同類型已有記錄（覆蓋模式）
+        session.query(MeetingRecord).filter(
+            MeetingRecord.meeting_date == meeting_date,
+            MeetingRecord.meeting_type == data.meeting_type
+        ).delete()
+
+        created = 0
+
+        # 查詢員工的下班時間，用於計算加班費
+        all_emp_ids = list(set(data.attendees + data.absentees))
+        employees = session.query(Employee).filter(Employee.id.in_(all_emp_ids)).all()
+        emp_map = {e.id: e for e in employees}
+
+        # 建立出席記錄
+        for emp_id in data.attendees:
+            emp = emp_map.get(emp_id)
+            work_end = emp.work_end_time if emp else '17:00'
+            
+            # 計算加班費：6點下班者 $100，其他 $200
+            if work_end == '18:00':
+                pay = 100
+            else:
+                pay = 200
+
+            record = MeetingRecord(
+                employee_id=emp_id,
+                meeting_date=meeting_date,
+                meeting_type=data.meeting_type,
+                attended=True,
+                overtime_hours=data.overtime_hours,
+                overtime_pay=pay,
+                remark=data.remark
+            )
+            session.add(record)
+            created += 1
+
+        # 建立缺席記錄
+        for emp_id in data.absentees:
+            record = MeetingRecord(
+                employee_id=emp_id,
+                meeting_date=meeting_date,
+                meeting_type=data.meeting_type,
+                attended=False,
+                overtime_hours=0,
+                overtime_pay=0,
+                remark=data.remark
+            )
+            session.add(record)
+            created += 1
+
+        session.commit()
+        return {"message": f"批次建立完成，共 {created} 筆", "count": created}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.put("/meetings/{record_id}")
+def update_meeting(record_id: int, data: MeetingRecordUpdate):
+    """更新園務會議記錄"""
+    session = get_session()
+    try:
+        record = session.query(MeetingRecord).get(record_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="記錄不存在")
+
+        if data.attended is not None:
+            record.attended = data.attended
+        if data.overtime_hours is not None:
+            record.overtime_hours = data.overtime_hours
+        if data.overtime_pay is not None:
+            record.overtime_pay = data.overtime_pay
+        if data.remark is not None:
+            record.remark = data.remark
+
+        session.commit()
+        return {"message": "更新成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.delete("/meetings/{record_id}")
+def delete_meeting(record_id: int):
+    """刪除園務會議記錄"""
+    session = get_session()
+    try:
+        record = session.query(MeetingRecord).get(record_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="記錄不存在")
+
+        session.delete(record)
+        session.commit()
+        return {"message": "刪除成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.get("/meetings/summary")
+def get_meeting_summary(
+    year: int = Query(...),
+    month: int = Query(...)
+):
+    """查詢當月園務會議出勤統計"""
+    session = get_session()
+    try:
+        import calendar
+        _, last_day = calendar.monthrange(year, month)
+        start_date = date(year, month, 1)
+        end_date = date(year, month, last_day)
+
+        records = session.query(MeetingRecord, Employee).join(
+            Employee, MeetingRecord.employee_id == Employee.id
+        ).filter(
+            MeetingRecord.meeting_date >= start_date,
+            MeetingRecord.meeting_date <= end_date,
+            Employee.is_active == True
+        ).all()
+
+        # 彙總每位員工
+        summary = {}
+        for r, emp in records:
+            if emp.id not in summary:
+                summary[emp.id] = {
+                    "employee_id": emp.id,
+                    "employee_name": emp.name,
+                    "attended": 0,
+                    "absent": 0,
+                    "total_pay": 0
+                }
+            if r.attended:
+                summary[emp.id]["attended"] += 1
+                summary[emp.id]["total_pay"] += r.overtime_pay or 0
+            else:
+                summary[emp.id]["absent"] += 1
+
+        return list(summary.values())
+    finally:
+        session.close()

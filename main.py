@@ -31,6 +31,7 @@ from api.auth import router as auth_router
 from api.portal import router as portal_router
 from api.shifts import router as shifts_router
 from api.events import router as events_router
+from api.meetings import router as meetings_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -95,6 +96,7 @@ app.include_router(auth_router)
 app.include_router(portal_router)
 app.include_router(shifts_router)
 app.include_router(events_router)
+app.include_router(meetings_router)
 
 # ---------------------------------------------------------------------------
 # Seed Data
@@ -122,7 +124,7 @@ def seed_default_configs():
             policy = AttendancePolicy(
                 default_work_start="08:00",
                 default_work_end="17:00",
-                grace_minutes=5,
+                grace_minutes=0,
                 late_threshold=2,
                 late_deduction=50,
                 early_leave_deduction=50,

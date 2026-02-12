@@ -397,6 +397,29 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 emp_dict['_calculated_festival_bonus'] = round(school_festival_bonus)
                 emp_dict['_calculated_overtime_bonus'] = 0  # 沒有帶班，無超額獎金
 
+        # 查詢園務會議記錄
+        from models.database import MeetingRecord
+        import calendar
+        _, last_day = calendar.monthrange(request.year, request.month)
+        salary_start = date(request.year, request.month, 1)
+        salary_end = date(request.year, request.month, last_day)
+        
+        meeting_records = session.query(MeetingRecord).filter(
+            MeetingRecord.employee_id == emp.id,
+            MeetingRecord.meeting_date >= salary_start,
+            MeetingRecord.meeting_date <= salary_end
+        ).all()
+        
+        meeting_context = None
+        if meeting_records:
+            meeting_attended = sum(1 for m in meeting_records if m.attended)
+            meeting_absent = sum(1 for m in meeting_records if not m.attended)
+            meeting_context = {
+                'attended': meeting_attended,
+                'absent': meeting_absent,
+                'work_end_time': emp.work_end_time or '17:00'
+            }
+
         # 決定獎金設定方式
         if '_calculated_festival_bonus' in emp_dict:
             # 多班員工（共用副班導/美師等）：直接使用已計算的獎金
@@ -406,7 +429,8 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 request.month,
                 bonus_settings=None,
                 allowances=emp_allowances,
-                classroom_context=None
+                classroom_context=None,
+                meeting_context=meeting_context
             )
             breakdown.festival_bonus = emp_dict['_calculated_festival_bonus']
             breakdown.overtime_bonus = emp_dict.get('_calculated_overtime_bonus', 0)
@@ -424,7 +448,8 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 breakdown.overtime_bonus +
                 breakdown.performance_bonus +
                 breakdown.special_bonus +
-                breakdown.supervisor_dividend
+                breakdown.supervisor_dividend +
+                breakdown.meeting_overtime_pay
             )
             breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
         elif classroom_context:
@@ -435,7 +460,8 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 request.month,
                 bonus_settings=None,
                 allowances=emp_allowances,
-                classroom_context=classroom_context
+                classroom_context=classroom_context,
+                meeting_context=meeting_context
             )
         else:
             # 使用舊版計算（沒有班級角色，如園長、行政等）
@@ -444,7 +470,8 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 request.year,
                 request.month,
                 bonus_settings=global_bonus_settings,
-                allowances=emp_allowances
+                allowances=emp_allowances,
+                meeting_context=meeting_context
             )
 
         results.append(breakdown.__dict__)
@@ -492,6 +519,8 @@ def calculate_salaries_alt(
                     "missing_punch_deduction": salary_record.missing_punch_deduction,
                     "leave_deduction": salary_record.leave_deduction,
                     "attendance_deduction": (salary_record.late_deduction or 0) + (salary_record.early_leave_deduction or 0) + (salary_record.missing_punch_deduction or 0),
+                    "meeting_overtime_pay": salary_record.meeting_overtime_pay or 0,
+                    "meeting_absence_deduction": salary_record.meeting_absence_deduction or 0,
                     "total_deductions": salary_record.total_deduction,
                     "net_pay": salary_record.net_salary
                 })
@@ -573,6 +602,8 @@ def get_salary_records(
                 "festival_bonus": record.festival_bonus,
                 "overtime_bonus": record.overtime_bonus,
                 "overtime_pay": record.overtime_pay,
+                "meeting_overtime_pay": record.meeting_overtime_pay or 0,
+                "meeting_absence_deduction": record.meeting_absence_deduction or 0,
                 "performance_bonus": record.performance_bonus,
                 "special_bonus": record.special_bonus,
                 "supervisor_dividend": record.bonus_amount or 0,
