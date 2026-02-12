@@ -7,3 +7,4 @@ openpyxl>=3.1.0
 python-multipart>=0.0.6
 reportlab>=4.0.0
 pydantic>=2.0.0
+holidays>=0.30.0

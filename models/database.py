@@ -720,6 +720,40 @@ class User(Base):
     employee = relationship("Employee", backref="user_account")
 
 
+class Holiday(Base):
+    """國定假日表"""
+    __tablename__ = "holidays"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date, unique=True, nullable=False, comment="日期")
+    name = Column(String(100), nullable=False, comment="假日名稱")
+    is_active = Column(Boolean, default=True)
+    description = Column(String(200), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SchoolEvent(Base):
+    """學校行事曆事件表"""
+    __tablename__ = "school_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(200), nullable=False, comment="事件標題")
+    description = Column(Text, comment="事件說明")
+    event_date = Column(Date, nullable=False, comment="事件日期")
+    end_date = Column(Date, comment="結束日期（多日事件）")
+    event_type = Column(String(30), default="general", comment="事件類型: meeting/activity/holiday/general")
+    is_all_day = Column(Boolean, default=True, comment="是否全天")
+    start_time = Column(String(5), comment="開始時間 HH:MM")
+    end_time = Column(String(5), comment="結束時間 HH:MM")
+    location = Column(String(100), comment="地點")
+    is_active = Column(Boolean, default=True)
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 if __name__ == "__main__":
     engine, Session = init_database()
     print("資料庫初始化完成！")

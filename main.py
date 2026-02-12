@@ -30,6 +30,7 @@ from api.employee_allowances import router as employee_allowances_router
 from api.auth import router as auth_router
 from api.portal import router as portal_router
 from api.shifts import router as shifts_router
+from api.events import router as events_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -93,6 +94,7 @@ app.include_router(employee_allowances_router)
 app.include_router(auth_router)
 app.include_router(portal_router)
 app.include_router(shifts_router)
+app.include_router(events_router)
 
 # ---------------------------------------------------------------------------
 # Seed Data

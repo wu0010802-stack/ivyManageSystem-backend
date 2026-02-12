@@ -10,9 +10,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from sqlalchemy import or_
 from models.database import (
     get_session, Employee, Attendance, LeaveRecord, OvertimeRecord, SalaryRecord,
-    Classroom, ShiftAssignment, ShiftType,
+    Classroom, ShiftAssignment, ShiftType, Student, SchoolEvent,
 )
 from utils.auth import get_current_user
 
@@ -133,7 +134,7 @@ def get_attendance_sheet(
                         "name": st.name,
                     }
 
-        # Also get leaves for this month
+        # Also get leaves for this month (approved only for status calculation)
         leaves = session.query(LeaveRecord).filter(
             LeaveRecord.employee_id == emp.id,
             LeaveRecord.start_date <= end,
@@ -146,6 +147,55 @@ def get_attendance_sheet(
             while d <= min(lv.end_date, end):
                 leave_dates[d] = lv.leave_type
                 d = date.fromordinal(d.toordinal() + 1)
+
+        # Get ALL leave requests (any status) for display
+        all_leaves = session.query(LeaveRecord).filter(
+            LeaveRecord.employee_id == emp.id,
+            LeaveRecord.start_date <= end,
+            LeaveRecord.end_date >= start,
+        ).all()
+        leave_request_map = {}  # date -> list of leave info
+        for lv in all_leaves:
+            d = max(lv.start_date, start)
+            while d <= min(lv.end_date, end):
+                if d not in leave_request_map:
+                    leave_request_map[d] = []
+                leave_request_map[d].append({
+                    "leave_type": lv.leave_type,
+                    "leave_type_label": LEAVE_TYPE_LABELS.get(lv.leave_type, lv.leave_type),
+                    "leave_hours": lv.leave_hours,
+                    "is_approved": lv.is_approved,
+                    "reason": lv.reason,
+                })
+                d = date.fromordinal(d.toordinal() + 1)
+
+        # Get ALL overtime requests for display
+        overtimes = session.query(OvertimeRecord).filter(
+            OvertimeRecord.employee_id == emp.id,
+            OvertimeRecord.overtime_date >= start,
+            OvertimeRecord.overtime_date <= end,
+        ).all()
+        overtime_map = {}  # date -> list of overtime info
+        for ot in overtimes:
+            d = ot.overtime_date
+            if d not in overtime_map:
+                overtime_map[d] = []
+            overtime_map[d].append({
+                "overtime_type": ot.overtime_type,
+                "overtime_type_label": OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type),
+                "hours": ot.hours,
+                "is_approved": ot.is_approved,
+                "reason": ot.reason,
+            })
+        
+        # Get Holidays
+        from models.database import Holiday
+        holidays_query = session.query(Holiday).filter(
+            Holiday.date >= start,
+            Holiday.date <= end,
+            Holiday.is_active == True
+        ).all()
+        holiday_map = {h.date: h.name for h in holidays_query}
 
         grace_minutes = 5
         days = []
@@ -178,7 +228,19 @@ def get_attendance_sheet(
                 "scheduled_start": None,
                 "scheduled_end": None,
                 "work_hours": None,
+                "is_holiday": False,
+                "holiday_name": None,
+                "leave_requests": [],
+                "overtime_requests": [],
             }
+
+            # Check if holiday
+            if d in holiday_map:
+                row["is_holiday"] = True
+                row["holiday_name"] = holiday_map[d]
+                # Holidays are treated like weekends by default for status
+                if row["status"] == "no_record":
+                     row["status"] = "holiday"
 
             # Look up shift for this day
             week_monday = d - timedelta(days=d.weekday())
@@ -269,6 +331,12 @@ def get_attendance_sheet(
                 row["leave_type_label"] = LEAVE_TYPE_LABELS.get(lt, lt)
                 if not att:
                     row["status"] = "leave"
+
+            # Attach leave and overtime requests for this day
+            if d in leave_request_map:
+                row["leave_requests"] = leave_request_map[d]
+            if d in overtime_map:
+                row["overtime_requests"] = overtime_map[d]
 
             days.append(row)
 
@@ -484,7 +552,7 @@ def create_my_leave(
             end_date=data.end_date,
             leave_hours=data.leave_hours,
             reason=data.reason,
-            is_approved=False,
+            is_approved=None,
         )
         session.add(leave)
         session.commit()
@@ -773,5 +841,124 @@ def get_salary_preview(
             }
 
         return result
+    finally:
+        session.close()
+
+
+# ============ My Students ============
+
+@router.get("/my-students")
+def get_my_students(
+    classroom_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """取得教師所屬班級的學生資料"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+
+        # Find classrooms where this teacher is assigned
+        query = session.query(Classroom).filter(
+            Classroom.is_active == True,
+            or_(
+                Classroom.head_teacher_id == emp.id,
+                Classroom.assistant_teacher_id == emp.id,
+                Classroom.art_teacher_id == emp.id,
+            ),
+        )
+        if classroom_id:
+            query = query.filter(Classroom.id == classroom_id)
+
+        classrooms = query.all()
+
+        result = []
+        for cr in classrooms:
+            # Determine teacher's role in this classroom
+            role = "教師"
+            if cr.head_teacher_id == emp.id:
+                role = "主教老師"
+            elif cr.assistant_teacher_id == emp.id:
+                role = "助教老師"
+            elif cr.art_teacher_id == emp.id:
+                role = "美術老師"
+
+            students = session.query(Student).filter(
+                Student.classroom_id == cr.id,
+                Student.is_active == True,
+            ).order_by(Student.name).all()
+
+            result.append({
+                "classroom_id": cr.id,
+                "classroom_name": cr.name,
+                "role": role,
+                "student_count": len(students),
+                "students": [{
+                    "id": s.id,
+                    "student_id": s.student_id,
+                    "name": s.name,
+                    "gender": s.gender,
+                    "birthday": s.birthday.isoformat() if s.birthday else None,
+                    "enrollment_date": s.enrollment_date.isoformat() if s.enrollment_date else None,
+                    "parent_name": s.parent_name,
+                    "parent_phone": s.parent_phone,
+                    "address": s.address,
+                    "status_tag": s.status_tag,
+                    "notes": s.notes,
+                } for s in students],
+            })
+
+        return {
+            "employee_name": emp.name,
+            "classrooms": result,
+            "total_students": sum(c["student_count"] for c in result),
+        }
+    finally:
+        session.close()
+
+
+# ============ School Calendar ============
+
+@router.get("/calendar")
+def get_portal_calendar(
+    year: int = Query(...),
+    month: int = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """取得學校行事曆（教師檢視）"""
+    session = get_session()
+    try:
+        _, last_day = cal_module.monthrange(year, month)
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+
+        events = session.query(SchoolEvent).filter(
+            SchoolEvent.is_active == True,
+            SchoolEvent.event_date <= end,
+            or_(
+                SchoolEvent.end_date >= start,
+                (SchoolEvent.end_date.is_(None)) & (SchoolEvent.event_date >= start),
+            ),
+        ).order_by(SchoolEvent.event_date).all()
+
+        EVENT_TYPE_LABELS_LOCAL = {
+            "meeting": "會議",
+            "activity": "活動",
+            "holiday": "假日",
+            "general": "一般",
+        }
+
+        return [{
+            "id": ev.id,
+            "title": ev.title,
+            "description": ev.description,
+            "event_date": ev.event_date.isoformat(),
+            "end_date": ev.end_date.isoformat() if ev.end_date else None,
+            "event_type": ev.event_type,
+            "event_type_label": EVENT_TYPE_LABELS_LOCAL.get(ev.event_type, ev.event_type),
+            "is_all_day": ev.is_all_day,
+            "start_time": ev.start_time,
+            "end_time": ev.end_time,
+            "location": ev.location,
+        } for ev in events]
     finally:
         session.close()
