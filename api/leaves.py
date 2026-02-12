@@ -64,7 +64,8 @@ class LeaveUpdate(BaseModel):
 def get_leaves(
     employee_id: Optional[int] = None,
     year: Optional[int] = None,
-    month: Optional[int] = None
+    month: Optional[int] = None,
+    status: Optional[str] = None,
 ):
     """查詢請假記錄"""
     session = get_session()
@@ -74,6 +75,12 @@ def get_leaves(
         )
         if employee_id:
             q = q.filter(LeaveRecord.employee_id == employee_id)
+        if status == "pending":
+            q = q.filter(LeaveRecord.is_approved.is_(None))
+        elif status == "approved":
+            q = q.filter(LeaveRecord.is_approved == True)
+        elif status == "rejected":
+            q = q.filter(LeaveRecord.is_approved == False)
         if year and month:
             _, last_day = cal_module.monthrange(year, month)
             start = date(year, month, 1)

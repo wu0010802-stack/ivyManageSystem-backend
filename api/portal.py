@@ -14,6 +14,7 @@ from sqlalchemy import or_
 from models.database import (
     get_session, Employee, Attendance, LeaveRecord, OvertimeRecord, SalaryRecord,
     Classroom, ShiftAssignment, ShiftType, Student, SchoolEvent,
+    Announcement, AnnouncementRead, JobTitle,
 )
 from utils.auth import get_current_user
 
@@ -61,6 +62,16 @@ class OvertimeCreatePortal(BaseModel):
 class AnomalyConfirm(BaseModel):
     action: str  # "use_pto" | "accept" | "dispute"
     remark: Optional[str] = None
+
+
+class ProfileUpdate(BaseModel):
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    bank_code: Optional[str] = None
+    bank_account: Optional[str] = None
+    bank_account_name: Optional[str] = None
 
 
 # ============ Helper ============
@@ -974,5 +985,181 @@ def get_portal_calendar(
             "end_time": ev.end_time,
             "location": ev.location,
         } for ev in events]
+    finally:
+        session.close()
+
+
+# ============ Announcements ============
+
+@router.get("/announcements")
+def get_portal_announcements(
+    current_user: dict = Depends(get_current_user),
+):
+    """取得公告列表（教師端）"""
+    session = get_session()
+    try:
+        emp_id = current_user["employee_id"]
+
+        announcements = session.query(Announcement).order_by(
+            Announcement.is_pinned.desc(),
+            Announcement.created_at.desc(),
+        ).all()
+
+        # Get read announcement IDs for this employee
+        read_ids = set(
+            r.announcement_id for r in session.query(AnnouncementRead).filter(
+                AnnouncementRead.employee_id == emp_id,
+            ).all()
+        )
+
+        results = []
+        for ann in announcements:
+            author = session.query(Employee).filter(Employee.id == ann.created_by).first()
+            results.append({
+                "id": ann.id,
+                "title": ann.title,
+                "content": ann.content,
+                "priority": ann.priority,
+                "is_pinned": ann.is_pinned,
+                "created_by_name": author.name if author else "未知",
+                "created_at": ann.created_at.isoformat() if ann.created_at else None,
+                "is_read": ann.id in read_ids,
+            })
+
+        return results
+    finally:
+        session.close()
+
+
+@router.post("/announcements/{announcement_id}/read")
+def mark_announcement_read(
+    announcement_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """標記公告為已讀"""
+    session = get_session()
+    try:
+        emp_id = current_user["employee_id"]
+
+        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
+        if not ann:
+            raise HTTPException(status_code=404, detail="找不到該公告")
+
+        existing = session.query(AnnouncementRead).filter(
+            AnnouncementRead.announcement_id == announcement_id,
+            AnnouncementRead.employee_id == emp_id,
+        ).first()
+
+        if not existing:
+            read_record = AnnouncementRead(
+                announcement_id=announcement_id,
+                employee_id=emp_id,
+            )
+            session.add(read_record)
+            session.commit()
+
+        return {"message": "已標記為已讀"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.get("/unread-count")
+def get_unread_count(
+    current_user: dict = Depends(get_current_user),
+):
+    """取得未讀公告數量"""
+    session = get_session()
+    try:
+        emp_id = current_user["employee_id"]
+
+        total = session.query(Announcement).count()
+        read = session.query(AnnouncementRead).filter(
+            AnnouncementRead.employee_id == emp_id,
+        ).count()
+
+        return {"unread_count": max(0, total - read)}
+    finally:
+        session.close()
+
+
+# ============ Profile ============
+
+@router.get("/profile")
+def get_profile(
+    current_user: dict = Depends(get_current_user),
+):
+    """取得個人資料"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+
+        # Get job title name
+        job_title_name = None
+        if emp.job_title_rel:
+            job_title_name = emp.job_title_rel.name
+
+        # Get classroom name
+        classroom_name = None
+        classroom = session.query(Classroom).filter(
+            Classroom.is_active == True,
+            (Classroom.head_teacher_id == emp.id) |
+            (Classroom.assistant_teacher_id == emp.id) |
+            (Classroom.art_teacher_id == emp.id),
+        ).first()
+        if classroom:
+            classroom_name = classroom.name
+
+        return {
+            "employee_id": emp.employee_id,
+            "name": emp.name,
+            "job_title": job_title_name,
+            "position": emp.position,
+            "classroom": classroom_name,
+            "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
+            "work_start_time": emp.work_start_time,
+            "work_end_time": emp.work_end_time,
+            "phone": emp.phone,
+            "address": emp.address,
+            "emergency_contact_name": emp.emergency_contact_name,
+            "emergency_contact_phone": emp.emergency_contact_phone,
+            "bank_code": emp.bank_code,
+            "bank_account": emp.bank_account,
+            "bank_account_name": emp.bank_account_name,
+        }
+    finally:
+        session.close()
+
+
+@router.put("/profile")
+def update_profile(
+    data: ProfileUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """更新個人資料（僅限允許欄位）"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+
+        allowed_fields = [
+            "phone", "address",
+            "emergency_contact_name", "emergency_contact_phone",
+            "bank_code", "bank_account", "bank_account_name",
+        ]
+
+        update_data = data.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            if key in allowed_fields:
+                setattr(emp, key, value)
+
+        session.commit()
+        return {"message": "個人資料已更新"}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

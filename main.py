@@ -32,6 +32,10 @@ from api.portal import router as portal_router
 from api.shifts import router as shifts_router
 from api.events import router as events_router
 from api.meetings import router as meetings_router
+from api.announcements import router as announcements_router
+from api.approvals import router as approvals_router
+from api.reports import router as reports_router
+from api.exports import router as exports_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -97,6 +101,10 @@ app.include_router(portal_router)
 app.include_router(shifts_router)
 app.include_router(events_router)
 app.include_router(meetings_router)
+app.include_router(announcements_router)
+app.include_router(approvals_router)
+app.include_router(reports_router)
+app.include_router(exports_router)
 
 # ---------------------------------------------------------------------------
 # Seed Data

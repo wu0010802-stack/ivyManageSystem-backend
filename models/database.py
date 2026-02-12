@@ -152,6 +152,11 @@ class Employee(Base):
     dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
     hire_date = Column(Date, comment="到職日期")
 
+    phone = Column(String(20), comment="聯絡電話")
+    address = Column(String(200), comment="通訊地址")
+    emergency_contact_name = Column(String(50), comment="緊急聯絡人")
+    emergency_contact_phone = Column(String(20), comment="緊急聯絡人電話")
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -775,6 +780,38 @@ class SchoolEvent(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class Announcement(Base):
+    """公告表"""
+    __tablename__ = "announcements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(200), nullable=False, comment="公告標題")
+    content = Column(Text, nullable=False, comment="公告內容")
+    priority = Column(String(20), default="normal", comment="優先級: normal/important/urgent")
+    is_pinned = Column(Boolean, default=False, comment="是否置頂")
+    created_by = Column(Integer, ForeignKey("employees.id"), nullable=False, comment="發佈者")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    author = relationship("Employee", backref="announcements")
+
+
+class AnnouncementRead(Base):
+    """公告已讀記錄表"""
+    __tablename__ = "announcement_reads"
+    __table_args__ = (
+        UniqueConstraint("announcement_id", "employee_id", name="uq_announcement_employee"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    announcement_id = Column(Integer, ForeignKey("announcements.id", ondelete="CASCADE"), nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+    read_at = Column(DateTime, default=datetime.now, comment="閱讀時間")
+
+    announcement = relationship("Announcement", backref="reads")
 
 
 if __name__ == "__main__":
