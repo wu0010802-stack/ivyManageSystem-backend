@@ -6,8 +6,9 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 
 from models.database import get_session, Student
 
@@ -51,14 +52,31 @@ class StudentUpdate(BaseModel):
 # ============ Routes ============
 
 @router.get("/students")
-async def get_students():
-    """取得所有在讀學生列表"""
+async def get_students(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    classroom_id: Optional[int] = None,
+    search: Optional[str] = None,
+):
+    """取得在讀學生列表（分頁）"""
     session = get_session()
     try:
-        students = session.query(Student).filter(Student.is_active == True).all()
-        result = []
+        q = session.query(Student).filter(Student.is_active == True)
+
+        if classroom_id is not None:
+            q = q.filter(Student.classroom_id == classroom_id)
+        if search:
+            like = f"%{search}%"
+            q = q.filter(
+                (Student.name.ilike(like)) | (Student.student_id.ilike(like))
+            )
+
+        total = q.count()
+        students = q.order_by(Student.id).offset(skip).limit(limit).all()
+
+        items = []
         for s in students:
-            result.append({
+            items.append({
                 "id": s.id,
                 "student_id": s.student_id,
                 "name": s.name,
@@ -69,11 +87,10 @@ async def get_students():
                 "parent_name": s.parent_name,
                 "parent_phone": s.parent_phone,
                 "address": s.address,
-                "address": s.address,
                 "status_tag": s.status_tag,
                 "is_active": s.is_active
             })
-        return result
+        return {"items": items, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
 

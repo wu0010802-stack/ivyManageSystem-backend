@@ -1031,31 +1031,39 @@ def get_portal_calendar(
 
 @router.get("/announcements")
 def get_portal_announcements(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
 ):
-    """取得公告列表（教師端）"""
+    """取得公告列表（教師端，分頁）"""
     session = get_session()
     try:
         emp_id = current_user["employee_id"]
 
-        # JOIN 一次查出公告和作者，避免 N+1
-        rows = session.query(Announcement, Employee.name).outerjoin(
+        base_q = session.query(Announcement, Employee.name).outerjoin(
             Employee, Announcement.created_by == Employee.id
         ).order_by(
             Announcement.is_pinned.desc(),
             Announcement.created_at.desc(),
-        ).all()
-
-        # Get read announcement IDs for this employee
-        read_ids = set(
-            r.announcement_id for r in session.query(AnnouncementRead).filter(
-                AnnouncementRead.employee_id == emp_id,
-            ).all()
         )
 
-        results = []
+        total = session.query(Announcement).count()
+        rows = base_q.offset(skip).limit(limit).all()
+
+        # Get read announcement IDs for this employee (only for current page)
+        ann_ids = [ann.id for ann, _ in rows]
+        read_ids = set()
+        if ann_ids:
+            read_ids = set(
+                r.announcement_id for r in session.query(AnnouncementRead).filter(
+                    AnnouncementRead.employee_id == emp_id,
+                    AnnouncementRead.announcement_id.in_(ann_ids),
+                ).all()
+            )
+
+        items = []
         for ann, author_name in rows:
-            results.append({
+            items.append({
                 "id": ann.id,
                 "title": ann.title,
                 "content": ann.content,
@@ -1066,7 +1074,7 @@ def get_portal_announcements(
                 "is_read": ann.id in read_ids,
             })
 
-        return results
+        return {"items": items, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
 
