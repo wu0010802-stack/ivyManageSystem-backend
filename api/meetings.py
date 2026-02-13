@@ -5,10 +5,11 @@
 from datetime import date, datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from models.database import get_session, MeetingRecord, Employee
+from utils.auth import get_current_user, require_admin
 
 router = APIRouter(prefix="/api", tags=["meetings"])
 
@@ -48,7 +49,8 @@ class MeetingBatchCreate(BaseModel):
 def get_meetings(
     year: int = Query(...),
     month: int = Query(...),
-    employee_id: Optional[int] = Query(None)
+    employee_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """查詢園務會議記錄"""
     session = get_session()
@@ -90,7 +92,7 @@ def get_meetings(
 
 
 @router.post("/meetings")
-def create_meeting(data: MeetingRecordCreate):
+def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(require_admin)):
     """建立單筆園務會議記錄"""
     session = get_session()
     try:
@@ -129,7 +131,7 @@ def create_meeting(data: MeetingRecordCreate):
 
 
 @router.post("/meetings/batch")
-def create_meetings_batch(data: MeetingBatchCreate):
+def create_meetings_batch(data: MeetingBatchCreate, current_user: dict = Depends(require_admin)):
     """批次建立園務會議記錄（一次建立同日所有員工）"""
     session = get_session()
     try:
@@ -195,7 +197,7 @@ def create_meetings_batch(data: MeetingBatchCreate):
 
 
 @router.put("/meetings/{record_id}")
-def update_meeting(record_id: int, data: MeetingRecordUpdate):
+def update_meeting(record_id: int, data: MeetingRecordUpdate, current_user: dict = Depends(require_admin)):
     """更新園務會議記錄"""
     session = get_session()
     try:
@@ -224,7 +226,7 @@ def update_meeting(record_id: int, data: MeetingRecordUpdate):
 
 
 @router.delete("/meetings/{record_id}")
-def delete_meeting(record_id: int):
+def delete_meeting(record_id: int, current_user: dict = Depends(require_admin)):
     """刪除園務會議記錄"""
     session = get_session()
     try:
@@ -247,7 +249,8 @@ def delete_meeting(record_id: int):
 @router.get("/meetings/summary")
 def get_meeting_summary(
     year: int = Query(...),
-    month: int = Query(...)
+    month: int = Query(...),
+    current_user: dict = Depends(get_current_user),
 ):
     """查詢當月園務會議出勤統計"""
     session = get_session()

@@ -7,9 +7,10 @@ from calendar import monthrange
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.database import get_session, Employee, Attendance
+from utils.auth import get_current_user, require_admin
 from ._shared import AttendanceRecordUpdate
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,8 @@ router = APIRouter()
 async def get_attendance_records(
     year: int = Query(...),
     month: int = Query(...),
-    employee_id: Optional[int] = None
+    employee_id: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """查詢考勤記錄"""
     session = get_session()
@@ -69,7 +71,7 @@ async def get_attendance_records(
 
 
 @router.post("/record")
-async def create_or_update_attendance_record(record: AttendanceRecordUpdate):
+async def create_or_update_attendance_record(record: AttendanceRecordUpdate, current_user: dict = Depends(require_admin)):
     """新增或更新單筆考勤記錄"""
     session = get_session()
     try:
@@ -187,7 +189,7 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate):
 
 
 @router.delete("/record/{employee_id}/{date}")
-async def delete_single_attendance_record(employee_id: int, date: str):
+async def delete_single_attendance_record(employee_id: int, date: str, current_user: dict = Depends(require_admin)):
     """刪除單筆考勤記錄"""
     session = get_session()
     try:
@@ -215,7 +217,7 @@ async def delete_single_attendance_record(employee_id: int, date: str):
 
 
 @router.delete("/records/{employee_id}/{date_str}")
-def delete_single_attendance(employee_id: int, date_str: str):
+def delete_single_attendance(employee_id: int, date_str: str, current_user: dict = Depends(require_admin)):
     """刪除單筆考勤記錄"""
     session = get_session()
     try:
@@ -246,7 +248,7 @@ def delete_single_attendance(employee_id: int, date_str: str):
 
 
 @router.delete("/records/{year}/{month}")
-async def delete_attendance_records(year: int, month: int):
+async def delete_attendance_records(year: int, month: int, current_user: dict = Depends(require_admin)):
     """刪除指定月份的所有考勤記錄"""
     session = get_session()
     try:

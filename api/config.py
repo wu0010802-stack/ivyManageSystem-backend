@@ -6,7 +6,8 @@ import logging
 from typing import Optional
 
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from utils.auth import require_admin
 from pydantic import BaseModel
 
 from models.database import (
@@ -136,7 +137,7 @@ class BonusTypeCreate(BaseModel):
 # ============ Routes ============
 
 @router.get("/attendance-policy")
-def get_attendance_policy():
+def get_attendance_policy(current_user: dict = Depends(require_admin)):
     """取得考勤政策設定"""
     cached = _cache.get("attendance_policy")
     if cached is not None:
@@ -165,7 +166,7 @@ def get_attendance_policy():
 
 
 @router.put("/attendance-policy")
-def update_attendance_policy(data: AttendancePolicyUpdate):
+def update_attendance_policy(data: AttendancePolicyUpdate, current_user: dict = Depends(require_admin)):
     """更新考勤政策設定"""
     session = get_session()
     try:
@@ -192,7 +193,7 @@ def update_attendance_policy(data: AttendancePolicyUpdate):
 
 
 @router.get("/bonus")
-def get_bonus_config():
+def get_bonus_config(current_user: dict = Depends(require_admin)):
     """取得獎金設定"""
     cached = _cache.get("bonus")
     if cached is not None:
@@ -233,7 +234,7 @@ def get_bonus_config():
 
 
 @router.put("/bonus")
-def update_bonus_config(data: BonusConfigUpdate):
+def update_bonus_config(data: BonusConfigUpdate, current_user: dict = Depends(require_admin)):
     """更新獎金設定"""
     session = get_session()
     try:
@@ -260,7 +261,7 @@ def update_bonus_config(data: BonusConfigUpdate):
 
 
 @router.get("/grade-targets")
-def get_grade_targets():
+def get_grade_targets(current_user: dict = Depends(require_admin)):
     """取得年級目標人數設定"""
     session = get_session()
     try:
@@ -282,7 +283,7 @@ def get_grade_targets():
 
 
 @router.put("/grade-targets")
-def update_grade_target(data: GradeTargetUpdate):
+def update_grade_target(data: GradeTargetUpdate, current_user: dict = Depends(require_admin)):
     """更新年級目標人數設定"""
     session = get_session()
     try:
@@ -308,7 +309,7 @@ def update_grade_target(data: GradeTargetUpdate):
 
 
 @router.get("/insurance-rates")
-def get_insurance_rates():
+def get_insurance_rates(current_user: dict = Depends(require_admin)):
     """取得勞健保費率設定"""
     cached = _cache.get("insurance_rates")
     if cached is not None:
@@ -339,7 +340,7 @@ def get_insurance_rates():
 
 
 @router.put("/insurance-rates")
-def update_insurance_rates(data: InsuranceRateUpdate):
+def update_insurance_rates(data: InsuranceRateUpdate, current_user: dict = Depends(require_admin)):
     """更新勞健保費率設定"""
     session = get_session()
     try:
@@ -366,7 +367,7 @@ def update_insurance_rates(data: InsuranceRateUpdate):
 
 
 @router.post("/reload")
-def reload_config():
+def reload_config(current_user: dict = Depends(require_admin)):
     """重新從資料庫載入設定到薪資計算引擎"""
     try:
         _salary_engine.load_config_from_db()
@@ -377,7 +378,7 @@ def reload_config():
 
 
 @router.get("/all")
-def get_all_configs():
+def get_all_configs(current_user: dict = Depends(require_admin)):
     """取得所有設定（一次性載入）"""
     session = get_session()
     try:
@@ -465,7 +466,7 @@ def get_all_configs():
 # ============ Job Titles ============
 
 @router.get("/titles")
-def get_job_titles():
+def get_job_titles(current_user: dict = Depends(require_admin)):
     cached = _cache.get("titles")
     if cached is not None:
         return cached
@@ -478,7 +479,7 @@ def get_job_titles():
 
 
 @router.post("/titles")
-def create_job_title(title: JobTitleCreate):
+def create_job_title(title: JobTitleCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     existing = session.query(JobTitle).filter(JobTitle.name == title.name).first()
     if existing:
@@ -496,7 +497,7 @@ def create_job_title(title: JobTitleCreate):
 
 
 @router.put("/titles/{title_id}")
-def update_job_title(title_id: int, title: JobTitleCreate):
+def update_job_title(title_id: int, title: JobTitleCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     # Check if name exists for OTHER titles
     existing = session.query(JobTitle).filter(JobTitle.name == title.name, JobTitle.id != title_id).first()
@@ -516,7 +517,7 @@ def update_job_title(title_id: int, title: JobTitleCreate):
 
 
 @router.delete("/titles/{title_id}")
-def delete_job_title(title_id: int):
+def delete_job_title(title_id: int, current_user: dict = Depends(require_admin)):
     session = get_session()
     db_title = session.query(JobTitle).filter(JobTitle.id == title_id).first()
     if not db_title:
@@ -532,7 +533,7 @@ def delete_job_title(title_id: int):
 # ============ Type Management ============
 
 @router.get("/allowance-types")
-async def get_allowance_types():
+async def get_allowance_types(current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         return session.query(AllowanceType).filter(AllowanceType.is_active == True).order_by(AllowanceType.sort_order).all()
@@ -541,7 +542,7 @@ async def get_allowance_types():
 
 
 @router.post("/allowance-types")
-async def create_allowance_type(item: AllowanceTypeCreate):
+async def create_allowance_type(item: AllowanceTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         new_item = AllowanceType(**item.dict())
@@ -556,7 +557,7 @@ async def create_allowance_type(item: AllowanceTypeCreate):
 
 
 @router.get("/deduction-types")
-async def get_deduction_types():
+async def get_deduction_types(current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         return session.query(DeductionType).filter(DeductionType.is_active == True).order_by(DeductionType.sort_order).all()
@@ -565,7 +566,7 @@ async def get_deduction_types():
 
 
 @router.post("/deduction-types")
-async def create_deduction_type(item: DeductionTypeCreate):
+async def create_deduction_type(item: DeductionTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         new_item = DeductionType(**item.dict())
@@ -580,7 +581,7 @@ async def create_deduction_type(item: DeductionTypeCreate):
 
 
 @router.get("/bonus-types")
-async def get_bonus_types():
+async def get_bonus_types(current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         return session.query(BonusType).filter(BonusType.is_active == True).order_by(BonusType.sort_order).all()
@@ -589,7 +590,7 @@ async def get_bonus_types():
 
 
 @router.post("/bonus-types")
-async def create_bonus_type(item: BonusTypeCreate):
+async def create_bonus_type(item: BonusTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         new_item = BonusType(**item.dict())

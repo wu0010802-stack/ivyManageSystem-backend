@@ -6,11 +6,12 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import joinedload
 
 from models.database import get_session, Employee, Classroom, ClassGrade, JobTitle
+from utils.auth import get_current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class EmployeeUpdate(BaseModel):
 # ============ Routes ============
 
 @router.get("/employees")
-def get_employees(skip: int = 0, limit: int = 100):
+def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(get_current_user)):
     session = get_session()
     try:
         employees = session.query(Employee).options(joinedload(Employee.job_title_rel)).offset(skip).limit(limit).all()
@@ -119,7 +120,7 @@ def get_employees(skip: int = 0, limit: int = 100):
 
 
 @router.get("/employees/{employee_id}")
-async def get_employee(employee_id: int):
+async def get_employee(employee_id: int, current_user: dict = Depends(get_current_user)):
     """取得單一員工詳細資料"""
     session = get_session()
     try:
@@ -170,7 +171,7 @@ async def get_employee(employee_id: int):
 
 
 @router.post("/employees")
-async def create_employee(emp: EmployeeCreate):
+async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(require_admin)):
     """新增員工"""
     session = get_session()
     try:
@@ -212,7 +213,7 @@ async def create_employee(emp: EmployeeCreate):
 
 
 @router.put("/employees/{employee_id}")
-async def update_employee(employee_id: int, emp: EmployeeUpdate):
+async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: dict = Depends(require_admin)):
     """更新員工資料"""
     session = get_session()
     try:
@@ -257,7 +258,7 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate):
 
 
 @router.delete("/employees/{employee_id}")
-async def delete_employee(employee_id: int):
+async def delete_employee(employee_id: int, current_user: dict = Depends(require_admin)):
     """刪除員工（軟刪除，設為離職）"""
     session = get_session()
     try:
@@ -278,7 +279,7 @@ async def delete_employee(employee_id: int):
 
 
 @router.get("/teachers")
-async def get_teachers():
+async def get_teachers(current_user: dict = Depends(get_current_user)):
     """取得所有可作為老師的員工"""
     session = get_session()
     try:

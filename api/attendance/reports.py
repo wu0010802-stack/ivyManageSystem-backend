@@ -8,10 +8,11 @@ import os
 from calendar import monthrange
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from models.database import get_session, Employee, Attendance, LeaveRecord, OvertimeRecord
+from utils.auth import get_current_user
 from ._shared import LEAVE_TYPE_LABELS
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,8 @@ router = APIRouter()
 @router.get("/summary")
 async def get_attendance_summary(
     year: int = Query(...),
-    month: int = Query(...)
+    month: int = Query(...),
+    current_user: dict = Depends(get_current_user),
 ):
     """取得考勤統計摘要"""
     session = get_session()
@@ -78,7 +80,7 @@ async def get_attendance_summary(
 
 
 @router.get("/anomaly-report")
-async def download_anomaly_report():
+async def download_anomaly_report(current_user: dict = Depends(get_current_user)):
     """下載異常清單"""
     file_path = "output/anomaly_report.xlsx"
     if not os.path.exists(file_path):
@@ -90,7 +92,8 @@ async def download_anomaly_report():
 def get_attendance_calendar(
     employee_id: int = Query(...),
     year: int = Query(...),
-    month: int = Query(...)
+    month: int = Query(...),
+    current_user: dict = Depends(get_current_user),
 ):
     """取得員工月出勤日曆資料"""
     session = get_session()

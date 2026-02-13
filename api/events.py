@@ -6,10 +6,11 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent
+from utils.auth import get_current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ def get_events(
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None),
     event_type: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """取得行事曆事件列表"""
     session = get_session()
@@ -104,7 +106,7 @@ def get_events(
 
 
 @router.get("/events/{event_id}")
-def get_event(event_id: int):
+def get_event(event_id: int, current_user: dict = Depends(get_current_user)):
     """取得單一事件"""
     session = get_session()
     try:
@@ -120,7 +122,7 @@ def get_event(event_id: int):
 
 
 @router.post("/events")
-def create_event(data: EventCreate):
+def create_event(data: EventCreate, current_user: dict = Depends(require_admin)):
     """新增行事曆事件"""
     session = get_session()
     try:
@@ -153,7 +155,7 @@ def create_event(data: EventCreate):
 
 
 @router.put("/events/{event_id}")
-def update_event(event_id: int, data: EventUpdate):
+def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(require_admin)):
     """更新行事曆事件"""
     session = get_session()
     try:
@@ -187,7 +189,7 @@ def update_event(event_id: int, data: EventUpdate):
 
 
 @router.delete("/events/{event_id}")
-def delete_event(event_id: int):
+def delete_event(event_id: int, current_user: dict = Depends(require_admin)):
     """刪除行事曆事件（軟刪除）"""
     session = get_session()
     try:

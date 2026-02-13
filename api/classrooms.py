@@ -5,10 +5,11 @@ Classroom management router
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from sqlalchemy import func
 from models.database import get_session, Classroom, ClassGrade, Employee, Student
+from utils.auth import get_current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/api", tags=["classrooms"])
 # ============ Routes ============
 
 @router.get("/classrooms")
-async def get_classrooms():
+async def get_classrooms(current_user: dict = Depends(get_current_user)):
     """取得所有班級列表（含老師和學生數）"""
     session = get_session()
     try:
@@ -78,7 +79,7 @@ async def get_classrooms():
 
 
 @router.get("/classrooms/{classroom_id}")
-async def get_classroom(classroom_id: int):
+async def get_classroom(classroom_id: int, current_user: dict = Depends(get_current_user)):
     """取得單一班級詳細資料（含學生列表）"""
     session = get_session()
     try:
@@ -133,7 +134,8 @@ async def update_classroom(
     classroom_id: int,
     head_teacher_id: Optional[int] = None,
     assistant_teacher_id: Optional[int] = None,
-    art_teacher_id: Optional[int] = None
+    art_teacher_id: Optional[int] = None,
+    current_user: dict = Depends(require_admin),
 ):
     """更新班級老師"""
     session = get_session()
@@ -161,7 +163,7 @@ async def update_classroom(
 
 
 @router.get("/grades")
-async def get_grades():
+async def get_grades(current_user: dict = Depends(get_current_user)):
     """取得所有年級"""
     session = get_session()
     try:

@@ -5,7 +5,8 @@ Employee allowance management router
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from utils.auth import require_admin
 from pydantic import BaseModel
 
 from models.database import get_session, EmployeeAllowance, AllowanceType
@@ -27,7 +28,7 @@ class EmployeeAllowanceCreate(BaseModel):
 # ============ Routes ============
 
 @router.get("/employees/{employee_id}/allowances")
-async def get_employee_allowances(employee_id: int):
+async def get_employee_allowances(employee_id: int, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         allowances = session.query(EmployeeAllowance, AllowanceType).join(AllowanceType).filter(
@@ -48,7 +49,7 @@ async def get_employee_allowances(employee_id: int):
 
 
 @router.post("/employees/{employee_id}/allowances")
-async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate):
+async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         # 簡單處理：如果已存在相同類型則更新，否則新增

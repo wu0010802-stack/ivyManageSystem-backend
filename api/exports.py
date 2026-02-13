@@ -8,7 +8,8 @@ import calendar as cal_module
 from datetime import date
 from urllib.parse import quote
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from utils.auth import require_admin
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -88,7 +89,7 @@ def _id_name_map(session, model):
 # ============ Employees ============
 
 @router.get("/employees")
-def export_employees():
+def export_employees(current_user: dict = Depends(require_admin)):
     """匯出員工名冊 Excel"""
     session = get_session()
     try:
@@ -134,7 +135,7 @@ def export_employees():
 # ============ Students ============
 
 @router.get("/students")
-def export_students():
+def export_students(current_user: dict = Depends(require_admin)):
     """匯出學生名冊 Excel"""
     session = get_session()
     try:
@@ -180,6 +181,7 @@ def export_students():
 
 @router.get("/attendance")
 def export_attendance(
+    current_user: dict = Depends(require_admin),
     year: int = Query(...),
     month: int = Query(...),
 ):
@@ -268,6 +270,7 @@ EVENT_TYPE_LABELS = {
 
 @router.get("/calendar")
 def export_calendar(
+    current_user: dict = Depends(require_admin),
     year: int = Query(...),
     month: int = Query(...),
 ):

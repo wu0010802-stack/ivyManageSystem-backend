@@ -5,7 +5,8 @@ Insurance router
 import logging
 from typing import List
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.auth import require_admin
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class InsuranceTableImport(BaseModel):
 # ============ Routes ============
 
 @router.post("/insurance/import")
-async def import_insurance_table(data: InsuranceTableImport):
+async def import_insurance_table(data: InsuranceTableImport, current_user: dict = Depends(require_admin)):
     """匯入勞健保級距表"""
     success = _insurance_service.import_table(data=data.data, table_type=data.table_type)
     if success:
@@ -42,7 +43,7 @@ async def import_insurance_table(data: InsuranceTableImport):
 
 
 @router.get("/insurance/calculate")
-async def calculate_insurance(salary: float = Query(...), dependents: int = Query(0)):
+async def calculate_insurance(current_user: dict = Depends(require_admin), salary: float = Query(...), dependents: int = Query(0)):
     """計算勞健保"""
     result = _insurance_service.calculate(salary, dependents)
     return {

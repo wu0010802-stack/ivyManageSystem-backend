@@ -8,10 +8,11 @@ import logging
 from datetime import date, timedelta
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift, ShiftSwapRequest
+from utils.auth import get_current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class DailyShiftCreate(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/types")
-def list_shift_types():
+def list_shift_types(current_user: dict = Depends(get_current_user)):
     session = get_session()
     try:
         types = session.query(ShiftType).order_by(ShiftType.sort_order).all()
@@ -78,7 +79,7 @@ def list_shift_types():
 
 
 @router.post("/types")
-def create_shift_type(data: ShiftTypeCreate):
+def create_shift_type(data: ShiftTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         st = ShiftType(
@@ -100,7 +101,7 @@ def create_shift_type(data: ShiftTypeCreate):
 
 
 @router.put("/types/{type_id}")
-def update_shift_type(type_id: int, data: ShiftTypeUpdate):
+def update_shift_type(type_id: int, data: ShiftTypeUpdate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         st = session.query(ShiftType).get(type_id)
@@ -121,7 +122,7 @@ def update_shift_type(type_id: int, data: ShiftTypeUpdate):
 
 
 @router.delete("/types/{type_id}")
-def delete_shift_type(type_id: int):
+def delete_shift_type(type_id: int, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
         st = session.query(ShiftType).get(type_id)
@@ -149,7 +150,7 @@ def delete_shift_type(type_id: int):
 # ---------------------------------------------------------------------------
 
 @router.get("/assignments")
-def get_assignments(week_start: str):
+def get_assignments(week_start: str, current_user: dict = Depends(get_current_user)):
     """查詢某週排班。week_start 為該週週一日期 (YYYY-MM-DD)"""
     session = get_session()
     try:
@@ -183,7 +184,7 @@ def get_assignments(week_start: str):
 
 
 @router.post("/assignments")
-def save_assignments(data: BulkAssignmentRequest):
+def save_assignments(data: BulkAssignmentRequest, current_user: dict = Depends(require_admin)):
     """批次儲存某週排班（覆蓋該週所有排班）"""
     session = get_session()
     try:
@@ -228,7 +229,8 @@ def save_assignments(data: BulkAssignmentRequest):
 def get_daily_shifts(
     start_date: str,
     end_date: str,
-    employee_id: Optional[int] = None
+    employee_id: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """查詢日期範圍內的排班調動/每日排班"""
     session = get_session()
@@ -267,7 +269,7 @@ def get_daily_shifts(
 
 
 @router.post("/daily")
-def upsert_daily_shift(data: DailyShiftCreate):
+def upsert_daily_shift(data: DailyShiftCreate, current_user: dict = Depends(require_admin)):
     """新增或更新每日排班（支援 UPSERT）"""
     session = get_session()
     try:
@@ -305,7 +307,7 @@ def upsert_daily_shift(data: DailyShiftCreate):
 
 
 @router.delete("/daily/{shift_id}")
-def delete_daily_shift(shift_id: int):
+def delete_daily_shift(shift_id: int, current_user: dict = Depends(require_admin)):
     """刪除每日排班（恢復為週排班或預設）"""
     session = get_session()
     try:
@@ -334,6 +336,7 @@ def get_swap_history(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     """查看換班歷史（管理端）"""
     session = get_session()

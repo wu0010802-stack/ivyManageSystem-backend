@@ -7,10 +7,11 @@ import calendar as cal_module
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from models.database import get_session, Employee, OvertimeRecord
+from utils.auth import get_current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,8 @@ def get_overtimes(
     employee_id: Optional[int] = None,
     year: Optional[int] = None,
     month: Optional[int] = None,
-    status: Optional[str] = None  # pending, approved, rejected
+    status: Optional[str] = None,  # pending, approved, rejected
+    current_user: dict = Depends(get_current_user),
 ):
     """查詢加班記錄"""
     session = get_session()
@@ -122,7 +124,7 @@ def get_overtimes(
 
 
 @router.post("/overtimes")
-def create_overtime(data: OvertimeCreate):
+def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_admin)):
     """新增加班記錄（自動計算加班費）"""
     session = get_session()
     try:
@@ -170,7 +172,7 @@ def create_overtime(data: OvertimeCreate):
 
 
 @router.put("/overtimes/{overtime_id}")
-def update_overtime(overtime_id: int, data: OvertimeUpdate):
+def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_admin)):
     """更新加班記錄"""
     session = get_session()
     try:
@@ -209,7 +211,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate):
 
 
 @router.delete("/overtimes/{overtime_id}")
-def delete_overtime(overtime_id: int):
+def delete_overtime(overtime_id: int, current_user: dict = Depends(require_admin)):
     """刪除加班記錄"""
     session = get_session()
     try:
@@ -224,7 +226,7 @@ def delete_overtime(overtime_id: int):
 
 
 @router.put("/overtimes/{overtime_id}/approve")
-def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員"):
+def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_admin)):
     """核准/駁回加班"""
     session = get_session()
     try:

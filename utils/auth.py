@@ -8,7 +8,7 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 from jose import JWTError, jwt
 
 logger = logging.getLogger(__name__)
@@ -94,3 +94,10 @@ async def get_current_user(authorization: str = Header(None)):
     if employee_id is None:
         raise HTTPException(status_code=401, detail="Token 資料不完整")
     return payload
+
+
+async def require_admin(current_user: dict = Depends(get_current_user)):
+    """FastAPI dependency: require admin role."""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="僅限管理員操作")
+    return current_user
