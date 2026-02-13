@@ -8,6 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import joinedload
 
 from models.database import get_session, Employee, Classroom, ClassGrade, JobTitle
 
@@ -78,7 +79,7 @@ class EmployeeUpdate(BaseModel):
 def get_employees(skip: int = 0, limit: int = 100):
     session = get_session()
     try:
-        employees = session.query(Employee).offset(skip).limit(limit).all()
+        employees = session.query(Employee).options(joinedload(Employee.job_title_rel)).offset(skip).limit(limit).all()
 
         result = []
         for emp in employees:
@@ -122,7 +123,7 @@ async def get_employee(employee_id: int):
     """取得單一員工詳細資料"""
     session = get_session()
     try:
-        employee = session.query(Employee).filter(Employee.id == employee_id).first()
+        employee = session.query(Employee).options(joinedload(Employee.job_title_rel)).filter(Employee.id == employee_id).first()
         if not employee:
             raise HTTPException(status_code=404, detail="找不到該員工")
 

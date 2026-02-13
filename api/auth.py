@@ -3,10 +3,12 @@ Authentication & user management router
 """
 
 import logging
+import time
+from collections import defaultdict
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
@@ -17,6 +19,24 @@ from utils.auth import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# ---------- Login Rate Limiter ----------
+# 每個 IP / 帳號 在 WINDOW 秒內最多 MAX_ATTEMPTS 次嘗試
+_LOGIN_WINDOW = 300  # 5 分鐘
+_LOGIN_MAX_ATTEMPTS = 10
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(key: str):
+    """檢查登入頻率，超出則拋 429"""
+    now = time.time()
+    attempts = _login_attempts[key]
+    # 清除過期紀錄
+    _login_attempts[key] = [t for t in attempts if now - t < _LOGIN_WINDOW]
+    if len(_login_attempts[key]) >= _LOGIN_MAX_ATTEMPTS:
+        logger.warning(f"登入頻率超限: {key}")
+        raise HTTPException(status_code=429, detail="登入嘗試次數過多，請稍後再試")
+    _login_attempts[key].append(now)
 
 
 # ============ Pydantic Models ============
@@ -92,8 +112,12 @@ def impersonate_user(data: ImpersonateRequest, current_user: dict = Depends(get_
         session.close()
 
 @router.post("/login")
-def login(data: LoginRequest):
+def login(data: LoginRequest, request: Request):
     """教師/管理員登入"""
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(f"ip:{client_ip}")
+    _check_rate_limit(f"user:{data.username}")
+
     session = get_session()
     try:
         user = session.query(User).filter(

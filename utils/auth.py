@@ -13,7 +13,17 @@ from jose import JWTError, jwt
 
 logger = logging.getLogger(__name__)
 
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "ivy-kindergarten-secret-key-2026")
+_jwt_secret = os.environ.get("JWT_SECRET_KEY", "")
+_is_dev = os.environ.get("ENV", "development").lower() in ("development", "dev", "local")
+
+if not _jwt_secret:
+    if _is_dev:
+        _jwt_secret = "dev-only-insecure-key-do-not-use-in-production"
+        logger.warning("JWT_SECRET_KEY 未設定，使用開發用預設值。請勿在正式環境使用！")
+    else:
+        raise RuntimeError("JWT_SECRET_KEY 環境變數未設定，正式環境不允許啟動。")
+
+JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 

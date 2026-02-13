@@ -27,10 +27,15 @@ Base = declarative_base()
 # 資料庫連線管理
 # ---------------------------------------------------------------------------
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://yilunwu@localhost:5432/ivymanagement",
-)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+_is_dev = os.environ.get("ENV", "development").lower() in ("development", "dev", "local")
+
+if not DATABASE_URL:
+    if _is_dev:
+        DATABASE_URL = "postgresql://localhost:5432/ivymanagement"
+        logger.warning("DATABASE_URL 未設定，使用本機開發預設值。")
+    else:
+        raise RuntimeError("DATABASE_URL 環境變數未設定，正式環境不允許啟動。")
 
 _engine = None
 _SessionFactory = None

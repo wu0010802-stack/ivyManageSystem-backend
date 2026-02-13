@@ -59,10 +59,18 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# CORS
+# CORS — 由環境變數 CORS_ORIGINS 控制白名單，逗號分隔
+# 例如: CORS_ORIGINS=http://localhost:5173,https://my-app.example.com
+_cors_env = os.environ.get("CORS_ORIGINS", "")
+CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

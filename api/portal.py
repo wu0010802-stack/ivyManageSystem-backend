@@ -137,7 +137,11 @@ def get_attendance_sheet(
 
         # Pre-fetch shift assignments for this month's weeks
         shift_schedule_map = {}  # week_monday -> {work_start, work_end, name}
+        daily_shift_map = {}
         if uses_shift:
+            # 一次性載入所有班別（避免重複查詢）
+            shift_types = {st.id: st for st in session.query(ShiftType).all()}
+
             # Get all Mondays that cover this month
             first_monday = start - timedelta(days=start.weekday())
             last_monday = end - timedelta(days=end.weekday())
@@ -146,7 +150,6 @@ def get_attendance_sheet(
                 ShiftAssignment.week_start_date >= first_monday,
                 ShiftAssignment.week_start_date <= last_monday,
             ).all()
-            shift_types = {st.id: st for st in session.query(ShiftType).all()}
             for sa in assignments:
                 st = shift_types.get(sa.shift_type_id)
                 if st:
@@ -156,20 +159,12 @@ def get_attendance_sheet(
                         "name": st.name,
                     }
 
-        # Fetch Daily Shifts (Overrides)
-        daily_shift_map = {}
-        if uses_shift:
-            from models.database import DailyShift
+            # Fetch Daily Shifts (Overrides)
             daily_shifts = session.query(DailyShift).filter(
                 DailyShift.employee_id == emp.id,
                 DailyShift.date >= start,
                 DailyShift.date <= end,
             ).all()
-            
-            # Ensure we have shift types if not already fetched
-            if 'shift_types' not in locals():
-                shift_types = {st.id: st for st in session.query(ShiftType).all()}
-
             for ds in daily_shifts:
                 st = shift_types.get(ds.shift_type_id)
                 if st:
@@ -1316,6 +1311,8 @@ def get_swap_candidates(
     """取得指定日期其他老師及其班別"""
     from datetime import timedelta
 
+    from datetime import timedelta
+
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
@@ -1331,24 +1328,52 @@ def get_swap_candidates(
                 teacher_ids.add(c.head_teacher_id)
             if c.assistant_teacher_id:
                 teacher_ids.add(c.assistant_teacher_id)
-
         teacher_ids.discard(emp.id)
 
+        if not teacher_ids:
+            return []
+
+        # 批量載入老師
+        teachers = session.query(Employee).filter(
+            Employee.id.in_(teacher_ids), Employee.is_active == True
+        ).all()
+        teacher_map = {t.id: t for t in teachers}
+        active_ids = set(teacher_map.keys())
+
+        # 批量載入 DailyShift（override）
+        daily_shifts = session.query(DailyShift).filter(
+            DailyShift.employee_id.in_(active_ids),
+            DailyShift.date == target_date,
+        ).all()
+        daily_shift_map = {ds.employee_id: ds.shift_type_id for ds in daily_shifts}
+
+        # 批量載入 ShiftAssignment（週排班）
+        week_monday = target_date - timedelta(days=target_date.weekday())
+        weekly_assigns = session.query(ShiftAssignment).filter(
+            ShiftAssignment.employee_id.in_(active_ids),
+            ShiftAssignment.week_start_date == week_monday,
+        ).all()
+        weekly_map = {sa.employee_id: sa.shift_type_id for sa in weekly_assigns}
+
+        # 批量載入 pending swap 狀態
+        pending_swaps = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.swap_date == target_date,
+            ShiftSwapRequest.status == "pending",
+            or_(
+                ShiftSwapRequest.requester_id.in_(active_ids),
+                ShiftSwapRequest.target_id.in_(active_ids),
+            ),
+        ).all()
+        pending_ids = set()
+        for ps in pending_swaps:
+            pending_ids.add(ps.requester_id)
+            pending_ids.add(ps.target_id)
+
         candidates = []
-        for tid in teacher_ids:
-            teacher = session.query(Employee).filter(Employee.id == tid, Employee.is_active == True).first()
-            if not teacher:
-                continue
-
-            shift_type_id = _get_employee_shift_for_date(session, tid, target_date)
+        for tid in active_ids:
+            teacher = teacher_map[tid]
+            shift_type_id = daily_shift_map.get(tid) or weekly_map.get(tid)
             st = shift_types.get(shift_type_id) if shift_type_id else None
-
-            # Check if target already has a pending swap on this date
-            has_pending = session.query(ShiftSwapRequest).filter(
-                ShiftSwapRequest.swap_date == target_date,
-                ShiftSwapRequest.status == "pending",
-                (ShiftSwapRequest.requester_id == tid) | (ShiftSwapRequest.target_id == tid),
-            ).first() is not None
 
             candidates.append({
                 "employee_id": tid,
@@ -1357,7 +1382,7 @@ def get_swap_candidates(
                 "shift_name": st.name if st else "未排班",
                 "work_start": st.work_start if st else None,
                 "work_end": st.work_end if st else None,
-                "has_pending_swap": has_pending,
+                "has_pending_swap": tid in pending_ids,
             })
 
         return candidates
@@ -1378,14 +1403,17 @@ def get_swap_requests(
         ).order_by(ShiftSwapRequest.created_at.desc()).limit(50).all()
 
         shift_types = {st.id: st for st in session.query(ShiftType).all()}
-        emp_map = {}
+
+        # 批量載入相關員工姓名
+        emp_ids = set()
+        for r in requests:
+            emp_ids.add(r.requester_id)
+            emp_ids.add(r.target_id)
+        emp_rows = session.query(Employee.id, Employee.name).filter(Employee.id.in_(emp_ids)).all() if emp_ids else []
+        emp_map = {e.id: e.name for e in emp_rows}
 
         result = []
         for r in requests:
-            for eid in (r.requester_id, r.target_id):
-                if eid not in emp_map:
-                    e = session.query(Employee).get(eid)
-                    emp_map[eid] = e.name if e else "未知"
 
             req_st = shift_types.get(r.requester_shift_type_id)
             tgt_st = shift_types.get(r.target_shift_type_id)
