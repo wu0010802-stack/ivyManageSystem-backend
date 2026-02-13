@@ -490,9 +490,9 @@ class Classroom(Base):
     capacity = Column(Integer, default=30)
     current_count = Column(Integer, default=0)
 
-    head_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
-    assistant_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
-    art_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    head_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    assistant_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    art_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
 
     class_code = Column(String(20), nullable=True, comment="班級代號")
 
@@ -559,7 +559,7 @@ class EmployeeAllowance(Base):
     __tablename__ = "employee_allowances"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
     allowance_type_id = Column(Integer, ForeignKey("allowance_types.id"), nullable=False)
     amount = Column(Float, default=0)
     effective_date = Column(Date)
