@@ -8,12 +8,13 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
 from utils.auth import (
     hash_password, verify_password, create_access_token, get_current_user,
+    decode_token_allow_expired,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,55 @@ def login(data: LoginRequest, request: Request):
     except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+# ============ Token Refresh ============
+
+@router.post("/refresh")
+def refresh_token(authorization: str = Header(None)):
+    """以現有 token（可為剛過期）換發新 token。
+    寬限期內的過期 token 仍可刷新，超過則需重新登入。
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="未提供認證 Token")
+    token = authorization.split(" ", 1)[1]
+
+    # 允許過期的 token 解碼（在寬限期內）
+    payload = decode_token_allow_expired(token)
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token 資料不完整")
+
+    # 驗證使用者仍然有效
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id, User.is_active == True).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="使用者已停用或不存在")
+
+        emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
+
+        new_token = create_access_token({
+            "user_id": user.id,
+            "employee_id": user.employee_id,
+            "role": user.role,
+            "name": emp.name if emp else "",
+        })
+
+        return {
+            "token": new_token,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "role": user.role,
+                "employee_id": user.employee_id,
+                "name": emp.name if emp else "",
+                "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
+            },
+        }
     finally:
         session.close()
 

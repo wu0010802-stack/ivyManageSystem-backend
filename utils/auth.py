@@ -26,6 +26,7 @@ if not _jwt_secret:
 JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
+JWT_REFRESH_GRACE_HOURS = 72  # 過期後仍允許刷新的寬限時間
 
 
 def hash_password(password: str) -> str:
@@ -56,6 +57,31 @@ def decode_token(token: str) -> dict:
         return payload
     except JWTError:
         raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+
+def decode_token_allow_expired(token: str) -> dict:
+    """解碼 token，允許在寬限期內的過期 token（用於 refresh）。
+    回傳 payload，若 token 無效或超出寬限期則拋出 401。
+    """
+    try:
+        # 先嘗試正常解碼（未過期）
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        # Token 已過期，跳過 exp 驗證取出 payload
+        payload = jwt.decode(
+            token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM],
+            options={"verify_exp": False},
+        )
+        # 檢查是否在寬限期內
+        exp = payload.get("exp", 0)
+        now = datetime.utcnow().timestamp()
+        grace_seconds = JWT_REFRESH_GRACE_HOURS * 3600
+        if now - exp > grace_seconds:
+            raise HTTPException(status_code=401, detail="Token 已超過可刷新期限，請重新登入")
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=401, detail="無效的 Token，請重新登入")
 
 
 async def get_current_user(authorization: str = Header(None)):
