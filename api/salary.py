@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from sqlalchemy.orm import joinedload
 from models.database import (
     get_session, Employee, Classroom, ClassGrade, Student,
     SalaryRecord, EmployeeAllowance, AllowanceType
@@ -237,6 +238,22 @@ async def calculate_salaries(request: CalculateSalaryRequest):
             "overtime_per": request.bonus_settings.overtime_bonus_per_student
         }
 
+    # 批次載入所有園務會議記錄，避免 N+1
+    from models.database import MeetingRecord
+    import calendar
+    _, last_day = calendar.monthrange(request.year, request.month)
+    salary_start = date(request.year, request.month, 1)
+    salary_end = date(request.year, request.month, last_day)
+
+    all_meetings = session.query(MeetingRecord).filter(
+        MeetingRecord.meeting_date >= salary_start,
+        MeetingRecord.meeting_date <= salary_end
+    ).all()
+
+    meeting_by_emp = {}
+    for m in all_meetings:
+        meeting_by_emp.setdefault(m.employee_id, []).append(m)
+
     for emp in employees:
         emp_dict = {
             "name": emp.name,
@@ -397,19 +414,9 @@ async def calculate_salaries(request: CalculateSalaryRequest):
                 emp_dict['_calculated_festival_bonus'] = round(school_festival_bonus)
                 emp_dict['_calculated_overtime_bonus'] = 0  # 沒有帶班，無超額獎金
 
-        # 查詢園務會議記錄
-        from models.database import MeetingRecord
-        import calendar
-        _, last_day = calendar.monthrange(request.year, request.month)
-        salary_start = date(request.year, request.month, 1)
-        salary_end = date(request.year, request.month, last_day)
-        
-        meeting_records = session.query(MeetingRecord).filter(
-            MeetingRecord.employee_id == emp.id,
-            MeetingRecord.meeting_date >= salary_start,
-            MeetingRecord.meeting_date <= salary_end
-        ).all()
-        
+        # 從預載入的會議記錄取得該員工的資料
+        meeting_records = meeting_by_emp.get(emp.id, [])
+
         meeting_context = None
         if meeting_records:
             meeting_attended = sum(1 for m in meeting_records if m.attended)
@@ -574,6 +581,8 @@ def get_salary_records(
     try:
         records = session.query(SalaryRecord, Employee).join(
             Employee, SalaryRecord.employee_id == Employee.id
+        ).options(
+            joinedload(Employee.job_title_rel)
         ).filter(
             SalaryRecord.salary_year == year,
             SalaryRecord.salary_month == month

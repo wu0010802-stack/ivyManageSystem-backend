@@ -6,12 +6,18 @@ Database Schema for Kindergarten Payroll System
 import os
 import logging
 from contextlib import contextmanager
+from pathlib import Path
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import enum
+
+# 載入 .env（backend/.env）
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_env_path)
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +36,27 @@ _engine = None
 _SessionFactory = None
 
 
+def _is_remote_db(url: str) -> bool:
+    """判斷是否為遠端資料庫（Supabase 等）"""
+    return "supabase" in url or "neon" in url or "render" in url
+
+
 def get_engine():
     """取得全域 Engine（含連線池），只建立一次"""
     global _engine
     if _engine is None:
-        _engine = create_engine(
-            DATABASE_URL,
+        kwargs = dict(
             pool_size=5,
             max_overflow=10,
             pool_pre_ping=True,
             echo=False,
         )
+
+        # 遠端資料庫需要 SSL
+        if _is_remote_db(DATABASE_URL):
+            kwargs["connect_args"] = {"sslmode": "require"}
+
+        _engine = create_engine(DATABASE_URL, **kwargs)
     return _engine
 
 
@@ -190,6 +206,10 @@ class Attendance(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+    __table_args__ = (
+        Index('ix_attendance_emp_date', 'employee_id', 'attendance_date'),
+    )
+
     employee = relationship("Employee", back_populates="attendances")
 
 
@@ -216,6 +236,10 @@ class LeaveRecord(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+    __table_args__ = (
+        Index('ix_leave_emp_dates', 'employee_id', 'start_date', 'end_date'),
+    )
+
     employee = relationship("Employee", back_populates="leaves")
 
 
@@ -241,6 +265,10 @@ class OvertimeRecord(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_overtime_emp_date', 'employee_id', 'overtime_date'),
+    )
 
     employee = relationship("Employee", backref="overtimes")
 
@@ -308,6 +336,10 @@ class SalaryRecord(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_salary_emp_ym', 'employee_id', 'salary_year', 'salary_month'),
+    )
 
     employee = relationship("Employee", back_populates="salaries")
 
@@ -416,6 +448,10 @@ class Student(Base):
 
     is_active = Column(Boolean, default=True)
     status_tag = Column(String(50), nullable=True, comment="狀態標籤")
+
+    __table_args__ = (
+        Index('ix_student_classroom', 'classroom_id', 'is_active'),
+    )
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -778,6 +814,10 @@ class MeetingRecord(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_meeting_emp_date', 'employee_id', 'meeting_date'),
+    )
 
     employee = relationship("Employee", backref="meeting_records")
 

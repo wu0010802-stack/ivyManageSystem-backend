@@ -1021,14 +1021,20 @@ async def get_attendance_summary(
         # 取得所有員工
         employees = session.query(Employee).filter(Employee.is_active == True).all()
 
+        # 批次載入所有考勤記錄，避免 N+1
+        all_attendances = session.query(Attendance).filter(
+            Attendance.attendance_date >= start_date,
+            Attendance.attendance_date <= end_date
+        ).all()
+
+        # 按 employee_id 分組
+        att_by_emp = {}
+        for a in all_attendances:
+            att_by_emp.setdefault(a.employee_id, []).append(a)
+
         result = []
         for emp in employees:
-            # 查詢該員工的考勤記錄
-            attendances = session.query(Attendance).filter(
-                Attendance.employee_id == emp.id,
-                Attendance.attendance_date >= start_date,
-                Attendance.attendance_date <= end_date
-            ).all()
+            attendances = att_by_emp.get(emp.id, [])
 
             if not attendances:
                 continue

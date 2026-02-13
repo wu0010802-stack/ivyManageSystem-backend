@@ -5,6 +5,7 @@ System configuration router
 import logging
 from typing import Optional
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -15,6 +16,18 @@ from models.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 設定快取（5 分鐘 TTL，最多 16 個 key）
+_cache = TTLCache(maxsize=16, ttl=300)
+
+
+def _clear_cache(*keys):
+    """清除指定的快取 key，不指定則全部清除"""
+    if keys:
+        for k in keys:
+            _cache.pop(k, None)
+    else:
+        _cache.clear()
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -125,12 +138,16 @@ class BonusTypeCreate(BaseModel):
 @router.get("/attendance-policy")
 def get_attendance_policy():
     """取得考勤政策設定"""
+    cached = _cache.get("attendance_policy")
+    if cached is not None:
+        return cached
+
     session = get_session()
     try:
         policy = session.query(AttendancePolicy).filter(AttendancePolicy.is_active == True).first()
         if not policy:
             return {}
-        return {
+        result = {
             "id": policy.id,
             "default_work_start": policy.default_work_start,
             "default_work_end": policy.default_work_end,
@@ -141,6 +158,8 @@ def get_attendance_policy():
             "missing_punch_deduction": policy.missing_punch_deduction,
             "festival_bonus_months": policy.festival_bonus_months
         }
+        _cache["attendance_policy"] = result
+        return result
     finally:
         session.close()
 
@@ -163,6 +182,7 @@ def update_attendance_policy(data: AttendancePolicyUpdate):
         session.commit()
         # 重新載入設定到薪資計算引擎
         _salary_engine.load_config_from_db()
+        _clear_cache("attendance_policy")
         return {"message": "考勤政策更新成功"}
     except Exception as e:
         session.rollback()
@@ -174,12 +194,16 @@ def update_attendance_policy(data: AttendancePolicyUpdate):
 @router.get("/bonus")
 def get_bonus_config():
     """取得獎金設定"""
+    cached = _cache.get("bonus")
+    if cached is not None:
+        return cached
+
     session = get_session()
     try:
         config = session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).order_by(DBBonusConfig.config_year.desc()).first()
         if not config:
             return {}
-        return {
+        result = {
             "id": config.id,
             "config_year": config.config_year,
             "head_teacher_ab": config.head_teacher_ab,
@@ -202,6 +226,8 @@ def get_bonus_config():
             "overtime_assistant_baby": config.overtime_assistant_baby,
             "school_wide_target": config.school_wide_target
         }
+        _cache["bonus"] = result
+        return result
     finally:
         session.close()
 
@@ -224,6 +250,7 @@ def update_bonus_config(data: BonusConfigUpdate):
         session.commit()
         # 重新載入設定到薪資計算引擎
         _salary_engine.load_config_from_db()
+        _clear_cache("bonus")
         return {"message": "獎金設定更新成功"}
     except Exception as e:
         session.rollback()
@@ -283,12 +310,16 @@ def update_grade_target(data: GradeTargetUpdate):
 @router.get("/insurance-rates")
 def get_insurance_rates():
     """取得勞健保費率設定"""
+    cached = _cache.get("insurance_rates")
+    if cached is not None:
+        return cached
+
     session = get_session()
     try:
         rate = session.query(InsuranceRate).filter(InsuranceRate.is_active == True).order_by(InsuranceRate.rate_year.desc()).first()
         if not rate:
             return {}
-        return {
+        result = {
             "id": rate.id,
             "rate_year": rate.rate_year,
             "labor_rate": rate.labor_rate,
@@ -301,6 +332,8 @@ def get_insurance_rates():
             "pension_employer_rate": rate.pension_employer_rate,
             "average_dependents": rate.average_dependents
         }
+        _cache["insurance_rates"] = result
+        return result
     finally:
         session.close()
 
@@ -323,6 +356,7 @@ def update_insurance_rates(data: InsuranceRateUpdate):
         session.commit()
         # 重新載入設定到薪資計算引擎
         _salary_engine.load_config_from_db()
+        _clear_cache("insurance_rates")
         return {"message": "勞健保費率更新成功"}
     except Exception as e:
         session.rollback()
@@ -336,6 +370,7 @@ def reload_config():
     """重新從資料庫載入設定到薪資計算引擎"""
     try:
         _salary_engine.load_config_from_db()
+        _clear_cache()
         return {"message": "設定已重新載入"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -431,9 +466,15 @@ def get_all_configs():
 
 @router.get("/titles")
 def get_job_titles():
+    cached = _cache.get("titles")
+    if cached is not None:
+        return cached
+
     session = get_session()
     titles = session.query(JobTitle).filter(JobTitle.is_active == True).order_by(JobTitle.sort_order).all()
-    return [{"id": t.id, "name": t.name} for t in titles]
+    result = [{"id": t.id, "name": t.name} for t in titles]
+    _cache["titles"] = result
+    return result
 
 
 @router.post("/titles")
@@ -450,6 +491,7 @@ def create_job_title(title: JobTitleCreate):
     new_title = JobTitle(name=title.name, is_active=True)
     session.add(new_title)
     session.commit()
+    _clear_cache("titles")
     return {"message": "Job title created", "id": new_title.id}
 
 
@@ -469,6 +511,7 @@ def update_job_title(title_id: int, title: JobTitleCreate):
     # Ensure it's active if we are updating it
     db_title.is_active = True
     session.commit()
+    _clear_cache("titles")
     return {"message": "Job title updated"}
 
 
@@ -482,6 +525,7 @@ def delete_job_title(title_id: int):
     # Soft delete
     db_title.is_active = False
     session.commit()
+    _clear_cache("titles")
     return {"message": "Job title deleted (soft delete)"}
 
 

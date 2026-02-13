@@ -1028,7 +1028,10 @@ def get_portal_announcements(
     try:
         emp_id = current_user["employee_id"]
 
-        announcements = session.query(Announcement).order_by(
+        # JOIN 一次查出公告和作者，避免 N+1
+        rows = session.query(Announcement, Employee.name).outerjoin(
+            Employee, Announcement.created_by == Employee.id
+        ).order_by(
             Announcement.is_pinned.desc(),
             Announcement.created_at.desc(),
         ).all()
@@ -1041,15 +1044,14 @@ def get_portal_announcements(
         )
 
         results = []
-        for ann in announcements:
-            author = session.query(Employee).filter(Employee.id == ann.created_by).first()
+        for ann, author_name in rows:
             results.append({
                 "id": ann.id,
                 "title": ann.title,
                 "content": ann.content,
                 "priority": ann.priority,
                 "is_pinned": ann.is_pinned,
-                "created_by_name": author.name if author else "未知",
+                "created_by_name": author_name or "未知",
                 "created_at": ann.created_at.isoformat() if ann.created_at else None,
                 "is_read": ann.id in read_ids,
             })
