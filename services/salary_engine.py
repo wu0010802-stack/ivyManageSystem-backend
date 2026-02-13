@@ -15,6 +15,36 @@ def _get_db_session():
     return get_session()
 
 
+def get_working_days(year: int, month: int, session=None) -> int:
+    """計算指定月份的法定工作日數（週一至週五，排除國定假日）"""
+    import calendar
+    from models.database import Holiday, get_session
+
+    cal = calendar.Calendar()
+    # 取得當月所有工作日（週一=0 到 週五=4）
+    workdays = [d for d in cal.itermonthdays2(year, month)
+                if d[0] != 0 and d[1] < 5]
+
+    # 查詢當月國定假日
+    _session = session or get_session()
+    try:
+        month_start = date(year, month, 1)
+        month_end = date(year, month, calendar.monthrange(year, month)[1])
+        holidays = _session.query(Holiday.date).filter(
+            Holiday.date >= month_start,
+            Holiday.date <= month_end,
+            Holiday.is_active == True
+        ).all()
+        holiday_dates = {h.date for h in holidays}
+    finally:
+        if not session:
+            _session.close()
+
+    # 排除落在工作日的國定假日
+    working_days = len([d for d in workdays if date(year, month, d[0]) not in holiday_dates])
+    return working_days
+
+
 @dataclass
 class SalaryBreakdown:
     """薪資明細"""
@@ -426,22 +456,22 @@ class SalaryEngine:
         """設定扣款規則"""
         self.deduction_rules.update(rules)
     
-    def calculate_attendance_deduction(self, attendance: AttendanceResult, daily_salary: float = 0, base_salary: float = 0, late_details: list = None) -> dict:
+    def calculate_attendance_deduction(self, attendance: AttendanceResult, daily_salary: float = 0, base_salary: float = 0, late_details: list = None, working_days: int = 22) -> dict:
         """
         計算考勤扣款
-        
+
         新規則：
-        - 遲到/早退：按分鐘比例扣款（基於員工薪資，每分鐘 = 月薪 ÷ 30天 ÷ 8小時 ÷ 60分鐘）
+        - 遲到/早退：按分鐘比例扣款（基於員工薪資，每分鐘 = 月薪 ÷ 當月工作日數 ÷ 8小時 ÷ 60分鐘）
         - 無寬限期
         - 遲到超過 2 小時（120 分鐘）：該次不扣分鐘費，改為請事假半天扣薪
         - 未打卡：不扣款，僅記錄次數（供考核用）
         """
         late_rule = self.deduction_rules.get('late', {})
         early_rule = self.deduction_rules.get('early', {})
-        
+
         # 按薪資比例計算每分鐘扣款金額
-        # 每分鐘薪資 = 月薪 / (30天 × 8小時 × 60分鐘) = 月薪 / 14400
-        per_minute_rate = base_salary / 14400 if base_salary > 0 else 1
+        # 每分鐘薪資 = 月薪 / (當月工作日數 × 8小時 × 60分鐘)
+        per_minute_rate = base_salary / (working_days * 8 * 60) if base_salary > 0 else 1
         
         auto_leave_threshold = late_rule.get('auto_leave_threshold', 120)
         
@@ -775,7 +805,8 @@ class SalaryEngine:
         allowances: List[dict] = None,
         classroom_context: dict = None,
         office_staff_context: dict = None,
-        meeting_context: dict = None
+        meeting_context: dict = None,
+        working_days: int = 22
     ) -> SalaryBreakdown:
         """
         計算單一員工薪資
@@ -988,11 +1019,11 @@ class SalaryEngine:
         
         # 考勤扣款
         base_sal = employee.get('base_salary', 0) or 0
-        daily_salary = base_sal / 30 if base_sal else 0
+        daily_salary = base_sal / working_days if base_sal else 0
         late_details = employee.get('_late_details', None)  # 逐筆遲到分鐘數列表
         if attendance:
             att_ded = self.calculate_attendance_deduction(
-                attendance, daily_salary=daily_salary, base_salary=base_sal, late_details=late_details
+                attendance, daily_salary=daily_salary, base_salary=base_sal, late_details=late_details, working_days=working_days
             )
             breakdown.late_deduction = att_ded['late_deduction']
             breakdown.early_leave_deduction = att_ded['early_leave_deduction']
@@ -1365,7 +1396,8 @@ class SalaryEngine:
                 LeaveRecord.end_date >= start_date
             ).all()
             leave_deduction_total = 0
-            daily_salary = emp.base_salary / 30 if emp.base_salary else 0
+            wd = get_working_days(year, month, session)
+            daily_salary = emp.base_salary / wd if emp.base_salary else 0
             for lv in approved_leaves:
                 ratio = LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
                 leave_deduction_total += (lv.leave_hours / 8) * daily_salary * ratio
@@ -1408,7 +1440,8 @@ class SalaryEngine:
                 allowances=allowances,
                 classroom_context=classroom_context,
                 office_staff_context=office_staff_context,
-                meeting_context=meeting_context
+                meeting_context=meeting_context,
+                working_days=wd
             )
             # 加入加班費
             breakdown.overtime_work_pay = overtime_work_pay_total

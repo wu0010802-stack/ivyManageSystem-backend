@@ -28,9 +28,9 @@ OVERTIME_TYPE_LABELS = {
 
 # ============ Helper Functions ============
 
-def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str) -> float:
+def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str, working_days: int = 22) -> float:
     """依勞基法計算加班費"""
-    hourly_base = base_salary / 30 / 8
+    hourly_base = base_salary / working_days / 8
 
     if overtime_type == "weekday":
         # 平日: 前2小時 1.34x, 後2小時 1.67x
@@ -133,7 +133,9 @@ def create_overtime(data: OvertimeCreate):
         if not emp:
             raise HTTPException(status_code=404, detail="員工不存在")
 
-        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
+        from services.salary_engine import get_working_days
+        wd = get_working_days(data.overtime_date.year, data.overtime_date.month, session)
+        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type, working_days=wd)
 
         start_dt = None
         end_dt = None
@@ -191,7 +193,9 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate):
         # Recalculate pay
         emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()
         if emp:
-            ot.overtime_pay = calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type)
+            from services.salary_engine import get_working_days
+            wd = get_working_days(ot.overtime_date.year, ot.overtime_date.month, session)
+            ot.overtime_pay = calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type, working_days=wd)
 
         session.commit()
         return {"message": "加班記錄已更新", "overtime_pay": ot.overtime_pay}

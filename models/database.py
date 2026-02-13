@@ -45,18 +45,22 @@ def get_engine():
     """取得全域 Engine（含連線池），只建立一次"""
     global _engine
     if _engine is None:
-        kwargs = dict(
-            pool_size=5,
-            max_overflow=10,
-            pool_pre_ping=True,
-            echo=False,
-        )
-
-        # 遠端資料庫需要 SSL
-        if _is_remote_db(DATABASE_URL):
-            kwargs["connect_args"] = {"sslmode": "require"}
-
-        _engine = create_engine(DATABASE_URL, **kwargs)
+        if DATABASE_URL.startswith("sqlite"):
+            _engine = create_engine(
+                DATABASE_URL,
+                connect_args={"check_same_thread": False},
+                echo=False,
+            )
+        else:
+            kwargs = dict(
+                pool_size=5,
+                max_overflow=10,
+                pool_pre_ping=True,
+                echo=False,
+            )
+            if _is_remote_db(DATABASE_URL):
+                kwargs["connect_args"] = {"sslmode": "require"}
+            _engine = create_engine(DATABASE_URL, **kwargs)
     return _engine
 
 
@@ -765,6 +769,35 @@ class DailyShift(Base):
     shift_type = relationship("ShiftType", backref="daily_shifts")
 
 
+class ShiftSwapRequest(Base):
+    """換班申請表"""
+    __tablename__ = "shift_swap_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    requester_id = Column(Integer, ForeignKey("employees.id"), nullable=False, comment="發起人")
+    target_id = Column(Integer, ForeignKey("employees.id"), nullable=False, comment="換班對象")
+    swap_date = Column(Date, nullable=False, comment="換班日期")
+    requester_shift_type_id = Column(Integer, ForeignKey("shift_types.id"), comment="發起者原班別")
+    target_shift_type_id = Column(Integer, ForeignKey("shift_types.id"), comment="對象原班別")
+    reason = Column(Text, comment="申請原因")
+    status = Column(String(20), default="pending", comment="pending/accepted/rejected/cancelled")
+    target_responded_at = Column(DateTime, comment="對方回覆時間")
+    target_remark = Column(Text, comment="對方備註")
+    executed_at = Column(DateTime, comment="執行時間")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("ix_swap_requester", "requester_id", "status"),
+        Index("ix_swap_target", "target_id", "status"),
+    )
+
+    requester = relationship("Employee", foreign_keys=[requester_id], backref="swap_requests_sent")
+    target = relationship("Employee", foreign_keys=[target_id], backref="swap_requests_received")
+    requester_shift_type = relationship("ShiftType", foreign_keys=[requester_shift_type_id])
+    target_shift_type = relationship("ShiftType", foreign_keys=[target_shift_type_id])
+
+
 class User(Base):
     """用戶認證表"""
     __tablename__ = "users"
@@ -872,6 +905,26 @@ class AnnouncementRead(Base):
     read_at = Column(DateTime, default=datetime.now, comment="閱讀時間")
 
     announcement = relationship("Announcement", backref="reads")
+
+
+class AuditLog(Base):
+    """操作審計紀錄表"""
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_created", "created_at"),
+        Index("ix_audit_entity", "entity_type", "entity_id"),
+        Index("ix_audit_user", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=True, comment="操作者 user_id")
+    username = Column(String(50), nullable=True, comment="操作者名稱")
+    action = Column(String(20), nullable=False, comment="CREATE / UPDATE / DELETE")
+    entity_type = Column(String(50), nullable=False, comment="資源類型")
+    entity_id = Column(String(50), nullable=True, comment="資源 ID")
+    summary = Column(Text, nullable=True, comment="操作摘要")
+    ip_address = Column(String(45), nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
 
 
 if __name__ == "__main__":

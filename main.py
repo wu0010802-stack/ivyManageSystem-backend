@@ -36,6 +36,8 @@ from api.announcements import router as announcements_router
 from api.approvals import router as approvals_router
 from api.reports import router as reports_router
 from api.exports import router as exports_router
+from api.audit import router as audit_router
+from api.dev import router as dev_router, init_dev_services
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,6 +79,7 @@ salary_engine = SalaryEngine(load_from_db=True)
 init_salary_services(salary_engine, insurance_service)
 init_config_services(salary_engine)
 init_insurance_services(insurance_service)
+init_dev_services(salary_engine)
 
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)
@@ -105,6 +108,12 @@ app.include_router(announcements_router)
 app.include_router(approvals_router)
 app.include_router(reports_router)
 app.include_router(exports_router)
+app.include_router(audit_router)
+app.include_router(dev_router)
+
+# Audit middleware (must be added after CORS middleware)
+from utils.audit import AuditMiddleware
+app.add_middleware(AuditMiddleware)
 
 # ---------------------------------------------------------------------------
 # Seed Data
@@ -240,18 +249,29 @@ def seed_default_admin():
     from utils.auth import hash_password
     session = get_session()
     try:
-        if session.query(User).count() == 0:
-            emp = session.query(Employee).first()
-            if emp:
-                admin_user = User(
-                    employee_id=emp.id,
-                    username="admin",
-                    password_hash=hash_password("admin123"),
-                    role="admin",
-                )
-                session.add(admin_user)
-                session.commit()
-                logger.info(f"Seeded default admin user (linked to {emp.name}).")
+        if session.query(User).filter(User.role == "admin").count() > 0:
+            return
+
+        # 確保至少有一位員工可以關聯
+        emp = session.query(Employee).first()
+        if not emp:
+            emp = Employee(
+                employee_id="ADMIN001",
+                name="系統管理員",
+                position="管理員",
+            )
+            session.add(emp)
+            session.flush()
+
+        admin_user = User(
+            employee_id=emp.id,
+            username="admin",
+            password_hash=hash_password("admin123"),
+            role="admin",
+        )
+        session.add(admin_user)
+        session.commit()
+        logger.info(f"Seeded default admin user (linked to {emp.name}).")
     finally:
         session.close()
 

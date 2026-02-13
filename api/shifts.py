@@ -11,7 +11,7 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift
+from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift, ShiftSwapRequest
 
 logger = logging.getLogger(__name__)
 
@@ -321,5 +321,54 @@ def delete_daily_shift(shift_id: int):
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# 換班歷史（管理端）
+# ---------------------------------------------------------------------------
+
+@router.get("/swap-history")
+def get_swap_history(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status: Optional[str] = None,
+):
+    """查看換班歷史（管理端）"""
+    session = get_session()
+    try:
+        query = session.query(ShiftSwapRequest).order_by(ShiftSwapRequest.created_at.desc())
+
+        if start_date:
+            query = query.filter(ShiftSwapRequest.swap_date >= date.fromisoformat(start_date))
+        if end_date:
+            query = query.filter(ShiftSwapRequest.swap_date <= date.fromisoformat(end_date))
+        if status:
+            query = query.filter(ShiftSwapRequest.status == status)
+
+        swaps = query.limit(100).all()
+
+        # Pre-fetch employees and shift types
+        emp_ids = set()
+        for s in swaps:
+            emp_ids.add(s.requester_id)
+            emp_ids.add(s.target_id)
+        emps = {e.id: e.name for e in session.query(Employee).filter(Employee.id.in_(emp_ids)).all()} if emp_ids else {}
+        sts = {st.id: st.name for st in session.query(ShiftType).all()}
+
+        return [{
+            "id": s.id,
+            "requester_name": emps.get(s.requester_id, ""),
+            "target_name": emps.get(s.target_id, ""),
+            "swap_date": s.swap_date.isoformat(),
+            "requester_shift": sts.get(s.requester_shift_type_id, "未排班"),
+            "target_shift": sts.get(s.target_shift_type_id, "未排班"),
+            "reason": s.reason,
+            "status": s.status,
+            "target_remark": s.target_remark,
+            "target_responded_at": s.target_responded_at.isoformat() if s.target_responded_at else None,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        } for s in swaps]
     finally:
         session.close()

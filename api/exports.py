@@ -51,15 +51,21 @@ def _write_data_row(ws, row, values):
 
 
 def _auto_width(ws):
+    from openpyxl.cell.cell import MergedCell
     for col in ws.columns:
         max_len = 0
-        col_letter = col[0].column_letter
+        col_letter = None
         for cell in col:
+            if isinstance(cell, MergedCell):
+                continue
+            if col_letter is None:
+                col_letter = cell.column_letter
             if cell.value:
                 length = len(str(cell.value))
                 if length > max_len:
                     max_len = length
-        ws.column_dimensions[col_letter].width = min(max(max_len + 4, 8), 40)
+        if col_letter:
+            ws.column_dimensions[col_letter].width = min(max(max_len + 4, 8), 40)
 
 
 def _to_response(wb, filename):

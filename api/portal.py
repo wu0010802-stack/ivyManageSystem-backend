@@ -13,8 +13,8 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from models.database import (
     get_session, Employee, Attendance, LeaveRecord, OvertimeRecord, SalaryRecord,
-    Classroom, ShiftAssignment, ShiftType, Student, SchoolEvent,
-    Announcement, AnnouncementRead, JobTitle,
+    Classroom, ShiftAssignment, ShiftType, DailyShift, Student, SchoolEvent,
+    Announcement, AnnouncementRead, JobTitle, ShiftSwapRequest,
 )
 from utils.auth import get_current_user
 
@@ -72,6 +72,17 @@ class ProfileUpdate(BaseModel):
     bank_code: Optional[str] = None
     bank_account: Optional[str] = None
     bank_account_name: Optional[str] = None
+
+
+class SwapRequestCreate(BaseModel):
+    target_id: int
+    swap_date: date
+    reason: Optional[str] = None
+
+
+class SwapRequestRespond(BaseModel):
+    action: str  # "accept" | "reject"
+    remark: Optional[str] = None
 
 
 # ============ Helper ============
@@ -427,7 +438,9 @@ def get_anomalies(
             Attendance.attendance_date <= end,
         ).all()
 
-        daily_salary = emp.base_salary / 30 if emp.base_salary else 0
+        from services.salary_engine import get_working_days
+        wd = get_working_days(year, month, session)
+        daily_salary = emp.base_salary / wd if emp.base_salary else 0
 
         anomalies = []
         for att in records:
@@ -756,8 +769,10 @@ def create_my_overtime(
             raise HTTPException(status_code=400, detail=f"無效的加班類型: {data.overtime_type}")
 
         from api.overtimes import calculate_overtime_pay
+        from services.salary_engine import get_working_days
         from datetime import datetime
-        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
+        wd = get_working_days(data.overtime_date.year, data.overtime_date.month, session)
+        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type, working_days=wd)
 
         start_dt = None
         end_dt = None
@@ -1191,5 +1206,389 @@ def update_profile(
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+# ============ My Schedule ============
+
+def _get_employee_shift_for_date(session, employee_id: int, target_date: date):
+    """取得員工在指定日期的班別（優先 DailyShift → ShiftAssignment）"""
+    from datetime import timedelta
+    # 1. DailyShift override
+    ds = session.query(DailyShift).filter(
+        DailyShift.employee_id == employee_id,
+        DailyShift.date == target_date,
+    ).first()
+    if ds:
+        return ds.shift_type_id
+
+    # 2. Weekly ShiftAssignment
+    week_monday = target_date - timedelta(days=target_date.weekday())
+    sa = session.query(ShiftAssignment).filter(
+        ShiftAssignment.employee_id == employee_id,
+        ShiftAssignment.week_start_date == week_monday,
+    ).first()
+    if sa:
+        return sa.shift_type_id
+
+    return None
+
+
+@router.get("/my-schedule")
+def get_my_schedule(
+    year: int = Query(...),
+    month: int = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """取得自己當月排班"""
+    from datetime import timedelta
+
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        _, last_day = cal_module.monthrange(year, month)
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+
+        # Pre-fetch shift types
+        shift_types = {st.id: st for st in session.query(ShiftType).filter(ShiftType.is_active == True).all()}
+
+        # Pre-fetch daily shifts for this month
+        daily_shifts = session.query(DailyShift).filter(
+            DailyShift.employee_id == emp.id,
+            DailyShift.date >= start,
+            DailyShift.date <= end,
+        ).all()
+        daily_map = {ds.date: ds.shift_type_id for ds in daily_shifts}
+
+        # Pre-fetch weekly assignments covering this month
+        first_monday = start - timedelta(days=start.weekday())
+        last_monday = end - timedelta(days=end.weekday())
+        assignments = session.query(ShiftAssignment).filter(
+            ShiftAssignment.employee_id == emp.id,
+            ShiftAssignment.week_start_date >= first_monday,
+            ShiftAssignment.week_start_date <= last_monday,
+        ).all()
+        weekly_map = {a.week_start_date: a.shift_type_id for a in assignments}
+
+        days = []
+        for day_num in range(1, last_day + 1):
+            d = date(year, month, day_num)
+            weekday = d.weekday()
+            is_weekend = weekday >= 5
+
+            # Resolve shift
+            shift_type_id = daily_map.get(d)
+            is_override = shift_type_id is not None
+            if not shift_type_id:
+                week_monday = d - timedelta(days=weekday)
+                shift_type_id = weekly_map.get(week_monday)
+
+            st = shift_types.get(shift_type_id) if shift_type_id else None
+            days.append({
+                "date": d.isoformat(),
+                "day": day_num,
+                "weekday": WEEKDAY_NAMES[weekday],
+                "is_weekend": is_weekend,
+                "shift_type_id": shift_type_id,
+                "shift_name": st.name if st else None,
+                "work_start": st.work_start if st else None,
+                "work_end": st.work_end if st else None,
+                "is_override": is_override,
+            })
+
+        return {
+            "employee_name": emp.name,
+            "year": year,
+            "month": month,
+            "days": days,
+        }
+    finally:
+        session.close()
+
+
+@router.get("/swap-candidates")
+def get_swap_candidates(
+    swap_date: str = Query(..., alias="date"),
+    current_user: dict = Depends(get_current_user),
+):
+    """取得指定日期其他老師及其班別"""
+    from datetime import timedelta
+
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        target_date = date.fromisoformat(swap_date)
+
+        shift_types = {st.id: st for st in session.query(ShiftType).all()}
+
+        # Find teachers with classroom assignments
+        classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+        teacher_ids = set()
+        for c in classrooms:
+            if c.head_teacher_id:
+                teacher_ids.add(c.head_teacher_id)
+            if c.assistant_teacher_id:
+                teacher_ids.add(c.assistant_teacher_id)
+
+        teacher_ids.discard(emp.id)
+
+        candidates = []
+        for tid in teacher_ids:
+            teacher = session.query(Employee).filter(Employee.id == tid, Employee.is_active == True).first()
+            if not teacher:
+                continue
+
+            shift_type_id = _get_employee_shift_for_date(session, tid, target_date)
+            st = shift_types.get(shift_type_id) if shift_type_id else None
+
+            # Check if target already has a pending swap on this date
+            has_pending = session.query(ShiftSwapRequest).filter(
+                ShiftSwapRequest.swap_date == target_date,
+                ShiftSwapRequest.status == "pending",
+                (ShiftSwapRequest.requester_id == tid) | (ShiftSwapRequest.target_id == tid),
+            ).first() is not None
+
+            candidates.append({
+                "employee_id": tid,
+                "name": teacher.name,
+                "shift_type_id": shift_type_id,
+                "shift_name": st.name if st else "未排班",
+                "work_start": st.work_start if st else None,
+                "work_end": st.work_end if st else None,
+                "has_pending_swap": has_pending,
+            })
+
+        return candidates
+    finally:
+        session.close()
+
+
+@router.get("/swap-requests")
+def get_swap_requests(
+    current_user: dict = Depends(get_current_user),
+):
+    """查詢自己的換班申請（發起+收到）"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        requests = session.query(ShiftSwapRequest).filter(
+            (ShiftSwapRequest.requester_id == emp.id) | (ShiftSwapRequest.target_id == emp.id),
+        ).order_by(ShiftSwapRequest.created_at.desc()).limit(50).all()
+
+        shift_types = {st.id: st for st in session.query(ShiftType).all()}
+        emp_map = {}
+
+        result = []
+        for r in requests:
+            for eid in (r.requester_id, r.target_id):
+                if eid not in emp_map:
+                    e = session.query(Employee).get(eid)
+                    emp_map[eid] = e.name if e else "未知"
+
+            req_st = shift_types.get(r.requester_shift_type_id)
+            tgt_st = shift_types.get(r.target_shift_type_id)
+
+            result.append({
+                "id": r.id,
+                "requester_id": r.requester_id,
+                "requester_name": emp_map.get(r.requester_id, ""),
+                "target_id": r.target_id,
+                "target_name": emp_map.get(r.target_id, ""),
+                "swap_date": r.swap_date.isoformat(),
+                "requester_shift": req_st.name if req_st else "未排班",
+                "target_shift": tgt_st.name if tgt_st else "未排班",
+                "reason": r.reason,
+                "status": r.status,
+                "target_remark": r.target_remark,
+                "target_responded_at": r.target_responded_at.isoformat() if r.target_responded_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "is_mine": r.requester_id == emp.id,
+            })
+
+        return result
+    finally:
+        session.close()
+
+
+@router.post("/swap-requests")
+def create_swap_request(
+    data: SwapRequestCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    """發起換班申請"""
+    from datetime import datetime as dt
+
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+
+        # Validations
+        if data.target_id == emp.id:
+            raise HTTPException(status_code=400, detail="不可與自己換班")
+        if data.swap_date < date.today():
+            raise HTTPException(status_code=400, detail="不可換過去的日期")
+
+        # Check target exists
+        target = session.query(Employee).filter(Employee.id == data.target_id, Employee.is_active == True).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="找不到換班對象")
+
+        # Check duplicate pending
+        existing = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.requester_id == emp.id,
+            ShiftSwapRequest.swap_date == data.swap_date,
+            ShiftSwapRequest.status == "pending",
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="您在此日期已有一筆待處理的換班申請")
+
+        # Check target has pending swap on same date
+        target_pending = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.swap_date == data.swap_date,
+            ShiftSwapRequest.status == "pending",
+            (ShiftSwapRequest.requester_id == data.target_id) | (ShiftSwapRequest.target_id == data.target_id),
+        ).first()
+        if target_pending:
+            raise HTTPException(status_code=400, detail="對方在此日期已有待處理的換班申請")
+
+        # Get both parties' current shift
+        req_shift_id = _get_employee_shift_for_date(session, emp.id, data.swap_date)
+        tgt_shift_id = _get_employee_shift_for_date(session, data.target_id, data.swap_date)
+
+        swap = ShiftSwapRequest(
+            requester_id=emp.id,
+            target_id=data.target_id,
+            swap_date=data.swap_date,
+            requester_shift_type_id=req_shift_id,
+            target_shift_type_id=tgt_shift_id,
+            reason=data.reason,
+            status="pending",
+        )
+        session.add(swap)
+        session.commit()
+        return {"message": "換班申請已送出", "id": swap.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.post("/swap-requests/{request_id}/respond")
+def respond_swap_request(
+    request_id: int,
+    data: SwapRequestRespond,
+    current_user: dict = Depends(get_current_user),
+):
+    """接受或拒絕換班申請（對象操作）"""
+    from datetime import datetime as dt
+
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        swap = session.query(ShiftSwapRequest).filter(ShiftSwapRequest.id == request_id).first()
+        if not swap:
+            raise HTTPException(status_code=404, detail="找不到該換班申請")
+        if swap.target_id != emp.id:
+            raise HTTPException(status_code=403, detail="您不是此申請的換班對象")
+        if swap.status != "pending":
+            raise HTTPException(status_code=400, detail="此申請已不是待處理狀態")
+
+        swap.target_responded_at = dt.now()
+        swap.target_remark = data.remark
+
+        if data.action == "accept":
+            swap.status = "accepted"
+            swap.executed_at = dt.now()
+
+            # Execute swap: write DailyShift for both parties
+            for emp_id, new_shift_type_id in [
+                (swap.requester_id, swap.target_shift_type_id),
+                (swap.target_id, swap.requester_shift_type_id),
+            ]:
+                if new_shift_type_id is None:
+                    continue
+                existing_ds = session.query(DailyShift).filter(
+                    DailyShift.employee_id == emp_id,
+                    DailyShift.date == swap.swap_date,
+                ).first()
+                if existing_ds:
+                    existing_ds.shift_type_id = new_shift_type_id
+                    existing_ds.notes = f"換班 #{swap.id}"
+                else:
+                    ds = DailyShift(
+                        employee_id=emp_id,
+                        shift_type_id=new_shift_type_id,
+                        date=swap.swap_date,
+                        notes=f"換班 #{swap.id}",
+                    )
+                    session.add(ds)
+
+            session.commit()
+            return {"message": "已接受換班，班別已自動互換"}
+
+        elif data.action == "reject":
+            swap.status = "rejected"
+            session.commit()
+            return {"message": "已拒絕換班申請"}
+
+        else:
+            raise HTTPException(status_code=400, detail="無效的操作")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.post("/swap-requests/{request_id}/cancel")
+def cancel_swap_request(
+    request_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """撤銷換班申請（發起人操作）"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        swap = session.query(ShiftSwapRequest).filter(ShiftSwapRequest.id == request_id).first()
+        if not swap:
+            raise HTTPException(status_code=404, detail="找不到該換班申請")
+        if swap.requester_id != emp.id:
+            raise HTTPException(status_code=403, detail="您不是此申請的發起人")
+        if swap.status != "pending":
+            raise HTTPException(status_code=400, detail="只能撤銷待處理的申請")
+
+        swap.status = "cancelled"
+        session.commit()
+        return {"message": "已撤銷換班申請"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.get("/swap-pending-count")
+def get_swap_pending_count(
+    current_user: dict = Depends(get_current_user),
+):
+    """取得待回覆的換班申請數量（用於 badge）"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        count = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.target_id == emp.id,
+            ShiftSwapRequest.status == "pending",
+        ).count()
+        return {"pending_count": count}
     finally:
         session.close()
