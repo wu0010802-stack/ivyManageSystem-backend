@@ -80,6 +80,11 @@ def _to_response(wb, filename):
     )
 
 
+def _id_name_map(session, model):
+    """建立 {id: name} 對照表"""
+    return {obj.id: obj.name for obj in session.query(model).all()}
+
+
 # ============ Employees ============
 
 @router.get("/employees")
@@ -88,8 +93,8 @@ def export_employees():
     session = get_session()
     try:
         employees = session.query(Employee).order_by(Employee.employee_id).all()
-        classrooms = {c.id: c.name for c in session.query(Classroom).all()}
-        job_titles = {j.id: j.name for j in session.query(JobTitle).all()}
+        classrooms = _id_name_map(session, Classroom)
+        job_titles = _id_name_map(session, JobTitle)
 
         wb = Workbook()
         ws = wb.active
@@ -134,7 +139,7 @@ def export_students():
     session = get_session()
     try:
         students = session.query(Student).order_by(Student.student_id).all()
-        classrooms = {c.id: c.name for c in session.query(Classroom).all()}
+        classrooms = _id_name_map(session, Classroom)
 
         wb = Workbook()
         ws = wb.active
