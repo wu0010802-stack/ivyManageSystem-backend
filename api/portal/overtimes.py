@@ -52,7 +52,7 @@ def get_my_overtimes(
         session.close()
 
 
-@router.post("/my-overtimes")
+@router.post("/my-overtimes", status_code=201)
 def create_my_overtime(
     data: OvertimeCreatePortal,
     current_user: dict = Depends(get_current_user),

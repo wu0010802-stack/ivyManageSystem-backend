@@ -115,7 +115,7 @@ def get_leaves(
         session.close()
 
 
-@router.post("/leaves")
+@router.post("/leaves", status_code=201)
 def create_leave(data: LeaveCreate, current_user: dict = Depends(require_admin)):
     """新增請假記錄"""
     session = get_session()

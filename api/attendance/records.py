@@ -70,7 +70,7 @@ async def get_attendance_records(
         session.close()
 
 
-@router.post("/record")
+@router.post("/record", status_code=201)
 async def create_or_update_attendance_record(record: AttendanceRecordUpdate, current_user: dict = Depends(require_admin)):
     """新增或更新單筆考勤記錄"""
     session = get_session()

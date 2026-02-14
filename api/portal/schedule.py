@@ -214,7 +214,7 @@ def get_swap_requests(
         session.close()
 
 
-@router.post("/swap-requests")
+@router.post("/swap-requests", status_code=201)
 def create_swap_request(
     data: SwapRequestCreate,
     current_user: dict = Depends(get_current_user),

@@ -170,7 +170,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(get_curren
         session.close()
 
 
-@router.post("/employees")
+@router.post("/employees", status_code=201)
 async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(require_admin)):
     """新增員工"""
     session = get_session()

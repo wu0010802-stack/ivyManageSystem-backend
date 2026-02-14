@@ -27,21 +27,30 @@ OVERTIME_TYPE_LABELS = {
 }
 
 
+# ============ 加班倍率常數（勞基法） ============
+WEEKDAY_FIRST_2H_RATE = 1.34   # 平日前 2 小時
+WEEKDAY_AFTER_2H_RATE = 1.67   # 平日第 3-4 小時
+WEEKDAY_THRESHOLD_HOURS = 2     # 平日倍率分界時數
+HOLIDAY_RATE = 2.0              # 假日 / 國定假日
+DAILY_WORK_HOURS = 8            # 每日法定工時
+
+
 # ============ Helper Functions ============
 
 def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str, working_days: int = 22) -> float:
     """依勞基法計算加班費"""
-    hourly_base = base_salary / working_days / 8
+    hourly_base = base_salary / working_days / DAILY_WORK_HOURS
 
     if overtime_type == "weekday":
-        # 平日: 前2小時 1.34x, 後2小時 1.67x
-        if hours <= 2:
-            return round(hourly_base * hours * 1.34)
+        if hours <= WEEKDAY_THRESHOLD_HOURS:
+            return round(hourly_base * hours * WEEKDAY_FIRST_2H_RATE)
         else:
-            return round(hourly_base * 2 * 1.34 + hourly_base * (hours - 2) * 1.67)
+            return round(
+                hourly_base * WEEKDAY_THRESHOLD_HOURS * WEEKDAY_FIRST_2H_RATE
+                + hourly_base * (hours - WEEKDAY_THRESHOLD_HOURS) * WEEKDAY_AFTER_2H_RATE
+            )
     else:
-        # 假日/國定假日: 全部 2x
-        return round(hourly_base * hours * 2)
+        return round(hourly_base * hours * HOLIDAY_RATE)
 
 
 # ============ Pydantic Models ============
@@ -123,7 +132,7 @@ def get_overtimes(
         session.close()
 
 
-@router.post("/overtimes")
+@router.post("/overtimes", status_code=201)
 def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_admin)):
     """新增加班記錄（自動計算加班費）"""
     session = get_session()

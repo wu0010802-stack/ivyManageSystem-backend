@@ -91,7 +91,7 @@ def get_meetings(
         session.close()
 
 
-@router.post("/meetings")
+@router.post("/meetings", status_code=201)
 def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(require_admin)):
     """建立單筆園務會議記錄"""
     session = get_session()
@@ -130,7 +130,7 @@ def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(requi
         session.close()
 
 
-@router.post("/meetings/batch")
+@router.post("/meetings/batch", status_code=201)
 def create_meetings_batch(data: MeetingBatchCreate, current_user: dict = Depends(require_admin)):
     """批次建立園務會議記錄（一次建立同日所有員工）"""
     session = get_session()

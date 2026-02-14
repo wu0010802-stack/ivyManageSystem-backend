@@ -11,6 +11,8 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from sqlalchemy.orm import joinedload
+
 from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift, ShiftSwapRequest
 from utils.auth import get_current_user, require_admin
 
@@ -78,7 +80,7 @@ def list_shift_types(current_user: dict = Depends(get_current_user)):
         session.close()
 
 
-@router.post("/types")
+@router.post("/types", status_code=201)
 def create_shift_type(data: ShiftTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
@@ -160,13 +162,14 @@ def get_assignments(week_start: str, current_user: dict = Depends(get_current_us
 
         assignments = (
             session.query(ShiftAssignment)
+            .options(joinedload(ShiftAssignment.employee), joinedload(ShiftAssignment.shift_type))
             .filter(ShiftAssignment.week_start_date == week_date)
             .all()
         )
         result = []
         for a in assignments:
-            emp = session.query(Employee).get(a.employee_id)
-            st = session.query(ShiftType).get(a.shift_type_id)
+            emp = a.employee
+            st = a.shift_type
             result.append({
                 "id": a.id,
                 "employee_id": a.employee_id,
@@ -183,7 +186,7 @@ def get_assignments(week_start: str, current_user: dict = Depends(get_current_us
         session.close()
 
 
-@router.post("/assignments")
+@router.post("/assignments", status_code=201)
 def save_assignments(data: BulkAssignmentRequest, current_user: dict = Depends(require_admin)):
     """批次儲存某週排班（覆蓋該週所有排班）"""
     session = get_session()
@@ -268,7 +271,7 @@ def get_daily_shifts(
         session.close()
 
 
-@router.post("/daily")
+@router.post("/daily", status_code=201)
 def upsert_daily_shift(data: DailyShiftCreate, current_user: dict = Depends(require_admin)):
     """新增或更新每日排班（支援 UPSERT）"""
     session = get_session()

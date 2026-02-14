@@ -30,7 +30,6 @@ class StudentCreate(BaseModel):
     parent_name: Optional[str] = None
     parent_phone: Optional[str] = None
     address: Optional[str] = None
-    address: Optional[str] = None
     notes: Optional[str] = None
     status_tag: Optional[str] = None
 
@@ -44,7 +43,6 @@ class StudentUpdate(BaseModel):
     enrollment_date: Optional[str] = None
     parent_name: Optional[str] = None
     parent_phone: Optional[str] = None
-    address: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
     status_tag: Optional[str] = None
@@ -123,7 +121,7 @@ async def get_student(student_id: int, current_user: dict = Depends(get_current_
         session.close()
 
 
-@router.post("/students")
+@router.post("/students", status_code=201)
 async def create_student(item: StudentCreate, current_user: dict = Depends(require_admin)):
     """新增學生"""
     session = get_session()

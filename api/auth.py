@@ -280,7 +280,7 @@ def list_users(current_user: dict = Depends(get_current_user)):
         session.close()
 
 
-@router.post("/users")
+@router.post("/users", status_code=201)
 def create_user(data: CreateUserRequest, current_user: dict = Depends(get_current_user)):
     """建立使用者帳號（管理員限定）"""
     if current_user.get("role") != "admin":

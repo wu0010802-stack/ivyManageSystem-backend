@@ -74,7 +74,7 @@ def list_announcements(
         session.close()
 
 
-@router.post("")
+@router.post("", status_code=201)
 def create_announcement(
     data: AnnouncementCreate,
     current_user: dict = Depends(get_current_user),

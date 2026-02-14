@@ -478,7 +478,7 @@ def get_job_titles(current_user: dict = Depends(require_admin)):
     return result
 
 
-@router.post("/titles")
+@router.post("/titles", status_code=201)
 def create_job_title(title: JobTitleCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     existing = session.query(JobTitle).filter(JobTitle.name == title.name).first()
@@ -541,7 +541,7 @@ async def get_allowance_types(current_user: dict = Depends(require_admin)):
         session.close()
 
 
-@router.post("/allowance-types")
+@router.post("/allowance-types", status_code=201)
 async def create_allowance_type(item: AllowanceTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
@@ -565,7 +565,7 @@ async def get_deduction_types(current_user: dict = Depends(require_admin)):
         session.close()
 
 
-@router.post("/deduction-types")
+@router.post("/deduction-types", status_code=201)
 async def create_deduction_type(item: DeductionTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
@@ -589,7 +589,7 @@ async def get_bonus_types(current_user: dict = Depends(require_admin)):
         session.close()
 
 
-@router.post("/bonus-types")
+@router.post("/bonus-types", status_code=201)
 async def create_bonus_type(item: BonusTypeCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:

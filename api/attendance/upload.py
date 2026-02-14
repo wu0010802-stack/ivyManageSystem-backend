@@ -119,7 +119,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                         if isinstance(date_val, str):
                             try:
                                 attendance_date = datetime.strptime(date_val, "%Y/%m/%d").date()
-                            except:
+                            except ValueError:
                                 attendance_date = datetime.strptime(date_val, "%Y-%m-%d").date()
                         else:
                             attendance_date = pd.to_datetime(date_val).date()
@@ -134,8 +134,8 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                     hour = int(parts[0])
                                     minute = int(parts[1].split('.')[0]) if '.' in parts[1] else int(parts[1])
                                     punch_in_time = datetime.combine(attendance_date, datetime.strptime(f"{hour:02d}:{minute:02d}", "%H:%M").time())
-                            except:
-                                pass
+                            except (ValueError, IndexError) as e:
+                                logger.warning("第 %d 行: 上班時間格式無法解析 '%s': %s", idx+2, punch_in_val, e)
 
                         punch_out_time = None
                         punch_out_val = row.get('下班時間')
@@ -147,8 +147,8 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                     hour = int(parts[0])
                                     minute = int(parts[1].split('.')[0]) if '.' in parts[1] else int(parts[1])
                                     punch_out_time = datetime.combine(attendance_date, datetime.strptime(f"{hour:02d}:{minute:02d}", "%H:%M").time())
-                            except:
-                                pass
+                            except (ValueError, IndexError) as e:
+                                logger.warning("第 %d 行: 下班時間格式無法解析 '%s': %s", idx+2, punch_out_val, e)
 
                         work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
                         work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()

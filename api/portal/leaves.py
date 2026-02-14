@@ -53,7 +53,7 @@ def get_my_leaves(
         session.close()
 
 
-@router.post("/my-leaves")
+@router.post("/my-leaves", status_code=201)
 def create_my_leave(
     data: LeaveCreatePortal,
     current_user: dict = Depends(get_current_user),

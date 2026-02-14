@@ -16,6 +16,7 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 
 from models.database import (
     get_session, Employee, Student, Attendance, Classroom, SchoolEvent, JobTitle,
+    LeaveRecord, OvertimeRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -323,5 +324,139 @@ def export_calendar(
 
         _auto_width(ws)
         return _to_response(wb, f"{year}年{month}月行事曆.xlsx")
+    finally:
+        session.close()
+
+
+# ============ Leaves ============
+
+LEAVE_TYPE_LABELS = {
+    "personal": "事假",
+    "sick": "病假",
+    "menstrual": "生理假",
+    "annual": "特休",
+    "maternity": "產假",
+    "paternity": "陪產假",
+}
+
+
+def _approval_label(is_approved):
+    if is_approved is True:
+        return "已核准"
+    if is_approved is False:
+        return "已駁回"
+    return "待審核"
+
+
+@router.get("/leaves")
+def export_leaves(
+    current_user: dict = Depends(require_admin),
+    year: int = Query(...),
+    month: int = Query(...),
+):
+    """匯出請假記錄 Excel"""
+    session = get_session()
+    try:
+        _, last_day = cal_module.monthrange(year, month)
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+
+        leaves = (
+            session.query(LeaveRecord)
+            .filter(LeaveRecord.start_date <= end, LeaveRecord.end_date >= start)
+            .order_by(LeaveRecord.start_date)
+            .all()
+        )
+        emp_map = _id_name_map(session, Employee)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"{year}年{month}月請假記錄"
+
+        ws.merge_cells("A1:H1")
+        ws["A1"] = f"{year}年{month}月 請假記錄"
+        ws["A1"].font = TITLE_FONT
+        ws["A1"].alignment = CENTER_ALIGN
+
+        headers = ["員工姓名", "假別", "開始日期", "結束日期", "時數", "扣薪比例", "原因", "審核狀態"]
+        _write_header_row(ws, 3, headers)
+
+        for idx, lv in enumerate(leaves, 4):
+            _write_data_row(ws, idx, [
+                emp_map.get(lv.employee_id, ""),
+                LEAVE_TYPE_LABELS.get(lv.leave_type, lv.leave_type),
+                lv.start_date.isoformat(),
+                lv.end_date.isoformat(),
+                lv.leave_hours or 8,
+                lv.deduction_ratio,
+                lv.reason or "",
+                _approval_label(lv.is_approved),
+            ])
+
+        _auto_width(ws)
+        return _to_response(wb, f"{year}年{month}月請假記錄.xlsx")
+    finally:
+        session.close()
+
+
+# ============ Overtimes ============
+
+OVERTIME_TYPE_LABELS = {
+    "weekday": "平日",
+    "weekend": "假日",
+    "holiday": "國定假日",
+}
+
+
+@router.get("/overtimes")
+def export_overtimes(
+    current_user: dict = Depends(require_admin),
+    year: int = Query(...),
+    month: int = Query(...),
+):
+    """匯出加班記錄 Excel"""
+    session = get_session()
+    try:
+        _, last_day = cal_module.monthrange(year, month)
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+
+        overtimes = (
+            session.query(OvertimeRecord)
+            .filter(OvertimeRecord.overtime_date >= start, OvertimeRecord.overtime_date <= end)
+            .order_by(OvertimeRecord.overtime_date)
+            .all()
+        )
+        emp_map = _id_name_map(session, Employee)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"{year}年{month}月加班記錄"
+
+        ws.merge_cells("A1:I1")
+        ws["A1"] = f"{year}年{month}月 加班記錄"
+        ws["A1"].font = TITLE_FONT
+        ws["A1"].alignment = CENTER_ALIGN
+
+        headers = ["員工姓名", "日期", "類型", "開始時間", "結束時間", "時數", "加班費", "原因", "審核狀態"]
+        _write_header_row(ws, 3, headers)
+
+        for idx, ot in enumerate(overtimes, 4):
+            start_t = ot.start_time.strftime("%H:%M") if ot.start_time else ""
+            end_t = ot.end_time.strftime("%H:%M") if ot.end_time else ""
+            _write_data_row(ws, idx, [
+                emp_map.get(ot.employee_id, ""),
+                ot.overtime_date.isoformat(),
+                OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type),
+                start_t,
+                end_t,
+                ot.hours or 0,
+                round(ot.overtime_pay or 0),
+                ot.reason or "",
+                _approval_label(ot.is_approved),
+            ])
+
+        _auto_width(ws)
+        return _to_response(wb, f"{year}年{month}月加班記錄.xlsx")
     finally:
         session.close()

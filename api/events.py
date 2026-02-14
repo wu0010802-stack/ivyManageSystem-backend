@@ -121,7 +121,7 @@ def get_event(event_id: int, current_user: dict = Depends(get_current_user)):
         session.close()
 
 
-@router.post("/events")
+@router.post("/events", status_code=201)
 def create_event(data: EventCreate, current_user: dict = Depends(require_admin)):
     """新增行事曆事件"""
     session = get_session()

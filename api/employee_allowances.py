@@ -25,6 +25,12 @@ class EmployeeAllowanceCreate(BaseModel):
     remark: Optional[str] = None
 
 
+class EmployeeAllowanceUpdate(BaseModel):
+    amount: Optional[float] = None
+    effective_date: Optional[str] = None
+    remark: Optional[str] = None
+
+
 # ============ Routes ============
 
 @router.get("/employees/{employee_id}/allowances")
@@ -48,7 +54,7 @@ async def get_employee_allowances(employee_id: int, current_user: dict = Depends
         session.close()
 
 
-@router.post("/employees/{employee_id}/allowances")
+@router.post("/employees/{employee_id}/allowances", status_code=201)
 async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate, current_user: dict = Depends(require_admin)):
     session = get_session()
     try:
@@ -72,6 +78,71 @@ async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate
 
         session.commit()
         return {"message": "儲存成功"}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.put("/employees/{employee_id}/allowances/{allowance_id}")
+async def update_employee_allowance(
+    employee_id: int,
+    allowance_id: int,
+    data: EmployeeAllowanceUpdate,
+    current_user: dict = Depends(require_admin),
+):
+    """更新員工津貼"""
+    session = get_session()
+    try:
+        allowance = session.query(EmployeeAllowance).filter(
+            EmployeeAllowance.id == allowance_id,
+            EmployeeAllowance.employee_id == employee_id,
+            EmployeeAllowance.is_active == True,
+        ).first()
+        if not allowance:
+            raise HTTPException(status_code=404, detail="找不到該津貼記錄")
+
+        if data.amount is not None:
+            allowance.amount = data.amount
+        if data.effective_date is not None:
+            allowance.effective_date = data.effective_date
+        if data.remark is not None:
+            allowance.remark = data.remark
+
+        session.commit()
+        return {"message": "更新成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.delete("/employees/{employee_id}/allowances/{allowance_id}")
+async def delete_employee_allowance(
+    employee_id: int,
+    allowance_id: int,
+    current_user: dict = Depends(require_admin),
+):
+    """刪除員工津貼（軟刪除）"""
+    session = get_session()
+    try:
+        allowance = session.query(EmployeeAllowance).filter(
+            EmployeeAllowance.id == allowance_id,
+            EmployeeAllowance.employee_id == employee_id,
+            EmployeeAllowance.is_active == True,
+        ).first()
+        if not allowance:
+            raise HTTPException(status_code=404, detail="找不到該津貼記錄")
+
+        allowance.is_active = False
+        session.commit()
+        return {"message": "已刪除"}
+    except HTTPException:
+        raise
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
