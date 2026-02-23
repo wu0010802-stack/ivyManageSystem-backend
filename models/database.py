@@ -106,6 +106,12 @@ def _run_migrations(engine):
             conn.execute(text("ALTER TABLE leave_records ADD COLUMN attachment_paths TEXT"))
             conn.commit()
         logger.info("Migration: 已新增 leave_records.attachment_paths 欄位")
+    if "start_time" not in existing_cols:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE leave_records ADD COLUMN start_time VARCHAR(5)"))
+            conn.execute(text("ALTER TABLE leave_records ADD COLUMN end_time VARCHAR(5)"))
+            conn.commit()
+        logger.info("Migration: 已新增 leave_records.start_time 與 end_time 欄位")
 
 
 def init_database():
@@ -245,6 +251,8 @@ class LeaveRecord(Base):
     leave_type = Column(String(20), nullable=False, comment="請假類型")
     start_date = Column(Date, nullable=False, comment="開始日期")
     end_date = Column(Date, nullable=False, comment="結束日期")
+    start_time = Column(String(5), nullable=True, comment="開始時間 HH:MM")
+    end_time = Column(String(5), nullable=True, comment="結束時間 HH:MM")
     leave_hours = Column(Float, default=8, comment="請假時數")
 
     is_deductible = Column(Boolean, default=True, comment="是否扣薪")
@@ -253,7 +261,7 @@ class LeaveRecord(Base):
     reason = Column(Text, comment="請假原因")
     attachment_paths = Column(Text, nullable=True, comment="附件路徑清單（JSON 陣列）")
 
-    is_approved = Column(Boolean, default=False, comment="是否核准")
+    is_approved = Column(Boolean, nullable=True, default=None, comment="是否核准 (None=待審核, True=核准, False=駁回)")
     approved_by = Column(String(50), comment="核准人")
 
     created_at = Column(DateTime, default=datetime.now)

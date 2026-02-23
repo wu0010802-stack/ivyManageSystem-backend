@@ -78,6 +78,8 @@ class LeaveCreate(BaseModel):
     leave_type: str
     start_date: date
     end_date: date
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     leave_hours: float = 8
     reason: Optional[str] = None
 
@@ -86,6 +88,8 @@ class LeaveUpdate(BaseModel):
     leave_type: Optional[str] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     leave_hours: Optional[float] = None
     reason: Optional[str] = None
 
@@ -134,6 +138,8 @@ def get_leaves(
                 "leave_type_label": LEAVE_TYPE_LABELS.get(leave.leave_type, leave.leave_type),
                 "start_date": leave.start_date.isoformat(),
                 "end_date": leave.end_date.isoformat(),
+                "start_time": leave.start_time,
+                "end_time": leave.end_time,
                 "leave_hours": leave.leave_hours,
                 "deduction_ratio": LEAVE_DEDUCTION_RULES.get(leave.leave_type, 1.0),
                 "reason": leave.reason,
@@ -164,6 +170,8 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
             leave_type=data.leave_type,
             start_date=data.start_date,
             end_date=data.end_date,
+            start_time=data.start_time,
+            end_time=data.end_time,
             leave_hours=data.leave_hours,
             is_deductible=LEAVE_DEDUCTION_RULES[data.leave_type] > 0,
             deduction_ratio=LEAVE_DEDUCTION_RULES[data.leave_type],

@@ -48,6 +48,8 @@ class LeaveCreatePortal(BaseModel):
     leave_type: str
     start_date: date
     end_date: date
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     leave_hours: float = 8
     reason: Optional[str] = None
 
