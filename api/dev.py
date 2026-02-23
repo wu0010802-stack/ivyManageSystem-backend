@@ -159,11 +159,11 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
             "gross_salary": "底薪 + 津貼(主管/導師/伙食/交通/其他) + 節慶獎金 + 超額獎金 + 績效獎金 + 特別獎金 + 主管紅利 + 加班費 + 園務會議加班費",
             "total_deduction": "勞保(員工) + 健保(員工) + 勞退自提 + 遲到扣款 + 早退扣款 + 遲到轉事假扣款 + 請假扣款 + 其他扣款",
             "net_salary": "gross_salary - total_deduction",
-            "late_deduction_formula": "遲到分鐘 × (月薪 ÷ (當月工作日數 × 8 × 60))",
-            "early_leave_deduction_formula": "早退分鐘 × (月薪 ÷ (當月工作日數 × 8 × 60))",
+            "late_deduction_formula": "遲到分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
+            "early_leave_deduction_formula": "早退分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
             "auto_leave_rule": "遲到 ≥ 120 分鐘 → 不扣分鐘費，改扣事假半天 (日薪 × 0.5)",
-            "daily_salary": "月薪 ÷ 當月工作日數",
-            "per_minute_rate": "月薪 ÷ (當月工作日數 × 8小時 × 60分鐘)",
+            "daily_salary": "月薪 ÷ 30  ← 依勞基法固定30天（遲到轉事假、請假扣款均適用）",
+            "per_minute_rate": "月薪 ÷ 30 ÷ 8 ÷ 60  ← 依勞基法固定30天",
             "leave_deduction": "請假天數 × 日薪 × 扣薪比例 (事假1.0 / 病假0.5 / 特休0.0)",
             "missing_punch": "不扣款，僅記錄次數",
             "festival_bonus_teacher": "獎金基數 × (班級在籍人數 ÷ 目標人數)",
@@ -245,9 +245,8 @@ def debug_employee_salary(
             LeaveRecord.start_date <= end_date,
             LeaveRecord.end_date >= start_date,
         ).all()
-        from services.salary_engine import get_working_days
-        wd = get_working_days(year, month, session)
-        daily_salary = emp.base_salary / wd if emp.base_salary else 0
+        from services.salary_engine import MONTHLY_BASE_DAYS
+        daily_salary = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
         leave_deduction_total = 0
         leave_breakdown = []
         for lv in approved_leaves:
@@ -323,9 +322,9 @@ def debug_employee_salary(
             total_students = session.query(Student).filter(Student.is_active == True).count()
             office_staff_context = {"school_enrollment": total_students}
 
-        # Per minute rate
+        # Per minute rate（月薪 ÷ 30 ÷ 8 ÷ 60，依勞基法固定30天）
         base_sal = emp.base_salary or 0
-        per_minute_rate = base_sal / (wd * 8 * 60) if base_sal > 0 else 0
+        per_minute_rate = base_sal / (MONTHLY_BASE_DAYS * 8 * 60) if base_sal > 0 else 0
 
         # Attendance deduction detail
         auto_leave_threshold = engine._attendance_policy.get('auto_leave_threshold', 120)
