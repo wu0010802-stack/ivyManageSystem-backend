@@ -140,9 +140,14 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # Only log successful requests
         if 200 <= response.status_code < 300:
             try:
+                # 若 endpoint 已設定跳過標記，直接略過
+                if getattr(request.state, "audit_skip", False):
+                    return response
+
                 user_id, username = _extract_user_from_header(request)
-                entity_id = _parse_entity_id(path)
-                summary = _build_summary(method, path, entity_type)
+                # endpoint 可透過 request.state 覆寫摘要與 entity_id
+                entity_id = getattr(request.state, "audit_entity_id", None) or _parse_entity_id(path)
+                summary = getattr(request.state, "audit_summary", None) or _build_summary(method, path, entity_type)
                 ip = request.client.host if request.client else None
 
                 session = get_session()

@@ -144,6 +144,14 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
             "annual": {"label": "特休", "ratio": 0.0, "note": "不扣薪"},
             "maternity": {"label": "產假", "ratio": 0.0, "note": "不扣薪"},
             "paternity": {"label": "陪產假", "ratio": 0.0, "note": "不扣薪"},
+            "official": {"label": "公假", "ratio": 0.0, "note": "不扣薪（教召、研習等）"},
+            "marriage": {"label": "婚假", "ratio": 0.0, "note": "不扣薪，共8日"},
+            "bereavement": {"label": "喪假", "ratio": 0.0, "note": "不扣薪，依親疏3/6/8日"},
+            "prenatal": {"label": "產檢假", "ratio": 0.0, "note": "不扣薪，共7日"},
+            "paternity_new": {"label": "陪產檢及陪產假", "ratio": 0.0, "note": "不扣薪，共7日"},
+            "miscarriage": {"label": "流產假", "ratio": 0.0, "note": "不扣薪，依週數5日/1週/4週"},
+            "family_care": {"label": "家庭照顧假", "ratio": 1.0, "note": "不給薪，併入事假計算，年7日"},
+            "parental_unpaid": {"label": "育嬰留職停薪", "ratio": 0.0, "note": "留停無薪，最長2年"},
         }
 
         # 8. 薪資公式說明
@@ -227,6 +235,9 @@ def debug_employee_salary(
         LEAVE_DEDUCTION_RULES = {
             "personal": 1.0, "sick": 0.5, "menstrual": 0.5,
             "annual": 0.0, "maternity": 0.0, "paternity": 0.0,
+            "official": 0.0, "marriage": 0.0, "bereavement": 0.0,
+            "prenatal": 0.0, "paternity_new": 0.0, "miscarriage": 0.0,
+            "family_care": 1.0, "parental_unpaid": 0.0,
         }
         approved_leaves = session.query(LeaveRecord).filter(
             LeaveRecord.employee_id == emp.id,

@@ -371,13 +371,18 @@ def get_permissions():
 
 
 @router.put("/users/{user_id}")
-def update_user(user_id: int, data: UpdateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
+def update_user(user_id: int, data: UpdateUserRequest, request: Request, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """更新使用者角色與權限"""
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
+
+        # 記錄舊值，用於審計摘要
+        old_role = user.role
+        old_permissions = user.permissions
+        old_is_active = user.is_active
 
         if data.role is not None:
             user.role = data.role
@@ -390,6 +395,17 @@ def update_user(user_id: int, data: UpdateUserRequest, current_user: dict = Depe
 
         if data.is_active is not None:
             user.is_active = data.is_active
+
+        # 建立變更摘要並傳給 AuditMiddleware
+        changes = []
+        if data.role is not None and user.role != old_role:
+            changes.append(f"角色 {old_role} → {user.role}")
+        if user.permissions != old_permissions:
+            changes.append(f"權限遮罩 {old_permissions} → {user.permissions}")
+        if data.is_active is not None and user.is_active != old_is_active:
+            changes.append("帳號" + ("啟用" if user.is_active else "停用"))
+        if changes:
+            request.state.audit_summary = "修改使用者帳號：" + "、".join(changes)
 
         session.commit()
         return {"message": "使用者已更新"}

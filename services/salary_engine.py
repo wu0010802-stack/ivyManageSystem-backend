@@ -644,6 +644,17 @@ class SalaryEngine:
 
         return reference_date >= eligible_date
 
+    @staticmethod
+    def get_bonus_distribution_month(month: int) -> bool:
+        """
+        判斷是否為節慶獎金發放月
+        2月 → 發放 12+1月
+        6月 → 發放 2-5月
+        9月 → 發放 6-8月
+        12月 → 發放 9-11月
+        """
+        return month in (2, 6, 9, 12)
+
     def get_overtime_target(self, grade_name: str, has_assistant: bool, is_shared_assistant: bool = False) -> int:
         """取得超額獎金目標人數"""
         if grade_name not in self._overtime_target:
@@ -1061,6 +1072,10 @@ class SalaryEngine:
         breakdown.gross_salary += breakdown.meeting_overtime_pay
         # 將園務會議缺席從節慶獎金扣款
         breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
+
+        # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
+        if not self.get_bonus_distribution_month(month):
+            breakdown.festival_bonus = 0
 
         # 計算扣款總額（未打卡不扣款）
         breakdown.total_deduction = (

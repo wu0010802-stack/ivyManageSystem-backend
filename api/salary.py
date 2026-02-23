@@ -318,6 +318,9 @@ def _compute_salary_breakdown(emp, emp_dict, year, month, emp_allowances,
             classroom_context=None, meeting_context=meeting_context)
         breakdown.festival_bonus = emp_dict['_calculated_festival_bonus']
         breakdown.overtime_bonus = emp_dict.get('_calculated_overtime_bonus', 0)
+        # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
+        if not _salary_engine.get_bonus_distribution_month(month):
+            breakdown.festival_bonus = 0
         breakdown.supervisor_dividend = _salary_engine.get_supervisor_dividend(emp.title or '', emp.position or '')
         breakdown.gross_salary = (
             breakdown.base_salary + breakdown.supervisor_allowance +

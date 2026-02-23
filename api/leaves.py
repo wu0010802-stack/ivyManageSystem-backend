@@ -28,7 +28,15 @@ LEAVE_DEDUCTION_RULES = {
     "menstrual": 0.5,   # 生理假: 扣半薪
     "annual": 0.0,      # 特休: 不扣
     "maternity": 0.0,   # 產假: 不扣
-    "paternity": 0.0,   # 陪產假: 不扣
+    "paternity": 0.0,   # 陪產假: 不扣（舊）
+    "official": 0.0,    # 公假: 不扣
+    "marriage": 0.0,    # 婚假: 不扣
+    "bereavement": 0.0, # 喪假: 不扣
+    "prenatal": 0.0,    # 產檢假: 不扣
+    "paternity_new": 0.0,  # 陪產檢及陪產假: 不扣
+    "miscarriage": 0.0, # 流產假: 不扣
+    "family_care": 1.0, # 家庭照顧假: 不給薪（併入事假）
+    "parental_unpaid": 0.0,  # 育嬰留職停薪: 不扣（留停期間無薪）
 }
 
 LEAVE_TYPE_LABELS = {
@@ -38,6 +46,14 @@ LEAVE_TYPE_LABELS = {
     "annual": "特休",
     "maternity": "產假",
     "paternity": "陪產假",
+    "official": "公假",
+    "marriage": "婚假",
+    "bereavement": "喪假",
+    "prenatal": "產檢假",
+    "paternity_new": "陪產檢及陪產假",
+    "miscarriage": "流產假",
+    "family_care": "家庭照顧假",
+    "parental_unpaid": "育嬰留職停薪",
 }
 
 

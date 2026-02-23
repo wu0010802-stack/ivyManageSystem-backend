@@ -353,7 +353,7 @@ class TestCalculateSalary:
         """含節慶獎金（班級上下文）"""
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=1,
+            year=2026, month=6,  # 6月為發放月
             classroom_context=sample_classroom_context
         )
         assert breakdown.festival_bonus > 0
@@ -410,3 +410,35 @@ class TestCalculateSalary:
             classroom_context=sample_classroom_context
         )
         assert breakdown.festival_bonus == 0
+
+
+# ──────────────────────────────────────────────
+# 節慶獎金季度發放
+# ──────────────────────────────────────────────
+class TestBonusDistributionMonth:
+
+    def test_distribution_months(self, engine):
+        """發放月份（2, 6, 9, 12）回傳 True"""
+        for m in [2, 6, 9, 12]:
+            assert engine.get_bonus_distribution_month(m) is True
+
+    def test_non_distribution_months(self, engine):
+        """非發放月份回傳 False"""
+        for m in [1, 3, 4, 5, 7, 8, 10, 11]:
+            assert engine.get_bonus_distribution_month(m) is False
+
+    def test_salary_no_bonus_in_non_distribution_month(self, engine, sample_employee, sample_classroom_context):
+        """非發放月份，節慶獎金應為 0"""
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=3,
+            classroom_context=sample_classroom_context
+        )
+        assert breakdown.festival_bonus == 0
+
+    def test_salary_has_bonus_in_distribution_month(self, engine, sample_employee, sample_classroom_context):
+        """發放月份，節慶獎金應 > 0"""
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=6,
+            classroom_context=sample_classroom_context
+        )
+        assert breakdown.festival_bonus > 0
