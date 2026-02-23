@@ -280,6 +280,7 @@ def seed_default_admin():
             username="admin",
             password_hash=hash_password("admin123"),
             role="admin",
+            permissions=-1,  # 明確設定：admin 擁有全部權限
         )
         session.add(admin_user)
         session.commit()

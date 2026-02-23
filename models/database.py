@@ -885,7 +885,7 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, comment="登入帳號")
     password_hash = Column(String(255), nullable=False, comment="密碼雜湊")
     role = Column(String(20), default="teacher", comment="角色: teacher/admin")
-    permissions = Column(BigInteger, default=-1, comment="功能模組權限位元遮罩 (-1=全部權限)")
+    permissions = Column(BigInteger, nullable=True, default=None, comment="功能模組權限位元遮罩 (-1=全部權限, NULL=使用角色預設)")
     is_active = Column(Boolean, default=True, comment="帳號是否啟用")
     last_login = Column(DateTime, comment="最後登入時間")
 

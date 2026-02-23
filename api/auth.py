@@ -100,7 +100,7 @@ def impersonate_user(data: ImpersonateRequest, current_user: dict = Depends(get_
             raise HTTPException(status_code=400, detail="該員工沒有使用者帳號，無法切換")
             
         # 4. 產生該使用者的 token
-        permissions = target_user.permissions if target_user.permissions is not None else -1
+        permissions = target_user.permissions if target_user.permissions is not None else get_role_default_permissions(target_user.role)
         token = create_access_token({
             "user_id": target_user.id,
             "employee_id": target_user.employee_id,
@@ -148,7 +148,7 @@ def login(data: LoginRequest, request: Request):
         session.commit()
 
         # permissions: -1 表示全部權限，teacher 角色不需要 permissions
-        permissions = user.permissions if user.permissions is not None else -1
+        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
 
         token = create_access_token({
             "user_id": user.id,
@@ -206,7 +206,7 @@ def refresh_token(authorization: str = Header(None)):
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = user.permissions if user.permissions is not None else -1
+        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
 
         new_token = create_access_token({
             "user_id": user.id,
@@ -244,7 +244,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = user.permissions if user.permissions is not None else -1
+        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
         return {
             "id": user.id,
             "username": user.username,
@@ -296,7 +296,7 @@ def list_users(current_user: dict = Depends(require_permission(Permission.USER_M
             "username": u.username,
             "role": u.role,
             "role_label": ROLE_LABELS.get(u.role, u.role),
-            "permissions": u.permissions if u.permissions is not None else -1,
+            "permissions": u.permissions if u.permissions is not None else get_role_default_permissions(u.role),
             "is_active": u.is_active,
             "employee_id": u.employee_id,
             "employee_name": emp.name if emp else "",
