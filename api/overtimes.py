@@ -43,13 +43,14 @@ WEEKDAY_AFTER_2H_RATE = 1.67   # 平日第 3-4 小時
 WEEKDAY_THRESHOLD_HOURS = 2     # 平日倍率分界時數
 HOLIDAY_RATE = 2.0              # 假日 / 國定假日
 DAILY_WORK_HOURS = 8            # 每日法定工時
+MONTHLY_BASE_DAYS = 30          # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
 
 
 # ============ Helper Functions ============
 
-def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str, working_days: int = 22) -> float:
-    """依勞基法計算加班費"""
-    hourly_base = base_salary / working_days / DAILY_WORK_HOURS
+def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str) -> float:
+    """依勞基法計算加班費（時薪 = 月薪 ÷ 30 ÷ 8）"""
+    hourly_base = base_salary / MONTHLY_BASE_DAYS / DAILY_WORK_HOURS
 
     if overtime_type == "weekday":
         if hours <= WEEKDAY_THRESHOLD_HOURS:
@@ -154,9 +155,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
         if not emp:
             raise HTTPException(status_code=404, detail="員工不存在")
 
-        from services.salary_engine import get_working_days
-        wd = get_working_days(data.overtime_date.year, data.overtime_date.month, session)
-        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type, working_days=wd)
+        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
 
         start_dt = None
         end_dt = None
@@ -214,9 +213,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
         # Recalculate pay
         emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()
         if emp:
-            from services.salary_engine import get_working_days
-            wd = get_working_days(ot.overtime_date.year, ot.overtime_date.month, session)
-            ot.overtime_pay = calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type, working_days=wd)
+            ot.overtime_pay = calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type)
 
         session.commit()
         return {"message": "加班記錄已更新", "overtime_pay": ot.overtime_pay}

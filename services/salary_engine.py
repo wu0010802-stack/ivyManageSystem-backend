@@ -9,6 +9,9 @@ from dateutil.relativedelta import relativedelta
 from .insurance_service import InsuranceService, InsuranceCalculation
 from .attendance_parser import AttendanceResult
 
+MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
+
+
 # 資料庫相關匯入（延遲匯入避免循環依賴）
 def _get_db_session():
     from models.database import get_session
@@ -457,12 +460,12 @@ class SalaryEngine:
         """設定扣款規則"""
         self.deduction_rules.update(rules)
     
-    def calculate_attendance_deduction(self, attendance: AttendanceResult, daily_salary: float = 0, base_salary: float = 0, late_details: list = None, working_days: int = 22) -> dict:
+    def calculate_attendance_deduction(self, attendance: AttendanceResult, daily_salary: float = 0, base_salary: float = 0, late_details: list = None) -> dict:
         """
         計算考勤扣款
 
         新規則：
-        - 遲到/早退：按分鐘比例扣款（基於員工薪資，每分鐘 = 月薪 ÷ 當月工作日數 ÷ 8小時 ÷ 60分鐘）
+        - 遲到/早退：按分鐘比例扣款（每分鐘 = 月薪 ÷ 30 ÷ 8 ÷ 60，依勞基法固定基準）
         - 無寬限期
         - 遲到超過 2 小時（120 分鐘）：該次不扣分鐘費，改為請事假半天扣薪
         - 未打卡：不扣款，僅記錄次數（供考核用）
@@ -470,9 +473,8 @@ class SalaryEngine:
         late_rule = self.deduction_rules.get('late', {})
         early_rule = self.deduction_rules.get('early', {})
 
-        # 按薪資比例計算每分鐘扣款金額
-        # 每分鐘薪資 = 月薪 / (當月工作日數 × 8小時 × 60分鐘)
-        per_minute_rate = base_salary / (working_days * 8 * 60) if base_salary > 0 else 1
+        # 每分鐘薪資 = 月薪 ÷ 30 ÷ 8 ÷ 60（依勞基法時薪基準，固定 30 天）
+        per_minute_rate = base_salary / (MONTHLY_BASE_DAYS * 8 * 60) if base_salary > 0 else 1
         
         auto_leave_threshold = late_rule.get('auto_leave_threshold', 120)
         
@@ -993,13 +995,13 @@ class SalaryEngine:
             breakdown.health_insurance = insurance.health_employee
             breakdown.pension_self = insurance.pension_employee
         
-        # 考勤扣款
+        # 考勤扣款（遲到/早退時薪基準：月薪 ÷ 30 ÷ 8，依勞基法固定 30 天）
         base_sal = employee.get('base_salary', 0) or 0
-        daily_salary = base_sal / working_days if base_sal else 0
+        daily_salary = base_sal / MONTHLY_BASE_DAYS if base_sal else 0
         late_details = employee.get('_late_details', None)  # 逐筆遲到分鐘數列表
         if attendance:
             att_ded = self.calculate_attendance_deduction(
-                attendance, daily_salary=daily_salary, base_salary=base_sal, late_details=late_details, working_days=working_days
+                attendance, daily_salary=daily_salary, base_salary=base_sal, late_details=late_details
             )
             breakdown.late_deduction = att_ded['late_deduction']
             breakdown.early_leave_deduction = att_ded['early_leave_deduction']
@@ -1379,8 +1381,7 @@ class SalaryEngine:
                 LeaveRecord.end_date >= start_date
             ).all()
             leave_deduction_total = 0
-            wd = get_working_days(year, month, session)
-            daily_salary = emp.base_salary / wd if emp.base_salary else 0
+            daily_salary = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
             for lv in approved_leaves:
                 ratio = LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
                 leave_deduction_total += (lv.leave_hours / 8) * daily_salary * ratio
@@ -1413,7 +1414,7 @@ class SalaryEngine:
                     'work_end_time': emp.work_end_time or '17:00'
                 }
 
-            # 6. 計算薪資
+            # 6. 計算薪資（working_days 僅保留給請假扣款日薪，考勤扣款已改用 MONTHLY_BASE_DAYS）
             breakdown = self.calculate_salary(
                 employee=emp_dict,
                 year=year,
@@ -1424,7 +1425,6 @@ class SalaryEngine:
                 classroom_context=classroom_context,
                 office_staff_context=office_staff_context,
                 meeting_context=meeting_context,
-                working_days=wd
             )
             # 加入加班費
             breakdown.overtime_work_pay = overtime_work_pay_total

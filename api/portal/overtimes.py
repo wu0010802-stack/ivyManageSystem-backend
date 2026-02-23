@@ -66,9 +66,7 @@ def create_my_overtime(
             raise HTTPException(status_code=400, detail=f"無效的加班類型: {data.overtime_type}")
 
         from api.overtimes import calculate_overtime_pay
-        from services.salary_engine import get_working_days
-        wd = get_working_days(data.overtime_date.year, data.overtime_date.month, session)
-        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type, working_days=wd)
+        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
 
         start_dt = None
         end_dt = None
