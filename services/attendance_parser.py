@@ -138,11 +138,11 @@ class AttendanceParser:
         for date, day_records in grouped:
             day_records = day_records.sort_values('punch_datetime')
             punch_times = day_records['punch_time'].tolist()
-            
-            # 判斷上班打卡（第一筆）
-            punch_in = punch_times[0] if len(punch_times) >= 1 else None
-            # 判斷下班打卡（最後一筆，如果有多筆的話）
-            punch_out = punch_times[-1] if len(punch_times) >= 2 else None
+
+            # 上班打卡取最早一筆，下班打卡取最晚一筆
+            # 使用 min/max 明確表達語意，不依賴排序副作用
+            punch_in = min(punch_times) if len(punch_times) >= 1 else None
+            punch_out = max(punch_times) if len(punch_times) >= 2 else None
             
             day_detail = {
                 'date': date,
