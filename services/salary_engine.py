@@ -317,6 +317,7 @@ class SalaryEngine:
                         '大班': bonus.overtime_assistant_normal,
                         '中班': bonus.overtime_assistant_normal,
                         '小班': bonus.overtime_assistant_normal,
+                        '幼幼班': bonus.overtime_assistant_baby
                     }
                 }
 
