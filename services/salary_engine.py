@@ -1086,6 +1086,7 @@ class SalaryEngine:
             breakdown.early_leave_deduction +
             breakdown.auto_leave_deduction +
             breakdown.leave_deduction +
+            breakdown.meeting_absence_deduction +
             breakdown.other_deduction
         )
 
