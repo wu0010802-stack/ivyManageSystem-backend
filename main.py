@@ -24,8 +24,8 @@ from api.classrooms import router as classrooms_router
 from api.attendance import router as attendance_router
 from api.salary import router as salary_router, init_salary_services
 from api.config import router as config_router, init_config_services
-from api.leaves import router as leaves_router
-from api.overtimes import router as overtimes_router
+from api.leaves import router as leaves_router, init_leaves_services
+from api.overtimes import router as overtimes_router, init_overtimes_services
 from api.insurance import router as insurance_router, init_insurance_services
 from api.employee_allowances import router as employee_allowances_router
 from api.auth import router as auth_router
@@ -88,6 +88,8 @@ salary_engine = SalaryEngine(load_from_db=True)
 init_salary_services(salary_engine, insurance_service)
 init_config_services(salary_engine)
 init_insurance_services(insurance_service)
+init_overtimes_services(salary_engine)
+init_leaves_services(salary_engine)
 init_dev_services(salary_engine)
 
 # Ensure data directories exist

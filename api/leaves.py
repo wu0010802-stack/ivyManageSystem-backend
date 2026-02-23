@@ -38,6 +38,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["leaves"])
 
+# ============ Service Injection ============
+
+_salary_engine = None
+
+
+def init_leaves_services(salary_engine_instance):
+    global _salary_engine
+    _salary_engine = salary_engine_instance
+
 
 # ============ Constants ============
 
@@ -723,6 +732,30 @@ def approve_leave(
         result = {"message": "已核准" if data.approved else "已駁回"}
         if warning:
             result["warning"] = warning
+
+        # 核准後自動重算該員工所有涉及月份的薪資
+        if data.approved and _salary_engine is not None:
+            try:
+                emp_id = leave.employee_id
+                # 計算假單跨越的所有 (year, month)
+                months_to_recalc = set()
+                cur = date(leave.start_date.year, leave.start_date.month, 1)
+                end = date(leave.end_date.year, leave.end_date.month, 1)
+                while cur <= end:
+                    months_to_recalc.add((cur.year, cur.month))
+                    cur = date(cur.year + 1, 1, 1) if cur.month == 12 else date(cur.year, cur.month + 1, 1)
+
+                for year, month in sorted(months_to_recalc):
+                    _salary_engine.process_salary_calculation(emp_id, year, month)
+                    logger.info(f"請假核准後自動重算薪資：emp_id={emp_id}, {year}/{month}")
+
+                result["salary_recalculated"] = True
+                result["message"] = "已核准，薪資已自動重算"
+            except Exception as e:
+                result["salary_recalculated"] = False
+                result["salary_warning"] = "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                logger.error(f"請假核准後薪資重算失敗：{e}")
+
         return result
     finally:
         session.close()

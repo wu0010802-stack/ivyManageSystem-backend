@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["overtimes"])
 
+# ============ Service Injection ============
+
+_salary_engine = None
+
+
+def init_overtimes_services(salary_engine_instance):
+    global _salary_engine
+    _salary_engine = salary_engine_instance
+
 
 # ============ Constants ============
 
@@ -237,7 +246,7 @@ def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permi
 
 @router.put("/overtimes/{overtime_id}/approve")
 def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
-    """核准/駁回加班"""
+    """核准/駁回加班；核准後自動重算該員工當月薪資"""
     session = get_session()
     try:
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
@@ -246,6 +255,24 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
         ot.is_approved = approved
         ot.approved_by = approved_by
         session.commit()
-        return {"message": "已核准" if approved else "已駁回"}
+
+        result = {"message": "已核准" if approved else "已駁回"}
+
+        # 核准後自動重算該員工當月薪資
+        if approved and _salary_engine is not None:
+            try:
+                year = ot.overtime_date.year
+                month = ot.overtime_date.month
+                emp_id = ot.employee_id
+                _salary_engine.process_salary_calculation(emp_id, year, month)
+                result["salary_recalculated"] = True
+                result["message"] = "已核准，薪資已自動重算"
+                logger.info(f"加班核准後自動重算薪資：emp_id={emp_id}, {year}/{month}")
+            except Exception as e:
+                result["salary_recalculated"] = False
+                result["warning"] = "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                logger.error(f"加班核准後薪資重算失敗：{e}")
+
+        return result
     finally:
         session.close()
