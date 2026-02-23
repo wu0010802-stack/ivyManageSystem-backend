@@ -6,7 +6,8 @@ import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
-from utils.auth import require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 from models.database import (
     get_session, Employee, Attendance, LeaveRecord, OvertimeRecord,
@@ -28,7 +29,7 @@ def init_dev_services(salary_engine):
 
 
 @router.get("/salary-logic")
-def get_salary_logic(current_user: dict = Depends(require_admin)):
+def get_salary_logic(current_user: dict = Depends(require_permission(Permission.SETTINGS))):
     """傾印目前的薪資計算邏輯與所有參數設定"""
     session = get_session()
     try:
@@ -184,7 +185,7 @@ def get_salary_logic(current_user: dict = Depends(require_admin)):
 
 @router.get("/employee-salary-debug")
 def debug_employee_salary(
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SETTINGS)),
     employee_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(...),

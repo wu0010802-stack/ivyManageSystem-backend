@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
 from models.database import get_session, AuditLog
-from utils.auth import get_current_user
+from utils.auth import require_permission
+from utils.permissions import Permission
 from sqlalchemy import desc
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,9 @@ def get_audit_logs(
     username: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.AUDIT_LOGS)),
 ):
-    """查詢操作審計紀錄（管理員限定）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="僅限管理員操作")
-
+    """查詢操作審計紀錄"""
     session = get_session()
     try:
         q = session.query(AuditLog)

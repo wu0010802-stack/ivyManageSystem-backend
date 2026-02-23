@@ -6,7 +6,8 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from utils.auth import require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 from pydantic import BaseModel
 
 from models.database import get_session, EmployeeAllowance, AllowanceType
@@ -34,7 +35,7 @@ class EmployeeAllowanceUpdate(BaseModel):
 # ============ Routes ============
 
 @router.get("/employees/{employee_id}/allowances")
-async def get_employee_allowances(employee_id: int, current_user: dict = Depends(require_admin)):
+async def get_employee_allowances(employee_id: int, current_user: dict = Depends(require_permission(Permission.SALARY))):
     session = get_session()
     try:
         allowances = session.query(EmployeeAllowance, AllowanceType).join(AllowanceType).filter(
@@ -55,7 +56,7 @@ async def get_employee_allowances(employee_id: int, current_user: dict = Depends
 
 
 @router.post("/employees/{employee_id}/allowances", status_code=201)
-async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate, current_user: dict = Depends(require_admin)):
+async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate, current_user: dict = Depends(require_permission(Permission.SALARY))):
     session = get_session()
     try:
         # 簡單處理：如果已存在相同類型則更新，否則新增
@@ -90,7 +91,7 @@ async def update_employee_allowance(
     employee_id: int,
     allowance_id: int,
     data: EmployeeAllowanceUpdate,
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
 ):
     """更新員工津貼"""
     session = get_session()
@@ -125,7 +126,7 @@ async def update_employee_allowance(
 async def delete_employee_allowance(
     employee_id: int,
     allowance_id: int,
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
 ):
     """刪除員工津貼（軟刪除）"""
     session = get_session()

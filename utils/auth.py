@@ -101,3 +101,23 @@ async def require_admin(current_user: dict = Depends(get_current_user)):
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="僅限管理員操作")
     return current_user
+
+
+def require_permission(permission):
+    """
+    FastAPI dependency factory: require specific permission.
+
+    Usage:
+        @router.get("/some-route")
+        def some_endpoint(current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+            ...
+    """
+    from utils.permissions import has_permission
+
+    async def check_permission(current_user: dict = Depends(get_current_user)):
+        user_permissions = current_user.get("permissions", 0)
+        if not has_permission(user_permissions, permission):
+            raise HTTPException(status_code=403, detail="您沒有此功能的存取權限")
+        return current_user
+
+    return check_permission

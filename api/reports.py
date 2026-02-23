@@ -12,7 +12,8 @@ from sqlalchemy import extract, func, Integer
 from models.database import (
     get_session, Attendance, Employee, Classroom, LeaveRecord, SalaryRecord,
 )
-from utils.auth import get_current_user
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +23,9 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 @router.get("/dashboard")
 def get_report_dashboard(
     year: int = Query(...),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.REPORTS)),
 ):
     """取得年度報表統計資料"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="僅限管理員操作")
-
     session = get_session()
     try:
         start = date(year, 1, 1)

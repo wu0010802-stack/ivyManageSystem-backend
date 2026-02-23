@@ -11,7 +11,8 @@ from pydantic import BaseModel
 from sqlalchemy import func
 
 from models.database import get_session, Student
-from utils.auth import get_current_user, require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ async def get_students(
     limit: int = Query(50, ge=1, le=200),
     classroom_id: Optional[int] = None,
     search: Optional[str] = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.STUDENTS)),
 ):
     """取得在讀學生列表（分頁）"""
     session = get_session()
@@ -96,7 +97,7 @@ async def get_students(
 
 
 @router.get("/students/{student_id}")
-async def get_student(student_id: int, current_user: dict = Depends(get_current_user)):
+async def get_student(student_id: int, current_user: dict = Depends(require_permission(Permission.STUDENTS))):
     """取得單一學生詳細資料"""
     session = get_session()
     try:
@@ -122,7 +123,7 @@ async def get_student(student_id: int, current_user: dict = Depends(get_current_
 
 
 @router.post("/students", status_code=201)
-async def create_student(item: StudentCreate, current_user: dict = Depends(require_admin)):
+async def create_student(item: StudentCreate, current_user: dict = Depends(require_permission(Permission.STUDENTS))):
     """新增學生"""
     session = get_session()
     try:
@@ -157,7 +158,7 @@ async def create_student(item: StudentCreate, current_user: dict = Depends(requi
 
 
 @router.put("/students/{student_id}")
-async def update_student(student_id: int, item: StudentUpdate, current_user: dict = Depends(require_admin)):
+async def update_student(student_id: int, item: StudentUpdate, current_user: dict = Depends(require_permission(Permission.STUDENTS))):
     """更新學生資料"""
     session = get_session()
     try:
@@ -190,7 +191,7 @@ async def update_student(student_id: int, item: StudentUpdate, current_user: dic
 
 
 @router.delete("/students/{student_id}")
-async def delete_student(student_id: int, current_user: dict = Depends(require_admin)):
+async def delete_student(student_id: int, current_user: dict = Depends(require_permission(Permission.STUDENTS))):
     """刪除學生（軟刪除）"""
     session = get_session()
     try:

@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from models.database import get_session, Employee, LeaveRecord
-from utils.auth import get_current_user, require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def get_leaves(
     year: Optional[int] = None,
     month: Optional[int] = None,
     status: Optional[str] = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.LEAVES)),
 ):
     """查詢請假記錄"""
     session = get_session()
@@ -116,7 +117,7 @@ def get_leaves(
 
 
 @router.post("/leaves", status_code=201)
-def create_leave(data: LeaveCreate, current_user: dict = Depends(require_admin)):
+def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permission(Permission.LEAVES))):
     """新增請假記錄"""
     session = get_session()
     try:
@@ -150,7 +151,7 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_admin))
 
 
 @router.put("/leaves/{leave_id}")
-def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(require_admin)):
+def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(require_permission(Permission.LEAVES))):
     """更新請假記錄"""
     session = get_session()
     try:
@@ -179,7 +180,7 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
 
 
 @router.delete("/leaves/{leave_id}")
-def delete_leave(leave_id: int, current_user: dict = Depends(require_admin)):
+def delete_leave(leave_id: int, current_user: dict = Depends(require_permission(Permission.LEAVES))):
     """刪除請假記錄"""
     session = get_session()
     try:
@@ -194,7 +195,7 @@ def delete_leave(leave_id: int, current_user: dict = Depends(require_admin)):
 
 
 @router.put("/leaves/{leave_id}/approve")
-def approve_leave(leave_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_admin)):
+def approve_leave(leave_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_permission(Permission.LEAVES))):
     """核准/駁回請假"""
     session = get_session()
     try:

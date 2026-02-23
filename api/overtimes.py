@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from models.database import get_session, Employee, OvertimeRecord
-from utils.auth import get_current_user, require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def get_overtimes(
     year: Optional[int] = None,
     month: Optional[int] = None,
     status: Optional[str] = None,  # pending, approved, rejected
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.OVERTIME)),
 ):
     """查詢加班記錄"""
     session = get_session()
@@ -133,7 +134,7 @@ def get_overtimes(
 
 
 @router.post("/overtimes", status_code=201)
-def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_admin)):
+def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_permission(Permission.OVERTIME))):
     """新增加班記錄（自動計算加班費）"""
     session = get_session()
     try:
@@ -181,7 +182,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_a
 
 
 @router.put("/overtimes/{overtime_id}")
-def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_admin)):
+def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_permission(Permission.OVERTIME))):
     """更新加班記錄"""
     session = get_session()
     try:
@@ -220,7 +221,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
 
 
 @router.delete("/overtimes/{overtime_id}")
-def delete_overtime(overtime_id: int, current_user: dict = Depends(require_admin)):
+def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permission(Permission.OVERTIME))):
     """刪除加班記錄"""
     session = get_session()
     try:
@@ -235,7 +236,7 @@ def delete_overtime(overtime_id: int, current_user: dict = Depends(require_admin
 
 
 @router.put("/overtimes/{overtime_id}/approve")
-def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_admin)):
+def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_permission(Permission.OVERTIME))):
     """核准/駁回加班"""
     session = get_session()
     try:

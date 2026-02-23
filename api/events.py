@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent
-from utils.auth import get_current_user, require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ def get_events(
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None),
     event_type: Optional[str] = Query(None),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
 ):
     """取得行事曆事件列表"""
     session = get_session()
@@ -106,7 +107,7 @@ def get_events(
 
 
 @router.get("/events/{event_id}")
-def get_event(event_id: int, current_user: dict = Depends(get_current_user)):
+def get_event(event_id: int, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
     """取得單一事件"""
     session = get_session()
     try:
@@ -122,7 +123,7 @@ def get_event(event_id: int, current_user: dict = Depends(get_current_user)):
 
 
 @router.post("/events", status_code=201)
-def create_event(data: EventCreate, current_user: dict = Depends(require_admin)):
+def create_event(data: EventCreate, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
     """新增行事曆事件"""
     session = get_session()
     try:
@@ -155,7 +156,7 @@ def create_event(data: EventCreate, current_user: dict = Depends(require_admin))
 
 
 @router.put("/events/{event_id}")
-def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(require_admin)):
+def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
     """更新行事曆事件"""
     session = get_session()
     try:
@@ -189,7 +190,7 @@ def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(
 
 
 @router.delete("/events/{event_id}")
-def delete_event(event_id: int, current_user: dict = Depends(require_admin)):
+def delete_event(event_id: int, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
     """刪除行事曆事件（軟刪除）"""
     session = get_session()
     try:

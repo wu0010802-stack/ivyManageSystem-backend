@@ -14,8 +14,10 @@ from pydantic import BaseModel
 from models.database import get_session, User, Employee
 from utils.auth import (
     hash_password, verify_password, create_access_token, get_current_user,
-    decode_token_allow_expired,
+    decode_token_allow_expired, require_permission,
 )
+from utils.permissions import Permission
+from utils.permissions import get_permissions_definition, get_role_default_permissions, ROLE_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,13 @@ class CreateUserRequest(BaseModel):
     username: str
     password: str
     role: str = "teacher"
+    permissions: Optional[int] = None  # None 表示使用角色預設權限
+
+
+class UpdateUserRequest(BaseModel):
+    role: Optional[str] = None
+    permissions: Optional[int] = None
+    is_active: Optional[bool] = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -91,19 +100,23 @@ def impersonate_user(data: ImpersonateRequest, current_user: dict = Depends(get_
             raise HTTPException(status_code=400, detail="該員工沒有使用者帳號，無法切換")
             
         # 4. 產生該使用者的 token
+        permissions = target_user.permissions if target_user.permissions is not None else -1
         token = create_access_token({
             "user_id": target_user.id,
             "employee_id": target_user.employee_id,
             "role": target_user.role,
             "name": target_emp.name,
+            "permissions": permissions,
         })
-        
+
         return {
             "token": token,
             "user": {
                 "id": target_user.id,
                 "username": target_user.username,
                 "role": target_user.role,
+                "role_label": ROLE_LABELS.get(target_user.role, target_user.role),
+                "permissions": permissions,
                 "employee_id": target_user.employee_id,
                 "name": target_emp.name,
                 "title": (target_emp.job_title_rel.name if target_emp.job_title_rel else (target_emp.title or "")),
@@ -134,11 +147,15 @@ def login(data: LoginRequest, request: Request):
         user.last_login = datetime.now()
         session.commit()
 
+        # permissions: -1 表示全部權限，teacher 角色不需要 permissions
+        permissions = user.permissions if user.permissions is not None else -1
+
         token = create_access_token({
             "user_id": user.id,
             "employee_id": user.employee_id,
             "role": user.role,
             "name": emp.name if emp else "",
+            "permissions": permissions,
         })
 
         return {
@@ -147,6 +164,8 @@ def login(data: LoginRequest, request: Request):
                 "id": user.id,
                 "username": user.username,
                 "role": user.role,
+                "role_label": ROLE_LABELS.get(user.role, user.role),
+                "permissions": permissions,
                 "employee_id": user.employee_id,
                 "name": emp.name if emp else "",
                 "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
@@ -187,12 +206,14 @@ def refresh_token(authorization: str = Header(None)):
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
+        permissions = user.permissions if user.permissions is not None else -1
 
         new_token = create_access_token({
             "user_id": user.id,
             "employee_id": user.employee_id,
             "role": user.role,
             "name": emp.name if emp else "",
+            "permissions": permissions,
         })
 
         return {
@@ -201,6 +222,8 @@ def refresh_token(authorization: str = Header(None)):
                 "id": user.id,
                 "username": user.username,
                 "role": user.role,
+                "role_label": ROLE_LABELS.get(user.role, user.role),
+                "permissions": permissions,
                 "employee_id": user.employee_id,
                 "name": emp.name if emp else "",
                 "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
@@ -221,10 +244,13 @@ def get_me(current_user: dict = Depends(get_current_user)):
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
+        permissions = user.permissions if user.permissions is not None else -1
         return {
             "id": user.id,
             "username": user.username,
             "role": user.role,
+            "role_label": ROLE_LABELS.get(user.role, user.role),
+            "permissions": permissions,
             "employee_id": user.employee_id,
             "name": emp.name if emp else "",
             "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
@@ -258,10 +284,8 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
 # ============ Admin Routes ============
 
 @router.get("/users")
-def list_users(current_user: dict = Depends(get_current_user)):
-    """列出所有使用者（管理員限定）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="權限不足")
+def list_users(current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+    """列出所有使用者"""
     session = get_session()
     try:
         users = session.query(User, Employee).outerjoin(
@@ -271,6 +295,8 @@ def list_users(current_user: dict = Depends(get_current_user)):
             "id": u.id,
             "username": u.username,
             "role": u.role,
+            "role_label": ROLE_LABELS.get(u.role, u.role),
+            "permissions": u.permissions if u.permissions is not None else -1,
             "is_active": u.is_active,
             "employee_id": u.employee_id,
             "employee_name": emp.name if emp else "",
@@ -281,10 +307,8 @@ def list_users(current_user: dict = Depends(get_current_user)):
 
 
 @router.post("/users", status_code=201)
-def create_user(data: CreateUserRequest, current_user: dict = Depends(get_current_user)):
-    """建立使用者帳號（管理員限定）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="權限不足")
+def create_user(data: CreateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+    """建立使用者帳號"""
     session = get_session()
     try:
         if session.query(User).filter(User.username == data.username).first():
@@ -295,11 +319,18 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(get_curren
         if not emp:
             raise HTTPException(status_code=404, detail="員工不存在")
 
+        # 計算權限：若有指定則使用，否則套用角色預設
+        if data.permissions is not None:
+            final_permissions = data.permissions
+        else:
+            final_permissions = get_role_default_permissions(data.role)
+
         user = User(
             employee_id=data.employee_id,
             username=data.username,
             password_hash=hash_password(data.password),
             role=data.role,
+            permissions=final_permissions,
         )
         session.add(user)
         session.commit()
@@ -314,10 +345,8 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(get_curren
 
 
 @router.put("/users/{user_id}/reset-password")
-def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict = Depends(get_current_user)):
-    """重設密碼（管理員限定）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="權限不足")
+def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+    """重設密碼"""
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
@@ -335,11 +364,47 @@ def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict 
         session.close()
 
 
+@router.get("/permissions")
+def get_permissions():
+    """取得權限定義（供前端渲染 UI）"""
+    return get_permissions_definition()
+
+
+@router.put("/users/{user_id}")
+def update_user(user_id: int, data: UpdateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+    """更新使用者角色與權限"""
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="使用者不存在")
+
+        if data.role is not None:
+            user.role = data.role
+            # 角色變更時，若未指定權限則套用新角色的預設權限
+            if data.permissions is None:
+                user.permissions = get_role_default_permissions(data.role)
+
+        if data.permissions is not None:
+            user.permissions = data.permissions
+
+        if data.is_active is not None:
+            user.is_active = data.is_active
+
+        session.commit()
+        return {"message": "使用者已更新"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
 @router.delete("/users/{user_id}")
-def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
-    """刪除使用者帳號（管理員限定）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="權限不足")
+def delete_user(user_id: int, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+    """刪除使用者帳號"""
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()

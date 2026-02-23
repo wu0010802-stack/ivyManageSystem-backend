@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint, Index
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -812,6 +812,7 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, comment="登入帳號")
     password_hash = Column(String(255), nullable=False, comment="密碼雜湊")
     role = Column(String(20), default="teacher", comment="角色: teacher/admin")
+    permissions = Column(BigInteger, default=-1, comment="功能模組權限位元遮罩 (-1=全部權限)")
     is_active = Column(Boolean, default=True, comment="帳號是否啟用")
     last_login = Column(DateTime, comment="最後登入時間")
 

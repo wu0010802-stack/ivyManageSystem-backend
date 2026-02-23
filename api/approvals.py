@@ -7,7 +7,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from models.database import get_session, LeaveRecord, OvertimeRecord
-from utils.auth import get_current_user
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,9 @@ router = APIRouter(prefix="/api", tags=["approvals"])
 
 @router.get("/approval-summary")
 def get_approval_summary(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.APPROVALS)),
 ):
     """取得待審核項目數量"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="僅限管理員操作")
-
     session = get_session()
     try:
         pending_leaves = session.query(LeaveRecord).filter(

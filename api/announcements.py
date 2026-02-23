@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from models.database import get_session, Announcement, Employee
-from utils.auth import get_current_user
+from utils.auth import require_permission
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +39,9 @@ class AnnouncementUpdate(BaseModel):
 def list_announcements(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
 ):
     """列出所有公告（管理員用）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="僅限管理員操作")
-
     session = get_session()
     try:
         query = session.query(Announcement).order_by(
@@ -77,12 +75,9 @@ def list_announcements(
 @router.post("", status_code=201)
 def create_announcement(
     data: AnnouncementCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
 ):
     """新增公告"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="僅限管理員操作")
-
     if data.priority not in ("normal", "important", "urgent"):
         raise HTTPException(status_code=400, detail="無效的優先級")
 
@@ -109,12 +104,9 @@ def create_announcement(
 def update_announcement(
     announcement_id: int,
     data: AnnouncementUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
 ):
     """更新公告"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="僅限管理員操作")
-
     session = get_session()
     try:
         ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
@@ -146,12 +138,9 @@ def update_announcement(
 @router.delete("/{announcement_id}")
 def delete_announcement(
     announcement_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
 ):
     """刪除公告"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="僅限管理員操作")
-
     session = get_session()
     try:
         ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()

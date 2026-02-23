@@ -9,7 +9,8 @@ from datetime import date, datetime
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from utils.auth import require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -340,7 +341,7 @@ def _compute_salary_breakdown(emp, emp_dict, year, month, emp_allowances,
 
 
 @router.post("/salary/calculate")
-async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict = Depends(require_admin)):
+async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict = Depends(require_permission(Permission.SALARY))):
     """一鍵結算薪資"""
     session = get_session()
     try:
@@ -410,7 +411,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
 
 @router.post("/salaries/calculate")
 def calculate_salaries_alt(
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
     year: int = Query(..., description="Calculate for which year"),
     month: int = Query(..., description="Calculate for which month")
 ):
@@ -468,7 +469,7 @@ def calculate_salaries_alt(
 
 @router.get("/salaries/festival-bonus")
 def get_festival_bonus(
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
     year: int = Query(...),
     month: int = Query(...)
 ):
@@ -500,7 +501,7 @@ def get_festival_bonus(
 
 @router.get("/salaries/records")
 def get_salary_records(
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
     year: int = Query(...),
     month: int = Query(...)
 ):
@@ -567,7 +568,7 @@ def get_salary_records(
 @router.get("/salaries/{record_id}/export")
 def export_salary_slip(
     record_id: int,
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
     format: str = Query("pdf", pattern="^(pdf)$")
 ):
     """匯出單人薪資單 PDF"""
@@ -597,7 +598,7 @@ def export_salary_slip(
 
 @router.get("/salaries/export-all")
 def export_all_salaries(
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
     year: int = Query(...),
     month: int = Query(...),
     format: str = Query("xlsx", pattern="^(xlsx)$")
@@ -631,7 +632,7 @@ def export_all_salaries(
 
 @router.get("/salaries/history")
 def get_salary_history(
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
     employee_id: int = Query(...),
     months: int = Query(12, ge=1, le=60)
 ):
@@ -688,7 +689,7 @@ def get_salary_history(
 
 @router.get("/salaries/history-all")
 def get_salary_history_all(
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_permission(Permission.SALARY)),
     year: int = Query(...)
 ):
     """查詢全部員工年度薪資概覽"""

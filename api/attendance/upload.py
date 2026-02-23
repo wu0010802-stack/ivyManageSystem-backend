@@ -14,7 +14,8 @@ from models.database import (
     get_session, Employee, Attendance, Classroom,
     ShiftAssignment, ShiftType, DailyShift,
 )
-from utils.auth import require_admin
+from utils.auth import require_permission
+from utils.permissions import Permission
 from ._shared import AttendanceUploadRequest
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ router = APIRouter()
 
 
 @router.post("/upload")
-async def upload_attendance(file: UploadFile = File(...), current_user: dict = Depends(require_admin)):
+async def upload_attendance(file: UploadFile = File(...), current_user: dict = Depends(require_permission(Permission.ATTENDANCE))):
     """上傳打卡記錄 Excel（支持分開的上班/下班時間欄位）"""
     if not file.filename.endswith(('.xlsx', '.xls')):
         raise HTTPException(status_code=400, detail="請上傳 Excel 檔案")
@@ -464,7 +465,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
 
 @router.post("/upload-csv")
-async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: dict = Depends(require_admin)):
+async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: dict = Depends(require_permission(Permission.ATTENDANCE))):
     """上傳 CSV 格式考勤記錄並存入資料庫"""
     session = get_session()
     try:
