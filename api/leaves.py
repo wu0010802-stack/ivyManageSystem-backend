@@ -701,11 +701,29 @@ def approve_leave(
         leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
         if not leave:
             raise HTTPException(status_code=404, detail="請假記錄不存在")
+
+        warning = None
+        if data.approved:
+            # 提示主管：該員工同期是否已有其他已核准假單（不強制阻擋，由主管判斷）
+            conflict = _check_overlap(
+                session, leave.employee_id, leave.start_date, leave.end_date,
+                exclude_id=leave_id
+            )
+            if conflict:
+                warning = (
+                    f"注意：該員工在 {conflict.start_date} ~ {conflict.end_date} "
+                    f"已有另一筆已核准的請假（ID: {conflict.id}），請確認是否重複核准"
+                )
+
         leave.is_approved = data.approved
         leave.approved_by = current_user.get("username", "管理員") if data.approved else None
         leave.rejection_reason = data.rejection_reason.strip() if not data.approved and data.rejection_reason else None
         session.commit()
-        return {"message": "已核准" if data.approved else "已駁回"}
+
+        result = {"message": "已核准" if data.approved else "已駁回"}
+        if warning:
+            result["warning"] = warning
+        return result
     finally:
         session.close()
 
