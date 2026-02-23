@@ -15,6 +15,7 @@ from models.database import (
 )
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
+from utils.permissions import _RW_PAIRS
 
 # Routers
 from api.employees import router as employees_router
@@ -284,9 +285,34 @@ def seed_default_admin():
         session.close()
 
 
+def migrate_permissions_rw():
+    """為既有非全權用戶自動補上 _WRITE 位元（冪等）"""
+    session = get_session()
+    try:
+        users = session.query(User).filter(User.permissions != -1).all()
+        updated = 0
+        for user in users:
+            old = user.permissions
+            new = old
+            for read_bit, write_bit in _RW_PAIRS:
+                if (old & read_bit.value) == read_bit.value:
+                    new = new | write_bit.value
+            if new != old:
+                user.permissions = new
+                updated += 1
+        if updated:
+            session.commit()
+            logger.info(f"migrate_permissions_rw: 已更新 {updated} 位用戶的 WRITE 權限位元")
+        else:
+            logger.info("migrate_permissions_rw: 無需遷移（所有用戶已是最新）")
+    finally:
+        session.close()
+
+
 @app.on_event("startup")
 def on_startup():
     init_database()
+    migrate_permissions_rw()
     seed_job_titles()
     seed_default_configs()
     seed_shift_types()

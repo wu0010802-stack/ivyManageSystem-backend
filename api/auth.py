@@ -284,7 +284,7 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
 # ============ Admin Routes ============
 
 @router.get("/users")
-def list_users(current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+def list_users(current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_READ))):
     """列出所有使用者"""
     session = get_session()
     try:
@@ -307,7 +307,7 @@ def list_users(current_user: dict = Depends(require_permission(Permission.USER_M
 
 
 @router.post("/users", status_code=201)
-def create_user(data: CreateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+def create_user(data: CreateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """建立使用者帳號"""
     session = get_session()
     try:
@@ -345,7 +345,7 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_pe
 
 
 @router.put("/users/{user_id}/reset-password")
-def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """重設密碼"""
     session = get_session()
     try:
@@ -371,7 +371,7 @@ def get_permissions():
 
 
 @router.put("/users/{user_id}")
-def update_user(user_id: int, data: UpdateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+def update_user(user_id: int, data: UpdateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """更新使用者角色與權限"""
     session = get_session()
     try:
@@ -403,7 +403,7 @@ def update_user(user_id: int, data: UpdateUserRequest, current_user: dict = Depe
 
 
 @router.delete("/users/{user_id}")
-def delete_user(user_id: int, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT))):
+def delete_user(user_id: int, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """刪除使用者帳號"""
     session = get_session()
     try:

@@ -29,7 +29,7 @@ def init_dev_services(salary_engine):
 
 
 @router.get("/salary-logic")
-def get_salary_logic(current_user: dict = Depends(require_permission(Permission.SETTINGS))):
+def get_salary_logic(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
     """傾印目前的薪資計算邏輯與所有參數設定"""
     session = get_session()
     try:
@@ -185,7 +185,7 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
 
 @router.get("/employee-salary-debug")
 def debug_employee_salary(
-    current_user: dict = Depends(require_permission(Permission.SETTINGS)),
+    current_user: dict = Depends(require_permission(Permission.SETTINGS_READ)),
     employee_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(...),

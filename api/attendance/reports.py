@@ -25,7 +25,7 @@ router = APIRouter()
 async def get_attendance_summary(
     year: int = Query(...),
     month: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE)),
+    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得考勤統計摘要"""
     session = get_session()
@@ -81,7 +81,7 @@ async def get_attendance_summary(
 
 
 @router.get("/anomaly-report")
-async def download_anomaly_report(current_user: dict = Depends(require_permission(Permission.ATTENDANCE))):
+async def download_anomaly_report(current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ))):
     """下載異常清單"""
     file_path = "output/anomaly_report.xlsx"
     if not os.path.exists(file_path):
@@ -94,7 +94,7 @@ def get_attendance_calendar(
     employee_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE)),
+    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得員工月出勤日曆資料"""
     session = get_session()

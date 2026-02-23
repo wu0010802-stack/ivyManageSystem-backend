@@ -78,7 +78,7 @@ class EmployeeUpdate(BaseModel):
 # ============ Routes ============
 
 @router.get("/employees")
-def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
     session = get_session()
     try:
         employees = session.query(Employee).options(joinedload(Employee.job_title_rel)).offset(skip).limit(limit).all()
@@ -121,7 +121,7 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
 
 
 @router.get("/employees/{employee_id}")
-async def get_employee(employee_id: int, current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+async def get_employee(employee_id: int, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
     """取得單一員工詳細資料"""
     session = get_session()
     try:
@@ -172,7 +172,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
 
 
 @router.post("/employees", status_code=201)
-async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_WRITE))):
     """新增員工"""
     session = get_session()
     try:
@@ -214,7 +214,7 @@ async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(requ
 
 
 @router.put("/employees/{employee_id}")
-async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_WRITE))):
     """更新員工資料"""
     session = get_session()
     try:
@@ -259,7 +259,7 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
 
 
 @router.delete("/employees/{employee_id}")
-async def delete_employee(employee_id: int, current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+async def delete_employee(employee_id: int, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_WRITE))):
     """刪除員工（軟刪除，設為離職）"""
     session = get_session()
     try:
@@ -280,7 +280,7 @@ async def delete_employee(employee_id: int, current_user: dict = Depends(require
 
 
 @router.get("/teachers")
-async def get_teachers(current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+async def get_teachers(current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
     """取得所有可作為老師的員工"""
     session = get_session()
     try:

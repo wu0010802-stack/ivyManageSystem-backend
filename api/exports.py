@@ -91,7 +91,7 @@ def _id_name_map(session, model):
 # ============ Employees ============
 
 @router.get("/employees")
-def export_employees(current_user: dict = Depends(require_permission(Permission.EMPLOYEES))):
+def export_employees(current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
     """匯出員工名冊 Excel"""
     session = get_session()
     try:
@@ -137,7 +137,7 @@ def export_employees(current_user: dict = Depends(require_permission(Permission.
 # ============ Students ============
 
 @router.get("/students")
-def export_students(current_user: dict = Depends(require_permission(Permission.STUDENTS))):
+def export_students(current_user: dict = Depends(require_permission(Permission.STUDENTS_READ))):
     """匯出學生名冊 Excel"""
     session = get_session()
     try:
@@ -183,7 +183,7 @@ def export_students(current_user: dict = Depends(require_permission(Permission.S
 
 @router.get("/attendance")
 def export_attendance(
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE)),
+    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
     year: int = Query(...),
     month: int = Query(...),
 ):
@@ -351,7 +351,7 @@ def _approval_label(is_approved):
 
 @router.get("/leaves")
 def export_leaves(
-    current_user: dict = Depends(require_permission(Permission.LEAVES)),
+    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
     year: int = Query(...),
     month: int = Query(...),
 ):
@@ -411,7 +411,7 @@ OVERTIME_TYPE_LABELS = {
 
 @router.get("/overtimes")
 def export_overtimes(
-    current_user: dict = Depends(require_permission(Permission.OVERTIME)),
+    current_user: dict = Depends(require_permission(Permission.OVERTIME_READ)),
     year: int = Query(...),
     month: int = Query(...),
 ):

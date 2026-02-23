@@ -39,7 +39,7 @@ class AnnouncementUpdate(BaseModel):
 def list_announcements(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
-    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS_READ)),
 ):
     """列出所有公告（管理員用）"""
     session = get_session()
@@ -75,7 +75,7 @@ def list_announcements(
 @router.post("", status_code=201)
 def create_announcement(
     data: AnnouncementCreate,
-    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS_WRITE)),
 ):
     """新增公告"""
     if data.priority not in ("normal", "important", "urgent"):
@@ -104,7 +104,7 @@ def create_announcement(
 def update_announcement(
     announcement_id: int,
     data: AnnouncementUpdate,
-    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS_WRITE)),
 ):
     """更新公告"""
     session = get_session()
@@ -138,7 +138,7 @@ def update_announcement(
 @router.delete("/{announcement_id}")
 def delete_announcement(
     announcement_id: int,
-    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS)),
+    current_user: dict = Depends(require_permission(Permission.ANNOUNCEMENTS_WRITE)),
 ):
     """刪除公告"""
     session = get_session()

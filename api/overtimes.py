@@ -83,7 +83,7 @@ def get_overtimes(
     year: Optional[int] = None,
     month: Optional[int] = None,
     status: Optional[str] = None,  # pending, approved, rejected
-    current_user: dict = Depends(require_permission(Permission.OVERTIME)),
+    current_user: dict = Depends(require_permission(Permission.OVERTIME_READ)),
 ):
     """查詢加班記錄"""
     session = get_session()
@@ -134,7 +134,7 @@ def get_overtimes(
 
 
 @router.post("/overtimes", status_code=201)
-def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_permission(Permission.OVERTIME))):
+def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
     """新增加班記錄（自動計算加班費）"""
     session = get_session()
     try:
@@ -182,7 +182,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
 
 
 @router.put("/overtimes/{overtime_id}")
-def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_permission(Permission.OVERTIME))):
+def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
     """更新加班記錄"""
     session = get_session()
     try:
@@ -221,7 +221,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
 
 
 @router.delete("/overtimes/{overtime_id}")
-def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permission(Permission.OVERTIME))):
+def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
     """刪除加班記錄"""
     session = get_session()
     try:
@@ -236,7 +236,7 @@ def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permi
 
 
 @router.put("/overtimes/{overtime_id}/approve")
-def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_permission(Permission.OVERTIME))):
+def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
     """核准/駁回加班"""
     session = get_session()
     try:
