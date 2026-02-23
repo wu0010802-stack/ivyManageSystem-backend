@@ -112,6 +112,11 @@ def _run_migrations(engine):
             conn.execute(text("ALTER TABLE leave_records ADD COLUMN end_time VARCHAR(5)"))
             conn.commit()
         logger.info("Migration: 已新增 leave_records.start_time 與 end_time 欄位")
+    if "rejection_reason" not in existing_cols:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE leave_records ADD COLUMN rejection_reason TEXT"))
+            conn.commit()
+        logger.info("Migration: 已新增 leave_records.rejection_reason 欄位")
 
 
 def init_database():
@@ -263,6 +268,7 @@ class LeaveRecord(Base):
 
     is_approved = Column(Boolean, nullable=True, default=None, comment="是否核准 (None=待審核, True=核准, False=駁回)")
     approved_by = Column(String(50), comment="核准人")
+    rejection_reason = Column(Text, nullable=True, comment="駁回原因")
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -272,6 +278,26 @@ class LeaveRecord(Base):
     )
 
     employee = relationship("Employee", back_populates="leaves")
+
+
+class LeaveQuota(Base):
+    """請假配額表（年度）— 僅儲存配額總量，已使用量動態從 LeaveRecord 計算"""
+    __tablename__ = "leave_quotas"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "year", "leave_type", name="uq_leave_quota"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)
+    year = Column(Integer, nullable=False, comment="適用年度")
+    leave_type = Column(String(20), nullable=False, comment="假別")
+    total_hours = Column(Float, nullable=False, comment="年度配額時數")
+    note = Column(String(200), nullable=True, comment="備註（如年資計算依據）")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="leave_quotas")
 
 
 class OvertimeRecord(Base):

@@ -6,18 +6,27 @@ import calendar as cal_module
 import json
 import os
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 
-from models.database import get_session, LeaveRecord
+from models.database import (
+    get_session, LeaveRecord, LeaveQuota,
+    ShiftAssignment, ShiftType, DailyShift, Holiday,
+)
 from utils.auth import get_current_user
 from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
     LeaveCreatePortal, LEAVE_TYPE_LABELS,
 )
+
+# ── 重用 leaves.py 的配額常數 ──
+QUOTA_LEAVE_TYPES = {"annual", "sick", "menstrual", "personal", "family_care"}
+STATUTORY_QUOTA_HOURS = {"sick": 240.0, "menstrual": 96.0, "personal": 112.0, "family_care": 56.0}
 
 router = APIRouter()
 
@@ -68,6 +77,7 @@ def get_my_leaves(
             "reason": lv.reason,
             "is_approved": lv.is_approved,
             "approved_by": lv.approved_by,
+            "rejection_reason": lv.rejection_reason,
             "attachment_paths": _parse_paths(lv.attachment_paths),
             "created_at": lv.created_at.isoformat() if lv.created_at else None,
         } for lv in leaves]
@@ -89,6 +99,21 @@ def create_my_leave(
             raise HTTPException(status_code=400, detail=f"無效的假別: {data.leave_type}")
         if data.end_date < data.start_date:
             raise HTTPException(status_code=400, detail="結束日期不可早於開始日期")
+        if data.leave_hours < 0.5:
+            raise HTTPException(status_code=400, detail="請假時數至少 0.5 小時")
+
+        # 重疊偵測（排除已駁回）
+        overlap = session.query(LeaveRecord).filter(
+            LeaveRecord.employee_id == emp.id,
+            LeaveRecord.start_date <= data.end_date,
+            LeaveRecord.end_date >= data.start_date,
+            LeaveRecord.is_approved.isnot(False),
+        ).first()
+        if overlap:
+            raise HTTPException(
+                status_code=409,
+                detail=f"您在 {overlap.start_date} ~ {overlap.end_date} 已有請假記錄，請確認後再送出",
+            )
 
         leave = LeaveRecord(
             employee_id=emp.id,
@@ -282,5 +307,138 @@ def get_my_leave_stats(
             "start_of_calculation": start_of_year.isoformat(),
             "end_of_calculation": end_of_year.isoformat()
         }
+    finally:
+        session.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# 工作日時數計算（整合排班與假日，供前端申請表使用）
+# ─────────────────────────────────────────────────────────────
+
+def _calc_shift_hours(work_start: str, work_end: str) -> float:
+    sh, sm = map(int, work_start.split(":"))
+    eh, em = map(int, work_end.split(":"))
+    total_minutes = (eh * 60 + em) - (sh * 60 + sm)
+    if total_minutes <= 0:
+        total_minutes += 24 * 60
+    total_hours = total_minutes / 60
+    if total_hours > 5:
+        total_hours -= 1
+    return round(total_hours * 2) / 2
+
+
+@router.get("/my-workday-hours")
+def get_my_workday_hours(
+    start_date: date,
+    end_date: date,
+    current_user: dict = Depends(get_current_user),
+):
+    """計算本人在指定區間的每日工時明細（整合排班 + 國定假日）"""
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="結束日期不得早於開始日期")
+    if (end_date - start_date).days > 90:
+        raise HTTPException(status_code=400, detail="查詢區間不得超過 90 天")
+
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        employee_id = emp.id
+
+        holidays = {
+            h.date: h.name
+            for h in session.query(Holiday).filter(
+                Holiday.date >= start_date,
+                Holiday.date <= end_date,
+                Holiday.is_active.is_(True),
+            ).all()
+        }
+        daily_shifts = {
+            ds.date: ds.shift_type
+            for ds in session.query(DailyShift)
+            .filter(DailyShift.employee_id == employee_id, DailyShift.date >= start_date, DailyShift.date <= end_date)
+            .options(joinedload(DailyShift.shift_type)).all()
+        }
+        monday_start = start_date - timedelta(days=start_date.weekday())
+        monday_end = end_date - timedelta(days=end_date.weekday())
+        weekly_shifts = {
+            a.week_start_date: a.shift_type
+            for a in session.query(ShiftAssignment)
+            .filter(ShiftAssignment.employee_id == employee_id,
+                    ShiftAssignment.week_start_date >= monday_start,
+                    ShiftAssignment.week_start_date <= monday_end)
+            .options(joinedload(ShiftAssignment.shift_type)).all()
+        }
+
+        breakdown, total_hours, cur = [], 0.0, start_date
+        while cur <= end_date:
+            wd = cur.weekday()
+            if wd >= 5:
+                breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "weekend", "hours": 0, "shift": None, "work_start": None, "work_end": None, "holiday_name": None})
+            elif cur in holidays:
+                breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "holiday", "hours": 0, "shift": None, "work_start": None, "work_end": None, "holiday_name": holidays[cur]})
+            else:
+                st = daily_shifts.get(cur) or weekly_shifts.get(cur - timedelta(days=wd))
+                hours = _calc_shift_hours(st.work_start, st.work_end) if st else 8.0
+                total_hours += hours
+                breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "workday", "hours": hours, "shift": st.name if st else None, "work_start": st.work_start if st else None, "work_end": st.work_end if st else None, "holiday_name": None})
+            cur += timedelta(days=1)
+
+        return {"total_hours": round(total_hours * 2) / 2, "breakdown": breakdown}
+    finally:
+        session.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# 個人配額查詢
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/my-quotas")
+def get_my_quotas(
+    year: int = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """查詢本人各假別年度配額（含動態計算的已使用、待審、剩餘時數）"""
+    if year is None:
+        year = date.today().year
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        quotas = session.query(LeaveQuota).filter(
+            LeaveQuota.employee_id == emp.id,
+            LeaveQuota.year == year,
+        ).all()
+
+        def used_hours(lt):
+            r = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+                LeaveRecord.employee_id == emp.id,
+                LeaveRecord.leave_type == lt,
+                LeaveRecord.is_approved == True,
+                func.strftime("%Y", LeaveRecord.start_date) == str(year),
+            ).scalar()
+            return float(r)
+
+        def pending_hours(lt):
+            r = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+                LeaveRecord.employee_id == emp.id,
+                LeaveRecord.leave_type == lt,
+                LeaveRecord.is_approved.is_(None),
+                func.strftime("%Y", LeaveRecord.start_date) == str(year),
+            ).scalar()
+            return float(r)
+
+        result = []
+        for q in quotas:
+            u = used_hours(q.leave_type)
+            p = pending_hours(q.leave_type)
+            result.append({
+                "leave_type": q.leave_type,
+                "leave_type_label": LEAVE_TYPE_LABELS.get(q.leave_type, q.leave_type),
+                "total_hours": q.total_hours,
+                "used_hours": u,
+                "pending_hours": p,
+                "remaining_hours": max(0.0, q.total_hours - u),
+                "note": q.note,
+            })
+        return result
     finally:
         session.close()
