@@ -190,17 +190,17 @@ def _calc_annual_leave_hours(hire_date: "date | None", year: int) -> float:
         return 0.0
     elif months < 12:
         return 24.0    # 3天
-    years = months / 12
-    if years < 2:
+    complete_years = months // 12
+    if complete_years < 2:
         return 56.0    # 7天
-    elif years < 3:
+    elif complete_years < 3:
         return 80.0    # 10天
-    elif years < 5:
+    elif complete_years < 5:
         return 112.0   # 14天
-    elif years < 10:
+    elif complete_years < 10:
         return 120.0   # 15天
     else:
-        days = min(15 + int(years) - 10, 30)
+        days = min(15 + complete_years - 10, 30)
         return float(days * 8)
 
 
