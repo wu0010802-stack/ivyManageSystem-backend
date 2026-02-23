@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint, Index
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint, Index, inspect as sa_inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -96,10 +96,23 @@ def session_scope():
         session.close()
 
 
+def _run_migrations(engine):
+    """執行資料庫結構遷移（向後相容，安全重複執行）"""
+    inspector = sa_inspect(engine)
+    # 新增 leave_records.attachment_paths
+    existing_cols = [c["name"] for c in inspector.get_columns("leave_records")]
+    if "attachment_paths" not in existing_cols:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE leave_records ADD COLUMN attachment_paths TEXT"))
+            conn.commit()
+        logger.info("Migration: 已新增 leave_records.attachment_paths 欄位")
+
+
 def init_database():
     """初始化資料庫並建立所有表格"""
     engine = get_engine()
     Base.metadata.create_all(engine)
+    _run_migrations(engine)
     logger.info("資料庫初始化完成")
     return engine, get_session_factory()
 
@@ -238,6 +251,7 @@ class LeaveRecord(Base):
     deduction_ratio = Column(Float, default=1.0, comment="扣薪比例")
 
     reason = Column(Text, comment="請假原因")
+    attachment_paths = Column(Text, nullable=True, comment="附件路徑清單（JSON 陣列）")
 
     is_approved = Column(Boolean, default=False, comment="是否核准")
     approved_by = Column(String(50), comment="核准人")

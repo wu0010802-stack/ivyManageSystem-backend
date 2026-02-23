@@ -2,17 +2,31 @@
 Leave management router
 """
 
+import json
 import logging
+import os
 import calendar as cal_module
 from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from models.database import get_session, Employee, LeaveRecord
 from utils.auth import require_permission
 from utils.permissions import Permission
+
+_UPLOAD_DIR = "uploads/leave_attachments"
+
+
+def _parse_paths(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except Exception:
+        return []
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +139,7 @@ def get_leaves(
                 "reason": leave.reason,
                 "is_approved": leave.is_approved,
                 "approved_by": leave.approved_by,
+                "attachment_paths": _parse_paths(leave.attachment_paths),
                 "created_at": leave.created_at.isoformat() if leave.created_at else None,
             })
         return results
@@ -222,5 +237,31 @@ def approve_leave(leave_id: int, approved: bool = True, approved_by: str = "管�
         leave.approved_by = approved_by if approved else None
         session.commit()
         return {"message": "已核准" if approved else "已駁回"}
+    finally:
+        session.close()
+
+
+@router.get("/leaves/{leave_id}/attachments/{filename}")
+def get_leave_attachment(
+    leave_id: int,
+    filename: str,
+    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+):
+    """取得假單附件（管理後台）"""
+    session = get_session()
+    try:
+        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        if not leave:
+            raise HTTPException(status_code=404, detail="找不到請假記錄")
+
+        paths = _parse_paths(leave.attachment_paths)
+        if filename not in paths:
+            raise HTTPException(status_code=404, detail="找不到附件")
+
+        file_path = os.path.join(_UPLOAD_DIR, str(leave_id), filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="檔案不存在")
+
+        return FileResponse(file_path)
     finally:
         session.close()

@@ -21,6 +21,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/today")
+async def get_today_attendance_summary(
+    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+):
+    """取得今日出勤即時狀態"""
+    session = get_session()
+    try:
+        today = date.today()
+
+        total_employees = session.query(Employee).filter(Employee.is_active == True).count()
+
+        today_records = session.query(Attendance).filter(
+            Attendance.attendance_date == today
+        ).all()
+
+        present_count = len(today_records)
+        late_count = sum(1 for a in today_records if a.is_late)
+        missing_count = sum(
+            1 for a in today_records
+            if a.is_missing_punch_in or a.is_missing_punch_out
+        )
+
+        return {
+            "date": today.isoformat(),
+            "total_employees": total_employees,
+            "present_count": present_count,
+            "absent_count": max(0, total_employees - present_count),
+            "late_count": late_count,
+            "missing_count": missing_count,
+        }
+    finally:
+        session.close()
+
+
 @router.get("/summary")
 async def get_attendance_summary(
     year: int = Query(...),

@@ -93,6 +93,7 @@ init_dev_services(salary_engine)
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)
 os.makedirs("output", exist_ok=True)
+os.makedirs("uploads/leave_attachments", exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Register Routers
