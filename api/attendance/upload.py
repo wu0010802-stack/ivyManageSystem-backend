@@ -184,8 +184,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                         is_head_teacher = employee.id in head_teacher_map
                         is_assistant = employee.id in assistant_teacher_map
-                        title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
-                        is_driver = "司機" in title_str
+                        is_driver = "司機" in employee.title_name
 
                         daily_key = (employee.id, attendance_date)
                         week_monday = attendance_date - timedelta(days=attendance_date.weekday())
@@ -359,8 +358,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                         is_head_teacher = employee.id in head_teacher_map
                         is_assistant = employee.id in assistant_teacher_map
-                        title_str = (employee.title or "") + (employee.job_title_rel.name if employee.job_title_rel else "")
-                        is_driver = "司機" in title_str
+                        is_driver = "司機" in employee.title_name
 
                         if (is_head_teacher or is_assistant) and p_in and p_out:
                             week_monday = a_date - timedelta(days=a_date.weekday())

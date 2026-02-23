@@ -178,6 +178,11 @@ class Employee(Base):
 
     job_title_rel = relationship("JobTitle", backref="employees")
 
+    @property
+    def title_name(self) -> str:
+        """統一的職稱名稱：優先使用 job_title_rel，fallback 到 legacy title 欄位"""
+        return (self.job_title_rel.name if self.job_title_rel else self.title) or ''
+
     base_salary = Column(Float, default=0, comment="底薪")
     hourly_rate = Column(Float, default=0, comment="時薪（才藝老師用）")
 

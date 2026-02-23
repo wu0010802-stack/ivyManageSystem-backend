@@ -50,8 +50,7 @@ def get_attendance_sheet(
 
         is_head_teacher = emp.id in head_teacher_ids
         is_assistant = emp.id in assistant_teacher_ids
-        title_str = (emp.title or "") + (emp.job_title_rel.name if emp.job_title_rel else "")
-        is_driver = "司機" in title_str
+        is_driver = "司機" in emp.title_name
         uses_shift = is_head_teacher or is_assistant
 
         # Pre-fetch shift assignments for this month's weeks

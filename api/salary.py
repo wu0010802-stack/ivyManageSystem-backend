@@ -228,7 +228,7 @@ def _resolve_bonus_for_employee(emp, emp_dict, emp_role_map, classroom_info_map,
 
     if emp.id in emp_role_map:
         roles = emp_role_map[emp.id]
-        office_festival_base = _salary_engine.get_office_festival_bonus_base(emp.position or '', emp.title or '')
+        office_festival_base = _salary_engine.get_office_festival_bonus_base(emp.position or '', emp.title_name)
 
         if office_festival_base is not None:
             # 司機/美編
@@ -294,7 +294,7 @@ def _resolve_bonus_for_employee(emp, emp_dict, emp_role_map, classroom_info_map,
             emp_dict['_calculated_overtime_bonus'] = total_overtime
     else:
         # 員工沒有帶班
-        office_festival_base = _salary_engine.get_office_festival_bonus_base(emp.position or '', emp.title or '')
+        office_festival_base = _salary_engine.get_office_festival_bonus_base(emp.position or '', emp.title_name)
         if office_festival_base is not None:
             emp_dict['_calculated_festival_bonus'] = _calc_school_wide_bonus(
                 emp, office_festival_base, total_school_enrollment, school_wide_overtime_target)
@@ -321,7 +321,7 @@ def _compute_salary_breakdown(emp, emp_dict, year, month, emp_allowances,
         # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
         if not _salary_engine.get_bonus_distribution_month(month):
             breakdown.festival_bonus = 0
-        breakdown.supervisor_dividend = _salary_engine.get_supervisor_dividend(emp.title or '', emp.position or '')
+        breakdown.supervisor_dividend = _salary_engine.get_supervisor_dividend(emp.title_name, emp.position or '')
         breakdown.gross_salary = (
             breakdown.base_salary + breakdown.supervisor_allowance +
             breakdown.teacher_allowance + breakdown.meal_allowance +
