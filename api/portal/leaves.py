@@ -102,17 +102,17 @@ def create_my_leave(
         if data.leave_hours < 0.5:
             raise HTTPException(status_code=400, detail="請假時數至少 0.5 小時")
 
-        # 重疊偵測（排除已駁回）
+        # 重疊偵測（僅封鎖已核准的假單，待審核可並存）
         overlap = session.query(LeaveRecord).filter(
             LeaveRecord.employee_id == emp.id,
             LeaveRecord.start_date <= data.end_date,
             LeaveRecord.end_date >= data.start_date,
-            LeaveRecord.is_approved.isnot(False),
+            LeaveRecord.is_approved == True,
         ).first()
         if overlap:
             raise HTTPException(
                 status_code=409,
-                detail=f"您在 {overlap.start_date} ~ {overlap.end_date} 已有請假記錄，請確認後再送出",
+                detail=f"您在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄，無法重複請假",
             )
 
         leave = LeaveRecord(

@@ -278,6 +278,16 @@ class LeaveRecord(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+    @property
+    def approval_status(self) -> str:
+        """語意化審核狀態，取代直接比較 nullable boolean 的反模式。
+        回傳值：'pending' | 'approved' | 'rejected'"""
+        if self.is_approved is True:
+            return 'approved'
+        if self.is_approved is False:
+            return 'rejected'
+        return 'pending'
+
     __table_args__ = (
         Index('ix_leave_emp_dates', 'employee_id', 'start_date', 'end_date'),
     )
@@ -327,6 +337,16 @@ class OvertimeRecord(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def approval_status(self) -> str:
+        """語意化審核狀態，取代直接比較 nullable boolean 的反模式。
+        回傳值：'pending' | 'approved' | 'rejected'"""
+        if self.is_approved is True:
+            return 'approved'
+        if self.is_approved is False:
+            return 'rejected'
+        return 'pending'
 
     __table_args__ = (
         Index('ix_overtime_emp_date', 'employee_id', 'overtime_date'),

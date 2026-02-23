@@ -102,7 +102,7 @@ def get_overtimes(
             q = q.filter(OvertimeRecord.overtime_date >= date(year, 1, 1), OvertimeRecord.overtime_date <= date(year, 12, 31))
 
         if status == "pending":
-            q = q.filter(OvertimeRecord.is_approved == None)
+            q = q.filter(OvertimeRecord.is_approved.is_(None))
         elif status == "approved":
             q = q.filter(OvertimeRecord.is_approved == True)
         elif status == "rejected":
