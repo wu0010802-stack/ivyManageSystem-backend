@@ -147,12 +147,13 @@ class LeaveUpdate(BaseModel):
 def _check_overlap(
     session, employee_id: int, start_date: date, end_date: date, exclude_id: int = None
 ) -> "LeaveRecord | None":
-    """檢查員工在指定日期區間是否已有未駁回的請假記錄（含待審與已核准）"""
+    """檢查員工在指定日期區間是否已有「已核准」的請假記錄。
+    待審核記錄不列入封鎖，允許員工同時提交多份申請供主管選擇。"""
     q = session.query(LeaveRecord).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.start_date <= end_date,
         LeaveRecord.end_date >= start_date,
-        LeaveRecord.is_approved.isnot(False),
+        LeaveRecord.is_approved == True,
     )
     if exclude_id is not None:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -601,7 +602,7 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
         if overlap:
             raise HTTPException(
                 status_code=409,
-                detail=f"該員工在 {overlap.start_date} ~ {overlap.end_date} 已有請假記錄（ID: {overlap.id}），請確認後再新增"
+                detail=f"該員工在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄（ID: {overlap.id}），無法重複請假"
             )
 
         leave = LeaveRecord(
@@ -644,7 +645,7 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
         if overlap:
             raise HTTPException(
                 status_code=409,
-                detail=f"修改後的日期與現有請假記錄重疊（{overlap.start_date} ~ {overlap.end_date}，ID: {overlap.id}）"
+                detail=f"修改後的日期與已核准的請假記錄重疊（{overlap.start_date} ~ {overlap.end_date}，ID: {overlap.id}）"
             )
 
         update_data = data.dict(exclude_unset=True)
