@@ -901,48 +901,12 @@ class SalaryEngine:
                 supervisor_festival_base = self.get_supervisor_festival_bonus(emp_title, emp_position)
 
             if supervisor_festival_base is not None:
-                # 主管使用固定的節慶獎金基數 -> 改為全校比例
+                # 主管節慶獎金 = 固定基數 × 全校比例
+                # office_staff_context 由 process_salary_calculation 負責準備（主管無論有無班級皆會提供）
                 if is_eligible and emp_position:
-                    # Calculate ratio
-                    # Check if office_staff_context has enrollment, or fetch it?
-                    # process_salary_calculation only fetches office_staff_context if is_office_staff is true.
-                    # We need school enrollment for Supervisor too now.
-                    
-                    # Fetch school enrollment if not available (Lazy load or ensure it's fetched before)
-                    current_school_enrollment = 0
-                    if office_staff_context:
-                        current_school_enrollment = office_staff_context.get('school_enrollment', 0)
-                    else:
-                        # Need to fetch if not already. 
-                        # Ideally process_salary_calculation should prepare this. 
-                        # But for now let's query if needed OR rely on a passed context.
-                        # Let's modify process_salary_calculation to fetch school enrollment for everyone or specifically for supervisors too.
-                        # For this specific block, we assume we might need to fetch it if context is missing.
-                        # However, doing query here might break the "engine-only logic" if we want to keep DB access separated?
-                        # `process_salary_calculation` handles DB access. `calculate_salary` is pure logic.
-                        # But `process_salary_calculation` prepares `office_staff_context` only for office staff.
-                        # We should update `process_salary_calculation` to pass `school_context` or similar.
-                        # For now, let's assume we can pass it via `office_staff_context` or similar, 
-                        # OR simply rely on the fact that we can't query inside here easily without session.
-                        
-                        # Wait, `calculate_salary` doesn't have session access unless `self` has it? 
-                        # `SalaryEngine` has `load_config_from_db` but not a persistent session for calc.
-                        # So `process_salary_calculation` MUST provide the data.
-                        pass # Logic continues below
-                        
-                    # Let's assume process_salary_calculation will be updated to provide this in `office_staff_context` 
-                    # OR we create a new `school_context`.
-                    # For minimal change, let's use `office_staff_context` if available, or 0? 
-                    # If 0, bonus is 0? That's risky.
-                    # We MUST update process_salary_calculation to ensure `office_staff_context` (or renamed `school_context`) is passed for Supervisors.
-                    
-                    school_enrollment = 0
-                    if office_staff_context:
-                         school_enrollment = office_staff_context.get('school_enrollment', 0)
-                    
+                    school_enrollment = office_staff_context.get('school_enrollment', 0) if office_staff_context else 0
                     school_target = self._school_wide_target or 160
                     ratio = school_enrollment / school_target if school_target > 0 else 0
-                    
                     breakdown.festival_bonus = round(supervisor_festival_base * ratio)
                 else:
                     breakdown.festival_bonus = 0
@@ -1394,7 +1358,9 @@ class SalaryEngine:
             if self.get_supervisor_festival_bonus(title_name, emp.position):
                 is_supervisor = True
 
-            if (emp.is_office_staff or is_supervisor) and not classroom_context:
+            # 主管一律需要全校比例（不受 classroom_context 影響，因為主管節慶獎金走全校路徑）
+            # 辦公室人員若有 classroom_context 則走班級路徑，不需要 office_staff_context
+            if is_supervisor or (emp.is_office_staff and not classroom_context):
                 total_students = session.query(Student).filter(Student.is_active == True).count()
                 office_staff_context = {
                     'school_enrollment': total_students
