@@ -148,6 +148,9 @@ def _run_migrations(engine):
     # salary_records — 記錄計算時使用的設定版本
     _add_column_if_missing(engine, inspector, "salary_records", "bonus_config_id", "INTEGER REFERENCES bonus_configs(id)")
     _add_column_if_missing(engine, inspector, "salary_records", "attendance_policy_id", "INTEGER REFERENCES attendance_policies(id)")
+    # salary_records — 曠職扣款
+    _add_column_if_missing(engine, inspector, "salary_records", "absence_deduction", "FLOAT DEFAULT 0")
+    _add_column_if_missing(engine, inspector, "salary_records", "absent_count", "INTEGER DEFAULT 0")
 
 
 def init_database():
@@ -434,11 +437,13 @@ class SalaryRecord(Base):
     early_leave_deduction = Column(Float, default=0, comment="早退扣款")
     missing_punch_deduction = Column(Float, default=0, comment="未打卡扣款")
     leave_deduction = Column(Float, default=0, comment="請假扣款")
+    absence_deduction = Column(Float, default=0, comment="曠職扣款")
     other_deduction = Column(Float, default=0, comment="其他扣款")
 
     late_count = Column(Integer, default=0, comment="遲到次數")
     early_leave_count = Column(Integer, default=0, comment="早退次數")
     missing_punch_count = Column(Integer, default=0, comment="未打卡次數")
+    absent_count = Column(Integer, default=0, comment="曠職天數")
 
     gross_salary = Column(Float, default=0, comment="應發總額")
     total_deduction = Column(Float, default=0, comment="扣款總額")

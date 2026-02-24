@@ -160,10 +160,24 @@ class LeaveUpdate(BaseModel):
 # ============ Helpers ============
 
 def _check_overlap(
-    session, employee_id: int, start_date: date, end_date: date, exclude_id: int = None
+    session,
+    employee_id: int,
+    start_date: date,
+    end_date: date,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    exclude_id: int = None,
 ) -> "LeaveRecord | None":
-    """檢查員工在指定日期區間是否已有「已核准」的請假記錄。
-    待審核記錄不列入封鎖，允許員工同時提交多份申請供主管選擇。"""
+    """檢查員工在指定日期區間（含時段）是否已有「已核准」的請假記錄。
+    待審核記錄不列入封鎖，允許員工同時提交多份申請供主管選擇。
+
+    時段重疊規則：
+    - 若任一方跨多天 → 純日期重疊即視為衝突
+    - 若雙方都是同一天的單日假單，且雙方都提供了 start_time/end_time
+      → 做時間區間精確比對，不重疊則放行
+      （不重疊條件：new_end <= exist_start 或 exist_end <= new_start）
+    - 其餘情況（缺乏時間資訊）→ 同日即視為衝突
+    """
     q = session.query(LeaveRecord).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.start_date <= end_date,
@@ -172,7 +186,28 @@ def _check_overlap(
     )
     if exclude_id is not None:
         q = q.filter(LeaveRecord.id != exclude_id)
-    return q.first()
+
+    is_new_single_day = (start_date == end_date)
+
+    for record in q.all():
+        is_record_single_day = (record.start_date == record.end_date)
+
+        # 雙方都是同一天的單日假單，且雙方都有時間資訊 → 做時間段精確比對
+        if (
+            is_new_single_day
+            and is_record_single_day
+            and start_time
+            and end_time
+            and record.start_time
+            and record.end_time
+        ):
+            # HH:MM 字串可直接做字典序比較（00:00 ~ 23:59 均正確）
+            if end_time <= record.start_time or record.end_time <= start_time:
+                continue  # 時間不重疊，放行
+
+        return record  # 日期重疊且不符合放行條件 → 衝突
+
+    return None
 
 
 # ── 配額相關常數 ──────────────────────────────────────────────
@@ -766,7 +801,10 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
         if not emp:
             raise HTTPException(status_code=404, detail="員工不存在")
 
-        overlap = _check_overlap(session, data.employee_id, data.start_date, data.end_date)
+        overlap = _check_overlap(
+            session, data.employee_id, data.start_date, data.end_date,
+            data.start_time, data.end_time,
+        )
         if overlap:
             raise HTTPException(
                 status_code=409,
@@ -815,10 +853,15 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
         if not leave:
             raise HTTPException(status_code=404, detail="請假記錄不存在")
 
-        # 以更新後的日期範圍做重疊偵測（日期若未傳入則沿用原值）
+        # 以更新後的日期 / 時間做重疊偵測（未傳入的欄位沿用原值）
         new_start = data.start_date or leave.start_date
         new_end = data.end_date or leave.end_date
-        overlap = _check_overlap(session, leave.employee_id, new_start, new_end, exclude_id=leave_id)
+        new_start_time = data.start_time if data.start_time is not None else leave.start_time
+        new_end_time = data.end_time if data.end_time is not None else leave.end_time
+        overlap = _check_overlap(
+            session, leave.employee_id, new_start, new_end,
+            new_start_time, new_end_time, exclude_id=leave_id,
+        )
         if overlap:
             raise HTTPException(
                 status_code=409,
@@ -892,10 +935,11 @@ def approve_leave(
 
         warning = None
         if data.approved:
-            # 提示主管：該員工同期是否已有其他已核准假單（不強制阻擋，由主管判斷）
+            # 提示主管：該員工同期是否已有其他已核准假單（含時段比對，不強制阻擋，由主管判斷）
             conflict = _check_overlap(
                 session, leave.employee_id, leave.start_date, leave.end_date,
-                exclude_id=leave_id
+                leave.start_time, leave.end_time,
+                exclude_id=leave_id,
             )
             if conflict:
                 warning = (

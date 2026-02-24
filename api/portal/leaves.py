@@ -24,6 +24,7 @@ from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
     LeaveCreatePortal, LEAVE_TYPE_LABELS,
 )
+from api.leaves import _check_overlap
 
 # ── 重用 leaves.py 的配額常數 ──
 QUOTA_LEAVE_TYPES = {"annual", "sick", "menstrual", "personal", "family_care"}
@@ -105,13 +106,11 @@ def create_my_leave(
         if round(data.leave_hours * 2) != data.leave_hours * 2:
             raise HTTPException(status_code=400, detail="請假時數必須為 0.5 小時的倍數（如 0.5、1、1.5、2…）")
 
-        # 重疊偵測（僅封鎖已核准的假單，待審核可並存）
-        overlap = session.query(LeaveRecord).filter(
-            LeaveRecord.employee_id == emp.id,
-            LeaveRecord.start_date <= data.end_date,
-            LeaveRecord.end_date >= data.start_date,
-            LeaveRecord.is_approved == True,
-        ).first()
+        # 重疊偵測（含時段精確比對，僅封鎖已核准的假單，待審核可並存）
+        overlap = _check_overlap(
+            session, emp.id, data.start_date, data.end_date,
+            data.start_time, data.end_time,
+        )
         if overlap:
             raise HTTPException(
                 status_code=409,

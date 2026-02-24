@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import or_
 
 from models.database import get_session, Employee, OvertimeRecord
 from utils.auth import require_permission
@@ -62,6 +63,44 @@ def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str)
             )
     else:
         return round(hourly_base * hours * HOLIDAY_RATE)
+
+
+def _check_overtime_overlap(
+    session,
+    employee_id: int,
+    overtime_date: date,
+    start_time,
+    end_time,
+    exclude_id: int = None,
+) -> "OvertimeRecord | None":
+    """
+    檢查員工在指定日期是否已有時間重疊的加班申請（待審核或已核准）。
+
+    重疊規則：
+    - 已駁回的申請不列入，允許重新申請
+    - 若新申請或現有記錄缺少時間資訊，同日即視為重疊
+    - 若雙方都有 start/end time，做時間區間重疊判斷（start1 < end2 AND start2 < end1）
+    """
+    q = session.query(OvertimeRecord).filter(
+        OvertimeRecord.employee_id == employee_id,
+        OvertimeRecord.overtime_date == overtime_date,
+        or_(OvertimeRecord.is_approved.is_(None), OvertimeRecord.is_approved == True),
+    )
+    if exclude_id is not None:
+        q = q.filter(OvertimeRecord.id != exclude_id)
+
+    for record in q.all():
+        if (
+            start_time is None
+            or end_time is None
+            or record.start_time is None
+            or record.end_time is None
+        ):
+            return record  # 缺乏時間資訊，同日即視為重疊
+        if start_time < record.end_time and record.start_time < end_time:
+            return record  # 時間區間重疊
+
+    return None
 
 
 # ============ Pydantic Models ============
@@ -166,6 +205,18 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
             h, m = map(int, data.end_time.split(":"))
             end_dt = datetime.combine(data.overtime_date, datetime.min.time().replace(hour=h, minute=m))
 
+        overlap = _check_overtime_overlap(session, data.employee_id, data.overtime_date, start_dt, end_dt)
+        if overlap:
+            st = overlap.start_time.strftime("%H:%M") if overlap.start_time else "未指定"
+            et = overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
+                    f"（ID: {overlap.id}，{st}～{et}），請勿重複申請"
+                ),
+            )
+
         ot = OvertimeRecord(
             employee_id=data.employee_id,
             overtime_date=data.overtime_date,
@@ -198,17 +249,40 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
         if not ot:
             raise HTTPException(status_code=404, detail="加班記錄不存在")
 
+        # 先計算更新後的日期與時間（供重疊檢查使用）
+        check_date = data.overtime_date or ot.overtime_date
+        if data.start_time:
+            h, m = map(int, data.start_time.split(":"))
+            new_start_dt = datetime.combine(check_date, datetime.min.time().replace(hour=h, minute=m))
+        else:
+            new_start_dt = ot.start_time
+        if data.end_time:
+            h, m = map(int, data.end_time.split(":"))
+            new_end_dt = datetime.combine(check_date, datetime.min.time().replace(hour=h, minute=m))
+        else:
+            new_end_dt = ot.end_time
+
+        overlap = _check_overtime_overlap(session, ot.employee_id, check_date, new_start_dt, new_end_dt, exclude_id=overtime_id)
+        if overlap:
+            st = overlap.start_time.strftime("%H:%M") if overlap.start_time else "未指定"
+            et = overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"修改後的時段與已存在的加班申請重疊"
+                    f"（ID: {overlap.id}，{overlap.overtime_date} {st}～{et}），請調整時段"
+                ),
+            )
+
         update_data = data.dict(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None and key not in ('start_time', 'end_time'):
                 setattr(ot, key, value)
 
         if data.start_time:
-            h, m = map(int, data.start_time.split(":"))
-            ot.start_time = datetime.combine(ot.overtime_date, datetime.min.time().replace(hour=h, minute=m))
+            ot.start_time = new_start_dt
         if data.end_time:
-            h, m = map(int, data.end_time.split(":"))
-            ot.end_time = datetime.combine(ot.overtime_date, datetime.min.time().replace(hour=h, minute=m))
+            ot.end_time = new_end_dt
 
         # Recalculate pay
         emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()

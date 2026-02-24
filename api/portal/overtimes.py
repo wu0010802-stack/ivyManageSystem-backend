@@ -65,7 +65,7 @@ def create_my_overtime(
         if data.overtime_type not in OVERTIME_TYPE_LABELS:
             raise HTTPException(status_code=400, detail=f"無效的加班類型: {data.overtime_type}")
 
-        from api.overtimes import calculate_overtime_pay
+        from api.overtimes import calculate_overtime_pay, _check_overtime_overlap
         pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
 
         start_dt = None
@@ -76,6 +76,18 @@ def create_my_overtime(
         if data.end_time:
             h, m = map(int, data.end_time.split(":"))
             end_dt = datetime.combine(data.overtime_date, datetime.min.time().replace(hour=h, minute=m))
+
+        overlap = _check_overtime_overlap(session, emp.id, data.overtime_date, start_dt, end_dt)
+        if overlap:
+            st = overlap.start_time.strftime("%H:%M") if overlap.start_time else "未指定"
+            et = overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"您在 {overlap.overtime_date} 已有時間重疊的加班申請"
+                    f"（ID: {overlap.id}，{st}～{et}），請勿重複送出"
+                ),
+            )
 
         ot = OvertimeRecord(
             employee_id=emp.id,

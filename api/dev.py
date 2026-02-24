@@ -165,7 +165,7 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
             "net_salary": "gross_salary - total_deduction",
             "late_deduction_formula": "遲到分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
             "early_leave_deduction_formula": "早退分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
-            "auto_leave_rule": "遲到 ≥ 120 分鐘 → 不扣分鐘費，改扣事假半天 (日薪 × 0.5)",
+            "late_deduction_rule": "遲到一律按實際分鐘數比例扣款（月薪 ÷ 30 ÷ 8 ÷ 60），依勞基法第26條工資核實發給原則",
             "daily_salary": "月薪 ÷ 30  ← 依勞基法固定30天（遲到轉事假、請假扣款均適用）",
             "per_minute_rate": "月薪 ÷ 30 ÷ 8 ÷ 60  ← 依勞基法固定30天",
             "leave_deduction": "請假天數 × 日薪 × 扣薪比例 (事假1.0 / 病假0.5 / 特休0.0)",
@@ -331,22 +331,13 @@ def debug_employee_salary(
         base_sal = emp.base_salary or 0
         per_minute_rate = base_sal / (MONTHLY_BASE_DAYS * 8 * 60) if base_sal > 0 else 0
 
-        # Attendance deduction detail
-        auto_leave_threshold = engine._attendance_policy.get('auto_leave_threshold', 120)
+        # Attendance deduction detail（全程按實際分鐘比例，依勞基法第26條）
         att_deduction_detail = []
         normal_late_deduction = 0
-        auto_leave_deduction = 0
-        auto_leave_count = 0
         for minutes in late_details:
-            if minutes >= auto_leave_threshold:
-                d = round(daily_salary * 0.5)
-                att_deduction_detail.append({"minutes": minutes, "type": "auto_leave_half_day", "deduction": d})
-                auto_leave_deduction += d
-                auto_leave_count += 1
-            else:
-                d = round(minutes * per_minute_rate)
-                att_deduction_detail.append({"minutes": minutes, "type": "per_minute", "deduction": d})
-                normal_late_deduction += d
+            d = round(minutes * per_minute_rate)
+            att_deduction_detail.append({"minutes": minutes, "type": "per_minute", "deduction": d})
+            normal_late_deduction += d
 
         early_deduction = round(total_early_min * per_minute_rate)
 
@@ -448,11 +439,8 @@ def debug_employee_salary(
             "deduction_calc": {
                 "daily_salary": round(daily_salary),
                 "per_minute_rate": round(per_minute_rate, 4),
-                "auto_leave_threshold_minutes": auto_leave_threshold,
                 "late_deduction_detail": att_deduction_detail,
-                "normal_late_deduction": normal_late_deduction,
-                "auto_leave_deduction": auto_leave_deduction,
-                "auto_leave_count": auto_leave_count,
+                "late_deduction": normal_late_deduction,
                 "early_leave_deduction": early_deduction,
                 "missing_punch_deduction": 0,
             },

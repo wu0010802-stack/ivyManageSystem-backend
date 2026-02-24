@@ -141,28 +141,28 @@ class TestAttendanceDeduction:
         per_minute = 30000 / 14400
         expected = round(30 * per_minute)
         assert result['late_deduction'] == expected
-        assert result['auto_leave_count'] == 0
 
-    def test_late_over_120_min_auto_leave(self, engine):
-        """遲到超過 120 分鐘轉事假半天"""
+    def test_late_over_120_min_per_minute(self, engine):
+        """遲到超過 120 分鐘仍按實際分鐘比例扣款（依勞基法，不得溢扣）"""
         att = self._make_attendance(late_count=1, total_late_minutes=150)
         result = engine.calculate_attendance_deduction(
             att, daily_salary=1000, base_salary=30000, late_details=[150]
         )
-        assert result['late_deduction'] == 0  # 不扣分鐘費
-        assert result['auto_leave_count'] == 1
-        assert result['auto_leave_deduction'] == round(1000 * 0.5)
+        per_minute = 30000 / 14400
+        assert result['late_deduction'] == round(150 * per_minute)
+        assert 'auto_leave_count' not in result
+        assert 'auto_leave_deduction' not in result
 
     def test_mixed_late_details(self, engine):
-        """混合：一次正常遲到 + 一次超過 120 分鐘"""
+        """混合：一次正常遲到 + 一次超過 120 分鐘，全部按分鐘比例合計"""
         att = self._make_attendance(late_count=2, total_late_minutes=180)
         result = engine.calculate_attendance_deduction(
             att, daily_salary=1000, base_salary=30000, late_details=[30, 150]
         )
         per_minute = 30000 / 14400
-        assert result['late_deduction'] == round(30 * per_minute)
-        assert result['auto_leave_count'] == 1
-        assert result['auto_leave_deduction'] == round(1000 * 0.5)
+        assert result['late_deduction'] == round(180 * per_minute)
+        assert 'auto_leave_count' not in result
+        assert 'auto_leave_deduction' not in result
 
     def test_early_leave(self, engine):
         """早退扣款"""
