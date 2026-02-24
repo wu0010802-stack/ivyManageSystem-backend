@@ -101,6 +101,9 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
 
     # Earnings
     supervisor_dividend = getattr(record, 'bonus_amount', 0) or 0
+    bonus_separate = getattr(record, 'bonus_separate', False)
+    festival_bonus_val = record.festival_bonus or 0
+    overtime_bonus_val = record.overtime_bonus or 0
     total_allowances = (
         (record.supervisor_allowance or 0) +
         (record.teacher_allowance or 0) +
@@ -108,9 +111,8 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
         (record.transportation_allowance or 0) +
         (record.other_allowance or 0)
     )
+    # 獎金小計不含獨立轉帳的節慶/超額獎金
     total_bonus = (
-        (record.festival_bonus or 0) +
-        (record.overtime_bonus or 0) +
         (record.performance_bonus or 0) +
         (record.special_bonus or 0) +
         supervisor_dividend
@@ -125,14 +127,16 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
         ['交通津貼', '', money(record.transportation_allowance)],
         ['其他津貼', '', money(record.other_allowance)],
         ['津貼小計', '', money(total_allowances)],
-        ['節慶獎金', '', money(record.festival_bonus)],
-        ['超額獎金', '', money(record.overtime_bonus)],
         ['績效獎金', '', money(record.performance_bonus)],
         ['特別獎金', '', money(record.special_bonus)],
         ['主管紅利', '', money(supervisor_dividend)],
         ['獎金小計', '', money(total_bonus)],
-        ['應發合計', '', money(record.gross_salary)],
     ]
+    # 獨立轉帳獎金行（節慶/超額獎金另行匯款，不計入月薪應發）
+    if bonus_separate:
+        festival_separate = festival_bonus_val + overtime_bonus_val
+        earn_data.append(['節慶/超額獎金 (另行轉帳)', '', money(festival_separate)])
+    earn_data.append(['月薪應發合計', '', money(record.gross_salary)])
 
     earn_table = Table(earn_data, colWidths=[120, 100, 120])
     earn_table.setStyle(TableStyle([
@@ -243,7 +247,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
     money_fmt = '#,##0'
 
     # Title row
-    ws.merge_cells('A1:R1')
+    ws.merge_cells('A1:T1')
     ws['A1'] = f'{year}年{month}月 薪資總表'
     ws['A1'].font = Font(bold=True, size=14)
     ws['A1'].alignment = Alignment(horizontal='center')
@@ -252,8 +256,9 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
     headers = [
         '姓名', '員工編號', '職稱', '底薪',
         '主管加給', '導師津貼', '伙食津貼', '交通津貼', '其他津貼',
-        '節慶獎金', '超額獎金', '績效獎金', '主管紅利',
-        '應發合計',
+        '節慶獎金(另轉)', '超額獎金(另轉)', '績效獎金', '主管紅利',
+        '獨立獎金合計',
+        '月薪應發',
         '勞保', '健保', '考勤扣款', '扣款合計',
         '實發金額'
     ]
@@ -281,6 +286,9 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
         )
 
         supervisor_dividend = getattr(record, 'bonus_amount', 0) or 0
+        festival_bonus_val = record.festival_bonus or 0
+        overtime_bonus_val = record.overtime_bonus or 0
+        independent_bonus = festival_bonus_val + overtime_bonus_val
 
         values = [
             employee.name,
@@ -292,10 +300,11 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
             record.meal_allowance or 0,
             record.transportation_allowance or 0,
             record.other_allowance or 0,
-            record.festival_bonus or 0,
-            record.overtime_bonus or 0,
+            festival_bonus_val,
+            overtime_bonus_val,
             record.performance_bonus or 0,
             supervisor_dividend,
+            independent_bonus,
             record.gross_salary or 0,
             record.labor_insurance_employee or 0,
             record.health_insurance_employee or 0,

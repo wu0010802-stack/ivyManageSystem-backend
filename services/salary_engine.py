@@ -989,7 +989,7 @@ class SalaryEngine:
                 breakdown.festival_bonus = 0
                 breakdown.overtime_bonus = 0
 
-            # 計算應發總額
+            # 計算應發總額（festival_bonus / overtime_bonus 獨立轉帳，不計入月薪）
             breakdown.gross_salary = (
                 breakdown.base_salary +
                 breakdown.supervisor_allowance +
@@ -997,8 +997,6 @@ class SalaryEngine:
                 breakdown.meal_allowance +
                 breakdown.transportation_allowance +
                 breakdown.other_allowance +
-                breakdown.festival_bonus +
-                breakdown.overtime_bonus +
                 breakdown.performance_bonus +
                 breakdown.special_bonus +
                 breakdown.supervisor_dividend
@@ -1060,7 +1058,7 @@ class SalaryEngine:
         # 將園務會議缺席從節慶獎金扣款
         breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
 
-        # 計算扣款總額（未打卡不扣款）
+        # 計算扣款總額（未打卡不扣款；meeting_absence_deduction 已扣減 festival_bonus，不重複列入）
         breakdown.total_deduction = (
             breakdown.labor_insurance +
             breakdown.health_insurance +
@@ -1069,9 +1067,11 @@ class SalaryEngine:
             breakdown.early_leave_deduction +
             breakdown.auto_leave_deduction +
             breakdown.leave_deduction +
-            breakdown.meeting_absence_deduction +
             breakdown.other_deduction
         )
+
+        # 節慶獎金（含超額獎金）獨立轉帳旗標
+        breakdown.bonus_separate = (breakdown.festival_bonus + breakdown.overtime_bonus) > 0
 
         # 計算實領薪資
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
@@ -1477,6 +1477,7 @@ class SalaryEngine:
             
             salary_record.festival_bonus = breakdown.festival_bonus
             salary_record.overtime_bonus = breakdown.overtime_bonus
+            salary_record.bonus_separate = breakdown.bonus_separate
             salary_record.performance_bonus = breakdown.performance_bonus
             salary_record.special_bonus = breakdown.special_bonus
             salary_record.bonus_amount = breakdown.supervisor_dividend
