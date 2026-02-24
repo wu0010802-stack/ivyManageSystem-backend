@@ -15,9 +15,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sqlalchemy.orm import joinedload
+import calendar as _cal
+
 from models.database import (
     get_session, Employee, Classroom, ClassGrade, Student,
-    SalaryRecord, EmployeeAllowance, AllowanceType
+    SalaryRecord, EmployeeAllowance, AllowanceType, Attendance,
 )
 
 logger = logging.getLogger(__name__)
@@ -322,13 +324,15 @@ def _compute_salary_breakdown(engine, emp, emp_dict, year, month, emp_allowances
         if not engine.get_bonus_distribution_month(month):
             breakdown.festival_bonus = 0
         breakdown.supervisor_dividend = engine.get_supervisor_dividend(emp.title_name, emp.position or '')
-        breakdown.gross_salary = (
-            breakdown.base_salary + breakdown.supervisor_allowance +
-            breakdown.teacher_allowance + breakdown.meal_allowance +
-            breakdown.transportation_allowance + breakdown.other_allowance +
-            breakdown.performance_bonus + breakdown.special_bonus +
-            breakdown.supervisor_dividend + breakdown.meeting_overtime_pay +
-            breakdown.birthday_bonus)
+        # 時薪制：gross_salary 已由 calculate_salary() 正確設為 hourly_total，不可覆蓋
+        if emp_dict.get('employee_type') != 'hourly':
+            breakdown.gross_salary = (
+                breakdown.base_salary + breakdown.supervisor_allowance +
+                breakdown.teacher_allowance + breakdown.meal_allowance +
+                breakdown.transportation_allowance + breakdown.other_allowance +
+                breakdown.performance_bonus + breakdown.special_bonus +
+                breakdown.supervisor_dividend + breakdown.meeting_overtime_pay +
+                breakdown.birthday_bonus)
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
     elif classroom_context:
         breakdown = engine.calculate_salary(
@@ -371,6 +375,10 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
         meeting_by_emp = _build_meeting_map(session, request.year, request.month)
         global_bonus_settings = _build_legacy_bonus_settings(request)
 
+        _, _last_day = _cal.monthrange(request.year, request.month)
+        _month_start = date(request.year, request.month, 1)
+        _month_end = date(request.year, request.month, _last_day)
+
         results = []
         for emp in employees:
             emp_dict = {
@@ -387,6 +395,20 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                 "birthday": emp.birthday.isoformat() if emp.birthday else None,
                 "is_office_staff": emp.is_office_staff or False,
             }
+
+            # 時薪制：從考勤記錄計算當月實際工時，以免 hourly_total 為 0
+            if emp.employee_type == 'hourly':
+                att_records = session.query(Attendance).filter(
+                    Attendance.employee_id == emp.id,
+                    Attendance.attendance_date >= _month_start,
+                    Attendance.attendance_date <= _month_end,
+                ).all()
+                total_hours = sum(
+                    (a.punch_out_time - a.punch_in_time).total_seconds() / 3600
+                    for a in att_records
+                    if a.punch_in_time and a.punch_out_time
+                )
+                emp_dict['work_hours'] = round(total_hours, 2)
 
             classroom_context = _resolve_bonus_for_employee(
                 engine, emp, emp_dict, emp_role_map, classroom_info_map,
@@ -429,6 +451,31 @@ def calculate_salaries_alt(
     """
     session = get_session()
     try:
+        # ── 封存前置檢查：只要該月有任何已封存薪資，整批拒絕 ──────────────────
+        # 理由：部分封存 + 部分重算 會讓帳冊出現新舊混合的狀態，更難稽核。
+        # 應讓管理員先到薪資頁面確認並解除整月封存後，再執行重算。
+        finalized_records = (
+            session.query(SalaryRecord, Employee)
+            .join(Employee, SalaryRecord.employee_id == Employee.id)
+            .filter(
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+                SalaryRecord.is_finalized == True,
+            )
+            .all()
+        )
+        if finalized_records:
+            names = "、".join(r.name for _, r in finalized_records)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{year} 年 {month} 月已有 {len(finalized_records)} 筆薪資封存，"
+                    f"無法整批重算（{names}）。"
+                    "請先至薪資管理頁面解除整月封存後再重試。"
+                ),
+            )
+        # ─────────────────────────────────────────────────────────────────────────
+
         from services.salary_engine import SalaryEngine as Engine
         engine = Engine(load_from_db=True)
 
@@ -570,6 +617,8 @@ def get_salary_records(
                 "total_deduction": record.total_deduction,
                 "net_salary": record.net_salary,
                 "is_finalized": record.is_finalized,
+                "finalized_at": record.finalized_at.isoformat() if record.finalized_at else None,
+                "finalized_by": record.finalized_by,
             })
 
         return results
@@ -736,5 +785,92 @@ def get_salary_history_all(
             })
 
         return results
+    finally:
+        session.close()
+
+
+# ============ 薪資封存管理 ============
+
+class FinalizeMonthRequest(BaseModel):
+    year: int
+    month: int
+
+
+@router.post("/salaries/finalize-month")
+def finalize_salary_month(
+    data: FinalizeMonthRequest,
+    current_user: dict = Depends(require_permission(Permission.SALARY_WRITE)),
+):
+    """封存整月薪資（封存後禁止重新計算，需手動解封才能修改）"""
+    session = get_session()
+    try:
+        records = (
+            session.query(SalaryRecord)
+            .filter(
+                SalaryRecord.salary_year == data.year,
+                SalaryRecord.salary_month == data.month,
+                SalaryRecord.is_finalized != True,
+            )
+            .all()
+        )
+        if not records:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{data.year} 年 {data.month} 月無可封存的薪資記錄（可能尚未計算，或全部已封存）",
+            )
+        now = datetime.now()
+        operator = current_user.get("username") or current_user.get("name") or "管理員"
+        for r in records:
+            r.is_finalized = True
+            r.finalized_at = now
+            r.finalized_by = operator
+        session.commit()
+        logger.info(
+            "整月薪資封存：%d/%d，共 %d 筆，操作者=%s",
+            data.year, data.month, len(records), operator,
+        )
+        return {
+            "message": f"已封存 {data.year} 年 {data.month} 月共 {len(records)} 筆薪資記錄",
+            "count": len(records),
+            "finalized_by": operator,
+            "finalized_at": now.isoformat(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.delete("/salaries/{record_id}/finalize")
+def unfinalize_salary(
+    record_id: int,
+    current_user: dict = Depends(require_permission(Permission.SALARY_WRITE)),
+):
+    """解除單筆薪資封存（危險操作，會記錄稽核備註）"""
+    session = get_session()
+    try:
+        record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+        if not record.is_finalized:
+            raise HTTPException(status_code=409, detail="此筆薪資尚未封存，無需解封")
+        operator = current_user.get("username") or current_user.get("name") or "管理員"
+        logger.warning(
+            "薪資封存解除！record_id=%d，employee_id=%d，%d/%d，操作者=%s",
+            record_id, record.employee_id, record.salary_year, record.salary_month, operator,
+        )
+        record.is_finalized = False
+        audit_note = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 封存解除，操作者：{operator}"
+        record.remark = (record.remark or "") + audit_note
+        session.commit()
+        return {"message": "已解除封存，操作記錄已寫入備註欄位"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

@@ -152,6 +152,17 @@ def _run_migrations(engine):
     _add_column_if_missing(engine, inspector, "salary_records", "absence_deduction", "FLOAT DEFAULT 0")
     _add_column_if_missing(engine, inspector, "salary_records", "absent_count", "INTEGER DEFAULT 0")
 
+    # daily_shifts — shift_type_id 改為允許 NULL（換班至無班的情境需要顯式標記排休）
+    ds_cols = {c["name"]: c for c in inspector.get_columns("daily_shifts")}
+    if not ds_cols.get("shift_type_id", {}).get("nullable", True):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE daily_shifts ALTER COLUMN shift_type_id DROP NOT NULL"))
+                conn.commit()
+            logger.info("Migration: daily_shifts.shift_type_id 已改為允許 NULL")
+        except Exception as e:
+            logger.warning("Migration: daily_shifts.shift_type_id 允許 NULL 設定失敗（可忽略）：%s", e)
+
 
 def init_database():
     """初始化資料庫並建立所有表格"""
@@ -886,7 +897,8 @@ class DailyShift(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
-    shift_type_id = Column(Integer, ForeignKey("shift_types.id"), nullable=False)
+    shift_type_id = Column(Integer, ForeignKey("shift_types.id"), nullable=True,
+                           comment="班別（NULL 表示該日明確排休，不繼承週排班）")
     date = Column(Date, nullable=False, comment="排班日期")
     notes = Column(Text, comment="備註")
 

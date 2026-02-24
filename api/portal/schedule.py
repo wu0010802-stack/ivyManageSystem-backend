@@ -42,7 +42,10 @@ def get_my_schedule(
             DailyShift.date >= start,
             DailyShift.date <= end,
         ).all()
+        # 用 dict 存 shift_type_id（可能為 None，代表換班後該日明確排休）
         daily_map = {ds.date: ds.shift_type_id for ds in daily_shifts}
+        # 用 set 記錄「有 DailyShift 記錄」的日期，不論 shift_type_id 是否為 None
+        daily_override_dates = {ds.date for ds in daily_shifts}
 
         first_monday = start - timedelta(days=start.weekday())
         last_monday = end - timedelta(days=end.weekday())
@@ -59,9 +62,12 @@ def get_my_schedule(
             weekday = d.weekday()
             is_weekend = weekday >= 5
 
-            shift_type_id = daily_map.get(d)
-            is_override = shift_type_id is not None
-            if not shift_type_id:
+            # 以 record 存在性（非 shift_type_id 非空）判斷是否為覆蓋日
+            # DailyShift(shift_type_id=None) = 換班後明確排休，仍算 override
+            is_override = d in daily_override_dates
+            if is_override:
+                shift_type_id = daily_map[d]  # 取出（可能為 None）
+            else:
                 week_monday = d - timedelta(days=weekday)
                 shift_type_id = weekly_map.get(week_monday)
 
@@ -123,6 +129,8 @@ def get_swap_candidates(
             DailyShift.employee_id.in_(active_ids),
             DailyShift.date == target_date,
         ).all()
+        # 以 set 記錄「有 DailyShift 記錄」的員工 id，不論 shift_type_id 是否為 None
+        daily_override_ids = {ds.employee_id for ds in daily_shifts}
         daily_shift_map = {ds.employee_id: ds.shift_type_id for ds in daily_shifts}
 
         week_monday = target_date - timedelta(days=target_date.weekday())
@@ -148,7 +156,11 @@ def get_swap_candidates(
         candidates = []
         for tid in active_ids:
             teacher = teacher_map[tid]
-            shift_type_id = daily_shift_map.get(tid) or weekly_map.get(tid)
+            # 以 record 存在性判斷：DailyShift 存在則優先（含 shift_type_id=None 的明確排休）
+            if tid in daily_override_ids:
+                shift_type_id = daily_shift_map[tid]
+            else:
+                shift_type_id = weekly_map.get(tid)
             st = shift_types.get(shift_type_id) if shift_type_id else None
 
             candidates.append({
@@ -302,8 +314,9 @@ def respond_swap_request(
                 (swap.requester_id, swap.target_shift_type_id),
                 (swap.target_id, swap.requester_shift_type_id),
             ]:
-                if new_shift_type_id is None:
-                    continue
+                # new_shift_type_id 可能為 None（對方原本無班），
+                # 此時仍需寫入 DailyShift(shift_type_id=None) 來顯式覆蓋週排班，
+                # 否則本人的週排班會繼續生效，造成「排班複製」的人事成本錯誤。
                 existing_ds = session.query(DailyShift).filter(
                     DailyShift.employee_id == emp_id,
                     DailyShift.date == swap.swap_date,
@@ -314,7 +327,7 @@ def respond_swap_request(
                 else:
                     ds = DailyShift(
                         employee_id=emp_id,
-                        shift_type_id=new_shift_type_id,
+                        shift_type_id=new_shift_type_id,  # None 表示該日排休
                         date=swap.swap_date,
                         notes=f"換班 #{swap.id}",
                     )
