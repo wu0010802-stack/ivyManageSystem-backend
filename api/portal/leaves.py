@@ -24,7 +24,7 @@ from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
     LeaveCreatePortal, LEAVE_TYPE_LABELS,
 )
-from api.leaves import _check_overlap
+from api.leaves import _check_overlap, _check_quota, _check_leave_limits
 
 # ── 重用 leaves.py 的配額常數 ──
 QUOTA_LEAVE_TYPES = {"annual", "sick", "menstrual", "personal", "family_care"}
@@ -116,6 +116,16 @@ def create_my_leave(
                 status_code=409,
                 detail=f"您在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄，無法重複請假",
             )
+
+        # 配額檢查（已核准 + 待審合計不得超出年度上限，防止併發刷假）
+        _check_leave_limits(
+            session, emp.id, data.leave_type,
+            data.start_date, data.leave_hours,
+        )
+        _check_quota(
+            session, emp.id, data.leave_type,
+            data.start_date.year, data.leave_hours,
+        )
 
         leave = LeaveRecord(
             employee_id=emp.id,

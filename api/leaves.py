@@ -307,6 +307,21 @@ def _get_approved_hours_in_year(
     return float(q.scalar())
 
 
+def _get_pending_hours_in_year(
+    session, employee_id: int, year: int, leave_type: str, exclude_id: int = None
+) -> float:
+    """查詢年度待審核時數（可排除指定記錄）"""
+    q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+        LeaveRecord.employee_id == employee_id,
+        LeaveRecord.leave_type == leave_type,
+        LeaveRecord.is_approved.is_(None),
+        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+    )
+    if exclude_id:
+        q = q.filter(LeaveRecord.id != exclude_id)
+    return float(q.scalar())
+
+
 def _get_approved_hours_in_month(
     session, employee_id: int, year: int, month: int,
     leave_type: str, exclude_id: int = None
@@ -316,6 +331,23 @@ def _get_approved_hours_in_month(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved == True,
+        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+        func.strftime("%m", LeaveRecord.start_date) == f"{month:02d}",
+    )
+    if exclude_id:
+        q = q.filter(LeaveRecord.id != exclude_id)
+    return float(q.scalar())
+
+
+def _get_pending_hours_in_month(
+    session, employee_id: int, year: int, month: int,
+    leave_type: str, exclude_id: int = None
+) -> float:
+    """查詢指定月份待審核時數（可排除指定記錄）"""
+    q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+        LeaveRecord.employee_id == employee_id,
+        LeaveRecord.leave_type == leave_type,
+        LeaveRecord.is_approved.is_(None),
         func.strftime("%Y", LeaveRecord.start_date) == str(year),
         func.strftime("%m", LeaveRecord.start_date) == f"{month:02d}",
     )
@@ -344,7 +376,8 @@ def _quota_row(session, quota: "LeaveQuota", year: int) -> dict:
 
 def _check_leave_limits(
     session, employee_id: int, leave_type: str,
-    start_date: date, leave_hours: float, exclude_id: int = None
+    start_date: date, leave_hours: float, exclude_id: int = None,
+    include_pending: bool = True,
 ) -> None:
     """
     針對有法定上限的假別進行驗證，超限時 raise HTTPException(400)。
@@ -352,20 +385,32 @@ def _check_leave_limits(
     婚假：全年累計 ≤ 8天（64小時）
     喪假：單次申請 ≤ 8天（64小時，實際依親等）
     生理假：當月累計 ≤ 1天（8小時）
+
+    include_pending=True（預設，用於新增/編輯）：已核准 + 待審合計納入
+    include_pending=False（用於核准動作）：僅計算已核准時數
     """
     # ── 婚假：年累計上限 ──────────────────────────────────
     if leave_type in ANNUAL_MAX_HOURS:
         max_h = ANNUAL_MAX_HOURS[leave_type]
-        used = _get_approved_hours_in_year(
+        approved = _get_approved_hours_in_year(
             session, employee_id, start_date.year, leave_type, exclude_id
         )
-        if used + leave_hours > max_h:
-            remaining = max(0.0, max_h - used)
+        if include_pending:
+            pending = _get_pending_hours_in_year(
+                session, employee_id, start_date.year, leave_type, exclude_id
+            )
+            committed = approved + pending
+        else:
+            pending = 0.0
+            committed = approved
+        if committed + leave_hours > max_h:
+            remaining = max(0.0, max_h - committed)
+            pending_note = f"、待審 {pending / 8:.1f} 天" if include_pending and pending > 0 else ""
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"婚假全年上限 8 天（{max_h:.0f} 小時），"
-                    f"本年已核准 {used / 8:.1f} 天，"
+                    f"本年已核准 {approved / 8:.1f} 天{pending_note}，"
                     f"剩餘 {remaining / 8:.1f} 天（{remaining:.0f} 小時）"
                 ),
             )
@@ -386,16 +431,25 @@ def _check_leave_limits(
     if leave_type in MONTHLY_MAX_HOURS:
         max_h = MONTHLY_MAX_HOURS[leave_type]
         year, month = start_date.year, start_date.month
-        used = _get_approved_hours_in_month(
+        approved = _get_approved_hours_in_month(
             session, employee_id, year, month, leave_type, exclude_id
         )
-        if used + leave_hours > max_h:
-            remaining = max(0.0, max_h - used)
+        if include_pending:
+            pending_m = _get_pending_hours_in_month(
+                session, employee_id, year, month, leave_type, exclude_id
+            )
+            committed = approved + pending_m
+        else:
+            pending_m = 0.0
+            committed = approved
+        if committed + leave_hours > max_h:
+            remaining = max(0.0, max_h - committed)
+            pending_note = f"、待審 {pending_m:.0f} 小時" if include_pending and pending_m > 0 else ""
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"生理假每月上限 1 天（{max_h:.0f} 小時），"
-                    f"{year}/{month:02d} 月已核准 {used:.0f} 小時，"
+                    f"{year}/{month:02d} 月已核准 {approved:.0f} 小時{pending_note}，"
                     f"剩餘 {remaining:.0f} 小時"
                 ),
             )
@@ -403,14 +457,19 @@ def _check_leave_limits(
 
 def _check_quota(
     session, employee_id: int, leave_type: str,
-    year: int, leave_hours: float, exclude_id: int = None
+    year: int, leave_hours: float, exclude_id: int = None,
+    include_pending: bool = True,
 ) -> None:
     """
     針對有年度配額的假別（QUOTA_LEAVE_TYPES）檢查剩餘配額，
     超過時 raise HTTPException(400)。
 
-    - 僅計算已核准時數，待審記錄不列入（允許同時提交多份申請供主管選擇）
-    - 若該員工尚未初始化配額（LeaveQuota 無記錄）則略過，不強制攔截
+    include_pending=True（預設，用於新增/編輯送出）：
+      已核准 + 待審時數合計納入上限計算，防止員工同時大量送出假單
+      規避配額（concurrent flooding 攻擊）。
+    include_pending=False（用於核准動作）：
+      僅計算已核准時數，確保主管核准時也不超出年度配額。
+    若該員工尚未初始化配額（LeaveQuota 無記錄）則略過，不強制攔截。
     """
     if leave_type not in QUOTA_LEAVE_TYPES:
         return
@@ -424,20 +483,30 @@ def _check_quota(
     if quota is None:
         return  # 配額未初始化，略過檢查
 
-    used = _get_approved_hours_in_year(
+    approved = _get_approved_hours_in_year(
         session, employee_id, year, leave_type, exclude_id
     )
-    remaining = max(0.0, quota.total_hours - used)
+    if include_pending:
+        pending = _get_pending_hours_in_year(
+            session, employee_id, year, leave_type, exclude_id
+        )
+        committed = approved + pending
+    else:
+        pending = 0.0
+        committed = approved
+
+    remaining = max(0.0, quota.total_hours - committed)
 
     if leave_hours > remaining:
         label = LEAVE_TYPE_LABELS.get(leave_type, leave_type)
+        pending_note = f"、待審 {pending:.0f} 小時" if include_pending and pending > 0 else ""
         raise HTTPException(
             status_code=400,
             detail=(
                 f"{label}年度配額 {quota.total_hours:.0f} 小時"
                 f"（{quota.total_hours / 8:.1f} 天），"
-                f"已核准 {used:.0f} 小時，"
-                f"剩餘 {remaining:.0f} 小時（{remaining / 8:.1f} 天），"
+                f"已核准 {approved:.0f} 小時{pending_note}，"
+                f"剩餘可用 {remaining:.0f} 小時（{remaining / 8:.1f} 天），"
                 f"本次申請 {leave_hours:.1f} 小時超過剩餘配額"
             ),
         )
@@ -946,6 +1015,21 @@ def approve_leave(
                     f"注意：該員工在 {conflict.start_date} ~ {conflict.end_date} "
                     f"已有另一筆已核准的請假（ID: {conflict.id}），請確認是否重複核准"
                 )
+
+            # ── 配額硬檢查（核准動作）──────────────────────────────────────────
+            # 此假單目前仍是待審（is_approved=None），不在 approved 計數內，
+            # 故用 include_pending=False 直接檢查「已核准 + 本次」是否超出年度配額。
+            # 防止主管把多張待審假單全部核准造成額度嚴重超支（-N 天）。
+            _check_leave_limits(
+                session, leave.employee_id, leave.leave_type,
+                leave.start_date, leave.leave_hours,
+                include_pending=False,
+            )
+            _check_quota(
+                session, leave.employee_id, leave.leave_type,
+                leave.start_date.year, leave.leave_hours,
+                include_pending=False,
+            )
 
         leave.is_approved = data.approved
         leave.approved_by = current_user.get("username", "管理員") if data.approved else None
