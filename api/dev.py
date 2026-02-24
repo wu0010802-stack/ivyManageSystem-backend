@@ -112,7 +112,6 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
                 "deduction_rules": engine.deduction_rules,
                 "attendance_policy": engine._attendance_policy,
                 "school_wide_target": engine._school_wide_target,
-                "pension_self_rate": engine._pension_self_rate,
                 "meeting_pay": engine._meeting_pay,
                 "meeting_pay_6pm": engine._meeting_pay_6pm,
                 "meeting_absence_penalty": engine._meeting_absence_penalty,
@@ -405,8 +404,8 @@ def debug_employee_salary(
         # Insurance
         from services.insurance_service import InsuranceService
         ins_service = InsuranceService()
-        ins_salary = emp.insurance_salary_level if emp.insurance_salary_level and emp.insurance_salary_level > 0 else base_sal
-        ins = ins_service.calculate(ins_salary, emp.dependents or 0, pension_self_rate=engine._pension_self_rate)
+        ins_salary = emp.insurance_salary_level or emp.base_salary or 0
+        ins = ins_service.calculate(ins_salary, emp.dependents or 0, pension_self_rate=emp.pension_self_rate or 0)
 
         return {
             "employee": {

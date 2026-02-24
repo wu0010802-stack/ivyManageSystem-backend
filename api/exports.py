@@ -47,9 +47,16 @@ def _write_header_row(ws, row, headers):
         cell.alignment = CENTER_ALIGN
 
 
+def _sanitize_excel_value(value):
+    if isinstance(value, str) and value.startswith(('=', '+', '-', '@')):
+        return f"'{value}"
+    return value
+
+
 def _write_data_row(ws, row, values):
     for col, value in enumerate(values, 1):
-        cell = ws.cell(row=row, column=col, value=value)
+        sanitized_value = _sanitize_excel_value(value)
+        cell = ws.cell(row=row, column=col, value=sanitized_value)
         cell.border = THIN_BORDER
 
 

@@ -5,6 +5,7 @@ Attendance - upload endpoints (Excel and CSV)
 import logging
 import os
 import shutil
+import uuid
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -26,10 +27,12 @@ router = APIRouter()
 @router.post("/upload")
 async def upload_attendance(file: UploadFile = File(...), current_user: dict = Depends(require_permission(Permission.ATTENDANCE_WRITE))):
     """上傳打卡記錄 Excel（支持分開的上班/下班時間欄位）"""
-    if not file.filename.endswith(('.xlsx', '.xls')):
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ['.xlsx', '.xls']:
         raise HTTPException(status_code=400, detail="請上傳 Excel 檔案")
 
-    file_path = f"data/uploads/{file.filename}"
+    safe_filename = f"{uuid.uuid4().hex}{ext}"
+    file_path = f"data/uploads/{safe_filename}"
     os.makedirs("data/uploads", exist_ok=True)
 
     with open(file_path, "wb") as f:

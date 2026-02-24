@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 from models.database import (
     get_session, Employee, DailyShift, ShiftAssignment,
@@ -53,6 +53,23 @@ class LeaveCreatePortal(BaseModel):
     leave_hours: float = 8
     reason: Optional[str] = None
 
+    @field_validator("leave_hours")
+    @classmethod
+    def validate_leave_hours(cls, v):
+        if v < 0.5:
+            raise ValueError("請假時數至少 0.5 小時")
+        if v > 480:
+            raise ValueError("請假時數不得超過 480 小時")
+        if round(v * 2) != v * 2:
+            raise ValueError("請假時數必須為 0.5 小時的倍數")
+        return v
+
+    @model_validator(mode="after")
+    def validate_date_order(self):
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("結束日期不得早於開始日期")
+        return self
+
 
 class OvertimeCreatePortal(BaseModel):
     overtime_date: date
@@ -61,6 +78,15 @@ class OvertimeCreatePortal(BaseModel):
     end_time: Optional[str] = None
     hours: float
     reason: Optional[str] = None
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v):
+        if v <= 0:
+            raise ValueError("加班時數必須大於 0")
+        if v > 24:
+            raise ValueError("加班時數不合理")
+        return v
 
 
 class AnomalyConfirm(BaseModel):

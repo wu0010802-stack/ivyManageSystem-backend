@@ -233,8 +233,6 @@ class SalaryEngine:
         self._office_festival_bonus_base = self.OFFICE_FESTIVAL_BONUS_BASE.copy()
         # 可被覆蓋的設定 - 全校目標人數
         self._school_wide_target = 160
-        # 勞退自提固定 6%
-        self._pension_self_rate = 0.06
         # 園務會議設定
         self._meeting_pay = self.DEFAULT_MEETING_PAY
         self._meeting_pay_6pm = self.DEFAULT_MEETING_PAY_6PM
@@ -994,11 +992,12 @@ class SalaryEngine:
                 breakdown.birthday_bonus
             )
 
-            # 勞健保計算（勞退自提固定 6%）
+            # 勞健保計算（勞退自提依員工設定）
+            pension_rate = employee.get("pension_self_rate", 0.0)
             insurance = self.insurance_service.calculate(
                 employee.get('insurance_salary', breakdown.base_salary),
                 employee.get('dependents', 0),
-                pension_self_rate=self._pension_self_rate
+                pension_self_rate=pension_rate
             )
             breakdown.labor_insurance = insurance.labor_employee
             breakdown.health_insurance = insurance.health_employee

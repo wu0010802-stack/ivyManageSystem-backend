@@ -152,6 +152,9 @@ def _run_migrations(engine):
     _add_column_if_missing(engine, inspector, "salary_records", "absence_deduction", "FLOAT DEFAULT 0")
     _add_column_if_missing(engine, inspector, "salary_records", "absent_count", "INTEGER DEFAULT 0")
 
+    # employees — 勞退自提比例
+    _add_column_if_missing(engine, inspector, "employees", "pension_self_rate", "FLOAT DEFAULT 0")
+
     # daily_shifts — shift_type_id 改為允許 NULL（換班至無班的情境需要顯式標記排休）
     ds_cols = {c["name"]: c for c in inspector.get_columns("daily_shifts")}
     if not ds_cols.get("shift_type_id", {}).get("nullable", True):
@@ -242,6 +245,7 @@ class Employee(Base):
     bank_account_name = Column(String(50), comment="帳戶戶名")
 
     insurance_salary_level = Column(Float, default=0, comment="投保薪資級距")
+    pension_self_rate = Column(Float, default=0, comment="勞退自提比例 (0~0.06)")
 
     work_start_time = Column(String(5), default="08:00", comment="上班時間 HH:MM")
     work_end_time = Column(String(5), default="17:00", comment="下班時間 HH:MM")

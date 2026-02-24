@@ -41,6 +41,7 @@ class EmployeeCreate(BaseModel):
     bank_account: Optional[str] = None
     bank_account_name: Optional[str] = None
     insurance_salary_level: float = 0
+    pension_self_rate: float = 0
     work_start_time: str = "08:00"
     work_end_time: str = "17:00"
     hire_date: Optional[str] = None
@@ -69,6 +70,7 @@ class EmployeeUpdate(BaseModel):
     bank_account: Optional[str] = None
     bank_account_name: Optional[str] = None
     insurance_salary_level: Optional[float] = None
+    pension_self_rate: Optional[float] = None
     work_start_time: Optional[str] = None
     work_end_time: Optional[str] = None
     hire_date: Optional[str] = None
@@ -105,9 +107,9 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
                 "supervisor_allowance": emp.supervisor_allowance,
                 "teacher_allowance": emp.teacher_allowance,
                 "meal_allowance": emp.meal_allowance,
-                "transportation_allowance": emp.transportation_allowance,
                 "other_allowance": emp.other_allowance,
                 "insurance_salary_level": emp.insurance_salary_level,
+                "pension_self_rate": emp.pension_self_rate,
                 "work_start_time": emp.work_start_time,
                 "work_end_time": emp.work_end_time,
                 "is_active": emp.is_active,
@@ -164,6 +166,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             "bank_account": employee.bank_account,
             "bank_account_name": employee.bank_account_name,
             "insurance_salary_level": employee.insurance_salary_level,
+            "pension_self_rate": employee.pension_self_rate,
             "work_start_time": employee.work_start_time,
             "work_end_time": employee.work_end_time,
             "hire_date": employee.hire_date.isoformat() if employee.hire_date else None,
