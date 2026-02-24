@@ -326,9 +326,9 @@ def _compute_salary_breakdown(engine, emp, emp_dict, year, month, emp_allowances
             breakdown.base_salary + breakdown.supervisor_allowance +
             breakdown.teacher_allowance + breakdown.meal_allowance +
             breakdown.transportation_allowance + breakdown.other_allowance +
-            breakdown.festival_bonus + breakdown.overtime_bonus +
             breakdown.performance_bonus + breakdown.special_bonus +
-            breakdown.supervisor_dividend + breakdown.meeting_overtime_pay)
+            breakdown.supervisor_dividend + breakdown.meeting_overtime_pay +
+            breakdown.birthday_bonus)
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
     elif classroom_context:
         breakdown = engine.calculate_salary(
@@ -384,6 +384,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                 "transportation_allowance": emp.transportation_allowance,
                 "insurance_salary": emp.insurance_salary_level or emp.base_salary,
                 "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
+                "birthday": emp.birthday.isoformat() if emp.birthday else None,
                 "is_office_staff": emp.is_office_staff or False,
             }
 
@@ -459,6 +460,8 @@ def calculate_salaries_alt(
                     "attendance_deduction": (salary_record.late_deduction or 0) + (salary_record.early_leave_deduction or 0) + (salary_record.missing_punch_deduction or 0),
                     "meeting_overtime_pay": salary_record.meeting_overtime_pay or 0,
                     "meeting_absence_deduction": salary_record.meeting_absence_deduction or 0,
+                    "birthday_bonus": salary_record.birthday_bonus or 0,
+                    "pension_self": salary_record.pension_self or 0,
                     "total_deductions": salary_record.total_deduction,
                     "net_pay": salary_record.net_salary
                 })
@@ -550,6 +553,7 @@ def get_salary_records(
                 "overtime_pay": record.overtime_pay,
                 "meeting_overtime_pay": record.meeting_overtime_pay or 0,
                 "meeting_absence_deduction": record.meeting_absence_deduction or 0,
+                "birthday_bonus": record.birthday_bonus or 0,
                 "performance_bonus": record.performance_bonus,
                 "special_bonus": record.special_bonus,
                 "supervisor_dividend": record.bonus_amount or 0,

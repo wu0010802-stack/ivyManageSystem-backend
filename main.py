@@ -157,7 +157,7 @@ def seed_default_configs():
                 late_threshold=2,
                 late_deduction=50,
                 early_leave_deduction=50,
-                missing_punch_deduction=50,
+                missing_punch_deduction=0,
                 festival_bonus_months=3,
                 is_active=True,
             )

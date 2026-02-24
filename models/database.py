@@ -236,6 +236,7 @@ class Employee(Base):
     is_office_staff = Column(Boolean, default=False, comment="是否為辦公室人員")
     dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
     hire_date = Column(Date, comment="到職日期")
+    birthday = Column(Date, nullable=True, comment="生日")
 
     phone = Column(String(20), comment="聯絡電話")
     address = Column(String(200), comment="通訊地址")
@@ -416,6 +417,7 @@ class SalaryRecord(Base):
     overtime_pay = Column(Float, default=0, comment="加班費")
     meeting_overtime_pay = Column(Float, default=0, comment="園務會議加班費")
     meeting_absence_deduction = Column(Float, default=0, comment="園務會議缺席扣節慶獎金")
+    birthday_bonus = Column(Float, default=0, comment="生日禮金")
 
     work_hours = Column(Float, default=0, comment="工作時數（時薪制用）")
     hourly_rate = Column(Float, default=0, comment="時薪")

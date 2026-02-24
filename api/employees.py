@@ -44,6 +44,7 @@ class EmployeeCreate(BaseModel):
     work_start_time: str = "08:00"
     work_end_time: str = "17:00"
     hire_date: Optional[str] = None
+    birthday: Optional[str] = None
     is_office_staff: bool = False
     dependents: int = 0
 
@@ -71,6 +72,7 @@ class EmployeeUpdate(BaseModel):
     work_start_time: Optional[str] = None
     work_end_time: Optional[str] = None
     hire_date: Optional[str] = None
+    birthday: Optional[str] = None
     is_office_staff: Optional[bool] = None
     dependents: Optional[int] = None
 
@@ -110,6 +112,7 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
                 "work_end_time": emp.work_end_time,
                 "is_active": emp.is_active,
                 "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
+                "birthday": emp.birthday.isoformat() if emp.birthday else None,
                 "bank_code": emp.bank_code,
                 "bank_account": emp.bank_account,
                 "bank_account_name": emp.bank_account_name,
@@ -164,6 +167,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             "work_start_time": employee.work_start_time,
             "work_end_time": employee.work_end_time,
             "hire_date": employee.hire_date.isoformat() if employee.hire_date else None,
+            "birthday": employee.birthday.isoformat() if employee.birthday else None,
             "is_active": employee.is_active,
             "is_office_staff": employee.is_office_staff or False
         }
@@ -187,6 +191,11 @@ async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(requ
             emp_data['hire_date'] = datetime.strptime(emp_data['hire_date'], '%Y-%m-%d').date()
         else:
             emp_data.pop('hire_date', None)
+
+        if emp_data.get('birthday'):
+            emp_data['birthday'] = datetime.strptime(emp_data['birthday'], '%Y-%m-%d').date()
+        else:
+            emp_data.pop('birthday', None)
 
         # Sync title string from job_title_id for safety/legacy
         if emp_data.get('job_title_id'):
@@ -227,6 +236,9 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
         # 處理日期欄位
         if 'hire_date' in update_data and update_data['hire_date']:
             update_data['hire_date'] = datetime.strptime(update_data['hire_date'], '%Y-%m-%d').date()
+            
+        if 'birthday' in update_data and update_data['birthday']:
+            update_data['birthday'] = datetime.strptime(update_data['birthday'], '%Y-%m-%d').date()
 
         for key, value in update_data.items():
             if value is not None:

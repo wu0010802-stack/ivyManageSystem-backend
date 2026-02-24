@@ -17,6 +17,7 @@ from sqlalchemy.orm import joinedload
 from models.database import (
     get_session, LeaveRecord, LeaveQuota,
     ShiftAssignment, ShiftType, DailyShift, Holiday,
+    AttendancePolicy,
 )
 from utils.auth import get_current_user
 from ._shared import (
@@ -371,6 +372,11 @@ def get_my_workday_hours(
             .options(joinedload(ShiftAssignment.shift_type)).all()
         }
 
+        # 系統預設上下班時間（當員工無排班時使用）
+        policy = session.query(AttendancePolicy).first()
+        default_ws = policy.default_work_start if policy and policy.default_work_start else "08:00"
+        default_we = policy.default_work_end if policy and policy.default_work_end else "17:00"
+
         breakdown, total_hours, cur = [], 0.0, start_date
         while cur <= end_date:
             wd = cur.weekday()
@@ -380,9 +386,13 @@ def get_my_workday_hours(
                 breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "holiday", "hours": 0, "shift": None, "work_start": None, "work_end": None, "holiday_name": holidays[cur]})
             else:
                 st = daily_shifts.get(cur) or weekly_shifts.get(cur - timedelta(days=wd))
-                hours = _calc_shift_hours(st.work_start, st.work_end) if st else 8.0
+                if st:
+                    hours = _calc_shift_hours(st.work_start, st.work_end)
+                    breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "workday", "hours": hours, "shift": st.name, "work_start": st.work_start, "work_end": st.work_end, "holiday_name": None})
+                else:
+                    hours = _calc_shift_hours(default_ws, default_we)
+                    breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "workday", "hours": hours, "shift": None, "work_start": default_ws, "work_end": default_we, "holiday_name": None})
                 total_hours += hours
-                breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "workday", "hours": hours, "shift": st.name if st else None, "work_start": st.work_start if st else None, "work_end": st.work_end if st else None, "holiday_name": None})
             cur += timedelta(days=1)
 
         return {"total_hours": round(total_hours * 2) / 2, "breakdown": breakdown}

@@ -216,9 +216,28 @@ def get_attendance_sheet(
                 row["is_missing_punch_out"] = att.is_missing_punch_out or False
                 row["remark"] = att.remark
 
-                # Calculate work hours
-                if att.punch_in_time and att.punch_out_time:
-                    duration_min = (att.punch_out_time - att.punch_in_time).total_seconds() / 60
+                # Calculate work hours — Plan B: use shift for missing side
+                effective_in = att.punch_in_time
+                effective_out = att.punch_out_time
+
+                if not effective_in or not effective_out:
+                    # Determine fallback times from shift or defaults
+                    if shift_info:
+                        fallback_start = datetime.combine(d, datetime.strptime(shift_info["work_start"], "%H:%M").time())
+                        fallback_end = datetime.combine(d, datetime.strptime(shift_info["work_end"], "%H:%M").time())
+                    else:
+                        fb_ws = emp.work_start_time or "08:00"
+                        fb_we = emp.work_end_time or "17:00"
+                        fallback_start = datetime.combine(d, datetime.strptime(fb_ws, "%H:%M").time())
+                        fallback_end = datetime.combine(d, datetime.strptime(fb_we, "%H:%M").time())
+
+                    if not effective_in:
+                        effective_in = fallback_start
+                    if not effective_out:
+                        effective_out = fallback_end
+
+                if effective_in and effective_out and effective_out > effective_in:
+                    duration_min = (effective_out - effective_in).total_seconds() / 60
                     row["work_hours"] = round(duration_min / 60, 1)
                     total_work_hours += row["work_hours"]
                     work_hour_days += 1

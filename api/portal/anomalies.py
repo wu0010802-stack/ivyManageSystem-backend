@@ -60,15 +60,15 @@ def get_anomalies(
                 items.append({
                     "type": "missing_punch",
                     "type_label": "未打卡(上班)",
-                    "detail": "上班未打卡",
-                    "estimated_deduction": 50,
+                    "detail": "上班未打卡（不扣款，僅記錄）",
+                    "estimated_deduction": 0,
                 })
             if att.is_missing_punch_out:
                 items.append({
                     "type": "missing_punch",
                     "type_label": "未打卡(下班)",
-                    "detail": "下班未打卡",
-                    "estimated_deduction": 50,
+                    "detail": "下班未打卡（不扣款，僅記錄）",
+                    "estimated_deduction": 0,
                 })
 
             for item in items:

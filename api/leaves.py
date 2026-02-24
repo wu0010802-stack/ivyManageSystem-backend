@@ -19,6 +19,7 @@ from sqlalchemy import func
 from models.database import (
     get_session, Employee, LeaveRecord, LeaveQuota,
     ShiftAssignment, ShiftType, DailyShift, Holiday,
+    AttendancePolicy,
 )
 from utils.auth import require_permission
 from utils.permissions import Permission
@@ -483,6 +484,11 @@ def get_workday_hours(
             .all()
         }
 
+        # 系統預設上下班時間（當員工無排班時使用）
+        policy = session.query(AttendancePolicy).first()
+        default_ws = policy.default_work_start if policy and policy.default_work_start else "08:00"
+        default_we = policy.default_work_end if policy and policy.default_work_end else "17:00"
+
         breakdown = []
         total_hours = 0.0
         cur = start_date
@@ -536,10 +542,10 @@ def get_workday_hours(
                     work_start = shift_type.work_start
                     work_end = shift_type.work_end
                 else:
-                    hours = 8.0
+                    hours = _calc_shift_hours(default_ws, default_we)
                     shift_name = None
-                    work_start = None
-                    work_end = None
+                    work_start = default_ws
+                    work_end = default_we
 
                 total_hours += hours
                 breakdown.append({

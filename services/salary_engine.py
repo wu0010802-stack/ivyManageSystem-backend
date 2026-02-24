@@ -72,6 +72,7 @@ class SalaryBreakdown:
     supervisor_dividend: float = 0  # 主管紅利
     overtime_work_pay: float = 0   # 加班費
     meeting_overtime_pay: float = 0 # 園務會議加班費
+    birthday_bonus: float = 0       # 生日禮金
 
     # 時薪制
     work_hours: float = 0
@@ -989,6 +990,18 @@ class SalaryEngine:
                 breakdown.festival_bonus = 0
                 breakdown.overtime_bonus = 0
 
+            # 生日禮金：當月壽星 $500
+            hire_date_val = employee.get('hire_date')
+            birthday_val = employee.get('birthday')
+            if birthday_val:
+                if isinstance(birthday_val, str):
+                    try:
+                        birthday_val = datetime.strptime(birthday_val, '%Y-%m-%d').date()
+                    except ValueError:
+                        birthday_val = None
+                if birthday_val and birthday_val.month == month:
+                    breakdown.birthday_bonus = 500
+
             # 計算應發總額（festival_bonus / overtime_bonus 獨立轉帳，不計入月薪）
             breakdown.gross_salary = (
                 breakdown.base_salary +
@@ -999,7 +1012,8 @@ class SalaryEngine:
                 breakdown.other_allowance +
                 breakdown.performance_bonus +
                 breakdown.special_bonus +
-                breakdown.supervisor_dividend
+                breakdown.supervisor_dividend +
+                breakdown.birthday_bonus
             )
 
             # 勞健保計算（勞退自提固定 6%）
@@ -1055,10 +1069,8 @@ class SalaryEngine:
         
         # 將園務會議加班費加入應發總額
         breakdown.gross_salary += breakdown.meeting_overtime_pay
-        # 將園務會議缺席從節慶獎金扣款
-        breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
 
-        # 計算扣款總額（未打卡不扣款；meeting_absence_deduction 已扣減 festival_bonus，不重複列入）
+        # 計算扣款總額（未打卡不扣款；meeting_absence_deduction 列為獨立扣款項）
         breakdown.total_deduction = (
             breakdown.labor_insurance +
             breakdown.health_insurance +
@@ -1067,7 +1079,8 @@ class SalaryEngine:
             breakdown.early_leave_deduction +
             breakdown.auto_leave_deduction +
             breakdown.leave_deduction +
-            breakdown.other_deduction
+            breakdown.other_deduction +
+            breakdown.meeting_absence_deduction
         )
 
         # 節慶獎金（含超額獎金）獨立轉帳旗標
@@ -1263,7 +1276,8 @@ class SalaryEngine:
                 # Fallback to base_salary if insurance_salary_level is 0
                 'insurance_salary': emp.insurance_salary_level if emp.insurance_salary_level and emp.insurance_salary_level > 0 else emp.base_salary,
                 'dependents': emp.dependents,
-                'hire_date': emp.hire_date
+                'hire_date': emp.hire_date,
+                'birthday': emp.birthday,
             }
 
             # 3. 取得考勤並計算統計
@@ -1484,6 +1498,7 @@ class SalaryEngine:
             salary_record.overtime_pay = breakdown.overtime_work_pay
             salary_record.meeting_overtime_pay = breakdown.meeting_overtime_pay
             salary_record.meeting_absence_deduction = breakdown.meeting_absence_deduction
+            salary_record.birthday_bonus = breakdown.birthday_bonus
 
             salary_record.work_hours = breakdown.work_hours
             salary_record.hourly_rate = breakdown.hourly_rate

@@ -79,27 +79,34 @@ class ImpersonateRequest(BaseModel):
 # ============ Public Routes ============
 
 @router.post("/impersonate")
-def impersonate_user(data: ImpersonateRequest, current_user: dict = Depends(get_current_user)):
+def impersonate_user(data: ImpersonateRequest, request: Request, current_user: dict = Depends(get_current_user)):
     """切換使用者身份（管理員限定）"""
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="權限不足")
-    
+
     session = get_session()
     try:
         # 1. 檢查目標員工是否存在
         target_emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
         if not target_emp:
             raise HTTPException(status_code=404, detail="員工不存在")
-            
+
         # 2. 尋找該員工的使用者帳號
         target_user = session.query(User).filter(User.employee_id == data.employee_id).first()
-        
-        # 3. 如果沒有使用者帳號，我們先拒絕（或者可以動態建立一個臨時 token context，但這樣比較複雜）
-        # 目前假設只能切換到有帳號的員工（通常是老師）
+
+        # 3. 如果沒有使用者帳號，拒絕切換
         if not target_user:
             raise HTTPException(status_code=400, detail="該員工沒有使用者帳號，無法切換")
-            
-        # 4. 產生該使用者的 token
+
+        # 4. 禁止冒充 admin（防止平級或提權冒充）
+        if target_user.role == "admin":
+            logger.warning(
+                f"冒充被拒：{current_user.get('name')}（user_id={current_user.get('user_id')}）"
+                f" 嘗試冒充 admin 帳號 {target_user.username}（user_id={target_user.id}）"
+            )
+            raise HTTPException(status_code=403, detail="不可冒充管理員帳號")
+
+        # 5. 產生該使用者的 token
         permissions = target_user.permissions if target_user.permissions is not None else get_role_default_permissions(target_user.role)
         token = create_access_token({
             "user_id": target_user.id,
@@ -108,6 +115,15 @@ def impersonate_user(data: ImpersonateRequest, current_user: dict = Depends(get_
             "name": target_emp.name,
             "permissions": permissions,
         })
+
+        # 6. 寫入審計日誌
+        logger.info(
+            f"冒充操作：{current_user.get('name')}（user_id={current_user.get('user_id')}）"
+            f" 切換為 {target_emp.name}（user_id={target_user.id}, role={target_user.role}）"
+        )
+        request.state.audit_summary = (
+            f"冒充使用者：切換為 {target_emp.name}（{ROLE_LABELS.get(target_user.role, target_user.role)}）"
+        )
 
         return {
             "token": token,
