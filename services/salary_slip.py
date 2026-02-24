@@ -3,6 +3,25 @@
 """
 
 import io
+
+# ── Excel 公式注入防護 ──────────────────────────────────────────────────────
+# = + - @：試算表公式觸發符；| 可觸發 DDE (Dynamic Data Exchange) 攻擊
+_FORMULA_PREFIXES = ('=', '+', '-', '@', '|')
+
+
+def _sanitize_excel_value(value):
+    """防止 Excel 公式注入（Excel Injection / DDE 攻擊）。
+
+    先去除開頭 Tab/CR/LF（可用來繞過前綴偵測），
+    再對危險前綴字元加上單引號使 openpyxl 儲存為純字串。
+    """
+    if not isinstance(value, str):
+        return value
+    clean = value.lstrip('\t\r\n')
+    if clean.startswith(_FORMULA_PREFIXES):
+        return "'" + clean
+    return clean
+# ────────────────────────────────────────────────────────────────────────────
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -314,7 +333,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
         ]
 
         for col, value in enumerate(values, 1):
-            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell = ws.cell(row=row_idx, column=col, value=_sanitize_excel_value(value))
             cell.border = thin_border
             if isinstance(value, (int, float)) and col >= 4:
                 cell.number_format = money_fmt

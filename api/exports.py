@@ -47,10 +47,25 @@ def _write_header_row(ws, row, headers):
         cell.alignment = CENTER_ALIGN
 
 
+# Excel 公式觸發前綴：= + - @（試算表公式），| 可觸發 DDE 攻擊
+_FORMULA_PREFIXES = ('=', '+', '-', '@', '|')
+
+
 def _sanitize_excel_value(value):
-    if isinstance(value, str) and value.startswith(('=', '+', '-', '@')):
-        return f"'{value}"
-    return value
+    """防止 Excel 公式注入（Excel Injection / DDE 攻擊）。
+
+    策略：
+    1. 先去除開頭 Tab / CR / LF — 這些字元常被用來繞過前綴偵測
+       （例如 '\\t=cmd...' 不以 '=' 開頭，可繞過只檢查第一字元的邏輯）
+    2. 若清理後仍以危險前綴開頭，則在最前面加上單引號
+       openpyxl 會將其儲存為純字串，Excel 開啟時不會執行公式
+    """
+    if not isinstance(value, str):
+        return value
+    clean = value.lstrip('\t\r\n')
+    if clean.startswith(_FORMULA_PREFIXES):
+        return "'" + clean
+    return clean
 
 
 def _write_data_row(ws, row, values):
