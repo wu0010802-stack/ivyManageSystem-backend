@@ -1445,14 +1445,32 @@ class SalaryEngine:
                 ).all()
                 holiday_set = {h.date for h in holidays_in_month}
 
-                # 預期上班日（週一到週五，排除國定假日）
+                # 預期上班日：優先參考 DailyShift 排班記錄，其次預設週一到週五
+                # DailyShift.shift_type_id 非 None → 應上班（含假日排班）
+                # DailyShift.shift_type_id 為 None → 排休（即使是平日也不算曠職）
+                # 無 DailyShift 記錄 → 預設平日（週一～週五）
+                from models.database import DailyShift as _DailyShift
+                daily_shifts_in_month = session.query(_DailyShift).filter(
+                    _DailyShift.employee_id == emp.id,
+                    _DailyShift.date >= start_date,
+                    _DailyShift.date <= end_date,
+                ).all()
+                daily_shift_map = {ds.date: ds.shift_type_id for ds in daily_shifts_in_month}
+
                 expected_workdays: set = set()
                 for day_num, weekday in _cal.Calendar().itermonthdays2(year, month):
-                    if day_num == 0 or weekday >= 5:
+                    if day_num == 0:
                         continue
                     d = date(year, month, day_num)
-                    if d not in holiday_set:
-                        expected_workdays.add(d)
+                    if d in holiday_set:
+                        continue
+                    if d in daily_shift_map:
+                        if daily_shift_map[d] is not None:
+                            expected_workdays.add(d)
+                    else:
+                        # 無排班記錄 → 預設平日（週一～週五）
+                        if weekday < 5:
+                            expected_workdays.add(d)
 
                 # 限制到職日之後（尚未在職的日子不算曠職）
                 if emp.hire_date:
