@@ -4,9 +4,11 @@ Attendance - upload endpoints (Excel and CSV)
 
 import logging
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -21,19 +23,21 @@ from ._shared import AttendanceUploadRequest
 
 logger = logging.getLogger(__name__)
 
+_UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
+_EXCEL_EXT_RE = re.compile(r'^\.[a-z0-9]+$')
+
 router = APIRouter()
 
 
 @router.post("/upload")
 async def upload_attendance(file: UploadFile = File(...), current_user: dict = Depends(require_permission(Permission.ATTENDANCE_WRITE))):
     """上傳打卡記錄 Excel（支持分開的上班/下班時間欄位）"""
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in ['.xlsx', '.xls']:
+    raw_ext = Path(file.filename or "").suffix.lower()
+    if not raw_ext or not _EXCEL_EXT_RE.match(raw_ext) or raw_ext not in {'.xlsx', '.xls'}:
         raise HTTPException(status_code=400, detail="請上傳 Excel 檔案")
 
-    safe_filename = f"{uuid.uuid4().hex}{ext}"
-    file_path = f"data/uploads/{safe_filename}"
-    os.makedirs("data/uploads", exist_ok=True)
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    file_path = _UPLOAD_DIR / f"{uuid.uuid4().hex}{raw_ext}"
 
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -471,6 +475,9 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析失敗: {str(e)}")
+    finally:
+        # 處理完畢後刪除暫存檔，無論成功或失敗
+        file_path.unlink(missing_ok=True)
 
 
 @router.post("/upload-csv")

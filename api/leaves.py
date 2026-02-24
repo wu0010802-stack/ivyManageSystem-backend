@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import calendar as cal_module
+from pathlib import Path
 from datetime import date, timedelta
 from typing import Optional
 
@@ -24,7 +25,7 @@ from models.database import (
 from utils.auth import require_permission
 from utils.permissions import Permission
 
-_UPLOAD_DIR = "uploads/leave_attachments"
+_UPLOAD_BASE = Path(__file__).resolve().parent.parent / "uploads" / "leave_attachments"
 
 
 def _parse_paths(raw: str | None) -> list[str]:
@@ -34,6 +35,17 @@ def _parse_paths(raw: str | None) -> list[str]:
         return json.loads(raw)
     except Exception:
         return []
+
+
+def _safe_attach_path(leave_id: int, filename: str) -> Path:
+    """解析附件路徑並確認落在 _UPLOAD_BASE 之內（路徑穿越防護）。"""
+    resolved = (_UPLOAD_BASE / str(leave_id) / filename).resolve()
+    try:
+        resolved.relative_to(_UPLOAD_BASE.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="無效的附件路徑")
+    return resolved
+
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +288,7 @@ def _get_used_hours(session, employee_id: int, year: int, leave_type: str) -> fl
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved == True,
-        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+        func.extract('year', LeaveRecord.start_date) == year,
     ).scalar()
     return float(result)
 
@@ -287,7 +299,7 @@ def _get_pending_hours(session, employee_id: int, year: int, leave_type: str) ->
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved.is_(None),
-        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+        func.extract('year', LeaveRecord.start_date) == year,
     ).scalar()
     return float(result)
 
@@ -300,7 +312,7 @@ def _get_approved_hours_in_year(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved == True,
-        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+        func.extract('year', LeaveRecord.start_date) == year,
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -315,7 +327,7 @@ def _get_pending_hours_in_year(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved.is_(None),
-        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+        func.extract('year', LeaveRecord.start_date) == year,
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -331,8 +343,8 @@ def _get_approved_hours_in_month(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved == True,
-        func.strftime("%Y", LeaveRecord.start_date) == str(year),
-        func.strftime("%m", LeaveRecord.start_date) == f"{month:02d}",
+        func.extract('year', LeaveRecord.start_date) == year,
+        func.extract('month', LeaveRecord.start_date) == month,
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -348,8 +360,8 @@ def _get_pending_hours_in_month(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved.is_(None),
-        func.strftime("%Y", LeaveRecord.start_date) == str(year),
-        func.strftime("%m", LeaveRecord.start_date) == f"{month:02d}",
+        func.extract('year', LeaveRecord.start_date) == year,
+        func.extract('month', LeaveRecord.start_date) == month,
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -1127,10 +1139,10 @@ def get_leave_attachment(
         if filename not in paths:
             raise HTTPException(status_code=404, detail="找不到附件")
 
-        file_path = os.path.join(_UPLOAD_DIR, str(leave_id), filename)
-        if not os.path.exists(file_path):
+        file_path = _safe_attach_path(leave_id, filename)
+        if not file_path.exists():
             raise HTTPException(status_code=404, detail="檔案不存在")
 
-        return FileResponse(file_path)
+        return FileResponse(str(file_path))
     finally:
         session.close()

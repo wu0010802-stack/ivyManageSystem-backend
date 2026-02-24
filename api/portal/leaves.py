@@ -5,8 +5,10 @@ Portal - leave management endpoints
 import calendar as cal_module
 import json
 import os
+import re
 import uuid
 from datetime import date, timedelta
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -32,10 +34,13 @@ STATUTORY_QUOTA_HOURS = {"sick": 240.0, "menstrual": 96.0, "personal": 112.0, "f
 
 router = APIRouter()
 
-_UPLOAD_DIR = "uploads/leave_attachments"
+# 使用 __file__ 建立絕對路徑，避免 CWD 變動導致檔案寫入位置不正確
+_UPLOAD_BASE = Path(__file__).resolve().parent.parent.parent / "uploads" / "leave_attachments"
 _ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".pdf"}
 _MAX_FILE_SIZE = 5 * 1024 * 1024   # 5 MB
 _MAX_FILES = 5
+# 副檔名只允許英數字，防止特殊字元（null byte、路徑符號等）進入檔案系統
+_EXT_RE = re.compile(r'^\.[a-z0-9]+$')
 
 
 def _parse_paths(raw: str | None) -> list[str]:
@@ -45,6 +50,16 @@ def _parse_paths(raw: str | None) -> list[str]:
         return json.loads(raw)
     except Exception:
         return []
+
+
+def _safe_attach_path(leave_id: int, filename: str) -> Path:
+    """解析附件路徑並確認落在 _UPLOAD_BASE 之內（路徑穿越防護）。"""
+    resolved = (_UPLOAD_BASE / str(leave_id) / filename).resolve()
+    try:
+        resolved.relative_to(_UPLOAD_BASE.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="無效的附件路徑")
+    return resolved
 
 
 @router.get("/my-leaves")
@@ -171,21 +186,21 @@ async def upload_leave_attachments(
         if len(existing) + len(files) > _MAX_FILES:
             raise HTTPException(status_code=400, detail=f"附件總數不可超過 {_MAX_FILES} 個")
 
-        dir_path = os.path.join(_UPLOAD_DIR, str(leave_id))
-        os.makedirs(dir_path, exist_ok=True)
+        dir_path = _UPLOAD_BASE / str(leave_id)
+        dir_path.mkdir(parents=True, exist_ok=True)
 
         saved = []
         for f in files:
-            ext = os.path.splitext(f.filename or "")[1].lower()
-            if ext not in _ALLOWED_EXT:
-                raise HTTPException(status_code=400, detail=f"不支援的檔案格式：{ext or '(無副檔名)'}，僅接受圖片與 PDF")
+            raw_ext = Path(f.filename or "").suffix.lower()
+            if not raw_ext or not _EXT_RE.match(raw_ext) or raw_ext not in _ALLOWED_EXT:
+                raise HTTPException(status_code=400, detail=f"不支援的檔案格式：{raw_ext or '(無副檔名)'}，僅接受圖片與 PDF")
 
             content = await f.read()
             if len(content) > _MAX_FILE_SIZE:
                 raise HTTPException(status_code=400, detail=f"檔案 {f.filename} 超過 5 MB 限制")
 
-            safe_name = f"{uuid.uuid4().hex}{ext}"
-            with open(os.path.join(dir_path, safe_name), "wb") as fp:
+            safe_name = f"{uuid.uuid4().hex}{raw_ext}"
+            with open(dir_path / safe_name, "wb") as fp:
                 fp.write(content)
             saved.append(safe_name)
 
@@ -225,9 +240,9 @@ def delete_leave_attachment(
         if filename not in paths:
             raise HTTPException(status_code=404, detail="找不到附件")
 
-        file_path = os.path.join(_UPLOAD_DIR, str(leave_id), filename)
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        file_path = _safe_attach_path(leave_id, filename)
+        if file_path.exists():
+            file_path.unlink()
 
         paths.remove(filename)
         leave.attachment_paths = json.dumps(paths) if paths else None
@@ -263,11 +278,11 @@ def get_leave_attachment(
         if filename not in paths:
             raise HTTPException(status_code=404, detail="找不到附件")
 
-        file_path = os.path.join(_UPLOAD_DIR, str(leave_id), filename)
-        if not os.path.exists(file_path):
+        file_path = _safe_attach_path(leave_id, filename)
+        if not file_path.exists():
             raise HTTPException(status_code=404, detail="檔案不存在")
 
-        return FileResponse(file_path)
+        return FileResponse(str(file_path))
     finally:
         session.close()
 
@@ -434,7 +449,7 @@ def get_my_quotas(
                 LeaveRecord.employee_id == emp.id,
                 LeaveRecord.leave_type == lt,
                 LeaveRecord.is_approved == True,
-                func.strftime("%Y", LeaveRecord.start_date) == str(year),
+                func.extract('year', LeaveRecord.start_date) == year,
             ).scalar()
             return float(r)
 
@@ -443,7 +458,7 @@ def get_my_quotas(
                 LeaveRecord.employee_id == emp.id,
                 LeaveRecord.leave_type == lt,
                 LeaveRecord.is_approved.is_(None),
-                func.strftime("%Y", LeaveRecord.start_date) == str(year),
+                func.extract('year', LeaveRecord.start_date) == year,
             ).scalar()
             return float(r)
 
