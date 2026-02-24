@@ -915,12 +915,15 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
 
 @router.put("/leaves/{leave_id}")
 def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE))):
-    """更新請假記錄"""
+    """更新請假記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
     session = get_session()
     try:
         leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
         if not leave:
             raise HTTPException(status_code=404, detail="請假記錄不存在")
+
+        # 記錄修改前的核准狀態（供後續稽核退審判斷）
+        was_approved = leave.is_approved == True
 
         # 以更新後的日期 / 時間做重疊偵測（未傳入的欄位沿用原值）
         new_start = data.start_date or leave.start_date
@@ -939,6 +942,7 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
 
         new_type = data.leave_type or leave.leave_type
         new_hours = data.leave_hours if data.leave_hours is not None else leave.leave_hours
+        # 已核准的假單退審後視同重新提交：用 include_pending=True 重新過一次配額（排除自身）
         _check_leave_limits(
             session, leave.employee_id, new_type,
             new_start, new_hours, exclude_id=leave_id
@@ -956,8 +960,46 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
             leave.is_deductible = LEAVE_DEDUCTION_RULES[data.leave_type] > 0
             leave.deduction_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
 
+        # ── 稽核退審：已核准的記錄被修改，自動退回待審核 ──────────────────────
+        # 防止管理員靜默竄改已核准假單時數/日期，導致薪資扣款異常（財務防呆）
+        if was_approved:
+            leave.is_approved = None
+            leave.approved_by = None
+            leave.rejection_reason = None
+            logger.warning(
+                "稽核警告：已核准請假記錄 #%d（員工 ID=%d, %s~%s, %s）被管理員「%s」修改，"
+                "已自動退回待審核狀態，需重新核准",
+                leave_id, leave.employee_id, leave.start_date, leave.end_date,
+                leave.leave_type, current_user.get("username", "unknown"),
+            )
+
         session.commit()
-        return {"message": "請假記錄已更新"}
+
+        result = {"message": "請假記錄已更新"}
+        if was_approved:
+            result["message"] += "；原核准狀態已自動退回「待審核」，請重新送審"
+            result["reset_to_pending"] = True
+            # 薪資重算：撤銷原核准假單在薪資中的扣款
+            if _salary_engine is not None:
+                try:
+                    emp_id = leave.employee_id
+                    months_to_recalc: set = set()
+                    cur = date(leave.start_date.year, leave.start_date.month, 1)
+                    end_m = date(leave.end_date.year, leave.end_date.month, 1)
+                    while cur <= end_m:
+                        months_to_recalc.add((cur.year, cur.month))
+                        cur = (
+                            date(cur.year + 1, 1, 1) if cur.month == 12
+                            else date(cur.year, cur.month + 1, 1)
+                        )
+                    for yr, mo in sorted(months_to_recalc):
+                        _salary_engine.process_salary_calculation(emp_id, yr, mo)
+                    result["salary_recalculated"] = True
+                except Exception as e:
+                    result["salary_warning"] = "薪資重算失敗，請手動前往薪資頁面重新計算"
+                    logger.error("請假修改退審後薪資重算失敗：%s", e)
+
+        return result
     except HTTPException:
         raise
     except Exception as e:

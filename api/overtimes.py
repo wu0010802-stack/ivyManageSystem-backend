@@ -242,12 +242,15 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
 
 @router.put("/overtimes/{overtime_id}")
 def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
-    """更新加班記錄"""
+    """更新加班記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
     session = get_session()
     try:
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
         if not ot:
             raise HTTPException(status_code=404, detail="加班記錄不存在")
+
+        # 記錄修改前的核准狀態（供後續稽核退審判斷）
+        was_approved = ot.is_approved == True
 
         # 先計算更新後的日期與時間（供重疊檢查使用）
         check_date = data.overtime_date or ot.overtime_date
@@ -289,8 +292,24 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
         if emp:
             ot.overtime_pay = calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type)
 
+        # ── 稽核退審：已核准的記錄被修改，自動退回待審核 ──────────────────────
+        # 防止管理員靜默修改已核准加班時數，導致薪資異常（財務防呆）
+        if was_approved:
+            ot.is_approved = None
+            ot.approved_by = None
+            logger.warning(
+                "稽核警告：已核准加班記錄 #%d（員工 ID=%d, %s）被管理員「%s」修改，"
+                "已自動退回待審核狀態，需重新核准",
+                overtime_id, ot.employee_id, ot.overtime_date,
+                current_user.get("username", "unknown"),
+            )
+
         session.commit()
-        return {"message": "加班記錄已更新", "overtime_pay": ot.overtime_pay}
+
+        msg = "加班記錄已更新"
+        if was_approved:
+            msg += "；原核准狀態已自動退回「待審核」，請重新送審"
+        return {"message": msg, "overtime_pay": ot.overtime_pay, "reset_to_pending": was_approved}
     except HTTPException:
         raise
     except Exception as e:
