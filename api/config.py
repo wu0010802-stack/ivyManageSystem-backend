@@ -17,6 +17,33 @@ from models.database import (
     AllowanceType, DeductionType, BonusType
 )
 
+# BonusConfig 所有可複製的業務欄位（不含 id/version/changed_by/is_active/timestamps）
+_BONUS_FIELDS = [
+    "config_year",
+    "head_teacher_ab", "head_teacher_c",
+    "assistant_teacher_ab", "assistant_teacher_c",
+    "principal_festival", "director_festival", "leader_festival",
+    "driver_festival", "designer_festival", "admin_festival",
+    "principal_dividend", "director_dividend", "leader_dividend", "vice_leader_dividend",
+    "overtime_head_normal", "overtime_head_baby",
+    "overtime_assistant_normal", "overtime_assistant_baby",
+    "school_wide_target",
+]
+
+_ATTENDANCE_FIELDS = [
+    "default_work_start", "default_work_end",
+    "grace_minutes", "late_threshold",
+    "late_deduction", "early_leave_deduction", "missing_punch_deduction",
+    "festival_bonus_months", "effective_date",
+]
+
+_INSURANCE_FIELDS = [
+    "rate_year",
+    "labor_rate", "labor_employee_ratio", "labor_employer_ratio", "labor_government_ratio",
+    "health_rate", "health_employee_ratio", "health_employer_ratio",
+    "pension_employer_rate", "average_dependents",
+]
+
 logger = logging.getLogger(__name__)
 
 # 設定快取（5 分鐘 TTL，最多 16 個 key）
@@ -168,24 +195,35 @@ def get_attendance_policy(current_user: dict = Depends(require_permission(Permis
 
 @router.put("/attendance-policy")
 def update_attendance_policy(data: AttendancePolicyUpdate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
-    """更新考勤政策設定"""
+    """更新考勤政策設定（建立新版本，保留舊版歷程）"""
     session = get_session()
     try:
-        policy = session.query(AttendancePolicy).filter(AttendancePolicy.is_active == True).first()
-        if not policy:
-            policy = AttendancePolicy(is_active=True)
-            session.add(policy)
+        old_policy = session.query(AttendancePolicy).filter(AttendancePolicy.is_active == True).first()
+
+        # 複製舊版欄位值，再套用本次變更
+        new_policy = AttendancePolicy(is_active=True)
+        if old_policy:
+            for field in _ATTENDANCE_FIELDS:
+                setattr(new_policy, field, getattr(old_policy, field, None))
+            new_policy.version = (old_policy.version or 1) + 1
+        else:
+            new_policy.version = 1
+
+        new_policy.changed_by = current_user.get("username")
 
         update_data = data.dict(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None:
-                setattr(policy, key, value)
+                setattr(new_policy, key, value)
 
+        if old_policy:
+            old_policy.is_active = False
+
+        session.add(new_policy)
         session.commit()
-        # 重新載入設定到薪資計算引擎
         _salary_engine.load_config_from_db()
         _clear_cache("attendance_policy")
-        return {"message": "考勤政策更新成功"}
+        return {"message": "考勤政策更新成功", "version": new_policy.version, "id": new_policy.id}
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -236,24 +274,60 @@ def get_bonus_config(current_user: dict = Depends(require_permission(Permission.
 
 @router.put("/bonus")
 def update_bonus_config(data: BonusConfigUpdate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
-    """更新獎金設定"""
+    """更新獎金設定（建立新版本，保留舊版歷程，同步複製年級目標）"""
     session = get_session()
     try:
-        config = session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
-        if not config:
-            config = DBBonusConfig(config_year=2026, is_active=True)
-            session.add(config)
+        old_config = session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
+
+        # 複製舊版欄位值，再套用本次變更
+        new_config = DBBonusConfig(is_active=True)
+        if old_config:
+            for field in _BONUS_FIELDS:
+                setattr(new_config, field, getattr(old_config, field, None))
+            new_config.version = (old_config.version or 1) + 1
+        else:
+            new_config.version = 1
+            new_config.config_year = 2026
+
+        new_config.changed_by = current_user.get("username")
 
         update_data = data.dict(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None:
-                setattr(config, key, value)
+                setattr(new_config, key, value)
+
+        if old_config:
+            old_config.is_active = False
+
+        session.add(new_config)
+        session.flush()  # 取得 new_config.id
+
+        # 複製年級目標到新版本（優先取舊 config 的，否則取 bonus_config_id=NULL 的舊資料）
+        old_targets = session.query(GradeTarget).filter(
+            GradeTarget.bonus_config_id == (old_config.id if old_config else None)
+        ).all()
+        if not old_targets:
+            old_targets = session.query(GradeTarget).filter(
+                GradeTarget.bonus_config_id == None  # noqa: E711
+            ).all()
+
+        for gt in old_targets:
+            session.add(GradeTarget(
+                config_year=gt.config_year,
+                grade_name=gt.grade_name,
+                festival_two_teachers=gt.festival_two_teachers,
+                festival_one_teacher=gt.festival_one_teacher,
+                festival_shared=gt.festival_shared,
+                overtime_two_teachers=gt.overtime_two_teachers,
+                overtime_one_teacher=gt.overtime_one_teacher,
+                overtime_shared=gt.overtime_shared,
+                bonus_config_id=new_config.id,
+            ))
 
         session.commit()
-        # 重新載入設定到薪資計算引擎
         _salary_engine.load_config_from_db()
         _clear_cache("bonus")
-        return {"message": "獎金設定更新成功"}
+        return {"message": "獎金設定更新成功", "version": new_config.version, "id": new_config.id}
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -263,10 +337,22 @@ def update_bonus_config(data: BonusConfigUpdate, current_user: dict = Depends(re
 
 @router.get("/grade-targets")
 def get_grade_targets(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
-    """取得年級目標人數設定"""
+    """取得年級目標人數設定（屬於目前有效的獎金設定版本）"""
     session = get_session()
     try:
-        targets = session.query(GradeTarget).order_by(GradeTarget.grade_name).all()
+        active_bonus = session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
+        if active_bonus:
+            targets = session.query(GradeTarget).filter(
+                GradeTarget.bonus_config_id == active_bonus.id
+            ).order_by(GradeTarget.grade_name).all()
+            # 向下相容：若新版本尚無年級目標，回退到 NULL（舊資料）
+            if not targets:
+                targets = session.query(GradeTarget).filter(
+                    GradeTarget.bonus_config_id == None  # noqa: E711
+                ).order_by(GradeTarget.grade_name).all()
+        else:
+            targets = session.query(GradeTarget).order_by(GradeTarget.grade_name).all()
+
         result = {}
         for t in targets:
             result[t.grade_name] = {
@@ -285,12 +371,34 @@ def get_grade_targets(current_user: dict = Depends(require_permission(Permission
 
 @router.put("/grade-targets")
 def update_grade_target(data: GradeTargetUpdate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
-    """更新年級目標人數設定"""
+    """更新年級目標人數設定（直接更新屬於目前有效獎金設定版本的行）"""
     session = get_session()
     try:
-        target = session.query(GradeTarget).filter(GradeTarget.grade_name == data.grade_name).first()
+        active_bonus = session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
+        active_bonus_id = active_bonus.id if active_bonus else None
+
+        # 優先找屬於目前版本的行
+        target = session.query(GradeTarget).filter(
+            GradeTarget.grade_name == data.grade_name,
+            GradeTarget.bonus_config_id == active_bonus_id
+        ).first()
+
         if not target:
-            target = GradeTarget(config_year=2026, grade_name=data.grade_name)
+            # 向下相容：找舊資料（bonus_config_id=NULL）或任何同年級行作為藍本
+            template = session.query(GradeTarget).filter(
+                GradeTarget.grade_name == data.grade_name
+            ).first()
+            target = GradeTarget(
+                config_year=2026,
+                grade_name=data.grade_name,
+                bonus_config_id=active_bonus_id,
+                festival_two_teachers=template.festival_two_teachers if template else 0,
+                festival_one_teacher=template.festival_one_teacher if template else 0,
+                festival_shared=template.festival_shared if template else 0,
+                overtime_two_teachers=template.overtime_two_teachers if template else 0,
+                overtime_one_teacher=template.overtime_one_teacher if template else 0,
+                overtime_shared=template.overtime_shared if template else 0,
+            )
             session.add(target)
 
         update_data = data.dict(exclude_unset=True)
@@ -299,7 +407,6 @@ def update_grade_target(data: GradeTargetUpdate, current_user: dict = Depends(re
                 setattr(target, key, value)
 
         session.commit()
-        # 重新載入設定到薪資計算引擎
         _salary_engine.load_config_from_db()
         return {"message": f"{data.grade_name}目標人數更新成功"}
     except Exception as e:
@@ -342,27 +449,113 @@ def get_insurance_rates(current_user: dict = Depends(require_permission(Permissi
 
 @router.put("/insurance-rates")
 def update_insurance_rates(data: InsuranceRateUpdate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
-    """更新勞健保費率設定"""
+    """更新勞健保費率設定（建立新版本，保留舊版歷程）"""
     session = get_session()
     try:
-        rate = session.query(InsuranceRate).filter(InsuranceRate.is_active == True).first()
-        if not rate:
-            rate = InsuranceRate(rate_year=2026, is_active=True)
-            session.add(rate)
+        old_rate = session.query(InsuranceRate).filter(InsuranceRate.is_active == True).first()
+
+        new_rate = InsuranceRate(is_active=True)
+        if old_rate:
+            for field in _INSURANCE_FIELDS:
+                setattr(new_rate, field, getattr(old_rate, field, None))
+            new_rate.version = (old_rate.version or 1) + 1
+        else:
+            new_rate.version = 1
+            new_rate.rate_year = 2026
+
+        new_rate.changed_by = current_user.get("username")
 
         update_data = data.dict(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None:
-                setattr(rate, key, value)
+                setattr(new_rate, key, value)
 
+        if old_rate:
+            old_rate.is_active = False
+
+        session.add(new_rate)
         session.commit()
-        # 重新載入設定到薪資計算引擎
         _salary_engine.load_config_from_db()
         _clear_cache("insurance_rates")
-        return {"message": "勞健保費率更新成功"}
+        return {"message": "勞健保費率更新成功", "version": new_rate.version, "id": new_rate.id}
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.get("/bonus/history")
+def get_bonus_config_history(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
+    """取得獎金設定所有歷史版本（最新在前）"""
+    session = get_session()
+    try:
+        configs = session.query(DBBonusConfig).order_by(DBBonusConfig.created_at.desc()).all()
+        return [
+            {
+                "id": c.id,
+                "version": c.version,
+                "config_year": c.config_year,
+                "is_active": c.is_active,
+                "changed_by": c.changed_by,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "head_teacher_ab": c.head_teacher_ab,
+                "head_teacher_c": c.head_teacher_c,
+                "assistant_teacher_ab": c.assistant_teacher_ab,
+                "assistant_teacher_c": c.assistant_teacher_c,
+                "school_wide_target": c.school_wide_target,
+            }
+            for c in configs
+        ]
+    finally:
+        session.close()
+
+
+@router.get("/attendance-policy/history")
+def get_attendance_policy_history(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
+    """取得考勤政策所有歷史版本（最新在前）"""
+    session = get_session()
+    try:
+        policies = session.query(AttendancePolicy).order_by(AttendancePolicy.created_at.desc()).all()
+        return [
+            {
+                "id": p.id,
+                "version": p.version,
+                "is_active": p.is_active,
+                "changed_by": p.changed_by,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "default_work_start": p.default_work_start,
+                "default_work_end": p.default_work_end,
+                "grace_minutes": p.grace_minutes,
+                "late_threshold": p.late_threshold,
+                "festival_bonus_months": p.festival_bonus_months,
+            }
+            for p in policies
+        ]
+    finally:
+        session.close()
+
+
+@router.get("/insurance-rates/history")
+def get_insurance_rates_history(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
+    """取得勞健保費率所有歷史版本（最新在前）"""
+    session = get_session()
+    try:
+        rates = session.query(InsuranceRate).order_by(InsuranceRate.created_at.desc()).all()
+        return [
+            {
+                "id": r.id,
+                "version": r.version,
+                "rate_year": r.rate_year,
+                "is_active": r.is_active,
+                "changed_by": r.changed_by,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "labor_rate": r.labor_rate,
+                "health_rate": r.health_rate,
+                "pension_employer_rate": r.pension_employer_rate,
+            }
+            for r in rates
+        ]
     finally:
         session.close()
 

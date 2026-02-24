@@ -207,6 +207,9 @@ class SalaryEngine:
 
     def __init__(self, load_from_db: bool = False):
         self.insurance_service = InsuranceService()
+        # 記錄目前載入的設定版本 ID，供薪資紀錄稽核用
+        self._bonus_config_id: Optional[int] = None
+        self._attendance_policy_id: Optional[int] = None
         self.deduction_rules = {
             'late': {'per_minute': 1, 'auto_leave_threshold': 120},
             'missing': {'amount': 0},   # 未打卡不扣款，僅記錄
@@ -256,6 +259,7 @@ class SalaryEngine:
             # 載入考勤政策
             policy = session.query(AttendancePolicy).filter(AttendancePolicy.is_active == True).first()
             if policy:
+                self._attendance_policy_id = policy.id  # 記錄版本 ID
                 self._attendance_policy = {
                     'grace_minutes': policy.grace_minutes,
                     'late_per_minute': getattr(policy, 'late_per_minute', 1) or 1,
@@ -276,6 +280,7 @@ class SalaryEngine:
             # 載入獎金設定
             bonus = session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
             if bonus:
+                self._bonus_config_id = bonus.id  # 記錄版本 ID
                 # 更新獎金基數
                 self._bonus_base = {
                     'head_teacher': {
@@ -328,8 +333,16 @@ class SalaryEngine:
                 if bonus.school_wide_target:
                     self._school_wide_target = bonus.school_wide_target
 
-            # 載入年級目標
-            targets = session.query(GradeTarget).all()
+            # 載入年級目標（只取屬於目前有效獎金設定版本的行；若無則 fallback 到舊資料）
+            targets = []
+            if bonus:
+                targets = session.query(GradeTarget).filter(
+                    GradeTarget.bonus_config_id == bonus.id
+                ).all()
+            if not targets:
+                targets = session.query(GradeTarget).filter(
+                    GradeTarget.bonus_config_id == None  # noqa: E711  — 向下相容舊資料
+                ).all()
             if targets:
                 self._target_enrollment = {}
                 self._overtime_target = {}
@@ -1447,6 +1460,10 @@ class SalaryEngine:
                 )
                 session.add(salary_record)
             
+            # 記錄計算時使用的設定版本（稽核追蹤）
+            salary_record.bonus_config_id = self._bonus_config_id
+            salary_record.attendance_policy_id = self._attendance_policy_id
+
             # Update fields
             salary_record.base_salary = breakdown.base_salary
             salary_record.supervisor_allowance = breakdown.supervisor_allowance

@@ -96,10 +96,21 @@ def session_scope():
         session.close()
 
 
+def _add_column_if_missing(engine, inspector, table: str, column: str, col_def: str):
+    """若欄位不存在則執行 ALTER TABLE ADD COLUMN"""
+    existing = [c["name"] for c in inspector.get_columns(table)]
+    if column not in existing:
+        with engine.connect() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}"))
+            conn.commit()
+        logger.info("Migration: 已新增 %s.%s 欄位", table, column)
+
+
 def _run_migrations(engine):
     """執行資料庫結構遷移（向後相容，安全重複執行）"""
     inspector = sa_inspect(engine)
-    # 新增 leave_records.attachment_paths
+
+    # ── leave_records ──────────────────────────────────────────────────────────
     existing_cols = [c["name"] for c in inspector.get_columns("leave_records")]
     if "attachment_paths" not in existing_cols:
         with engine.connect() as conn:
@@ -117,6 +128,26 @@ def _run_migrations(engine):
             conn.execute(text("ALTER TABLE leave_records ADD COLUMN rejection_reason TEXT"))
             conn.commit()
         logger.info("Migration: 已新增 leave_records.rejection_reason 欄位")
+
+    # ── 設定版本控制（Config Versioning）──────────────────────────────────────
+    # bonus_configs
+    _add_column_if_missing(engine, inspector, "bonus_configs", "version", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(engine, inspector, "bonus_configs", "changed_by", "VARCHAR(50)")
+
+    # attendance_policies
+    _add_column_if_missing(engine, inspector, "attendance_policies", "version", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(engine, inspector, "attendance_policies", "changed_by", "VARCHAR(50)")
+
+    # insurance_rates
+    _add_column_if_missing(engine, inspector, "insurance_rates", "version", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(engine, inspector, "insurance_rates", "changed_by", "VARCHAR(50)")
+
+    # grade_targets — 關聯到 bonus_config 版本
+    _add_column_if_missing(engine, inspector, "grade_targets", "bonus_config_id", "INTEGER REFERENCES bonus_configs(id)")
+
+    # salary_records — 記錄計算時使用的設定版本
+    _add_column_if_missing(engine, inspector, "salary_records", "bonus_config_id", "INTEGER REFERENCES bonus_configs(id)")
+    _add_column_if_missing(engine, inspector, "salary_records", "attendance_policy_id", "INTEGER REFERENCES attendance_policies(id)")
 
 
 def init_database():
@@ -361,6 +392,10 @@ class SalaryRecord(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+
+    # 計算時使用的設定版本 FK（用於稽核追蹤）
+    bonus_config_id = Column(Integer, ForeignKey("bonus_configs.id"), nullable=True, comment="計算時使用的獎金設定版本")
+    attendance_policy_id = Column(Integer, ForeignKey("attendance_policies.id"), nullable=True, comment="計算時使用的考勤政策版本")
 
     salary_year = Column(Integer, nullable=False, comment="年")
     salary_month = Column(Integer, nullable=False, comment="月")
@@ -689,6 +724,8 @@ class AttendancePolicy(Base):
     __tablename__ = "attendance_policies"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(Integer, default=1, nullable=False, comment="版本號（每次更新遞增）")
+    changed_by = Column(String(50), nullable=True, comment="最後修改人")
 
     default_work_start = Column(String(5), default="08:00")
     default_work_end = Column(String(5), default="17:00")
@@ -714,6 +751,8 @@ class BonusConfig(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     config_year = Column(Integer, nullable=False)
+    version = Column(Integer, default=1, nullable=False, comment="版本號（每次更新遞增）")
+    changed_by = Column(String(50), nullable=True, comment="最後修改人")
 
     head_teacher_ab = Column(Float, default=2000)
     head_teacher_c = Column(Float, default=1500)
@@ -753,6 +792,8 @@ class GradeTarget(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     config_year = Column(Integer, nullable=False)
     grade_name = Column(String(20), nullable=False)
+    bonus_config_id = Column(Integer, ForeignKey("bonus_configs.id"), nullable=True, comment="所屬獎金設定版本（NULL=舊資料）")
+    bonus_config = relationship("BonusConfig", backref="grade_targets")
 
     festival_two_teachers = Column(Integer, default=0)
     festival_one_teacher = Column(Integer, default=0)
@@ -772,6 +813,8 @@ class InsuranceRate(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     rate_year = Column(Integer, nullable=False)
+    version = Column(Integer, default=1, nullable=False, comment="版本號（每次更新遞增）")
+    changed_by = Column(String(50), nullable=True, comment="最後修改人")
 
     labor_rate = Column(Float, default=0.12)
     labor_employee_ratio = Column(Float, default=0.20)
