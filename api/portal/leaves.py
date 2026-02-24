@@ -101,6 +101,8 @@ def create_my_leave(
             raise HTTPException(status_code=400, detail="結束日期不可早於開始日期")
         if data.leave_hours < 0.5:
             raise HTTPException(status_code=400, detail="請假時數至少 0.5 小時")
+        if round(data.leave_hours * 2) != data.leave_hours * 2:
+            raise HTTPException(status_code=400, detail="請假時數必須為 0.5 小時的倍數（如 0.5、1、1.5、2…）")
 
         # 重疊偵測（僅封鎖已核准的假單，待審核可並存）
         overlap = session.query(LeaveRecord).filter(

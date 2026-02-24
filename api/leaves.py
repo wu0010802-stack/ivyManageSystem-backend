@@ -112,6 +112,8 @@ class LeaveCreate(BaseModel):
             raise ValueError("請假時數至少 0.5 小時")
         if v > 480:
             raise ValueError("請假時數不得超過 480 小時")
+        if round(v * 2) != v * 2:
+            raise ValueError("請假時數必須為 0.5 小時的倍數（如 0.5、1、1.5、2…）")
         return v
 
     @model_validator(mode="after")
@@ -140,8 +142,11 @@ class LeaveUpdate(BaseModel):
     @field_validator("leave_hours")
     @classmethod
     def validate_leave_hours(cls, v):
-        if v is not None and v < 0.5:
-            raise ValueError("請假時數至少 0.5 小時")
+        if v is not None:
+            if v < 0.5:
+                raise ValueError("請假時數至少 0.5 小時")
+            if round(v * 2) != v * 2:
+                raise ValueError("請假時數必須為 0.5 小時的倍數（如 0.5、1、1.5、2…）")
         return v
 
     @model_validator(mode="after")
