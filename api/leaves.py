@@ -365,6 +365,48 @@ def _check_leave_limits(
             )
 
 
+def _check_quota(
+    session, employee_id: int, leave_type: str,
+    year: int, leave_hours: float, exclude_id: int = None
+) -> None:
+    """
+    針對有年度配額的假別（QUOTA_LEAVE_TYPES）檢查剩餘配額，
+    超過時 raise HTTPException(400)。
+
+    - 僅計算已核准時數，待審記錄不列入（允許同時提交多份申請供主管選擇）
+    - 若該員工尚未初始化配額（LeaveQuota 無記錄）則略過，不強制攔截
+    """
+    if leave_type not in QUOTA_LEAVE_TYPES:
+        return
+
+    quota = session.query(LeaveQuota).filter(
+        LeaveQuota.employee_id == employee_id,
+        LeaveQuota.year == year,
+        LeaveQuota.leave_type == leave_type,
+    ).first()
+
+    if quota is None:
+        return  # 配額未初始化，略過檢查
+
+    used = _get_approved_hours_in_year(
+        session, employee_id, year, leave_type, exclude_id
+    )
+    remaining = max(0.0, quota.total_hours - used)
+
+    if leave_hours > remaining:
+        label = LEAVE_TYPE_LABELS.get(leave_type, leave_type)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{label}年度配額 {quota.total_hours:.0f} 小時"
+                f"（{quota.total_hours / 8:.1f} 天），"
+                f"已核准 {used:.0f} 小時，"
+                f"剩餘 {remaining:.0f} 小時（{remaining / 8:.1f} 天），"
+                f"本次申請 {leave_hours:.1f} 小時超過剩餘配額"
+            ),
+        )
+
+
 def _calc_shift_hours(work_start: str, work_end: str) -> float:
     """從 HH:MM 上下班時間計算有效工時，超過 5 小時自動扣除 1 小時午休"""
     sh, sm = map(int, work_start.split(":"))
@@ -729,6 +771,10 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
             session, data.employee_id, data.leave_type,
             data.start_date, data.leave_hours
         )
+        _check_quota(
+            session, data.employee_id, data.leave_type,
+            data.start_date.year, data.leave_hours
+        )
 
         leave = LeaveRecord(
             employee_id=data.employee_id,
@@ -778,6 +824,10 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
         _check_leave_limits(
             session, leave.employee_id, new_type,
             new_start, new_hours, exclude_id=leave_id
+        )
+        _check_quota(
+            session, leave.employee_id, new_type,
+            new_start.year, new_hours, exclude_id=leave_id
         )
 
         update_data = data.dict(exclude_unset=True)
