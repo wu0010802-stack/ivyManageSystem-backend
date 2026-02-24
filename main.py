@@ -257,13 +257,53 @@ def seed_shift_types():
 
 
 def seed_default_admin():
-    """建立預設管理員帳號"""
+    """建立初始管理員帳號。
+
+    優先從環境變數讀取帳密：
+      ADMIN_INIT_USERNAME  （預設: admin）
+      ADMIN_INIT_PASSWORD  （正式環境必須設定）
+
+    正式環境（ENV=production）若未設定 ADMIN_INIT_PASSWORD，
+    則不自動建立帳號，避免弱密碼遺留——請部署後手動透過環境變數設定。
+    開發環境退而使用預設值 admin/admin123，並強制標記 must_change_password。
+    """
     from utils.auth import hash_password
+
+    # 若已存在任何 admin 帳號，跳過
     session = get_session()
     try:
         if session.query(User).filter(User.role == "admin").count() > 0:
             return
+    finally:
+        session.close()
 
+    init_username = os.environ.get("ADMIN_INIT_USERNAME", "").strip()
+    init_password = os.environ.get("ADMIN_INIT_PASSWORD", "").strip()
+
+    if not init_password:
+        if _is_production():
+            logger.error(
+                "正式環境尚未設定 ADMIN_INIT_PASSWORD，"
+                "系統不會自動建立管理員帳號。"
+                "請設定環境變數後重新啟動：\n"
+                "  ADMIN_INIT_USERNAME=<帳號>  ADMIN_INIT_PASSWORD=<強密碼>"
+            )
+            return
+        else:
+            # 開發環境：使用眾所周知的預設值，但強制下次登入修改
+            init_username = init_username or "admin"
+            init_password = "admin123"
+            logger.warning(
+                "開發環境使用預設管理員帳號 admin/admin123，"
+                "已標記 must_change_password=True。請勿在正式環境使用！"
+            )
+            must_change = True
+    else:
+        init_username = init_username or "admin"
+        must_change = False
+
+    session = get_session()
+    try:
         # 確保至少有一位員工可以關聯
         emp = session.query(Employee).first()
         if not emp:
@@ -277,16 +317,21 @@ def seed_default_admin():
 
         admin_user = User(
             employee_id=emp.id,
-            username="admin",
-            password_hash=hash_password("admin123"),
+            username=init_username,
+            password_hash=hash_password(init_password),
             role="admin",
-            permissions=-1,  # 明確設定：admin 擁有全部權限
+            permissions=-1,  # admin 擁有全部權限
+            must_change_password=must_change,
         )
         session.add(admin_user)
         session.commit()
-        logger.info(f"Seeded default admin user (linked to {emp.name}).")
+        logger.info("已建立初始管理員帳號：%s（linked to %s）", init_username, emp.name)
     finally:
         session.close()
+
+
+def _is_production() -> bool:
+    return os.environ.get("ENV", "development").lower() in ("production", "prod")
 
 
 def migrate_permissions_rw():

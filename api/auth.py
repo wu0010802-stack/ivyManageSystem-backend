@@ -181,6 +181,7 @@ def login(data: LoginRequest, request: Request):
 
         return {
             "token": token,
+            "must_change_password": bool(user.must_change_password),
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -291,6 +292,7 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
         if not verify_password(data.old_password, user.password_hash):
             raise HTTPException(status_code=400, detail="舊密碼錯誤")
         user.password_hash = hash_password(data.new_password)
+        user.must_change_password = False  # 使用者主動修改後清除強制旗標
         session.commit()
         return {"message": "密碼修改成功"}
     except HTTPException:
@@ -374,6 +376,7 @@ def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict 
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
         user.password_hash = hash_password(data.new_password)
+        user.must_change_password = True  # 管理員代為重設密碼，強制當事人下次登入修改
         session.commit()
         return {"message": "密碼重設成功"}
     except HTTPException:

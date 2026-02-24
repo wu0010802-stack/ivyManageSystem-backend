@@ -155,6 +155,9 @@ def _run_migrations(engine):
     # employees — 勞退自提比例
     _add_column_if_missing(engine, inspector, "employees", "pension_self_rate", "FLOAT DEFAULT 0")
 
+    # users — 強制修改密碼旗標
+    _add_column_if_missing(engine, inspector, "users", "must_change_password", "BOOLEAN NOT NULL DEFAULT FALSE")
+
     # daily_shifts — shift_type_id 改為允許 NULL（換班至無班的情境需要顯式標記排休）
     ds_cols = {c["name"]: c for c in inspector.get_columns("daily_shifts")}
     if not ds_cols.get("shift_type_id", {}).get("nullable", True):
@@ -953,6 +956,7 @@ class User(Base):
     role = Column(String(20), default="teacher", comment="角色: teacher/admin")
     permissions = Column(BigInteger, nullable=True, default=None, comment="功能模組權限位元遮罩 (-1=全部權限, NULL=使用角色預設)")
     is_active = Column(Boolean, default=True, comment="帳號是否啟用")
+    must_change_password = Column(Boolean, default=False, comment="是否強制下次登入修改密碼")
     last_login = Column(DateTime, comment="最後登入時間")
 
     created_at = Column(DateTime, default=datetime.now)
