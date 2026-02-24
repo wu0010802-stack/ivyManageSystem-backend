@@ -2,12 +2,15 @@
 薪資計算引擎 - 整合考勤、獎金、扣款計算
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 from .insurance_service import InsuranceService, InsuranceCalculation
 from .attendance_parser import AttendanceResult
+
+logger = logging.getLogger(__name__)
 
 MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
 
