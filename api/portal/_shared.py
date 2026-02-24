@@ -79,13 +79,22 @@ class OvertimeCreatePortal(BaseModel):
     hours: float
     reason: Optional[str] = None
 
+    @field_validator("overtime_type")
+    @classmethod
+    def validate_overtime_type(cls, v):
+        if v not in OVERTIME_TYPE_LABELS:
+            allowed = ", ".join(OVERTIME_TYPE_LABELS.keys())
+            raise ValueError(f"無效的加班類型，允許值：{allowed}")
+        return v
+
     @field_validator("hours")
     @classmethod
     def validate_hours(cls, v):
         if v <= 0:
             raise ValueError("加班時數必須大於 0")
-        if v > 24:
-            raise ValueError("加班時數不合理")
+        # 勞基法：平日最多延長 4H；假日正常班 8H + 延長最多 4H = 12H
+        if v > 12:
+            raise ValueError("單筆加班時數不得超過 12 小時")
         return v
 
 

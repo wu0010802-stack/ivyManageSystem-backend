@@ -8,7 +8,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import or_
 
 from models.database import get_session, Employee, OvertimeRecord
@@ -45,12 +45,18 @@ WEEKDAY_THRESHOLD_HOURS = 2     # 平日倍率分界時數
 HOLIDAY_RATE = 2.0              # 假日 / 國定假日
 DAILY_WORK_HOURS = 8            # 每日法定工時
 MONTHLY_BASE_DAYS = 30          # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
+# 單筆加班記錄的合法上限：勞基法假日最多可加班至 12 小時（正常 8H + 延長 4H）
+MAX_OVERTIME_HOURS = 12.0
 
 
 # ============ Helper Functions ============
 
 def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str) -> float:
     """依勞基法計算加班費（時薪 = 月薪 ÷ 30 ÷ 8）"""
+    # 防禦縱深：即使前端驗證被繞過，也不允許負數或零時數計算
+    if hours <= 0:
+        return 0.0
+    hours = min(hours, MAX_OVERTIME_HOURS)
     hourly_base = base_salary / MONTHLY_BASE_DAYS / DAILY_WORK_HOURS
 
     if overtime_type == "weekday":
@@ -114,6 +120,23 @@ class OvertimeCreate(BaseModel):
     hours: float
     reason: Optional[str] = None
 
+    @field_validator("overtime_type")
+    @classmethod
+    def validate_overtime_type(cls, v):
+        if v not in OVERTIME_TYPE_LABELS:
+            allowed = ", ".join(OVERTIME_TYPE_LABELS.keys())
+            raise ValueError(f"無效的加班類型，允許值：{allowed}")
+        return v
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v):
+        if v <= 0:
+            raise ValueError("加班時數必須大於 0")
+        if v > MAX_OVERTIME_HOURS:
+            raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS} 小時")
+        return v
+
 
 class OvertimeUpdate(BaseModel):
     overtime_date: Optional[date] = None
@@ -122,6 +145,25 @@ class OvertimeUpdate(BaseModel):
     end_time: Optional[str] = None
     hours: Optional[float] = None
     reason: Optional[str] = None
+
+    @field_validator("overtime_type")
+    @classmethod
+    def validate_overtime_type(cls, v):
+        if v is not None and v not in OVERTIME_TYPE_LABELS:
+            allowed = ", ".join(OVERTIME_TYPE_LABELS.keys())
+            raise ValueError(f"無效的加班類型，允許值：{allowed}")
+        return v
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v):
+        if v is None:
+            return v
+        if v <= 0:
+            raise ValueError("加班時數必須大於 0")
+        if v > MAX_OVERTIME_HOURS:
+            raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS} 小時")
+        return v
 
 
 # ============ Routes ============
