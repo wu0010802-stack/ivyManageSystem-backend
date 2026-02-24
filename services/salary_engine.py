@@ -1503,9 +1503,6 @@ class SalaryEngine:
                 SalaryRecord.salary_month == month
             ).first()
 
-            # ── 封存保護：已結算封存的薪資禁止覆寫 ──────────────────────────────
-            # is_finalized == True 代表該月薪資已由管理員確認發放並封存，
-            # 任何自動重算都必須被拒絕，以保護會計帳冊的完整性。
             if salary_record and salary_record.is_finalized:
                 raise ValueError(
                     f"員工「{emp.name}」{year} 年 {month} 月薪資已封存（is_finalized=True），"

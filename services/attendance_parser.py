@@ -125,6 +125,18 @@ class AttendanceParser:
         
         # 按日期分組
         grouped = employee_df.groupby('punch_date')
+
+        # 找出整份上傳檔案的最早與最晚日期，避免漏掉整天沒打卡的「幽靈曠職日」
+        _min_date = employee_df['punch_date'].min() if not employee_df.empty else datetime.today().date()
+        _max_date = employee_df['punch_date'].max() if not employee_df.empty else datetime.today().date()
+        
+        # 建立這段期間所有的工作日（預設排除週末，後續可擴充為參考行事曆）
+        expected_dates = []
+        current_date = _min_date
+        while current_date <= _max_date:
+            if current_date.weekday() < 5:  # 0-4 is Mon-Fri
+                expected_dates.append(current_date)
+            current_date += timedelta(days=1)
         
         details = []
         late_count = 0
@@ -135,9 +147,9 @@ class AttendanceParser:
         total_early_minutes = 0
         normal_days = 0
         
-        for date, day_records in grouped:
-            day_records = day_records.sort_values('punch_datetime')
-            punch_times = day_records['punch_time'].tolist()
+        for check_date in expected_dates:
+            day_records = grouped.get_group(check_date).sort_values('punch_datetime') if check_date in grouped.groups else pd.DataFrame()
+            punch_times = day_records['punch_time'].tolist() if not day_records.empty else []
 
             # 上班打卡取最早一筆，下班打卡取最晚一筆
             # 使用 min/max 明確表達語意，不依賴排序副作用
@@ -145,7 +157,7 @@ class AttendanceParser:
             punch_out = max(punch_times) if len(punch_times) >= 2 else None
             
             day_detail = {
-                'date': date,
+                'date': check_date,
                 'punch_in': punch_in,
                 'punch_out': punch_out,
                 'is_late': False,
