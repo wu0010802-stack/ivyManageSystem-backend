@@ -211,16 +211,16 @@ def _build_legacy_bonus_settings(request):
     return global_bonus_settings
 
 
-def _calc_school_wide_bonus(emp, office_festival_base, total_enrollment, target):
+def _calc_school_wide_bonus(engine, emp, office_festival_base, total_enrollment, target):
     """計算全校比例節慶獎金（司機/美編/辦公室人員）。"""
-    is_eligible = _salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+    is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
     if is_eligible and target > 0:
         school_ratio = total_enrollment / target
         return round(office_festival_base * school_ratio)
     return 0
 
 
-def _resolve_bonus_for_employee(emp, emp_dict, emp_role_map, classroom_info_map,
+def _resolve_bonus_for_employee(engine, emp, emp_dict, emp_role_map, classroom_info_map,
                                 total_school_enrollment, school_wide_overtime_target):
     """依員工角色與班級計算節慶獎金和超額獎金，回傳 classroom_context 或 None。"""
     is_office_staff = emp.is_office_staff or False
@@ -228,17 +228,17 @@ def _resolve_bonus_for_employee(emp, emp_dict, emp_role_map, classroom_info_map,
 
     if emp.id in emp_role_map:
         roles = emp_role_map[emp.id]
-        office_festival_base = _salary_engine.get_office_festival_bonus_base(emp.position or '', emp.title_name)
+        office_festival_base = engine.get_office_festival_bonus_base(emp.position or '', emp.title_name)
 
         if office_festival_base is not None:
             # 司機/美編
             emp_dict['_calculated_festival_bonus'] = _calc_school_wide_bonus(
-                emp, office_festival_base, total_school_enrollment, school_wide_overtime_target)
+                engine, emp, office_festival_base, total_school_enrollment, school_wide_overtime_target)
             emp_dict['_calculated_overtime_bonus'] = 0
 
         elif is_office_staff and len(roles) > 0:
             # 辦公室人員有帶班
-            is_eligible = _salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+            is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
             school_festival_bonus = 0
             total_overtime_bonus = 0
             if is_eligible:
@@ -247,12 +247,12 @@ def _resolve_bonus_for_employee(emp, emp_dict, emp_role_map, classroom_info_map,
                     first_info = classroom_info_map.get(first_classroom_id)
                     if first_info:
                         role_for_bonus = first_role if first_role != 'art_teacher' else 'assistant_teacher'
-                        bonus_base = _salary_engine.get_festival_bonus_base(emp.position or '', role_for_bonus)
+                        bonus_base = engine.get_festival_bonus_base(emp.position or '', role_for_bonus)
                         school_festival_bonus = bonus_base * (total_school_enrollment / school_wide_overtime_target)
                 for classroom_id, role in roles:
                     info = classroom_info_map.get(classroom_id)
                     if info:
-                        result = _salary_engine.calculate_overtime_bonus(
+                        result = engine.calculate_overtime_bonus(
                             role=role, grade_name=info['grade_name'],
                             current_enrollment=info['current_enrollment'],
                             has_assistant=info['has_assistant'],
@@ -277,12 +277,12 @@ def _resolve_bonus_for_employee(emp, emp_dict, emp_role_map, classroom_info_map,
             is_shared = assistant_count > 1
             total_festival = 0
             total_overtime = 0
-            is_eligible = _salary_engine.is_eligible_for_festival_bonus(emp.hire_date)
+            is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
             if is_eligible:
                 for classroom_id, role in roles:
                     info = classroom_info_map.get(classroom_id)
                     if info:
-                        result = _salary_engine.calculate_festival_bonus_v2(
+                        result = engine.calculate_festival_bonus_v2(
                             position=emp.position or '', role=role,
                             grade_name=info['grade_name'],
                             current_enrollment=info['current_enrollment'],
@@ -294,34 +294,34 @@ def _resolve_bonus_for_employee(emp, emp_dict, emp_role_map, classroom_info_map,
             emp_dict['_calculated_overtime_bonus'] = total_overtime
     else:
         # 員工沒有帶班
-        office_festival_base = _salary_engine.get_office_festival_bonus_base(emp.position or '', emp.title_name)
+        office_festival_base = engine.get_office_festival_bonus_base(emp.position or '', emp.title_name)
         if office_festival_base is not None:
             emp_dict['_calculated_festival_bonus'] = _calc_school_wide_bonus(
-                emp, office_festival_base, total_school_enrollment, school_wide_overtime_target)
+                engine, emp, office_festival_base, total_school_enrollment, school_wide_overtime_target)
             emp_dict['_calculated_overtime_bonus'] = 0
         elif is_office_staff:
-            bonus_base = _salary_engine.get_festival_bonus_base(emp.position or '', 'assistant_teacher')
+            bonus_base = engine.get_festival_bonus_base(emp.position or '', 'assistant_teacher')
             emp_dict['_calculated_festival_bonus'] = _calc_school_wide_bonus(
-                emp, bonus_base, total_school_enrollment, school_wide_overtime_target)
+                engine, emp, bonus_base, total_school_enrollment, school_wide_overtime_target)
             emp_dict['_calculated_overtime_bonus'] = 0
 
     return classroom_context
 
 
-def _compute_salary_breakdown(emp, emp_dict, year, month, emp_allowances,
+def _compute_salary_breakdown(engine, emp, emp_dict, year, month, emp_allowances,
                               classroom_context, meeting_context, global_bonus_settings):
     """呼叫 salary_engine 計算薪資明細。"""
     if '_calculated_festival_bonus' in emp_dict:
-        breakdown = _salary_engine.calculate_salary(
+        breakdown = engine.calculate_salary(
             emp_dict, year, month,
             bonus_settings=None, allowances=emp_allowances,
             classroom_context=None, meeting_context=meeting_context)
         breakdown.festival_bonus = emp_dict['_calculated_festival_bonus']
         breakdown.overtime_bonus = emp_dict.get('_calculated_overtime_bonus', 0)
         # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
-        if not _salary_engine.get_bonus_distribution_month(month):
+        if not engine.get_bonus_distribution_month(month):
             breakdown.festival_bonus = 0
-        breakdown.supervisor_dividend = _salary_engine.get_supervisor_dividend(emp.title_name, emp.position or '')
+        breakdown.supervisor_dividend = engine.get_supervisor_dividend(emp.title_name, emp.position or '')
         breakdown.gross_salary = (
             breakdown.base_salary + breakdown.supervisor_allowance +
             breakdown.teacher_allowance + breakdown.meal_allowance +
@@ -331,12 +331,12 @@ def _compute_salary_breakdown(emp, emp_dict, year, month, emp_allowances,
             breakdown.supervisor_dividend + breakdown.meeting_overtime_pay)
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
     elif classroom_context:
-        breakdown = _salary_engine.calculate_salary(
+        breakdown = engine.calculate_salary(
             emp_dict, year, month,
             bonus_settings=None, allowances=emp_allowances,
             classroom_context=classroom_context, meeting_context=meeting_context)
     else:
-        breakdown = _salary_engine.calculate_salary(
+        breakdown = engine.calculate_salary(
             emp_dict, year, month,
             bonus_settings=global_bonus_settings, allowances=emp_allowances,
             meeting_context=meeting_context)
@@ -346,13 +346,18 @@ def _compute_salary_breakdown(emp, emp_dict, year, month, emp_allowances,
 @router.post("/salary/calculate")
 async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict = Depends(require_permission(Permission.SALARY_WRITE))):
     """一鍵結算薪資"""
+    from services.salary_engine import SalaryEngine
     session = get_session()
     try:
-        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        # 建立本次批次專用的引擎實例，與全域 singleton 完全隔離，
+        # 確保：① 批次中途設定變更不影響本次計算；② bonus_config 覆蓋不污染其他並發請求
+        engine = SalaryEngine(load_from_db=True)
 
         if request.bonus_config:
             bonus_config_dict = request.bonus_config.dict() if hasattr(request.bonus_config, 'dict') else request.bonus_config
-            _salary_engine.set_bonus_config(bonus_config_dict)
+            engine.set_bonus_config(bonus_config_dict)
+
+        employees = session.query(Employee).filter(Employee.is_active == True).all()
 
         allowance_map = _build_allowance_map(session)
 
@@ -383,7 +388,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
             }
 
             classroom_context = _resolve_bonus_for_employee(
-                emp, emp_dict, emp_role_map, classroom_info_map,
+                engine, emp, emp_dict, emp_role_map, classroom_info_map,
                 total_school_enrollment, request.school_wide_overtime_target)
 
             meeting_records = meeting_by_emp.get(emp.id, [])
@@ -396,7 +401,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                 }
 
             breakdown = _compute_salary_breakdown(
-                emp, emp_dict, request.year, request.month,
+                engine, emp, emp_dict, request.year, request.month,
                 allowance_map.get(emp.id, []), classroom_context,
                 meeting_context, global_bonus_settings)
 
