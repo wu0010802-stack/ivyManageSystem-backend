@@ -105,6 +105,13 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate, cur
             except ValueError:
                 raise HTTPException(status_code=400, detail="下班時間格式錯誤，請使用 HH:MM")
 
+        # 驗證時間順序：上班時間不得晚於下班時間
+        if punch_in_time and punch_out_time and punch_out_time <= punch_in_time:
+            raise HTTPException(
+                status_code=400,
+                detail=f"時間錯誤：上班時間 {record.punch_in} 不得晚於或等於下班時間 {record.punch_out}"
+            )
+
         work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
         work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
         grace_minutes = 0

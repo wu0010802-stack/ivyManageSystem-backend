@@ -983,6 +983,12 @@ class SalaryEngine:
             else:
                  breakdown.supervisor_dividend = 0
 
+            # 非發放月份不計節慶獎金與超額獎金（季度合併發放：2月、6月、9月、12月）
+            # 在 gross_salary 計算前歸零，確保應發總額正確
+            if not self.get_bonus_distribution_month(month):
+                breakdown.festival_bonus = 0
+                breakdown.overtime_bonus = 0
+
             # 計算應發總額
             breakdown.gross_salary = (
                 breakdown.base_salary +
@@ -1045,17 +1051,14 @@ class SalaryEngine:
             breakdown.meeting_attended = attended
             breakdown.meeting_absent = absent
             
-            # 缺席扣節慶獎金（每次 $100）
-            breakdown.meeting_absence_deduction = absent * self._meeting_absence_penalty
+            # 缺席扣節慶獎金（每次 $100）— 僅在節慶獎金發放月才計算
+            if self.get_bonus_distribution_month(month):
+                breakdown.meeting_absence_deduction = absent * self._meeting_absence_penalty
         
         # 將園務會議加班費加入應發總額
         breakdown.gross_salary += breakdown.meeting_overtime_pay
         # 將園務會議缺席從節慶獎金扣款
         breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
-
-        # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
-        if not self.get_bonus_distribution_month(month):
-            breakdown.festival_bonus = 0
 
         # 計算扣款總額（未打卡不扣款）
         breakdown.total_deduction = (

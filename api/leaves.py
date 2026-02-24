@@ -187,6 +187,21 @@ STATUTORY_QUOTA_HOURS: dict[str, float] = {
     "family_care":  56.0,   # 家庭照顧假 7天（勞基法第20條）
 }
 
+# 法定年度累計上限（小時）— 事件型假別（不在 QUOTA_LEAVE_TYPES 中）
+ANNUAL_MAX_HOURS: dict[str, float] = {
+    "marriage": 64.0,  # 婚假 8天（勞工請假規則第3條）
+}
+
+# 法定單次申請上限（小時）
+SINGLE_REQUEST_MAX_HOURS: dict[str, float] = {
+    "bereavement": 64.0,  # 喪假最高 8天（依親等實際上限 3–8天）
+}
+
+# 法定每月上限（小時）
+MONTHLY_MAX_HOURS: dict[str, float] = {
+    "menstrual": 8.0,  # 生理假每月 1天（勞基法第14-1條）
+}
+
 
 def _calc_annual_leave_hours(hire_date: "date | None", year: int) -> float:
     """依勞基法第38條計算特休配額時數，以 year 年 12/31 為基準日計算年資"""
@@ -241,6 +256,38 @@ def _get_pending_hours(session, employee_id: int, year: int, leave_type: str) ->
     return float(result)
 
 
+def _get_approved_hours_in_year(
+    session, employee_id: int, year: int, leave_type: str, exclude_id: int = None
+) -> float:
+    """查詢年度已核准時數（可排除指定記錄，供更新時使用）"""
+    q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+        LeaveRecord.employee_id == employee_id,
+        LeaveRecord.leave_type == leave_type,
+        LeaveRecord.is_approved == True,
+        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+    )
+    if exclude_id:
+        q = q.filter(LeaveRecord.id != exclude_id)
+    return float(q.scalar())
+
+
+def _get_approved_hours_in_month(
+    session, employee_id: int, year: int, month: int,
+    leave_type: str, exclude_id: int = None
+) -> float:
+    """查詢指定月份已核准時數（可排除指定記錄）"""
+    q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+        LeaveRecord.employee_id == employee_id,
+        LeaveRecord.leave_type == leave_type,
+        LeaveRecord.is_approved == True,
+        func.strftime("%Y", LeaveRecord.start_date) == str(year),
+        func.strftime("%m", LeaveRecord.start_date) == f"{month:02d}",
+    )
+    if exclude_id:
+        q = q.filter(LeaveRecord.id != exclude_id)
+    return float(q.scalar())
+
+
 def _quota_row(session, quota: "LeaveQuota", year: int) -> dict:
     used = _get_used_hours(session, quota.employee_id, year, quota.leave_type)
     pending = _get_pending_hours(session, quota.employee_id, year, quota.leave_type)
@@ -257,6 +304,65 @@ def _quota_row(session, quota: "LeaveQuota", year: int) -> dict:
         "remaining_hours": remaining,
         "note": quota.note,
     }
+
+
+def _check_leave_limits(
+    session, employee_id: int, leave_type: str,
+    start_date: date, leave_hours: float, exclude_id: int = None
+) -> None:
+    """
+    針對有法定上限的假別進行驗證，超限時 raise HTTPException(400)。
+
+    婚假：全年累計 ≤ 8天（64小時）
+    喪假：單次申請 ≤ 8天（64小時，實際依親等）
+    生理假：當月累計 ≤ 1天（8小時）
+    """
+    # ── 婚假：年累計上限 ──────────────────────────────────
+    if leave_type in ANNUAL_MAX_HOURS:
+        max_h = ANNUAL_MAX_HOURS[leave_type]
+        used = _get_approved_hours_in_year(
+            session, employee_id, start_date.year, leave_type, exclude_id
+        )
+        if used + leave_hours > max_h:
+            remaining = max(0.0, max_h - used)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"婚假全年上限 8 天（{max_h:.0f} 小時），"
+                    f"本年已核准 {used / 8:.1f} 天，"
+                    f"剩餘 {remaining / 8:.1f} 天（{remaining:.0f} 小時）"
+                ),
+            )
+
+    # ── 喪假：單次申請上限 ────────────────────────────────
+    if leave_type in SINGLE_REQUEST_MAX_HOURS:
+        max_h = SINGLE_REQUEST_MAX_HOURS[leave_type]
+        if leave_hours > max_h:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"喪假單次申請不得超過 8 天（{max_h:.0f} 小時）。"
+                    "實際上限依親等：父母/配偶/子女 8 天、祖父母等 6 天、兄弟姐妹等 3 天"
+                ),
+            )
+
+    # ── 生理假：每月上限 ──────────────────────────────────
+    if leave_type in MONTHLY_MAX_HOURS:
+        max_h = MONTHLY_MAX_HOURS[leave_type]
+        year, month = start_date.year, start_date.month
+        used = _get_approved_hours_in_month(
+            session, employee_id, year, month, leave_type, exclude_id
+        )
+        if used + leave_hours > max_h:
+            remaining = max(0.0, max_h - used)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"生理假每月上限 1 天（{max_h:.0f} 小時），"
+                    f"{year}/{month:02d} 月已核准 {used:.0f} 小時，"
+                    f"剩餘 {remaining:.0f} 小時"
+                ),
+            )
 
 
 def _calc_shift_hours(work_start: str, work_end: str) -> float:
@@ -619,6 +725,11 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
                 detail=f"該員工在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄（ID: {overlap.id}），無法重複請假"
             )
 
+        _check_leave_limits(
+            session, data.employee_id, data.leave_type,
+            data.start_date, data.leave_hours
+        )
+
         leave = LeaveRecord(
             employee_id=data.employee_id,
             leave_type=data.leave_type,
@@ -661,6 +772,13 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
                 status_code=409,
                 detail=f"修改後的日期與已核准的請假記錄重疊（{overlap.start_date} ~ {overlap.end_date}，ID: {overlap.id}）"
             )
+
+        new_type = data.leave_type or leave.leave_type
+        new_hours = data.leave_hours if data.leave_hours is not None else leave.leave_hours
+        _check_leave_limits(
+            session, leave.employee_id, new_type,
+            new_start, new_hours, exclude_id=leave_id
+        )
 
         update_data = data.dict(exclude_unset=True)
         for key, value in update_data.items():
