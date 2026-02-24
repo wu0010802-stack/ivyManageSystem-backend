@@ -2,6 +2,7 @@
 Authentication utilities - password hashing and JWT tokens
 """
 
+import hmac
 import os
 import logging
 import hashlib
@@ -28,20 +29,55 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 JWT_REFRESH_GRACE_HOURS = 72  # 過期後仍允許刷新的寬限時間
 
+# ── 密碼雜湊參數 ───────────────────────────────────────────────────────────
+# OWASP 2023 建議：PBKDF2-HMAC-SHA256 至少 600,000 次迭代
+PBKDF2_ITERATIONS = 600_000
+_LEGACY_ITERATIONS = 100_000  # 舊版雜湊，僅用於向下相容驗證
+
+# 儲存格式（新）：{iterations}${salt_hex}${hash_hex}
+# 儲存格式（舊）：{salt_hex}${hash_hex}  ← 固定 100,000 次
+# 識別方式：split("$") 得到 3 段 → 新格式；2 段 → 舊格式
+# ─────────────────────────────────────────────────────────────────────────
+
 
 def hash_password(password: str) -> str:
+    """使用 PBKDF2-HMAC-SHA256 雜湊密碼，格式：{iterations}${salt}${hash}"""
     salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
-    return f"{salt}${h.hex()}"
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
+    return f"{PBKDF2_ITERATIONS}${salt}${h.hex()}"
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """驗證密碼，同時相容新格式（含 iterations）與舊格式（固定 100,000 次）。
+    使用 hmac.compare_digest 進行恆定時間比對，防止 Timing Attack。
+    """
     try:
-        salt, stored_hash = hashed_password.split("$", 1)
-        h = hashlib.pbkdf2_hmac("sha256", plain_password.encode(), salt.encode(), 100_000)
-        return h.hex() == stored_hash
+        parts = hashed_password.split("$", 2)
+        if len(parts) == 3:
+            # 新格式：iterations$salt$hash
+            iterations = int(parts[0])
+            salt, stored_hash = parts[1], parts[2]
+        elif len(parts) == 2:
+            # 舊格式：salt$hash（固定 100,000 次）
+            iterations = _LEGACY_ITERATIONS
+            salt, stored_hash = parts[0], parts[1]
+        else:
+            return False
+        h = hashlib.pbkdf2_hmac("sha256", plain_password.encode(), salt.encode(), iterations)
+        return hmac.compare_digest(h.hex(), stored_hash)
     except (ValueError, AttributeError):
         return False
+
+
+def needs_rehash(hashed_password: str) -> bool:
+    """判斷密碼雜湊是否需要以目前的參數重新雜湊（舊格式或低迭代次數）。"""
+    parts = hashed_password.split("$", 2)
+    if len(parts) == 3:
+        try:
+            return int(parts[0]) < PBKDF2_ITERATIONS
+        except ValueError:
+            return True  # 格式損毀，應重新雜湊
+    return True  # 舊格式，需升級
 
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> str:

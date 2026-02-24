@@ -13,8 +13,8 @@ from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
 from utils.auth import (
-    hash_password, verify_password, create_access_token, get_current_user,
-    decode_token_allow_expired, require_permission,
+    hash_password, verify_password, needs_rehash, create_access_token,
+    get_current_user, decode_token_allow_expired, require_permission,
 )
 from utils.permissions import Permission
 from utils.permissions import get_permissions_definition, get_role_default_permissions, ROLE_LABELS
@@ -157,6 +157,11 @@ def login(data: LoginRequest, request: Request):
 
         if not user or not verify_password(data.password, user.password_hash):
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+
+        # 透明升級：若密碼是舊格式（100,000 次迭代），趁登入時無感升級至 600,000 次
+        if needs_rehash(user.password_hash):
+            user.password_hash = hash_password(data.password)
+            logger.info("使用者 %s 密碼雜湊已自動升級至新迭代次數", user.username)
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
 
