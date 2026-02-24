@@ -13,6 +13,7 @@ from .attendance_parser import AttendanceResult
 logger = logging.getLogger(__name__)
 
 MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
+MAX_DAILY_WORK_HOURS = 12.0  # 時薪制每日工時上限（正常 8H + 最高加班 4H，防止打卡異常灌水）
 
 
 # 資料庫相關匯入（延遲匯入避免循環依賴）
@@ -1288,12 +1289,22 @@ class SalaryEngine:
             emp_dict['_late_details'] = late_details
             
             # Work hours for hourly employees (sum difference between punch in/out)
-            total_hours = 0
+            total_hours = 0.0
             if emp.employee_type == 'hourly':
+                _work_end_t = datetime.strptime(emp.work_end_time or "17:00", "%H:%M").time()
                 for a in attendances:
-                    if a.punch_in_time and a.punch_out_time:
-                         diff = (a.punch_out_time - a.punch_in_time).total_seconds() / 3600
-                         total_hours += diff
+                    if not a.punch_in_time:
+                        continue
+                    if a.punch_out_time:
+                        effective_out = a.punch_out_time
+                    else:
+                        # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
+                        effective_out = datetime.combine(a.punch_in_time.date(), _work_end_t)
+                        if effective_out <= a.punch_in_time:
+                            continue
+                    diff = (effective_out - a.punch_in_time).total_seconds() / 3600
+                    # 每日工時上限，防止打卡資料異常（手動修改）導致薪資灌水
+                    total_hours += min(diff, MAX_DAILY_WORK_HOURS)
                 emp_dict['work_hours'] = round(total_hours, 2)
 
             attendance_result = AttendanceResult(

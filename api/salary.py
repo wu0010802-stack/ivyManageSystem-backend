@@ -24,6 +24,8 @@ from models.database import (
 
 logger = logging.getLogger(__name__)
 
+MAX_DAILY_WORK_HOURS = 12.0  # 時薪制每日工時上限（正常 8H + 最高加班 4H，防止打卡異常灌水）
+
 router = APIRouter(prefix="/api", tags=["salary"])
 
 
@@ -403,11 +405,21 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                     Attendance.attendance_date >= _month_start,
                     Attendance.attendance_date <= _month_end,
                 ).all()
-                total_hours = sum(
-                    (a.punch_out_time - a.punch_in_time).total_seconds() / 3600
-                    for a in att_records
-                    if a.punch_in_time and a.punch_out_time
-                )
+                _work_end_t = datetime.strptime(emp.work_end_time or "17:00", "%H:%M").time()
+                total_hours = 0.0
+                for a in att_records:
+                    if not a.punch_in_time:
+                        continue
+                    if a.punch_out_time:
+                        effective_out = a.punch_out_time
+                    else:
+                        # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
+                        effective_out = datetime.combine(a.punch_in_time.date(), _work_end_t)
+                        if effective_out <= a.punch_in_time:
+                            continue
+                    diff = (effective_out - a.punch_in_time).total_seconds() / 3600
+                    # 每日工時上限，防止打卡資料異常（手動修改）導致薪資灌水
+                    total_hours += min(diff, MAX_DAILY_WORK_HOURS)
                 emp_dict['work_hours'] = round(total_hours, 2)
 
             classroom_context = _resolve_bonus_for_employee(
