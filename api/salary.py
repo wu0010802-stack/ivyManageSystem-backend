@@ -186,8 +186,32 @@ def _build_classroom_info(session, enrollment_map):
     return classroom_info_map, emp_role_map
 
 
+def _meeting_deduction_period_start(year: int, month: int):
+    """
+    返回發放月的會議缺席扣款起算日（與 SalaryEngine 同步，避免循環匯入）。
+    計算範圍 = 上次發放月（不含）至當發放月（含）之間所有非發放月。
+    非發放月返回 None。
+    """
+    if month == 2:
+        return date(year, 1, 1)
+    elif month == 6:
+        return date(year, 3, 1)
+    elif month == 9:
+        return date(year, 7, 1)
+    elif month == 12:
+        return date(year, 10, 1)
+    return None
+
+
 def _build_meeting_map(session, year, month):
-    """批次載入該月所有園務會議記錄，依 employee_id 分組。"""
+    """
+    批次載入該月所有園務會議記錄，依 employee_id 分組。
+    同時回傳發放月前幾個非發放月的缺席次數（用於補扣）。
+
+    Returns:
+        meeting_by_emp: {employee_id: [MeetingRecord, ...]}（當月，用於加班費）
+        prior_absent_by_emp: {employee_id: int}（前幾個非發放月缺席次數，發放月才有值）
+    """
     from models.database import MeetingRecord
     import calendar
     _, last_day = calendar.monthrange(year, month)
@@ -196,10 +220,23 @@ def _build_meeting_map(session, year, month):
     all_meetings = session.query(MeetingRecord).filter(
         MeetingRecord.meeting_date >= start, MeetingRecord.meeting_date <= end
     ).all()
-    meeting_by_emp = {}
+    meeting_by_emp: dict = {}
     for m in all_meetings:
         meeting_by_emp.setdefault(m.employee_id, []).append(m)
-    return meeting_by_emp
+
+    # 發放月：補查前幾個非發放月的缺席記錄，確保不漏扣
+    prior_absent_by_emp: dict = {}
+    period_start = _meeting_deduction_period_start(year, month)
+    if period_start is not None and period_start < start:
+        prior_records = session.query(MeetingRecord).filter(
+            MeetingRecord.meeting_date >= period_start,
+            MeetingRecord.meeting_date < start,
+        ).all()
+        for m in prior_records:
+            if not m.attended:
+                prior_absent_by_emp[m.employee_id] = prior_absent_by_emp.get(m.employee_id, 0) + 1
+
+    return meeting_by_emp, prior_absent_by_emp
 
 
 def _build_legacy_bonus_settings(request):
@@ -374,7 +411,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
 
         classroom_info_map, emp_role_map = _build_classroom_info(session, enrollment_map)
         total_school_enrollment = sum(info['current_enrollment'] for info in classroom_info_map.values())
-        meeting_by_emp = _build_meeting_map(session, request.year, request.month)
+        meeting_by_emp, prior_absent_by_emp = _build_meeting_map(session, request.year, request.month)
         global_bonus_settings = _build_legacy_bonus_settings(request)
 
         _, _last_day = _cal.monthrange(request.year, request.month)
@@ -433,11 +470,14 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                 total_school_enrollment, request.school_wide_overtime_target)
 
             meeting_records = meeting_by_emp.get(emp.id, [])
+            _absent_current = sum(1 for m in meeting_records if not m.attended)
+            _absent_period = _absent_current + prior_absent_by_emp.get(emp.id, 0)
             meeting_context = None
-            if meeting_records:
+            if meeting_records or _absent_period > 0:
                 meeting_context = {
                     'attended': sum(1 for m in meeting_records if m.attended),
-                    'absent': sum(1 for m in meeting_records if not m.attended),
+                    'absent': _absent_current,
+                    'absent_period': _absent_period,
                     'work_end_time': emp.work_end_time or '17:00',
                 }
 

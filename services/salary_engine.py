@@ -649,6 +649,29 @@ class SalaryEngine:
         """
         return month in (2, 6, 9, 12)
 
+    @staticmethod
+    def get_meeting_deduction_period_start(year: int, month: int) -> Optional[date]:
+        """
+        返回發放月的會議缺席扣款起算日。
+        計算範圍 = 上次發放月（不含，因其當月已計算）至當發放月（含）。
+
+        2月  → 1月1日  （上次發放為12月，1月為未扣款的非發放月）
+        6月  → 3月1日  （上次發放為2月，3–5月為未扣款的非發放月）
+        9月  → 7月1日  （上次發放為6月，7–8月為未扣款的非發放月）
+        12月 → 10月1日 （上次發放為9月，10–11月為未扣款的非發放月）
+
+        非發放月返回 None（不需要補查歷史記錄）。
+        """
+        if month == 2:
+            return date(year, 1, 1)
+        elif month == 6:
+            return date(year, 3, 1)
+        elif month == 9:
+            return date(year, 7, 1)
+        elif month == 12:
+            return date(year, 10, 1)
+        return None
+
     def get_overtime_target(self, grade_name: str, has_assistant: bool, is_shared_assistant: bool = False) -> int:
         """取得超額獎金目標人數"""
         if grade_name not in self._overtime_target:
@@ -1040,8 +1063,10 @@ class SalaryEngine:
             breakdown.meeting_absent = absent
             
             # 缺席扣節慶獎金（每次 $100）— 僅在節慶獎金發放月才計算
+            # absent_period 涵蓋本月及前幾個非發放月的缺席，確保不漏扣
             if self.get_bonus_distribution_month(month):
-                breakdown.meeting_absence_deduction = absent * self._meeting_absence_penalty
+                absent_for_deduction = meeting_context.get('absent_period', absent)
+                breakdown.meeting_absence_deduction = absent_for_deduction * self._meeting_absence_penalty
         
         # 將園務會議加班費加入應發總額
         breakdown.gross_salary += breakdown.meeting_overtime_pay
@@ -1419,6 +1444,8 @@ class SalaryEngine:
             overtime_work_pay_total = sum(o.overtime_pay or 0 for o in approved_overtimes)
 
             # 5e. 查詢園務會議記錄
+            # - 當月記錄：用於計算加班費（每月皆計）
+            # - 發放月額外補查前幾個非發放月：確保歷史缺席不漏扣
             from models.database import MeetingRecord, Holiday
             meeting_records = session.query(MeetingRecord).filter(
                 MeetingRecord.employee_id == emp.id,
@@ -1426,14 +1453,27 @@ class SalaryEngine:
                 MeetingRecord.meeting_date <= end_date
             ).all()
 
+            meeting_attended = sum(1 for m in meeting_records if m.attended)
+            meeting_absent_current = sum(1 for m in meeting_records if not m.attended)
+
+            # 累計缺席次數（預設等於當月；發放月會再加入前幾個非發放月）
+            absent_period = meeting_absent_current
+            period_start = self.get_meeting_deduction_period_start(year, month)
+            if period_start is not None and period_start < start_date:
+                prior_records = session.query(MeetingRecord).filter(
+                    MeetingRecord.employee_id == emp.id,
+                    MeetingRecord.meeting_date >= period_start,
+                    MeetingRecord.meeting_date < start_date,
+                ).all()
+                absent_period += sum(1 for m in prior_records if not m.attended)
+
             meeting_context = None
-            if meeting_records:
-                meeting_attended = sum(1 for m in meeting_records if m.attended)
-                meeting_absent = sum(1 for m in meeting_records if not m.attended)
+            if meeting_records or absent_period > 0:
                 meeting_context = {
                     'attended': meeting_attended,
-                    'absent': meeting_absent,
-                    'work_end_time': emp.work_end_time or '17:00'
+                    'absent': meeting_absent_current,
+                    'absent_period': absent_period,
+                    'work_end_time': emp.work_end_time or '17:00',
                 }
 
             # 5f. 曠職偵測：預期應上班日 vs 實際有打卡日 vs 核准請假日
