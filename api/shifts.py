@@ -187,37 +187,61 @@ def get_assignments(week_start: str, current_user: dict = Depends(require_permis
         session.close()
 
 
+def _apply_employee_assignment_action(session, existing, item, week_date: str) -> str:
+    """針對單一員工執行排班 upsert 或刪除。
+
+    僅影響該員工自身的記錄，不動其他員工的資料。
+
+    Returns: 'inserted' | 'updated' | 'deleted' | 'skipped'
+    """
+    if item.shift_type_id is None:
+        if existing:
+            session.delete(existing)
+            return "deleted"
+        return "skipped"
+
+    if existing:
+        existing.shift_type_id = item.shift_type_id
+        existing.notes = item.notes
+        return "updated"
+
+    session.add(ShiftAssignment(
+        employee_id=item.employee_id,
+        shift_type_id=item.shift_type_id,
+        week_start_date=week_date,
+        notes=item.notes,
+    ))
+    return "inserted"
+
+
 @router.post("/assignments", status_code=201)
 def save_assignments(data: BulkAssignmentRequest, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
-    """批次儲存某週排班（覆蓋該週所有排班）"""
+    """批次儲存某週排班（per-employee upsert，不影響清單外的員工）"""
     session = get_session()
     try:
         week_date = date.fromisoformat(data.week_start_date)
         # Align to Monday
         week_date = week_date - timedelta(days=week_date.weekday())
 
-        # Delete existing assignments for this week
-        session.query(ShiftAssignment).filter(
-            ShiftAssignment.week_start_date == week_date
-        ).delete()
-
-        # Insert new assignments (skip entries without shift_type_id)
-        count = 0
+        saved = deleted = 0
         for item in data.assignments:
-            if item.shift_type_id is None:
-                continue
-            assignment = ShiftAssignment(
-                employee_id=item.employee_id,
-                shift_type_id=item.shift_type_id,
-                week_start_date=week_date,
-                notes=item.notes,
+            existing = (
+                session.query(ShiftAssignment)
+                .filter(
+                    ShiftAssignment.employee_id == item.employee_id,
+                    ShiftAssignment.week_start_date == week_date,
+                )
+                .first()
             )
-            session.add(assignment)
-            count += 1
+            action = _apply_employee_assignment_action(session, existing, item, str(week_date))
+            if action in ("inserted", "updated"):
+                saved += 1
+            elif action == "deleted":
+                deleted += 1
 
         session.commit()
-        logger.info(f"Saved {count} shift assignments for week {week_date}")
-        return {"message": f"已儲存 {count} 筆排班", "week_start_date": str(week_date)}
+        logger.info(f"Saved {saved} / deleted {deleted} shift assignments for week {week_date}")
+        return {"message": f"已儲存 {saved} 筆、清除 {deleted} 筆排班", "week_start_date": str(week_date)}
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
