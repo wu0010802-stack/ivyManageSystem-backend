@@ -154,6 +154,8 @@ def _run_migrations(engine):
 
     # employees — 勞退自提比例
     _add_column_if_missing(engine, inspector, "employees", "pension_self_rate", "FLOAT DEFAULT 0")
+    # employees — 離職日期
+    _add_column_if_missing(engine, inspector, "employees", "resign_date", "DATE")
 
     # users — 強制修改密碼旗標
     _add_column_if_missing(engine, inspector, "users", "must_change_password", "BOOLEAN NOT NULL DEFAULT FALSE")
@@ -254,6 +256,7 @@ class Employee(Base):
     work_end_time = Column(String(5), default="17:00", comment="下班時間 HH:MM")
 
     is_active = Column(Boolean, default=True, comment="是否在職")
+    resign_date = Column(Date, nullable=True, comment="離職日期")
     is_office_staff = Column(Boolean, default=False, comment="是否為辦公室人員")
     dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
     hire_date = Column(Date, comment="到職日期")

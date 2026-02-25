@@ -3,7 +3,7 @@ Employee management router
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -283,6 +283,8 @@ async def delete_employee(employee_id: int, current_user: dict = Depends(require
             raise HTTPException(status_code=404, detail="找不到該員工")
 
         employee.is_active = False
+        if not employee.resign_date:
+            employee.resign_date = date.today()
         session.commit()
         return {"message": "員工已設為離職", "id": employee.id}
     except HTTPException:

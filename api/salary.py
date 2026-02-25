@@ -14,6 +14,7 @@ from utils.permissions import Permission
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
 import calendar as _cal
 
@@ -400,8 +401,6 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
             bonus_config_dict = request.bonus_config.dict() if hasattr(request.bonus_config, 'dict') else request.bonus_config
             engine.set_bonus_config(bonus_config_dict)
 
-        employees = session.query(Employee).filter(Employee.is_active == True).all()
-
         allowance_map = _build_allowance_map(session)
 
         enrollment_map = {}
@@ -417,6 +416,18 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
         _, _last_day = _cal.monthrange(request.year, request.month)
         _month_start = date(request.year, request.month, 1)
         _month_end = date(request.year, request.month, _last_day)
+
+        # 包含在職員工，以及當月才離職的員工（保留最後一個月薪資結算）
+        employees = session.query(Employee).filter(
+            or_(
+                Employee.is_active == True,
+                and_(
+                    Employee.is_active == False,
+                    Employee.resign_date >= _month_start,
+                    Employee.resign_date <= _month_end,
+                ),
+            )
+        ).all()
 
         results = []
         for emp in employees:
@@ -537,8 +548,20 @@ def calculate_salaries_alt(
         from services.salary_engine import SalaryEngine as Engine
         engine = Engine(load_from_db=True)
 
-        # 1. Fetch all active employees
-        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        # 1. 包含在職員工，以及當月才離職的員工（保留最後一個月薪資結算）
+        _, _alt_last = _cal.monthrange(year, month)
+        _alt_start = date(year, month, 1)
+        _alt_end = date(year, month, _alt_last)
+        employees = session.query(Employee).filter(
+            or_(
+                Employee.is_active == True,
+                and_(
+                    Employee.is_active == False,
+                    Employee.resign_date >= _alt_start,
+                    Employee.resign_date <= _alt_end,
+                ),
+            )
+        ).all()
 
         results = []
         for emp in employees:
@@ -562,6 +585,7 @@ def calculate_salaries_alt(
                     "early_leave_deduction": salary_record.early_leave_deduction,
                     "missing_punch_deduction": salary_record.missing_punch_deduction,
                     "leave_deduction": salary_record.leave_deduction,
+                    "absence_deduction": salary_record.absence_deduction or 0,
                     "attendance_deduction": (salary_record.late_deduction or 0) + (salary_record.early_leave_deduction or 0) + (salary_record.missing_punch_deduction or 0),
                     "meeting_overtime_pay": salary_record.meeting_overtime_pay or 0,
                     "meeting_absence_deduction": salary_record.meeting_absence_deduction or 0,
@@ -597,7 +621,20 @@ def get_festival_bonus(
         from services.salary_engine import SalaryEngine as Engine
         engine = Engine(load_from_db=True)
 
-        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        # 包含在職員工，以及當月才離職的員工（保留節慶獎金結算）
+        _, _fb_last = _cal.monthrange(year, month)
+        _fb_start = date(year, month, 1)
+        _fb_end = date(year, month, _fb_last)
+        employees = session.query(Employee).filter(
+            or_(
+                Employee.is_active == True,
+                and_(
+                    Employee.is_active == False,
+                    Employee.resign_date >= _fb_start,
+                    Employee.resign_date <= _fb_end,
+                ),
+            )
+        ).all()
         results = []
 
         for emp in employees:
@@ -668,6 +705,7 @@ def get_salary_records(
                 "late_deduction": record.late_deduction,
                 "early_leave_deduction": record.early_leave_deduction,
                 "missing_punch_deduction": record.missing_punch_deduction,
+                "absence_deduction": record.absence_deduction or 0,
                 "attendance_deduction": (record.late_deduction or 0) + (record.early_leave_deduction or 0) + (record.missing_punch_deduction or 0),
                 "leave_deduction": record.leave_deduction,
                 "other_deduction": record.other_deduction,
