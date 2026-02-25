@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from utils.auth import require_permission
 from utils.permissions import Permission
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from models.database import get_session, EmployeeAllowance, AllowanceType
 
@@ -21,13 +21,13 @@ router = APIRouter(prefix="/api", tags=["employee-allowances"])
 
 class EmployeeAllowanceCreate(BaseModel):
     allowance_type_id: int
-    amount: float
+    amount: float = Field(..., ge=0)
     effective_date: Optional[str] = None
     remark: Optional[str] = None
 
 
 class EmployeeAllowanceUpdate(BaseModel):
-    amount: Optional[float] = None
+    amount: Optional[float] = Field(None, ge=0)
     effective_date: Optional[str] = None
     remark: Optional[str] = None
 

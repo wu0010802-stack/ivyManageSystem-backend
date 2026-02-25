@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import joinedload
 
 from sqlalchemy import func
@@ -745,7 +745,7 @@ def get_leaves(
 # ── 配額 API ──────────────────────────────────────────────────
 
 class QuotaUpdate(BaseModel):
-    total_hours: float
+    total_hours: float = Field(..., ge=0)
     note: Optional[str] = None
 
 

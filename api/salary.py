@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.auth import require_permission
 from utils.permissions import Permission
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sqlalchemy.orm import joinedload
 import calendar as _cal
@@ -44,69 +44,69 @@ def init_salary_services(salary_engine, insurance_service):
 # ============ Pydantic Models ============
 
 class ClassBonusParam(BaseModel):
-    classroom_id: int
-    target_enrollment: int = 0
-    current_enrollment: int = 0
+    classroom_id: int = Field(..., ge=1)
+    target_enrollment: int = Field(0, ge=0)
+    current_enrollment: int = Field(0, ge=0)
 
 
 class BonusSettings(BaseModel):
-    year: int
-    month: int
-    target_enrollment: int = 160  # Default global target
-    current_enrollment: int = 133  # Default global current
-    festival_bonus_base: float = 0
-    overtime_bonus_per_student: float = 500
+    year: int = Field(..., ge=2000, le=2100)
+    month: int = Field(..., ge=1, le=12)
+    target_enrollment: int = Field(160, ge=0)
+    current_enrollment: int = Field(133, ge=0)
+    festival_bonus_base: float = Field(0, ge=0)
+    overtime_bonus_per_student: float = Field(500, ge=0)
     class_params: List[ClassBonusParam] = []
     position_bonus_base: Optional[Dict[str, float]] = None
 
 
 class BonusBaseConfig(BaseModel):
     """獎金基數設定"""
-    headTeacherAB: float = 2000
-    headTeacherC: float = 1500
-    assistantTeacherAB: float = 1200
-    assistantTeacherC: float = 1200
+    headTeacherAB: float = Field(2000, ge=0)
+    headTeacherC: float = Field(1500, ge=0)
+    assistantTeacherAB: float = Field(1200, ge=0)
+    assistantTeacherC: float = Field(1200, ge=0)
 
 
 class GradeTargetConfig(BaseModel):
     """單一年級目標人數設定"""
-    twoTeachers: int = 0
-    oneTeacher: int = 0
-    sharedAssistant: int = 0
+    twoTeachers: int = Field(0, ge=0)
+    oneTeacher: int = Field(0, ge=0)
+    sharedAssistant: int = Field(0, ge=0)
 
 
 class OfficeFestivalBonusBase(BaseModel):
     """司機/美編/行政節慶獎金基數"""
-    driver: float = 1000    # 司機
-    designer: float = 1000  # 美編
-    admin: float = 2000     # 行政
+    driver: float = Field(1000, ge=0)    # 司機
+    designer: float = Field(1000, ge=0)  # 美編
+    admin: float = Field(2000, ge=0)     # 行政
 
 
 class SupervisorFestivalBonusConfig(BaseModel):
     """主管節慶獎金基數設定"""
-    principal: float = 6500   # 園長
-    director: float = 3500    # 主任
-    leader: float = 2000      # 組長
+    principal: float = Field(6500, ge=0)   # 園長
+    director: float = Field(3500, ge=0)    # 主任
+    leader: float = Field(2000, ge=0)      # 組長
 
 
 class SupervisorDividendConfig(BaseModel):
     """主管紅利設定"""
-    principal: float = 5000   # 園長
-    director: float = 4000    # 主任
-    leader: float = 3000      # 組長
-    viceLeader: float = 1500  # 副組長
+    principal: float = Field(5000, ge=0)   # 園長
+    director: float = Field(4000, ge=0)    # 主任
+    leader: float = Field(3000, ge=0)      # 組長
+    viceLeader: float = Field(1500, ge=0)  # 副組長
 
 
 class OvertimePerPersonConfig(BaseModel):
     """超額獎金每人金額設定"""
-    headBig: float = 400
-    headMid: float = 400
-    headSmall: float = 400
-    headBaby: float = 450
-    assistantBig: float = 100
-    assistantMid: float = 100
-    assistantSmall: float = 100
-    assistantBaby: float = 150
+    headBig: float = Field(400, ge=0)
+    headMid: float = Field(400, ge=0)
+    headSmall: float = Field(400, ge=0)
+    headBaby: float = Field(450, ge=0)
+    assistantBig: float = Field(100, ge=0)
+    assistantMid: float = Field(100, ge=0)
+    assistantSmall: float = Field(100, ge=0)
+    assistantBaby: float = Field(150, ge=0)
 
 
 class BonusConfigSchema(BaseModel):
@@ -122,20 +122,20 @@ class BonusConfigSchema(BaseModel):
 
 class ClassEnrollment(BaseModel):
     """班級在籍人數"""
-    classroom_id: int
-    current_enrollment: int = 0
+    classroom_id: int = Field(..., ge=1)
+    current_enrollment: int = Field(0, ge=0)
 
 
 class CalculateSalaryRequest(BaseModel):
-    year: int
-    month: int
+    year: int = Field(..., ge=2000, le=2100)
+    month: int = Field(..., ge=1, le=12)
     bonus_settings: Optional[BonusSettings] = None
     # 新版設定
     bonus_config: Optional[BonusConfigSchema] = None
     class_enrollments: Optional[List[ClassEnrollment]] = None
-    overtime_bonus_per_student: float = 400
+    overtime_bonus_per_student: float = Field(400, ge=0)
     # 辦公室人員用全校超額目標
-    school_wide_overtime_target: int = 0
+    school_wide_overtime_target: int = Field(0, ge=0)
 
 
 # ============ Routes ============
@@ -804,8 +804,8 @@ def get_salary_history_all(
 # ============ 薪資封存管理 ============
 
 class FinalizeMonthRequest(BaseModel):
-    year: int
-    month: int
+    year: int = Field(..., ge=2000, le=2100)
+    month: int = Field(..., ge=1, le=12)
 
 
 @router.post("/salaries/finalize-month")

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
 from models.database import get_session, Employee, Classroom, ClassGrade, JobTitle
@@ -30,24 +30,24 @@ class EmployeeCreate(BaseModel):
     job_title_id: Optional[int] = None  # New FK
     position: Optional[str] = None
     classroom_id: Optional[int] = None
-    base_salary: float = 0
-    hourly_rate: float = 0
-    supervisor_allowance: float = 0
-    teacher_allowance: float = 0
-    meal_allowance: float = 0
-    transportation_allowance: float = 0
-    other_allowance: float = 0
+    base_salary: float = Field(0, ge=0)
+    hourly_rate: float = Field(0, ge=0)
+    supervisor_allowance: float = Field(0, ge=0)
+    teacher_allowance: float = Field(0, ge=0)
+    meal_allowance: float = Field(0, ge=0)
+    transportation_allowance: float = Field(0, ge=0)
+    other_allowance: float = Field(0, ge=0)
     bank_code: Optional[str] = None
     bank_account: Optional[str] = None
     bank_account_name: Optional[str] = None
-    insurance_salary_level: float = 0
-    pension_self_rate: float = 0
+    insurance_salary_level: float = Field(0, ge=0)
+    pension_self_rate: float = Field(0, ge=0, le=0.06)  # 勞退自提最高 6%
     work_start_time: str = "08:00"
     work_end_time: str = "17:00"
     hire_date: Optional[str] = None
     birthday: Optional[str] = None
     is_office_staff: bool = False
-    dependents: int = 0
+    dependents: int = Field(0, ge=0)
 
 
 class EmployeeUpdate(BaseModel):
@@ -59,24 +59,24 @@ class EmployeeUpdate(BaseModel):
     job_title_id: Optional[int] = None
     position: Optional[str] = None
     classroom_id: Optional[int] = None
-    base_salary: Optional[float] = None
-    hourly_rate: Optional[float] = None
-    supervisor_allowance: Optional[float] = None
-    teacher_allowance: Optional[float] = None
-    meal_allowance: Optional[float] = None
-    transportation_allowance: Optional[float] = None
-    other_allowance: Optional[float] = None
+    base_salary: Optional[float] = Field(None, ge=0)
+    hourly_rate: Optional[float] = Field(None, ge=0)
+    supervisor_allowance: Optional[float] = Field(None, ge=0)
+    teacher_allowance: Optional[float] = Field(None, ge=0)
+    meal_allowance: Optional[float] = Field(None, ge=0)
+    transportation_allowance: Optional[float] = Field(None, ge=0)
+    other_allowance: Optional[float] = Field(None, ge=0)
     bank_code: Optional[str] = None
     bank_account: Optional[str] = None
     bank_account_name: Optional[str] = None
-    insurance_salary_level: Optional[float] = None
-    pension_self_rate: Optional[float] = None
+    insurance_salary_level: Optional[float] = Field(None, ge=0)
+    pension_self_rate: Optional[float] = Field(None, ge=0, le=0.06)  # 勞退自提最高 6%
     work_start_time: Optional[str] = None
     work_end_time: Optional[str] = None
     hire_date: Optional[str] = None
     birthday: Optional[str] = None
     is_office_staff: Optional[bool] = None
-    dependents: Optional[int] = None
+    dependents: Optional[int] = Field(None, ge=0)
 
 
 # ============ Routes ============

@@ -9,7 +9,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException
 from utils.auth import require_permission
 from utils.permissions import Permission
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from models.database import (
     get_session, AttendancePolicy, BonusConfig as DBBonusConfig,
@@ -77,60 +77,60 @@ class AttendancePolicyUpdate(BaseModel):
     """考勤政策更新"""
     default_work_start: Optional[str] = None
     default_work_end: Optional[str] = None
-    grace_minutes: Optional[int] = None
-    late_threshold: Optional[int] = None
-    late_deduction: Optional[float] = None
-    early_leave_deduction: Optional[float] = None
-    missing_punch_deduction: Optional[float] = None
-    festival_bonus_months: Optional[int] = None
+    grace_minutes: Optional[int] = Field(None, ge=0)
+    late_threshold: Optional[int] = Field(None, ge=0)
+    late_deduction: Optional[float] = Field(None, ge=0)
+    early_leave_deduction: Optional[float] = Field(None, ge=0)
+    missing_punch_deduction: Optional[float] = Field(None, ge=0)
+    festival_bonus_months: Optional[int] = Field(None, ge=0)
 
 
 class BonusConfigUpdate(BaseModel):
     """獎金設定更新"""
-    config_year: Optional[int] = None
-    head_teacher_ab: Optional[float] = None
-    head_teacher_c: Optional[float] = None
-    assistant_teacher_ab: Optional[float] = None
-    assistant_teacher_c: Optional[float] = None
-    principal_festival: Optional[float] = None
-    director_festival: Optional[float] = None
-    leader_festival: Optional[float] = None
-    driver_festival: Optional[float] = None
-    designer_festival: Optional[float] = None
-    admin_festival: Optional[float] = None
-    principal_dividend: Optional[float] = None
-    director_dividend: Optional[float] = None
-    leader_dividend: Optional[float] = None
-    vice_leader_dividend: Optional[float] = None
-    overtime_head_normal: Optional[float] = None
-    overtime_head_baby: Optional[float] = None
-    overtime_assistant_normal: Optional[float] = None
-    overtime_assistant_baby: Optional[float] = None
-    school_wide_target: Optional[int] = None
+    config_year: Optional[int] = Field(None, ge=2000, le=2100)
+    head_teacher_ab: Optional[float] = Field(None, ge=0)
+    head_teacher_c: Optional[float] = Field(None, ge=0)
+    assistant_teacher_ab: Optional[float] = Field(None, ge=0)
+    assistant_teacher_c: Optional[float] = Field(None, ge=0)
+    principal_festival: Optional[float] = Field(None, ge=0)
+    director_festival: Optional[float] = Field(None, ge=0)
+    leader_festival: Optional[float] = Field(None, ge=0)
+    driver_festival: Optional[float] = Field(None, ge=0)
+    designer_festival: Optional[float] = Field(None, ge=0)
+    admin_festival: Optional[float] = Field(None, ge=0)
+    principal_dividend: Optional[float] = Field(None, ge=0)
+    director_dividend: Optional[float] = Field(None, ge=0)
+    leader_dividend: Optional[float] = Field(None, ge=0)
+    vice_leader_dividend: Optional[float] = Field(None, ge=0)
+    overtime_head_normal: Optional[float] = Field(None, ge=0)
+    overtime_head_baby: Optional[float] = Field(None, ge=0)
+    overtime_assistant_normal: Optional[float] = Field(None, ge=0)
+    overtime_assistant_baby: Optional[float] = Field(None, ge=0)
+    school_wide_target: Optional[int] = Field(None, ge=0)
 
 
 class GradeTargetUpdate(BaseModel):
     """年級目標人數更新"""
     grade_name: str
-    festival_two_teachers: Optional[int] = None
-    festival_one_teacher: Optional[int] = None
-    festival_shared: Optional[int] = None
-    overtime_two_teachers: Optional[int] = None
-    overtime_one_teacher: Optional[int] = None
-    overtime_shared: Optional[int] = None
+    festival_two_teachers: Optional[int] = Field(None, ge=0)
+    festival_one_teacher: Optional[int] = Field(None, ge=0)
+    festival_shared: Optional[int] = Field(None, ge=0)
+    overtime_two_teachers: Optional[int] = Field(None, ge=0)
+    overtime_one_teacher: Optional[int] = Field(None, ge=0)
+    overtime_shared: Optional[int] = Field(None, ge=0)
 
 
 class InsuranceRateUpdate(BaseModel):
     """勞健保費率更新"""
-    rate_year: Optional[int] = None
-    labor_rate: Optional[float] = None
-    labor_employee_ratio: Optional[float] = None
-    labor_employer_ratio: Optional[float] = None
-    health_rate: Optional[float] = None
-    health_employee_ratio: Optional[float] = None
-    health_employer_ratio: Optional[float] = None
-    pension_employer_rate: Optional[float] = None
-    average_dependents: Optional[float] = None
+    rate_year: Optional[int] = Field(None, ge=2000, le=2100)
+    labor_rate: Optional[float] = Field(None, ge=0, le=1)
+    labor_employee_ratio: Optional[float] = Field(None, ge=0, le=1)
+    labor_employer_ratio: Optional[float] = Field(None, ge=0, le=1)
+    health_rate: Optional[float] = Field(None, ge=0, le=1)
+    health_employee_ratio: Optional[float] = Field(None, ge=0, le=1)
+    health_employer_ratio: Optional[float] = Field(None, ge=0, le=1)
+    pension_employer_rate: Optional[float] = Field(None, ge=0, le=1)
+    average_dependents: Optional[float] = Field(None, ge=0)
 
 
 class JobTitleCreate(BaseModel):
