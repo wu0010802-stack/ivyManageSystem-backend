@@ -238,6 +238,17 @@ def get_attendance_sheet(
 
                 if effective_in and effective_out and effective_out > effective_in:
                     duration_min = (effective_out - effective_in).total_seconds() / 60
+                    
+                    # 扣除午休時間 (12:00 - 13:00)
+                    lunch_start = datetime.combine(d, datetime.strptime("12:00", "%H:%M").time())
+                    lunch_end = datetime.combine(d, datetime.strptime("13:00", "%H:%M").time())
+                    
+                    overlap_start = max(effective_in, lunch_start)
+                    overlap_end = min(effective_out, lunch_end)
+                    if overlap_end > overlap_start:
+                        lunch_overlap_min = (overlap_end - overlap_start).total_seconds() / 60
+                        duration_min -= lunch_overlap_min
+                        
                     row["work_hours"] = round(duration_min / 60, 1)
                     total_work_hours += row["work_hours"]
                     work_hour_days += 1
