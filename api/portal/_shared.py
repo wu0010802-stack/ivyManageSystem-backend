@@ -13,6 +13,7 @@ from models.database import (
     get_session, Employee, DailyShift, ShiftAssignment,
 )
 from utils.auth import get_current_user
+from api.overtimes import MAX_OVERTIME_HOURS
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,8 @@ class OvertimeCreatePortal(BaseModel):
     def validate_hours(cls, v):
         if v <= 0:
             raise ValueError("加班時數必須大於 0")
-        # 勞基法：平日最多延長 4H；假日正常班 8H + 延長最多 4H = 12H
-        if v > 12:
-            raise ValueError("單筆加班時數不得超過 12 小時")
+        if v > MAX_OVERTIME_HOURS:
+            raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS:.0f} 小時")
         return v
 
 
