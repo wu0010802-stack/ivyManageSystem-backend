@@ -5,7 +5,7 @@ Data export router - Excel downloads for employees, students, attendance, calend
 import io
 import logging
 import calendar as cal_module
-from datetime import date
+from datetime import date, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
@@ -18,7 +18,7 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 
 from models.database import (
     get_session, Employee, Student, Attendance, Classroom, SchoolEvent, JobTitle,
-    LeaveRecord, OvertimeRecord,
+    LeaveRecord, OvertimeRecord, Holiday,
 )
 
 logger = logging.getLogger(__name__)
@@ -235,13 +235,45 @@ def export_attendance(
         employees = session.query(Employee).filter(Employee.is_active == True).order_by(Employee.employee_id).all()
         emp_map = {e.id: e for e in employees}
 
+        # 1. 計算當月應出勤天數（排除週末與國定假日）
+        holiday_dates = {
+            h.date for h in session.query(Holiday).filter(
+                Holiday.date >= start,
+                Holiday.date <= end,
+                Holiday.is_active.is_(True),
+            ).all()
+        }
+        expected_workdays: set = set()
+        cur = start
+        while cur <= end:
+            if cur.weekday() < 5 and cur not in holiday_dates:
+                expected_workdays.add(cur)
+            cur += timedelta(days=1)
+
+        # 2. 已核准請假日期，用來區分「合法缺席」與「曠職」
+        approved_leaves = session.query(LeaveRecord).filter(
+            LeaveRecord.start_date <= end,
+            LeaveRecord.end_date >= start,
+            LeaveRecord.is_approved == True,
+        ).all()
+        leave_dates_by_emp: dict = {}
+        for lv in approved_leaves:
+            if lv.employee_id not in emp_map:
+                continue
+            d = max(lv.start_date, start)
+            lv_end = min(lv.end_date, end)
+            while d <= lv_end:
+                leave_dates_by_emp.setdefault(lv.employee_id, set()).add(d)
+                d += timedelta(days=1)
+
+        # 3. 從打卡記錄彙整統計，同時記錄每位員工的實際出勤日期集合
         records = session.query(Attendance).filter(
             Attendance.attendance_date >= start,
             Attendance.attendance_date <= end,
         ).all()
 
-        # Aggregate per employee
-        stats = {}
+        stats: dict = {}
+        att_dates_by_emp: dict = {}
         for att in records:
             if att.employee_id not in emp_map:
                 continue
@@ -250,8 +282,10 @@ def export_attendance(
                     "total": 0, "normal": 0, "late": 0, "early": 0,
                     "missing_in": 0, "missing_out": 0, "late_min": 0,
                 }
+                att_dates_by_emp[att.employee_id] = set()
             s = stats[att.employee_id]
             s["total"] += 1
+            att_dates_by_emp[att.employee_id].add(att.attendance_date)
             if not att.is_late and not att.is_early_leave and not att.is_missing_punch_in and not att.is_missing_punch_out:
                 s["normal"] += 1
             if att.is_late:
@@ -268,14 +302,15 @@ def export_attendance(
         ws = wb.active
         ws.title = f"{year}年{month}月出勤月報"
 
-        ws.merge_cells("A1:I1")
+        ws.merge_cells("A1:L1")
         ws["A1"] = f"{year}年{month}月 出勤月報"
         ws["A1"].font = TITLE_FONT
         ws["A1"].alignment = CENTER_ALIGN
 
         headers = [
-            "工號", "姓名", "出勤天數", "正常天數",
+            "工號", "姓名", "應出勤天數", "實際出勤天數", "正常天數",
             "遲到次數", "早退次數", "缺卡(上班)", "缺卡(下班)", "遲到總分鐘",
+            "請假天數", "曠職天數",
         ]
         _write_header_row(ws, 3, headers)
 
@@ -285,10 +320,18 @@ def export_attendance(
                 "total": 0, "normal": 0, "late": 0, "early": 0,
                 "missing_in": 0, "missing_out": 0, "late_min": 0,
             })
+            att_dates = att_dates_by_emp.get(emp.id, set())
+            leave_dates = leave_dates_by_emp.get(emp.id, set())
+            # 請假天數：已核准請假日 ∩ 應出勤日（排除本來就是假日的天）
+            leave_days = len(leave_dates & expected_workdays)
+            # 曠職天數：應出勤日 - 有打卡日 - 已核准請假日
+            absent_days = len(expected_workdays - att_dates - leave_dates)
             _write_data_row(ws, row_idx, [
                 emp.employee_id, emp.name,
+                len(expected_workdays),
                 s["total"], s["normal"], s["late"], s["early"],
                 s["missing_in"], s["missing_out"], s["late_min"],
+                leave_days, absent_days,
             ])
             row_idx += 1
 
