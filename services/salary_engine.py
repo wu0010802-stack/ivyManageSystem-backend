@@ -5,7 +5,7 @@
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import date, datetime
+from datetime import date, datetime, time
 from dateutil.relativedelta import relativedelta
 from .insurance_service import InsuranceService, InsuranceCalculation
 from .attendance_parser import AttendanceResult
@@ -1303,6 +1303,12 @@ class SalaryEngine:
                         if effective_out <= a.punch_in_time:
                             continue
                     diff = (effective_out - a.punch_in_time).total_seconds() / 3600
+                    # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
+                    _d = a.punch_in_time.date()
+                    _lunch_s = datetime.combine(_d, time(12, 0))
+                    _lunch_e = datetime.combine(_d, time(13, 0))
+                    _overlap = max(0.0, (min(effective_out, _lunch_e) - max(a.punch_in_time, _lunch_s)).total_seconds() / 3600)
+                    diff -= _overlap
                     # 每日工時上限，防止打卡資料異常（手動修改）導致薪資灌水
                     total_hours += min(diff, MAX_DAILY_WORK_HOURS)
                 emp_dict['work_hours'] = round(total_hours, 2)
