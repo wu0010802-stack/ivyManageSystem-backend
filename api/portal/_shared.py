@@ -68,6 +68,15 @@ class LeaveCreatePortal(BaseModel):
     def validate_date_order(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("結束日期不得早於開始日期")
+        if self.start_date and self.end_date and (
+            self.start_date.year != self.end_date.year
+            or self.start_date.month != self.end_date.month
+        ):
+            raise ValueError(
+                "請假區間不可跨月，若需跨越月底請拆成兩張假單分別申請"
+                f"（本次 {self.start_date.year}/{self.start_date.month:02d} 月 →"
+                f" {self.end_date.year}/{self.end_date.month:02d} 月）"
+            )
         return self
 
 

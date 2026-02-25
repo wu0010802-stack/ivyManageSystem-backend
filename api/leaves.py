@@ -133,6 +133,15 @@ class LeaveCreate(BaseModel):
     def validate_date_order(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("結束日期不得早於開始日期")
+        if self.start_date and self.end_date and (
+            self.start_date.year != self.end_date.year
+            or self.start_date.month != self.end_date.month
+        ):
+            raise ValueError(
+                "請假區間不可跨月，若需跨越月底請拆成兩張假單分別申請"
+                f"（本次 {self.start_date.year}/{self.start_date.month:02d} 月 →"
+                f" {self.end_date.year}/{self.end_date.month:02d} 月）"
+            )
         return self
 
 
@@ -168,6 +177,13 @@ class LeaveUpdate(BaseModel):
     def validate_date_order(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("結束日期不得早於開始日期")
+        if self.start_date and self.end_date and (
+            self.start_date.year != self.end_date.year
+            or self.start_date.month != self.end_date.month
+        ):
+            raise ValueError(
+                "請假區間不可跨月，若需跨越月底請拆成兩張假單分別申請"
+            )
         return self
 
 
@@ -942,6 +958,18 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
         # 以更新後的日期 / 時間做重疊偵測（未傳入的欄位沿用原值）
         new_start = data.start_date or leave.start_date
         new_end = data.end_date or leave.end_date
+
+        # 跨月檢查：更新後的區間也不允許跨月
+        if new_start.year != new_end.year or new_start.month != new_end.month:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "請假區間不可跨月，若需跨越月底請拆成兩張假單分別申請"
+                    f"（更新後 {new_start.year}/{new_start.month:02d} 月 →"
+                    f" {new_end.year}/{new_end.month:02d} 月）"
+                ),
+            )
+
         new_start_time = data.start_time if data.start_time is not None else leave.start_time
         new_end_time = data.end_time if data.end_time is not None else leave.end_time
         overlap = _check_overlap(
