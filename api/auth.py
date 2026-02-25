@@ -23,23 +23,61 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# ---------- Login Rate Limiter ----------
-# 每個 IP / 帳號 在 WINDOW 秒內最多 MAX_ATTEMPTS 次嘗試
-_LOGIN_WINDOW = 300  # 5 分鐘
-_LOGIN_MAX_ATTEMPTS = 10
-_login_attempts: dict[str, list[float]] = defaultdict(list)
+# ---------- Login Rate Limiter（雙層防護）----------
+#
+# 層級一：IP 滑動視窗
+#   同一 IP 在 _IP_WINDOW 秒內最多 _IP_MAX_ATTEMPTS 次登入嘗試（不分成敗）
+#   防止：大量帳號爆破（Credential Stuffing）、分散式暴力破解
+#
+# 層級二：帳號失敗鎖定
+#   同一帳號連續失敗 _FAIL_THRESHOLD 次，鎖定 _FAIL_LOCKOUT 秒
+#   登入成功後自動解除（reset 失敗計數）
+#   防止：針對特定帳號的定向暴力破解
+
+_IP_WINDOW = 300        # IP 滑動視窗長度：5 分鐘
+_IP_MAX_ATTEMPTS = 20   # 同 IP 視窗內最多嘗試次數
+_FAIL_THRESHOLD = 5     # 帳號連續失敗次數上限
+_FAIL_LOCKOUT = 900     # 帳號鎖定時間：15 分鐘
+
+_ip_attempts: dict[str, list[float]] = defaultdict(list)
+_account_failures: dict[str, list[float]] = defaultdict(list)
 
 
-def _check_rate_limit(key: str):
-    """檢查登入頻率，超出則拋 429"""
+def _check_ip_rate_limit(ip: str) -> None:
+    """IP 層級滑動視窗限流：超出則拋 429。"""
     now = time.time()
-    attempts = _login_attempts[key]
-    # 清除過期紀錄
-    _login_attempts[key] = [t for t in attempts if now - t < _LOGIN_WINDOW]
-    if len(_login_attempts[key]) >= _LOGIN_MAX_ATTEMPTS:
-        logger.warning(f"登入頻率超限: {key}")
+    _ip_attempts[ip] = [t for t in _ip_attempts[ip] if now - t < _IP_WINDOW]
+    if len(_ip_attempts[ip]) >= _IP_MAX_ATTEMPTS:
+        logger.warning("IP 登入頻率超限: %s", ip)
         raise HTTPException(status_code=429, detail="登入嘗試次數過多，請稍後再試")
-    _login_attempts[key].append(now)
+    _ip_attempts[ip].append(now)
+
+
+def _check_account_lockout(username: str) -> None:
+    """帳號層級失敗鎖定：連續失敗 _FAIL_THRESHOLD 次後拋 429，含剩餘解鎖時間。"""
+    now = time.time()
+    _account_failures[username] = [
+        t for t in _account_failures[username] if now - t < _FAIL_LOCKOUT
+    ]
+    if len(_account_failures[username]) >= _FAIL_THRESHOLD:
+        earliest = _account_failures[username][0]
+        remaining_sec = int(_FAIL_LOCKOUT - (now - earliest))
+        remaining_min = max(1, (remaining_sec + 59) // 60)
+        logger.warning("帳號已鎖定: %s（剩餘 %d 分鐘）", username, remaining_min)
+        raise HTTPException(
+            status_code=429,
+            detail=f"密碼錯誤次數過多，帳號已暫時鎖定，請 {remaining_min} 分鐘後再試",
+        )
+
+
+def _record_login_failure(username: str) -> None:
+    """記錄帳號登入失敗一次。"""
+    _account_failures[username].append(time.time())
+
+
+def _clear_login_failures(username: str) -> None:
+    """登入成功後清除帳號的失敗記錄。"""
+    _account_failures[username] = []
 
 
 # ============ Pydantic Models ============
@@ -145,8 +183,10 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
 def login(data: LoginRequest, request: Request):
     """教師/管理員登入"""
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(f"ip:{client_ip}")
-    _check_rate_limit(f"user:{data.username}")
+    # 層級一：IP 滑動視窗（不分成敗，防 Credential Stuffing）
+    _check_ip_rate_limit(client_ip)
+    # 層級二：帳號失敗鎖定（只在密碼錯誤時遞增，防定向暴力破解）
+    _check_account_lockout(data.username)
 
     session = get_session()
     try:
@@ -156,7 +196,11 @@ def login(data: LoginRequest, request: Request):
         ).first()
 
         if not user or not verify_password(data.password, user.password_hash):
+            _record_login_failure(data.username)  # 記錄失敗，累積後觸發鎖定
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+
+        # 登入成功：清除帳號失敗記錄
+        _clear_login_failures(data.username)
 
         # 透明升級：若密碼是舊格式（100,000 次迭代），趁登入時無感升級至 600,000 次
         if needs_rehash(user.password_hash):

@@ -11,6 +11,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query
 from utils.auth import require_permission
 from utils.permissions import Permission
+from utils.rate_limit import SlidingWindowLimiter
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -23,6 +24,14 @@ from models.database import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/exports", tags=["exports"])
+
+# 匯出端點限流：同一 IP 每分鐘最多 5 次（匯出屬於重資源操作，防 DoS 消耗）
+_export_rate_limit = SlidingWindowLimiter(
+    max_calls=5,
+    window_seconds=60,
+    name="export",
+    error_detail="匯出過於頻繁，請稍後再試",
+).as_dependency()
 
 # ============ Shared Styles ============
 
@@ -113,7 +122,10 @@ def _id_name_map(session, model):
 # ============ Employees ============
 
 @router.get("/employees")
-def export_employees(current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
+def export_employees(
+    _rl=Depends(_export_rate_limit),
+    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
+):
     """匯出員工名冊 Excel"""
     session = get_session()
     try:
@@ -159,7 +171,10 @@ def export_employees(current_user: dict = Depends(require_permission(Permission.
 # ============ Students ============
 
 @router.get("/students")
-def export_students(current_user: dict = Depends(require_permission(Permission.STUDENTS_READ))):
+def export_students(
+    _rl=Depends(_export_rate_limit),
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+):
     """匯出學生名冊 Excel"""
     session = get_session()
     try:
@@ -205,6 +220,7 @@ def export_students(current_user: dict = Depends(require_permission(Permission.S
 
 @router.get("/attendance")
 def export_attendance(
+    _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
     year: int = Query(...),
     month: int = Query(...),
@@ -294,6 +310,7 @@ EVENT_TYPE_LABELS = {
 
 @router.get("/calendar")
 def export_calendar(
+    _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_permission(Permission.CALENDAR)),
     year: int = Query(...),
     month: int = Query(...),
@@ -381,6 +398,7 @@ def _approval_label(is_approved):
 
 @router.get("/leaves")
 def export_leaves(
+    _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
     year: int = Query(...),
     month: int = Query(...),
@@ -441,6 +459,7 @@ OVERTIME_TYPE_LABELS = {
 
 @router.get("/overtimes")
 def export_overtimes(
+    _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_permission(Permission.OVERTIME_READ)),
     year: int = Query(...),
     month: int = Query(...),
