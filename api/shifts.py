@@ -124,6 +124,20 @@ def update_shift_type(type_id: int, data: ShiftTypeUpdate, current_user: dict = 
         session.close()
 
 
+def _shift_type_in_use_message(assignment_count: int, daily_count: int, swap_count: int) -> "str | None":
+    """匯總三張子表的引用計數，回傳人可讀錯誤訊息；若可安全刪除則回傳 None。"""
+    parts = []
+    if assignment_count > 0:
+        parts.append(f"每週排班 {assignment_count} 筆")
+    if daily_count > 0:
+        parts.append(f"每日調班 {daily_count} 筆")
+    if swap_count > 0:
+        parts.append(f"換班申請 {swap_count} 筆")
+    if parts:
+        return f"此班別已被使用（{'、'.join(parts)}），無法刪除"
+    return None
+
+
 @router.delete("/types/{type_id}")
 def delete_shift_type(type_id: int, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
     session = get_session()
@@ -131,10 +145,22 @@ def delete_shift_type(type_id: int, current_user: dict = Depends(require_permiss
         st = session.query(ShiftType).get(type_id)
         if not st:
             raise HTTPException(status_code=404, detail="班別不存在")
-        # Check if any assignments reference this type
-        count = session.query(ShiftAssignment).filter(ShiftAssignment.shift_type_id == type_id).count()
-        if count > 0:
-            raise HTTPException(status_code=400, detail=f"此班別已被 {count} 筆排班使用，無法刪除")
+
+        assignment_count = session.query(ShiftAssignment).filter(ShiftAssignment.shift_type_id == type_id).count()
+        daily_count = session.query(DailyShift).filter(DailyShift.shift_type_id == type_id).count()
+        swap_count = (
+            session.query(ShiftSwapRequest)
+            .filter(
+                (ShiftSwapRequest.requester_shift_type_id == type_id)
+                | (ShiftSwapRequest.target_shift_type_id == type_id)
+            )
+            .count()
+        )
+
+        error_msg = _shift_type_in_use_message(assignment_count, daily_count, swap_count)
+        if error_msg:
+            raise HTTPException(status_code=400, detail=error_msg)
+
         session.delete(st)
         session.commit()
         logger.info(f"Deleted shift type: {st.name}")
