@@ -44,6 +44,19 @@ class MeetingBatchCreate(BaseModel):
     remark: Optional[str] = None
 
 
+# ============ Business Rules ============
+
+def _enforce_absent_no_overtime(record) -> None:
+    """業務規則：缺席者不得有加班費，強制歸零。
+
+    呼叫時機：每次 create / update 後，只要 record.attended 為 False，
+    即清空 overtime_hours 與 overtime_pay，防止「幽靈加班費」產生。
+    """
+    if not record.attended:
+        record.overtime_hours = 0
+        record.overtime_pay = 0
+
+
 # ============ Routes ============
 
 @router.get("/meetings")
@@ -118,6 +131,8 @@ def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(requi
             overtime_pay=data.overtime_pay,
             remark=data.remark
         )
+        # 業務規則：缺席者不得有加班費
+        _enforce_absent_no_overtime(record)
         session.add(record)
         session.commit()
 
@@ -214,6 +229,9 @@ def update_meeting(record_id: int, data: MeetingRecordUpdate, current_user: dict
             record.overtime_pay = data.overtime_pay
         if data.remark is not None:
             record.remark = data.remark
+
+        # 業務規則：缺席者不得有加班費（無論客戶端是否傳入 overtime_pay）
+        _enforce_absent_no_overtime(record)
 
         session.commit()
         return {"message": "更新成功"}

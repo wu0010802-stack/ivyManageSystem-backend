@@ -12,10 +12,12 @@ from utils.auth import (
 class TestHashPassword:
 
     def test_format(self):
-        """雜湊結果包含 salt$hash 格式"""
+        """雜湊結果為 {iterations}${salt}${hash} 三段格式"""
         hashed = hash_password("test123")
-        assert "$" in hashed
-        salt, h = hashed.split("$", 1)
+        parts = hashed.split("$")
+        assert len(parts) == 3, "格式應為 iterations$salt$hash"
+        iterations, salt, h = parts
+        assert iterations.isdigit(), "第一段應為迭代次數"
         assert len(salt) == 32  # 16 bytes hex
         assert len(h) > 0
 

@@ -4,7 +4,7 @@ Overtime management router
 
 import logging
 import calendar as cal_module
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -50,6 +50,34 @@ MAX_OVERTIME_HOURS = 12.0
 
 
 # ============ Helper Functions ============
+
+def _to_time(val) -> dt_time:
+    """str / datetime.time / datetime.datetime 統一正規化為 datetime.time。
+
+    DB 欄位依設定不同可能回傳 datetime.time（Time 欄位）或 datetime.datetime（DateTime 欄位）；
+    外部輸入則為 'HH:MM' 字串。直接混型比較（str < time、datetime < time 等）會
+    觸發 TypeError，本函式確保任何輸入都能安全轉換為可比較的 datetime.time。
+    """
+    if isinstance(val, str):
+        h, m = map(int, val.strip().split(':'))
+        return dt_time(h, m)
+    if isinstance(val, datetime):   # datetime 是 date 的子類別，必須在 date 之前檢查
+        return val.time()
+    if isinstance(val, dt_time):
+        return val
+    raise TypeError(f"無法將 {type(val).__name__!r} 轉為 datetime.time")
+
+
+def _times_overlap(start1, end1, start2, end2) -> bool:
+    """判斷兩個時間區間是否重疊（開放端點：端點相接不視為重疊）。
+
+    接受 str ('HH:MM')、datetime.time 或 datetime.datetime，
+    透過 _to_time() 統一轉換後再比較，不受傳入型別影響。
+
+    公式：start1 < end2 AND start2 < end1
+    """
+    return _to_time(start1) < _to_time(end2) and _to_time(start2) < _to_time(end1)
+
 
 def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str) -> float:
     """依勞基法計算加班費（時薪 = 月薪 ÷ 30 ÷ 8）"""
@@ -103,7 +131,7 @@ def _check_overtime_overlap(
             or record.end_time is None
         ):
             return record  # 缺乏時間資訊，同日即視為重疊
-        if start_time < record.end_time and record.start_time < end_time:
+        if _times_overlap(start_time, end_time, record.start_time, record.end_time):
             return record  # 時間區間重疊
 
     return None

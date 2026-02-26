@@ -541,12 +541,15 @@ class SalaryEngine:
         grade = self.get_position_grade(position)
         if role not in self._bonus_base:
             return 0
-            
+
         # 如果沒有對應的職位等級，預設使用 C 級
         if not grade:
             grade = 'C'
-            
-        return self._bonus_base[role].get(grade, 0)
+
+        # 使用 `or 0` 防禦 DB 欄位為 NULL 的情況：
+        # dict.get(grade, 0) 在 key 存在但值為 None 時仍回傳 None（非預設 0），
+        # None * ratio 會拋 TypeError，導致整批薪資中斷。
+        return self._bonus_base[role].get(grade, 0) or 0
 
     def get_target_enrollment(self, grade_name: str, has_assistant: bool, is_shared_assistant: bool = False) -> int:
         """
@@ -637,6 +640,49 @@ class SalaryEngine:
         eligible_date = hire_date + relativedelta(months=3)
 
         return reference_date >= eligible_date
+
+    @staticmethod
+    def _prorate_base_salary(contracted_base: float, hire_date_raw, year: int, month: int) -> float:
+        """
+        月中入職者：按「在職天數 ÷ 當月天數」比例折算本月應領底薪。
+
+        規則：
+        - 入職日為計算月份的 2 日（含）以後 → 按自然日比例折算
+        - 入職日為 1 日或更早（上月/更早入職） → 全額，不折算
+        - 入職日為非計算月份 → 全額，不折算
+
+        ⚠️  注意：本方法「僅」影響 breakdown.base_salary（當月應領底薪顯示）。
+            加班費時薪計算基準應以「完整契約月薪（emp.base_salary）÷ 30 ÷ 8」計算，
+            絕不使用本方法回傳的折算後金額，否則會造成「雙重縮水」違反勞基法：
+              錯誤：折算後底薪（15,000）/ 30 / 8 = 62.5 NTD/hr
+              正確：契約月薪（30,000）  / 30 / 8 = 125.0 NTD/hr
+        """
+        import calendar as _cal
+        if not contracted_base:
+            return 0.0
+        if not hire_date_raw:
+            return contracted_base
+
+        # 型別正規化：str / datetime / date → date
+        if isinstance(hire_date_raw, str):
+            try:
+                hire_d = datetime.strptime(hire_date_raw, '%Y-%m-%d').date()
+            except ValueError:
+                return contracted_base
+        elif isinstance(hire_date_raw, datetime):
+            hire_d = hire_date_raw.date()
+        elif isinstance(hire_date_raw, date):
+            hire_d = hire_date_raw
+        else:
+            return contracted_base
+
+        # 僅當入職年月與計算月份相同且非月初（day > 1）才折算
+        if hire_d.year != year or hire_d.month != month or hire_d.day <= 1:
+            return contracted_base
+
+        _, month_days = _cal.monthrange(year, month)
+        worked_days = month_days - hire_d.day + 1   # 入職日當天計入
+        return round(contracted_base * worked_days / month_days)
 
     @staticmethod
     def get_bonus_distribution_month(month: int) -> bool:
@@ -872,7 +918,14 @@ class SalaryEngine:
             breakdown.gross_salary = breakdown.hourly_total
         else:
             # 正職員工
-            breakdown.base_salary = employee.get('base_salary', 0)
+            # contracted_base = 契約月薪（完整月薪，勞基法加班費/考勤扣款計算基準）
+            # breakdown.base_salary = 本月應領底薪（月中入職者按在職天數折算）
+            # ⚠️  兩者在月中入職時會不同，後續加班費時薪計算必須使用 contracted_base，
+            #     否則造成「雙重縮水」：底薪已縮水 + 加班時薪也縮水，違反勞基法
+            contracted_base = employee.get('base_salary', 0) or 0
+            breakdown.base_salary = self._prorate_base_salary(
+                contracted_base, employee.get('hire_date'), year, month
+            )
 
             # 處理津貼 (從 normalized 列表)
             if allowances:
@@ -1017,9 +1070,10 @@ class SalaryEngine:
             )
 
             # 勞健保計算（勞退自提依員工設定）
+            # 投保薪資以契約月薪（contracted_base）為基準，不受月中入職折算影響
             pension_rate = employee.get("pension_self_rate", 0.0)
             insurance = self.insurance_service.calculate(
-                employee.get('insurance_salary', breakdown.base_salary),
+                employee.get('insurance_salary') or contracted_base,
                 employee.get('dependents', 0),
                 pension_self_rate=pension_rate
             )
@@ -1504,10 +1558,14 @@ class SalaryEngine:
                 daily_shift_map = {ds.date: ds.shift_type_id for ds in daily_shifts_in_month}
 
                 expected_workdays: set = set()
+                today_date = date.today()
                 for day_num, weekday in _cal.Calendar().itermonthdays2(year, month):
                     if day_num == 0:
                         continue
                     d = date(year, month, day_num)
+                    # 不得將未來的日子算作曠職
+                    if d > today_date:
+                        continue
                     if d in holiday_set:
                         continue
                     if d in daily_shift_map:
