@@ -20,7 +20,7 @@ from sqlalchemy import func
 from models.database import (
     get_session, Employee, LeaveRecord, LeaveQuota,
     ShiftAssignment, ShiftType, DailyShift, Holiday,
-    AttendancePolicy,
+    AttendancePolicy, SalaryRecord,
 )
 from utils.auth import require_permission
 from utils.permissions import Permission
@@ -48,6 +48,36 @@ def _safe_attach_path(leave_id: int, filename: str) -> Path:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _check_salary_months_not_finalized(session, employee_id: int, months: set) -> None:
+    """commit 前的封存保護守衛。
+
+    若 months 中任何一個月份的薪資記錄已封存（is_finalized=True），
+    拋出 409 阻止整個操作，避免 DB 進入「假單改了、薪資沒改」的矛盾狀態。
+
+    Args:
+        session:     SQLAlchemy session
+        employee_id: 員工 ID
+        months:      待檢查的 {(year, month), ...}，空集合直接返回
+    """
+    for yr, mo in months:
+        record = session.query(SalaryRecord).filter(
+            SalaryRecord.employee_id == employee_id,
+            SalaryRecord.salary_year == yr,
+            SalaryRecord.salary_month == mo,
+            SalaryRecord.is_finalized == True,
+        ).first()
+        if record:
+            by = record.finalized_by or "系統"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{yr} 年 {mo} 月薪資已封存（結算人：{by}），"
+                    "無法修改該月份的假單。請先至薪資管理頁面解除封存後再操作。"
+                ),
+            )
+
 
 router = APIRouter(prefix="/api", tags=["leaves"])
 
@@ -954,6 +984,8 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
 
         # 記錄修改前的核准狀態（供後續稽核退審判斷）
         was_approved = leave.is_approved == True
+        # 在 setattr 套用新日期前，捕捉原始月份（日期修改後此值會被覆蓋）
+        orig_month = (leave.start_date.year, leave.start_date.month)
 
         # 以更新後的日期 / 時間做重疊偵測（未傳入的欄位沿用原值）
         new_start = data.start_date or leave.start_date
@@ -993,6 +1025,16 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
             session, leave.employee_id, new_type,
             new_start.year, new_hours, exclude_id=leave_id
         )
+
+        # ── 封存月薪保護（must be BEFORE commit）────────────────────────────────
+        # 修改已核准假單會觸發薪資重算；若該月薪資已封存，必須在 commit 前阻擋，
+        # 否則假單改了、薪資沒改，DB 永遠處於矛盾狀態。
+        # 同時檢查「原始月份」與「更新後月份」（日期可能被修改到不同月）。
+        if was_approved:
+            _check_salary_months_not_finalized(
+                session, leave.employee_id,
+                {orig_month, (new_start.year, new_start.month)},
+            )
 
         update_data = data.dict(exclude_unset=True)
         for key, value in update_data.items():
@@ -1059,9 +1101,33 @@ def delete_leave(leave_id: int, current_user: dict = Depends(require_permission(
         leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
         if not leave:
             raise HTTPException(status_code=404, detail="請假記錄不存在")
+
+        # ── 封存保護：已核准假單在封存月份不得刪除 ──────────────────────────
+        was_approved = leave.is_approved is True
+        leave_month = (leave.start_date.year, leave.start_date.month)
+        emp_id = leave.employee_id
+        if was_approved:
+            _check_salary_months_not_finalized(session, emp_id, {leave_month})
+
         session.delete(leave)
         session.commit()
-        return {"message": "請假記錄已刪除"}
+
+        result = {"message": "請假記錄已刪除"}
+        # 刪除已核准假單後補算薪資，撤銷原扣款
+        if was_approved and _salary_engine is not None:
+            try:
+                _salary_engine.process_salary_calculation(emp_id, *leave_month)
+                result["salary_recalculated"] = True
+            except Exception as e:
+                result["salary_warning"] = "假單已刪除，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                logger.error("刪除假單後薪資重算失敗：%s", e)
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
 
@@ -1113,6 +1179,14 @@ def approve_leave(
                 session, leave.employee_id, leave.leave_type,
                 leave.start_date.year, leave.leave_hours,
                 include_pending=False,
+            )
+
+            # ── 封存月薪保護（commit 前）────────────────────────────────────────
+            # 核准假單會觸發薪資重算；若該月薪資已封存，必須在 commit 前阻擋，
+            # 否則假單被核准、薪資沒更新，DB 永遠處於矛盾狀態。
+            _check_salary_months_not_finalized(
+                session, leave.employee_id,
+                {(leave.start_date.year, leave.start_date.month)},
             )
 
         leave.is_approved = data.approved
