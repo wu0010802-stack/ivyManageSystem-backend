@@ -140,6 +140,10 @@ class LeaveCreate(BaseModel):
     end_time: Optional[str] = None
     leave_hours: float = 8
     reason: Optional[str] = None
+    deduction_ratio: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="扣薪比例覆蓋（不提供則依假別預設值，0.0=全薪，1.0=全扣）"
+    )
 
     @field_validator("leave_type")
     @classmethod
@@ -183,6 +187,10 @@ class LeaveUpdate(BaseModel):
     end_time: Optional[str] = None
     leave_hours: Optional[float] = None
     reason: Optional[str] = None
+    deduction_ratio: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description="扣薪比例覆蓋（不提供則依假別預設值，0.0=全薪，1.0=全扣）"
+    )
 
     @field_validator("leave_type")
     @classmethod
@@ -949,6 +957,10 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
             data.start_date.year, data.leave_hours
         )
 
+        # 優先使用 API 傳入的覆蓋值；未提供則依假別預設規則
+        effective_ratio = data.deduction_ratio \
+            if data.deduction_ratio is not None \
+            else LEAVE_DEDUCTION_RULES[data.leave_type]
         leave = LeaveRecord(
             employee_id=data.employee_id,
             leave_type=data.leave_type,
@@ -957,8 +969,8 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
             start_time=data.start_time,
             end_time=data.end_time,
             leave_hours=data.leave_hours,
-            is_deductible=LEAVE_DEDUCTION_RULES[data.leave_type] > 0,
-            deduction_ratio=LEAVE_DEDUCTION_RULES[data.leave_type],
+            is_deductible=effective_ratio > 0,
+            deduction_ratio=effective_ratio,
             reason=data.reason,
         )
         session.add(leave)
@@ -1040,9 +1052,13 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
         for key, value in update_data.items():
             if value is not None:
                 setattr(leave, key, value)
+        # 假別更換時重設 deduction_ratio，但若本次同時明確傳入 deduction_ratio 則以傳入值為準
         if data.leave_type and data.leave_type in LEAVE_DEDUCTION_RULES:
-            leave.is_deductible = LEAVE_DEDUCTION_RULES[data.leave_type] > 0
-            leave.deduction_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
+            if data.deduction_ratio is None:
+                # 假別改變，未明確指定比例 → 使用新假別的預設規則
+                leave.deduction_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
+            # 若有明確 deduction_ratio 傳入，已在上方 setattr 迴圈中套用
+            leave.is_deductible = leave.deduction_ratio > 0
 
         # ── 稽核退審：已核准的記錄被修改，自動退回待審核 ──────────────────────
         # 防止管理員靜默竄改已核准假單時數/日期，導致薪資扣款異常（財務防呆）
