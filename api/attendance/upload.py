@@ -220,6 +220,9 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                              shift_start_dt = datetime.combine(attendance_date, shift_start)
                              shift_end_dt = datetime.combine(attendance_date, shift_end)
+                             # 跨夜班：排班結束在隔日（如 shift_end=02:00 < shift_start=18:00）
+                             if shift_end_dt <= shift_start_dt:
+                                 shift_end_dt += timedelta(days=1)
 
                              is_late = punch_in_time > shift_start_dt
                              late_minutes = max(0, int((punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0

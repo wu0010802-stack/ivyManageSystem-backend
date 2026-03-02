@@ -5,7 +5,7 @@ Salary calculation and management router
 import io
 import logging
 from collections import defaultdict
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -463,8 +463,14 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                     else:
                         # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
                         effective_out = datetime.combine(a.punch_in_time.date(), _work_end_t)
+                        # 跨夜班修正：排班下班時間在隔日（如 work_end=02:00 < punch_in=18:00）
+                        # 若補一天後工時仍合理（≤ 每日上限），視為隔日下班
                         if effective_out <= a.punch_in_time:
-                            continue
+                            candidate = effective_out + timedelta(days=1)
+                            if (candidate - a.punch_in_time).total_seconds() / 3600 <= MAX_DAILY_WORK_HOURS:
+                                effective_out = candidate
+                            else:
+                                continue
                     diff = (effective_out - a.punch_in_time).total_seconds() / 3600
                     # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
                     _d = a.punch_in_time.date()
