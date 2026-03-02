@@ -773,3 +773,38 @@ class TestComputeHourlyDailyHours:
         punch_in = datetime(2026, 1, 15, 13, 0)
         punch_out = datetime(2026, 1, 15, 17, 0)
         assert _compute_hourly_daily_hours(punch_in, punch_out, self.WORK_END) == 4.0
+
+
+class TestComputeHourlyDailyHoursOvernight:
+    """回歸測試：時薪制跨夜班工時計算
+
+    Bug 情境：
+    - 跨夜班員工（如 18:00 上班，隔日 02:00 下班），排班下班時間 work_end_t = time(2, 0)
+    - 缺下班打卡時，datetime.combine(punch_in.date(), time(2,0)) = 當日 02:00 < 18:00
+    - 舊邏輯：effective_out <= punch_in → return 0.0（工時空白）
+    - 預期：應補填「隔日 02:00」，計算得 8h
+    """
+
+    OVERNIGHT_END = time(2, 0)  # 跨夜班排班下班 02:00
+
+    def test_overnight_both_punches(self):
+        """18:00 上班，隔日 02:00 下班，雙打卡 → 8h（不跨午休）"""
+        punch_in = datetime(2026, 1, 14, 18, 0)
+        punch_out = datetime(2026, 1, 15, 2, 0)
+        assert _compute_hourly_daily_hours(punch_in, punch_out, self.OVERNIGHT_END) == 8.0
+
+    def test_overnight_missing_punch_out_fills_next_day(self):
+        """18:00 上班，缺下班打卡，work_end_t=02:00（隔日）→ 補填隔日 02:00 → 8h"""
+        punch_in = datetime(2026, 1, 14, 18, 0)
+        assert _compute_hourly_daily_hours(punch_in, None, self.OVERNIGHT_END) == 8.0
+
+    def test_late_after_normal_end_still_zero(self):
+        """18:00 才上班，work_end_t=17:00（正常日班），缺下班打卡 → 補填當日 17:00 → 0h（不視為跨夜）"""
+        punch_in = datetime(2026, 1, 14, 18, 0)
+        assert _compute_hourly_daily_hours(punch_in, None, time(17, 0)) == 0.0
+
+    def test_overnight_partial_punch_out_early(self):
+        """18:00 上班，隔日 01:00 提早下班（排班 02:00）→ 7h"""
+        punch_in = datetime(2026, 1, 14, 18, 0)
+        punch_out = datetime(2026, 1, 15, 1, 0)
+        assert _compute_hourly_daily_hours(punch_in, punch_out, self.OVERNIGHT_END) == 7.0
