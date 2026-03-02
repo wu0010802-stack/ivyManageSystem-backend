@@ -986,7 +986,12 @@ class SalaryEngine:
             # 時薪制計算
             breakdown.hourly_rate = employee.get('hourly_rate', 0)
             breakdown.work_hours = employee.get('work_hours', 0)
-            breakdown.hourly_total = breakdown.hourly_rate * breakdown.work_hours
+            # 優先使用已依勞基法分段計費的結果（process_salary_calculation 提供）；
+            # 未提供時 fallback 至等比計算（向後相容直接傳入 employee dict 的測試情境）
+            breakdown.hourly_total = (
+                employee.get('hourly_calculated_pay')
+                or breakdown.hourly_rate * breakdown.work_hours
+            )
             breakdown.gross_salary = breakdown.hourly_total
         else:
             # 正職員工
@@ -1441,6 +1446,7 @@ class SalaryEngine:
             
             # Work hours for hourly employees (sum difference between punch in/out)
             total_hours = 0.0
+            total_hourly_pay = 0.0
             if emp.employee_type == 'hourly':
                 _work_end_t = datetime.strptime(emp.work_end_time or "17:00", "%H:%M").time()
                 for a in attendances:
@@ -1461,8 +1467,12 @@ class SalaryEngine:
                     _overlap = max(0.0, (min(effective_out, _lunch_e) - max(a.punch_in_time, _lunch_s)).total_seconds() / 3600)
                     diff -= _overlap
                     # 每日工時上限，防止打卡資料異常（手動修改）導致薪資灌水
-                    total_hours += min(diff, MAX_DAILY_WORK_HOURS)
+                    day_hours = min(diff, MAX_DAILY_WORK_HOURS)
+                    total_hours += day_hours
+                    # 依勞基法第 24 條分段計費（日工時超 8h 起算加班倍率）
+                    total_hourly_pay += _calc_daily_hourly_pay(day_hours, emp.hourly_rate or 0)
                 emp_dict['work_hours'] = round(total_hours, 2)
+                emp_dict['hourly_calculated_pay'] = round(total_hourly_pay, 2)
 
             attendance_result = AttendanceResult(
                 employee_name=emp.name,
