@@ -60,6 +60,46 @@ def _sum_leave_deduction(leaves, daily_salary: float) -> float:
     return round(total)
 
 
+def _compute_hourly_daily_hours(
+    punch_in: datetime,
+    punch_out: Optional[datetime],
+    work_end_t: time,
+) -> float:
+    """計算時薪制員工單日實際工時（含午休扣除與時空穿越防護）。
+
+    時空穿越防護：
+    - 無下班打卡時，以 work_end_t 補填；若補填後下班 ≤ 上班 → 回傳 0.0
+    - 有下班打卡但早於上班（管理員誤植等資料異常）→ 同樣回傳 0.0
+
+    Args:
+        punch_in:    上班打卡時間
+        punch_out:   下班打卡時間（None 表示缺打）
+        work_end_t:  排班預設下班時間（用於補填缺打）
+
+    Returns:
+        當日有效工時（小時），已扣午休、已套用每日上限，最小值 0.0
+    """
+    if punch_out is not None:
+        effective_out = punch_out
+    else:
+        # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
+        effective_out = datetime.combine(punch_in.date(), work_end_t)
+
+    # 防止時空穿越：補填或明確設定的下班時間若早於或等於上班時間，略過該日
+    if effective_out <= punch_in:
+        return 0.0
+
+    diff = (effective_out - punch_in).total_seconds() / 3600
+    # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
+    _d = punch_in.date()
+    lunch_s = datetime.combine(_d, time(12, 0))
+    lunch_e = datetime.combine(_d, time(13, 0))
+    overlap = max(0.0, (min(effective_out, lunch_e) - max(punch_in, lunch_s)).total_seconds() / 3600)
+    diff -= overlap
+    # 每日工時上限；max(0.0,...) 為雙重保護，確保不因浮點誤差產生負值
+    return max(0.0, min(diff, MAX_DAILY_WORK_HOURS))
+
+
 def _calc_daily_hourly_pay(hours: float, rate: float) -> float:
     """依勞基法第 24 條計算時薪制員工單日薪資。
 
@@ -1452,22 +1492,9 @@ class SalaryEngine:
                 for a in attendances:
                     if not a.punch_in_time:
                         continue
-                    if a.punch_out_time:
-                        effective_out = a.punch_out_time
-                    else:
-                        # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
-                        effective_out = datetime.combine(a.punch_in_time.date(), _work_end_t)
-                        if effective_out <= a.punch_in_time:
-                            continue
-                    diff = (effective_out - a.punch_in_time).total_seconds() / 3600
-                    # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
-                    _d = a.punch_in_time.date()
-                    _lunch_s = datetime.combine(_d, time(12, 0))
-                    _lunch_e = datetime.combine(_d, time(13, 0))
-                    _overlap = max(0.0, (min(effective_out, _lunch_e) - max(a.punch_in_time, _lunch_s)).total_seconds() / 3600)
-                    diff -= _overlap
-                    # 每日工時上限，防止打卡資料異常（手動修改）導致薪資灌水
-                    day_hours = min(diff, MAX_DAILY_WORK_HOURS)
+                    day_hours = _compute_hourly_daily_hours(
+                        a.punch_in_time, a.punch_out_time, _work_end_t
+                    )
                     total_hours += day_hours
                     # 依勞基法第 24 條分段計費（日工時超 8h 起算加班倍率）
                     total_hourly_pay += _calc_daily_hourly_pay(day_hours, emp.hourly_rate or 0)
