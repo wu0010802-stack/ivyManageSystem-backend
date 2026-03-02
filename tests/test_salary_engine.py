@@ -1,7 +1,7 @@
 """薪資引擎核心邏輯單元測試"""
 import pytest
-from datetime import date
-from services.salary_engine import SalaryEngine, SalaryBreakdown
+from datetime import date, datetime, time
+from services.salary_engine import SalaryEngine, SalaryBreakdown, _compute_hourly_daily_hours
 from services.attendance_parser import AttendanceResult
 
 
@@ -727,3 +727,49 @@ class TestMidMonthHireSalaryProration:
         assert correct_pay == round(30000 / 30 / 8 * 2 * 1.34)
         # 錯誤值：15000/30/8 * 2hr * 1.34倍率 = 168（遠低於法定最低時薪）
         assert wrong_pay == round(15000 / 30 / 8 * 2 * 1.34)
+
+
+class TestComputeHourlyDailyHours:
+    """回歸測試：時薪制單日工時時空穿越防護
+
+    Bug 情境：
+    - 員工在排班下班時間（17:00）之後才到班（如 18:00），且忘記打下班卡
+    - 系統補填 17:00 為下班時間 → effective_out(17:00) ≤ punch_in(18:00)
+    - 若 guard 只在 else 分支，diff 為負數 → 負薪資或靜默歸零
+    - 若 punch_out 被明確設定為早於 punch_in（管理員誤植），同樣缺少防護
+    """
+
+    WORK_END = time(17, 0)
+
+    def test_late_arrival_after_work_end_no_punch_out_returns_zero(self):
+        """18:00 才上班，缺下班打卡，補填 17:00 → 時空穿越 → 0.0"""
+        punch_in = datetime(2026, 1, 15, 18, 0)
+        assert _compute_hourly_daily_hours(punch_in, None, self.WORK_END) == 0.0
+
+    def test_exact_work_end_arrival_no_punch_out_returns_zero(self):
+        """剛好 17:00 上班，缺下班打卡，補填 17:00 → 上下班相同 → 0.0"""
+        punch_in = datetime(2026, 1, 15, 17, 0)
+        assert _compute_hourly_daily_hours(punch_in, None, self.WORK_END) == 0.0
+
+    def test_inverted_explicit_punch_out_returns_zero(self):
+        """下班打卡 16:00 早於上班打卡 17:30（管理員誤植）→ 0.0，不得為負"""
+        punch_in = datetime(2026, 1, 15, 17, 30)
+        punch_out = datetime(2026, 1, 15, 16, 0)
+        assert _compute_hourly_daily_hours(punch_in, punch_out, self.WORK_END) == 0.0
+
+    def test_normal_day_no_punch_out_fills_default(self):
+        """正常：08:00 上班，缺下班打卡，補填 17:00 → 8h（扣午休 1h）"""
+        punch_in = datetime(2026, 1, 15, 8, 0)
+        assert _compute_hourly_daily_hours(punch_in, None, self.WORK_END) == 8.0
+
+    def test_normal_with_both_punches(self):
+        """09:00–18:00，雙打卡 → 8h（扣午休 1h）"""
+        punch_in = datetime(2026, 1, 15, 9, 0)
+        punch_out = datetime(2026, 1, 15, 18, 0)
+        assert _compute_hourly_daily_hours(punch_in, punch_out, self.WORK_END) == 8.0
+
+    def test_afternoon_only_no_lunch_overlap(self):
+        """13:00–17:00，不跨午休 → 4h"""
+        punch_in = datetime(2026, 1, 15, 13, 0)
+        punch_out = datetime(2026, 1, 15, 17, 0)
+        assert _compute_hourly_daily_hours(punch_in, punch_out, self.WORK_END) == 4.0
