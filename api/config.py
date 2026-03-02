@@ -302,19 +302,30 @@ def update_bonus_config(data: BonusConfigUpdate, current_user: dict = Depends(re
         session.add(new_config)
         session.flush()  # 取得 new_config.id
 
-        # 複製年級目標到新版本（優先取舊 config 的，否則取 bonus_config_id=NULL 的舊資料）
-        old_targets = session.query(GradeTarget).filter(
-            GradeTarget.bonus_config_id == (old_config.id if old_config else None)
-        ).all()
-        if not old_targets:
-            old_targets = session.query(GradeTarget).filter(
+        # 複製年級目標到新版本：合併 NULL（舊資料）與版本特定目標
+        # 策略：NULL 目標作為基礎，舊版本目標覆蓋同年級的 NULL 值
+        # 這樣即使只有部分年級已綁定到舊版本 ID（其他仍為 NULL），所有年級都能被複製
+        null_targets = {
+            gt.grade_name: gt
+            for gt in session.query(GradeTarget).filter(
                 GradeTarget.bonus_config_id == None  # noqa: E711
             ).all()
+        }
+        versioned_targets = {}
+        if old_config:
+            versioned_targets = {
+                gt.grade_name: gt
+                for gt in session.query(GradeTarget).filter(
+                    GradeTarget.bonus_config_id == old_config.id
+                ).all()
+            }
+        # 合併：版本目標優先覆蓋 NULL 目標
+        merged_targets = {**null_targets, **versioned_targets}
 
-        for gt in old_targets:
+        for grade_name, gt in merged_targets.items():
             session.add(GradeTarget(
                 config_year=gt.config_year,
-                grade_name=gt.grade_name,
+                grade_name=grade_name,
                 festival_two_teachers=gt.festival_two_teachers,
                 festival_one_teacher=gt.festival_one_teacher,
                 festival_shared=gt.festival_shared,
@@ -618,11 +629,24 @@ def get_all_configs(current_user: dict = Depends(require_permission(Permission.S
                 "school_wide_target": bonus.school_wide_target
             }
 
-        # 年級目標
-        targets = session.query(GradeTarget).all()
+        # 年級目標（合併邏輯：NULL 為基礎，active bonus 版本優先覆蓋）
         grade_targets = {}
-        for t in targets:
-            grade_targets[t.grade_name] = {
+        null_tgts = {
+            t.grade_name: t
+            for t in session.query(GradeTarget).filter(
+                GradeTarget.bonus_config_id == None  # noqa: E711
+            ).all()
+        }
+        ver_tgts = {}
+        if bonus:
+            ver_tgts = {
+                t.grade_name: t
+                for t in session.query(GradeTarget).filter(
+                    GradeTarget.bonus_config_id == bonus.id
+                ).all()
+            }
+        for grade_name, t in {**null_tgts, **ver_tgts}.items():
+            grade_targets[grade_name] = {
                 "festival_two_teachers": t.festival_two_teachers,
                 "festival_one_teacher": t.festival_one_teacher,
                 "festival_shared": t.festival_shared,

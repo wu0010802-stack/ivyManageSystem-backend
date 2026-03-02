@@ -333,26 +333,35 @@ class SalaryEngine:
                 if bonus.school_wide_target:
                     self._school_wide_target = bonus.school_wide_target
 
-            # 載入年級目標（只取屬於目前有效獎金設定版本的行；若無則 fallback 到舊資料）
-            targets = []
+            # 載入年級目標：合併 NULL（舊資料）與版本特定目標
+            # 策略：NULL 目標作為基礎，版本特定目標覆蓋同年級的 NULL 值
+            # 這樣可防止「部分年級有版本 ID、部分為 NULL」時，版本年級擋住 NULL fallback
+            null_targets = {
+                t.grade_name: t
+                for t in session.query(GradeTarget).filter(
+                    GradeTarget.bonus_config_id == None  # noqa: E711
+                ).all()
+            }
+            versioned_targets = {}
             if bonus:
-                targets = session.query(GradeTarget).filter(
-                    GradeTarget.bonus_config_id == bonus.id
-                ).all()
-            if not targets:
-                targets = session.query(GradeTarget).filter(
-                    GradeTarget.bonus_config_id == None  # noqa: E711  — 向下相容舊資料
-                ).all()
-            if targets:
+                versioned_targets = {
+                    t.grade_name: t
+                    for t in session.query(GradeTarget).filter(
+                        GradeTarget.bonus_config_id == bonus.id
+                    ).all()
+                }
+            # 合併：版本目標優先覆蓋 NULL 目標
+            merged = {**null_targets, **versioned_targets}
+            if merged:
                 self._target_enrollment = {}
                 self._overtime_target = {}
-                for t in targets:
-                    self._target_enrollment[t.grade_name] = {
+                for grade_name, t in merged.items():
+                    self._target_enrollment[grade_name] = {
                         '2_teachers': t.festival_two_teachers,
                         '1_teacher': t.festival_one_teacher,
                         'shared_assistant': t.festival_shared
                     }
-                    self._overtime_target[t.grade_name] = {
+                    self._overtime_target[grade_name] = {
                         '2_teachers': t.overtime_two_teachers,
                         '1_teacher': t.overtime_one_teacher,
                         'shared_assistant': t.overtime_shared
@@ -401,10 +410,9 @@ class SalaryEngine:
                 }
             }
 
-        # 更新節慶獎金目標人數
+        # 更新節慶獎金目標人數（merge：只覆蓋傳入的年級，其他年級保留原值）
         if 'targetEnrollment' in bonus_config and bonus_config['targetEnrollment']:
             te = bonus_config['targetEnrollment']
-            self._target_enrollment = {}
             for grade, targets in te.items():
                 self._target_enrollment[grade] = {
                     '2_teachers': targets.get('twoTeachers', 0),
@@ -412,10 +420,9 @@ class SalaryEngine:
                     'shared_assistant': targets.get('sharedAssistant', 0)
                 }
 
-        # 更新超額獎金目標人數
+        # 更新超額獎金目標人數（merge：只覆蓋傳入的年級，其他年級保留原值）
         if 'overtimeTarget' in bonus_config and bonus_config['overtimeTarget']:
             ot = bonus_config['overtimeTarget']
-            self._overtime_target = {}
             for grade, targets in ot.items():
                 self._overtime_target[grade] = {
                     '2_teachers': targets.get('twoTeachers', 0),
