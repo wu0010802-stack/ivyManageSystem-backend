@@ -158,11 +158,13 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                             except (ValueError, IndexError) as e:
                                 logger.warning("第 %d 行: 下班時間格式無法解析 '%s': %s", idx+2, punch_out_val, e)
 
-                        # 驗證時間順序：上班時間不得晚於下班時間
-                        if punch_in_time and punch_out_time and punch_out_time <= punch_in_time:
+                        # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 18:00→02:00）
+                        if punch_in_time and punch_out_time and punch_out_time < punch_in_time:
+                            punch_out_time += timedelta(days=1)
+                        elif punch_in_time and punch_out_time and punch_out_time == punch_in_time:
                             results_data["failed"] += 1
                             results_data["errors"].append(
-                                f"第 {idx+2} 行 ({emp_name} {attendance_date}): 上班時間 {punch_in_val} 晚於或等於下班時間 {punch_out_val}，請確認資料"
+                                f"第 {idx+2} 行 ({emp_name} {attendance_date}): 上下班時間相同 {punch_in_val}，請確認資料"
                             )
                             continue
 
@@ -538,11 +540,13 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                     except ValueError:
                         pass
 
-                # 驗證時間順序：上班時間不得晚於下班時間
-                if punch_in_time and punch_out_time and punch_out_time <= punch_in_time:
+                # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 18:00→02:00）
+                if punch_in_time and punch_out_time and punch_out_time < punch_in_time:
+                    punch_out_time += timedelta(days=1)
+                elif punch_in_time and punch_out_time and punch_out_time == punch_in_time:
                     results["failed"] += 1
                     results["errors"].append(
-                        f"{row.name} {row.date}: 上班時間 {row.punch_in} 晚於或等於下班時間 {row.punch_out}，請確認資料"
+                        f"{row.name} {row.date}: 上下班時間相同 {row.punch_in}，請確認資料"
                     )
                     continue
 

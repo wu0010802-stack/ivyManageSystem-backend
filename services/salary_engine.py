@@ -5,7 +5,7 @@
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from dateutil.relativedelta import relativedelta
 from .insurance_service import InsuranceService, InsuranceCalculation
 from .attendance_parser import AttendanceResult
@@ -84,6 +84,12 @@ def _compute_hourly_daily_hours(
     else:
         # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
         effective_out = datetime.combine(punch_in.date(), work_end_t)
+        # 跨夜班：排班下班時間在上班時間之前（如 work_end=02:00 < punch_in=18:00）
+        # 若補一天後工時仍合理（≤ 每日上限），視為隔日下班
+        if effective_out <= punch_in:
+            candidate = effective_out + timedelta(days=1)
+            if (candidate - punch_in).total_seconds() / 3600 <= MAX_DAILY_WORK_HOURS:
+                effective_out = candidate
 
     # 防止時空穿越：補填或明確設定的下班時間若早於或等於上班時間，略過該日
     if effective_out <= punch_in:

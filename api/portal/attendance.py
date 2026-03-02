@@ -231,10 +231,18 @@ def get_attendance_sheet(
                         fallback_start = datetime.combine(d, datetime.strptime(fb_ws, "%H:%M").time())
                         fallback_end = datetime.combine(d, datetime.strptime(fb_we, "%H:%M").time())
 
+                    # 跨夜班修正：排班下班時間落在隔日（如 work_end=02:00 < work_start=18:00）
+                    if fallback_end <= fallback_start:
+                        fallback_end += timedelta(days=1)
+
                     if not effective_in:
                         effective_in = fallback_start
                     if not effective_out:
                         effective_out = fallback_end
+
+                # 跨夜班修正：DB 儲存的 punch_out 早於 punch_in（舊資料或異常），補一天
+                if effective_in and effective_out and effective_out <= effective_in:
+                    effective_out += timedelta(days=1)
 
                 if effective_in and effective_out and effective_out > effective_in:
                     duration_min = (effective_out - effective_in).total_seconds() / 60
@@ -260,6 +268,9 @@ def get_attendance_sheet(
                         shift_end = datetime.strptime(shift_info["work_end"], "%H:%M").time()
                         shift_start_dt = datetime.combine(d, shift_start)
                         shift_end_dt = datetime.combine(d, shift_end)
+                        # 跨夜班：排班結束在隔日（如 02:00 < 18:00），補一天
+                        if shift_end_dt <= shift_start_dt:
+                            shift_end_dt += timedelta(days=1)
 
                         is_late = att.punch_in_time > shift_start_dt
                         is_early_leave = att.punch_out_time < shift_end_dt
