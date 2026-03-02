@@ -126,9 +126,6 @@ async def get_current_user(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="未提供認證 Token")
     token = authorization.split(" ", 1)[1]
     payload = decode_token(token)
-    employee_id = payload.get("employee_id")
-    if employee_id is None:
-        raise HTTPException(status_code=401, detail="Token 資料不完整")
     return payload
 
 

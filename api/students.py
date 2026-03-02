@@ -175,8 +175,9 @@ async def update_student(student_id: int, item: StudentUpdate, current_user: dic
         if 'enrollment_date' in update_data and update_data['enrollment_date']:
             update_data['enrollment_date'] = datetime.strptime(update_data['enrollment_date'], '%Y-%m-%d').date()
 
+        NULLABLE_FK_FIELDS = {'classroom_id'}
         for key, value in update_data.items():
-            if value is not None:
+            if value is not None or key in NULLABLE_FK_FIELDS:
                 setattr(student, key, value)
 
         session.commit()

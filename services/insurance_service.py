@@ -152,7 +152,7 @@ class InsuranceService:
         health_er = bracket["health_employer"]
 
         pension_er = bracket["pension"]
-        pension_emp = round(salary * pension_self_rate)
+        pension_emp = round(bracket["amount"] * pension_self_rate)  # 依勞基法以月提繳工資級距計算
 
         return InsuranceCalculation(
             insured_amount=amount,

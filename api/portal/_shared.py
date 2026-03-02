@@ -136,7 +136,13 @@ class SwapRequestRespond(BaseModel):
 # ============ Helpers ============
 
 def _get_employee(session, current_user: dict) -> Employee:
-    emp = session.query(Employee).filter(Employee.id == current_user["employee_id"]).first()
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(
+            status_code=403,
+            detail="此帳號無關聯員工資料，請先使用身份切換功能進入前台",
+        )
+    emp = session.query(Employee).filter(Employee.id == employee_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="找不到對應的員工資料")
     return emp

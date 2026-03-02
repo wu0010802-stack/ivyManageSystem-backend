@@ -160,6 +160,17 @@ def _run_migrations(engine):
     # users — 強制修改密碼旗標
     _add_column_if_missing(engine, inspector, "users", "must_change_password", "BOOLEAN NOT NULL DEFAULT FALSE")
 
+    # users — employee_id 改為允許 NULL（純管理帳號用，不關聯員工記錄）
+    user_cols = {c["name"]: c for c in inspector.get_columns("users")}
+    if not user_cols.get("employee_id", {}).get("nullable", True):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE users ALTER COLUMN employee_id DROP NOT NULL"))
+                conn.commit()
+            logger.info("Migration: users.employee_id 已改為允許 NULL")
+        except Exception as e:
+            logger.warning("Migration: 無法修改 users.employee_id nullable 約束: %s", e)
+
     # daily_shifts — shift_type_id 改為允許 NULL（換班至無班的情境需要顯式標記排休）
     ds_cols = {c["name"]: c for c in inspector.get_columns("daily_shifts")}
     if not ds_cols.get("shift_type_id", {}).get("nullable", True):
@@ -953,7 +964,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    employee_id = Column(Integer, ForeignKey("employees.id"), unique=True, nullable=False, comment="關聯員工ID")
+    employee_id = Column(Integer, ForeignKey("employees.id"), unique=True, nullable=True, comment="關聯員工ID")
     username = Column(String(50), unique=True, nullable=False, comment="登入帳號")
     password_hash = Column(String(255), nullable=False, comment="密碼雜湊")
     role = Column(String(20), default="teacher", comment="角色: teacher/admin")

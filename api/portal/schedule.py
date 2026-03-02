@@ -3,6 +3,7 @@ Portal - schedule and shift swap endpoints
 """
 
 import calendar as cal_module
+import logging
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,7 +19,40 @@ from ._shared import (
     SwapRequestCreate, SwapRequestRespond, WEEKDAY_NAMES,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+def _assert_swap_snapshot_fresh(session, swap) -> None:
+    """TOCTOU 保護：在接受換班前，確認雙方班別快照未被主管修改。
+
+    create_swap_request 建立申請時，會快照雙方當下的班別 ID。
+    若主管在「申請後、對方同意前」修改了任一方的班表，
+    快照就已過期；直接執行換班會悄悄還原主管的修改。
+
+    此函式重新讀取 DB 當前班別，與快照比對：
+    - 相符 → 正常返回（可安全執行換班）
+    - 不符 → 拋出 409，通知對方重新申請
+
+    Args:
+        session: SQLAlchemy session
+        swap:    ShiftSwapRequest 物件（帶有快照 requester/target_shift_type_id）
+
+    Raises:
+        HTTPException 409：快照過期
+    """
+    current_req = _get_employee_shift_for_date(session, swap.requester_id, swap.swap_date)
+    current_tgt = _get_employee_shift_for_date(session, swap.target_id, swap.swap_date)
+
+    if current_req != swap.requester_shift_type_id or current_tgt != swap.target_shift_type_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "班表已被主管修改，換班申請的班別快照已過期，此申請已自動取消。"
+                "請重新查看最新班表後，重新發起換班申請。"
+            ),
+        )
 
 
 @router.get("/my-schedule")
@@ -307,6 +341,24 @@ def respond_swap_request(
         swap.target_remark = data.remark
 
         if data.action == "accept":
+            # ── TOCTOU 保護：commit 前驗證快照是否已過期 ──────────────────────
+            # 若主管在申請後、B 同意前修改了班表，直接用快照執行換班
+            # 會悄悄還原主管的修改，且完全不留痕跡。
+            # 快照過期 → 自動將申請設為 cancelled，要求重新發起。
+            try:
+                _assert_swap_snapshot_fresh(session, swap)
+            except HTTPException:
+                swap.status = "cancelled"
+                logger.warning(
+                    "換班申請 #%d 快照已過期（req_snapshot=%s, tgt_snapshot=%s），"
+                    "班表已被主管修改，申請已自動取消",
+                    swap.id,
+                    swap.requester_shift_type_id,
+                    swap.target_shift_type_id,
+                )
+                session.commit()
+                raise
+
             swap.status = "accepted"
             swap.executed_at = datetime.now()
 

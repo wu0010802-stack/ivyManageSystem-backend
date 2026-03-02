@@ -93,7 +93,7 @@ class ChangePasswordRequest(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    employee_id: int
+    employee_id: Optional[int] = None  # None = 純管理帳號，不關聯員工記錄
     username: str
     password: str
     role: str = "teacher"
@@ -380,11 +380,15 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_pe
     try:
         if session.query(User).filter(User.username == data.username).first():
             raise HTTPException(status_code=400, detail="帳號已存在")
-        if session.query(User).filter(User.employee_id == data.employee_id).first():
-            raise HTTPException(status_code=400, detail="該員工已有帳號")
-        emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
-        if not emp:
-            raise HTTPException(status_code=404, detail="員工不存在")
+
+        if data.employee_id is not None:
+            if session.query(User).filter(User.employee_id == data.employee_id).first():
+                raise HTTPException(status_code=400, detail="該員工已有帳號")
+            emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
+            if not emp:
+                raise HTTPException(status_code=404, detail="員工不存在")
+        else:
+            emp = None
 
         # 計算權限：若有指定則使用，否則套用角色預設
         if data.permissions is not None:

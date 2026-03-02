@@ -15,6 +15,111 @@ logger = logging.getLogger(__name__)
 MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
 MAX_DAILY_WORK_HOURS = 12.0  # 時薪制每日工時上限（正常 8H + 最高加班 4H，防止打卡異常灌水）
 
+# 時薪制加班費倍率（勞基法第 24 條）
+HOURLY_OT1_RATE = 1.34        # 日工時第 9–10 小時倍率
+HOURLY_OT2_RATE = 1.67        # 日工時第 11 小時起倍率
+HOURLY_REGULAR_HOURS = 8      # 正常日工時上限
+HOURLY_OT1_CAP_HOURS = 10     # 第一分段上限（到第 10 小時止）
+
+# 請假扣薪預設規則（與 api/leaves.py 同步，作為 deduction_ratio=None 時的 fallback）
+LEAVE_DEDUCTION_RULES = {
+    "personal": 1.0,        # 事假: 全扣
+    "sick": 0.5,             # 病假: 扣半薪
+    "menstrual": 0.5,        # 生理假: 扣半薪
+    "annual": 0.0,           # 特休: 不扣
+    "maternity": 0.0,        # 產假: 不扣
+    "paternity": 0.0,        # 陪產假: 不扣
+    "official": 0.0,         # 公假: 不扣
+    "marriage": 0.0,         # 婚假: 不扣
+    "bereavement": 0.0,      # 喪假: 不扣
+    "prenatal": 0.0,         # 產檢假: 不扣
+    "paternity_new": 0.0,    # 陪產檢及陪產假: 不扣
+    "miscarriage": 0.0,      # 流產假: 不扣
+    "family_care": 1.0,      # 家庭照顧假: 不給薪
+    "parental_unpaid": 0.0,  # 育嬰留職停薪: 不扣
+}
+
+
+def _sum_leave_deduction(leaves, daily_salary: float) -> float:
+    """計算請假扣款總額。
+
+    優先使用 LeaveRecord.deduction_ratio 欄位；
+    若為 None，fallback 至 LEAVE_DEDUCTION_RULES[leave_type]（向後相容舊資料）。
+
+    Args:
+        leaves:       LeaveRecord 列表（需有 leave_type, leave_hours, deduction_ratio 屬性）
+        daily_salary: 日薪（base_salary / MONTHLY_BASE_DAYS）
+    Returns:
+        四捨五入後的扣款金額（整數）
+    """
+    total = 0.0
+    for lv in leaves:
+        ratio = lv.deduction_ratio if lv.deduction_ratio is not None \
+            else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
+        total += (lv.leave_hours / 8) * daily_salary * ratio
+    return round(total)
+
+
+def _compute_hourly_daily_hours(
+    punch_in: datetime,
+    punch_out: Optional[datetime],
+    work_end_t: time,
+) -> float:
+    """計算時薪制員工單日實際工時（含午休扣除與時空穿越防護）。
+
+    時空穿越防護：
+    - 無下班打卡時，以 work_end_t 補填；若補填後下班 ≤ 上班 → 回傳 0.0
+    - 有下班打卡但早於上班（管理員誤植等資料異常）→ 同樣回傳 0.0
+
+    Args:
+        punch_in:    上班打卡時間
+        punch_out:   下班打卡時間（None 表示缺打）
+        work_end_t:  排班預設下班時間（用於補填缺打）
+
+    Returns:
+        當日有效工時（小時），已扣午休、已套用每日上限，最小值 0.0
+    """
+    if punch_out is not None:
+        effective_out = punch_out
+    else:
+        # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
+        effective_out = datetime.combine(punch_in.date(), work_end_t)
+
+    # 防止時空穿越：補填或明確設定的下班時間若早於或等於上班時間，略過該日
+    if effective_out <= punch_in:
+        return 0.0
+
+    diff = (effective_out - punch_in).total_seconds() / 3600
+    # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
+    _d = punch_in.date()
+    lunch_s = datetime.combine(_d, time(12, 0))
+    lunch_e = datetime.combine(_d, time(13, 0))
+    overlap = max(0.0, (min(effective_out, lunch_e) - max(punch_in, lunch_s)).total_seconds() / 3600)
+    diff -= overlap
+    # 每日工時上限；max(0.0,...) 為雙重保護，確保不因浮點誤差產生負值
+    return max(0.0, min(diff, MAX_DAILY_WORK_HOURS))
+
+
+def _calc_daily_hourly_pay(hours: float, rate: float) -> float:
+    """依勞基法第 24 條計算時薪制員工單日薪資。
+
+    分段計費：
+    - 0–8 小時：正常倍率（×1.0）
+    - 第 9–10 小時：×HOURLY_OT1_RATE（1.34）
+    - 第 11 小時起：×HOURLY_OT2_RATE（1.67）
+
+    Args:
+        hours: 當日實際工時（已扣午休、已套用上限）
+        rate:  時薪
+    Returns:
+        當日應付薪資（未四捨五入）
+    """
+    regular = min(hours, HOURLY_REGULAR_HOURS)
+    ot1 = max(0.0, min(hours - HOURLY_REGULAR_HOURS,
+                       HOURLY_OT1_CAP_HOURS - HOURLY_REGULAR_HOURS))
+    ot2 = max(0.0, hours - HOURLY_OT1_CAP_HOURS)
+    return rate * (regular + ot1 * HOURLY_OT1_RATE + ot2 * HOURLY_OT2_RATE)
+
 
 # 資料庫相關匯入（延遲匯入避免循環依賴）
 def _get_db_session():
@@ -333,26 +438,35 @@ class SalaryEngine:
                 if bonus.school_wide_target:
                     self._school_wide_target = bonus.school_wide_target
 
-            # 載入年級目標（只取屬於目前有效獎金設定版本的行；若無則 fallback 到舊資料）
-            targets = []
+            # 載入年級目標：合併 NULL（舊資料）與版本特定目標
+            # 策略：NULL 目標作為基礎，版本特定目標覆蓋同年級的 NULL 值
+            # 這樣可防止「部分年級有版本 ID、部分為 NULL」時，版本年級擋住 NULL fallback
+            null_targets = {
+                t.grade_name: t
+                for t in session.query(GradeTarget).filter(
+                    GradeTarget.bonus_config_id == None  # noqa: E711
+                ).all()
+            }
+            versioned_targets = {}
             if bonus:
-                targets = session.query(GradeTarget).filter(
-                    GradeTarget.bonus_config_id == bonus.id
-                ).all()
-            if not targets:
-                targets = session.query(GradeTarget).filter(
-                    GradeTarget.bonus_config_id == None  # noqa: E711  — 向下相容舊資料
-                ).all()
-            if targets:
+                versioned_targets = {
+                    t.grade_name: t
+                    for t in session.query(GradeTarget).filter(
+                        GradeTarget.bonus_config_id == bonus.id
+                    ).all()
+                }
+            # 合併：版本目標優先覆蓋 NULL 目標
+            merged = {**null_targets, **versioned_targets}
+            if merged:
                 self._target_enrollment = {}
                 self._overtime_target = {}
-                for t in targets:
-                    self._target_enrollment[t.grade_name] = {
+                for grade_name, t in merged.items():
+                    self._target_enrollment[grade_name] = {
                         '2_teachers': t.festival_two_teachers,
                         '1_teacher': t.festival_one_teacher,
                         'shared_assistant': t.festival_shared
                     }
-                    self._overtime_target[t.grade_name] = {
+                    self._overtime_target[grade_name] = {
                         '2_teachers': t.overtime_two_teachers,
                         '1_teacher': t.overtime_one_teacher,
                         'shared_assistant': t.overtime_shared
@@ -401,10 +515,9 @@ class SalaryEngine:
                 }
             }
 
-        # 更新節慶獎金目標人數
+        # 更新節慶獎金目標人數（merge：只覆蓋傳入的年級，其他年級保留原值）
         if 'targetEnrollment' in bonus_config and bonus_config['targetEnrollment']:
             te = bonus_config['targetEnrollment']
-            self._target_enrollment = {}
             for grade, targets in te.items():
                 self._target_enrollment[grade] = {
                     '2_teachers': targets.get('twoTeachers', 0),
@@ -412,10 +525,9 @@ class SalaryEngine:
                     'shared_assistant': targets.get('sharedAssistant', 0)
                 }
 
-        # 更新超額獎金目標人數
+        # 更新超額獎金目標人數（merge：只覆蓋傳入的年級，其他年級保留原值）
         if 'overtimeTarget' in bonus_config and bonus_config['overtimeTarget']:
             ot = bonus_config['overtimeTarget']
-            self._overtime_target = {}
             for grade, targets in ot.items():
                 self._overtime_target[grade] = {
                     '2_teachers': targets.get('twoTeachers', 0),
@@ -914,7 +1026,12 @@ class SalaryEngine:
             # 時薪制計算
             breakdown.hourly_rate = employee.get('hourly_rate', 0)
             breakdown.work_hours = employee.get('work_hours', 0)
-            breakdown.hourly_total = breakdown.hourly_rate * breakdown.work_hours
+            # 優先使用已依勞基法分段計費的結果（process_salary_calculation 提供）；
+            # 未提供時 fallback 至等比計算（向後相容直接傳入 employee dict 的測試情境）
+            breakdown.hourly_total = (
+                employee.get('hourly_calculated_pay')
+                or breakdown.hourly_rate * breakdown.work_hours
+            )
             breakdown.gross_salary = breakdown.hourly_total
         else:
             # 正職員工
@@ -1369,28 +1486,20 @@ class SalaryEngine:
             
             # Work hours for hourly employees (sum difference between punch in/out)
             total_hours = 0.0
+            total_hourly_pay = 0.0
             if emp.employee_type == 'hourly':
                 _work_end_t = datetime.strptime(emp.work_end_time or "17:00", "%H:%M").time()
                 for a in attendances:
                     if not a.punch_in_time:
                         continue
-                    if a.punch_out_time:
-                        effective_out = a.punch_out_time
-                    else:
-                        # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
-                        effective_out = datetime.combine(a.punch_in_time.date(), _work_end_t)
-                        if effective_out <= a.punch_in_time:
-                            continue
-                    diff = (effective_out - a.punch_in_time).total_seconds() / 3600
-                    # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
-                    _d = a.punch_in_time.date()
-                    _lunch_s = datetime.combine(_d, time(12, 0))
-                    _lunch_e = datetime.combine(_d, time(13, 0))
-                    _overlap = max(0.0, (min(effective_out, _lunch_e) - max(a.punch_in_time, _lunch_s)).total_seconds() / 3600)
-                    diff -= _overlap
-                    # 每日工時上限，防止打卡資料異常（手動修改）導致薪資灌水
-                    total_hours += min(diff, MAX_DAILY_WORK_HOURS)
+                    day_hours = _compute_hourly_daily_hours(
+                        a.punch_in_time, a.punch_out_time, _work_end_t
+                    )
+                    total_hours += day_hours
+                    # 依勞基法第 24 條分段計費（日工時超 8h 起算加班倍率）
+                    total_hourly_pay += _calc_daily_hourly_pay(day_hours, emp.hourly_rate or 0)
                 emp_dict['work_hours'] = round(total_hours, 2)
+                emp_dict['hourly_calculated_pay'] = round(total_hourly_pay, 2)
 
             attendance_result = AttendanceResult(
                 employee_name=emp.name,
@@ -1471,22 +1580,14 @@ class SalaryEngine:
 
             # 5c. 查詢已核准請假記錄，計算請假扣款
             from models.database import LeaveRecord, OvertimeRecord as DBOvertimeRecord
-            LEAVE_DEDUCTION_RULES = {
-                "personal": 1.0, "sick": 0.5, "menstrual": 0.5,
-                "annual": 0.0, "maternity": 0.0, "paternity": 0.0,
-            }
             approved_leaves = session.query(LeaveRecord).filter(
                 LeaveRecord.employee_id == emp.id,
                 LeaveRecord.is_approved == True,
                 LeaveRecord.start_date <= end_date,
                 LeaveRecord.end_date >= start_date
             ).all()
-            leave_deduction_total = 0
             daily_salary = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
-            for lv in approved_leaves:
-                ratio = LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
-                leave_deduction_total += (lv.leave_hours / 8) * daily_salary * ratio
-            leave_deduction_total = round(leave_deduction_total)
+            leave_deduction_total = _sum_leave_deduction(approved_leaves, daily_salary)
 
             # 5d. 查詢已核准加班記錄，計算加班費
             approved_overtimes = session.query(DBOvertimeRecord).filter(

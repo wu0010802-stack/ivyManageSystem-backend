@@ -261,6 +261,8 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
             elif key == 'job_title_id' and value is None:  # Allow explicitly setting job_title_id to None
                 setattr(db_employee, key, None)
                 db_employee.title = None  # Clear title if job_title_id is cleared
+            elif key == 'classroom_id' and value is None:  # Allow explicitly removing from classroom
+                setattr(db_employee, key, None)
 
         session.commit()
         return {"message": "員工資料更新成功", "id": db_employee.id}
