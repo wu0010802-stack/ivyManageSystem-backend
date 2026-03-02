@@ -77,6 +77,65 @@ def _sanitize_excel_value(value):
     return clean
 
 
+class SafeWorksheet:
+    """openpyxl Worksheet 薄包裝器，所有寫入路徑自動執行公式注入清理。
+
+    將防護掛在「worksheet 寫入」這一底層，確保即使未來新增報表功能時
+    忘記呼叫 _write_data_row 或 _sanitize_excel_value，直接使用
+    ws.cell() 或 ws["A1"] = value 也不會有 Excel / DDE 注入風險。
+
+    使用方式：
+        wb = Workbook()
+        ws = _safe_ws(wb)   # 取得已包裝的 worksheet
+        ws.title = "..."    # 屬性存取正常代理到底層
+        ws.cell(row=1, column=1, value=user_input)  # 自動清理
+        ws["A1"] = user_input                       # 自動清理
+
+    設計說明：
+    - .cell()    → 清理後再寫入底層，回傳真實 Cell（供設定 font/border 等）
+    - __setitem__ → ws["A1"] = v 語法，清理後寫入底層 Cell.value
+    - __getitem__ → ws["A1"] 語法，直接回傳底層真實 Cell（供讀值、設定樣式）
+    - __getattr__ → 其餘屬性 / 方法（title、merge_cells、columns 等）透明代理
+    - __setattr__ → title 等屬性設定代理到底層，'_ws' 保留給自身
+    """
+
+    def __init__(self, ws):
+        object.__setattr__(self, '_ws', ws)
+
+    # ── 寫入路徑：自動清理 ──────────────────────────────────────────────────
+
+    def cell(self, row, column, value=None):
+        """覆寫 cell()，清理 value 後再寫入底層 worksheet"""
+        return self._ws.cell(row=row, column=column,
+                             value=_sanitize_excel_value(value))
+
+    def __setitem__(self, key, value):
+        """覆寫 ws['A1'] = value，清理後直接設定底層 Cell.value"""
+        self._ws[key].value = _sanitize_excel_value(value)
+
+    # ── 讀取 / 代理路徑：透明轉發底層 ──────────────────────────────────────
+
+    def __getitem__(self, key):
+        """ws['A1'] 取值：回傳底層真實 Cell，可直接設定樣式"""
+        return self._ws[key]
+
+    def __getattr__(self, name):
+        """其餘屬性 / 方法（title、columns、merge_cells 等）透明代理"""
+        return getattr(self._ws, name)
+
+    def __setattr__(self, name, value):
+        """title 等屬性寫入代理到底層；'_ws' 保留給自身"""
+        if name == '_ws':
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._ws, name, value)
+
+
+def _safe_ws(wb) -> SafeWorksheet:
+    """回傳 wb.active 的 SafeWorksheet 包裝器（標準取得 worksheet 的方式）"""
+    return SafeWorksheet(wb.active)
+
+
 def _write_data_row(ws, row, values):
     for col, value in enumerate(values, 1):
         sanitized_value = _sanitize_excel_value(value)
@@ -134,7 +193,7 @@ def export_employees(
         job_titles = _id_name_map(session, JobTitle)
 
         wb = Workbook()
-        ws = wb.active
+        ws = _safe_ws(wb)
         ws.title = "員工名冊"
 
         ws.merge_cells("A1:O1")
@@ -182,7 +241,7 @@ def export_students(
         classrooms = _id_name_map(session, Classroom)
 
         wb = Workbook()
-        ws = wb.active
+        ws = _safe_ws(wb)
         ws.title = "學生名冊"
 
         ws.merge_cells("A1:K1")
@@ -299,7 +358,7 @@ def export_attendance(
                 s["missing_out"] += 1
 
         wb = Workbook()
-        ws = wb.active
+        ws = _safe_ws(wb)
         ws.title = f"{year}年{month}月出勤月報"
 
         ws.merge_cells("A1:L1")
@@ -377,7 +436,7 @@ def export_calendar(
         ).order_by(SchoolEvent.event_date).all()
 
         wb = Workbook()
-        ws = wb.active
+        ws = _safe_ws(wb)
         ws.title = f"{year}年{month}月行事曆"
 
         ws.merge_cells("A1:G1")
@@ -462,7 +521,7 @@ def export_leaves(
         emp_map = _id_name_map(session, Employee)
 
         wb = Workbook()
-        ws = wb.active
+        ws = _safe_ws(wb)
         ws.title = f"{year}年{month}月請假記錄"
 
         ws.merge_cells("A1:H1")
@@ -523,7 +582,7 @@ def export_overtimes(
         emp_map = _id_name_map(session, Employee)
 
         wb = Workbook()
-        ws = wb.active
+        ws = _safe_ws(wb)
         ws.title = f"{year}年{month}月加班記錄"
 
         ws.merge_cells("A1:I1")
