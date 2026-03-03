@@ -146,9 +146,9 @@ class InsuranceService:
         labor_er = bracket["labor_employer"]
         labor_gov = round(amount * LABOR_INSURANCE_RATE * LABOR_GOVERNMENT_RATIO)
 
-        # 健保員工自付額依眷屬人數倍增（最多3人）
+        # 健保員工自付額依眷屬人數倍增（最多3人；負值以0計，防止DB舊資料或直接寫入產生負健保費）
         health_emp_base = bracket["health_employee"]
-        health_emp = health_emp_base * (1 + min(dependents, 3))
+        health_emp = health_emp_base * (1 + min(max(0, dependents), 3))
         health_er = bracket["health_employer"]
 
         pension_er = bracket["pension"]

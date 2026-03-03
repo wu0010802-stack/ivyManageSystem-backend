@@ -4,7 +4,7 @@ Attendance - CRUD endpoints for attendance records
 
 import logging
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -105,11 +105,13 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate, cur
             except ValueError:
                 raise HTTPException(status_code=400, detail="下班時間格式錯誤，請使用 HH:MM")
 
-        # 驗證時間順序：上班時間不得晚於下班時間
-        if punch_in_time and punch_out_time and punch_out_time <= punch_in_time:
+        # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 18:00→02:00）
+        if punch_in_time and punch_out_time and punch_out_time < punch_in_time:
+            punch_out_time += timedelta(days=1)
+        elif punch_in_time and punch_out_time and punch_out_time == punch_in_time:
             raise HTTPException(
                 status_code=400,
-                detail=f"時間錯誤：上班時間 {record.punch_in} 不得晚於或等於下班時間 {record.punch_out}"
+                detail=f"時間錯誤：上下班時間相同 {record.punch_in}，請確認資料"
             )
 
         work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()

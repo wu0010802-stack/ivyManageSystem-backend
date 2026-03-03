@@ -5,7 +5,7 @@
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from dateutil.relativedelta import relativedelta
 from .insurance_service import InsuranceService, InsuranceCalculation
 from .attendance_parser import AttendanceResult
@@ -57,7 +57,7 @@ def _sum_leave_deduction(leaves, daily_salary: float) -> float:
         ratio = lv.deduction_ratio if lv.deduction_ratio is not None \
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
         total += (lv.leave_hours / 8) * daily_salary * ratio
-    return round(total)
+    return total
 
 
 def _compute_hourly_daily_hours(
@@ -84,6 +84,12 @@ def _compute_hourly_daily_hours(
     else:
         # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
         effective_out = datetime.combine(punch_in.date(), work_end_t)
+        # 跨夜班：排班下班時間在上班時間之前（如 work_end=02:00 < punch_in=18:00）
+        # 若補一天後工時仍合理（≤ 每日上限），視為隔日下班
+        if effective_out <= punch_in:
+            candidate = effective_out + timedelta(days=1)
+            if (candidate - punch_in).total_seconds() / 3600 <= MAX_DAILY_WORK_HOURS:
+                effective_out = candidate
 
     # 防止時空穿越：補填或明確設定的下班時間若早於或等於上班時間，略過該日
     if effective_out <= punch_in:
@@ -129,6 +135,8 @@ def _get_db_session():
 
 def get_working_days(year: int, month: int, session=None) -> int:
     """計算指定月份的法定工作日數（週一至週五，排除國定假日）"""
+    if not 1 <= month <= 12:
+        raise ValueError(f"month 必須介於 1–12，收到 {month!r}")
     import calendar
     from models.database import Holiday, get_session
 
@@ -473,10 +481,10 @@ class SalaryEngine:
                     }
 
             session.close()
-            print("SalaryEngine: 已從資料庫載入設定")
+            logger.info("SalaryEngine: 已從資料庫載入設定")
 
         except Exception as e:
-            print(f"SalaryEngine: 從資料庫載入設定失敗，使用預設值: {e}")
+            logger.warning("SalaryEngine: 從資料庫載入設定失敗，使用預設值: %s", e)
 
     def set_bonus_config(self, bonus_config: dict):
         """
@@ -614,9 +622,9 @@ class SalaryEngine:
         missing_count = attendance.missing_punch_in_count + attendance.missing_punch_out_count
 
         return {
-            'late_deduction': round(late_deduction),
+            'late_deduction': late_deduction,
             'missing_punch_deduction': 0,  # 不扣款
-            'early_leave_deduction': round(early_deduction),
+            'early_leave_deduction': early_deduction,
             'late_count': attendance.late_count,
             'early_leave_count': attendance.early_leave_count,
             'missing_punch_count': missing_count,
@@ -794,7 +802,61 @@ class SalaryEngine:
 
         _, month_days = _cal.monthrange(year, month)
         worked_days = month_days - hire_d.day + 1   # 入職日當天計入
-        return round(contracted_base * worked_days / month_days)
+        return contracted_base * worked_days / month_days
+
+    @staticmethod
+    def _build_expected_workdays(
+        year: int,
+        month: int,
+        holiday_set: set,
+        daily_shift_map: dict,
+        hire_date_raw=None,
+        resign_date_raw=None,
+        today: "date | None" = None,
+    ) -> set:
+        """
+        建立指定月份的預期上班日集合。
+
+        規則（優先順序由高至低）：
+        1. 未來日期（> today）不計
+        2. 假日（holiday_set）不計
+        3. 有排班記錄且 shift_type_id 非 None → 應上班
+        4. 無排班記錄 → 預設平日（週一～週五）
+        5. hire_date_raw：入職前不計
+        6. resign_date_raw：離職後不計
+        """
+        if not 1 <= month <= 12:
+            raise ValueError(f"month 必須介於 1–12，收到 {month!r}")
+
+        import calendar as _cal
+        if today is None:
+            today = date.today()
+
+        expected_workdays: set = set()
+        for day_num, weekday in _cal.Calendar().itermonthdays2(year, month):
+            if day_num == 0:
+                continue
+            d = date(year, month, day_num)
+            if d > today:
+                continue
+            if d in holiday_set:
+                continue
+            if d in daily_shift_map:
+                if daily_shift_map[d] is not None:
+                    expected_workdays.add(d)
+            else:
+                if weekday < 5:
+                    expected_workdays.add(d)
+
+        if hire_date_raw:
+            hire_d = hire_date_raw if isinstance(hire_date_raw, date) else datetime.strptime(str(hire_date_raw), '%Y-%m-%d').date()
+            expected_workdays = {d for d in expected_workdays if d >= hire_d}
+
+        if resign_date_raw:
+            resign_d = resign_date_raw if isinstance(resign_date_raw, date) else datetime.strptime(str(resign_date_raw), '%Y-%m-%d').date()
+            expected_workdays = {d for d in expected_workdays if d <= resign_d}
+
+        return expected_workdays
 
     @staticmethod
     def get_bonus_distribution_month(month: int) -> bool:
@@ -992,7 +1054,8 @@ class SalaryEngine:
         classroom_context: dict = None,
         office_staff_context: dict = None,
         meeting_context: dict = None,
-        working_days: int = 22
+        working_days: int = 22,
+        overtime_work_pay: float = 0,
     ) -> SalaryBreakdown:
         """
         計算單一員工薪資
@@ -1238,11 +1301,14 @@ class SalaryEngine:
             if self.get_bonus_distribution_month(month):
                 absent_for_deduction = meeting_context.get('absent_period', absent)
                 breakdown.meeting_absence_deduction = absent_for_deduction * self._meeting_absence_penalty
+                # 從節慶獎金直接扣減，不進入 total_deduction（floor 為 0）
+                breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
         
-        # 將園務會議加班費加入應發總額
-        breakdown.gross_salary += breakdown.meeting_overtime_pay
+        # 將園務會議加班費與核准加班費加入應發總額
+        breakdown.overtime_work_pay = overtime_work_pay
+        breakdown.gross_salary += breakdown.meeting_overtime_pay + overtime_work_pay
 
-        # 計算扣款總額（未打卡不扣款；meeting_absence_deduction 列為獨立扣款項）
+        # 計算扣款總額（未打卡不扣款；meeting_absence_deduction 直接扣 festival_bonus，不進此處）
         breakdown.total_deduction = (
             breakdown.labor_insurance +
             breakdown.health_insurance +
@@ -1251,15 +1317,23 @@ class SalaryEngine:
             breakdown.early_leave_deduction +
             breakdown.leave_deduction +
             breakdown.absence_deduction +
-            breakdown.other_deduction +
-            breakdown.meeting_absence_deduction
+            breakdown.other_deduction
         )
 
-        # 節慶獎金（含超額獎金）獨立轉帳旗標
-        breakdown.bonus_separate = (breakdown.festival_bonus + breakdown.overtime_bonus) > 0
+        # 節慶獎金、超額獎金、主管紅利獨立轉帳旗標與金額
+        breakdown.bonus_separate = (
+            breakdown.festival_bonus + breakdown.overtime_bonus + breakdown.supervisor_dividend
+        ) > 0
+        breakdown.bonus_amount = (
+            breakdown.festival_bonus + breakdown.overtime_bonus + breakdown.supervisor_dividend
+        )
 
-        # 計算實領薪資
-        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+        # 最終一次舍入（台幣無分）
+        # _net_raw 取自未舍入的 gross/total，確保不累積各別 round() 誤差
+        _net_raw = breakdown.gross_salary - breakdown.total_deduction
+        breakdown.gross_salary = round(breakdown.gross_salary)
+        breakdown.total_deduction = round(breakdown.total_deduction)
+        breakdown.net_salary = round(_net_raw)
 
         return breakdown
 
@@ -1406,7 +1480,7 @@ class SalaryEngine:
             }
 
         except Exception as e:
-            print(f"Error calculating bonus breakdown for {employee_id}: {e}")
+            logger.exception("計算節慶獎金明細失敗：employee_id=%s", employee_id)
             return {
                 "name": f"Error: {e}", 
                 "festivalBonus": 0
@@ -1636,8 +1710,6 @@ class SalaryEngine:
             absent_count = 0
             absence_deduction_amount = 0
             if emp.employee_type != 'hourly':
-                import calendar as _cal
-
                 # 取得當月國定假日
                 holidays_in_month = session.query(Holiday.date).filter(
                     Holiday.date >= start_date,
@@ -1658,29 +1730,14 @@ class SalaryEngine:
                 ).all()
                 daily_shift_map = {ds.date: ds.shift_type_id for ds in daily_shifts_in_month}
 
-                expected_workdays: set = set()
-                today_date = date.today()
-                for day_num, weekday in _cal.Calendar().itermonthdays2(year, month):
-                    if day_num == 0:
-                        continue
-                    d = date(year, month, day_num)
-                    # 不得將未來的日子算作曠職
-                    if d > today_date:
-                        continue
-                    if d in holiday_set:
-                        continue
-                    if d in daily_shift_map:
-                        if daily_shift_map[d] is not None:
-                            expected_workdays.add(d)
-                    else:
-                        # 無排班記錄 → 預設平日（週一～週五）
-                        if weekday < 5:
-                            expected_workdays.add(d)
-
-                # 限制到職日之後（尚未在職的日子不算曠職）
-                if emp.hire_date:
-                    hire_d = emp.hire_date if isinstance(emp.hire_date, date) else datetime.strptime(str(emp.hire_date), '%Y-%m-%d').date()
-                    expected_workdays = {d for d in expected_workdays if d >= hire_d}
+                expected_workdays = SalaryEngine._build_expected_workdays(
+                    year=year,
+                    month=month,
+                    holiday_set=holiday_set,
+                    daily_shift_map=daily_shift_map,
+                    hire_date_raw=emp.hire_date,
+                    resign_date_raw=getattr(emp, 'resign_date', None),
+                )
 
                 # 實際有考勤記錄的日期
                 attendance_dates = {a.attendance_date for a in attendances}
@@ -1699,7 +1756,7 @@ class SalaryEngine:
                 absent_days = expected_workdays - attendance_dates - leave_covered
                 absent_count = len(absent_days)
                 daily_salary_full = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
-                absence_deduction_amount = round(absent_count * daily_salary_full)
+                absence_deduction_amount = absent_count * daily_salary_full
                 if absent_count > 0:
                     logger.info(
                         "曠職偵測：emp_id=%d %d/%d 曠職 %d 天，扣款 %d 元（%s）",
@@ -1718,15 +1775,13 @@ class SalaryEngine:
                 classroom_context=classroom_context,
                 office_staff_context=office_staff_context,
                 meeting_context=meeting_context,
+                overtime_work_pay=overtime_work_pay_total,
             )
-            # 加入加班費
-            breakdown.overtime_work_pay = overtime_work_pay_total
-            breakdown.gross_salary += overtime_work_pay_total
 
             # 加入曠職扣款（在 calculate_salary 之外計算，避免改動介面）
             breakdown.absent_count = absent_count
-            breakdown.absence_deduction = absence_deduction_amount
-            breakdown.total_deduction += absence_deduction_amount
+            breakdown.absence_deduction = round(absence_deduction_amount)
+            breakdown.total_deduction = round(breakdown.total_deduction + absence_deduction_amount)
             breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
 
             # 7. 儲存 SalaryRecord
@@ -1769,7 +1824,10 @@ class SalaryEngine:
             salary_record.bonus_separate = breakdown.bonus_separate
             salary_record.performance_bonus = breakdown.performance_bonus
             salary_record.special_bonus = breakdown.special_bonus
-            salary_record.bonus_amount = breakdown.supervisor_dividend
+            salary_record.bonus_amount = (
+                breakdown.festival_bonus + breakdown.overtime_bonus + breakdown.supervisor_dividend
+            )
+            salary_record.supervisor_dividend = breakdown.supervisor_dividend
             salary_record.overtime_pay = breakdown.overtime_work_pay
             salary_record.meeting_overtime_pay = breakdown.meeting_overtime_pay
             salary_record.meeting_absence_deduction = breakdown.meeting_absence_deduction
@@ -1809,7 +1867,7 @@ class SalaryEngine:
 
         except Exception as e:
             session.rollback()
-            print(f"Error processing salary for {employee_id}: {e}")
+            logger.exception("薪資計算失敗：employee_id=%s", employee_id)
             raise e
         finally:
             session.close()

@@ -94,7 +94,7 @@ def get_salary_preview(
                 "overtime_bonus": salary.overtime_bonus or 0,
                 "performance_bonus": salary.performance_bonus or 0,
                 "special_bonus": salary.special_bonus or 0,
-                "supervisor_dividend": salary.bonus_amount or 0,
+                "supervisor_dividend": salary.supervisor_dividend or 0,
                 "total_bonus": total_bonus,
                 "overtime_pay": salary.overtime_pay or 0,
                 "meeting_overtime_pay": salary.meeting_overtime_pay or 0,

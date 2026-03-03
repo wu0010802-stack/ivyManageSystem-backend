@@ -158,11 +158,13 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                             except (ValueError, IndexError) as e:
                                 logger.warning("第 %d 行: 下班時間格式無法解析 '%s': %s", idx+2, punch_out_val, e)
 
-                        # 驗證時間順序：上班時間不得晚於下班時間
-                        if punch_in_time and punch_out_time and punch_out_time <= punch_in_time:
+                        # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 18:00→02:00）
+                        if punch_in_time and punch_out_time and punch_out_time < punch_in_time:
+                            punch_out_time += timedelta(days=1)
+                        elif punch_in_time and punch_out_time and punch_out_time == punch_in_time:
                             results_data["failed"] += 1
                             results_data["errors"].append(
-                                f"第 {idx+2} 行 ({emp_name} {attendance_date}): 上班時間 {punch_in_val} 晚於或等於下班時間 {punch_out_val}，請確認資料"
+                                f"第 {idx+2} 行 ({emp_name} {attendance_date}): 上下班時間相同 {punch_in_val}，請確認資料"
                             )
                             continue
 
@@ -218,6 +220,9 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                              shift_start_dt = datetime.combine(attendance_date, shift_start)
                              shift_end_dt = datetime.combine(attendance_date, shift_end)
+                             # 跨夜班：排班結束在隔日（如 shift_end=02:00 < shift_start=18:00）
+                             if shift_end_dt <= shift_start_dt:
+                                 shift_end_dt += timedelta(days=1)
 
                              is_late = punch_in_time > shift_start_dt
                              late_minutes = max(0, int((punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
@@ -367,6 +372,15 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                         p_out = detail['punch_out']
                         a_date = detail['date']
 
+                        # 取完整 datetime（跨夜班的 punch_out_dt 已是次日）
+                        dt_in_full  = detail.get('punch_in_dt')
+                        dt_out_full = detail.get('punch_out_dt')
+                        # 向後相容：若舊資料無 punch_in_dt，fallback 到 combine
+                        if dt_in_full is None and p_in:
+                            dt_in_full = datetime.combine(a_date, p_in)
+                        if dt_out_full is None and p_out:
+                            dt_out_full = datetime.combine(a_date, p_out)
+
                         status = detail['status']
                         is_late = detail['is_late']
                         is_early_leave = detail['is_early_leave']
@@ -375,19 +389,22 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                         is_assistant = employee.id in assistant_teacher_map
                         is_driver = "司機" in employee.title_name
 
-                        if (is_head_teacher or is_assistant) and p_in and p_out:
+                        if (is_head_teacher or is_assistant) and dt_in_full and dt_out_full:
                             week_monday = a_date - timedelta(days=a_date.weekday())
                             shift_key = (employee.id, week_monday)
                             if shift_key in shift_schedule_map:
                                 shift = shift_schedule_map[shift_key]
                                 shift_start = datetime.strptime(shift["work_start"], "%H:%M").time()
                                 shift_end = datetime.strptime(shift["work_end"], "%H:%M").time()
-                                dt_in = datetime.combine(a_date, p_in)
-                                dt_out = datetime.combine(a_date, p_out)
+                                shift_start_dt = datetime.combine(a_date, shift_start)
+                                shift_end_dt   = datetime.combine(a_date, shift_end)
+                                # 跨夜班：排班結束在隔日
+                                if shift_end_dt <= shift_start_dt:
+                                    shift_end_dt += timedelta(days=1)
 
-                                is_late = dt_in > datetime.combine(a_date, shift_start)
-                                late_minutes = max(0, int((dt_in - datetime.combine(a_date, shift_start)).total_seconds() / 60)) if is_late else 0
-                                is_early_leave = dt_out < datetime.combine(a_date, shift_end)
+                                is_late = dt_in_full > shift_start_dt
+                                late_minutes = max(0, int((dt_in_full - shift_start_dt).total_seconds() / 60)) if is_late else 0
+                                is_early_leave = dt_out_full < shift_end_dt
 
                                 if is_late and is_early_leave:
                                     status = "late+early_leave"
@@ -398,10 +415,8 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 else:
                                     status = "normal"
 
-                        elif p_in and p_out:
-                            dt_in = datetime.combine(a_date, p_in)
-                            dt_out = datetime.combine(a_date, p_out)
-                            duration_minutes = int((dt_out - dt_in).total_seconds() / 60)
+                        elif dt_in_full and dt_out_full:
+                            duration_minutes = int((dt_out_full - dt_in_full).total_seconds() / 60)
                             required_duration = 480 if is_driver else 540
 
                             if duration_minutes >= required_duration:
@@ -414,8 +429,8 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                             Attendance.attendance_date == a_date
                         ).first()
 
-                        db_p_in = datetime.combine(a_date, p_in) if p_in else None
-                        db_p_out = datetime.combine(a_date, p_out) if p_out else None
+                        db_p_in  = dt_in_full
+                        db_p_out = dt_out_full
 
                         if existing:
                             existing.punch_in_time = db_p_in
@@ -538,11 +553,13 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                     except ValueError:
                         pass
 
-                # 驗證時間順序：上班時間不得晚於下班時間
-                if punch_in_time and punch_out_time and punch_out_time <= punch_in_time:
+                # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 18:00→02:00）
+                if punch_in_time and punch_out_time and punch_out_time < punch_in_time:
+                    punch_out_time += timedelta(days=1)
+                elif punch_in_time and punch_out_time and punch_out_time == punch_in_time:
                     results["failed"] += 1
                     results["errors"].append(
-                        f"{row.name} {row.date}: 上班時間 {row.punch_in} 晚於或等於下班時間 {row.punch_out}，請確認資料"
+                        f"{row.name} {row.date}: 上下班時間相同 {row.punch_in}，請確認資料"
                     )
                     continue
 

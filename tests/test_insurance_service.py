@@ -108,6 +108,26 @@ class TestCalculate:
         assert result.insured_amount == 313000
 
 
+class TestNegativeDependents:
+    """眷屬人數為負值時不得產生負健保費"""
+
+    def test_negative_one_treated_as_zero(self, service):
+        """dependents=-1 應與 dependents=0 結果相同，不得算出負健保費"""
+        result_neg = service.calculate(salary=30000, dependents=-1)
+        result_zero = service.calculate(salary=30000, dependents=0)
+        assert result_neg.health_employee == result_zero.health_employee
+
+    def test_large_negative_treated_as_zero(self, service):
+        """dependents=-99 不得使健保費為負值"""
+        result = service.calculate(salary=30000, dependents=-99)
+        assert result.health_employee >= 0
+
+    def test_negative_dependents_total_employee_not_negative(self, service):
+        """負眷屬數不得讓 total_employee（勞+健+退）小於零"""
+        result = service.calculate(salary=30000, dependents=-5)
+        assert result.total_employee >= 0
+
+
 class TestPensionSelfContributionBracket:
     """回歸測試：勞退自提必須以投保級距金額計算，不得用真實薪資"""
 

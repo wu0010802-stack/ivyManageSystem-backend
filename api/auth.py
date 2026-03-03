@@ -152,6 +152,7 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
             "role": target_user.role,
             "name": target_emp.name,
             "permissions": permissions,
+            "token_version": target_user.token_version,
         })
 
         # 6. 寫入審計日誌
@@ -221,6 +222,7 @@ def login(data: LoginRequest, request: Request):
             "role": user.role,
             "name": emp.name if emp else "",
             "permissions": permissions,
+            "token_version": user.token_version,
         })
 
         return {
@@ -271,6 +273,11 @@ def refresh_token(authorization: str = Header(None)):
         if not user:
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
 
+        # 驗證 token_version：帳號停用或權限變更時版本遞增，使舊 token 無法換發
+        # payload 缺少 token_version（舊 token 向下相容）時視為 0，與 DB 預設值相符
+        if payload.get("token_version", 0) != user.token_version:
+            raise HTTPException(status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）")
+
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
         permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
 
@@ -280,6 +287,7 @@ def refresh_token(authorization: str = Header(None)):
             "role": user.role,
             "name": emp.name if emp else "",
             "permissions": permissions,
+            "token_version": user.token_version,
         })
 
         return {
@@ -425,6 +433,7 @@ def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict 
             raise HTTPException(status_code=404, detail="使用者不存在")
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = True  # 管理員代為重設密碼，強制當事人下次登入修改
+        user.token_version = (user.token_version or 0) + 1  # 使所有現有 session 的 token 立即無法刷新
         session.commit()
         return {"message": "密碼重設成功"}
     except HTTPException:
@@ -467,6 +476,16 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
 
         if data.is_active is not None:
             user.is_active = data.is_active
+
+        # 帳號停用、角色或權限實際變更時，遞增 token_version
+        # 使所有已持有的 token 在下次嘗試 refresh 時立即被拒絕（最長 15 分鐘後完全失效）
+        should_revoke = (
+            (not user.is_active and old_is_active) or
+            (user.role != old_role) or
+            (user.permissions != old_permissions)
+        )
+        if should_revoke:
+            user.token_version = (user.token_version or 0) + 1
 
         # 建立變更摘要並傳給 AuditMiddleware
         changes = []

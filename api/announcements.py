@@ -7,6 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.orm import joinedload
 
 from models.database import get_session, Announcement, Employee
 from utils.auth import require_permission
@@ -44,7 +45,9 @@ def list_announcements(
     """列出所有公告（管理員用）"""
     session = get_session()
     try:
-        query = session.query(Announcement).order_by(
+        query = session.query(Announcement).options(
+            joinedload(Announcement.author)
+        ).order_by(
             Announcement.is_pinned.desc(),
             Announcement.created_at.desc(),
         )
@@ -53,7 +56,6 @@ def list_announcements(
 
         results = []
         for ann in items:
-            author = session.query(Employee).filter(Employee.id == ann.created_by).first()
             results.append({
                 "id": ann.id,
                 "title": ann.title,
@@ -61,7 +63,7 @@ def list_announcements(
                 "priority": ann.priority,
                 "is_pinned": ann.is_pinned,
                 "created_by": ann.created_by,
-                "created_by_name": author.name if author else "未知",
+                "created_by_name": ann.author.name if ann.author else "未知",
                 "created_at": ann.created_at.isoformat() if ann.created_at else None,
                 "updated_at": ann.updated_at.isoformat() if ann.updated_at else None,
                 "read_count": len(ann.reads),

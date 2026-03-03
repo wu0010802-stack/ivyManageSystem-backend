@@ -151,6 +151,8 @@ def _run_migrations(engine):
     # salary_records — 曠職扣款
     _add_column_if_missing(engine, inspector, "salary_records", "absence_deduction", "FLOAT DEFAULT 0")
     _add_column_if_missing(engine, inspector, "salary_records", "absent_count", "INTEGER DEFAULT 0")
+    # salary_records — 主管紅利獨立欄位（拆分自 bonus_amount）
+    _add_column_if_missing(engine, inspector, "salary_records", "supervisor_dividend", "FLOAT DEFAULT 0")
 
     # employees — 勞退自提比例
     _add_column_if_missing(engine, inspector, "employees", "pension_self_rate", "FLOAT DEFAULT 0")
@@ -159,6 +161,8 @@ def _run_migrations(engine):
 
     # users — 強制修改密碼旗標
     _add_column_if_missing(engine, inspector, "users", "must_change_password", "BOOLEAN NOT NULL DEFAULT FALSE")
+    # users — Token 版本號（用於即時撤銷：帳號停用或權限變更時 +1，使所有現有 token 無法換發）
+    _add_column_if_missing(engine, inspector, "users", "token_version", "INTEGER NOT NULL DEFAULT 0")
 
     # users — employee_id 改為允許 NULL（純管理帳號用，不關聯員工記錄）
     user_cols = {c["name"]: c for c in inspector.get_columns("users")}
@@ -422,6 +426,43 @@ class OvertimeRecord(Base):
     employee = relationship("Employee", backref="overtimes")
 
 
+class PunchCorrectionRequest(Base):
+    """補打卡申請表"""
+    __tablename__ = "punch_correction_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+
+    attendance_date = Column(Date, nullable=False, comment="欲補打的日期")
+    correction_type = Column(String(20), nullable=False, comment="補正類型: punch_in / punch_out / both")
+    requested_punch_in = Column(DateTime, nullable=True, comment="申請的上班時間")
+    requested_punch_out = Column(DateTime, nullable=True, comment="申請的下班時間")
+    reason = Column(Text, nullable=True, comment="說明原因")
+
+    is_approved = Column(Boolean, nullable=True, default=None, comment="是否核准 (None=待審核, True=核准, False=駁回)")
+    approved_by = Column(String(50), nullable=True, comment="核准人")
+    rejection_reason = Column(Text, nullable=True, comment="駁回原因")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def approval_status(self) -> str:
+        """語意化審核狀態，取代直接比較 nullable boolean 的反模式。
+        回傳值：'pending' | 'approved' | 'rejected'"""
+        if self.is_approved is True:
+            return 'approved'
+        if self.is_approved is False:
+            return 'rejected'
+        return 'pending'
+
+    __table_args__ = (
+        Index('ix_punch_correction_emp_date', 'employee_id', 'attendance_date'),
+    )
+
+    employee = relationship("Employee", backref="punch_correction_requests")
+
+
 class SalaryRecord(Base):
     """薪資記錄表"""
     __tablename__ = "salary_records"
@@ -482,7 +523,8 @@ class SalaryRecord(Base):
     net_salary = Column(Float, default=0, comment="實發金額")
 
     bonus_separate = Column(Boolean, default=False, comment="獎金是否獨立轉帳")
-    bonus_amount = Column(Float, default=0, comment="獨立轉帳獎金金額")
+    bonus_amount = Column(Float, default=0, comment="獨立轉帳獎金金額（festival+overtime+supervisor_dividend）")
+    supervisor_dividend = Column(Float, default=0, comment="主管紅利（獨立轉帳）")
 
     remark = Column(Text, comment="備註")
 
@@ -971,6 +1013,7 @@ class User(Base):
     permissions = Column(BigInteger, nullable=True, default=None, comment="功能模組權限位元遮罩 (-1=全部權限, NULL=使用角色預設)")
     is_active = Column(Boolean, default=True, comment="帳號是否啟用")
     must_change_password = Column(Boolean, default=False, comment="是否強制下次登入修改密碼")
+    token_version = Column(Integer, default=0, nullable=False, comment="Token 版本號；帳號停用或權限變更時遞增，使所有現有 Token 無法刷新")
     last_login = Column(DateTime, comment="最後登入時間")
 
     created_at = Column(DateTime, default=datetime.now)

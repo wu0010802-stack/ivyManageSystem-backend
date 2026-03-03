@@ -39,6 +39,7 @@ from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
 from api.dev import router as dev_router, init_dev_services
+from api.punch_corrections import router as punch_corrections_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -122,6 +123,7 @@ app.include_router(reports_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
 app.include_router(dev_router)
+app.include_router(punch_corrections_router)
 
 # Audit middleware (must be added after CORS middleware)
 from utils.audit import AuditMiddleware
