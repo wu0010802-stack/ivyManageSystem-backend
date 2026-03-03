@@ -14,7 +14,7 @@ from utils.permissions import Permission
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import joinedload
 import calendar as _cal
 
@@ -22,10 +22,9 @@ from models.database import (
     get_session, Employee, Classroom, ClassGrade, Student,
     SalaryRecord, EmployeeAllowance, AllowanceType, Attendance,
 )
+from services.salary_engine import _compute_hourly_daily_hours
 
 logger = logging.getLogger(__name__)
-
-MAX_DAILY_WORK_HOURS = 12.0  # 時薪制每日工時上限（正常 8H + 最高加班 4H，防止打卡異常灌水）
 
 router = APIRouter(prefix="/api", tags=["salary"])
 
@@ -159,14 +158,16 @@ def _build_classroom_info(session, enrollment_map):
     classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
     grade_map = {g.id: g.name for g in session.query(ClassGrade).all()}
 
+    # 批次查詢所有班級學生數，避免 N+1
+    db_counts = session.query(
+        Student.classroom_id, func.count(Student.id)
+    ).filter(Student.is_active == True).group_by(Student.classroom_id).all()
+    db_count_map = {classroom_id: cnt for classroom_id, cnt in db_counts}
+
     classroom_info_map = {}
     for c in classrooms:
-        if c.id in enrollment_map:
-            student_count = enrollment_map[c.id]
-        else:
-            student_count = session.query(Student).filter(
-                Student.classroom_id == c.id, Student.is_active == True
-            ).count()
+        # enrollment_map 優先（使用者本次提交的覆寫），其次用 DB 統計，找不到則 0
+        student_count = enrollment_map.get(c.id, db_count_map.get(c.id, 0))
         classroom_info_map[c.id] = {
             "id": c.id, "name": c.name,
             "grade_id": c.grade_id, "grade_name": grade_map.get(c.grade_id, ''),
@@ -458,28 +459,9 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                 for a in att_records:
                     if not a.punch_in_time:
                         continue
-                    if a.punch_out_time:
-                        effective_out = a.punch_out_time
-                    else:
-                        # 缺下班打卡：以排班下班時間代入，避免員工工時歸零
-                        effective_out = datetime.combine(a.punch_in_time.date(), _work_end_t)
-                        # 跨夜班修正：排班下班時間在隔日（如 work_end=02:00 < punch_in=18:00）
-                        # 若補一天後工時仍合理（≤ 每日上限），視為隔日下班
-                        if effective_out <= a.punch_in_time:
-                            candidate = effective_out + timedelta(days=1)
-                            if (candidate - a.punch_in_time).total_seconds() / 3600 <= MAX_DAILY_WORK_HOURS:
-                                effective_out = candidate
-                            else:
-                                continue
-                    diff = (effective_out - a.punch_in_time).total_seconds() / 3600
-                    # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
-                    _d = a.punch_in_time.date()
-                    _lunch_s = datetime.combine(_d, time(12, 0))
-                    _lunch_e = datetime.combine(_d, time(13, 0))
-                    _overlap = max(0.0, (min(effective_out, _lunch_e) - max(a.punch_in_time, _lunch_s)).total_seconds() / 3600)
-                    diff -= _overlap
-                    # 每日工時上限，防止打卡資料異常（手動修改）導致薪資灌水
-                    total_hours += min(diff, MAX_DAILY_WORK_HOURS)
+                    total_hours += _compute_hourly_daily_hours(
+                        a.punch_in_time, a.punch_out_time, _work_end_t
+                    )
                 emp_dict['work_hours'] = round(total_hours, 2)
 
             classroom_context = _resolve_bonus_for_employee(
@@ -518,8 +500,8 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
 @router.post("/salaries/calculate")
 def calculate_salaries_alt(
     current_user: dict = Depends(require_permission(Permission.SALARY_WRITE)),
-    year: int = Query(..., description="Calculate for which year"),
-    month: int = Query(..., description="Calculate for which month")
+    year: int = Query(..., ge=2000, le=2100, description="Calculate for which year"),
+    month: int = Query(..., ge=1, le=12, description="Calculate for which month")
 ):
     """
     Calculate or Recalculate salaries for all employees for a given month.
@@ -616,8 +598,8 @@ def calculate_salaries_alt(
 @router.get("/salaries/festival-bonus")
 def get_festival_bonus(
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
-    year: int = Query(...),
-    month: int = Query(...)
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12)
 ):
     """
     Return breakdown of festival bonus calculation
@@ -661,8 +643,8 @@ def get_festival_bonus(
 @router.get("/salaries/records")
 def get_salary_records(
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
-    year: int = Query(...),
-    month: int = Query(...)
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12)
 ):
     """查詢某月薪資記錄"""
     session = get_session()
@@ -704,7 +686,7 @@ def get_salary_records(
                 "birthday_bonus": record.birthday_bonus or 0,
                 "performance_bonus": record.performance_bonus,
                 "special_bonus": record.special_bonus,
-                "supervisor_dividend": record.bonus_amount or 0,
+                "supervisor_dividend": record.supervisor_dividend or 0,
                 "labor_insurance": record.labor_insurance_employee,
                 "health_insurance": record.health_insurance_employee,
                 "pension": record.pension_employee,
@@ -762,8 +744,8 @@ def export_salary_slip(
 @router.get("/salaries/export-all")
 def export_all_salaries(
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
     format: str = Query("xlsx", pattern="^(xlsx)$")
 ):
     """匯出全部員工薪資 Excel"""
@@ -853,7 +835,7 @@ def get_salary_history(
 @router.get("/salaries/history-all")
 def get_salary_history_all(
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
-    year: int = Query(...)
+    year: int = Query(..., ge=2000, le=2100)
 ):
     """查詢全部員工年度薪資概覽"""
     session = get_session()

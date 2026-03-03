@@ -1,7 +1,8 @@
 """薪資引擎核心邏輯單元測試"""
 import pytest
 from datetime import date, datetime, time
-from services.salary_engine import SalaryEngine, SalaryBreakdown, _compute_hourly_daily_hours
+from unittest.mock import MagicMock
+from services.salary_engine import SalaryEngine, SalaryBreakdown, _compute_hourly_daily_hours, get_working_days
 from services.attendance_parser import AttendanceResult
 
 
@@ -133,14 +134,13 @@ class TestAttendanceDeduction:
         assert result['missing_punch_deduction'] == 0
 
     def test_late_per_minute(self, engine):
-        """遲到按分鐘比例扣款"""
+        """遲到按分鐘比例扣款（中間值保留浮點，不提前 round）"""
         att = self._make_attendance(late_count=1, total_late_minutes=30)
         result = engine.calculate_attendance_deduction(
             att, daily_salary=1000, base_salary=30000, late_details=[30]
         )
         per_minute = 30000 / 14400
-        expected = round(30 * per_minute)
-        assert result['late_deduction'] == expected
+        assert result['late_deduction'] == 30 * per_minute  # 62.5，不提前舍入
 
     def test_late_over_120_min_per_minute(self, engine):
         """遲到超過 120 分鐘仍按實際分鐘比例扣款（依勞基法，不得溢扣）"""
@@ -149,7 +149,7 @@ class TestAttendanceDeduction:
             att, daily_salary=1000, base_salary=30000, late_details=[150]
         )
         per_minute = 30000 / 14400
-        assert result['late_deduction'] == round(150 * per_minute)
+        assert result['late_deduction'] == 150 * per_minute  # 312.5，不提前舍入
         assert 'auto_leave_count' not in result
         assert 'auto_leave_deduction' not in result
 
@@ -171,7 +171,7 @@ class TestAttendanceDeduction:
             att, daily_salary=1000, base_salary=30000
         )
         per_minute = 30000 / 14400
-        assert result['early_leave_deduction'] == round(20 * per_minute)
+        assert result['early_leave_deduction'] == 20 * per_minute  # 41.666...，不提前舍入
 
     def test_missing_punch_no_deduction(self, engine):
         """缺卡不扣款，僅記錄"""
@@ -642,9 +642,9 @@ class TestMidMonthHireSalaryProration:
     # ── _prorate_base_salary 單元測試 ────────────────
 
     def test_mid_month_hire_31_day_month(self, engine):
-        """1月(31天)16日入職 → 在職16天 → 30000×16/31 ≈ 15484"""
+        """1月(31天)16日入職 → 在職16天 → 30000×16/31 ≈ 15483.87（保留浮點，不提前舍入）"""
         result = engine._prorate_base_salary(30000, '2026-01-16', 2026, 1)
-        assert result == round(30000 * 16 / 31)
+        assert result == 30000 * 16 / 31
 
     def test_mid_month_hire_30_day_month(self, engine):
         """6月(30天)16日入職 → 在職15天 → 30000×15/30 = 15000"""
@@ -662,9 +662,9 @@ class TestMidMonthHireSalaryProration:
         assert result == 30000
 
     def test_last_day_hire_one_day(self, engine):
-        """最後一天（31日）入職 → 在職1天 → 30000×1/31 ≈ 968"""
+        """最後一天（31日）入職 → 在職1天 → 30000×1/31 ≈ 967.74（保留浮點，不提前舍入）"""
         result = engine._prorate_base_salary(30000, '2026-01-31', 2026, 1)
-        assert result == round(30000 * 1 / 31)
+        assert result == 30000 * 1 / 31
 
     def test_no_hire_date_no_proration(self, engine):
         """無到職日 → 不折算，回傳完整月薪"""
@@ -674,7 +674,7 @@ class TestMidMonthHireSalaryProration:
     def test_date_object_input(self, engine):
         """支援 date 物件輸入（非字串）"""
         result = engine._prorate_base_salary(30000, date(2026, 1, 16), 2026, 1)
-        assert result == round(30000 * 16 / 31)
+        assert result == 30000 * 16 / 31
 
     # ── calculate_salary 整合測試 ────────────────────
 
@@ -691,7 +691,7 @@ class TestMidMonthHireSalaryProration:
             'hire_date': '2026-01-16',   # 1月16日入職，當月31天
         }
         breakdown = engine.calculate_salary(employee=employee, year=2026, month=1)
-        expected_base = round(30000 * 16 / 31)   # 在職16天/共31天
+        expected_base = 30000 * 16 / 31   # 在職16天/共31天，保留浮點
         assert breakdown.base_salary == expected_base
 
     def test_full_month_employee_no_proration(self, engine, sample_employee):
@@ -808,3 +808,344 @@ class TestComputeHourlyDailyHoursOvernight:
         punch_in = datetime(2026, 1, 14, 18, 0)
         punch_out = datetime(2026, 1, 15, 1, 0)
         assert _compute_hourly_daily_hours(punch_in, punch_out, self.OVERNIGHT_END) == 7.0
+
+
+# ──────────────────────────────────────────────
+# 會議缺席扣款應從 festival_bonus 扣，不進 total_deduction
+# ──────────────────────────────────────────────
+class TestMeetingAbsenceDeductFromFestivalBonus:
+    """
+    回歸測試：會議缺席扣款應從 festival_bonus 直接扣減，不進入 total_deduction。
+
+    Bug 描述：
+      meeting_absence_deduction 被錯誤加入 total_deduction，
+      導致罰款從月薪（net_salary）扣除，
+      但節慶獎金仍全額另行轉帳，罰款實際上形同虛設。
+
+    正確行為（依 CLAUDE.md 規範）：
+      festival_bonus = max(0, original_festival_bonus - meeting_absence_deduction)
+      total_deduction 不含 meeting_absence_deduction
+    """
+
+    def test_absence_deducted_from_festival_bonus_not_total_deduction(
+        self, engine, sample_employee, sample_classroom_context
+    ):
+        """發放月缺席 2 次：festival_bonus 應減少 200，total_deduction 不受影響"""
+        baseline = engine.calculate_salary(
+            employee=sample_employee,
+            year=2026, month=6,
+            classroom_context=sample_classroom_context,
+        )
+
+        meeting = {'attended': 1, 'absent': 2, 'absent_period': 2, 'work_end_time': '17:00'}
+        breakdown = engine.calculate_salary(
+            employee=sample_employee,
+            year=2026, month=6,
+            classroom_context=sample_classroom_context,
+            meeting_context=meeting,
+        )
+
+        assert breakdown.meeting_absence_deduction == 200
+        # festival_bonus 應被扣減 200
+        assert breakdown.festival_bonus == baseline.festival_bonus - 200
+        # total_deduction 不含 meeting_absence_deduction
+        assert breakdown.total_deduction == baseline.total_deduction
+
+    def test_net_salary_unaffected_by_meeting_absence(
+        self, engine, sample_employee, sample_classroom_context
+    ):
+        """會議缺席扣款不應影響月薪 net_salary，只影響節慶獎金轉帳金額"""
+        baseline = engine.calculate_salary(
+            employee=sample_employee,
+            year=2026, month=6,
+            classroom_context=sample_classroom_context,
+        )
+
+        meeting = {'attended': 0, 'absent': 3, 'absent_period': 3, 'work_end_time': '17:00'}
+        breakdown = engine.calculate_salary(
+            employee=sample_employee,
+            year=2026, month=6,
+            classroom_context=sample_classroom_context,
+            meeting_context=meeting,
+        )
+
+        assert breakdown.net_salary == baseline.net_salary
+
+    def test_festival_bonus_floor_at_zero(self, engine, sample_employee):
+        """缺席扣款超過 festival_bonus 時，festival_bonus 應為 0，不為負值"""
+        low_context = {
+            'role': 'head_teacher',
+            'grade_name': '大班',
+            'current_enrollment': 1,  # 在籍極低 → festival_bonus 極小
+            'has_assistant': True,
+            'is_shared_assistant': False,
+        }
+        meeting = {'attended': 0, 'absent': 50, 'absent_period': 50, 'work_end_time': '17:00'}
+        breakdown = engine.calculate_salary(
+            employee=sample_employee,
+            year=2026, month=6,
+            classroom_context=low_context,
+            meeting_context=meeting,
+        )
+
+        assert breakdown.festival_bonus >= 0
+
+
+# ──────────────────────────────────────────────
+# 加班費路徑一致性（overtime_work_pay 應在 calculate_salary 內計入）
+# ──────────────────────────────────────────────
+class TestOvertimeWorkPayInCalculateSalary:
+
+    def test_overtime_work_pay_included_in_gross_salary(self, engine, sample_employee):
+        """overtime_work_pay 傳入 calculate_salary 後應計入 gross_salary"""
+        breakdown = engine.calculate_salary(
+            employee=sample_employee,
+            year=2026, month=1,
+            overtime_work_pay=1200,
+        )
+        assert breakdown.overtime_work_pay == 1200
+        assert breakdown.gross_salary == (
+            sample_employee['base_salary'] +
+            sample_employee['teacher_allowance'] +
+            sample_employee['meal_allowance'] +
+            1200
+        )
+
+    def test_overtime_work_pay_included_in_net_salary(self, engine, sample_employee):
+        """overtime_work_pay 加入後 net_salary 應比不加時多出同等金額"""
+        base = engine.calculate_salary(employee=sample_employee, year=2026, month=1)
+        with_ot = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=1, overtime_work_pay=1200
+        )
+        assert with_ot.net_salary == base.net_salary + 1200
+
+    def test_zero_overtime_work_pay_is_backward_compatible(self, engine, sample_employee):
+        """overtime_work_pay=0（預設）不影響原有計算結果"""
+        base = engine.calculate_salary(employee=sample_employee, year=2026, month=1)
+        explicit_zero = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=1, overtime_work_pay=0
+        )
+        assert base.gross_salary == explicit_zero.gross_salary
+        assert base.net_salary == explicit_zero.net_salary
+
+
+# ──────────────────────────────────────────────
+# 曠職偵測：預期上班日計算（_build_expected_workdays）
+# ──────────────────────────────────────────────
+class TestBuildExpectedWorkdays:
+    """
+    2026 年 1 月有 22 個平日（週一～週五）：
+    1(Thu), 2(Fri), 5-9, 12-16, 19-23, 26-30
+    """
+
+    def _workdays(self, **kwargs):
+        """呼叫 _build_expected_workdays，固定 today=2026-01-31 排除未來過濾干擾"""
+        return SalaryEngine._build_expected_workdays(
+            year=2026, month=1,
+            holiday_set=set(),
+            daily_shift_map={},
+            today=date(2026, 1, 31),
+            **kwargs,
+        )
+
+    def test_no_filters_returns_all_weekdays(self, engine):
+        """無入離職限制應回傳當月所有平日（22 天）"""
+        result = self._workdays()
+        assert len(result) == 22
+
+    def test_hire_date_excludes_days_before_hire(self, engine):
+        """2026-01-15 入職：1/1–1/14 不算曠職，共 8 個預期工作日（1/15–1/30 平日）"""
+        result = self._workdays(hire_date_raw=date(2026, 1, 15))
+        # 1/15(Thu), 16(Fri), 19-23, 26-30 = 12 天
+        assert date(2026, 1, 14) not in result
+        assert date(2026, 1, 15) in result
+        assert len(result) == 12
+
+    def test_resign_date_excludes_days_after_resignation(self, engine):
+        """2026-01-15 離職：1/16 起不算曠職，只留 1/1–1/15 的平日"""
+        result = self._workdays(resign_date_raw=date(2026, 1, 15))
+        # 1/1(Thu), 2(Fri), 5-9, 12-16 不對——15 是 Thu，所以到 15
+        # 1(Thu),2(Fri),5,6,7,8,9,12,13,14,15 = 11 天
+        assert date(2026, 1, 16) not in result
+        assert date(2026, 1, 15) in result  # 離職當天仍算
+        assert len(result) == 11
+
+    def test_resign_day_is_included(self, engine):
+        """離職當天（2026-01-02 Fri）本身應包含在預期工作日內"""
+        result = self._workdays(resign_date_raw=date(2026, 1, 2))
+        assert date(2026, 1, 2) in result
+        assert date(2026, 1, 5) not in result
+        assert len(result) == 2  # 1/1, 1/2
+
+    def test_hire_and_resign_both_applied(self, engine):
+        """同時有入職（1/5）與離職（1/16 Fri）：只留 1/5–1/16 的平日 = 10 天"""
+        result = self._workdays(
+            hire_date_raw=date(2026, 1, 5),
+            resign_date_raw=date(2026, 1, 16),
+        )
+        assert date(2026, 1, 2) not in result   # 入職前
+        assert date(2026, 1, 19) not in result  # 離職後
+        assert date(2026, 1, 5) in result
+        assert date(2026, 1, 16) in result
+        assert len(result) == 10  # 5-9, 12-16
+
+    def test_resign_string_date_accepted(self, engine):
+        """resign_date_raw 為字串格式時應能正確解析"""
+        result = self._workdays(resign_date_raw='2026-01-02')
+        assert len(result) == 2
+
+    def test_invalid_month_raises_value_error(self, engine):
+        """month=13 應拋出含明確中文說明的 ValueError（由我們的 guard 產生，非 calendar 內部訊息）"""
+        with pytest.raises(ValueError, match="month 必須介於"):
+            SalaryEngine._build_expected_workdays(
+                year=2026, month=13,
+                holiday_set=set(), daily_shift_map={},
+            )
+
+    def test_month_zero_raises_value_error(self, engine):
+        """month=0 同樣應拋出明確 ValueError"""
+        with pytest.raises(ValueError, match="month 必須介於"):
+            SalaryEngine._build_expected_workdays(
+                year=2026, month=0,
+                holiday_set=set(), daily_shift_map={},
+            )
+
+    def test_valid_boundary_months_do_not_raise(self, engine):
+        """month=1 與 month=12 為合法邊界，不應拋出例外"""
+        SalaryEngine._build_expected_workdays(
+            year=2026, month=1,
+            holiday_set=set(), daily_shift_map={},
+            today=date(2026, 1, 31),
+        )
+        SalaryEngine._build_expected_workdays(
+            year=2026, month=12,
+            holiday_set=set(), daily_shift_map={},
+            today=date(2026, 12, 31),
+        )
+
+
+# ──────────────────────────────────────────────
+# get_working_days 月份驗證
+# ──────────────────────────────────────────────
+class TestGetWorkingDaysValidation:
+
+    def _mock_session(self):
+        """回傳一個空假日列表的 mock session，避免真實 DB 連線"""
+        sess = MagicMock()
+        sess.query.return_value.filter.return_value.all.return_value = []
+        return sess
+
+    def test_invalid_month_13_raises_value_error(self):
+        """month=13 應拋出含明確說明的 ValueError（非 calendar 內部訊息）"""
+        with pytest.raises(ValueError, match="month 必須介於"):
+            get_working_days(2026, 13)
+
+    def test_month_zero_raises_value_error(self):
+        """month=0 應拋出 ValueError"""
+        with pytest.raises(ValueError, match="month 必須介於"):
+            get_working_days(2026, 0)
+
+    def test_valid_boundary_month_1_returns_int(self):
+        """month=1 為合法邊界，應回傳整數工作日數"""
+        result = get_working_days(2026, 1, session=self._mock_session())
+        assert isinstance(result, int)
+        assert result > 0
+
+    def test_valid_boundary_month_12_returns_int(self):
+        """month=12 為合法邊界，應回傳整數工作日數"""
+        result = get_working_days(2026, 12, session=self._mock_session())
+        assert isinstance(result, int)
+        assert result > 0
+
+
+# ──────────────────────────────────────────────
+# 浮點舍入：中間值保留精度，最終一次舍入
+# ──────────────────────────────────────────────
+class TestDeferredRounding:
+    """
+    場景：2026年1月，員工 1/3 入職（29/31 天），遲到 3 分鐘
+      月中折算 raw : 30000 × 29/31 = 28064.516...  → 個別 round → 28065（誤差 +0.484）
+      遲到扣款 raw : 3 × (30000/30/8/60) = 6.25    → 個別 round → 6   （誤差 −0.25）
+      個別舍入 net  = (28065 + 2000 + 2400) − (758 + 470 + 6) = 31231
+      延遲舍入 net  = round(28064.516... + 2000 + 2400 − 758 − 470 − 6.25)
+                    = round(31230.266...) = 31230
+    """
+
+    def _make_att(self, late_minutes=3):
+        return AttendanceResult(
+            employee_name='舍入測試',
+            total_days=22, normal_days=21,
+            late_count=1, early_leave_count=0,
+            missing_punch_in_count=0, missing_punch_out_count=0,
+            total_late_minutes=late_minutes,
+            total_early_minutes=0,
+            details=[],
+        )
+
+    def test_net_salary_deferred_rounding(self, engine, sample_employee):
+        """延遲舍入應得 31230，個別舍入誤計 31231"""
+        emp = {**sample_employee, 'hire_date': '2026-01-03'}
+        breakdown = engine.calculate_salary(
+            employee=emp, year=2026, month=1,
+            attendance=self._make_att(late_minutes=3),
+        )
+        # round(28064.516... + 2000 + 2400 − 758 − 470 − 6.25) = round(31230.266) = 31230
+        assert breakdown.net_salary == 31230
+
+    def test_gross_and_total_deduction_are_integers(self, engine, sample_employee):
+        """gross_salary 與 total_deduction 最終應為整數（前端顯示不出現小數）"""
+        emp = {**sample_employee, 'hire_date': '2026-01-03'}
+        breakdown = engine.calculate_salary(
+            employee=emp, year=2026, month=1,
+            attendance=self._make_att(late_minutes=3),
+        )
+        assert breakdown.gross_salary == int(breakdown.gross_salary)
+        assert breakdown.total_deduction == int(breakdown.total_deduction)
+
+    def test_no_rounding_sources_net_exact(self, engine, sample_employee):
+        """無月中入職、無遲到時，net_salary 應為精確整數（無舍入差異）"""
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=3,
+        )
+        assert breakdown.net_salary == int(breakdown.net_salary)
+
+
+# ──────────────────────────────────────────────
+# bonus_amount 正確賦值
+# ──────────────────────────────────────────────
+class TestBonusAmount:
+
+    def test_bonus_amount_is_festival_plus_overtime_plus_dividend(self, engine, sample_employee):
+        """bonus_amount 應為三項之和：festival_bonus + overtime_bonus + supervisor_dividend"""
+        emp = {**sample_employee, 'title': '園長', 'position': '園長'}
+        classroom_ctx = {
+            'role': 'head_teacher',
+            'grade_name': '大班',
+            'current_enrollment': 27,
+            'has_assistant': True,
+            'is_shared_assistant': False,
+        }
+        breakdown = engine.calculate_salary(
+            employee=emp, year=2026, month=2, classroom_context=classroom_ctx
+        )
+        assert breakdown.bonus_amount == (
+            breakdown.festival_bonus + breakdown.overtime_bonus + breakdown.supervisor_dividend
+        )
+
+    def test_bonus_separate_includes_supervisor_dividend(self, engine, sample_employee):
+        """主管紅利 > 0 時，即使無節慶獎金 bonus_separate 也應為 True"""
+        emp = {**sample_employee, 'title': '園長', 'position': '園長'}
+        breakdown = engine.calculate_salary(
+            employee=emp, year=2026, month=3,  # 3月非節慶發放月
+        )
+        assert breakdown.supervisor_dividend > 0
+        assert breakdown.bonus_separate is True
+
+    def test_bonus_amount_zero_for_no_separate_items(self, engine, sample_employee):
+        """一般員工在非發放月：三項皆 0，bonus_amount = 0，bonus_separate = False"""
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=3,
+        )
+        assert breakdown.bonus_amount == 0
+        assert breakdown.bonus_separate is False
+        assert breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction

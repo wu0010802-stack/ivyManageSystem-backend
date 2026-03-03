@@ -26,8 +26,8 @@ if not _jwt_secret:
 
 JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_HOURS = 24
-JWT_REFRESH_GRACE_HOURS = 72  # 過期後仍允許刷新的寬限時間
+JWT_EXPIRE_MINUTES = 15          # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
+JWT_REFRESH_GRACE_HOURS = 7 * 24  # 過期後仍允許刷新的寬限時間（7 天，讓週末未使用的教師週一仍可自動換發）
 
 # ── 密碼雜湊參數 ───────────────────────────────────────────────────────────
 # OWASP 2023 建議：PBKDF2-HMAC-SHA256 至少 600,000 次迭代
@@ -82,7 +82,7 @@ def needs_rehash(hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(hours=JWT_EXPIRE_HOURS))
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 

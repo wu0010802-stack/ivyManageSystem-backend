@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from models.database import get_session, LeaveRecord, OvertimeRecord, SchoolEvent
+from models.database import get_session, LeaveRecord, OvertimeRecord, SchoolEvent, PunchCorrectionRequest
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -75,10 +75,15 @@ def get_approval_summary(
             OvertimeRecord.is_approved.is_(None),
         ).count()
 
+        pending_corrections = session.query(PunchCorrectionRequest).filter(
+            PunchCorrectionRequest.is_approved.is_(None),
+        ).count()
+
         return {
             "pending_leaves": pending_leaves,
             "pending_overtimes": pending_overtimes,
-            "total": pending_leaves + pending_overtimes,
+            "pending_punch_corrections": pending_corrections,
+            "total": pending_leaves + pending_overtimes + pending_corrections,
         }
     finally:
         session.close()

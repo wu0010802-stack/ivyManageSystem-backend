@@ -14,6 +14,7 @@ from .calendar import router as calendar_router
 from .announcements import router as announcements_router
 from .profile import router as profile_router
 from .schedule import router as schedule_router
+from .punch_corrections import router as punch_corrections_router
 
 router = APIRouter(prefix="/api/portal", tags=["portal"])
 
@@ -27,3 +28,4 @@ router.include_router(calendar_router)
 router.include_router(announcements_router)
 router.include_router(profile_router)
 router.include_router(schedule_router)
+router.include_router(punch_corrections_router, tags=["portal-punch-corrections"])

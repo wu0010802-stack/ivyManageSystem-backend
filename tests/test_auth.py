@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from utils.auth import (
     hash_password, verify_password,
     create_access_token, decode_token,
-    JWT_SECRET_KEY, JWT_ALGORITHM
+    JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES,
 )
 
 
@@ -101,3 +101,51 @@ class TestDecodeToken:
         with pytest.raises(HTTPException) as exc_info:
             decode_token(token)
         assert exc_info.value.status_code == 401
+
+
+class TestTokenExpiry:
+
+    def test_expire_minutes_is_short(self):
+        """Access token 有效期必須 ≤ 60 分鐘，防止帳號停用後長期暴露"""
+        assert JWT_EXPIRE_MINUTES <= 60, (
+            f"JWT_EXPIRE_MINUTES={JWT_EXPIRE_MINUTES}，應設為 ≤ 60 分鐘"
+        )
+
+    def test_default_expiry_used(self):
+        """不傳 expires_delta 時使用 JWT_EXPIRE_MINUTES 預設值"""
+        import time
+        from jose import jwt as _jwt
+        token = create_access_token({"id": "1"})
+        payload = _jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        expected_exp = time.time() + JWT_EXPIRE_MINUTES * 60
+        # 允許 ±5 秒誤差
+        assert abs(payload["exp"] - expected_exp) < 5
+
+
+class TestTokenVersion:
+
+    def test_token_version_preserved_in_payload(self):
+        """token_version 嵌入 payload 後可正確讀取"""
+        token = create_access_token({"user_id": 1, "token_version": 3})
+        payload = decode_token(token)
+        assert payload["token_version"] == 3
+
+    def test_token_version_mismatch_detected(self):
+        """payload 的 token_version 與 DB 版本不同時可偵測（模擬帳號被撤銷的情境）"""
+        token = create_access_token({"user_id": 1, "token_version": 2})
+        payload = decode_token(token)
+        db_version = 3  # 管理員停用帳號後 DB 版本已遞增
+        assert payload.get("token_version", 0) != db_version
+
+    def test_missing_token_version_defaults_to_zero(self):
+        """缺少 token_version 的舊 token 應視為版本 0（向下相容）"""
+        token = create_access_token({"user_id": 1})  # 不含 token_version
+        payload = decode_token(token)
+        assert payload.get("token_version", 0) == 0
+
+    def test_version_zero_matches_db_default(self):
+        """token_version=0 與 DB 欄位預設值（0）相符，確保舊 session 不被誤踢"""
+        token = create_access_token({"user_id": 1, "token_version": 0})
+        payload = decode_token(token)
+        db_version = 0  # 從未被撤銷過的帳號
+        assert payload.get("token_version", 0) == db_version

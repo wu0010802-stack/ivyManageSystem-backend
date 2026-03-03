@@ -119,7 +119,7 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
         return f'{int(val):,}' if val else '0'
 
     # Earnings
-    supervisor_dividend = getattr(record, 'bonus_amount', 0) or 0
+    supervisor_dividend = getattr(record, 'supervisor_dividend', 0) or 0
     bonus_separate = getattr(record, 'bonus_separate', False)
     festival_bonus_val = record.festival_bonus or 0
     overtime_bonus_val = record.overtime_bonus or 0
@@ -304,7 +304,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
             (record.leave_deduction or 0)
         )
 
-        supervisor_dividend = getattr(record, 'bonus_amount', 0) or 0
+        supervisor_dividend = getattr(record, 'supervisor_dividend', 0) or 0
         festival_bonus_val = record.festival_bonus or 0
         overtime_bonus_val = record.overtime_bonus or 0
         independent_bonus = festival_bonus_val + overtime_bonus_val
