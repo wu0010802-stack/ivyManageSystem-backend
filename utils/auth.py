@@ -27,7 +27,7 @@ if not _jwt_secret:
 JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 15          # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
-JWT_REFRESH_GRACE_HOURS = 7 * 24  # 過期後仍允許刷新的寬限時間（7 天，讓週末未使用的教師週一仍可自動換發）
+JWT_REFRESH_GRACE_HOURS = 24  # 過期後仍允許刷新的寬限時間（24 小時）；帳號停用後暴露窗口從 7 天縮至 1 天
 
 # ── 密碼雜湊參數 ───────────────────────────────────────────────────────────
 # OWASP 2023 建議：PBKDF2-HMAC-SHA256 至少 600,000 次迭代
@@ -47,9 +47,17 @@ def hash_password(password: str) -> str:
     return f"{PBKDF2_ITERATIONS}${salt}${h.hex()}"
 
 
+def _dummy_hash(plain_password: str) -> None:
+    """執行一次與正常驗證等量的 PBKDF2，用於格式無效時維持恆定回應時間。
+    防止攻擊者透過回應時間差探測 hash 格式是否合法（Timing Side-Channel）。
+    """
+    hashlib.pbkdf2_hmac("sha256", plain_password.encode(), b"__dummy__", PBKDF2_ITERATIONS)
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """驗證密碼，同時相容新格式（含 iterations）與舊格式（固定 100,000 次）。
     使用 hmac.compare_digest 進行恆定時間比對，防止 Timing Attack。
+    格式無效或解析失敗時執行 dummy hash，確保回應時間一致。
     """
     try:
         parts = hashed_password.split("$", 2)
@@ -62,10 +70,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             iterations = _LEGACY_ITERATIONS
             salt, stored_hash = parts[0], parts[1]
         else:
+            # 格式不合法：仍執行 dummy hash，避免即時回傳洩漏格式資訊
+            _dummy_hash(plain_password)
             return False
         h = hashlib.pbkdf2_hmac("sha256", plain_password.encode(), salt.encode(), iterations)
         return hmac.compare_digest(h.hex(), stored_hash)
     except (ValueError, AttributeError):
+        # 解析失敗（iterations 非整數、None 等）：同樣執行 dummy hash
+        _dummy_hash(plain_password)
         return False
 
 

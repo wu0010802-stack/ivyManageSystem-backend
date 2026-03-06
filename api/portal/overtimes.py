@@ -110,3 +110,33 @@ def create_my_overtime(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
+
+
+@router.delete("/my-overtimes/{overtime_id}", status_code=200)
+def delete_my_overtime(
+    overtime_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """撤回待審中的加班申請（已核准或已駁回者不可撤回）"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        ot = session.query(OvertimeRecord).filter(
+            OvertimeRecord.id == overtime_id,
+            OvertimeRecord.employee_id == emp.id,
+        ).first()
+        if not ot:
+            raise HTTPException(status_code=404, detail="找不到加班記錄")
+        if ot.is_approved is not None:
+            status = "已核准" if ot.is_approved else "已駁回"
+            raise HTTPException(status_code=400, detail=f"此申請已{status}，無法撤回")
+        session.delete(ot)
+        session.commit()
+        return {"message": "加班申請已撤回"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()

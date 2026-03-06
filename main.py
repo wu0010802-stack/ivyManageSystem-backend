@@ -18,7 +18,7 @@ from services.salary_engine import SalaryEngine
 from utils.permissions import _RW_PAIRS
 
 # Routers
-from api.employees import router as employees_router
+from api.employees import router as employees_router, init_employee_services
 from api.students import router as students_router
 from api.classrooms import router as classrooms_router
 from api.attendance import router as attendance_router
@@ -87,6 +87,7 @@ salary_engine = SalaryEngine(load_from_db=True)
 
 # Initialize service dependencies for routers that need them
 init_salary_services(salary_engine, insurance_service)
+init_employee_services(salary_engine)
 init_config_services(salary_engine)
 init_insurance_services(insurance_service)
 init_overtimes_services(salary_engine)

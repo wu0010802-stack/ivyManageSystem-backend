@@ -114,6 +114,58 @@ async def get_attendance_summary(
         session.close()
 
 
+@router.get("/today-anomalies")
+async def get_today_anomalies(
+    late_threshold: int = Query(15, ge=0, le=120),
+    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+):
+    """今日打卡異常員工清單"""
+    session = get_session()
+    try:
+        today = date.today()
+
+        employees = session.query(Employee).filter(Employee.is_active == True).all()
+
+        today_records = session.query(Attendance).filter(
+            Attendance.attendance_date == today
+        ).all()
+        att_map = {r.employee_id: r for r in today_records}
+
+        anomalies = []
+        for emp in employees:
+            att = att_map.get(emp.id)
+            if att is None:
+                anomalies.append({
+                    "employee_id": emp.employee_id,
+                    "employee_name": emp.name,
+                    "anomaly_type": "absent",
+                    "late_minutes": None,
+                })
+            else:
+                if att.is_late and (att.late_minutes or 0) > late_threshold:
+                    anomalies.append({
+                        "employee_id": emp.employee_id,
+                        "employee_name": emp.name,
+                        "anomaly_type": "late",
+                        "late_minutes": att.late_minutes,
+                    })
+                if att.is_missing_punch_in or att.is_missing_punch_out:
+                    anomalies.append({
+                        "employee_id": emp.employee_id,
+                        "employee_name": emp.name,
+                        "anomaly_type": "missing_punch",
+                        "late_minutes": None,
+                    })
+
+        return {
+            "date": today.isoformat(),
+            "late_threshold": late_threshold,
+            "anomalies": anomalies,
+        }
+    finally:
+        session.close()
+
+
 @router.get("/anomaly-report")
 async def download_anomaly_report(current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ))):
     """下載異常清單"""

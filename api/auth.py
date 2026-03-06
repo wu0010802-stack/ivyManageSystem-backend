@@ -139,10 +139,18 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
         # 4. 禁止冒充 admin（防止平級或提權冒充）
         if target_user.role == "admin":
             logger.warning(
-                f"冒充被拒：{current_user.get('name')}（user_id={current_user.get('user_id')}）"
-                f" 嘗試冒充 admin 帳號 {target_user.username}（user_id={target_user.id}）"
+                "冒充被拒（目標為 admin）：操作者 user_id=%s 嘗試冒充 user_id=%s",
+                current_user.get("user_id"), target_user.id,
             )
             raise HTTPException(status_code=403, detail="不可冒充管理員帳號")
+
+        # 4.5 禁止冒充已停用帳號（停用後應立即失效，不因冒充繞過）
+        if not target_user.is_active:
+            logger.warning(
+                "冒充被拒（帳號已停用）：操作者 user_id=%s 嘗試冒充已停用 user_id=%s",
+                current_user.get("user_id"), target_user.id,
+            )
+            raise HTTPException(status_code=403, detail="無法冒充已停用的帳號")
 
         # 5. 產生該使用者的 token
         permissions = target_user.permissions if target_user.permissions is not None else get_role_default_permissions(target_user.role)
@@ -155,13 +163,15 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
             "token_version": target_user.token_version,
         })
 
-        # 6. 寫入審計日誌
+        # 6. 寫入審計日誌（明確標記操作者與被冒充對象，供事後追查）
         logger.info(
-            f"冒充操作：{current_user.get('name')}（user_id={current_user.get('user_id')}）"
-            f" 切換為 {target_emp.name}（user_id={target_user.id}, role={target_user.role}）"
+            "冒充操作：操作者 user_id=%s 切換為 user_id=%s（role=%s）",
+            current_user.get("user_id"), target_user.id, target_user.role,
         )
         request.state.audit_summary = (
-            f"冒充使用者：切換為 {target_emp.name}（{ROLE_LABELS.get(target_user.role, target_user.role)}）"
+            f"[冒充] 操作者 {current_user.get('name')}（user_id={current_user.get('user_id')}）"
+            f" 切換為 {target_emp.name}（user_id={target_user.id}，"
+            f"{ROLE_LABELS.get(target_user.role, target_user.role)}）"
         )
 
         return {
