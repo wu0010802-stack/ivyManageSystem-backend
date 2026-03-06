@@ -154,3 +154,89 @@ class TestPensionSelfContributionBracket:
         薪資 30,500 → 級距 31,800 → 自提 6% = round(31,800 × 0.06) = 1,908"""
         result = service.calculate(salary=30500, dependents=0, pension_self_rate=0.06)
         assert result.pension_employee == round(31800 * 0.06)  # 1908
+
+
+# ──────────────────────────────────────────────
+# insurance_salary fallback 正規化回歸測試
+# ──────────────────────────────────────────────
+class TestInsuranceSalaryFallbackNormalization:
+    """
+    回歸測試：insurance_salary_level 為 0（未設定）時，
+    投保薪資的 fallback 必須以 get_bracket(base_salary)["amount"]
+    取得官方級距金額，不得直接使用 base_salary（可能非標準級距）。
+
+    calculate_salary() 傳給 InsuranceService.calculate() 的第一個引數
+    應永遠為官方級距金額。
+    """
+
+    def _base_emp(self, insurance_salary):
+        return {
+            'employee_id': 'E999', 'name': '測試', 'title': '幼兒園教師',
+            'position': '幼兒園教師', 'employee_type': 'regular',
+            'base_salary': 30000, 'hourly_rate': 0,
+            'supervisor_allowance': 0, 'teacher_allowance': 0,
+            'meal_allowance': 0, 'transportation_allowance': 0,
+            'other_allowance': 0,
+            'insurance_salary': insurance_salary,
+            'dependents': 0, 'hire_date': '2026-01-01',
+        }
+
+    def test_off_bracket_insurance_salary_normalized_before_calculate(self, engine):
+        """regression: insurance_salary=30000（非官方級距）時，
+        InsuranceService.calculate() 應收到正規化後的級距金額 30300，
+        而非原始的 30000"""
+        from unittest.mock import patch
+
+        called_with = []
+        original = engine.insurance_service.calculate
+
+        def spy(salary, *args, **kwargs):
+            called_with.append(salary)
+            return original(salary, *args, **kwargs)
+
+        emp = self._base_emp(insurance_salary=30000)  # off-bracket（simulate fallback bug）
+        with patch.object(engine.insurance_service, 'calculate', side_effect=spy):
+            engine.calculate_salary(emp, year=2026, month=3)
+
+        assert len(called_with) == 1
+        expected = engine.insurance_service.get_bracket(30000)["amount"]  # 30300
+        assert called_with[0] == expected, (
+            f"InsuranceService.calculate() 應收到官方級距金額 {expected}，"
+            f"實際收到 {called_with[0]}（非標準級距值）"
+        )
+
+    def test_exact_bracket_insurance_salary_unchanged(self, engine):
+        """insurance_salary 已是官方級距（30300）時，傳入值不變"""
+        from unittest.mock import patch
+
+        called_with = []
+        original = engine.insurance_service.calculate
+
+        def spy(salary, *args, **kwargs):
+            called_with.append(salary)
+            return original(salary, *args, **kwargs)
+
+        emp = self._base_emp(insurance_salary=30300)  # 官方級距
+        with patch.object(engine.insurance_service, 'calculate', side_effect=spy):
+            engine.calculate_salary(emp, year=2026, month=3)
+
+        assert called_with[0] == 30300
+
+    def test_zero_insurance_salary_falls_back_to_contracted_base(self, engine):
+        """insurance_salary=0 時，仍以 contracted_base（=base_salary）為基準，
+        並正規化至官方級距"""
+        from unittest.mock import patch
+
+        called_with = []
+        original = engine.insurance_service.calculate
+
+        def spy(salary, *args, **kwargs):
+            called_with.append(salary)
+            return original(salary, *args, **kwargs)
+
+        emp = self._base_emp(insurance_salary=0)  # simulate insurance_salary_level=0
+        with patch.object(engine.insurance_service, 'calculate', side_effect=spy):
+            engine.calculate_salary(emp, year=2026, month=3)
+
+        # contracted_base = base_salary = 30000 → get_bracket → 30300
+        assert called_with[0] == engine.insurance_service.get_bracket(30000)["amount"]

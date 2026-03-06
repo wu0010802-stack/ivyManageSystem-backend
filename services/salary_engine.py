@@ -60,6 +60,21 @@ def _sum_leave_deduction(leaves, daily_salary: float) -> float:
     return total
 
 
+def _calc_lunch_overlap_hours(start: datetime, end: datetime, ref_date: date) -> float:
+    """計算 [start, end) 時段與指定日期 12:00-13:00 午休窗口的重疊時數。
+
+    Args:
+        start:    打卡開始時間
+        end:      打卡結束時間（必須 > start）
+        ref_date: 需計算午休的日期（跨夜班需分別以兩個日期各呼叫一次）
+    Returns:
+        重疊時數（0.0 ~ 1.0 小時）
+    """
+    lunch_s = datetime.combine(ref_date, time(12, 0))
+    lunch_e = datetime.combine(ref_date, time(13, 0))
+    return max(0.0, (min(end, lunch_e) - max(start, lunch_s)).total_seconds() / 3600)
+
+
 def _compute_hourly_daily_hours(
     punch_in: datetime,
     punch_out: Optional[datetime],
@@ -96,11 +111,13 @@ def _compute_hourly_daily_hours(
         return 0.0
 
     diff = (effective_out - punch_in).total_seconds() / 3600
-    # 扣除午休（12:00–13:00），若工時跨越此區間則扣除重疊時數
-    _d = punch_in.date()
-    lunch_s = datetime.combine(_d, time(12, 0))
-    lunch_e = datetime.combine(_d, time(13, 0))
-    overlap = max(0.0, (min(effective_out, lunch_e) - max(punch_in, lunch_s)).total_seconds() / 3600)
+    # 扣除午休（12:00–13:00）：逐日檢查，涵蓋跨日班次。
+    # effective_out 若在次日，次日的午休窗口同樣需納入計算，
+    # 以避免跨夜班跨越隔日 12:00–13:00 時漏扣或誤扣午休時數。
+    overlap = sum(
+        _calc_lunch_overlap_hours(punch_in, effective_out, _d)
+        for _d in sorted({punch_in.date(), effective_out.date()})
+    )
     diff -= overlap
     # 每日工時上限；max(0.0,...) 為雙重保護，確保不因浮點誤差產生負值
     return max(0.0, min(diff, MAX_DAILY_WORK_HOURS))
@@ -805,6 +822,63 @@ class SalaryEngine:
         return contracted_base * worked_days / month_days
 
     @staticmethod
+    def _prorate_for_period(
+        contracted_base: float,
+        hire_date_raw,
+        resign_date_raw,
+        year: int,
+        month: int,
+    ) -> float:
+        """
+        計算當月實際在職天數的底薪折算（同時處理入職與離職）。
+
+        規則：
+        - hire_day >= 2（本月入職）：start_day = hire_day
+        - resign_day < 月末（本月離職）：end_day = resign_day
+        - 兩者均無異動：全額
+        worked_days = end_day - start_day + 1
+        result = contracted_base × worked_days / month_days
+
+        ⚠️  注意：本方法「僅」影響 breakdown.base_salary（當月應領底薪顯示）。
+            加班費時薪基準仍應使用完整契約月薪，避免「雙重縮水」。
+        """
+        import calendar as _cal
+        if not contracted_base:
+            return 0.0
+
+        def _to_date(raw):
+            if raw is None:
+                return None
+            if isinstance(raw, date) and not isinstance(raw, datetime):
+                return raw
+            if isinstance(raw, datetime):
+                return raw.date()
+            if isinstance(raw, str):
+                try:
+                    return datetime.strptime(raw, '%Y-%m-%d').date()
+                except ValueError:
+                    return None
+            return None
+
+        _, month_days = _cal.monthrange(year, month)
+        start_day = 1
+        end_day = month_days
+
+        hire_d = _to_date(hire_date_raw)
+        if hire_d and hire_d.year == year and hire_d.month == month and hire_d.day >= 2:
+            start_day = hire_d.day
+
+        resign_d = _to_date(resign_date_raw)
+        if resign_d and resign_d.year == year and resign_d.month == month and resign_d.day < month_days:
+            end_day = resign_d.day
+
+        if start_day == 1 and end_day == month_days:
+            return contracted_base  # 全額，無折算
+
+        worked_days = end_day - start_day + 1
+        return contracted_base * worked_days / month_days
+
+    @staticmethod
     def _build_expected_workdays(
         year: int,
         month: int,
@@ -1103,8 +1177,12 @@ class SalaryEngine:
             # ⚠️  兩者在月中入職時會不同，後續加班費時薪計算必須使用 contracted_base，
             #     否則造成「雙重縮水」：底薪已縮水 + 加班時薪也縮水，違反勞基法
             contracted_base = employee.get('base_salary', 0) or 0
-            breakdown.base_salary = self._prorate_base_salary(
-                contracted_base, employee.get('hire_date'), year, month
+            breakdown.base_salary = self._prorate_for_period(
+                contracted_base,
+                employee.get('hire_date'),
+                employee.get('resign_date'),
+                year,
+                month,
             )
 
             # 處理津貼 (從 normalized 列表)
@@ -1251,9 +1329,13 @@ class SalaryEngine:
 
             # 勞健保計算（勞退自提依員工設定）
             # 投保薪資以契約月薪（contracted_base）為基準，不受月中入職折算影響
+            # 正規化至官方級距金額：insurance_salary 或 contracted_base 皆須過 get_bracket()，
+            # 確保傳入的值符合勞健保投保薪資標準級距，不使用任意原始薪資值
             pension_rate = employee.get("pension_self_rate", 0.0)
+            _ins_raw = employee.get('insurance_salary') or contracted_base
+            _ins_salary = (self.insurance_service.get_bracket(_ins_raw)["amount"] if _ins_raw else 0)
             insurance = self.insurance_service.calculate(
-                employee.get('insurance_salary') or contracted_base,
+                _ins_salary,
                 employee.get('dependents', 0),
                 pension_self_rate=pension_rate
             )
@@ -1335,6 +1417,11 @@ class SalaryEngine:
         breakdown.total_deduction = round(breakdown.total_deduction)
         breakdown.net_salary = round(_net_raw)
 
+        # 不變量檢查：任何計算路徑產生負值均視為程式錯誤（如負遲到分鐘數導致扣款變加薪）
+        assert breakdown.gross_salary >= 0, f"gross_salary 異常負值: {breakdown.gross_salary}"
+        assert breakdown.total_deduction >= 0, f"total_deduction 異常負值: {breakdown.total_deduction}"
+        assert breakdown.net_salary >= 0, f"net_salary 異常負值: {breakdown.net_salary}"
+
         return breakdown
 
     def calculate_festival_bonus_breakdown(self, employee_id: int, year: int, month: int) -> dict:
@@ -1381,24 +1468,20 @@ class SalaryEngine:
             elif not is_eligible:
                 remark = "未滿3個月"
 
+            # 提前查一次全校在籍人數，主管與辦公室分支共用
+            school_active_students = session.query(Student).filter(Student.is_active == True).count()
+
             # 1. Supervisor (Principal/Director/Leader)
             # Use position as primary key if available, fallback to title_name check only if position matches
             supervisor_base = self.get_supervisor_festival_bonus(title_name, position)
             if supervisor_base:
                 category = "主管"
                 bonus_base = supervisor_base
-                
+
                 # Calculate School Ratio for Supervisor
-                total_students = session.query(Student).filter(Student.is_active == True).count()
-                current_enrollment = total_students
+                current_enrollment = school_active_students
                 
-                # Use configured school target if available, otherwise calculate or default
-                if hasattr(self, '_school_wide_target') and self._school_wide_target > 0:
-                    school_target = self._school_wide_target
-                else:
-                    school_target = 160 # Fallback default
-                
-                target_enrollment = school_target
+                target_enrollment = self._school_wide_target or 160
                 ratio = current_enrollment / target_enrollment if target_enrollment > 0 else 0
                 
                 festival_bonus = round(supervisor_base * ratio) if is_eligible else 0
@@ -1410,23 +1493,12 @@ class SalaryEngine:
 
                  category = "辦公室"
 
-                 # Calculate total school enrollment dynamically from students table
-                 total_students = session.query(Student).filter(Student.is_active == True).count()
-                 current_enrollment = total_students
+                 current_enrollment = school_active_students
                  
                  if office_base:
                      bonus_base = office_base
                      
-                     # Use configured school target if available, otherwise calculate or default
-                     if hasattr(self, '_school_wide_target') and self._school_wide_target > 0:
-                         school_target = self._school_wide_target
-                     else:
-                         school_target = 0
-                         for c in all_classrooms:
-                             # Use relationship to get grade name
-                             grade = c.grade.name if c.grade else None
-                             if grade:
-                                 school_target += self._target_enrollment.get(grade, {}).get('2_teachers', 0)
+                     school_target = self._school_wide_target or 160
                      
                      target_enrollment = school_target if school_target > 0 else 100
                      
@@ -1519,10 +1591,20 @@ class SalaryEngine:
                 'meal_allowance': emp.meal_allowance,
                 'transportation_allowance': emp.transportation_allowance,
                 'other_allowance': emp.other_allowance,
-                # Fallback to base_salary if insurance_salary_level is 0
-                'insurance_salary': emp.insurance_salary_level if emp.insurance_salary_level and emp.insurance_salary_level > 0 else emp.base_salary,
+                # insurance_salary_level 未設定時 fallback 至 base_salary，
+                # 再透過 get_bracket() 正規化為官方投保薪資級距金額；
+                # base_salary 也為 0（如時薪制）時保留 0，讓 calculate_salary 的
+                # contracted_base fallback 繼續生效
+                'insurance_salary': (
+                    self.insurance_service.get_bracket(
+                        emp.insurance_salary_level if emp.insurance_salary_level and emp.insurance_salary_level > 0
+                        else emp.base_salary
+                    )["amount"]
+                    if (emp.insurance_salary_level or emp.base_salary) else 0
+                ),
                 'dependents': emp.dependents,
                 'hire_date': emp.hire_date,
+                'resign_date': getattr(emp, 'resign_date', None),
                 'birthday': emp.birthday,
             }
 
@@ -1596,10 +1678,21 @@ class SalaryEngine:
                 # EmployeeAllowance.effective_date <= end_date, # simplified
                 # (EmployeeAllowance.end_date == None) | (EmployeeAllowance.end_date >= start_date)
             ).all()
-            
+
+            # 批次載入所需的 AllowanceType，避免 N+1 查詢
+            allowance_type_ids = [ea.allowance_type_id for ea in emp_allowances]
+            if allowance_type_ids:
+                allowance_type_map = {
+                    at.id: at
+                    for at in session.query(AllowanceType).filter(
+                        AllowanceType.id.in_(allowance_type_ids)
+                    ).all()
+                }
+            else:
+                allowance_type_map = {}
+
             for ea in emp_allowances:
-                # Need allowance name
-                a_type = session.query(AllowanceType).get(ea.allowance_type_id)
+                a_type = allowance_type_map.get(ea.allowance_type_id)
                 if a_type:
                     allowances.append({
                         'name': a_type.name,
@@ -1739,15 +1832,20 @@ class SalaryEngine:
                     resign_date_raw=getattr(emp, 'resign_date', None),
                 )
 
-                # 實際有考勤記錄的日期
-                attendance_dates = {a.attendance_date for a in attendances}
+                # 實際有考勤記錄的日期（normalize：部分 DB 驅動回傳 datetime，需轉為 date）
+                attendance_dates = {
+                    (a.attendance_date.date() if isinstance(a.attendance_date, datetime) else a.attendance_date)
+                    for a in attendances
+                }
 
                 # 核准請假涵蓋的日期（start_date ~ end_date 之間的每天都視為有假）
+                # normalize：部分 DB 驅動回傳 datetime，需轉為 date 確保集合差集正確
                 from datetime import timedelta as _td
                 leave_covered: set = set()
                 for lv in approved_leaves:
-                    d = lv.start_date
-                    while d <= lv.end_date:
+                    d = lv.start_date.date() if isinstance(lv.start_date, datetime) else lv.start_date
+                    lv_end = lv.end_date.date() if isinstance(lv.end_date, datetime) else lv.end_date
+                    while d <= lv_end:
                         if start_date <= d <= end_date:
                             leave_covered.add(d)
                         d += _td(days=1)
@@ -1783,6 +1881,10 @@ class SalaryEngine:
             breakdown.absence_deduction = round(absence_deduction_amount)
             breakdown.total_deduction = round(breakdown.total_deduction + absence_deduction_amount)
             breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
+            # 不變量檢查：曠職扣款後仍不允許出現負值（曠職扣款超出應發總額視為資料錯誤）
+            assert breakdown.total_deduction >= 0, f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
+            assert breakdown.net_salary >= 0, f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
 
             # 7. 儲存 SalaryRecord
             # check if exists

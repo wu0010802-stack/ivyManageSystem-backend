@@ -13,6 +13,7 @@ from models.database import (
 )
 from utils.auth import get_current_user
 from ._shared import _get_employee, _get_shift_type_map, WEEKDAY_NAMES, LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
+from services.salary_engine import _calc_lunch_overlap_hours
 
 router = APIRouter()
 
@@ -246,17 +247,7 @@ def get_attendance_sheet(
 
                 if effective_in and effective_out and effective_out > effective_in:
                     duration_min = (effective_out - effective_in).total_seconds() / 60
-                    
-                    # 扣除午休時間 (12:00 - 13:00)
-                    lunch_start = datetime.combine(d, datetime.strptime("12:00", "%H:%M").time())
-                    lunch_end = datetime.combine(d, datetime.strptime("13:00", "%H:%M").time())
-                    
-                    overlap_start = max(effective_in, lunch_start)
-                    overlap_end = min(effective_out, lunch_end)
-                    if overlap_end > overlap_start:
-                        lunch_overlap_min = (overlap_end - overlap_start).total_seconds() / 60
-                        duration_min -= lunch_overlap_min
-                        
+                    duration_min -= _calc_lunch_overlap_hours(effective_in, effective_out, d) * 60
                     row["work_hours"] = round(duration_min / 60, 1)
                     total_work_hours += row["work_hours"]
                     work_hour_days += 1

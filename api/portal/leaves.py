@@ -26,7 +26,7 @@ from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
     LeaveCreatePortal, LEAVE_TYPE_LABELS,
 )
-from api.leaves import _check_overlap, _check_quota, _check_leave_limits
+from api.leaves import _check_overlap, _check_quota, _check_leave_limits, _calc_shift_hours
 
 # ── 重用 leaves.py 的配額常數 ──
 QUOTA_LEAVE_TYPES = {"annual", "sick", "menstrual", "personal", "family_care"}
@@ -341,18 +341,6 @@ def get_my_leave_stats(
 # ─────────────────────────────────────────────────────────────
 # 工作日時數計算（整合排班與假日，供前端申請表使用）
 # ─────────────────────────────────────────────────────────────
-
-def _calc_shift_hours(work_start: str, work_end: str) -> float:
-    sh, sm = map(int, work_start.split(":"))
-    eh, em = map(int, work_end.split(":"))
-    total_minutes = (eh * 60 + em) - (sh * 60 + sm)
-    if total_minutes <= 0:
-        total_minutes += 24 * 60
-    total_hours = total_minutes / 60
-    if total_hours > 5:
-        total_hours -= 1
-    return round(total_hours * 2) / 2
-
 
 @router.get("/my-workday-hours")
 def get_my_workday_hours(

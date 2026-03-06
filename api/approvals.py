@@ -3,11 +3,12 @@ Approval summary router - pending counts for dashboard
 """
 
 import logging
+from calendar import monthrange
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from models.database import get_session, LeaveRecord, OvertimeRecord, SchoolEvent, PunchCorrectionRequest
+from models.database import get_session, LeaveRecord, OvertimeRecord, SchoolEvent, PunchCorrectionRequest, Employee
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -79,11 +80,74 @@ def get_approval_summary(
             PunchCorrectionRequest.is_approved.is_(None),
         ).count()
 
+        today = date.today()
+        first_day = date(today.year, today.month, 1)
+        _, last = monthrange(today.year, today.month)
+        last_day = date(today.year, today.month, last)
+
+        this_month_leaves = session.query(LeaveRecord).filter(
+            LeaveRecord.is_approved.is_(None),
+            LeaveRecord.start_date >= first_day,
+            LeaveRecord.start_date <= last_day,
+        ).count()
+
+        this_month_overtimes = session.query(OvertimeRecord).filter(
+            OvertimeRecord.is_approved.is_(None),
+            OvertimeRecord.overtime_date >= first_day,
+            OvertimeRecord.overtime_date <= last_day,
+        ).count()
+
         return {
             "pending_leaves": pending_leaves,
             "pending_overtimes": pending_overtimes,
             "pending_punch_corrections": pending_corrections,
             "total": pending_leaves + pending_overtimes + pending_corrections,
+            "this_month_pending_leaves": this_month_leaves,
+            "this_month_pending_overtimes": this_month_overtimes,
+        }
+    finally:
+        session.close()
+
+
+@router.get("/probation-alerts")
+def get_probation_alerts(
+    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
+):
+    """下個月即將到期的試用期員工"""
+    session = get_session()
+    try:
+        today = date.today()
+        # 計算下個月（含跨年）
+        if today.month == 12:
+            next_year, next_month = today.year + 1, 1
+        else:
+            next_year, next_month = today.year, today.month + 1
+
+        _, last = monthrange(next_year, next_month)
+        first_day = date(next_year, next_month, 1)
+        last_day = date(next_year, next_month, last)
+
+        employees = session.query(Employee).filter(
+            Employee.is_active == True,
+            Employee.probation_end_date >= first_day,
+            Employee.probation_end_date <= last_day,
+        ).order_by(Employee.probation_end_date).all()
+
+        result = []
+        for emp in employees:
+            days_remaining = (emp.probation_end_date - today).days
+            result.append({
+                "id": emp.id,
+                "employee_id": emp.employee_id,
+                "name": emp.name,
+                "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
+                "probation_end_date": emp.probation_end_date.isoformat(),
+                "days_remaining": days_remaining,
+            })
+
+        return {
+            "next_month": f"{next_year}年{next_month}月",
+            "employees": result,
         }
     finally:
         session.close()

@@ -811,6 +811,64 @@ class TestComputeHourlyDailyHoursOvernight:
 
 
 # ──────────────────────────────────────────────
+# 跨夜班午休扣除應以隔日日期為基準
+# ──────────────────────────────────────────────
+class TestOvernightLunchDeduction:
+    """
+    回歸測試：跨夜班（effective_out.date() != punch_in.date()）午休扣除
+    必須同時檢查 punch_in.date() 與 effective_out.date() 的 12:00–13:00 窗口。
+
+    Bug 描述：
+      _compute_hourly_daily_hours() 以 punch_in.date() 為唯一基準日期建立午休窗口，
+      當 effective_out 在次日且班次跨越次日 12:00–13:00 時，
+      次日午休重疊完全未被扣除，導致工時多計。
+
+    重現條件：
+      由於 MAX_DAILY_WORK_HOURS = 12.0 的保護，班次超過 12h 時上限截斷隱藏了差異。
+      測試使用 patch.object 暫時提高上限，使未扣午休的多計工時得以顯現。
+
+    正確行為：
+      跨日班次的午休扣除應涵蓋所有相關日期（punch_in.date() 及 effective_out.date()）。
+    """
+
+    def test_overnight_spanning_next_day_noon_deducts_lunch(self):
+        """
+        regression: 22:00 → 次日 13:30（15.5h）跨次日午休
+        次日 12:00–13:00 重疊 1.0h → 正確工時應為 14.5h
+        修正前只看當日午休（22:00 > 13:00 無重疊）→ 工時誤算為 15.5h
+        （需提高上限至 20.0 使截斷不遮蔽差異）
+        """
+        import services.salary_engine as se
+        from unittest.mock import patch
+
+        punch_in = datetime(2026, 1, 5, 22, 0)
+        punch_out = datetime(2026, 1, 6, 13, 30)
+
+        with patch.object(se, 'MAX_DAILY_WORK_HOURS', 20.0):
+            result = _compute_hourly_daily_hours(punch_in, punch_out, time(14, 0))
+
+        assert result == 14.5, (
+            f"跨夜班次日午休應被扣除 1h：期望 14.5h，實際 {result}h"
+        )
+
+    def test_overnight_not_spanning_next_day_noon_no_extra_deduction(self):
+        """標準跨夜班 22:00–次日 06:00（8h）不跨任何午休 → 8h 不變"""
+        punch_in = datetime(2026, 1, 5, 22, 0)
+        punch_out = datetime(2026, 1, 6, 6, 0)
+        assert _compute_hourly_daily_hours(punch_in, punch_out, time(6, 0)) == 8.0
+
+    def test_same_day_noon_still_deducted_when_overnight(self):
+        """
+        punch_in 在午前（11:30），effective_out 跨夜到次日 06:00（18.5h）
+        同日午休 12:00–13:00 重疊 0.5h 仍應被扣除
+        結果因上限截斷為 12.0h
+        """
+        punch_in = datetime(2026, 1, 5, 11, 30)
+        punch_out = datetime(2026, 1, 6, 6, 0)
+        assert _compute_hourly_daily_hours(punch_in, punch_out, time(6, 0)) == 12.0
+
+
+# ──────────────────────────────────────────────
 # 會議缺席扣款應從 festival_bonus 扣，不進 total_deduction
 # ──────────────────────────────────────────────
 class TestMeetingAbsenceDeductFromFestivalBonus:
@@ -1149,3 +1207,137 @@ class TestBonusAmount:
         assert breakdown.bonus_amount == 0
         assert breakdown.bonus_separate is False
         assert breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
+
+
+# ──────────────────────────────────────────────
+# attendance_dates datetime vs date 差集 regression
+# ──────────────────────────────────────────────
+class TestAttendanceDateNormalization:
+    """
+    回歸測試：attendance_dates 若含 datetime 物件（而非 date），
+    與 expected_workdays（set[date]）的集合差集會完全失效，
+    導致所有出勤日被誤判為曠職。
+    """
+
+    def test_datetime_not_equal_to_date_in_set(self):
+        """Python 基礎：datetime 物件無法從 date 集合中被差集移除"""
+        workday_set = {date(2026, 1, 5)}
+        attendance_with_datetime = {datetime(2026, 1, 5, 0, 0, 0)}
+        absent = workday_set - attendance_with_datetime
+        # datetime != date，差集失效 → 仍然誤判為曠職
+        assert date(2026, 1, 5) in absent
+
+    def test_build_expected_workdays_returns_date_type(self, engine):
+        """_build_expected_workdays 回傳集合元素必須是 date 型別"""
+        result = SalaryEngine._build_expected_workdays(
+            year=2026, month=1,
+            holiday_set=set(),
+            daily_shift_map={},
+            today=date(2026, 1, 31),
+        )
+        assert result, "預期有上班日"
+        for d in result:
+            assert type(d) is date, f"應為 date，收到 {type(d).__name__}: {d!r}"
+
+    def test_datetime_attendance_date_normalized_prevents_false_absent(self):
+        """regression: generate_payroll 第 1743 行 normalize attendance_date 後，差集正確"""
+        # 模擬 SQLAlchemy 部分驅動回傳 datetime 物件
+        class FakeAtt:
+            def __init__(self, dt):
+                self.attendance_date = dt
+
+        fakes = [FakeAtt(datetime(2026, 1, 5, 0, 0, 0))]
+        expected_workdays = {date(2026, 1, 5), date(2026, 1, 6)}
+
+        # 修正後行為：normalize to date
+        attendance_dates = {
+            (a.attendance_date.date() if isinstance(a.attendance_date, datetime) else a.attendance_date)
+            for a in fakes
+        }
+        absent = expected_workdays - attendance_dates
+
+        assert date(2026, 1, 5) not in absent, "出勤日 2026-01-05 不應誤判為曠職"
+        assert date(2026, 1, 6) in absent, "真正缺勤日 2026-01-06 應判為曠職"
+
+    def test_leave_covered_datetime_normalized_prevents_false_absent(self):
+        """regression: leave_covered 若含 datetime，差集同樣失效；normalize 後正確"""
+        expected_workdays = {date(2026, 1, 7)}
+
+        # 模擬請假 start_date / end_date 為 datetime
+        class FakeLeave:
+            start_date = datetime(2026, 1, 7, 0, 0, 0)
+            end_date = datetime(2026, 1, 7, 0, 0, 0)
+
+        from datetime import timedelta
+        leave_covered: set = set()
+        lv = FakeLeave()
+        d = lv.start_date.date() if isinstance(lv.start_date, datetime) else lv.start_date
+        end = lv.end_date.date() if isinstance(lv.end_date, datetime) else lv.end_date
+        while d <= end:
+            leave_covered.add(d)
+            d += timedelta(days=1)
+
+        absent = expected_workdays - set() - leave_covered
+        assert date(2026, 1, 7) not in absent, "請假日 2026-01-07 不應誤判為曠職"
+
+
+# ──────────────────────────────────────────────
+# 月中離職底薪折算
+# ──────────────────────────────────────────────
+class TestResignProration:
+    """
+    _prorate_for_period() 同時處理入職與離職的底薪折算。
+
+    規則：
+    - 本月 resign_day < 月末 → end_day = resign_day（折算）
+    - 本月 resign_day == 月末 → 全額
+    - resign_date 屬於不同月份 → 全額
+    - 同月入職 + 離職 → (resign_day - hire_day + 1) / month_days
+    """
+
+    def test_resign_last_day_no_proration(self, engine):
+        """月末最後一天（1月31日）離職 → 全額，不折算"""
+        result = engine._prorate_for_period(30000, None, '2026-01-31', 2026, 1)
+        assert result == 30000
+
+    def test_resign_mid_month_prorated(self, engine):
+        """15日離職（1月共31天）→ 在職15天 → 30000×15/31"""
+        result = engine._prorate_for_period(30000, None, '2026-01-15', 2026, 1)
+        assert result == 30000 * 15 / 31
+
+    def test_resign_different_month_no_proration(self, engine):
+        """上月（12月）離職 → 本月全額（不折算）"""
+        result = engine._prorate_for_period(30000, None, '2025-12-15', 2026, 1)
+        assert result == 30000
+
+    def test_hire_and_resign_same_month(self, engine):
+        """同月（1月）10日入職、20日離職 → 在職11天 → 30000×11/31"""
+        result = engine._prorate_for_period(30000, '2026-01-10', '2026-01-20', 2026, 1)
+        assert result == 30000 * 11 / 31
+
+    def test_no_resign_no_hire_full_salary(self, engine):
+        """無入職無離職折算 → 全額"""
+        result = engine._prorate_for_period(30000, None, None, 2026, 1)
+        assert result == 30000
+
+    def test_zero_base_returns_zero(self, engine):
+        """底薪為 0 → 回傳 0"""
+        result = engine._prorate_for_period(0, None, '2026-01-15', 2026, 1)
+        assert result == 0.0
+
+    def test_calculate_salary_prorates_for_resign_mid_month(self, engine):
+        """calculate_salary 應對月中離職員工折算 breakdown.base_salary"""
+        employee = {
+            'employee_id': 'E998', 'name': '月中離職',
+            'title': '', 'position': '', 'employee_type': 'regular',
+            'base_salary': 30000, 'hourly_rate': 0,
+            'supervisor_allowance': 0, 'teacher_allowance': 0,
+            'meal_allowance': 0, 'transportation_allowance': 0,
+            'other_allowance': 0,
+            'insurance_salary': 30000, 'dependents': 0,
+            'hire_date': '2025-01-01',
+            'resign_date': '2026-01-15',  # 1月15日離職，共31天
+        }
+        breakdown = engine.calculate_salary(employee=employee, year=2026, month=1)
+        expected_base = 30000 * 15 / 31
+        assert breakdown.base_salary == expected_base

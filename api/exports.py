@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
 from utils.auth import require_permission
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 from utils.rate_limit import SlidingWindowLimiter
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
@@ -178,6 +178,13 @@ def _id_name_map(session, model):
     return {obj.id: obj.name for obj in session.query(model).all()}
 
 
+def _mask_bank_account(account: str | None) -> str:
+    """遮蔽銀行帳號，僅保留末 4 碼（如 ****1234）。"""
+    if not account:
+        return ""
+    return f"****{account[-4:]}" if len(account) > 4 else "****"
+
+
 # ============ Employees ============
 
 @router.get("/employees")
@@ -191,6 +198,7 @@ def export_employees(
         employees = session.query(Employee).order_by(Employee.employee_id).all()
         classrooms = _id_name_map(session, Classroom)
         job_titles = _id_name_map(session, JobTitle)
+        can_view_full_account = has_permission(current_user.get("permissions", 0), Permission.SALARY_WRITE)
 
         wb = Workbook()
         ws = _safe_ws(wb)
@@ -217,7 +225,9 @@ def export_employees(
                 emp.hire_date.isoformat() if emp.hire_date else "",
                 emp.phone or "", emp.address or "",
                 emp.emergency_contact_name or "", emp.emergency_contact_phone or "",
-                emp.bank_code or "", emp.bank_account or "", emp.bank_account_name or "",
+                emp.bank_code or "",
+                emp.bank_account or "" if can_view_full_account else _mask_bank_account(emp.bank_account),
+                emp.bank_account_name or "",
                 "在職" if emp.is_active else "離職",
             ])
 

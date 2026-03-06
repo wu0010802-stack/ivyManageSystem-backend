@@ -158,6 +158,9 @@ def _run_migrations(engine):
     _add_column_if_missing(engine, inspector, "employees", "pension_self_rate", "FLOAT DEFAULT 0")
     # employees — 離職日期
     _add_column_if_missing(engine, inspector, "employees", "resign_date", "DATE")
+    # employees — 離職原因、試用期結束日
+    _add_column_if_missing(engine, inspector, "employees", "resign_reason", "VARCHAR(200)")
+    _add_column_if_missing(engine, inspector, "employees", "probation_end_date", "DATE")
 
     # users — 強制修改密碼旗標
     _add_column_if_missing(engine, inspector, "users", "must_change_password", "BOOLEAN NOT NULL DEFAULT FALSE")
@@ -272,6 +275,8 @@ class Employee(Base):
 
     is_active = Column(Boolean, default=True, comment="是否在職")
     resign_date = Column(Date, nullable=True, comment="離職日期")
+    resign_reason = Column(String(200), nullable=True, comment="離職原因")
+    probation_end_date = Column(Date, nullable=True, comment="試用期結束日")
     is_office_staff = Column(Boolean, default=False, comment="是否為辦公室人員")
     dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
     hire_date = Column(Date, comment="到職日期")
