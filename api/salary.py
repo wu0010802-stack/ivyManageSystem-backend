@@ -769,11 +769,9 @@ def export_all_salaries(
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
-    format: str = Query("xlsx", pattern="^(xlsx)$")
+    format: str = Query("xlsx", pattern="^(xlsx|pdf)$")
 ):
-    """匯出全部員工薪資 Excel"""
-    from services.salary_slip import generate_salary_excel
-
+    """匯出全部員工薪資（xlsx 或 pdf）"""
     session = get_session()
     try:
         records = session.query(SalaryRecord, Employee).join(
@@ -786,8 +784,18 @@ def export_all_salaries(
         if not records:
             raise HTTPException(status_code=404, detail="該月份無薪資記錄")
 
-        excel_bytes = generate_salary_excel(records, year, month)
+        if format == "pdf":
+            from services.salary_slip import generate_salary_all_pdf
+            pdf_bytes = generate_salary_all_pdf(records, year, month)
+            filename = f"salary_all_{year}_{month:02d}.pdf"
+            return StreamingResponse(
+                io.BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+            )
 
+        from services.salary_slip import generate_salary_excel
+        excel_bytes = generate_salary_excel(records, year, month)
         filename = f"salary_all_{year}_{month:02d}.xlsx"
         return StreamingResponse(
             io.BytesIO(excel_bytes),
