@@ -183,6 +183,10 @@ def _run_migrations(engine):
         except Exception as e:
             logger.warning("Migration: 無法修改 users.employee_id nullable 約束: %s", e)
 
+    # overtime_records — 補休欄位
+    _add_column_if_missing(engine, inspector, "overtime_records", "use_comp_leave",      "BOOLEAN NOT NULL DEFAULT FALSE")
+    _add_column_if_missing(engine, inspector, "overtime_records", "comp_leave_granted",  "BOOLEAN NOT NULL DEFAULT FALSE")
+
     # attendances — 異常確認欄位
     _add_column_if_missing(engine, inspector, "attendances", "confirmed_action", "VARCHAR(20)")
     _add_column_if_missing(engine, inspector, "attendances", "confirmed_by",     "VARCHAR(100)")

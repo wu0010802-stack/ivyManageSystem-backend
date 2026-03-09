@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import or_
 
-from models.database import get_session, Employee, OvertimeRecord
+from models.database import get_session, Employee, OvertimeRecord, LeaveQuota
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -147,6 +147,7 @@ class OvertimeCreate(BaseModel):
     end_time: Optional[str] = None    # HH:MM
     hours: float
     reason: Optional[str] = None
+    use_comp_leave: bool = False  # 以補休代替加班費
 
     @field_validator("overtime_type")
     @classmethod
@@ -242,6 +243,8 @@ def get_overtimes(
                 "end_time": ot.end_time.strftime("%H:%M") if ot.end_time else None,
                 "hours": ot.hours,
                 "overtime_pay": ot.overtime_pay,
+                "use_comp_leave": ot.use_comp_leave,
+                "comp_leave_granted": ot.comp_leave_granted,
                 "is_approved": ot.is_approved,
                 "approved_by": ot.approved_by,
                 "reason": ot.reason,
@@ -264,7 +267,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
         if not emp:
             raise HTTPException(status_code=404, detail="員工不存在")
 
-        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
+        pay = 0.0 if data.use_comp_leave else calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
 
         start_dt = None
         end_dt = None
@@ -295,6 +298,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
             end_time=end_dt,
             hours=data.hours,
             overtime_pay=pay,
+            use_comp_leave=data.use_comp_leave,
             reason=data.reason,
             is_approved=None,  # Explicitly set to Pending
         )
@@ -357,10 +361,10 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
         if data.end_time:
             ot.end_time = new_end_dt
 
-        # Recalculate pay
+        # Recalculate pay（補休模式加班費固定為 0）
         emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()
         if emp:
-            ot.overtime_pay = calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type)
+            ot.overtime_pay = 0.0 if ot.use_comp_leave else calculate_overtime_pay(emp.base_salary, ot.hours, ot.overtime_type)
 
         # ── 稽核退審：已核准的記錄被修改，自動退回待審核 ──────────────────────
         # 防止管理員靜默修改已核准加班時數，導致薪資異常（財務防呆）
@@ -406,7 +410,7 @@ def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permi
 
 @router.put("/overtimes/{overtime_id}/approve")
 def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
-    """核准/駁回加班；核准後自動重算該員工當月薪資"""
+    """核准/駁回加班；核准後自動重算該員工當月薪資，補休模式核准後自動累積配額"""
     session = get_session()
     try:
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
@@ -414,11 +418,38 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
             raise HTTPException(status_code=404, detail="加班記錄不存在")
         ot.is_approved = approved
         ot.approved_by = approved_by
-        session.commit()
 
         result = {"message": "已核准" if approved else "已駁回"}
 
-        # 核准後自動重算該員工當月薪資
+        # 補休配額發放（核准時才執行，且防止重複發放）
+        if approved and ot.use_comp_leave and not ot.comp_leave_granted:
+            year = ot.overtime_date.year
+            quota = session.query(LeaveQuota).filter(
+                LeaveQuota.employee_id == ot.employee_id,
+                LeaveQuota.year == year,
+                LeaveQuota.leave_type == "compensatory",
+            ).first()
+            if quota:
+                quota.total_hours += ot.hours
+            else:
+                quota = LeaveQuota(
+                    employee_id=ot.employee_id,
+                    year=year,
+                    leave_type="compensatory",
+                    total_hours=ot.hours,
+                    note="由加班補休累積",
+                )
+                session.add(quota)
+            ot.comp_leave_granted = True
+            result["comp_leave_hours_granted"] = ot.hours
+            logger.info(
+                "補休配額已發放：員工 ID=%d, %d 年度 +%.1f 小時（加班記錄 #%d）",
+                ot.employee_id, year, ot.hours, overtime_id,
+            )
+
+        session.commit()
+
+        # 核准後自動重算該員工當月薪資（補休模式加班費為 0，仍可重算確保一致性）
         if approved and _salary_engine is not None:
             try:
                 year = ot.overtime_date.year
@@ -427,12 +458,17 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
                 _salary_engine.process_salary_calculation(emp_id, year, month)
                 result["salary_recalculated"] = True
                 result["message"] = "已核准，薪資已自動重算"
-                logger.info(f"加班核准後自動重算薪資：emp_id={emp_id}, {year}/{month}")
+                logger.info("加班核准後自動重算薪資：emp_id=%d, %d/%d", emp_id, year, month)
             except Exception as e:
                 result["salary_recalculated"] = False
                 result["warning"] = "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
-                logger.error(f"加班核准後薪資重算失敗：{e}")
+                logger.error("加班核准後薪資重算失敗：%s", e)
 
         return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

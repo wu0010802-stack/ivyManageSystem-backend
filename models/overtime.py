@@ -26,6 +26,9 @@ class OvertimeRecord(Base):
 
     overtime_pay = Column(Float, default=0, comment="加班費（自動計算）")
 
+    use_comp_leave = Column(Boolean, default=False, nullable=False, comment="是否以補休代替加班費")
+    comp_leave_granted = Column(Boolean, default=False, nullable=False, comment="補休配額是否已發放（防止重複發放）")
+
     is_approved = Column(Boolean, nullable=True, default=None, comment="是否核准 (None=待審核, True=核准, False=駁回)")
     approved_by = Column(String(50), comment="核准人")
     reason = Column(Text, comment="加班原因")

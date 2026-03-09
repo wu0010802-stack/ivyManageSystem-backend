@@ -420,6 +420,7 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_pe
             password_hash=hash_password(data.password),
             role=data.role,
             permissions=final_permissions,
+            must_change_password=True,  # 新帳號強制首次登入修改密碼
         )
         session.add(user)
         session.commit()
