@@ -16,6 +16,10 @@ from sqlalchemy.orm import joinedload
 from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift, ShiftSwapRequest
 from utils.auth import require_permission
 from utils.permissions import Permission
+from utils.schedule_utils import (
+    get_week_dates, get_employee_weekly_shift_hours,
+    compute_weekly_hours, build_weekly_warning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +271,32 @@ def save_assignments(data: BulkAssignmentRequest, current_user: dict = Depends(r
 
         session.commit()
         logger.info(f"Saved {saved} / deleted {deleted} shift assignments for week {week_date}")
-        return {"message": f"已儲存 {saved} 筆、清除 {deleted} 筆排班", "week_start_date": str(week_date)}
+
+        # ── 週工時超時預警（commit 後直接讀 DB 最新狀態，不需 overrides）──
+        assigned_ids = {
+            item.employee_id for item in data.assignments if item.shift_type_id is not None
+        }
+        warnings = []
+        if assigned_ids:
+            shift_type_map = {st.id: st for st in session.query(ShiftType).all()}
+            emp_map = {
+                e.id: e.name
+                for e in session.query(Employee).filter(Employee.id.in_(assigned_ids)).all()
+            }
+            week_dates = get_week_dates(week_date)
+            for emp_id in assigned_ids:
+                shift_hours = get_employee_weekly_shift_hours(
+                    session, emp_id, week_dates, shift_type_map
+                )
+                weekly_hours = compute_weekly_hours(shift_hours)
+                w = build_weekly_warning(emp_id, emp_map.get(emp_id, str(emp_id)), week_dates[0], weekly_hours)
+                if w:
+                    warnings.append(w)
+
+        resp = {"message": f"已儲存 {saved} 筆、清除 {deleted} 筆排班", "week_start_date": str(week_date)}
+        if warnings:
+            resp["warnings"] = warnings
+        return resp
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=400, detail=str(e))

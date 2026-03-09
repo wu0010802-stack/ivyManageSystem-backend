@@ -43,6 +43,8 @@ def get_my_overtimes(
             "end_time": ot.end_time.strftime("%H:%M") if ot.end_time else None,
             "hours": ot.hours,
             "overtime_pay": ot.overtime_pay,
+            "use_comp_leave": ot.use_comp_leave,
+            "comp_leave_granted": ot.comp_leave_granted,
             "reason": ot.reason,
             "is_approved": ot.is_approved,
             "approved_by": ot.approved_by,
@@ -66,7 +68,7 @@ def create_my_overtime(
             raise HTTPException(status_code=400, detail=f"無效的加班類型: {data.overtime_type}")
 
         from api.overtimes import calculate_overtime_pay, _check_overtime_overlap
-        pay = calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
+        pay = 0.0 if data.use_comp_leave else calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
 
         start_dt = None
         end_dt = None
@@ -97,12 +99,16 @@ def create_my_overtime(
             end_time=end_dt,
             hours=data.hours,
             overtime_pay=pay,
+            use_comp_leave=data.use_comp_leave,
             reason=data.reason,
             is_approved=None,
         )
         session.add(ot)
         session.commit()
-        return {"message": "加班申請已送出，待主管核准", "id": ot.id, "overtime_pay": pay}
+        msg = "加班申請已送出，待主管核准"
+        if data.use_comp_leave:
+            msg = f"補休申請已送出（{data.hours}h），核准後計入當年度補休配額，待主管核准"
+        return {"message": msg, "id": ot.id, "overtime_pay": pay, "use_comp_leave": data.use_comp_leave}
     except HTTPException:
         raise
     except Exception as e:

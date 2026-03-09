@@ -14,6 +14,7 @@ from models.database import (
     DailyShift, ShiftSwapRequest,
 )
 from utils.auth import get_current_user
+from utils.schedule_utils import check_weekly_hours_warning
 from ._shared import (
     _get_employee, _get_employee_shift_for_date, _get_shift_type_map,
     SwapRequestCreate, SwapRequestRespond, WEEKDAY_NAMES,
@@ -308,8 +309,30 @@ def create_swap_request(
             status="pending",
         )
         session.add(swap)
+
+        # ── 週工時超時預警（非阻斷）──────────────────────────────────────
+        shift_type_map = _get_shift_type_map(session)
+        warnings = []
+        # 申請者換班後取得對方班別
+        req_w = check_weekly_hours_warning(
+            session, emp.id, emp.name, data.swap_date,
+            shift_type_map, overrides={data.swap_date: tgt_shift_id},
+        )
+        # 對象換班後取得申請者班別
+        tgt_w = check_weekly_hours_warning(
+            session, data.target_id, target.name, data.swap_date,
+            shift_type_map, overrides={data.swap_date: req_shift_id},
+        )
+        if req_w:
+            warnings.append(req_w)
+        if tgt_w:
+            warnings.append(tgt_w)
+
         session.commit()
-        return {"message": "換班申請已送出", "id": swap.id}
+        resp = {"message": "換班申請已送出", "id": swap.id}
+        if warnings:
+            resp["warnings"] = warnings
+        return resp
     except HTTPException:
         raise
     except Exception as e:
@@ -385,8 +408,42 @@ def respond_swap_request(
                     )
                     session.add(ds)
 
+            # ── 週工時超時預警（非阻斷）──────────────────────────────────
+            shift_type_map = _get_shift_type_map(session)
+            warnings = []
+            req_emp = session.query(Employee).get(swap.requester_id)
+            tgt_emp = emp  # 當前使用者即為換班對象
+            req_w = check_weekly_hours_warning(
+                session, swap.requester_id,
+                req_emp.name if req_emp else str(swap.requester_id),
+                swap.swap_date, shift_type_map,
+                overrides={swap.swap_date: swap.target_shift_type_id},
+            )
+            tgt_w = check_weekly_hours_warning(
+                session, swap.target_id, tgt_emp.name,
+                swap.swap_date, shift_type_map,
+                overrides={swap.swap_date: swap.requester_shift_type_id},
+            )
+            if req_w:
+                warnings.append(req_w)
+                logger.warning(
+                    "換班申請 #%d 接受後 %s（id=%d）本週預測工時 %.1fh 超過勞基法上限 %gh",
+                    swap.id, req_w["employee_name"], swap.requester_id,
+                    req_w["calculated_hours"], req_w["limit_hours"],
+                )
+            if tgt_w:
+                warnings.append(tgt_w)
+                logger.warning(
+                    "換班申請 #%d 接受後 %s（id=%d）本週預測工時 %.1fh 超過勞基法上限 %gh",
+                    swap.id, tgt_w["employee_name"], swap.target_id,
+                    tgt_w["calculated_hours"], tgt_w["limit_hours"],
+                )
+
             session.commit()
-            return {"message": "已接受換班，班別已自動互換"}
+            resp = {"message": "已接受換班，班別已自動互換"}
+            if warnings:
+                resp["warnings"] = warnings
+            return resp
 
         elif data.action == "reject":
             swap.status = "rejected"

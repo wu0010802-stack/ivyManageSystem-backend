@@ -34,6 +34,7 @@ LEAVE_TYPE_LABELS = {
     "miscarriage": "流產假",
     "family_care": "家庭照顧假",
     "parental_unpaid": "育嬰留職停薪",
+    "compensatory": "補休",
 }
 
 OVERTIME_TYPE_LABELS = {
@@ -88,6 +89,7 @@ class OvertimeCreatePortal(BaseModel):
     end_time: Optional[str] = None
     hours: float
     reason: Optional[str] = None
+    use_comp_leave: bool = False  # 以補休代替加班費（1:1 換算）
 
     @field_validator("overtime_type")
     @classmethod

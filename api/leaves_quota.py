@@ -38,6 +38,7 @@ LEAVE_DEDUCTION_RULES: dict[str, float] = {
     "miscarriage": 0.0,        # 流產假: 不扣
     "family_care": 1.0,        # 家庭照顧假: 不給薪（併入事假）
     "parental_unpaid": 0.0,    # 育嬰留職停薪: 不扣（留停期間無薪）
+    "compensatory": 0.0,       # 補休：不扣薪
 }
 
 LEAVE_TYPE_LABELS: dict[str, str] = {
@@ -55,6 +56,7 @@ LEAVE_TYPE_LABELS: dict[str, str] = {
     "miscarriage": "流產假",
     "family_care": "家庭照顧假",
     "parental_unpaid": "育嬰留職停薪",
+    "compensatory": "補休",
 }
 
 # 有年度上限的假別（其餘為事件型，不追蹤）
