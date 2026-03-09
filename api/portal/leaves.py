@@ -26,11 +26,9 @@ from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
     LeaveCreatePortal, LEAVE_TYPE_LABELS,
 )
-from api.leaves import _check_overlap, _check_quota, _check_leave_limits, _calc_shift_hours
-
-# ── 重用 leaves.py 的配額常數 ──
-QUOTA_LEAVE_TYPES = {"annual", "sick", "menstrual", "personal", "family_care"}
-STATUTORY_QUOTA_HOURS = {"sick": 240.0, "menstrual": 96.0, "personal": 112.0, "family_care": 56.0}
+from api.leaves import _check_overlap
+from api.leaves_workday import _calc_shift_hours
+from api.leaves_quota import _check_quota, _check_leave_limits, QUOTA_LEAVE_TYPES, STATUTORY_QUOTA_HOURS
 
 router = APIRouter()
 

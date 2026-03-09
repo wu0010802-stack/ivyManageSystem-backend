@@ -25,7 +25,7 @@ def _sanitize_excel_value(value):
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -55,6 +55,8 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
         PDF bytes
     """
     _register_cjk_font()
+    font_name = 'STSong-Light'
+    styles = getSampleStyleSheet()
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -66,8 +68,13 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
         rightMargin=20 * mm,
     )
 
-    font_name = 'STSong-Light'
-    styles = getSampleStyleSheet()
+    elements = _build_salary_elements(record, employee, year, month, font_name, styles)
+    doc.build(elements)
+    return buffer.getvalue()
+
+
+def _build_salary_elements(record, employee, year: int, month: int, font_name: str, styles) -> list:
+    """建構單人薪資單的 platypus elements 清單（供 generate_salary_pdf 與 generate_salary_all_pdf 共用）"""
     title_style = ParagraphStyle(
         'ChineseTitle', parent=styles['Title'],
         fontName=font_name, fontSize=18, alignment=1
@@ -83,13 +90,11 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
 
     elements = []
 
-    # Header
     elements.append(Paragraph('薪資單', title_style))
     elements.append(Spacer(1, 3 * mm))
     elements.append(Paragraph(f'{year} 年 {month} 月', subtitle_style))
     elements.append(Spacer(1, 6 * mm))
 
-    # Employee info
     job_title = ''
     if hasattr(employee, 'job_title_rel') and employee.job_title_rel:
         job_title = employee.job_title_rel.name
@@ -114,11 +119,9 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
     elements.append(info_table)
     elements.append(Spacer(1, 6 * mm))
 
-    # Helper
     def money(val):
         return f'{int(val):,}' if val else '0'
 
-    # Earnings
     supervisor_dividend = getattr(record, 'supervisor_dividend', 0) or 0
     bonus_separate = getattr(record, 'bonus_separate', False)
     festival_bonus_val = record.festival_bonus or 0
@@ -130,7 +133,6 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
         (record.transportation_allowance or 0) +
         (record.other_allowance or 0)
     )
-    # 獎金小計不含獨立轉帳的節慶/超額獎金
     total_bonus = (
         (record.performance_bonus or 0) +
         (record.special_bonus or 0) +
@@ -151,7 +153,6 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
         ['主管紅利', '', money(supervisor_dividend)],
         ['獎金小計', '', money(total_bonus)],
     ]
-    # 獨立轉帳獎金行（節慶/超額獎金另行匯款，不計入月薪應發）
     if bonus_separate:
         festival_separate = festival_bonus_val + overtime_bonus_val
         earn_data.append(['節慶/超額獎金 (另行轉帳)', '', money(festival_separate)])
@@ -174,7 +175,6 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
     elements.append(earn_table)
     elements.append(Spacer(1, 6 * mm))
 
-    # Deductions
     total_insurance = (
         (record.labor_insurance_employee or 0) +
         (record.health_insurance_employee or 0) +
@@ -219,7 +219,6 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
     elements.append(deduct_table)
     elements.append(Spacer(1, 8 * mm))
 
-    # Net pay
     net_data = [['實發金額', money(record.net_salary)]]
     net_table = Table(net_data, colWidths=[220, 120])
     net_table.setStyle(TableStyle([
@@ -233,7 +232,43 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
     ]))
     elements.append(net_table)
 
-    doc.build(elements)
+    return elements
+
+
+def generate_salary_all_pdf(records_with_employees, year: int, month: int) -> bytes:
+    """
+    產生全員薪資單合一 PDF（每人一頁）
+
+    Args:
+        records_with_employees: list of (SalaryRecord, Employee) tuples
+        year: 薪資年度
+        month: 薪資月份
+
+    Returns:
+        PDF bytes
+    """
+    _register_cjk_font()
+    font_name = 'STSong-Light'
+    styles = getSampleStyleSheet()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+    )
+
+    all_elements = []
+    total = len(records_with_employees)
+    for idx, (record, employee) in enumerate(records_with_employees):
+        all_elements.extend(_build_salary_elements(record, employee, year, month, font_name, styles))
+        if idx < total - 1:
+            all_elements.append(PageBreak())
+
+    doc.build(all_elements)
     return buffer.getvalue()
 
 

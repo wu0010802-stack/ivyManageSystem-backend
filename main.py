@@ -38,7 +38,6 @@ from api.approvals import router as approvals_router
 from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
-from api.dev import router as dev_router, init_dev_services
 from api.punch_corrections import router as punch_corrections_router
 
 # ---------------------------------------------------------------------------
@@ -50,6 +49,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _is_production() -> bool:
+    return os.environ.get("ENV", "development").lower() in ("production", "prod")
+
 
 # ---------------------------------------------------------------------------
 # App
@@ -92,7 +96,6 @@ init_config_services(salary_engine)
 init_insurance_services(insurance_service)
 init_overtimes_services(salary_engine)
 init_leaves_services(salary_engine)
-init_dev_services(salary_engine)
 
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)
@@ -123,7 +126,11 @@ app.include_router(approvals_router)
 app.include_router(reports_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
-app.include_router(dev_router)
+if not _is_production():
+    from api.dev import router as dev_router, init_dev_services
+    init_dev_services(salary_engine)
+    app.include_router(dev_router)
+    logger.warning("Dev router 已掛載（/api/dev/*），正式環境請設定 ENV=production")
 app.include_router(punch_corrections_router)
 
 # Audit middleware (must be added after CORS middleware)
@@ -331,10 +338,6 @@ def seed_default_admin():
         logger.info("已建立初始管理員帳號：%s（linked to %s）", init_username, emp.name)
     finally:
         session.close()
-
-
-def _is_production() -> bool:
-    return os.environ.get("ENV", "development").lower() in ("production", "prod")
 
 
 def migrate_permissions_rw():
