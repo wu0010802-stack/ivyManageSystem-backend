@@ -3,7 +3,7 @@ Portal - anomaly endpoints
 """
 
 import calendar as cal_module
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -76,7 +76,9 @@ def get_anomalies(
                     "id": att.id,
                     "date": att.attendance_date.isoformat(),
                     "weekday": WEEKDAY_NAMES[att.attendance_date.weekday()],
-                    "confirmed": False,
+                    "confirmed": att.confirmed_action is not None,
+                    "confirmed_action": att.confirmed_action,
+                    "confirmed_at": att.confirmed_at.isoformat() if att.confirmed_at else None,
                     **item,
                 })
 
@@ -120,6 +122,10 @@ def confirm_anomaly(
             att.remark = (att.remark or "") + f" [申訴: {data.remark or ''}]"
         else:
             raise HTTPException(status_code=400, detail="無效的處理方式")
+
+        att.confirmed_action = data.action
+        att.confirmed_by = emp.name
+        att.confirmed_at = datetime.now()
 
         session.commit()
 
