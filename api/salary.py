@@ -9,6 +9,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from utils.auth import require_permission
 from utils.permissions import Permission
 from fastapi.responses import StreamingResponse
@@ -614,7 +615,7 @@ def calculate_salaries_alt(
         return results
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -658,7 +659,7 @@ def get_festival_bonus(
 
     except Exception as e:
         logger.error(f"Error getting festival bonus: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -954,7 +955,7 @@ def finalize_salary_month(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -986,6 +987,6 @@ def unfinalize_salary(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

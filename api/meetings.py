@@ -6,6 +6,7 @@ from datetime import date, datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
 from models.database import get_session, MeetingRecord, Employee
@@ -141,7 +142,7 @@ def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(requi
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -207,7 +208,7 @@ def create_meetings_batch(data: MeetingBatchCreate, current_user: dict = Depends
         return {"message": f"批次建立完成，共 {created} 筆", "count": created}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -239,7 +240,7 @@ def update_meeting(record_id: int, data: MeetingRecordUpdate, current_user: dict
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -260,7 +261,7 @@ def delete_meeting(record_id: int, current_user: dict = Depends(require_permissi
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

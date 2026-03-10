@@ -9,7 +9,7 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from jose import JWTError, jwt
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,36 @@ _LEGACY_ITERATIONS = 100_000  # 舊版雜湊，僅用於向下相容驗證
 # 儲存格式（舊）：{salt_hex}${hash_hex}  ← 固定 100,000 次
 # 識別方式：split("$") 得到 3 段 → 新格式；2 段 → 舊格式
 # ─────────────────────────────────────────────────────────────────────────
+
+import re
+
+# ── 密碼強度規則 ─────────────────────────────────────────────────────────
+_PASSWORD_MIN_LENGTH = 8
+
+
+def validate_password_strength(password: str) -> None:
+    """驗證密碼強度，不合規則時拋出 400 HTTPException。
+
+    規則：
+    - 至少 8 字元
+    - 至少包含一個大寫字母
+    - 至少包含一個小寫字母
+    - 至少包含一個數字
+    """
+    errors = []
+    if len(password) < _PASSWORD_MIN_LENGTH:
+        errors.append(f"至少 {_PASSWORD_MIN_LENGTH} 個字元")
+    if not re.search(r"[A-Z]", password):
+        errors.append("至少一個大寫英文字母")
+    if not re.search(r"[a-z]", password):
+        errors.append("至少一個小寫英文字母")
+    if not re.search(r"\d", password):
+        errors.append("至少一個數字")
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail=f"密碼強度不足：{', '.join(errors)}",
+        )
 
 
 def hash_password(password: str) -> str:
@@ -132,11 +162,22 @@ def decode_token_allow_expired(token: str) -> dict:
         raise HTTPException(status_code=401, detail="無效的 Token，請重新登入")
 
 
-async def get_current_user(authorization: str = Header(None)):
-    """FastAPI dependency: extract and verify JWT from Authorization header."""
-    if not authorization or not authorization.startswith("Bearer "):
+async def get_current_user(request: Request):
+    """FastAPI dependency: extract and verify JWT from httpOnly Cookie or Authorization header.
+
+    優先順序：
+    1. Cookie 'access_token'（httpOnly，XSS 無法讀取）
+    2. Authorization: Bearer ... header（向下相容 / Swagger UI）
+    """
+    # 1. httpOnly Cookie（主要路徑）
+    token = request.cookies.get("access_token")
+    # 2. Fallback: Authorization header
+    if not token:
+        authorization = request.headers.get("authorization", "")
+        if authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+    if not token:
         raise HTTPException(status_code=401, detail="未提供認證 Token")
-    token = authorization.split(" ", 1)[1]
     payload = decode_token(token)
     return payload
 

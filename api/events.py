@@ -12,6 +12,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from utils.errors import raise_safe_500
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -156,7 +157,7 @@ def create_event(data: EventCreate, current_user: dict = Depends(require_permiss
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -190,7 +191,7 @@ def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -211,7 +212,7 @@ def delete_event(event_id: int, current_user: dict = Depends(require_permission(
         return {"message": "事件已刪除"}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from utils.errors import raise_safe_500
 from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -158,7 +159,7 @@ def create_my_leave(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -210,7 +211,7 @@ async def upload_leave_attachments(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -250,7 +251,7 @@ def delete_leave_attachment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

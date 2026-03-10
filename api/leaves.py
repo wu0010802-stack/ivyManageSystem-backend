@@ -15,6 +15,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from utils.errors import raise_safe_500
 from fastapi.responses import FileResponse, StreamingResponse
 from urllib.parse import quote
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -411,7 +412,7 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -535,7 +536,7 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -574,7 +575,7 @@ def delete_leave(leave_id: int, current_user: dict = Depends(require_permission(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

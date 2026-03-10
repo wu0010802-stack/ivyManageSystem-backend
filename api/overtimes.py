@@ -13,6 +13,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from utils.errors import raise_safe_500
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import or_
@@ -400,7 +401,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -479,7 +480,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -572,7 +573,7 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

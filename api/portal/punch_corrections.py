@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel, field_validator, model_validator
 
 from models.database import get_session, PunchCorrectionRequest
@@ -138,6 +139,6 @@ def create_my_punch_correction(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

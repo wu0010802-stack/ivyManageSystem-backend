@@ -3,6 +3,7 @@ Portal - profile endpoints
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from utils.errors import raise_safe_500
 
 from models.database import get_session, Classroom
 from utils.auth import get_current_user
@@ -80,6 +81,6 @@ def update_profile(
         return {"message": "個人資料已更新"}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
