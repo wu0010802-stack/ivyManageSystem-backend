@@ -565,6 +565,10 @@ def get_permissions():
 @router.put("/users/{user_id}")
 def update_user(user_id: int, data: UpdateUserRequest, request: Request, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """更新使用者角色與權限"""
+    # 禁止管理員停用自己的帳號（防止系統鎖死）
+    if user_id == current_user.get("user_id") and data.is_active is False:
+        raise HTTPException(status_code=400, detail="不可停用自己的帳號")
+
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
@@ -623,6 +627,10 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
 @router.delete("/users/{user_id}")
 def delete_user(user_id: int, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """刪除使用者帳號"""
+    # 禁止管理員刪除自己的帳號（防止系統鎖死）
+    if user_id == current_user.get("user_id"):
+        raise HTTPException(status_code=400, detail="不可刪除自己的帳號")
+
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
