@@ -27,7 +27,7 @@ if not _jwt_secret:
 JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 15          # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
-JWT_REFRESH_GRACE_HOURS = 24  # 過期後仍允許刷新的寬限時間（24 小時）；帳號停用後暴露窗口從 7 天縮至 1 天
+JWT_REFRESH_GRACE_HOURS = 2   # 過期後仍允許刷新的寬限時間（2 小時）；搭配 token_version 機制，帳號停用後舊 token 立即失效
 
 # ── 密碼雜湊參數 ───────────────────────────────────────────────────────────
 # OWASP 2023 建議：PBKDF2-HMAC-SHA256 至少 600,000 次迭代

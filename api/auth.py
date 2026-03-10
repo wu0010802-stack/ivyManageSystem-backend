@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# 預計算的假密碼雜湊，用於帳號不存在時仍執行 PBKDF2 運算
+# 使回應時間與「帳號存在但密碼錯誤」一致，防止 Timing Side-Channel 枚舉帳號
+_DUMMY_PASSWORD_HASH = hash_password("__dummy_timing_padding__")
+
 # ---------- Login Rate Limiter（雙層防護）----------
 #
 # 層級一：IP 滑動視窗
@@ -224,7 +228,14 @@ def login(data: LoginRequest, request: Request):
             User.is_active == True,
         ).first()
 
-        if not user or not verify_password(data.password, user.password_hash):
+        if not user:
+            # 帳號不存在：仍執行密碼驗證（對假 hash），使回應時間與「密碼錯誤」一致
+            # 防止攻擊者透過回應時間差異枚舉有效帳號（Timing Side-Channel）
+            verify_password(data.password, _DUMMY_PASSWORD_HASH)
+            _record_login_failure(data.username)
+            raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+
+        if not verify_password(data.password, user.password_hash):
             _record_login_failure(data.username)  # 記錄失敗，累積後觸發鎖定
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
 
@@ -565,6 +576,10 @@ def get_permissions():
 @router.put("/users/{user_id}")
 def update_user(user_id: int, data: UpdateUserRequest, request: Request, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """更新使用者角色與權限"""
+    # 禁止管理員停用自己的帳號（防止系統鎖死）
+    if user_id == current_user.get("user_id") and data.is_active is False:
+        raise HTTPException(status_code=400, detail="不可停用自己的帳號")
+
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
@@ -623,6 +638,10 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
 @router.delete("/users/{user_id}")
 def delete_user(user_id: int, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
     """刪除使用者帳號"""
+    # 禁止管理員刪除自己的帳號（防止系統鎖死）
+    if user_id == current_user.get("user_id"):
+        raise HTTPException(status_code=400, detail="不可刪除自己的帳號")
+
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
