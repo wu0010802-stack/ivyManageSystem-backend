@@ -23,13 +23,14 @@ from models.salary import (
 )
 from models.config import (
     AttendancePolicy, BonusConfig, GradeTarget, InsuranceRate,
-    SystemConfig,
+    SystemConfig, PositionSalaryConfig,
 )
 from models.event import (
     Holiday, MeetingRecord, SchoolEvent, Announcement, AnnouncementRead,
 )
 from models.auth import User
 from models.audit import AuditLog
+from models.approval import ApprovalPolicy, ApprovalLog
 
 __all__ = [
     # base
@@ -54,11 +55,13 @@ __all__ = [
     "BonusSetting", "ClassBonusSetting",
     # config
     "AttendancePolicy", "BonusConfig", "GradeTarget", "InsuranceRate",
-    "SystemConfig",
+    "SystemConfig", "PositionSalaryConfig",
     # event
     "Holiday", "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead",
     # auth
     "User",
     # audit
     "AuditLog",
+    # approval
+    "ApprovalPolicy", "ApprovalLog",
 ]

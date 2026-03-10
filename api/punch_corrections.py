@@ -10,13 +10,44 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import or_
 
-from models.database import get_session, Employee, Attendance, PunchCorrectionRequest
+from models.database import get_session, Employee, Attendance, PunchCorrectionRequest, User, ApprovalPolicy, ApprovalLog
 from utils.auth import require_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["punch-corrections"])
+
+def _get_submitter_role(employee_id: int, session) -> str:
+    user = session.query(User).filter(
+        User.employee_id == employee_id,
+        User.is_active == True,
+    ).first()
+    return user.role if user else "teacher"
+
+
+def _check_approval_eligibility(doc_type: str, submitter_role: str, approver_role: str, session) -> bool:
+    policy = session.query(ApprovalPolicy).filter(
+        ApprovalPolicy.is_active == True,
+        ApprovalPolicy.submitter_role == submitter_role,
+        ApprovalPolicy.doc_type.in_([doc_type, "all"]),
+    ).first()
+    if not policy:
+        return approver_role == "admin"
+    return approver_role in [r.strip() for r in policy.approver_roles.split(",")]
+
+
+def _write_approval_log(doc_type: str, doc_id: int, action: str, approver: dict, comment: str | None, session):
+    session.add(ApprovalLog(
+        doc_type=doc_type,
+        doc_id=doc_id,
+        action=action,
+        approver_id=approver.get("id"),
+        approver_username=approver.get("username", ""),
+        approver_role=approver.get("role", ""),
+        comment=comment,
+    ))
+
 
 CORRECTION_TYPE_LABELS = {
     "punch_in": "補上班打卡",
@@ -108,6 +139,15 @@ def approve_punch_correction(
             status_label = "已核准" if correction.is_approved else "已駁回"
             raise HTTPException(status_code=400, detail=f"此申請已{status_label}，無法再次審核")
 
+        # ── 角色資格檢查 ──────────────────────────────────────────────────────
+        submitter_role = _get_submitter_role(correction.employee_id, session)
+        approver_role = current_user.get("role", "")
+        if not _check_approval_eligibility("punch_correction", submitter_role, approver_role, session):
+            raise HTTPException(
+                status_code=403,
+                detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的補打卡申請",
+            )
+
         if not body.approved:
             # 駁回
             if not body.rejection_reason or not body.rejection_reason.strip():
@@ -115,6 +155,8 @@ def approve_punch_correction(
             correction.is_approved = False
             correction.rejection_reason = body.rejection_reason.strip()
             correction.approved_by = current_user.get("username", "")
+            _write_approval_log("punch_correction", correction_id, "rejected", current_user,
+                                body.rejection_reason, session)
             session.commit()
             logger.warning(
                 "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 駁回",
@@ -147,6 +189,7 @@ def approve_punch_correction(
         # 更新申請狀態
         correction.is_approved = True
         correction.approved_by = current_user.get("username", "")
+        _write_approval_log("punch_correction", correction_id, "approved", current_user, None, session)
         session.commit()
 
         logger.warning(

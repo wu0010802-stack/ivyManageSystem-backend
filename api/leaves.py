@@ -8,15 +8,20 @@ import os
 import calendar as cal_module
 from pathlib import Path
 from datetime import date
-from typing import Optional
+from typing import Optional, List
+from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse, StreamingResponse
+from urllib.parse import quote
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from models.database import (
     get_session, Employee, LeaveRecord, LeaveQuota,
-    SalaryRecord,
+    SalaryRecord, User, ApprovalPolicy, ApprovalLog,
 )
 from utils.auth import require_permission
 from utils.permissions import Permission
@@ -195,6 +200,40 @@ class LeaveUpdate(BaseModel):
 
 # ============ Helpers ============
 
+def _get_submitter_role(employee_id: int, session) -> str:
+    """查詢員工對應 User 帳號的角色，找不到預設 teacher"""
+    user = session.query(User).filter(
+        User.employee_id == employee_id,
+        User.is_active == True,
+    ).first()
+    return user.role if user else "teacher"
+
+
+def _check_approval_eligibility(doc_type: str, submitter_role: str, approver_role: str, session) -> bool:
+    """查詢 ApprovalPolicy，確認 approver_role 是否有資格審核 submitter_role 的申請"""
+    policy = session.query(ApprovalPolicy).filter(
+        ApprovalPolicy.is_active == True,
+        ApprovalPolicy.submitter_role == submitter_role,
+        ApprovalPolicy.doc_type.in_([doc_type, "all"]),
+    ).first()
+    if not policy:
+        return approver_role == "admin"
+    return approver_role in [r.strip() for r in policy.approver_roles.split(",")]
+
+
+def _write_approval_log(doc_type: str, doc_id: int, action: str, approver: dict, comment: str | None, session):
+    """寫入簽核記錄"""
+    session.add(ApprovalLog(
+        doc_type=doc_type,
+        doc_id=doc_id,
+        action=action,
+        approver_id=approver.get("id"),
+        approver_username=approver.get("username", ""),
+        approver_role=approver.get("role", ""),
+        comment=comment,
+    ))
+
+
 def _check_overlap(
     session,
     employee_id: int,
@@ -281,12 +320,24 @@ def get_leaves(
 
         records = q.order_by(LeaveRecord.start_date.desc()).all()
 
+        # 預先載入員工角色映射（減少逐筆查 DB 的 N+1 問題）
+        from models.database import User as UserModel
+        employee_ids = list({leave.employee_id for leave, _ in records})
+        user_roles = {}
+        if employee_ids:
+            users = session.query(UserModel).filter(
+                UserModel.employee_id.in_(employee_ids),
+                UserModel.is_active == True,
+            ).all()
+            user_roles = {u.employee_id: u.role for u in users}
+
         results = []
         for leave, emp in records:
             results.append({
                 "id": leave.id,
                 "employee_id": leave.employee_id,
                 "employee_name": emp.name,
+                "submitter_role": user_roles.get(leave.employee_id, "teacher"),
                 "leave_type": leave.leave_type,
                 "leave_type_label": LEAVE_TYPE_LABELS.get(leave.leave_type, leave.leave_type),
                 "start_date": leave.start_date.isoformat(),
@@ -294,7 +345,7 @@ def get_leaves(
                 "start_time": leave.start_time,
                 "end_time": leave.end_time,
                 "leave_hours": leave.leave_hours,
-                "deduction_ratio": LEAVE_DEDUCTION_RULES.get(leave.leave_type, 1.0),
+                "deduction_ratio": leave.deduction_ratio,
                 "reason": leave.reason,
                 "is_approved": leave.is_approved,
                 "approved_by": leave.approved_by,
@@ -533,6 +584,12 @@ class ApproveRequest(BaseModel):
     rejection_reason: Optional[str] = None
 
 
+class LeaveBatchApproveRequest(BaseModel):
+    ids: List[int]
+    approved: bool
+    rejection_reason: Optional[str] = None
+
+
 @router.put("/leaves/{leave_id}/approve")
 def approve_leave(
     leave_id: int,
@@ -547,6 +604,15 @@ def approve_leave(
         leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
         if not leave:
             raise HTTPException(status_code=404, detail="請假記錄不存在")
+
+        # ── 角色資格檢查 ────────────────────────────────────────────────────────
+        submitter_role = _get_submitter_role(leave.employee_id, session)
+        approver_role = current_user.get("role", "")
+        if not _check_approval_eligibility("leave", submitter_role, approver_role, session):
+            raise HTTPException(
+                status_code=403,
+                detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的請假申請",
+            )
 
         warning = None
         if data.approved:
@@ -588,6 +654,10 @@ def approve_leave(
         leave.is_approved = data.approved
         leave.approved_by = current_user.get("username", "管理員") if data.approved else None
         leave.rejection_reason = data.rejection_reason.strip() if not data.approved and data.rejection_reason else None
+
+        action = "approved" if data.approved else "rejected"
+        _write_approval_log("leave", leave_id, action, current_user,
+                            data.rejection_reason if not data.approved else None, session)
         session.commit()
 
         result = {"message": "已核准" if data.approved else "已駁回"}
@@ -620,6 +690,256 @@ def approve_leave(
         return result
     finally:
         session.close()
+
+
+@router.post("/leaves/batch-approve")
+def batch_approve_leaves(
+    data: LeaveBatchApproveRequest,
+    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+):
+    """批次核准/駁回請假。每筆獨立處理，不因單筆失敗而中止，回傳成功/失敗清單。"""
+    if not data.approved and not (data.rejection_reason or "").strip():
+        raise HTTPException(status_code=400, detail="批次駁回時必須填寫原因")
+
+    succeeded = []
+    failed = []
+
+    for leave_id in data.ids:
+        session = get_session()
+        try:
+            leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+            if not leave:
+                failed.append({"id": leave_id, "reason": "請假記錄不存在"})
+                continue
+
+            # 角色資格檢查（403 視為失敗條目，不中斷批次）
+            submitter_role = _get_submitter_role(leave.employee_id, session)
+            approver_role = current_user.get("role", "")
+            if not _check_approval_eligibility("leave", submitter_role, approver_role, session):
+                failed.append({
+                    "id": leave_id,
+                    "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的請假申請",
+                })
+                continue
+
+            if data.approved:
+                try:
+                    _check_leave_limits(
+                        session, leave.employee_id, leave.leave_type,
+                        leave.start_date, leave.leave_hours, include_pending=False,
+                    )
+                    _check_quota(
+                        session, leave.employee_id, leave.leave_type,
+                        leave.start_date.year, leave.leave_hours, include_pending=False,
+                    )
+                    _check_salary_months_not_finalized(
+                        session, leave.employee_id,
+                        {(leave.start_date.year, leave.start_date.month)},
+                    )
+                except HTTPException as e:
+                    failed.append({"id": leave_id, "reason": e.detail})
+                    continue
+
+            leave.is_approved = data.approved
+            leave.approved_by = current_user.get("username", "管理員") if data.approved else None
+            leave.rejection_reason = (
+                data.rejection_reason.strip()
+                if not data.approved and data.rejection_reason
+                else None
+            )
+            action = "approved" if data.approved else "rejected"
+            _write_approval_log("leave", leave_id, action, current_user,
+                                data.rejection_reason if not data.approved else None, session)
+            session.commit()
+
+            if data.approved and _salary_engine is not None:
+                try:
+                    emp_id = leave.employee_id
+                    months: set = set()
+                    cur = date(leave.start_date.year, leave.start_date.month, 1)
+                    end_m = date(leave.end_date.year, leave.end_date.month, 1)
+                    while cur <= end_m:
+                        months.add((cur.year, cur.month))
+                        cur = (
+                            date(cur.year + 1, 1, 1) if cur.month == 12
+                            else date(cur.year, cur.month + 1, 1)
+                        )
+                    for yr, mo in sorted(months):
+                        _salary_engine.process_salary_calculation(emp_id, yr, mo)
+                except Exception as se:
+                    logger.error("批次審核後薪資重算失敗（假單 #%d）：%s", leave_id, se)
+
+            succeeded.append(leave_id)
+        except Exception as e:
+            session.rollback()
+            failed.append({"id": leave_id, "reason": str(e)})
+        finally:
+            session.close()
+
+    return {"succeeded": succeeded, "failed": failed}
+
+
+def _leaves_xlsx_response(wb, filename: str):
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    encoded = quote(filename)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
+
+
+_LV_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
+_LV_HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+_LV_THIN_BORDER = Border(
+    left=Side(style="thin"), right=Side(style="thin"),
+    top=Side(style="thin"), bottom=Side(style="thin"),
+)
+_LV_CENTER_ALIGN = Alignment(horizontal="center")
+
+
+def _lv_write_header(ws, row, headers):
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col, value=h)
+        cell.font = _LV_HEADER_FONT
+        cell.fill = _LV_HEADER_FILL
+        cell.border = _LV_THIN_BORDER
+        cell.alignment = _LV_CENTER_ALIGN
+
+
+@router.get("/leaves/import-template")
+def get_leave_import_template(
+    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+):
+    """下載請假批次匯入 Excel 範本"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "請假匯入範本"
+
+    headers = ["員工編號", "員工姓名", "假別代碼", "開始日期", "結束日期", "時數(可空)", "原因(可空)"]
+    _lv_write_header(ws, 1, headers)
+
+    ws.cell(row=2, column=1, value="E001")
+    ws.cell(row=2, column=2, value="王小明")
+    ws.cell(row=2, column=3, value="annual")
+    ws.cell(row=2, column=4, value="2026-03-15")
+    ws.cell(row=2, column=5, value="2026-03-15")
+    ws.cell(row=2, column=6, value=8)
+    ws.cell(row=2, column=7, value="年度特休")
+
+    ws2 = wb.create_sheet("假別代碼說明")
+    ws2.cell(row=1, column=1, value="假別代碼")
+    ws2.cell(row=1, column=2, value="中文名稱")
+    for idx, (code, label) in enumerate(LEAVE_TYPE_LABELS.items(), 2):
+        ws2.cell(row=idx, column=1, value=code)
+        ws2.cell(row=idx, column=2, value=label)
+
+    return _leaves_xlsx_response(wb, "請假匯入範本.xlsx")
+
+
+@router.post("/leaves/import")
+async def import_leaves(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+):
+    """批次匯入請假申請（建立草稿假單，is_approved=None，需後續人工審核）"""
+    content = await file.read()
+    try:
+        df = pd.read_excel(BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+
+    label_to_code = {v: k for k, v in LEAVE_TYPE_LABELS.items()}
+
+    results: dict = {"total": 0, "created": 0, "failed": 0, "errors": []}
+    session = get_session()
+    try:
+        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        emp_by_id = {str(e.employee_id): e for e in employees}
+        emp_by_name = {e.name: e for e in employees}
+
+        for idx, row in df.iterrows():
+            results["total"] += 1
+            row_num = int(idx) + 2
+            try:
+                emp_id_str = str(row.get("員工編號", "")).strip()
+                emp_name_str = str(row.get("員工姓名", "")).strip()
+                emp = None
+                if emp_id_str and emp_id_str not in ("nan", ""):
+                    emp = emp_by_id.get(emp_id_str)
+                if emp is None and emp_name_str and emp_name_str not in ("nan", ""):
+                    emp = emp_by_name.get(emp_name_str)
+                if emp is None:
+                    raise ValueError(f"找不到員工（編號:{emp_id_str}，姓名:{emp_name_str}）")
+
+                leave_type_raw = str(row.get("假別代碼", "")).strip()
+                if leave_type_raw in LEAVE_TYPE_LABELS:
+                    leave_type = leave_type_raw
+                elif leave_type_raw in label_to_code:
+                    leave_type = label_to_code[leave_type_raw]
+                else:
+                    raise ValueError(f"無效的假別代碼：{leave_type_raw}（請參考「假別代碼說明」頁）")
+
+                start_raw = row.get("開始日期")
+                end_raw = row.get("結束日期")
+                if pd.isna(start_raw) or pd.isna(end_raw):
+                    raise ValueError("開始日期或結束日期不得為空")
+                try:
+                    start_date = pd.to_datetime(start_raw).date()
+                    end_date = pd.to_datetime(end_raw).date()
+                except Exception:
+                    raise ValueError("日期格式錯誤，建議使用 YYYY-MM-DD")
+
+                if end_date < start_date:
+                    raise ValueError("結束日期不得早於開始日期")
+                if start_date.year != end_date.year or start_date.month != end_date.month:
+                    raise ValueError("請假區間不可跨月，請拆成多筆分別匯入")
+
+                hours_raw = row.get("時數(可空)")
+                if hours_raw is None or pd.isna(hours_raw):
+                    leave_hours = 8.0
+                else:
+                    try:
+                        leave_hours = float(hours_raw)
+                        if leave_hours < 0.5:
+                            raise ValueError("時數至少 0.5 小時")
+                    except (ValueError, TypeError):
+                        leave_hours = 8.0
+
+                reason_raw = row.get("原因(可空)")
+                reason = str(reason_raw).strip() if reason_raw is not None and not pd.isna(reason_raw) else None
+
+                effective_ratio = LEAVE_DEDUCTION_RULES[leave_type]
+                leave = LeaveRecord(
+                    employee_id=emp.id,
+                    leave_type=leave_type,
+                    start_date=start_date,
+                    end_date=end_date,
+                    leave_hours=leave_hours,
+                    is_deductible=effective_ratio > 0,
+                    deduction_ratio=effective_ratio,
+                    reason=reason,
+                    is_approved=None,
+                )
+                session.add(leave)
+                session.flush()
+                results["created"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                results["errors"].append(f"第 {row_num} 行: {str(e)}")
+
+        session.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"匯入失敗：{e}")
+    finally:
+        session.close()
+
+    return results
 
 
 @router.get("/leaves/{leave_id}/attachments/{filename}")

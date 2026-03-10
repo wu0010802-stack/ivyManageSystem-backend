@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from models.database import (
     init_database, get_session,
     AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate, JobTitle,
-    User, Employee, ShiftType,
+    User, Employee, ShiftType, ApprovalPolicy,
 )
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
@@ -39,6 +39,7 @@ from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
 from api.punch_corrections import router as punch_corrections_router
+from api.approval_settings import router as approval_settings_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -132,6 +133,7 @@ if not _is_production():
     app.include_router(dev_router)
     logger.warning("Dev router 已掛載（/api/dev/*），正式環境請設定 ENV=production")
 app.include_router(punch_corrections_router)
+app.include_router(approval_settings_router)
 
 # Audit middleware (must be added after CORS middleware)
 from utils.audit import AuditMiddleware
@@ -340,6 +342,25 @@ def seed_default_admin():
         session.close()
 
 
+def seed_approval_policies():
+    """初始化預設審核政策（若表為空則 seed 4 筆預設值）"""
+    from api.approval_settings import DEFAULT_POLICIES
+    session = get_session()
+    try:
+        if session.query(ApprovalPolicy).count() == 0:
+            for p in DEFAULT_POLICIES:
+                session.add(ApprovalPolicy(
+                    doc_type="all",
+                    submitter_role=p["submitter_role"],
+                    approver_roles=p["approver_roles"],
+                    is_active=True,
+                ))
+            session.commit()
+            logger.info("Seeded default approval policies.")
+    finally:
+        session.close()
+
+
 def migrate_permissions_rw():
     """為既有非全權用戶自動補上 _WRITE 位元（冪等）"""
     session = get_session()
@@ -372,6 +393,7 @@ def on_startup():
     seed_default_configs()
     seed_shift_types()
     seed_default_admin()
+    seed_approval_policies()
     salary_engine.load_config_from_db()
     logger.info("Application started successfully.")
 
