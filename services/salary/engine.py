@@ -13,7 +13,7 @@ from .constants import (
     FESTIVAL_BONUS_BASE, TARGET_ENROLLMENT, OVERTIME_TARGET, OVERTIME_BONUS_PER_PERSON,
     SUPERVISOR_DIVIDEND, SUPERVISOR_FESTIVAL_BONUS, OFFICE_FESTIVAL_BONUS_BASE,
     POSITION_GRADE_MAP,
-    DEFAULT_LATE_PER_MINUTE, DEFAULT_EARLY_PER_MINUTE, DEFAULT_AUTO_LEAVE_THRESHOLD,
+    DEFAULT_LATE_PER_MINUTE, DEFAULT_EARLY_PER_MINUTE,
     DEFAULT_MISSING_PUNCH, DEFAULT_MEETING_PAY, DEFAULT_MEETING_PAY_6PM,
     DEFAULT_MEETING_ABSENCE_PENALTY,
 )
@@ -37,7 +37,6 @@ class SalaryEngine:
     # 預設扣款規則
     DEFAULT_LATE_PER_MINUTE = DEFAULT_LATE_PER_MINUTE
     DEFAULT_EARLY_PER_MINUTE = DEFAULT_EARLY_PER_MINUTE
-    DEFAULT_AUTO_LEAVE_THRESHOLD = DEFAULT_AUTO_LEAVE_THRESHOLD
     DEFAULT_MISSING_PUNCH = DEFAULT_MISSING_PUNCH
     DEFAULT_MEETING_PAY = DEFAULT_MEETING_PAY
     DEFAULT_MEETING_PAY_6PM = DEFAULT_MEETING_PAY_6PM
@@ -77,8 +76,8 @@ class SalaryEngine:
             'missing': {'amount': 0},   # 未打卡不扣款，僅記錄
             'early': {'per_minute': 1}
         }
-        # 可被覆蓋的設定 - 節慶獎金
-        self._bonus_base = dict(FESTIVAL_BONUS_BASE)
+        # 可被覆蓋的設定 - 節慶獎金（深拷貝，避免測試修改巢狀 dict 時汙染常數）
+        self._bonus_base = {k: dict(v) for k, v in FESTIVAL_BONUS_BASE.items()}
         self._target_enrollment = {k: dict(v) for k, v in TARGET_ENROLLMENT.items()}
         # 可被覆蓋的設定 - 超額獎金
         self._overtime_target = {k: dict(v) for k, v in OVERTIME_TARGET.items()}
@@ -394,8 +393,6 @@ class SalaryEngine:
         - 遲到/早退：一律按實際分鐘比例扣款（每分鐘 = 月薪 ÷ 30 ÷ 8 ÷ 60，依勞基法固定基準）
         - 未打卡：不扣款，僅記錄次數（供考核用）
         """
-        early_rule = self.deduction_rules.get('early', {})
-
         # 每分鐘薪資 = 月薪 ÷ 30 ÷ 8 ÷ 60（依勞基法時薪基準，固定 30 天）
         per_minute_rate = base_salary / (MONTHLY_BASE_DAYS * 8 * 60) if base_salary > 0 else 1
 
@@ -491,6 +488,7 @@ class SalaryEngine:
         meeting_context: dict = None,
         working_days: int = 22,
         overtime_work_pay: float = 0,
+        personal_sick_leave_hours: float = 0,
     ) -> SalaryBreakdown:
         """
         計算單一員工薪資
@@ -506,6 +504,7 @@ class SalaryEngine:
             classroom_context:  班級上下文 (新版節慶獎金用)
             office_staff_context: 辦公室人員上下文
             meeting_context:    園務會議上下文
+            personal_sick_leave_hours: 當月事假+病假累計時數（>40h 時取消所有節慶獎金及紅利）
         """
 
         is_hourly = employee.get('employee_type') == 'hourly'
@@ -571,6 +570,14 @@ class SalaryEngine:
             emp_title = employee.get('title', '')
             emp_position = employee.get('position', '')
 
+            # 計算節慶獎金用的有效職稱（bonus_grade 可覆蓋職稱等級）
+            _GRADE_TO_TITLE = {'A': '幼兒園教師', 'B': '教保員', 'C': '助理教保員'}
+            bonus_grade_override = employee.get('bonus_grade')
+            _effective_title = (
+                _GRADE_TO_TITLE.get(bonus_grade_override, emp_title)
+                if bonus_grade_override else emp_title
+            )
+
             if not emp_position:
                 supervisor_festival_base = None
             else:
@@ -598,13 +605,32 @@ class SalaryEngine:
                 breakdown.overtime_bonus = 0
             elif classroom_context and emp_position:
                 bonus_result = self.calculate_festival_bonus_v2(
-                    position=employee.get('position', ''),
+                    position=_effective_title,
                     role=classroom_context.get('role', ''),
                     grade_name=classroom_context.get('grade_name', ''),
                     current_enrollment=classroom_context.get('current_enrollment', 0),
                     has_assistant=classroom_context.get('has_assistant', False),
                     is_shared_assistant=classroom_context.get('is_shared_assistant', False)
                 )
+                # 第九條：兩班共用一位副班導，節慶獎金取兩班分數平均
+                shared_second = classroom_context.get('shared_second_class')
+                if shared_second:
+                    bonus_result2 = self.calculate_festival_bonus_v2(
+                        position=_effective_title,
+                        role=classroom_context.get('role', ''),
+                        grade_name=shared_second['grade_name'],
+                        current_enrollment=shared_second['current_enrollment'],
+                        has_assistant=True,
+                        is_shared_assistant=True,
+                    )
+                    bonus_result = {
+                        'festival_bonus': round(
+                            (bonus_result['festival_bonus'] + bonus_result2['festival_bonus']) / 2
+                        ),
+                        'overtime_bonus': round(
+                            (bonus_result['overtime_bonus'] + bonus_result2['overtime_bonus']) / 2
+                        ),
+                    }
                 if is_eligible:
                     breakdown.festival_bonus = bonus_result['festival_bonus']
                     breakdown.overtime_bonus = bonus_result['overtime_bonus']
@@ -641,6 +667,13 @@ class SalaryEngine:
             if not get_bonus_distribution_month(month):
                 breakdown.festival_bonus = 0
                 breakdown.overtime_bonus = 0
+
+            # 事假+病假累計超過40小時：取消所有節慶獎金及紅利（非工資）
+            breakdown.personal_sick_leave_hours = personal_sick_leave_hours
+            if personal_sick_leave_hours > 40:
+                breakdown.festival_bonus = 0
+                breakdown.overtime_bonus = 0
+                breakdown.supervisor_dividend = 0
 
             # 生日禮金：當月壽星 $500
             birthday_val = employee.get('birthday')
@@ -888,6 +921,7 @@ class SalaryEngine:
                 'name': emp.name,
                 'title': title_name,
                 'position': emp.position,
+                'bonus_grade': getattr(emp, 'bonus_grade', None) or None,
                 'employee_type': emp.employee_type,
                 'base_salary': emp.base_salary,
                 'hourly_rate': emp.hourly_rate,
@@ -905,6 +939,7 @@ class SalaryEngine:
                     if (emp.insurance_salary_level or emp.base_salary) else 0
                 ),
                 'dependents': emp.dependents,
+                'pension_self_rate': emp.pension_self_rate or 0,
                 'hire_date': emp.hire_date,
                 'resign_date': getattr(emp, 'resign_date', None),
                 'birthday': emp.birthday,
@@ -1014,6 +1049,26 @@ class SalaryEngine:
                         'is_shared_assistant': False
                     }
 
+                    # 第九條：偵測共用副班導（同一員工擔任兩個班級的 assistant_teacher）
+                    if role == 'assistant_teacher':
+                        shared_classes = session.query(Classroom).filter(
+                            Classroom.assistant_teacher_id == emp.id
+                        ).all()
+                        if len(shared_classes) >= 2:
+                            classroom_context['is_shared_assistant'] = True
+                            second_class = next(
+                                (c for c in shared_classes if c.id != classroom.id), None
+                            )
+                            if second_class:
+                                second_count = session.query(Student).filter(
+                                    Student.classroom_id == second_class.id,
+                                    Student.is_active == True
+                                ).count()
+                                classroom_context['shared_second_class'] = {
+                                    'grade_name': second_class.grade.name if second_class.grade else '',
+                                    'current_enrollment': second_count,
+                                }
+
             # 5b. 辦公室人員 / 主管需要全校比例
             is_supervisor = False
             title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
@@ -1036,6 +1091,11 @@ class SalaryEngine:
             ).all()
             daily_salary = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
             leave_deduction_total = _sum_leave_deduction(approved_leaves, daily_salary)
+            personal_sick_leave_hours = sum(
+                lv.leave_hours or 0
+                for lv in approved_leaves
+                if lv.leave_type in ('personal', 'sick')
+            )
 
             # 5d. 查詢已核准加班記錄
             approved_overtimes = session.query(DBOvertimeRecord).filter(
@@ -1142,6 +1202,7 @@ class SalaryEngine:
                 office_staff_context=office_staff_context,
                 meeting_context=meeting_context,
                 overtime_work_pay=overtime_work_pay_total,
+                personal_sick_leave_hours=personal_sick_leave_hours,
             )
 
             # 加入曠職扣款

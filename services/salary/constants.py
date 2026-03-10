@@ -27,12 +27,12 @@ LEAVE_DEDUCTION_RULES = {
     "miscarriage": 0.0,      # 流產假: 不扣
     "family_care": 1.0,      # 家庭照顧假: 不給薪
     "parental_unpaid": 0.0,  # 育嬰留職停薪: 不扣
+    "compensatory": 0.0,     # 補休: 不扣薪（加班換休）
 }
 
 # 預設扣款規則
 DEFAULT_LATE_PER_MINUTE = 1       # 遲到每分鐘扣款（會被按比例覆蓋）
 DEFAULT_EARLY_PER_MINUTE = 1      # 早退每分鐘扣款（會被按比例覆蓋）
-DEFAULT_AUTO_LEAVE_THRESHOLD = 120  # 遲到超過幾分鐘轉事假半天
 DEFAULT_MISSING_PUNCH = 0         # 未打卡不扣款（僅記錄）
 DEFAULT_MEETING_PAY = 200         # 園務會議加班費
 DEFAULT_MEETING_PAY_6PM = 100     # 6點下班者園務會議加班費
@@ -58,7 +58,12 @@ FESTIVAL_BONUS_BASE = {
         'A': 1200,
         'B': 1200,
         'C': 1200,
-    }
+    },
+    'art_teacher': {        # 美語教師（classroom.art_teacher_id），依第十二條一律 2000
+        'A': 2000,
+        'B': 2000,
+        'C': 2000,
+    },
 }
 
 # 節慶獎金目標人數 (依年級和教師配置)
@@ -67,9 +72,9 @@ FESTIVAL_BONUS_BASE = {
 # 1_teacher = 只有班導 (無副班導)
 # shared_assistant = 2班共用同一個副班導
 TARGET_ENROLLMENT = {
-    '大班': {'2_teachers': 27, '1_teacher': 14, 'shared_assistant': 20},
-    '中班': {'2_teachers': 25, '1_teacher': 13, 'shared_assistant': 18},
-    '小班': {'2_teachers': 23, '1_teacher': 12, 'shared_assistant': 16},
+    '大班': {'2_teachers': 24, '1_teacher': 12, 'shared_assistant': 20},
+    '中班': {'2_teachers': 24, '1_teacher': 12, 'shared_assistant': 18},
+    '小班': {'2_teachers': 24, '1_teacher': 12, 'shared_assistant': 16},
     '幼幼班': {'2_teachers': 15, '1_teacher': 7, 'shared_assistant': 12},
 }
 

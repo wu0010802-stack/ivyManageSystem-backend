@@ -35,6 +35,7 @@ class EmployeeCreate(BaseModel):
     title: Optional[str] = None  # Legacy/Display
     job_title_id: Optional[int] = None  # New FK
     position: Optional[str] = None
+    bonus_grade: Optional[str] = Field(None, pattern="^[ABC]$")
     classroom_id: Optional[int] = None
     base_salary: float = Field(0, ge=0)
     hourly_rate: float = Field(0, ge=0)
@@ -65,6 +66,7 @@ class EmployeeUpdate(BaseModel):
     title: Optional[str] = None
     job_title_id: Optional[int] = None
     position: Optional[str] = None
+    bonus_grade: Optional[str] = Field(None, pattern="^[ABC]$")
     classroom_id: Optional[int] = None
     base_salary: Optional[float] = Field(None, ge=0)
     hourly_rate: Optional[float] = Field(None, ge=0)
@@ -122,6 +124,7 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
                 "title": display_title,  # Return real title name for frontend display compatibility
                 "job_title_id": emp.job_title_id,
                 "position": emp.position,
+                "bonus_grade": getattr(emp, 'bonus_grade', None),
                 "classroom_id": emp.classroom_id,
                 "base_salary": emp.base_salary,
                 "hourly_rate": emp.hourly_rate,
@@ -178,6 +181,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             "title": display_title,
             "job_title_id": employee.job_title_id,
             "position": employee.position,
+            "bonus_grade": getattr(employee, 'bonus_grade', None),
             "classroom_id": employee.classroom_id,
             "classroom_name": classroom_name,
             "base_salary": employee.base_salary,
@@ -197,7 +201,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             "hire_date": employee.hire_date.isoformat() if employee.hire_date else None,
             "birthday": employee.birthday.isoformat() if employee.birthday else None,
             "is_active": employee.is_active,
-            "is_office_staff": employee.is_office_staff or False
+            "is_office_staff": employee.is_office_staff or False,
         }
     finally:
         session.close()

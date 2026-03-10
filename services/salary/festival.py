@@ -263,12 +263,9 @@ def calculate_festival_bonus_v2(
     # 美師特別處理：用 shared_assistant 的目標人數
     if role == 'art_teacher':
         is_shared_assistant = True
-        # 美師視為副班導級別
-        role_for_bonus = 'assistant_teacher'
-    else:
-        role_for_bonus = role
+    role_for_bonus = role
 
-    # 取得獎金基數
+    # 取得獎金基數（art_teacher 在 FESTIVAL_BONUS_BASE 有獨立基數 2000）
     base_amount = get_festival_bonus_base(position, role_for_bonus, bonus_base)
 
     # 取得節慶獎金目標人數

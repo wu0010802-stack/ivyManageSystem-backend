@@ -3,13 +3,19 @@ School Events (Calendar) router - CRUD for school calendar events
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
+from io import BytesIO
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from models.database import get_session, SchoolEvent
+from models.database import get_session, SchoolEvent, Holiday
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -208,3 +214,139 @@ def delete_event(event_id: int, current_user: dict = Depends(require_permission(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
+
+
+# ============ 假日批次匯入（Holiday 表） ============
+
+def _ev_xlsx_response(wb, filename: str):
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    encoded = quote(filename)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
+
+
+_EV_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
+_EV_HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+_EV_THIN_BORDER = Border(
+    left=Side(style="thin"), right=Side(style="thin"),
+    top=Side(style="thin"), bottom=Side(style="thin"),
+)
+_EV_CENTER_ALIGN = Alignment(horizontal="center")
+
+
+def _ev_write_header(ws, row, headers):
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col, value=h)
+        cell.font = _EV_HEADER_FONT
+        cell.fill = _EV_HEADER_FILL
+        cell.border = _EV_THIN_BORDER
+        cell.alignment = _EV_CENTER_ALIGN
+
+
+@router.get("/events/holidays/import-template")
+def get_holiday_import_template(
+    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+):
+    """下載國定假日批次匯入 Excel 範本"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "假日匯入範本"
+
+    headers = ["日期", "假日名稱", "說明(可空)"]
+    _ev_write_header(ws, 1, headers)
+
+    ws.cell(row=2, column=1, value="2026-01-01")
+    ws.cell(row=2, column=2, value="元旦")
+    ws.cell(row=2, column=3, value="新年第一天")
+    ws.cell(row=3, column=1, value="2026-02-17")
+    ws.cell(row=3, column=2, value="農曆春節")
+
+    note_ws = wb.create_sheet("說明")
+    note_ws.cell(row=1, column=1, value="注意事項")
+    note_ws.cell(row=2, column=1, value="1. 日期格式建議使用 YYYY-MM-DD")
+    note_ws.cell(row=3, column=1, value="2. 同日期若已存在則更新，否則新增（UPSERT）")
+    note_ws.cell(row=4, column=1, value="3. 匯入後考勤計算將自動排除這些假日")
+
+    return _ev_xlsx_response(wb, "假日匯入範本.xlsx")
+
+
+@router.post("/events/holidays/import")
+async def import_holidays(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+):
+    """批次匯入國定假日（UPSERT by date，同日期若已存在則更新）"""
+    content = await file.read()
+    try:
+        df = pd.read_excel(BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+
+    results: dict = {"total": 0, "upserted": 0, "failed": 0, "errors": []}
+    session = get_session()
+    try:
+        for idx, row in df.iterrows():
+            results["total"] += 1
+            row_num = int(idx) + 2
+            try:
+                date_raw = row.get("日期")
+                if date_raw is None or pd.isna(date_raw):
+                    raise ValueError("日期不得為空")
+                try:
+                    holiday_date = pd.to_datetime(date_raw).date()
+                except Exception:
+                    raise ValueError("日期格式錯誤，建議使用 YYYY-MM-DD")
+
+                name_raw = row.get("假日名稱")
+                if name_raw is None or pd.isna(name_raw):
+                    raise ValueError("假日名稱不得為空")
+                name = str(name_raw).strip()
+                if not name:
+                    raise ValueError("假日名稱不得為空")
+
+                desc_raw = row.get("說明(可空)")
+                description = (
+                    str(desc_raw).strip()
+                    if desc_raw is not None and not pd.isna(desc_raw)
+                    else None
+                )
+
+                existing = session.query(Holiday).filter(Holiday.date == holiday_date).first()
+                if existing:
+                    existing.name = name
+                    existing.description = description
+                    existing.is_active = True
+                    existing.updated_at = datetime.now()
+                else:
+                    session.add(Holiday(
+                        date=holiday_date,
+                        name=name,
+                        description=description,
+                        is_active=True,
+                    ))
+
+                session.flush()
+                results["upserted"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                results["errors"].append(f"第 {row_num} 行: {str(e)}")
+
+        session.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"匯入失敗：{e}")
+    finally:
+        session.close()
+
+    logger.info(
+        "假日批次匯入：使用者 %s，共 %d 筆，成功 %d 筆，失敗 %d 筆",
+        current_user.get("username"), results["total"], results["upserted"], results["failed"],
+    )
+    return results
