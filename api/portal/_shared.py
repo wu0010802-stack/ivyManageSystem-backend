@@ -54,6 +54,7 @@ class LeaveCreatePortal(BaseModel):
     end_time: Optional[str] = None
     leave_hours: float = 8
     reason: Optional[str] = None
+    substitute_employee_id: Optional[int] = None
 
     @field_validator("leave_hours")
     @classmethod
@@ -133,6 +134,18 @@ class SwapRequestCreate(BaseModel):
 class SwapRequestRespond(BaseModel):
     action: str  # "accept" | "reject"
     remark: Optional[str] = None
+
+
+class SubstituteRespond(BaseModel):
+    action: str  # "accept" | "reject"
+    remark: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v):
+        if v not in ("accept", "reject"):
+            raise ValueError("action 必須為 accept 或 reject")
+        return v
 
 
 # ============ Helpers ============

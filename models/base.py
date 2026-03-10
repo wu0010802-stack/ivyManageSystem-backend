@@ -189,6 +189,16 @@ def _run_migrations(engine):
     _add_column_if_missing(engine, inspector, "overtime_records", "use_comp_leave",      "BOOLEAN NOT NULL DEFAULT FALSE")
     _add_column_if_missing(engine, inspector, "overtime_records", "comp_leave_granted",  "BOOLEAN NOT NULL DEFAULT FALSE")
 
+    # leave_records — 職務代理人
+    _add_column_if_missing(engine, inspector, "leave_records",
+        "substitute_employee_id", "INTEGER REFERENCES employees(id)")
+    _add_column_if_missing(engine, inspector, "leave_records",
+        "substitute_status", "VARCHAR(20) NOT NULL DEFAULT 'not_required'")
+    _add_column_if_missing(engine, inspector, "leave_records",
+        "substitute_responded_at", "TIMESTAMP")
+    _add_column_if_missing(engine, inspector, "leave_records",
+        "substitute_remark", "TEXT")
+
     # attendances — 異常確認欄位
     _add_column_if_missing(engine, inspector, "attendances", "confirmed_action", "VARCHAR(20)")
     _add_column_if_missing(engine, inspector, "attendances", "confirmed_by",     "VARCHAR(100)")

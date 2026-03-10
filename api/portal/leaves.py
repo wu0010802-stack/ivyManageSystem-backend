@@ -4,12 +4,13 @@ Portal - leave management endpoints
 
 import calendar as cal_module
 import json
+import logging
 import os
 import re
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from utils.errors import raise_safe_500
@@ -17,21 +18,40 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
+from datetime import datetime
+
 from models.database import (
     get_session, LeaveRecord, LeaveQuota,
     ShiftAssignment, ShiftType, DailyShift, Holiday,
-    AttendancePolicy,
+    AttendancePolicy, Employee,
 )
 from utils.auth import get_current_user
 from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
-    LeaveCreatePortal, LEAVE_TYPE_LABELS,
+    LeaveCreatePortal, LEAVE_TYPE_LABELS, SubstituteRespond,
 )
 from api.leaves import _check_overlap
 from api.leaves_workday import _calc_shift_hours
 from api.leaves_quota import _check_quota, _check_leave_limits, QUOTA_LEAVE_TYPES, STATUTORY_QUOTA_HOURS
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+# ── 職務代理人工具函式 ──────────────────────────────────────────────────────
+
+def _validate_substitute(session, emp_id: int, substitute_id: int) -> "Employee":
+    """驗證代理人合法性：不能指定自己、員工必須存在且在職"""
+    if emp_id == substitute_id:
+        raise HTTPException(status_code=400, detail="代理人不能是自己")
+    sub_emp = session.query(Employee).filter(
+        Employee.id == substitute_id,
+        Employee.is_active == True,
+    ).first()
+    if not sub_emp:
+        raise HTTPException(status_code=404, detail="代理人員工不存在或已離職")
+    return sub_emp
+
 
 # 使用 __file__ 建立絕對路徑，避免 CWD 變動導致檔案寫入位置不正確
 _UPLOAD_BASE = Path(__file__).resolve().parent.parent.parent / "uploads" / "leave_attachments"
@@ -95,6 +115,9 @@ def get_my_leaves(
             "approved_by": lv.approved_by,
             "rejection_reason": lv.rejection_reason,
             "attachment_paths": _parse_paths(lv.attachment_paths),
+            "substitute_employee_id": lv.substitute_employee_id,
+            "substitute_status": lv.substitute_status or "not_required",
+            "substitute_remark": lv.substitute_remark,
             "created_at": lv.created_at.isoformat() if lv.created_at else None,
         } for lv in leaves]
     finally:
@@ -141,6 +164,12 @@ def create_my_leave(
             data.start_date.year, data.leave_hours,
         )
 
+        # 代理人驗證
+        substitute_status = "not_required"
+        if data.substitute_employee_id is not None:
+            _validate_substitute(session, emp.id, data.substitute_employee_id)
+            substitute_status = "pending"
+
         leave = LeaveRecord(
             employee_id=emp.id,
             leave_type=data.leave_type,
@@ -151,10 +180,15 @@ def create_my_leave(
             leave_hours=data.leave_hours,
             reason=data.reason,
             is_approved=None,
+            substitute_employee_id=data.substitute_employee_id,
+            substitute_status=substitute_status,
         )
         session.add(leave)
         session.commit()
-        return {"message": "請假申請已送出，待主管核准", "id": leave.id}
+        msg = "請假申請已送出，待主管核准"
+        if substitute_status == "pending":
+            msg = "請假申請已送出，請等待代理人接受後主管才能核准"
+        return {"message": msg, "id": leave.id}
     except HTTPException:
         raise
     except Exception as e:
@@ -463,5 +497,80 @@ def get_my_quotas(
                 "note": q.note,
             })
         return result
+    finally:
+        session.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# 職務代理人：回應 & 查詢
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/my-leaves/{leave_id}/substitute-respond")
+def substitute_respond(
+    leave_id: int,
+    data: SubstituteRespond,
+    current_user: dict = Depends(get_current_user),
+):
+    """代理人接受或拒絕代理請求（僅被指定人可操作）"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        if not leave:
+            raise HTTPException(status_code=404, detail="請假記錄不存在")
+        if leave.substitute_employee_id != emp.id:
+            raise HTTPException(status_code=403, detail="您不是此假單的指定代理人")
+        if leave.substitute_status != "pending":
+            raise HTTPException(status_code=409, detail="此代理請求已回應過，無法重複操作")
+
+        leave.substitute_status = "accepted" if data.action == "accept" else "rejected"
+        leave.substitute_responded_at = datetime.now()
+        leave.substitute_remark = data.remark
+        session.commit()
+
+        action_label = "接受" if data.action == "accept" else "拒絕"
+        return {"message": f"已{action_label}代理請求"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.get("/my-substitute-requests")
+def get_my_substitute_requests(
+    status: Optional[str] = Query(None, description="過濾狀態：pending/accepted/rejected"),
+    current_user: dict = Depends(get_current_user),
+):
+    """查詢被指定為代理人的假單列表"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        q = session.query(LeaveRecord, Employee).join(
+            Employee, LeaveRecord.employee_id == Employee.id
+        ).filter(LeaveRecord.substitute_employee_id == emp.id)
+
+        if status in ("pending", "accepted", "rejected"):
+            q = q.filter(LeaveRecord.substitute_status == status)
+
+        records = q.order_by(LeaveRecord.created_at.desc()).all()
+
+        return [{
+            "id": lv.id,
+            "leave_type": lv.leave_type,
+            "leave_type_label": LEAVE_TYPE_LABELS.get(lv.leave_type, lv.leave_type),
+            "requester_name": requester.name,
+            "requester_employee_id": requester.employee_id,
+            "start_date": lv.start_date.isoformat(),
+            "end_date": lv.end_date.isoformat(),
+            "leave_hours": lv.leave_hours,
+            "reason": lv.reason,
+            "substitute_status": lv.substitute_status or "pending",
+            "substitute_responded_at": lv.substitute_responded_at.isoformat() if lv.substitute_responded_at else None,
+            "is_approved": lv.is_approved,
+            "created_at": lv.created_at.isoformat() if lv.created_at else None,
+        } for lv, requester in records]
     finally:
         session.close()

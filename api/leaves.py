@@ -235,6 +235,26 @@ def _write_approval_log(doc_type: str, doc_id: int, action: str, approver: dict,
     ))
 
 
+def _check_substitute_guard(leave) -> None:
+    """序列式守衛：核准假單前確認代理人已接受。
+
+    - pending  → 409（等待代理人回應）
+    - rejected → 409（需重新指定代理人）
+    - accepted / not_required → 放行
+    """
+    status = getattr(leave, "substitute_status", "not_required") or "not_required"
+    if status == "pending":
+        raise HTTPException(
+            status_code=409,
+            detail="代理人尚未接受，請等待代理人回應後再核准",
+        )
+    if status == "rejected":
+        raise HTTPException(
+            status_code=409,
+            detail="代理人已拒絕此代理請求，請要求員工重新指定代理人後再核准",
+        )
+
+
 def _check_overlap(
     session,
     employee_id: int,
@@ -332,8 +352,45 @@ def get_leaves(
             ).all()
             user_roles = {u.employee_id: u.role for u in users}
 
+        # 預先載入代理人姓名（批次查詢，避免 N+1）
+        substitute_ids = list({leave.substitute_employee_id for leave, _ in records if leave.substitute_employee_id})
+        substitute_names: dict = {}
+        if substitute_ids:
+            subs = session.query(Employee).filter(Employee.id.in_(substitute_ids)).all()
+            substitute_names = {s.id: s.name for s in subs}
+
+        # 預先載入換班關聯（同員工、假單區間內有 pending/accepted 的換班申請）
+        from models.database import ShiftSwapRequest
+        all_leave_ids = [lv.id for lv, _ in records]
+        # 只做一次聚合查詢，按 requester_id + swap_date 建立快速索引
+        swap_map: dict = {}
+        if records:
+            for leave, _ in records:
+                if leave.substitute_employee_id is None:
+                    continue  # 無代理人的假單不需查換班
+            # 批次查詢所有涉及員工在假單區間的換班
+            involved_emp_ids = list({lv.employee_id for lv, _ in records})
+            all_swaps = session.query(ShiftSwapRequest).filter(
+                ShiftSwapRequest.requester_id.in_(involved_emp_ids),
+                ShiftSwapRequest.status.in_(["pending", "accepted"]),
+            ).all()
+            for sw in all_swaps:
+                swap_map.setdefault(sw.requester_id, []).append(sw)
+
         results = []
         for leave, emp in records:
+            # 換班關聯：查詢同員工、同期間的換班申請
+            related_swap = None
+            for sw in swap_map.get(leave.employee_id, []):
+                if leave.start_date <= sw.swap_date <= leave.end_date:
+                    related_swap = {
+                        "id": sw.id,
+                        "swap_date": sw.swap_date.isoformat(),
+                        "status": sw.status,
+                        "target_id": sw.target_id,
+                    }
+                    break
+
             results.append({
                 "id": leave.id,
                 "employee_id": leave.employee_id,
@@ -352,6 +409,11 @@ def get_leaves(
                 "approved_by": leave.approved_by,
                 "rejection_reason": leave.rejection_reason,
                 "attachment_paths": _parse_paths(leave.attachment_paths),
+                "substitute_employee_id": leave.substitute_employee_id,
+                "substitute_employee_name": substitute_names.get(leave.substitute_employee_id),
+                "substitute_status": leave.substitute_status or "not_required",
+                "substitute_responded_at": leave.substitute_responded_at.isoformat() if leave.substitute_responded_at else None,
+                "related_swap": related_swap,
                 "created_at": leave.created_at.isoformat() if leave.created_at else None,
             })
         return results
@@ -617,6 +679,9 @@ def approve_leave(
 
         warning = None
         if data.approved:
+            # ── 代理人序列式守衛 ──────────────────────────────────────────────
+            _check_substitute_guard(leave)
+
             # 提示主管：該員工同期是否已有其他已核准假單（含時段比對，不強制阻擋，由主管判斷）
             conflict = _check_overlap(
                 session, leave.employee_id, leave.start_date, leave.end_date,
@@ -725,6 +790,8 @@ def batch_approve_leaves(
 
             if data.approved:
                 try:
+                    # 代理人序列式守衛
+                    _check_substitute_guard(leave)
                     _check_leave_limits(
                         session, leave.employee_id, leave.leave_type,
                         leave.start_date, leave.leave_hours, include_pending=False,
