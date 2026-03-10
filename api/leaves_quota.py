@@ -11,6 +11,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 
@@ -464,7 +465,7 @@ def init_leave_quotas(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -492,6 +493,6 @@ def update_leave_quota(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

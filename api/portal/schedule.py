@@ -7,6 +7,7 @@ import logging
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from sqlalchemy import or_
 
 from models.database import (
@@ -337,7 +338,7 @@ def create_swap_request(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -457,7 +458,7 @@ def respond_swap_request(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -486,7 +487,7 @@ def cancel_swap_request(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

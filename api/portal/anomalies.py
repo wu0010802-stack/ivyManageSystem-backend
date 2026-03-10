@@ -6,6 +6,7 @@ import calendar as cal_module
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 
 from models.database import get_session, Attendance, LeaveRecord
 from utils.auth import get_current_user
@@ -139,6 +140,6 @@ def confirm_anomaly(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

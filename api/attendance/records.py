@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 
 from models.database import get_session, Employee, Attendance
 from utils.auth import require_permission
@@ -193,7 +194,7 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate, cur
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -221,7 +222,7 @@ async def delete_single_attendance_record(employee_id: int, date: str, current_u
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -252,7 +253,7 @@ def delete_single_attendance(employee_id: int, date_str: str, current_user: dict
         raise HTTPException(status_code=400, detail="日期格式錯誤")
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -276,6 +277,6 @@ async def delete_attendance_records(year: int, month: int, current_user: dict = 
         return {"message": f"已刪除 {deleted} 筆考勤記錄"}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

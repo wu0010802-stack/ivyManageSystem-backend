@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from utils.errors import raise_safe_500
 from utils.auth import require_permission
 from utils.permissions import Permission
 from pydantic import BaseModel, Field
@@ -81,7 +82,7 @@ async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate
         return {"message": "儲存成功"}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -117,7 +118,7 @@ async def update_employee_allowance(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -146,6 +147,6 @@ async def delete_employee_allowance(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

@@ -6,6 +6,7 @@ import calendar as cal_module
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 
 from models.database import get_session, OvertimeRecord
 from utils.auth import get_current_user
@@ -113,7 +114,7 @@ def create_my_overtime(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -143,6 +144,6 @@ def delete_my_overtime(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

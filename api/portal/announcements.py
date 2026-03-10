@@ -3,6 +3,7 @@ Portal - announcement endpoints
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 
 from models.database import get_session, Employee, Announcement, AnnouncementRead
 from utils.auth import get_current_user
@@ -91,7 +92,7 @@ def mark_announcement_read(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

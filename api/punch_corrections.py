@@ -7,6 +7,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel
 from sqlalchemy import or_
 
@@ -203,6 +204,6 @@ def approve_punch_correction(
     except Exception as e:
         session.rollback()
         logger.error("核准補打卡申請 #%d 時發生錯誤：%s", correction_id, e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

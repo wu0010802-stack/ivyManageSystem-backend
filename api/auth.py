@@ -9,12 +9,19 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from utils.errors import raise_safe_500
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
 from utils.auth import (
     hash_password, verify_password, needs_rehash, create_access_token,
     get_current_user, decode_token_allow_expired, require_permission,
+    validate_password_strength,
+)
+from utils.cookie import (
+    set_access_token_cookie, clear_access_token_cookie,
+    set_admin_token_cookie, clear_admin_token_cookie,
 )
 from utils.permissions import Permission
 from utils.permissions import get_permissions_definition, get_role_default_permissions, ROLE_LABELS
@@ -154,7 +161,7 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
 
         # 5. 產生該使用者的 token
         permissions = target_user.permissions if target_user.permissions is not None else get_role_default_permissions(target_user.role)
-        token = create_access_token({
+        target_token = create_access_token({
             "user_id": target_user.id,
             "employee_id": target_user.employee_id,
             "role": target_user.role,
@@ -163,7 +170,14 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
             "token_version": target_user.token_version,
         })
 
-        # 6. 寫入審計日誌（明確標記操作者與被冒充對象，供事後追查）
+        # 6. 取得管理員原始 token（用於備份到 admin_token Cookie）
+        admin_token = request.cookies.get("admin_token") or request.cookies.get("access_token")
+        if not admin_token:
+            authorization = request.headers.get("authorization", "")
+            if authorization.startswith("Bearer "):
+                admin_token = authorization.split(" ", 1)[1]
+
+        # 7. 寫入審計日誌（明確標記操作者與被冒充對象，供事後追查）
         logger.info(
             "冒充操作：操作者 user_id=%s 切換為 user_id=%s（role=%s）",
             current_user.get("user_id"), target_user.id, target_user.role,
@@ -174,8 +188,7 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
             f"{ROLE_LABELS.get(target_user.role, target_user.role)}）"
         )
 
-        return {
-            "token": token,
+        response = JSONResponse(content={
             "user": {
                 "id": target_user.id,
                 "username": target_user.username,
@@ -186,7 +199,12 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
                 "name": target_emp.name,
                 "title": (target_emp.job_title_rel.name if target_emp.job_title_rel else (target_emp.title or "")),
             },
-        }
+        })
+        set_access_token_cookie(response, target_token)
+        # 備份管理員 Token 到 admin_token Cookie（httpOnly，前端無法讀取）
+        if admin_token:
+            set_admin_token_cookie(response, admin_token)
+        return response
     finally:
         session.close()
 
@@ -235,8 +253,7 @@ def login(data: LoginRequest, request: Request):
             "token_version": user.token_version,
         })
 
-        return {
-            "token": token,
+        response = JSONResponse(content={
             "must_change_password": bool(user.must_change_password),
             "user": {
                 "id": user.id,
@@ -248,12 +265,14 @@ def login(data: LoginRequest, request: Request):
                 "name": emp.name if emp else "",
                 "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
             },
-        }
+        })
+        set_access_token_cookie(response, token)
+        return response
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -261,13 +280,19 @@ def login(data: LoginRequest, request: Request):
 # ============ Token Refresh ============
 
 @router.post("/refresh")
-def refresh_token(authorization: str = Header(None)):
+def refresh_token(request: Request):
     """以現有 token（可為剛過期）換發新 token。
     寬限期內的過期 token 仍可刷新，超過則需重新登入。
+    Token 來源：httpOnly Cookie 或 Authorization header。
     """
-    if not authorization or not authorization.startswith("Bearer "):
+    # 從 Cookie 或 header 取得舊 token
+    token = request.cookies.get("access_token")
+    if not token:
+        authorization = request.headers.get("authorization", "")
+        if authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+    if not token:
         raise HTTPException(status_code=401, detail="未提供認證 Token")
-    token = authorization.split(" ", 1)[1]
 
     # 允許過期的 token 解碼（在寬限期內）
     payload = decode_token_allow_expired(token)
@@ -300,8 +325,7 @@ def refresh_token(authorization: str = Header(None)):
             "token_version": user.token_version,
         })
 
-        return {
-            "token": new_token,
+        response = JSONResponse(content={
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -312,7 +336,78 @@ def refresh_token(authorization: str = Header(None)):
                 "name": emp.name if emp else "",
                 "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
             },
-        }
+        })
+        set_access_token_cookie(response, new_token)
+        return response
+    finally:
+        session.close()
+
+
+# ============ Logout ============
+
+@router.post("/logout")
+def logout():
+    """登出：清除 access_token 和 admin_token Cookie。"""
+    response = JSONResponse(content={"message": "已登出"})
+    clear_access_token_cookie(response)
+    clear_admin_token_cookie(response)
+    return response
+
+
+# ============ End Impersonate ============
+
+@router.post("/end-impersonate")
+def end_impersonate(request: Request):
+    """結束冒充：將 admin_token Cookie 還原為 access_token，清除 admin_token。
+
+    回傳管理員的 user 資訊供前端更新 UI。
+    """
+    admin_token = request.cookies.get("admin_token")
+    if not admin_token:
+        raise HTTPException(status_code=400, detail="目前不在冒充狀態")
+
+    # 驗證 admin_token 仍然有效
+    from utils.auth import decode_token_allow_expired
+    payload = decode_token_allow_expired(admin_token)
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token 資料不完整")
+
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id, User.is_active == True).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="管理員帳號已停用或不存在")
+
+        emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
+        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
+
+        # 為管理員簽發新的 access token（避免使用可能已接近過期的舊 token）
+        new_token = create_access_token({
+            "user_id": user.id,
+            "employee_id": user.employee_id,
+            "role": user.role,
+            "name": emp.name if emp else "",
+            "permissions": permissions,
+            "token_version": user.token_version,
+        })
+
+        response = JSONResponse(content={
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "role": user.role,
+                "role_label": ROLE_LABELS.get(user.role, user.role),
+                "permissions": permissions,
+                "employee_id": user.employee_id,
+                "name": emp.name if emp else "",
+                "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
+            },
+        })
+        set_access_token_cookie(response, new_token)
+        clear_admin_token_cookie(response)
+        return response
     finally:
         session.close()
 
@@ -353,6 +448,7 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
             raise HTTPException(status_code=404, detail="使用者不存在")
         if not verify_password(data.old_password, user.password_hash):
             raise HTTPException(status_code=400, detail="舊密碼錯誤")
+        validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = False  # 使用者主動修改後清除強制旗標
         session.commit()
@@ -361,7 +457,7 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -414,6 +510,9 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_pe
         else:
             final_permissions = get_role_default_permissions(data.role)
 
+        # 驗證密碼強度
+        validate_password_strength(data.password)
+
         user = User(
             employee_id=data.employee_id,
             username=data.username,
@@ -429,7 +528,7 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_pe
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -442,6 +541,7 @@ def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict 
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
+        validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = True  # 管理員代為重設密碼，強制當事人下次登入修改
         user.token_version = (user.token_version or 0) + 1  # 使所有現有 session 的 token 立即無法刷新
@@ -451,7 +551,7 @@ def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict 
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -515,7 +615,7 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

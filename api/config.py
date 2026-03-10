@@ -7,6 +7,7 @@ from typing import Optional
 
 from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException
+from utils.errors import raise_safe_500
 from utils.auth import require_permission
 from utils.permissions import Permission
 from pydantic import BaseModel, Field
@@ -236,7 +237,7 @@ def update_attendance_policy(data: AttendancePolicyUpdate, current_user: dict = 
         return {"message": "考勤政策更新成功", "version": new_policy.version, "id": new_policy.id}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -351,7 +352,7 @@ def update_bonus_config(data: BonusConfigUpdate, current_user: dict = Depends(re
         return {"message": "獎金設定更新成功", "version": new_config.version, "id": new_config.id}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -432,7 +433,7 @@ def update_grade_target(data: GradeTargetUpdate, current_user: dict = Depends(re
         return {"message": f"{data.grade_name}目標人數更新成功"}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -501,7 +502,7 @@ def update_insurance_rates(data: InsuranceRateUpdate, current_user: dict = Depen
         return {"message": "勞健保費率更新成功", "version": new_rate.version, "id": new_rate.id}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -589,7 +590,7 @@ def reload_config(current_user: dict = Depends(require_permission(Permission.SET
         _clear_cache()
         return {"message": "設定已重新載入"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
 
 
 @router.get("/all")
@@ -779,7 +780,7 @@ async def create_allowance_type(item: AllowanceTypeCreate, current_user: dict = 
         return {"message": "新增成功", "id": new_item.id}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -803,7 +804,7 @@ async def create_deduction_type(item: DeductionTypeCreate, current_user: dict = 
         return {"message": "新增成功", "id": new_item.id}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -827,7 +828,7 @@ async def create_bonus_type(item: BonusTypeCreate, current_user: dict = Depends(
         return {"message": "新增成功", "id": new_item.id}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -895,6 +896,6 @@ async def update_position_salary(
         return {"message": "職位標準底薪設定已更新", "version": config.version}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
