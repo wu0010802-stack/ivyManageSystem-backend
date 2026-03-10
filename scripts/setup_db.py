@@ -1,4 +1,5 @@
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from models.database import init_database, DEFAULT_DATABASE_URL
 from urllib.parse import urlparse
@@ -22,13 +23,13 @@ def create_database():
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
         cur = conn.cursor()
         
-        # 檢查資料庫是否存在
-        cur.execute(f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = '{db_name}'")
+        # 檢查資料庫是否存在（參數化查詢防止 SQL Injection）
+        cur.execute("SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,))
         exists = cur.fetchone()
         
         if not exists:
             print(f"正在建立資料庫 '{db_name}'...")
-            cur.execute(f"CREATE DATABASE {db_name}")
+            cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
             print(f"資料庫 '{db_name}' 建立成功！")
         else:
             print(f"資料庫 '{db_name}' 已存在。")

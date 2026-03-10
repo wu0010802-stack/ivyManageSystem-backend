@@ -5,7 +5,6 @@ Attendance - upload endpoints (Excel and CSV)
 import logging
 import os
 import re
-import shutil
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -25,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
 _EXCEL_EXT_RE = re.compile(r'^\.[a-z0-9]+$')
+_MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
 router = APIRouter()
 
@@ -36,11 +36,16 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
     if not raw_ext or not _EXCEL_EXT_RE.match(raw_ext) or raw_ext not in {'.xlsx', '.xls'}:
         raise HTTPException(status_code=400, detail="請上傳 Excel 檔案")
 
+    # 先讀取檔案內容並檢查大小，防止超大檔案耗盡磁碟空間或記憶體
+    content = await file.read()
+    if len(content) > _MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=400, detail="檔案超過 10MB 限制")
+
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     file_path = _UPLOAD_DIR / f"{uuid.uuid4().hex}{raw_ext}"
 
     with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        f.write(content)
 
     try:
         df = pd.read_excel(file_path)

@@ -116,7 +116,7 @@ async def get_attendance_summary(
 
 @router.get("/today-anomalies")
 async def get_today_anomalies(
-    late_threshold: int = Query(15, ge=0, le=120),
+    late_threshold: int = Query(0, ge=0, le=120),
     current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
 ):
     """今日打卡異常員工清單"""
