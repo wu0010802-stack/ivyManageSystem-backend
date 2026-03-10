@@ -59,6 +59,7 @@ class SalaryBreakdown:
     total_early_minutes: int = 0
     meeting_attended: int = 0            # 園務會議出席次數
     meeting_absent: int = 0              # 園務會議缺席次數
+    personal_sick_leave_hours: float = 0 # 事假+病假累計時數（超過40h取消獎金）
 
     # 合計
     gross_salary: float = 0

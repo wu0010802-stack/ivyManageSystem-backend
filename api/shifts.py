@@ -6,9 +6,15 @@
 
 import logging
 from datetime import date, timedelta
+from io import BytesIO
 from typing import Optional, List
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sqlalchemy.orm import joinedload
@@ -458,3 +464,178 @@ def get_swap_history(
         } for s in swaps]
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# 排班匯入/匯出輔助
+# ---------------------------------------------------------------------------
+
+def _sh_xlsx_response(wb, filename: str):
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    encoded = quote(filename)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
+
+
+_SH_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
+_SH_HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+_SH_THIN_BORDER = Border(
+    left=Side(style="thin"), right=Side(style="thin"),
+    top=Side(style="thin"), bottom=Side(style="thin"),
+)
+_SH_CENTER_ALIGN = Alignment(horizontal="center")
+
+
+def _sh_write_header(ws, row, headers):
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col, value=h)
+        cell.font = _SH_HEADER_FONT
+        cell.fill = _SH_HEADER_FILL
+        cell.border = _SH_THIN_BORDER
+        cell.alignment = _SH_CENTER_ALIGN
+
+
+@router.get("/import-template")
+def get_shift_import_template(
+    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+):
+    """下載排班批次匯入 Excel 範本"""
+    session = get_session()
+    try:
+        shift_types = session.query(ShiftType).filter(ShiftType.is_active == True).order_by(ShiftType.sort_order).all()
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "排班匯入範本"
+
+        headers = ["員工編號", "員工姓名", "班別名稱", "備註(可空)"]
+        _sh_write_header(ws, 1, headers)
+
+        ws.cell(row=2, column=1, value="E001")
+        ws.cell(row=2, column=2, value="王小明")
+        ws.cell(row=2, column=3, value=shift_types[0].name if shift_types else "早班")
+        ws.cell(row=2, column=4, value="")
+
+        ws2 = wb.create_sheet("班別說明")
+        ws2.cell(row=1, column=1, value="班別名稱")
+        ws2.cell(row=1, column=2, value="上班時間")
+        ws2.cell(row=1, column=3, value="下班時間")
+        for idx, st in enumerate(shift_types, 2):
+            ws2.cell(row=idx, column=1, value=st.name)
+            ws2.cell(row=idx, column=2, value=st.work_start)
+            ws2.cell(row=idx, column=3, value=st.work_end)
+
+        note_ws = wb.create_sheet("說明")
+        note_ws.cell(row=1, column=1, value="注意事項")
+        note_ws.cell(row=2, column=1, value="1. 員工編號或員工姓名二擇一填寫即可（建議填員工編號）")
+        note_ws.cell(row=3, column=1, value="2. 班別名稱須完全符合「班別說明」頁的名稱")
+        note_ws.cell(row=4, column=1, value="3. 上傳時需指定 week_start 參數（週一日期，格式 YYYY-MM-DD）")
+
+        return _sh_xlsx_response(wb, "排班匯入範本.xlsx")
+    finally:
+        session.close()
+
+
+@router.post("/import")
+async def import_shifts(
+    file: UploadFile = File(...),
+    week_start: str = Query(..., description="週起始日 YYYY-MM-DD（週一）"),
+    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+):
+    """批次匯入排班（覆蓋指定週的排班，per-employee upsert）"""
+    content = await file.read()
+    try:
+        df = pd.read_excel(BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+
+    try:
+        week_date = date.fromisoformat(week_start)
+        week_date = week_date - timedelta(days=week_date.weekday())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="week_start 格式錯誤，請使用 YYYY-MM-DD")
+
+    results: dict = {"total": 0, "saved": 0, "failed": 0, "errors": []}
+    session = get_session()
+    try:
+        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        emp_by_id = {str(e.employee_id): e for e in employees}
+        emp_by_name = {e.name: e for e in employees}
+
+        shift_types = session.query(ShiftType).filter(ShiftType.is_active == True).all()
+        st_by_name = {st.name: st for st in shift_types}
+
+        for idx, row in df.iterrows():
+            results["total"] += 1
+            row_num = int(idx) + 2
+            try:
+                emp_id_str = str(row.get("員工編號", "")).strip()
+                emp_name_str = str(row.get("員工姓名", "")).strip()
+                emp = None
+                if emp_id_str and emp_id_str not in ("nan", ""):
+                    emp = emp_by_id.get(emp_id_str)
+                if emp is None and emp_name_str and emp_name_str not in ("nan", ""):
+                    emp = emp_by_name.get(emp_name_str)
+                if emp is None:
+                    raise ValueError(f"找不到員工（編號:{emp_id_str}，姓名:{emp_name_str}）")
+
+                st_name_raw = str(row.get("班別名稱", "")).strip()
+                if st_name_raw in ("nan", ""):
+                    raise ValueError("班別名稱不得為空")
+                st = st_by_name.get(st_name_raw)
+                if st is None:
+                    raise ValueError(f"找不到班別：{st_name_raw}（請參考「班別說明」頁）")
+
+                notes_raw = row.get("備註(可空)")
+                notes = (
+                    str(notes_raw).strip()
+                    if notes_raw is not None and not pd.isna(notes_raw)
+                    else None
+                )
+
+                existing = (
+                    session.query(ShiftAssignment)
+                    .filter(
+                        ShiftAssignment.employee_id == emp.id,
+                        ShiftAssignment.week_start_date == week_date,
+                    )
+                    .first()
+                )
+
+                if existing:
+                    existing.shift_type_id = st.id
+                    existing.notes = notes
+                else:
+                    session.add(ShiftAssignment(
+                        employee_id=emp.id,
+                        shift_type_id=st.id,
+                        week_start_date=str(week_date),
+                        notes=notes,
+                    ))
+
+                session.flush()
+                results["saved"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                results["errors"].append(f"第 {row_num} 行: {str(e)}")
+
+        session.commit()
+        logger.info(
+            "排班批次匯入：使用者 %s，週 %s，共 %d 筆，成功 %d 筆，失敗 %d 筆",
+            current_user.get("username"), week_date,
+            results["total"], results["saved"], results["failed"],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"匯入失敗：{e}")
+    finally:
+        session.close()
+
+    return results

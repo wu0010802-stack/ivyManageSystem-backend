@@ -159,6 +159,8 @@ def _run_migrations(engine):
     # salary_records — 主管紅利獨立欄位（拆分自 bonus_amount）
     _add_column_if_missing(engine, inspector, "salary_records", "supervisor_dividend", "FLOAT DEFAULT 0")
 
+    # employees — 節慶獎金等級覆蓋
+    _add_column_if_missing(engine, inspector, "employees", "bonus_grade", "CHAR(1)")
     # employees — 勞退自提比例
     _add_column_if_missing(engine, inspector, "employees", "pension_self_rate", "FLOAT DEFAULT 0")
     # employees — 離職日期

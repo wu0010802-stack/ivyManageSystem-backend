@@ -5,7 +5,7 @@ models/employee.py — 員工相關模型
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, CHAR
 from sqlalchemy.orm import relationship
 
 from models.base import Base
@@ -71,6 +71,7 @@ class Employee(Base):
     resign_date = Column(Date, nullable=True, comment="離職日期")
     resign_reason = Column(String(200), nullable=True, comment="離職原因")
     probation_end_date = Column(Date, nullable=True, comment="試用期結束日")
+    bonus_grade = Column(CHAR(1), nullable=True, comment="節慶獎金等級覆蓋 (A/B/C)，NULL=依職稱自動判斷")
     is_office_staff = Column(Boolean, default=False, comment="是否為辦公室人員")
     dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
     hire_date = Column(Date, comment="到職日期")

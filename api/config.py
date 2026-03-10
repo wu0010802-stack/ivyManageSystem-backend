@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from models.database import (
     get_session, AttendancePolicy, BonusConfig as DBBonusConfig,
     GradeTarget, InsuranceRate, JobTitle,
-    AllowanceType, DeductionType, BonusType
+    AllowanceType, DeductionType, BonusType, PositionSalaryConfig
 )
 
 # BonusConfig 所有可複製的業務欄位（不含 id/version/changed_by/is_active/timestamps）
@@ -160,6 +160,16 @@ class BonusTypeCreate(BaseModel):
     description: Optional[str] = None
     is_separate_transfer: bool = False
     sort_order: int = 0
+
+
+class PositionSalaryUpdate(BaseModel):
+    """職位標準底薪設定更新"""
+    head_teacher_a: Optional[float] = Field(None, ge=0)
+    head_teacher_b: Optional[float] = Field(None, ge=0)
+    head_teacher_c: Optional[float] = Field(None, ge=0)
+    assistant_teacher_a: Optional[float] = Field(None, ge=0)
+    assistant_teacher_b: Optional[float] = Field(None, ge=0)
+    assistant_teacher_c: Optional[float] = Field(None, ge=0)
 
 
 # ============ Routes ============
@@ -815,6 +825,74 @@ async def create_bonus_type(item: BonusTypeCreate, current_user: dict = Depends(
         session.add(new_item)
         session.commit()
         return {"message": "新增成功", "id": new_item.id}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.get("/position-salary")
+async def get_position_salary(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
+    """取得職位標準底薪設定"""
+    session = get_session()
+    try:
+        config = session.query(PositionSalaryConfig).order_by(PositionSalaryConfig.id.desc()).first()
+        if not config:
+            # 回傳預設值
+            return {
+                "id": None,
+                "head_teacher_a": 39240,
+                "head_teacher_b": 37160,
+                "head_teacher_c": 33000,
+                "assistant_teacher_a": 35240,
+                "assistant_teacher_b": 33000,
+                "assistant_teacher_c": 29500,
+                "version": 0,
+                "changed_by": None,
+            }
+        return {
+            "id": config.id,
+            "head_teacher_a": config.head_teacher_a,
+            "head_teacher_b": config.head_teacher_b,
+            "head_teacher_c": config.head_teacher_c,
+            "assistant_teacher_a": config.assistant_teacher_a,
+            "assistant_teacher_b": config.assistant_teacher_b,
+            "assistant_teacher_c": config.assistant_teacher_c,
+            "version": config.version,
+            "changed_by": config.changed_by,
+        }
+    finally:
+        session.close()
+
+
+@router.put("/position-salary")
+async def update_position_salary(
+    data: PositionSalaryUpdate,
+    current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE)),
+):
+    """更新職位標準底薪設定（無資料則 insert，有則版本 +1）"""
+    session = get_session()
+    try:
+        config = session.query(PositionSalaryConfig).order_by(PositionSalaryConfig.id.desc()).first()
+        update_data = data.dict(exclude_none=True)
+        operator = current_user.get("username", "")
+
+        if config:
+            for key, value in update_data.items():
+                setattr(config, key, value)
+            config.version = (config.version or 1) + 1
+            config.changed_by = operator
+        else:
+            config = PositionSalaryConfig(
+                changed_by=operator,
+                **update_data,
+            )
+            session.add(config)
+
+        session.commit()
+        logger.warning("職位標準底薪設定已更新，操作人：%s", operator)
+        return {"message": "職位標準底薪設定已更新", "version": config.version}
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))

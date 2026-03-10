@@ -151,16 +151,17 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
             "miscarriage": {"label": "流產假", "ratio": 0.0, "note": "不扣薪，依週數5日/1週/4週"},
             "family_care": {"label": "家庭照顧假", "ratio": 1.0, "note": "不給薪，併入事假計算，年7日"},
             "parental_unpaid": {"label": "育嬰留職停薪", "ratio": 0.0, "note": "留停無薪，最長2年"},
+            "compensatory": {"label": "補休", "ratio": 0.0, "note": "加班換休，不扣薪"},
         }
 
         # 8. 薪資公式說明
         salary_formula = {
-            "gross_salary": "底薪 + 津貼(主管/導師/伙食/交通/其他) + 績效獎金 + 特別獎金 + 主管紅利 + 加班費(核准加班記錄) + 園務會議加班費",
+            "gross_salary": "底薪 + 津貼(主管/導師/伙食/交通/其他) + 績效獎金 + 特別獎金 + 主管紅利 + 加班費(核准加班記錄) + 園務會議加班費 + 生日禮金(當月壽星 $500)",
             "gross_salary_note": "節慶獎金 / 超額獎金 獨立轉帳，不計入 gross_salary",
             "festival_bonus": "節慶獎金（2/6/9/12月發放）— 獨立匯款，不進 gross_salary",
             "overtime_bonus": "超額獎金 — 與節慶獎金同月獨立匯款，不進 gross_salary",
-            "bonus_separate": "festival_bonus + overtime_bonus > 0 時為 True，表示當月有另行匯款",
-            "total_deduction": "勞保(員工) + 健保(員工) + 勞退自提 + 遲到扣款 + 早退扣款 + 遲到轉事假扣款 + 請假扣款 + 其他扣款（不含 meeting_absence_deduction）",
+            "bonus_separate": "festival_bonus + overtime_bonus + supervisor_dividend > 0 時為 True，表示當月有另行匯款",
+            "total_deduction": "勞保(員工) + 健保(員工) + 勞退自提 + 遲到扣款 + 早退扣款 + 請假扣款 + 曠職扣款 + 其他扣款（不含 meeting_absence_deduction）",
             "net_salary": "gross_salary - total_deduction",
             "late_deduction_formula": "遲到分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
             "early_leave_deduction_formula": "早退分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
@@ -204,6 +205,10 @@ def debug_employee_salary(
 ):
     """模擬計算單一員工薪資並回傳完整明細（不存檔）"""
     import calendar as cal_module
+    from services.salary_engine import MONTHLY_BASE_DAYS
+    from services.salary.constants import LEAVE_DEDUCTION_RULES
+    from services.salary.utils import get_bonus_distribution_month, get_meeting_deduction_period_start
+    from services.salary.proration import _prorate_for_period
 
     session = get_session()
     try:
@@ -215,10 +220,21 @@ def debug_employee_salary(
         if not emp:
             return {"error": f"Employee {employee_id} not found"}
 
+        if emp.employee_type == 'hourly':
+            return {"error": "時薪制員工請使用正式薪資計算流程，debug 端點僅支援月薪正職員工"}
+
         title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
+        # 計算節慶獎金用的有效職稱（bonus_grade 可覆蓋職稱等級）
+        _GRADE_TO_TITLE = {'A': '幼兒園教師', 'B': '教保員', 'C': '助理教保員'}
+        bonus_grade_override = getattr(emp, 'bonus_grade', None)
+        _effective_title = (
+            _GRADE_TO_TITLE.get(bonus_grade_override, title_name)
+            if bonus_grade_override else title_name
+        )
         _, last_day = cal_module.monthrange(year, month)
         start_date = date(year, month, 1)
         end_date = date(year, month, last_day)
+        is_bonus_month = get_bonus_distribution_month(month)
 
         # Attendance
         attendances = session.query(Attendance).filter(
@@ -235,26 +251,20 @@ def debug_employee_salary(
         total_early_min = sum(a.early_leave_minutes or 0 for a in attendances if a.is_early_leave)
         late_details = [a.late_minutes or 0 for a in attendances if a.is_late and (a.late_minutes or 0) > 0]
 
-        # Leaves
-        LEAVE_DEDUCTION_RULES = {
-            "personal": 1.0, "sick": 0.5, "menstrual": 0.5,
-            "annual": 0.0, "maternity": 0.0, "paternity": 0.0,
-            "official": 0.0, "marriage": 0.0, "bereavement": 0.0,
-            "prenatal": 0.0, "paternity_new": 0.0, "miscarriage": 0.0,
-            "family_care": 1.0, "parental_unpaid": 0.0,
-        }
+        # Leaves（daily_salary 使用全月底薪，與引擎 line 1037 一致）
         approved_leaves = session.query(LeaveRecord).filter(
             LeaveRecord.employee_id == emp.id,
             LeaveRecord.is_approved == True,
             LeaveRecord.start_date <= end_date,
             LeaveRecord.end_date >= start_date,
         ).all()
-        from services.salary_engine import MONTHLY_BASE_DAYS
-        daily_salary = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
+        daily_salary = (emp.base_salary or 0) / MONTHLY_BASE_DAYS if emp.base_salary else 0
         leave_deduction_total = 0
         leave_breakdown = []
         for lv in approved_leaves:
-            ratio = LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
+            # 與引擎一致：優先使用 LeaveRecord.deduction_ratio，None 時才 fallback 至預設規則
+            ratio = lv.deduction_ratio if lv.deduction_ratio is not None \
+                else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
             deduction = round((lv.leave_hours / 8) * daily_salary * ratio)
             leave_deduction_total += deduction
             leave_breakdown.append({
@@ -266,6 +276,13 @@ def debug_employee_salary(
                 "deduction": deduction,
             })
 
+        personal_sick_leave_hours = sum(
+            lv.leave_hours or 0
+            for lv in approved_leaves
+            if lv.leave_type in ('personal', 'sick')
+        )
+        bonus_forfeited_by_leave = personal_sick_leave_hours > 40
+
         # Overtime
         approved_ot = session.query(OvertimeRecord).filter(
             OvertimeRecord.employee_id == emp.id,
@@ -275,14 +292,25 @@ def debug_employee_salary(
         ).all()
         ot_pay = sum(o.overtime_pay or 0 for o in approved_ot)
 
-        # Meeting
+        # Meeting（與引擎一致：發放月累積跨期缺席，計算 meeting_absence_deduction）
         meetings = session.query(MeetingRecord).filter(
             MeetingRecord.employee_id == emp.id,
             MeetingRecord.meeting_date >= start_date,
             MeetingRecord.meeting_date <= end_date,
         ).all()
         meeting_attended = sum(1 for m in meetings if m.attended)
-        meeting_absent = sum(1 for m in meetings if not m.attended)
+        meeting_absent_current = sum(1 for m in meetings if not m.attended)
+        absent_period = meeting_absent_current
+        if is_bonus_month:
+            period_start = get_meeting_deduction_period_start(year, month)
+            if period_start is not None and period_start < start_date:
+                prior_records = session.query(MeetingRecord).filter(
+                    MeetingRecord.employee_id == emp.id,
+                    MeetingRecord.meeting_date >= period_start,
+                    MeetingRecord.meeting_date < start_date,
+                ).all()
+                absent_period += sum(1 for m in prior_records if not m.attended)
+        meeting_absence_deduction = (absent_period * engine._meeting_absence_penalty) if is_bonus_month else 0
 
         # Allowances
         emp_allowances = session.query(EmployeeAllowance).filter(
@@ -319,15 +347,37 @@ def debug_employee_salary(
                 "is_shared_assistant": False,
             }
 
+            # 第九條：偵測共用副班導
+            if role == 'assistant_teacher':
+                shared_classes = session.query(Classroom).filter(
+                    Classroom.assistant_teacher_id == emp.id
+                ).all()
+                if len(shared_classes) >= 2:
+                    classroom_context['is_shared_assistant'] = True
+                    second_class = next(
+                        (c for c in shared_classes if c.id != classroom.id), None
+                    )
+                    if second_class:
+                        second_count = session.query(Student).filter(
+                            Student.classroom_id == second_class.id, Student.is_active == True
+                        ).count()
+                        classroom_context['shared_second_class'] = {
+                            'grade_name': second_class.grade.name if second_class.grade else '',
+                            'current_enrollment': second_count,
+                        }
+
         # Office / Supervisor context
         office_staff_context = None
         is_supervisor = engine.get_supervisor_festival_bonus(title_name, emp.position) is not None
-        if emp.is_office_staff or is_supervisor:
+        if is_supervisor or (emp.is_office_staff and not classroom_context):
             total_students = session.query(Student).filter(Student.is_active == True).count()
             office_staff_context = {"school_enrollment": total_students}
 
-        # Per minute rate（月薪 ÷ 30 ÷ 8 ÷ 60，依勞基法固定30天）
+        # 底薪相關（與引擎一致：per_minute_rate 用全月底薪；gross_salary 用折算後底薪）
         base_sal = emp.base_salary or 0
+        resign_date = getattr(emp, 'resign_date', None)
+        prorated_base = _prorate_for_period(base_sal, emp.hire_date, resign_date, year, month)
+        birthday_bonus = 500 if (emp.birthday and emp.birthday.month == month) else 0
         per_minute_rate = base_sal / (MONTHLY_BASE_DAYS * 8 * 60) if base_sal > 0 else 0
 
         # Attendance deduction detail（全程按實際分鐘比例，依勞基法第26條）
@@ -340,7 +390,7 @@ def debug_employee_salary(
 
         early_deduction = round(total_early_min * per_minute_rate)
 
-        # Festival bonus detail
+        # Festival bonus detail（與引擎一致：非發放月清零；發放月扣除會議缺席罰款）
         festival_detail = {}
         supervisor_festival_base = engine.get_supervisor_festival_bonus(title_name, emp.position or '')
         if supervisor_festival_base is not None:
@@ -348,6 +398,8 @@ def debug_employee_salary(
             school_target = engine._school_wide_target or 160
             ratio = school_enrollment / school_target if school_target > 0 else 0
             is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
+            raw_result = round(supervisor_festival_base * ratio) if is_eligible else 0
+            effective_result = max(0, raw_result - meeting_absence_deduction) if is_bonus_month else 0
             festival_detail = {
                 "category": "主管",
                 "base": supervisor_festival_base,
@@ -355,7 +407,9 @@ def debug_employee_salary(
                 "target": school_target,
                 "ratio": round(ratio, 4),
                 "eligible": is_eligible,
-                "result": round(supervisor_festival_base * ratio) if is_eligible else 0,
+                "is_bonus_month": is_bonus_month,
+                "result": raw_result,
+                "result_after_penalty": effective_result,
             }
         elif office_staff_context and emp.position:
             office_base = engine.get_office_festival_bonus_base(emp.position or '', title_name)
@@ -364,6 +418,8 @@ def debug_employee_salary(
                 school_target = engine._school_wide_target or 160
                 ratio = school_enrollment / school_target if school_target > 0 else 0
                 is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
+                raw_result = round(office_base * ratio) if is_eligible else 0
+                effective_result = max(0, raw_result - meeting_absence_deduction) if is_bonus_month else 0
                 festival_detail = {
                     "category": "辦公室",
                     "base": office_base,
@@ -371,17 +427,36 @@ def debug_employee_salary(
                     "target": school_target,
                     "ratio": round(ratio, 4),
                     "eligible": is_eligible,
-                    "result": round(office_base * ratio) if is_eligible else 0,
+                    "is_bonus_month": is_bonus_month,
+                    "result": raw_result,
+                    "result_after_penalty": effective_result,
                 }
         elif classroom_context:
             cc = classroom_context
-            base_amount = engine.get_festival_bonus_base(emp.position or '', cc['role'] if cc['role'] != 'art_teacher' else 'assistant_teacher')
+            base_amount = engine.get_festival_bonus_base(_effective_title, cc['role'])
             target = engine.get_target_enrollment(cc['grade_name'], cc['has_assistant'], cc['is_shared_assistant'])
             ratio = cc['current_enrollment'] / target if target > 0 else 0
             is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
             ot_target = engine.get_overtime_target(cc['grade_name'], cc['has_assistant'], cc['is_shared_assistant'])
             ot_count = max(0, cc['current_enrollment'] - ot_target)
             ot_per = engine.get_overtime_per_person(cc['role'] if cc['role'] != 'art_teacher' else 'assistant_teacher', cc['grade_name'])
+            raw_festival = round(base_amount * ratio) if is_eligible else 0
+            raw_overtime = round(ot_count * ot_per) if is_eligible else 0
+
+            # 第九條：兩班共用副班導，取兩班分數平均
+            shared_second = cc.get('shared_second_class')
+            if shared_second and is_eligible:
+                target2 = engine.get_target_enrollment(shared_second['grade_name'], True, True)
+                ratio2 = shared_second['current_enrollment'] / target2 if target2 > 0 else 0
+                raw_festival2 = round(base_amount * ratio2)
+                ot_target2 = engine.get_overtime_target(shared_second['grade_name'], True, True)
+                ot_count2 = max(0, shared_second['current_enrollment'] - ot_target2)
+                raw_overtime2 = round(ot_count2 * ot_per)
+                raw_festival = round((raw_festival + raw_festival2) / 2)
+                raw_overtime = round((raw_overtime + raw_overtime2) / 2)
+
+            effective_festival = max(0, raw_festival - meeting_absence_deduction) if is_bonus_month else 0
+            effective_overtime = raw_overtime if is_bonus_month else 0
             festival_detail = {
                 "category": "帶班老師",
                 "role": cc['role'],
@@ -391,21 +466,113 @@ def debug_employee_salary(
                 "target": target,
                 "ratio": round(ratio, 4),
                 "eligible": is_eligible,
-                "festival_result": round(base_amount * ratio) if is_eligible else 0,
+                "is_bonus_month": is_bonus_month,
+                "festival_result": raw_festival,
+                "festival_result_after_penalty": effective_festival,
                 "overtime_target": ot_target,
                 "overtime_count": ot_count,
                 "overtime_per_person": ot_per,
-                "overtime_result": round(ot_count * ot_per) if is_eligible else 0,
+                "overtime_result": effective_overtime,
             }
+            if shared_second:
+                festival_detail["shared_second_class"] = {
+                    "grade": shared_second['grade_name'],
+                    "enrollment": shared_second['current_enrollment'],
+                    "target": target2,
+                    "ratio": round(ratio2, 4),
+                }
+
+        # 事假+病假累計超過40小時：節慶獎金及紅利全數取消
+        if bonus_forfeited_by_leave and festival_detail:
+            festival_detail['forfeited_by_leave'] = True
+            for key in ('result_after_penalty', 'festival_result_after_penalty', 'overtime_result'):
+                if key in festival_detail:
+                    festival_detail[key] = 0
 
         # Supervisor dividend
         supervisor_dividend = engine.get_supervisor_dividend(title_name, emp.position or '') if emp.position else 0
+        if bonus_forfeited_by_leave:
+            supervisor_dividend = 0
 
-        # Insurance
-        from services.insurance_service import InsuranceService
-        ins_service = InsuranceService()
-        ins_salary = emp.insurance_salary_level or emp.base_salary or 0
+        # 曠職偵測（與引擎 engine.py line 1079–1131 一致）
+        from models.database import Holiday as _Holiday
+        from services.salary.proration import _build_expected_workdays
+        from datetime import timedelta as _td
+        absent_count = 0
+        absence_deduction_amount = 0
+        holidays_in_month = session.query(_Holiday.date).filter(
+            _Holiday.date >= start_date,
+            _Holiday.date <= end_date,
+            _Holiday.is_active == True,
+        ).all()
+        holiday_set = {h.date for h in holidays_in_month}
+        daily_shifts_in_month = session.query(DailyShift).filter(
+            DailyShift.employee_id == emp.id,
+            DailyShift.date >= start_date,
+            DailyShift.date <= end_date,
+        ).all()
+        daily_shift_map = {ds.date: ds.shift_type_id for ds in daily_shifts_in_month}
+        expected_workdays = _build_expected_workdays(
+            year=year, month=month,
+            holiday_set=holiday_set, daily_shift_map=daily_shift_map,
+            hire_date_raw=emp.hire_date, resign_date_raw=resign_date,
+        )
+        attendance_dates = {
+            (a.attendance_date.date() if hasattr(a.attendance_date, 'date') else a.attendance_date)
+            for a in attendances
+        }
+        leave_covered: set = set()
+        for lv in approved_leaves:
+            d = lv.start_date.date() if hasattr(lv.start_date, 'date') else lv.start_date
+            lv_end = lv.end_date.date() if hasattr(lv.end_date, 'date') else lv.end_date
+            while d <= lv_end:
+                if start_date <= d <= end_date:
+                    leave_covered.add(d)
+                d += _td(days=1)
+        absent_days = expected_workdays - attendance_dates - leave_covered
+        absent_count = len(absent_days)
+        absence_deduction_amount = round(absent_count * daily_salary)
+
+        # Insurance（與引擎一致：先經 get_bracket() 正規化至級距金額，再帶入計算）
+        ins_service = engine.insurance_service
+        ins_salary_raw = (
+            emp.insurance_salary_level
+            if emp.insurance_salary_level and emp.insurance_salary_level > 0
+            else emp.base_salary
+        ) or 0
+        ins_salary = ins_service.get_bracket(ins_salary_raw)["amount"] if ins_salary_raw else 0
         ins = ins_service.calculate(ins_salary, emp.dependents or 0, pension_self_rate=emp.pension_self_rate or 0)
+
+        # 計算薪資匯總（與引擎 calculate_salary 邏輯對齊）
+        per_meeting_pay = engine._meeting_pay_6pm if (emp.work_end_time or '17:00') == '18:00' else engine._meeting_pay
+        meeting_overtime_pay = meeting_attended * per_meeting_pay
+        fixed_allowances_total = sum([
+            emp.supervisor_allowance or 0,
+            emp.teacher_allowance or 0,
+            emp.meal_allowance or 0,
+            emp.transportation_allowance or 0,
+            emp.other_allowance or 0,
+        ])
+        extra_allowances_total = sum(a['amount'] for a in allowances)
+        gross_salary = round(
+            prorated_base
+            + fixed_allowances_total
+            + extra_allowances_total
+            + supervisor_dividend
+            + birthday_bonus
+            + meeting_overtime_pay
+            + ot_pay
+        )
+        total_deduction = round(
+            ins.labor_employee
+            + ins.health_employee
+            + ins.pension_employee
+            + normal_late_deduction
+            + early_deduction
+            + leave_deduction_total
+            + absence_deduction_amount
+        )
+        net_salary = gross_salary - total_deduction
 
         return {
             "employee": {
@@ -424,7 +591,7 @@ def debug_employee_salary(
                 "work_start_time": emp.work_start_time,
                 "work_end_time": emp.work_end_time,
             },
-            "period": {"year": year, "month": month},
+            "period": {"year": year, "month": month, "is_bonus_month": is_bonus_month},
             "attendance_summary": {
                 "total_records": len(attendances),
                 "late_count": late_count,
@@ -448,8 +615,10 @@ def debug_employee_salary(
             "overtime_pay": ot_pay,
             "meeting": {
                 "attended": meeting_attended,
-                "absent": meeting_absent,
-                "overtime_pay_per_session": engine._meeting_pay if (emp.work_end_time or '17:00') != '18:00' else engine._meeting_pay_6pm,
+                "absent_this_month": meeting_absent_current,
+                "absent_period": absent_period,
+                "meeting_absence_deduction": meeting_absence_deduction,
+                "overtime_pay_per_session": per_meeting_pay,
                 "absence_penalty_per_session": engine._meeting_absence_penalty,
             },
             "allowances": allowances,
@@ -457,6 +626,7 @@ def debug_employee_salary(
             "festival_bonus_detail": festival_detail,
             "supervisor_dividend": supervisor_dividend,
             "insurance": {
+                "insured_amount_raw": ins_salary_raw,
                 "insured_amount": ins.insured_amount,
                 "labor_employee": ins.labor_employee,
                 "labor_employer": ins.labor_employer,
@@ -465,6 +635,21 @@ def debug_employee_salary(
                 "pension_employee": ins.pension_employee,
                 "pension_employer": ins.pension_employer,
                 "total_employee_deduction": ins.total_employee,
+            },
+            "salary_summary": {
+                "prorated_base_salary": round(prorated_base),
+                "proration_applied": round(prorated_base) != base_sal,
+                "birthday_bonus": birthday_bonus,
+                "meeting_overtime_pay": meeting_overtime_pay,
+                "fixed_allowances": round(fixed_allowances_total),
+                "extra_allowances": round(extra_allowances_total),
+                "absent_count": absent_count,
+                "absence_deduction": absence_deduction_amount,
+                "personal_sick_leave_hours": personal_sick_leave_hours,
+                "bonus_forfeited_by_leave": bonus_forfeited_by_leave,
+                "gross_salary": gross_salary,
+                "total_deduction": total_deduction,
+                "net_salary": net_salary,
             },
         }
     finally:

@@ -28,10 +28,10 @@ class TestGradeTargetVersionMerge:
           2. 現行程式碼：self._target_enrollment = {} → 再填大班 → 中/小/幼幼班消失
           3. 修復後：中/小/幼幼班應保留（從 NULL fallback 或預設值補回）
         """
-        # 確認修復前各年級的預設目標人數存在
-        assert engine.get_target_enrollment('大班', has_assistant=True) == 27
-        assert engine.get_target_enrollment('中班', has_assistant=True) == 25
-        assert engine.get_target_enrollment('小班', has_assistant=True) == 23
+        # 確認各年級的預設目標人數存在（第十條）
+        assert engine.get_target_enrollment('大班', has_assistant=True) == 24
+        assert engine.get_target_enrollment('中班', has_assistant=True) == 24
+        assert engine.get_target_enrollment('小班', has_assistant=True) == 24
         assert engine.get_target_enrollment('幼幼班', has_assistant=True) == 15
 
         # 模擬 load_config_from_db 後，只有大班從 DB 取得（部分遷移情況）
@@ -46,11 +46,11 @@ class TestGradeTargetVersionMerge:
         # 大班應更新為新值
         assert engine.get_target_enrollment('大班', has_assistant=True) == 30
 
-        # 中班/小班/幼幼班「沒有」在這次覆蓋中，應保留原有目標人數
+        # 中班/小班/幼幼班「沒有」在這次覆蓋中，應保留原有目標人數（第十條）
         # BUG 修復前：這三個年級都返回 0（因為 _target_enrollment 被清空重建）
-        assert engine.get_target_enrollment('中班', has_assistant=True) == 25, \
+        assert engine.get_target_enrollment('中班', has_assistant=True) == 24, \
             "中班目標人數不應因部分年級覆蓋而消失"
-        assert engine.get_target_enrollment('小班', has_assistant=True) == 23, \
+        assert engine.get_target_enrollment('小班', has_assistant=True) == 24, \
             "小班目標人數不應因部分年級覆蓋而消失"
         assert engine.get_target_enrollment('幼幼班', has_assistant=True) == 15, \
             "幼幼班目標人數不應因部分年級覆蓋而消失"

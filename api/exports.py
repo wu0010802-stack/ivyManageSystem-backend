@@ -18,7 +18,7 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 
 from models.database import (
     get_session, Employee, Student, Attendance, Classroom, SchoolEvent, JobTitle,
-    LeaveRecord, OvertimeRecord, Holiday,
+    LeaveRecord, OvertimeRecord, Holiday, ShiftAssignment, ShiftType,
 )
 
 logger = logging.getLogger(__name__)
@@ -620,5 +620,108 @@ def export_overtimes(
 
         _auto_width(ws)
         return _to_response(wb, f"{year}年{month}月加班記錄.xlsx")
+    finally:
+        session.close()
+
+
+# ============ Holidays ============
+
+@router.get("/holidays")
+def export_holidays(
+    _rl=Depends(_export_rate_limit),
+    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+    year: int = Query(..., description="要匯出的年份"),
+):
+    """匯出指定年份國定假日 Excel"""
+    session = get_session()
+    try:
+        holidays = (
+            session.query(Holiday)
+            .filter(
+                Holiday.date >= date(year, 1, 1),
+                Holiday.date <= date(year, 12, 31),
+                Holiday.is_active.is_(True),
+            )
+            .order_by(Holiday.date)
+            .all()
+        )
+
+        wb = Workbook()
+        ws = _safe_ws(wb)
+        ws.title = f"{year}年國定假日"
+
+        ws.merge_cells("A1:C1")
+        ws["A1"] = f"{year} 年國定假日清單"
+        ws["A1"].font = TITLE_FONT
+        ws["A1"].alignment = CENTER_ALIGN
+
+        headers = ["日期", "假日名稱", "說明"]
+        _write_header_row(ws, 3, headers)
+
+        for idx, h in enumerate(holidays, 4):
+            _write_data_row(ws, idx, [
+                h.date.isoformat(),
+                h.name,
+                h.description or "",
+            ])
+
+        _auto_width(ws)
+        return _to_response(wb, f"{year}年國定假日.xlsx")
+    finally:
+        session.close()
+
+
+# ============ Shifts ============
+
+@router.get("/shifts")
+def export_shifts(
+    _rl=Depends(_export_rate_limit),
+    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+    week_start: str = Query(..., description="週起始日 YYYY-MM-DD（週一）"),
+):
+    """匯出指定週排班 Excel"""
+    session = get_session()
+    try:
+        try:
+            week_date = date.fromisoformat(week_start)
+            week_date = week_date - timedelta(days=week_date.weekday())
+        except ValueError:
+            from fastapi import HTTPException as FHTTPException
+            raise FHTTPException(status_code=400, detail="week_start 格式錯誤，請使用 YYYY-MM-DD")
+
+        assignments = (
+            session.query(ShiftAssignment, Employee, ShiftType)
+            .join(Employee, ShiftAssignment.employee_id == Employee.id)
+            .outerjoin(ShiftType, ShiftAssignment.shift_type_id == ShiftType.id)
+            .filter(ShiftAssignment.week_start_date == week_date)
+            .order_by(Employee.employee_id)
+            .all()
+        )
+
+        week_end = week_date + timedelta(days=6)
+        wb = Workbook()
+        ws = _safe_ws(wb)
+        ws.title = f"排班表"
+
+        ws.merge_cells("A1:F1")
+        ws["A1"] = f"排班表：{week_date.isoformat()} ～ {week_end.isoformat()}"
+        ws["A1"].font = TITLE_FONT
+        ws["A1"].alignment = CENTER_ALIGN
+
+        headers = ["工號", "姓名", "班別名稱", "上班時間", "下班時間", "備註"]
+        _write_header_row(ws, 3, headers)
+
+        for idx, (a, emp, st) in enumerate(assignments, 4):
+            _write_data_row(ws, idx, [
+                emp.employee_id,
+                emp.name,
+                st.name if st else "",
+                st.work_start if st else "",
+                st.work_end if st else "",
+                a.notes or "",
+            ])
+
+        _auto_width(ws)
+        return _to_response(wb, f"排班表_{week_date.isoformat()}.xlsx")
     finally:
         session.close()
