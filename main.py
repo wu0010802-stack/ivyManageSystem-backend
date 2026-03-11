@@ -20,6 +20,9 @@ from utils.permissions import _RW_PAIRS
 # Routers
 from api.employees import router as employees_router, init_employee_services
 from api.students import router as students_router
+from api.student_attendance import router as student_attendance_router
+from api.student_incidents import router as student_incidents_router
+from api.student_assessments import router as student_assessments_router
 from api.classrooms import router as classrooms_router
 from api.attendance import router as attendance_router
 from api.salary import router as salary_router, init_salary_services
@@ -109,6 +112,9 @@ os.makedirs("uploads/leave_attachments", exist_ok=True)
 
 app.include_router(employees_router)
 app.include_router(students_router)
+app.include_router(student_attendance_router)
+app.include_router(student_incidents_router)
+app.include_router(student_assessments_router)
 app.include_router(classrooms_router)
 app.include_router(attendance_router)
 app.include_router(salary_router)

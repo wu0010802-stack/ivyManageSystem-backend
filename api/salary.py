@@ -577,6 +577,7 @@ def calculate_salaries_alt(
         ).all()
 
         results = []
+        errors = []
         for emp in employees:
             try:
                 # Calculate salary for this employee using new process method
@@ -609,10 +610,14 @@ def calculate_salaries_alt(
                 })
 
             except Exception as e:
-                logger.error(f"Error calculating for {emp.name}: {e}")
-                # Log error but continue
+                logger.error(f"薪資計算失敗 員工={emp.name}(id={emp.id}): {e}", exc_info=True)
+                errors.append({
+                    "employee_id": emp.id,
+                    "employee_name": emp.name,
+                    "error": str(e),
+                })
 
-        return results
+        return {"results": results, "errors": errors}
 
     except Exception as e:
         raise_safe_500(e)

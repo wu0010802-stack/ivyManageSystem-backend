@@ -7,7 +7,7 @@ from utils.errors import raise_safe_500
 
 from models.database import get_session, Classroom
 from utils.auth import get_current_user
-from ._shared import _get_employee, ProfileUpdate
+from ._shared import _get_employee, ProfileUpdate, _mask_bank_account
 
 router = APIRouter()
 
@@ -49,7 +49,7 @@ def get_profile(
             "emergency_contact_name": emp.emergency_contact_name,
             "emergency_contact_phone": emp.emergency_contact_phone,
             "bank_code": emp.bank_code,
-            "bank_account": emp.bank_account,
+            "bank_account": _mask_bank_account(emp.bank_account),
             "bank_account_name": emp.bank_account_name,
         }
     finally:

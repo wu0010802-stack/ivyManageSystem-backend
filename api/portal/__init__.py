@@ -15,6 +15,8 @@ from .announcements import router as announcements_router
 from .profile import router as profile_router
 from .schedule import router as schedule_router
 from .punch_corrections import router as punch_corrections_router
+from .incidents import router as incidents_router
+from .assessments import router as assessments_router
 
 router = APIRouter(prefix="/api/portal", tags=["portal"])
 
@@ -29,3 +31,5 @@ router.include_router(announcements_router)
 router.include_router(profile_router)
 router.include_router(schedule_router)
 router.include_router(punch_corrections_router, tags=["portal-punch-corrections"])
+router.include_router(incidents_router, tags=["portal-incidents"])
+router.include_router(assessments_router, tags=["portal-assessments"])
