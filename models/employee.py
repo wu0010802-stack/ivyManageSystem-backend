@@ -86,5 +86,5 @@ class Employee(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     attendances = relationship("Attendance", back_populates="employee", cascade="all, delete-orphan")
-    leaves = relationship("LeaveRecord", back_populates="employee", cascade="all, delete-orphan")
+    leaves = relationship("LeaveRecord", foreign_keys="[LeaveRecord.employee_id]", back_populates="employee", cascade="all, delete-orphan")
     salaries = relationship("SalaryRecord", back_populates="employee", cascade="all, delete-orphan")
