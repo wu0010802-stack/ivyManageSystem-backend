@@ -3,6 +3,7 @@ Announcements router - Admin CRUD for announcements
 """
 
 import logging
+from html.parser import HTMLParser
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,6 +14,50 @@ from sqlalchemy.orm import joinedload
 from models.database import get_session, Announcement, Employee
 from utils.auth import require_permission
 from utils.permissions import Permission
+
+
+class _TagStripper(HTMLParser):
+    """HTMLParser subclass that discards all tags and keeps only text nodes.
+
+    `convert_charrefs=False` is intentional: it prevents entity-encoded
+    payloads (e.g. ``&lt;img onerror=…&gt;``) from being decoded into real
+    ``<`` / ``>`` characters before tag-stripping, which would let them bypass
+    the filter and be stored as raw HTML in the database.
+    Named entities and character references are re-emitted verbatim so that
+    legitimate content like ``&amp;`` or ``&copy;`` is preserved.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._chunks: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self._chunks.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        # Preserve named HTML entities (e.g. &lt; stays as &lt;)
+        self._chunks.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        # Preserve numeric character references (e.g. &#60; stays as &#60;)
+        self._chunks.append(f"&#{name};")
+
+    def get_text(self) -> str:
+        return "".join(self._chunks)
+
+
+def _strip_html(text: str) -> str:
+    """Strip all HTML tags from *text*, returning plain-text content only.
+
+    HTML entities such as ``&lt;`` are intentionally preserved (not decoded)
+    so they remain safe regardless of how the stored value is later rendered.
+    """
+    if not text:
+        return text
+    p = _TagStripper()
+    p.feed(text)
+    p.close()
+    return p.get_text()
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +132,8 @@ def create_announcement(
     session = get_session()
     try:
         ann = Announcement(
-            title=data.title,
-            content=data.content,
+            title=_strip_html(data.title),
+            content=_strip_html(data.content),
             priority=data.priority,
             is_pinned=data.is_pinned,
             created_by=current_user["employee_id"],
@@ -117,9 +162,9 @@ def update_announcement(
             raise HTTPException(status_code=404, detail="找不到該公告")
 
         if data.title is not None:
-            ann.title = data.title
+            ann.title = _strip_html(data.title)
         if data.content is not None:
-            ann.content = data.content
+            ann.content = _strip_html(data.content)
         if data.priority is not None:
             if data.priority not in ("normal", "important", "urgent"):
                 raise HTTPException(status_code=400, detail="無效的優先級")

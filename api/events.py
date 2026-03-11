@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from models.database import get_session, SchoolEvent, Holiday
 from utils.auth import require_permission
 from utils.permissions import Permission
+from utils.file_upload import read_upload_with_size_check
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +283,7 @@ async def import_holidays(
     current_user: dict = Depends(require_permission(Permission.CALENDAR)),
 ):
     """批次匯入國定假日（UPSERT by date，同日期若已存在則更新）"""
-    content = await file.read()
+    content = await read_upload_with_size_check(file)
     try:
         df = pd.read_excel(BytesIO(content))
     except Exception as e:

@@ -10,7 +10,7 @@ from models.base import (
     get_session_factory, init_database,
 )
 from models.employee import Employee, JobTitle, EmployeeType
-from models.classroom import Classroom, ClassGrade, Student
+from models.classroom import Classroom, ClassGrade, Student, StudentAttendance, StudentIncident, StudentAssessment
 from models.attendance import Attendance, AttendanceStatus
 from models.shift import ShiftType, ShiftAssignment, DailyShift, ShiftSwapRequest
 from models.leave import LeaveRecord, LeaveQuota, LeaveType
@@ -39,7 +39,7 @@ __all__ = [
     # employee
     "Employee", "JobTitle", "EmployeeType",
     # classroom
-    "Classroom", "ClassGrade", "Student",
+    "Classroom", "ClassGrade", "Student", "StudentIncident", "StudentAssessment",
     # attendance
     "Attendance", "AttendanceStatus",
     # shift

@@ -204,6 +204,16 @@ def _run_migrations(engine):
     _add_column_if_missing(engine, inspector, "attendances", "confirmed_by",     "VARCHAR(100)")
     _add_column_if_missing(engine, inspector, "attendances", "confirmed_at",     "TIMESTAMP")
 
+    # students — 健康資訊欄位
+    _add_column_if_missing(engine, inspector, "students", "allergy",       "TEXT")
+    _add_column_if_missing(engine, inspector, "students", "medication",    "TEXT")
+    _add_column_if_missing(engine, inspector, "students", "special_needs", "TEXT")
+
+    # students — 緊急聯絡人欄位
+    _add_column_if_missing(engine, inspector, "students", "emergency_contact_name",     "VARCHAR(50)")
+    _add_column_if_missing(engine, inspector, "students", "emergency_contact_phone",    "VARCHAR(20)")
+    _add_column_if_missing(engine, inspector, "students", "emergency_contact_relation", "VARCHAR(20)")
+
     # daily_shifts — shift_type_id 改為允許 NULL（換班至無班的情境需要顯式標記排休）
     ds_cols = {c["name"]: c for c in inspector.get_columns("daily_shifts")}
     if not ds_cols.get("shift_type_id", {}).get("nullable", True):

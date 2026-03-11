@@ -115,6 +115,13 @@ class AnomalyConfirm(BaseModel):
     remark: Optional[str] = None
 
 
+def _mask_bank_account(account: Optional[str]) -> Optional[str]:
+    """遮蔽銀行帳號，僅保留末 4 碼（如 ****1234）。"""
+    if not account:
+        return account
+    return f"****{account[-4:]}" if len(account) > 4 else "****"
+
+
 class ProfileUpdate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
