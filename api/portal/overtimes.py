@@ -14,6 +14,16 @@ from ._shared import _get_employee, OvertimeCreatePortal, OVERTIME_TYPE_LABELS
 
 router = APIRouter()
 
+import logging
+logger = logging.getLogger(__name__)
+
+_line_service = None
+
+
+def init_overtime_notify(line_service):
+    global _line_service
+    _line_service = line_service
+
 
 @router.get("/my-overtimes")
 def get_my_overtimes(
@@ -106,6 +116,17 @@ def create_my_overtime(
         )
         session.add(ot)
         session.commit()
+
+        # LINE 通知（fire-and-forget，失敗不影響申請）
+        if _line_service:
+            try:
+                _line_service.notify_overtime_submitted(
+                    emp.name, data.overtime_date,
+                    data.overtime_type, data.hours, data.use_comp_leave,
+                )
+            except Exception as e:
+                logger.warning("LINE 通知發送失敗: %s", e)
+
         msg = "加班申請已送出，待主管核准"
         if data.use_comp_leave:
             msg = f"補休申請已送出（{data.hours}h），核准後計入當年度補休配額，待主管核准"

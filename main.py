@@ -11,10 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from models.database import (
     init_database, get_session,
     AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate, JobTitle,
-    User, Employee, ShiftType, ApprovalPolicy,
+    User, Employee, ShiftType, ApprovalPolicy, LineConfig,
 )
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
+from services.line_service import LineService
 from utils.permissions import _RW_PAIRS
 
 # Routers
@@ -32,7 +33,7 @@ from api.overtimes import router as overtimes_router, init_overtimes_services
 from api.insurance import router as insurance_router, init_insurance_services
 from api.employee_allowances import router as employee_allowances_router
 from api.auth import router as auth_router
-from api.portal import router as portal_router
+from api.portal import router as portal_router, init_portal_notify_services
 from api.shifts import router as shifts_router
 from api.events import router as events_router
 from api.meetings import router as meetings_router
@@ -92,14 +93,16 @@ app.add_middleware(
 
 insurance_service = InsuranceService()
 salary_engine = SalaryEngine(load_from_db=True)
+line_service = LineService()
 
 # Initialize service dependencies for routers that need them
 init_salary_services(salary_engine, insurance_service)
 init_employee_services(salary_engine)
-init_config_services(salary_engine)
+init_config_services(salary_engine, line_service)
 init_insurance_services(insurance_service)
 init_overtimes_services(salary_engine)
 init_leaves_services(salary_engine)
+init_portal_notify_services(line_service)
 
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)
@@ -391,6 +394,20 @@ def migrate_permissions_rw():
         session.close()
 
 
+def _load_line_config():
+    """啟動時從 DB 載入 LINE 通知設定"""
+    session = get_session()
+    try:
+        cfg = session.query(LineConfig).first()
+        if cfg and cfg.is_enabled and cfg.channel_access_token and cfg.target_id:
+            line_service.configure(cfg.channel_access_token, cfg.target_id, True)
+            logger.info("LINE 通知服務已啟用")
+        else:
+            logger.info("LINE 通知服務未啟用或尚未設定")
+    finally:
+        session.close()
+
+
 @app.on_event("startup")
 def on_startup():
     init_database()
@@ -401,6 +418,7 @@ def on_startup():
     seed_default_admin()
     seed_approval_policies()
     salary_engine.load_config_from_db()
+    _load_line_config()
     logger.info("Application started successfully.")
 
 

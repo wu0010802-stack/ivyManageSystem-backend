@@ -5,7 +5,7 @@ Portal - announcement endpoints
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 
-from models.database import get_session, Employee, Announcement, AnnouncementRead
+from models.database import get_session, Employee, Announcement, AnnouncementRead, AnnouncementRecipient
 from utils.auth import get_current_user
 
 router = APIRouter()
@@ -22,14 +22,24 @@ def get_portal_announcements(
     try:
         emp_id = current_user["employee_id"]
 
+        # 過濾：全員公告（無 recipients）或指定包含當前員工的公告
+        no_recipients_subq = ~session.query(AnnouncementRecipient).filter(
+            AnnouncementRecipient.announcement_id == Announcement.id
+        ).exists()
+        targeted_to_me_subq = session.query(AnnouncementRecipient).filter(
+            AnnouncementRecipient.announcement_id == Announcement.id,
+            AnnouncementRecipient.employee_id == emp_id,
+        ).exists()
+        visible_filter = no_recipients_subq | targeted_to_me_subq
+
         base_q = session.query(Announcement, Employee.name).outerjoin(
             Employee, Announcement.created_by == Employee.id
-        ).order_by(
+        ).filter(visible_filter).order_by(
             Announcement.is_pinned.desc(),
             Announcement.created_at.desc(),
         )
 
-        total = session.query(Announcement).count()
+        total = session.query(Announcement).filter(visible_filter).count()
         rows = base_q.offset(skip).limit(limit).all()
 
         ann_ids = [ann.id for ann, _ in rows]
@@ -106,7 +116,16 @@ def get_unread_count(
     try:
         emp_id = current_user["employee_id"]
 
-        total = session.query(Announcement).count()
+        no_recipients_subq = ~session.query(AnnouncementRecipient).filter(
+            AnnouncementRecipient.announcement_id == Announcement.id
+        ).exists()
+        targeted_to_me_subq = session.query(AnnouncementRecipient).filter(
+            AnnouncementRecipient.announcement_id == Announcement.id,
+            AnnouncementRecipient.employee_id == emp_id,
+        ).exists()
+        visible_filter = no_recipients_subq | targeted_to_me_subq
+
+        total = session.query(Announcement).filter(visible_filter).count()
         read = session.query(AnnouncementRead).filter(
             AnnouncementRead.employee_id == emp_id,
         ).count()

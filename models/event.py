@@ -84,6 +84,7 @@ class Announcement(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     author = relationship("Employee", backref="announcements")
+    recipients = relationship("AnnouncementRecipient", backref="announcement", cascade="all, delete-orphan", lazy="select")
 
 
 class AnnouncementRead(Base):
@@ -99,3 +100,15 @@ class AnnouncementRead(Base):
     read_at = Column(DateTime, default=datetime.now, comment="閱讀時間")
 
     announcement = relationship("Announcement", backref="reads")
+
+
+class AnnouncementRecipient(Base):
+    """公告指定對象表（空代表全員可見）"""
+    __tablename__ = "announcement_recipients"
+    __table_args__ = (
+        UniqueConstraint("announcement_id", "employee_id", name="uq_ann_recipient"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    announcement_id = Column(Integer, ForeignKey("announcements.id", ondelete="CASCADE"), nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)

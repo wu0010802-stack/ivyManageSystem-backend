@@ -26,11 +26,12 @@ from models.config import (
     SystemConfig, PositionSalaryConfig,
 )
 from models.event import (
-    Holiday, MeetingRecord, SchoolEvent, Announcement, AnnouncementRead,
+    Holiday, MeetingRecord, SchoolEvent, Announcement, AnnouncementRead, AnnouncementRecipient,
 )
 from models.auth import User
 from models.audit import AuditLog
 from models.approval import ApprovalPolicy, ApprovalLog
+from models.line_config import LineConfig
 
 __all__ = [
     # base
@@ -57,11 +58,13 @@ __all__ = [
     "AttendancePolicy", "BonusConfig", "GradeTarget", "InsuranceRate",
     "SystemConfig", "PositionSalaryConfig",
     # event
-    "Holiday", "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead",
+    "Holiday", "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead", "AnnouncementRecipient",
     # auth
     "User",
     # audit
     "AuditLog",
     # approval
     "ApprovalPolicy", "ApprovalLog",
+    # line
+    "LineConfig",
 ]
