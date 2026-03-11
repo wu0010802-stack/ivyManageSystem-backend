@@ -4,14 +4,14 @@ Announcements router - Admin CRUD for announcements
 
 import logging
 from html.parser import HTMLParser
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
 from sqlalchemy.orm import joinedload
 
-from models.database import get_session, Announcement, Employee
+from models.database import get_session, Announcement, AnnouncementRecipient, Employee
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -71,6 +71,7 @@ class AnnouncementCreate(BaseModel):
     content: str
     priority: str = "normal"
     is_pinned: bool = False
+    target_employee_ids: Optional[List[int]] = None  # None / [] = 全員可見
 
 
 class AnnouncementUpdate(BaseModel):
@@ -78,6 +79,7 @@ class AnnouncementUpdate(BaseModel):
     content: Optional[str] = None
     priority: Optional[str] = None
     is_pinned: Optional[bool] = None
+    target_employee_ids: Optional[List[int]] = None  # None = 不變；[] = 改為全員可見
 
 
 # ============ Endpoints ============
@@ -102,6 +104,7 @@ def list_announcements(
 
         results = []
         for ann in items:
+            recipient_ids = [r.employee_id for r in ann.recipients]
             results.append({
                 "id": ann.id,
                 "title": ann.title,
@@ -113,6 +116,8 @@ def list_announcements(
                 "created_at": ann.created_at.isoformat() if ann.created_at else None,
                 "updated_at": ann.updated_at.isoformat() if ann.updated_at else None,
                 "read_count": len(ann.reads),
+                "recipient_count": len(recipient_ids),
+                "recipient_ids": recipient_ids,
             })
 
         return {"total": total, "items": results}
@@ -139,6 +144,12 @@ def create_announcement(
             created_by=current_user["employee_id"],
         )
         session.add(ann)
+        session.flush()  # 取得 ann.id
+
+        if data.target_employee_ids:
+            for emp_id in data.target_employee_ids:
+                session.add(AnnouncementRecipient(announcement_id=ann.id, employee_id=emp_id))
+
         session.commit()
         return {"message": "公告已發佈", "id": ann.id}
     except Exception as e:
@@ -171,6 +182,14 @@ def update_announcement(
             ann.priority = data.priority
         if data.is_pinned is not None:
             ann.is_pinned = data.is_pinned
+
+        if data.target_employee_ids is not None:
+            # 清除舊 recipients，再批次 INSERT 新的
+            session.query(AnnouncementRecipient).filter(
+                AnnouncementRecipient.announcement_id == announcement_id
+            ).delete()
+            for emp_id in data.target_employee_ids:
+                session.add(AnnouncementRecipient(announcement_id=announcement_id, employee_id=emp_id))
 
         session.commit()
         return {"message": "公告已更新"}

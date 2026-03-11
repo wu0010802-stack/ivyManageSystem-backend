@@ -38,6 +38,13 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
+_line_service = None
+
+
+def init_leave_notify(line_service):
+    global _line_service
+    _line_service = line_service
+
 # ── 職務代理人工具函式 ──────────────────────────────────────────────────────
 
 def _validate_substitute(session, emp_id: int, substitute_id: int) -> "Employee":
@@ -185,6 +192,17 @@ def create_my_leave(
         )
         session.add(leave)
         session.commit()
+
+        # LINE 通知（fire-and-forget，失敗不影響申請）
+        if _line_service:
+            try:
+                _line_service.notify_leave_submitted(
+                    emp.name, data.leave_type,
+                    data.start_date, data.end_date, data.leave_hours,
+                )
+            except Exception as e:
+                logger.warning("LINE 通知發送失敗: %s", e)
+
         msg = "請假申請已送出，待主管核准"
         if substitute_status == "pending":
             msg = "請假申請已送出，請等待代理人接受後主管才能核准"

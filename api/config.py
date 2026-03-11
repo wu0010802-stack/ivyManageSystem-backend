@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 from models.database import (
     get_session, AttendancePolicy, BonusConfig as DBBonusConfig,
     GradeTarget, InsuranceRate, JobTitle,
-    AllowanceType, DeductionType, BonusType, PositionSalaryConfig
+    AllowanceType, DeductionType, BonusType, PositionSalaryConfig,
+    LineConfig,
 )
 
 # BonusConfig 所有可複製的業務欄位（不含 id/version/changed_by/is_active/timestamps）
@@ -65,11 +66,13 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 # ============ Service Init ============
 
 _salary_engine = None
+_line_service = None
 
 
-def init_config_services(salary_engine):
-    global _salary_engine
+def init_config_services(salary_engine, line_service=None):
+    global _salary_engine, _line_service
     _salary_engine = salary_engine
+    _line_service = line_service
 
 
 # ============ Pydantic Models ============
@@ -171,6 +174,18 @@ class PositionSalaryUpdate(BaseModel):
     assistant_teacher_a: Optional[float] = Field(None, ge=0)
     assistant_teacher_b: Optional[float] = Field(None, ge=0)
     assistant_teacher_c: Optional[float] = Field(None, ge=0)
+
+
+class LineConfigRead(BaseModel):
+    is_enabled: bool
+    target_id: Optional[str]
+    has_token: bool  # 是否已設定 token（不返回原值）
+
+
+class LineConfigUpdate(BaseModel):
+    is_enabled: Optional[bool] = None
+    target_id: Optional[str] = None
+    channel_access_token: Optional[str] = None  # 空字串 = 不更新
 
 
 # ============ Routes ============
@@ -899,3 +914,75 @@ async def update_position_salary(
         raise_safe_500(e)
     finally:
         session.close()
+
+
+# ============ LINE 通知設定 ============
+
+@router.get("/line", response_model=LineConfigRead)
+def get_line_config(
+    current_user: dict = Depends(require_permission(Permission.SETTINGS_READ)),
+):
+    """取得 LINE 通知設定（token 以 has_token 表示，不回傳原值）"""
+    session = get_session()
+    try:
+        cfg = session.query(LineConfig).first()
+        if not cfg:
+            return LineConfigRead(is_enabled=False, target_id=None, has_token=False)
+        return LineConfigRead(
+            is_enabled=cfg.is_enabled,
+            target_id=cfg.target_id,
+            has_token=bool(cfg.channel_access_token),
+        )
+    finally:
+        session.close()
+
+
+@router.put("/line")
+def update_line_config(
+    data: LineConfigUpdate,
+    current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE)),
+):
+    """更新 LINE 通知設定，空字串 token 視為不更新"""
+    session = get_session()
+    try:
+        cfg = session.query(LineConfig).first()
+        if not cfg:
+            cfg = LineConfig()
+            session.add(cfg)
+
+        if data.is_enabled is not None:
+            cfg.is_enabled = data.is_enabled
+        if data.target_id is not None:
+            cfg.target_id = data.target_id
+        if data.channel_access_token:  # 空字串不更新
+            cfg.channel_access_token = data.channel_access_token
+
+        session.commit()
+
+        # 熱更新 LineService（若已注入）
+        if _line_service is not None:
+            if cfg.is_enabled and cfg.channel_access_token and cfg.target_id:
+                _line_service.configure(cfg.channel_access_token, cfg.target_id, True)
+            else:
+                _line_service.configure("", "", False)
+
+        logger.warning("LINE 通知設定已更新，操作人：%s", current_user.get("username", ""))
+        return {"message": "LINE 通知設定已更新"}
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.post("/line/test")
+def test_line_notify(
+    current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE)),
+):
+    """發送測試訊息，驗證 LINE 通知是否正常"""
+    if _line_service is None:
+        raise HTTPException(status_code=503, detail="LINE 通知服務未初始化")
+    ok = _line_service._push("【測試】LINE 通知連線正常")
+    if not ok:
+        raise HTTPException(status_code=422, detail="LINE 通知發送失敗，請確認 token 與 target_id 是否正確，且通知功能已啟用")
+    return {"message": "測試訊息已發送"}
