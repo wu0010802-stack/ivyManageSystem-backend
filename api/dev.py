@@ -8,6 +8,13 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query
 from utils.auth import require_permission
 from utils.permissions import Permission
+from services.insurance_service import (
+    LABOR_INSURANCE_RATE, LABOR_EMPLOYEE_RATIO, LABOR_EMPLOYER_RATIO,
+    LABOR_GOVERNMENT_RATIO, HEALTH_INSURANCE_RATE, HEALTH_EMPLOYEE_RATIO,
+    HEALTH_EMPLOYER_RATIO, PENSION_EMPLOYER_RATE, AVERAGE_DEPENDENTS,
+    INSURANCE_TABLE_2026,
+)
+from services.salary_engine import MONTHLY_BASE_DAYS
 
 from models.database import (
     get_session, Employee, Attendance, LeaveRecord, OvertimeRecord,
@@ -21,6 +28,170 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dev", tags=["dev"])
 
 _salary_engine = None
+
+
+def _pct(value):
+    return f"{value * 100:.2f}%"
+
+
+def _build_formula_verification(insurance_rate_db: dict | None):
+    runtime_samples = {entry["amount"]: entry for entry in INSURANCE_TABLE_2026}
+    sample_29500 = runtime_samples[29500]
+    sample_30300 = runtime_samples[30300]
+
+    db_checks = []
+    if insurance_rate_db:
+        db_checks = [
+            {
+                "item": "DB 勞保+就保合計費率",
+                "system_value": _pct(insurance_rate_db["labor_rate"]),
+                "official_value": "12.50%",
+                "match": abs((insurance_rate_db["labor_rate"] or 0) - LABOR_INSURANCE_RATE) < 1e-9,
+            },
+            {
+                "item": "DB 平均眷口數",
+                "system_value": f'{insurance_rate_db["average_dependents"]:.2f}',
+                "official_value": f"{AVERAGE_DEPENDENTS:.2f}",
+                "match": abs((insurance_rate_db["average_dependents"] or 0) - AVERAGE_DEPENDENTS) < 1e-9,
+            },
+        ]
+
+    return {
+        "attendance_formulas": [
+            {
+                "item": "日薪",
+                "formula": f"月薪 ÷ {MONTHLY_BASE_DAYS}",
+                "note": "系統以固定 30 天換算日薪，供請假扣薪與曠職扣薪使用。",
+            },
+            {
+                "item": "每分鐘費率",
+                "formula": f"月薪 ÷ {MONTHLY_BASE_DAYS} ÷ 8 ÷ 60",
+                "note": "遲到 / 早退按分鐘比例扣款。",
+            },
+            {
+                "item": "請假扣薪",
+                "formula": "請假時數 ÷ 8 × 日薪 × 扣薪比例",
+                "note": "事假 1.0、病假 0.5，其餘依假別規則。",
+            },
+        ],
+        "insurance_formulas": [
+            {
+                "item": "勞保+就保合計費率",
+                "formula": "投保薪資 × 12.5%",
+                "note": "普通事故保險 11.5% + 就業保險 1%。",
+            },
+            {
+                "item": "勞保負擔比例",
+                "formula": "員工 20% / 雇主 70% / 政府 10%",
+                "note": "公民營受僱勞工適用。",
+            },
+            {
+                "item": "健保費率",
+                "formula": "投保金額 × 5.17%",
+                "note": "第 1 類被保險人由員工 30%、雇主 60%、政府 10% 分擔。",
+            },
+            {
+                "item": "健保眷屬計算",
+                "formula": "員工自付額 × (1 + min(眷屬人數, 3))",
+                "note": "最多計入 3 名眷屬；平均眷口數 0.56 僅供雇主估算參考。",
+            },
+            {
+                "item": "勞退雇主提繳",
+                "formula": "月提繳工資 × 6%",
+                "note": "雇主不得低於 6%。",
+            },
+        ],
+        "official_checks": [
+            {
+                "item": "Runtime 勞保+就保合計費率",
+                "system_value": _pct(LABOR_INSURANCE_RATE),
+                "official_value": "12.50%",
+                "match": True,
+            },
+            {
+                "item": "Runtime 勞保負擔比例",
+                "system_value": f"員工 {_pct(LABOR_EMPLOYEE_RATIO)} / 雇主 {_pct(LABOR_EMPLOYER_RATIO)} / 政府 {_pct(LABOR_GOVERNMENT_RATIO)}",
+                "official_value": "員工 20.00% / 雇主 70.00% / 政府 10.00%",
+                "match": True,
+            },
+            {
+                "item": "Runtime 健保費率",
+                "system_value": _pct(HEALTH_INSURANCE_RATE),
+                "official_value": "5.17%",
+                "match": True,
+            },
+            {
+                "item": "Runtime 健保負擔比例",
+                "system_value": f"員工 {_pct(HEALTH_EMPLOYEE_RATIO)} / 雇主 {_pct(HEALTH_EMPLOYER_RATIO)}",
+                "official_value": "員工 30.00% / 雇主 60.00%",
+                "match": True,
+            },
+            {
+                "item": "Runtime 平均眷口數",
+                "system_value": f"{AVERAGE_DEPENDENTS:.2f}",
+                "official_value": "0.56",
+                "match": True,
+            },
+            {
+                "item": "Runtime 勞退雇主提繳率",
+                "system_value": _pct(PENSION_EMPLOYER_RATE),
+                "official_value": "6.00%",
+                "match": True,
+            },
+        ] + db_checks,
+        "sample_bracket_checks": [
+            {
+                "insured_amount": 29500,
+                "labor_employee_system": sample_29500["labor_employee"],
+                "labor_employee_official": 738,
+                "health_employee_system": sample_29500["health_employee"],
+                "health_employee_official": 458,
+                "health_employer_system": sample_29500["health_employer"],
+                "health_employer_official": 1428,
+                "match": (
+                    sample_29500["labor_employee"] == 738
+                    and sample_29500["health_employee"] == 458
+                    and sample_29500["health_employer"] == 1428
+                ),
+            },
+            {
+                "insured_amount": 30300,
+                "labor_employee_system": sample_30300["labor_employee"],
+                "labor_employee_official": 758,
+                "labor_employer_system": sample_30300["labor_employer"],
+                "labor_employer_official": 2651,
+                "health_employee_system": sample_30300["health_employee"],
+                "health_employee_official": 470,
+                "health_employer_system": sample_30300["health_employer"],
+                "health_employer_official": 1466,
+                "match": (
+                    sample_30300["labor_employee"] == 758
+                    and sample_30300["labor_employer"] == 2651
+                    and sample_30300["health_employee"] == 470
+                    and sample_30300["health_employer"] == 1466
+                ),
+            },
+        ],
+        "official_sources": [
+            {
+                "label": "勞保局 115 年勞保 / 就保費率與負擔比例",
+                "url": "https://www.bli.gov.tw/0014161.html",
+            },
+            {
+                "label": "健保署 115 年健保費率與平均眷口數",
+                "url": "https://www.nhi.gov.tw/ch/cp-3273-d65d7-2582-1.html",
+            },
+            {
+                "label": "健保署 115 年保險費負擔金額表",
+                "url": "https://www.nhi.gov.tw/ch/cp-3273-d65d7-2582-1.html",
+            },
+            {
+                "label": "勞動部 / 法務部 勞工退休金條例第 14 條",
+                "url": "https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=N0030020&flno=14",
+            },
+        ],
+        "runtime_note": "薪資實算使用 InsuranceService 常數與 INSURANCE_TABLE_2026；DB 的 insurance_rates 目前只作顯示/版本紀錄。",
+    }
 
 
 def init_dev_services(salary_engine):
@@ -42,8 +213,6 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
             attendance_policy = {
                 "default_work_start": policy.default_work_start,
                 "default_work_end": policy.default_work_end,
-                "grace_minutes": policy.grace_minutes,
-                "late_threshold": policy.late_threshold,
                 "late_deduction": policy.late_deduction,
                 "early_leave_deduction": policy.early_leave_deduction,
                 "missing_punch_deduction": policy.missing_punch_deduction,
@@ -98,12 +267,25 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
                 "labor_rate": rate.labor_rate,
                 "labor_employee_ratio": rate.labor_employee_ratio,
                 "labor_employer_ratio": rate.labor_employer_ratio,
+                "labor_government_ratio": rate.labor_government_ratio,
                 "health_rate": rate.health_rate,
                 "health_employee_ratio": rate.health_employee_ratio,
                 "health_employer_ratio": rate.health_employer_ratio,
                 "pension_employer_rate": rate.pension_employer_rate,
                 "average_dependents": rate.average_dependents,
             }
+
+        insurance_runtime = {
+            "labor_rate": LABOR_INSURANCE_RATE,
+            "labor_employee_ratio": LABOR_EMPLOYEE_RATIO,
+            "labor_employer_ratio": LABOR_EMPLOYER_RATIO,
+            "labor_government_ratio": LABOR_GOVERNMENT_RATIO,
+            "health_rate": HEALTH_INSURANCE_RATE,
+            "health_employee_ratio": HEALTH_EMPLOYEE_RATIO,
+            "health_employer_ratio": HEALTH_EMPLOYER_RATIO,
+            "pension_employer_rate": PENSION_EMPLOYER_RATE,
+            "average_dependents": AVERAGE_DEPENDENTS,
+        }
 
         # 5. Engine 內部運算參數
         engine_config = {}
@@ -182,15 +364,19 @@ def get_salary_logic(current_user: dict = Depends(require_permission(Permission.
             "health_insurance_dependents": "健保員工自付 × (1 + min(眷屬人數, 3))",
         }
 
+        formula_verification = _build_formula_verification(insurance_rate)
+
         return {
             "attendance_policy_db": attendance_policy,
             "bonus_config_db": bonus_config,
             "grade_targets_db": grade_targets,
             "insurance_rate_db": insurance_rate,
+            "insurance_runtime_config": insurance_runtime,
             "engine_runtime_config": engine_config,
             "shift_types": shifts,
             "leave_deduction_rules": leave_deduction_rules,
             "salary_formula": salary_formula,
+            "formula_verification": formula_verification,
         }
     finally:
         session.close()

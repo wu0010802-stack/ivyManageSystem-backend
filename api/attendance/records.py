@@ -117,7 +117,6 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate, cur
 
         work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
         work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
-        grace_minutes = 0
 
         is_late = False
         is_early_leave = False

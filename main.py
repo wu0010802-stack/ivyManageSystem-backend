@@ -174,8 +174,6 @@ def seed_default_configs():
             policy = AttendancePolicy(
                 default_work_start="08:00",
                 default_work_end="17:00",
-                grace_minutes=0,
-                late_threshold=2,
                 late_deduction=50,
                 early_leave_deduction=50,
                 missing_punch_deduction=0,
@@ -230,7 +228,7 @@ def seed_default_configs():
         if session.query(InsuranceRate).count() == 0:
             rate = InsuranceRate(
                 rate_year=2026,
-                labor_rate=0.12,
+                labor_rate=0.125,
                 labor_employee_ratio=0.20,
                 labor_employer_ratio=0.70,
                 labor_government_ratio=0.10,
@@ -238,7 +236,7 @@ def seed_default_configs():
                 health_employee_ratio=0.30,
                 health_employer_ratio=0.60,
                 pension_employer_rate=0.06,
-                average_dependents=0.57,
+                average_dependents=0.56,
                 is_active=True,
             )
             session.add(rate)
