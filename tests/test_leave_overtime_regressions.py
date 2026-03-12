@@ -169,6 +169,235 @@ class TestPortalLeaveDeductionRatio:
         assert approve_res.status_code == 400
         assert "超過 2 天" in approve_res.json()["detail"]
 
+    def test_portal_leave_rejects_substitute_with_overlapping_pending_leave(self, leave_overtime_client):
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "T003", "教師丙")
+            substitute = _create_employee(session, "T004", "代理老師")
+            session.add(
+                LeaveRecord(
+                    employee_id=substitute.id,
+                    leave_type="personal",
+                    start_date=date(2026, 3, 20),
+                    end_date=date(2026, 3, 20),
+                    leave_hours=8,
+                    is_approved=None,
+                )
+            )
+            _create_user(
+                session,
+                username="teacher_with_substitute",
+                password="PortalPass123",
+                role="teacher",
+                permissions=0,
+                employee=employee,
+            )
+            session.commit()
+            substitute_id = substitute.id
+
+        login_res = _login(client, "teacher_with_substitute", "PortalPass123")
+        assert login_res.status_code == 200
+
+        create_res = client.post(
+            "/api/portal/my-leaves",
+            json={
+                "leave_type": "personal",
+                "start_date": "2026-03-20",
+                "end_date": "2026-03-20",
+                "leave_hours": 8,
+                "reason": "家中有事",
+                "substitute_employee_id": substitute_id,
+            },
+        )
+
+        assert create_res.status_code == 409
+        assert "代理人" in create_res.json()["detail"]
+        assert "請假" in create_res.json()["detail"]
+
+    def test_leave_approval_rejects_substitute_who_later_has_overlapping_leave(self, leave_overtime_client):
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "T005", "教師丁")
+            substitute = _create_employee(session, "T006", "代理老師乙")
+            leave = LeaveRecord(
+                employee_id=employee.id,
+                leave_type="personal",
+                start_date=date(2026, 3, 20),
+                end_date=date(2026, 3, 20),
+                leave_hours=8,
+                is_approved=None,
+                substitute_employee_id=substitute.id,
+                substitute_status="accepted",
+            )
+            substitute_leave = LeaveRecord(
+                employee_id=substitute.id,
+                leave_type="personal",
+                start_date=date(2026, 3, 20),
+                end_date=date(2026, 3, 20),
+                leave_hours=8,
+                is_approved=True,
+            )
+            session.add_all([leave, substitute_leave])
+            _create_user(
+                session,
+                username="admin_substitute_guard",
+                password="AdminPass123",
+                role="admin",
+                permissions=-1,
+            )
+            session.commit()
+            leave_id = leave.id
+
+        login_res = _login(client, "admin_substitute_guard", "AdminPass123")
+        assert login_res.status_code == 200
+
+        approve_res = client.put(
+            f"/api/leaves/{leave_id}/approve",
+            json={"approved": True},
+        )
+
+        assert approve_res.status_code == 409
+        assert "代理人" in approve_res.json()["detail"]
+
+    def test_leave_approval_can_force_approve_without_substitute_acceptance(self, leave_overtime_client):
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "T005A", "教師戊")
+            substitute = _create_employee(session, "T006A", "代理老師丙")
+            leave = LeaveRecord(
+                employee_id=employee.id,
+                leave_type="personal",
+                start_date=date(2026, 3, 26),
+                end_date=date(2026, 3, 26),
+                leave_hours=8,
+                is_approved=None,
+                substitute_employee_id=substitute.id,
+                substitute_status="pending",
+            )
+            session.add(leave)
+            _create_user(
+                session,
+                username="admin_force_substitute",
+                password="AdminPass123",
+                role="admin",
+                permissions=-1,
+            )
+            session.commit()
+            leave_id = leave.id
+
+        login_res = _login(client, "admin_force_substitute", "AdminPass123")
+        assert login_res.status_code == 200
+
+        approve_res = client.put(
+            f"/api/leaves/{leave_id}/approve",
+            json={"approved": True, "force_without_substitute": True},
+        )
+
+        assert approve_res.status_code == 200
+        with session_factory() as session:
+            leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).one()
+            assert leave.is_approved is True
+            assert leave.substitute_status == "waived"
+
+
+class TestPortalSubstitutePendingCount:
+    def test_only_counts_pending_requests_for_current_substitute(self, leave_overtime_client):
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            requester = _create_employee(session, "T007", "請假老師")
+            substitute = _create_employee(session, "T008", "代理老師甲")
+            other_substitute = _create_employee(session, "T009", "代理老師乙")
+            _create_user(
+                session,
+                username="substitute_portal",
+                password="PortalPass123",
+                role="teacher",
+                permissions=0,
+                employee=substitute,
+            )
+            _create_user(
+                session,
+                username="other_substitute_portal",
+                password="PortalPass123",
+                role="teacher",
+                permissions=0,
+                employee=other_substitute,
+            )
+            session.add_all([
+                LeaveRecord(
+                    employee_id=requester.id,
+                    leave_type="personal",
+                    start_date=date(2026, 3, 21),
+                    end_date=date(2026, 3, 21),
+                    leave_hours=8,
+                    substitute_employee_id=substitute.id,
+                    substitute_status="pending",
+                    is_approved=None,
+                ),
+                LeaveRecord(
+                    employee_id=requester.id,
+                    leave_type="personal",
+                    start_date=date(2026, 3, 22),
+                    end_date=date(2026, 3, 22),
+                    leave_hours=8,
+                    substitute_employee_id=substitute.id,
+                    substitute_status="pending",
+                    is_approved=None,
+                ),
+                LeaveRecord(
+                    employee_id=requester.id,
+                    leave_type="personal",
+                    start_date=date(2026, 3, 23),
+                    end_date=date(2026, 3, 23),
+                    leave_hours=8,
+                    substitute_employee_id=substitute.id,
+                    substitute_status="accepted",
+                    is_approved=None,
+                ),
+                LeaveRecord(
+                    employee_id=requester.id,
+                    leave_type="personal",
+                    start_date=date(2026, 3, 24),
+                    end_date=date(2026, 3, 24),
+                    leave_hours=8,
+                    substitute_employee_id=substitute.id,
+                    substitute_status="rejected",
+                    is_approved=None,
+                ),
+                LeaveRecord(
+                    employee_id=requester.id,
+                    leave_type="personal",
+                    start_date=date(2026, 3, 25),
+                    end_date=date(2026, 3, 25),
+                    leave_hours=8,
+                    substitute_employee_id=other_substitute.id,
+                    substitute_status="pending",
+                    is_approved=None,
+                ),
+            ])
+            session.commit()
+
+        login_res = _login(client, "substitute_portal", "PortalPass123")
+        assert login_res.status_code == 200
+
+        count_res = client.get("/api/portal/substitute-pending-count")
+        assert count_res.status_code == 200
+        assert count_res.json() == {"pending_count": 2}
+
+        other_login_res = _login(client, "other_substitute_portal", "PortalPass123")
+        assert other_login_res.status_code == 200
+
+        other_count_res = client.get("/api/portal/substitute-pending-count")
+        assert other_count_res.status_code == 200
+        assert other_count_res.json() == {"pending_count": 1}
+
+    def test_requires_portal_login(self, leave_overtime_client):
+        client, _, _ = leave_overtime_client
+
+        res = client.get("/api/portal/substitute-pending-count")
+
+        assert res.status_code == 401
+
 
 class TestApprovedOvertimeRollback:
     def test_update_approved_overtime_revokes_comp_leave_and_recalculates_salary(self, leave_overtime_client):

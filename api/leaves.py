@@ -19,6 +19,7 @@ from utils.errors import raise_safe_500
 from fastapi.responses import FileResponse, StreamingResponse
 from urllib.parse import quote
 from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import or_
 
 from models.database import (
     get_session, Employee, LeaveRecord, LeaveQuota,
@@ -237,7 +238,7 @@ def _write_approval_log(doc_type: str, doc_id: int, action: str, approver: dict,
     ))
 
 
-def _check_substitute_guard(leave) -> None:
+def _check_substitute_guard(leave, *, allow_without_substitute: bool = False) -> None:
     """序列式守衛：核准假單前確認代理人已接受。
 
     - pending  → 409（等待代理人回應）
@@ -245,6 +246,8 @@ def _check_substitute_guard(leave) -> None:
     - accepted / not_required → 放行
     """
     status = getattr(leave, "substitute_status", "not_required") or "not_required"
+    if allow_without_substitute and status in {"pending", "rejected"}:
+        return
     if status == "pending":
         raise HTTPException(
             status_code=409,
@@ -257,7 +260,7 @@ def _check_substitute_guard(leave) -> None:
         )
 
 
-def _check_overlap(
+def _find_overlapping_leave(
     session,
     employee_id: int,
     start_date: date,
@@ -265,9 +268,11 @@ def _check_overlap(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     exclude_id: int = None,
+    include_pending: bool = False,
 ) -> "LeaveRecord | None":
-    """檢查員工在指定日期區間（含時段）是否已有「已核准」的請假記錄。
-    待審核記錄不列入封鎖，允許員工同時提交多份申請供主管選擇。
+    """檢查員工在指定日期區間（含時段）是否已有重疊假單。
+
+    預設只檢查已核准假單；`include_pending=True` 時，待審假單也視為衝突。
 
     時段重疊規則：
     - 若任一方跨多天 → 純日期重疊即視為衝突
@@ -280,8 +285,11 @@ def _check_overlap(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.start_date <= end_date,
         LeaveRecord.end_date >= start_date,
-        LeaveRecord.is_approved == True,
     )
+    if include_pending:
+        q = q.filter(or_(LeaveRecord.is_approved == True, LeaveRecord.is_approved.is_(None)))
+    else:
+        q = q.filter(LeaveRecord.is_approved == True)
     if exclude_id is not None:
         q = q.filter(LeaveRecord.id != exclude_id)
 
@@ -306,6 +314,62 @@ def _check_overlap(
         return record  # 日期重疊且不符合放行條件 → 衝突
 
     return None
+
+
+def _check_overlap(
+    session,
+    employee_id: int,
+    start_date: date,
+    end_date: date,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    exclude_id: int = None,
+) -> "LeaveRecord | None":
+    """檢查員工在指定日期區間（含時段）是否已有「已核准」的請假記錄。"""
+    return _find_overlapping_leave(
+        session,
+        employee_id,
+        start_date,
+        end_date,
+        start_time=start_time,
+        end_time=end_time,
+        exclude_id=exclude_id,
+        include_pending=False,
+    )
+
+
+def _check_substitute_leave_conflict(
+    session,
+    substitute_employee_id: Optional[int],
+    start_date: date,
+    end_date: date,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> None:
+    """代理人不可在相同時段有待審或已核准假單。"""
+    if substitute_employee_id is None:
+        return
+
+    conflict = _find_overlapping_leave(
+        session,
+        substitute_employee_id,
+        start_date,
+        end_date,
+        start_time=start_time,
+        end_time=end_time,
+        include_pending=True,
+    )
+    if not conflict:
+        return
+
+    status_label = "待審核" if conflict.is_approved is None else "已核准"
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"代理人在 {conflict.start_date} ~ {conflict.end_date} "
+            f"已有{status_label}請假記錄，請改派其他代理人"
+        ),
+    )
 
 
 # ============ Routes ============
@@ -647,6 +711,7 @@ def delete_leave(leave_id: int, current_user: dict = Depends(require_staff_permi
 class ApproveRequest(BaseModel):
     approved: bool
     rejection_reason: Optional[str] = None
+    force_without_substitute: bool = False
 
 
 class LeaveBatchApproveRequest(BaseModel):
@@ -687,7 +752,16 @@ def approve_leave(
                     detail="請假超過 2 天需檢附證明附件後才能核准",
                 )
             # ── 代理人序列式守衛 ──────────────────────────────────────────────
-            _check_substitute_guard(leave)
+            _check_substitute_guard(leave, allow_without_substitute=data.force_without_substitute)
+            if not data.force_without_substitute:
+                _check_substitute_leave_conflict(
+                    session,
+                    leave.substitute_employee_id,
+                    leave.start_date,
+                    leave.end_date,
+                    leave.start_time,
+                    leave.end_time,
+                )
 
             # 提示主管：該員工同期是否已有其他已核准假單（含時段比對，不強制阻擋，由主管判斷）
             conflict = _check_overlap(
@@ -727,10 +801,15 @@ def approve_leave(
         leave.is_approved = data.approved
         leave.approved_by = current_user.get("username", "管理員") if data.approved else None
         leave.rejection_reason = data.rejection_reason.strip() if not data.approved and data.rejection_reason else None
+        if data.approved and data.force_without_substitute:
+            leave.substitute_status = "waived"
 
         action = "approved" if data.approved else "rejected"
+        approval_comment = data.rejection_reason if not data.approved else None
+        if data.approved and data.force_without_substitute:
+            approval_comment = "主管警告後核准：未取得代理人接受"
         _write_approval_log("leave", leave_id, action, current_user,
-                            data.rejection_reason if not data.approved else None, session)
+                            approval_comment, session)
         session.commit()
 
         result = {"message": "已核准" if data.approved else "已駁回"}
@@ -801,6 +880,14 @@ def batch_approve_leaves(
                         raise HTTPException(status_code=400, detail="請假超過 2 天需檢附證明附件後才能核准")
                     # 代理人序列式守衛
                     _check_substitute_guard(leave)
+                    _check_substitute_leave_conflict(
+                        session,
+                        leave.substitute_employee_id,
+                        leave.start_date,
+                        leave.end_date,
+                        leave.start_time,
+                        leave.end_time,
+                    )
                     _check_leave_limits(
                         session, leave.employee_id, leave.leave_type,
                         leave.start_date, leave.leave_hours, include_pending=False,
