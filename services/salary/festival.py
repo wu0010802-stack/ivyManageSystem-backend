@@ -69,17 +69,20 @@ def get_target_enrollment(
         return targets.get('1_teacher', 0)
 
 
-def get_supervisor_dividend(title: str, position: str, dividend_map: dict) -> float:
+def get_supervisor_dividend(title: str, position: str, dividend_map: dict, supervisor_role: str = '') -> float:
     """
     取得主管紅利
 
     Args:
-        title:        職務 (園長/主任/組長/副組長)
-        position:     職稱，也會檢查
+        title:        教育局系統職稱
+        position:     園內實際職位，也會檢查
         dividend_map: 主管紅利 config dict（self._supervisor_dividend）
+        supervisor_role: 主管職設定（園長/主任/組長/副組長）
     Returns:
         紅利金額，若非主管職則返回 0
     """
+    if supervisor_role in dividend_map:
+        return dividend_map[supervisor_role]
     if position in dividend_map:
         return dividend_map[position]
     if title in dividend_map:
@@ -87,17 +90,20 @@ def get_supervisor_dividend(title: str, position: str, dividend_map: dict) -> fl
     return 0
 
 
-def get_supervisor_festival_bonus(title: str, position: str, bonus_map: dict) -> Optional[float]:
+def get_supervisor_festival_bonus(title: str, position: str, bonus_map: dict, supervisor_role: str = '') -> Optional[float]:
     """
     取得主管節慶獎金基數
 
     Args:
-        title:     職務 (園長/主任/組長)
-        position:  職稱，也會檢查
+        title:     教育局系統職稱
+        position:  園內實際職位，也會檢查
         bonus_map: 主管節慶獎金基數 config dict（self._supervisor_festival_bonus）
+        supervisor_role: 主管職設定（園長/主任/組長）
     Returns:
         節慶獎金基數，若非主管職則返回 None
     """
+    if supervisor_role in bonus_map:
+        return bonus_map[supervisor_role]
     if position in bonus_map:
         return bonus_map[position]
     if title in bonus_map:

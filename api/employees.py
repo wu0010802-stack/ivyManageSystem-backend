@@ -35,6 +35,7 @@ class EmployeeCreate(BaseModel):
     title: Optional[str] = None  # Legacy/Display
     job_title_id: Optional[int] = None  # New FK
     position: Optional[str] = None
+    supervisor_role: Optional[str] = Field(None, pattern="^(園長|主任|組長|副組長)$")
     bonus_grade: Optional[str] = Field(None, pattern="^[ABC]$")
     classroom_id: Optional[int] = None
     base_salary: float = Field(0, ge=0)
@@ -54,7 +55,6 @@ class EmployeeCreate(BaseModel):
     hire_date: Optional[str] = None
     probation_end_date: Optional[str] = None
     birthday: Optional[str] = None
-    is_office_staff: bool = False
     dependents: int = Field(0, ge=0)
 
 
@@ -66,6 +66,7 @@ class EmployeeUpdate(BaseModel):
     title: Optional[str] = None
     job_title_id: Optional[int] = None
     position: Optional[str] = None
+    supervisor_role: Optional[str] = Field(None, pattern="^(園長|主任|組長|副組長)$")
     bonus_grade: Optional[str] = Field(None, pattern="^[ABC]$")
     classroom_id: Optional[int] = None
     base_salary: Optional[float] = Field(None, ge=0)
@@ -85,7 +86,6 @@ class EmployeeUpdate(BaseModel):
     hire_date: Optional[str] = None
     probation_end_date: Optional[str] = None
     birthday: Optional[str] = None
-    is_office_staff: Optional[bool] = None
     dependents: Optional[int] = Field(None, ge=0)
 
 
@@ -124,6 +124,7 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
                 "title": display_title,  # Return real title name for frontend display compatibility
                 "job_title_id": emp.job_title_id,
                 "position": emp.position,
+                "supervisor_role": emp.supervisor_role,
                 "bonus_grade": getattr(emp, 'bonus_grade', None),
                 "classroom_id": emp.classroom_id,
                 "base_salary": emp.base_salary,
@@ -145,7 +146,6 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
                 "bank_code": emp.bank_code,
                 "bank_account": emp.bank_account if can_view_full_account else _mask_bank_account(emp.bank_account),
                 "bank_account_name": emp.bank_account_name,
-                "is_office_staff": emp.is_office_staff
             })
         return result
     finally:
@@ -181,6 +181,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             "title": display_title,
             "job_title_id": employee.job_title_id,
             "position": employee.position,
+            "supervisor_role": employee.supervisor_role,
             "bonus_grade": getattr(employee, 'bonus_grade', None),
             "classroom_id": employee.classroom_id,
             "classroom_name": classroom_name,
@@ -201,7 +202,6 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             "hire_date": employee.hire_date.isoformat() if employee.hire_date else None,
             "birthday": employee.birthday.isoformat() if employee.birthday else None,
             "is_active": employee.is_active,
-            "is_office_staff": employee.is_office_staff or False,
         }
     finally:
         session.close()
@@ -233,6 +233,9 @@ async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(requ
             emp_data['birthday'] = datetime.strptime(emp_data['birthday'], '%Y-%m-%d').date()
         else:
             emp_data.pop('birthday', None)
+
+        if not emp_data.get('supervisor_role'):
+            emp_data['supervisor_role'] = None
 
         # Sync title string from job_title_id for safety/legacy
         if emp_data.get('job_title_id'):
@@ -299,6 +302,8 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
                 setattr(db_employee, key, None)
                 db_employee.title = None  # Clear title if job_title_id is cleared
             elif key == 'classroom_id' and value is None:  # Allow explicitly removing from classroom
+                setattr(db_employee, key, None)
+            elif key == 'supervisor_role' and value is None:
                 setattr(db_employee, key, None)
 
         session.commit()

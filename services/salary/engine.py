@@ -328,13 +328,13 @@ class SalaryEngine:
         """取得目標人數"""
         return _festival.get_target_enrollment(grade_name, has_assistant, is_shared_assistant, self._target_enrollment)
 
-    def get_supervisor_dividend(self, title: str, position: str = '') -> float:
+    def get_supervisor_dividend(self, title: str, position: str = '', supervisor_role: str = '') -> float:
         """取得主管紅利"""
-        return _festival.get_supervisor_dividend(title, position, self._supervisor_dividend)
+        return _festival.get_supervisor_dividend(title, position, self._supervisor_dividend, supervisor_role)
 
-    def get_supervisor_festival_bonus(self, title: str, position: str = '') -> Optional[float]:
+    def get_supervisor_festival_bonus(self, title: str, position: str = '', supervisor_role: str = '') -> Optional[float]:
         """取得主管節慶獎金基數"""
-        return _festival.get_supervisor_festival_bonus(title, position, self._supervisor_festival_bonus)
+        return _festival.get_supervisor_festival_bonus(title, position, self._supervisor_festival_bonus, supervisor_role)
 
     def get_office_festival_bonus_base(self, position: str, title: str = '') -> Optional[float]:
         """取得司機/美編節慶獎金基數"""
@@ -567,6 +567,7 @@ class SalaryEngine:
             # 獎金計算
             emp_title = employee.get('title', '')
             emp_position = employee.get('position', '')
+            emp_supervisor_role = employee.get('supervisor_role', '')
 
             # 計算節慶獎金用的有效職稱（bonus_grade 可覆蓋職稱等級）
             _GRADE_TO_TITLE = {'A': '幼兒園教師', 'B': '教保員', 'C': '助理教保員'}
@@ -576,14 +577,13 @@ class SalaryEngine:
                 if bonus_grade_override else emp_title
             )
 
-            if not emp_position:
-                supervisor_festival_base = None
-            else:
-                supervisor_festival_base = self.get_supervisor_festival_bonus(emp_title, emp_position)
+            supervisor_festival_base = self.get_supervisor_festival_bonus(
+                emp_title, emp_position, emp_supervisor_role
+            )
 
             if supervisor_festival_base is not None:
                 # 主管節慶獎金 = 固定基數 × 全校比例
-                if is_eligible and emp_position:
+                if is_eligible:
                     school_enrollment = office_staff_context.get('school_enrollment', 0) if office_staff_context else 0
                     school_target = self._school_wide_target or 160
                     ratio = school_enrollment / school_target if school_target > 0 else 0
@@ -656,10 +656,9 @@ class SalaryEngine:
             breakdown.special_bonus = employee.get('special_bonus', 0)
 
             # 計算主管紅利
-            if emp_position:
-                breakdown.supervisor_dividend = self.get_supervisor_dividend(emp_title, emp_position)
-            else:
-                breakdown.supervisor_dividend = 0
+            breakdown.supervisor_dividend = self.get_supervisor_dividend(
+                emp_title, emp_position, emp_supervisor_role
+            )
 
             # 非發放月份不計節慶獎金與超額獎金
             if not get_bonus_distribution_month(month):
@@ -810,6 +809,7 @@ class SalaryEngine:
 
             position = emp.position or ''
             title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
+            supervisor_role = emp.supervisor_role or ''
 
             is_eligible = self.is_eligible_for_festival_bonus(emp.hire_date)
 
@@ -822,7 +822,7 @@ class SalaryEngine:
             # 提前查一次全校在籍人數，主管與辦公室分支共用
             school_active_students = session.query(Student).filter(Student.is_active == True).count()
 
-            supervisor_base = self.get_supervisor_festival_bonus(title_name, position)
+            supervisor_base = self.get_supervisor_festival_bonus(title_name, position, supervisor_role)
             if supervisor_base:
                 category = "主管"
                 bonus_base = supervisor_base
@@ -833,7 +833,7 @@ class SalaryEngine:
                 if is_eligible:
                     remark = "全校比例(主管)"
 
-            elif emp.is_office_staff:
+            elif self.get_office_festival_bonus_base(position, title_name):
                 office_base = self.get_office_festival_bonus_base(position, title_name)
                 category = "辦公室"
                 current_enrollment = school_active_students
@@ -919,6 +919,7 @@ class SalaryEngine:
                 'name': emp.name,
                 'title': title_name,
                 'position': emp.position,
+                'supervisor_role': emp.supervisor_role,
                 'bonus_grade': getattr(emp, 'bonus_grade', None) or None,
                 'employee_type': emp.employee_type,
                 'base_salary': emp.base_salary,
@@ -1067,13 +1068,15 @@ class SalaryEngine:
                                     'current_enrollment': second_count,
                                 }
 
-            # 5b. 辦公室人員 / 主管需要全校比例
-            is_supervisor = False
+            # 5b. 主管或特定非帶班職位需要全校比例
             title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
-            if self.get_supervisor_festival_bonus(title_name, emp.position):
-                is_supervisor = True
+            supervisor_role = emp.supervisor_role or ''
+            is_supervisor = self.get_supervisor_festival_bonus(
+                title_name, emp.position or '', supervisor_role
+            ) is not None
+            office_bonus_base = self.get_office_festival_bonus_base(emp.position or '', title_name)
 
-            if is_supervisor or (emp.is_office_staff and not classroom_context):
+            if is_supervisor or (office_bonus_base is not None and not classroom_context):
                 total_students = session.query(Student).filter(Student.is_active == True).count()
                 office_staff_context = {
                     'school_enrollment': total_students

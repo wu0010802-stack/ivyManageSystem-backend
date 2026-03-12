@@ -135,7 +135,7 @@ class CalculateSalaryRequest(BaseModel):
     bonus_config: Optional[BonusConfigSchema] = None
     class_enrollments: Optional[List[ClassEnrollment]] = None
     overtime_bonus_per_student: float = Field(400, ge=0)
-    # 辦公室人員用全校超額目標
+    # 全校比例獎金用的目標人數
     school_wide_overtime_target: int = Field(0, ge=0)
 
 
@@ -261,7 +261,7 @@ def _safe_divide(a: float, b: float, default: float = 0.0) -> float:
 
 
 def _calc_school_wide_bonus(engine, emp, office_festival_base, total_enrollment, target):
-    """計算全校比例節慶獎金（司機/美編/辦公室人員）。"""
+    """計算全校比例節慶獎金（主管或特定非帶班職位）。"""
     if not engine.is_eligible_for_festival_bonus(emp.hire_date):
         return 0
     return round(office_festival_base * _safe_divide(total_enrollment, target))
@@ -270,7 +270,6 @@ def _calc_school_wide_bonus(engine, emp, office_festival_base, total_enrollment,
 def _resolve_bonus_for_employee(engine, emp, emp_dict, emp_role_map, classroom_info_map,
                                 total_school_enrollment, school_wide_overtime_target):
     """依員工角色與班級計算節慶獎金和超額獎金，回傳 classroom_context 或 None。"""
-    is_office_staff = emp.is_office_staff or False
     classroom_context = None
 
     if emp.id in emp_role_map:
@@ -282,30 +281,6 @@ def _resolve_bonus_for_employee(engine, emp, emp_dict, emp_role_map, classroom_i
             emp_dict['_calculated_festival_bonus'] = _calc_school_wide_bonus(
                 engine, emp, office_festival_base, total_school_enrollment, school_wide_overtime_target)
             emp_dict['_calculated_overtime_bonus'] = 0
-
-        elif is_office_staff and len(roles) > 0:
-            # 辦公室人員有帶班
-            is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
-            school_festival_bonus = 0
-            total_overtime_bonus = 0
-            if is_eligible:
-                first_classroom_id, first_role = roles[0]
-                first_info = classroom_info_map.get(first_classroom_id)
-                if first_info:
-                    role_for_bonus = first_role if first_role != 'art_teacher' else 'assistant_teacher'
-                    bonus_base = engine.get_festival_bonus_base(emp.position or '', role_for_bonus) or 0
-                    school_festival_bonus = bonus_base * _safe_divide(total_school_enrollment, school_wide_overtime_target)
-                for classroom_id, role in roles:
-                    info = classroom_info_map.get(classroom_id)
-                    if info:
-                        result = engine.calculate_overtime_bonus(
-                            role=role, grade_name=info['grade_name'],
-                            current_enrollment=info['current_enrollment'],
-                            has_assistant=info['has_assistant'],
-                            is_shared_assistant=(role == 'art_teacher'))
-                        total_overtime_bonus += result['overtime_bonus']
-            emp_dict['_calculated_festival_bonus'] = round(school_festival_bonus)
-            emp_dict['_calculated_overtime_bonus'] = total_overtime_bonus
 
         elif len(roles) == 1:
             # 單一班級教師
@@ -345,11 +320,6 @@ def _resolve_bonus_for_employee(engine, emp, emp_dict, emp_role_map, classroom_i
             emp_dict['_calculated_festival_bonus'] = _calc_school_wide_bonus(
                 engine, emp, office_festival_base, total_school_enrollment, school_wide_overtime_target)
             emp_dict['_calculated_overtime_bonus'] = 0
-        elif is_office_staff:
-            bonus_base = engine.get_festival_bonus_base(emp.position or '', 'assistant_teacher')
-            emp_dict['_calculated_festival_bonus'] = _calc_school_wide_bonus(
-                engine, emp, bonus_base, total_school_enrollment, school_wide_overtime_target)
-            emp_dict['_calculated_overtime_bonus'] = 0
 
     return classroom_context
 
@@ -369,7 +339,9 @@ def _compute_salary_breakdown(engine, emp, emp_dict, year, month, emp_allowances
         # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
         if not engine.get_bonus_distribution_month(month):
             breakdown.festival_bonus = 0
-        breakdown.supervisor_dividend = engine.get_supervisor_dividend(emp.title_name, emp.position or '')
+        breakdown.supervisor_dividend = engine.get_supervisor_dividend(
+            emp.title_name, emp.position or '', emp.supervisor_role or ''
+        )
         # 時薪制：gross_salary 已由 calculate_salary() 正確設為 hourly_total，不可覆蓋
         if emp_dict.get('employee_type') != 'hourly':
             breakdown.gross_salary = (
@@ -454,6 +426,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
             emp_dict = {
                 "name": emp.name, "employee_id": emp.employee_id,
                 "employee_type": emp.employee_type, "position": emp.position,
+                "supervisor_role": emp.supervisor_role,
                 "title": emp.title, "base_salary": emp.base_salary,
                 "hourly_rate": emp.hourly_rate,
                 "supervisor_allowance": emp.supervisor_allowance,
@@ -468,7 +441,6 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                 ),
                 "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
                 "birthday": emp.birthday.isoformat() if emp.birthday else None,
-                "is_office_staff": emp.is_office_staff or False,
             }
 
             # 時薪制：從考勤記錄計算當月實際工時，以免 hourly_total 為 0
