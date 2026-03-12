@@ -24,6 +24,7 @@ from models.database import (
     SalaryRecord, EmployeeAllowance, AllowanceType, Attendance, OvertimeRecord,
 )
 from services.salary_engine import _compute_hourly_daily_hours
+from api.salary_fields import calculate_display_bonus_total, calculate_total_allowances
 
 logger = logging.getLogger(__name__)
 
@@ -802,20 +803,8 @@ def get_salary_history(
 
         results = []
         for r in records:
-            total_allowances = (
-                (r.supervisor_allowance or 0) +
-                (r.teacher_allowance or 0) +
-                (r.meal_allowance or 0) +
-                (r.transportation_allowance or 0) +
-                (r.other_allowance or 0)
-            )
-            total_bonus = (
-                (r.festival_bonus or 0) +
-                (r.overtime_bonus or 0) +
-                (r.performance_bonus or 0) +
-                (r.special_bonus or 0) +
-                (r.bonus_amount or 0)
-            )
+            total_allowances = calculate_total_allowances(r)
+            total_bonus = calculate_display_bonus_total(r)
             results.append({
                 "id": r.id,
                 "year": r.salary_year,

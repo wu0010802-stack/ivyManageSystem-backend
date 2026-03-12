@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 
 from models.database import get_session, Attendance, LeaveRecord, SalaryRecord
 from utils.auth import get_current_user
+from api.salary_fields import calculate_display_bonus_total, calculate_total_allowances
 from ._shared import _get_employee
 
 router = APIRouter()
@@ -68,20 +69,8 @@ def get_salary_preview(
         }
 
         if salary:
-            total_allowances = (
-                (salary.supervisor_allowance or 0) +
-                (salary.teacher_allowance or 0) +
-                (salary.meal_allowance or 0) +
-                (salary.transportation_allowance or 0) +
-                (salary.other_allowance or 0)
-            )
-            total_bonus = (
-                (salary.festival_bonus or 0) +
-                (salary.overtime_bonus or 0) +
-                (salary.performance_bonus or 0) +
-                (salary.special_bonus or 0) +
-                (salary.bonus_amount or 0)
-            )
+            total_allowances = calculate_total_allowances(salary)
+            total_bonus = calculate_display_bonus_total(salary)
             result["salary"] = {
                 "base_salary": salary.base_salary,
                 "supervisor_allowance": salary.supervisor_allowance or 0,

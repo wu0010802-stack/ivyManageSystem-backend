@@ -30,7 +30,7 @@ from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
     LeaveCreatePortal, LEAVE_TYPE_LABELS, SubstituteRespond,
 )
-from api.leaves import _check_overlap
+from api.leaves import _check_overlap, _check_substitute_leave_conflict
 from api.leaves_workday import _calc_shift_hours
 from api.leaves_quota import (
     _check_quota, _check_leave_limits, QUOTA_LEAVE_TYPES,
@@ -188,6 +188,14 @@ def create_my_leave(
         substitute_status = "not_required"
         if data.substitute_employee_id is not None:
             _validate_substitute(session, emp.id, data.substitute_employee_id)
+            _check_substitute_leave_conflict(
+                session,
+                data.substitute_employee_id,
+                data.start_date,
+                data.end_date,
+                data.start_time,
+                data.end_time,
+            )
             substitute_status = "pending"
 
         effective_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
@@ -584,7 +592,10 @@ def get_my_substitute_requests(
         emp = _get_employee(session, current_user)
         q = session.query(LeaveRecord, Employee).join(
             Employee, LeaveRecord.employee_id == Employee.id
-        ).filter(LeaveRecord.substitute_employee_id == emp.id)
+        ).filter(
+            LeaveRecord.substitute_employee_id == emp.id,
+            LeaveRecord.substitute_status != "waived",
+        )
 
         if status in ("pending", "accepted", "rejected"):
             q = q.filter(LeaveRecord.substitute_status == status)
@@ -606,5 +617,22 @@ def get_my_substitute_requests(
             "is_approved": lv.is_approved,
             "created_at": lv.created_at.isoformat() if lv.created_at else None,
         } for lv, requester in records]
+    finally:
+        session.close()
+
+
+@router.get("/substitute-pending-count")
+def get_substitute_pending_count(
+    current_user: dict = Depends(get_current_user),
+):
+    """取得待回應代理請求數量（用於 badge）"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        count = session.query(LeaveRecord).filter(
+            LeaveRecord.substitute_employee_id == emp.id,
+            LeaveRecord.substitute_status == "pending",
+        ).count()
+        return {"pending_count": count}
     finally:
         session.close()
