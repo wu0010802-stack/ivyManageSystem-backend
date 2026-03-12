@@ -107,8 +107,6 @@ ROLE_TEMPLATES: Dict[str, int] = {
     "teacher": (
         Permission.DASHBOARD |
         Permission.CALENDAR |
-        Permission.LEAVES_READ | Permission.LEAVES_WRITE |
-        Permission.OVERTIME_READ | Permission.OVERTIME_WRITE |
         Permission.ANNOUNCEMENTS_READ  # 教師僅可檢視公告
     ),
 }

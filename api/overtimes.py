@@ -19,7 +19,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import or_
 
 from models.database import get_session, Employee, OvertimeRecord, LeaveQuota, User, ApprovalPolicy, ApprovalLog
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -284,7 +284,7 @@ def get_overtimes(
     year: Optional[int] = None,
     month: Optional[int] = None,
     status: Optional[str] = None,  # pending, approved, rejected
-    current_user: dict = Depends(require_permission(Permission.OVERTIME_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_READ)),
 ):
     """查詢加班記錄"""
     session = get_session()
@@ -348,7 +348,7 @@ def get_overtimes(
 
 
 @router.post("/overtimes", status_code=201)
-def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
+def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE))):
     """新增加班記錄（自動計算加班費）"""
     session = get_session()
     try:
@@ -407,7 +407,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_p
 
 
 @router.put("/overtimes/{overtime_id}")
-def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
+def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE))):
     """更新加班記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
     session = get_session()
     try:
@@ -486,7 +486,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
 
 
 @router.delete("/overtimes/{overtime_id}")
-def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
+def delete_overtime(overtime_id: int, current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE))):
     """刪除加班記錄"""
     session = get_session()
     try:
@@ -501,7 +501,7 @@ def delete_overtime(overtime_id: int, current_user: dict = Depends(require_permi
 
 
 @router.put("/overtimes/{overtime_id}/approve")
-def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE))):
+def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str = "管理員", current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE))):
     """核准/駁回加班；核准後自動重算該員工當月薪資，補休模式核准後自動累積配額"""
     session = get_session()
     try:
@@ -581,7 +581,7 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
 @router.post("/overtimes/batch-approve")
 def batch_approve_overtimes(
     data: OvertimeBatchApproveRequest,
-    current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
     """批次核准/駁回加班。每筆獨立處理，補休配額只在逐筆成功後發放。"""
     succeeded = []
@@ -652,7 +652,7 @@ def batch_approve_overtimes(
 
 @router.get("/overtimes/import-template")
 def get_overtime_import_template(
-    current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
     """下載加班批次匯入 Excel 範本"""
     wb = Workbook()
@@ -695,7 +695,7 @@ def get_overtime_import_template(
 @router.post("/overtimes/import")
 async def import_overtimes(
     file: UploadFile = File(...),
-    current_user: dict = Depends(require_permission(Permission.OVERTIME_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
     """批次匯入加班申請（建立草稿加班單，is_approved=None，需後續人工審核）"""
     content = await file.read()

@@ -86,3 +86,46 @@ class TestApprovalSummaryTotal:
         leaves, overtimes, corrections = 7, 3, 1
         result = self._compute_total(leaves, overtimes, corrections)
         assert result == leaves + overtimes + corrections
+
+
+# ============================================================
+# student-attendance-summary 公式
+# ============================================================
+
+class TestStudentAttendanceSummary:
+    """驗證學生出勤摘要計算邏輯"""
+
+    @pytest.fixture(autouse=True)
+    def _import_builder(self):
+        from api.approvals import _build_student_attendance_summary
+        self.build_summary = _build_student_attendance_summary
+
+    def test_counts_are_aggregated_correctly(self):
+        summary = self.build_summary(20, {
+            "出席": 12,
+            "遲到": 2,
+            "缺席": 3,
+            "病假": 1,
+            "事假": 1,
+        })
+
+        assert summary["total_students"] == 20
+        assert summary["recorded_count"] == 19
+        assert summary["on_campus_count"] == 14
+        assert summary["leave_count"] == 2
+        assert summary["unmarked_count"] == 1
+
+    def test_rates_are_zero_when_no_students(self):
+        summary = self.build_summary(0, {})
+
+        assert summary["record_completion_rate"] == 0
+        assert summary["attendance_rate"] == 0
+
+    def test_unknown_statuses_are_ignored(self):
+        summary = self.build_summary(5, {
+            "出席": 3,
+            "早退": 99,
+        })
+
+        assert summary["recorded_count"] == 3
+        assert summary["unmarked_count"] == 2

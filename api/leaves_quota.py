@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 
 from models.database import get_session, Employee, LeaveRecord, LeaveQuota
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -379,7 +379,7 @@ def get_leave_quotas(
     employee_id: Optional[int] = None,
     year: Optional[int] = None,
     leave_type: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
 ):
     """查詢請假配額，含動態計算已使用、待審、剩餘時數"""
     if year is None:
@@ -401,7 +401,7 @@ def get_leave_quotas(
 def init_leave_quotas(
     employee_id: int,
     year: Optional[int] = None,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """
     依勞基法自動初始化（或重新計算）指定員工的年度配額。
@@ -474,7 +474,7 @@ def init_leave_quotas(
 def update_leave_quota(
     quota_id: int,
     data: QuotaUpdate,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """手動調整配額（例如主管核准額外特休）"""
     if data.total_hours < 0:
