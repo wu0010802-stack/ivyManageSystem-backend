@@ -35,6 +35,7 @@ from api.leaves_quota import (
     _check_quota,
 )
 from api.leaves_workday import workday_router
+from services.leave_policy import requires_supporting_document
 
 _UPLOAD_BASE = Path(__file__).resolve().parent.parent / "uploads" / "leave_attachments"
 
@@ -680,6 +681,11 @@ def approve_leave(
 
         warning = None
         if data.approved:
+            if requires_supporting_document(leave.start_date, leave.end_date) and not _parse_paths(leave.attachment_paths):
+                raise HTTPException(
+                    status_code=400,
+                    detail="請假超過 2 天需檢附證明附件後才能核准",
+                )
             # ── 代理人序列式守衛 ──────────────────────────────────────────────
             _check_substitute_guard(leave)
 
@@ -791,6 +797,8 @@ def batch_approve_leaves(
 
             if data.approved:
                 try:
+                    if requires_supporting_document(leave.start_date, leave.end_date) and not _parse_paths(leave.attachment_paths):
+                        raise HTTPException(status_code=400, detail="請假超過 2 天需檢附證明附件後才能核准")
                     # 代理人序列式守衛
                     _check_substitute_guard(leave)
                     _check_leave_limits(

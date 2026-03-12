@@ -16,9 +16,12 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from utils.errors import raise_safe_500
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
-from models.database import get_session, Employee, OvertimeRecord, LeaveQuota, User, ApprovalPolicy, ApprovalLog
+from models.database import (
+    get_session, Employee, OvertimeRecord, LeaveQuota, User,
+    ApprovalPolicy, ApprovalLog, LeaveRecord, SalaryRecord,
+)
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -49,11 +52,19 @@ OVERTIME_TYPE_LABELS = {
 WEEKDAY_FIRST_2H_RATE = 1.34   # 平日前 2 小時
 WEEKDAY_AFTER_2H_RATE = 1.67   # 平日第 3-4 小時
 WEEKDAY_THRESHOLD_HOURS = 2     # 平日倍率分界時數
-HOLIDAY_RATE = 2.0              # 假日 / 國定假日
+HOLIDAY_RATE = 2.0              # 例假日 / 國定假日
 DAILY_WORK_HOURS = 8            # 每日法定工時
 MONTHLY_BASE_DAYS = 30          # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
 # 單筆加班記錄的合法上限：勞基法假日最多可加班至 12 小時（正常 8H + 延長 4H）
 MAX_OVERTIME_HOURS = 12.0
+
+# 休息日（週休二日第一天）倍率常數（勞基法第24條第2項）
+RESTDAY_FIRST_2H_RATE  = 1.33   # 前 2 小時
+RESTDAY_MID_RATE       = 1.67   # 第 3-8 小時
+RESTDAY_AFTER_8H_RATE  = 2.67   # 超過 8 小時
+RESTDAY_FIRST_SEGMENT  = 2      # 第一分段上限
+RESTDAY_SECOND_SEGMENT = 8      # 第二分段上限
+RESTDAY_MIN_HOURS      = 2      # 最低計費時數（工作不足2h仍算2h）
 
 
 # ============ Helper Functions ============
@@ -90,6 +101,85 @@ def _write_approval_log(doc_type: str, doc_id: int, action: str, approver: dict,
         approver_role=approver.get("role", ""),
         comment=comment,
     ))
+
+
+def _check_salary_month_not_finalized(session, employee_id: int, overtime_date: date) -> None:
+    """避免修改已封存月份的已核准加班，造成薪資與原始資料不一致。"""
+    record = session.query(SalaryRecord).filter(
+        SalaryRecord.employee_id == employee_id,
+        SalaryRecord.salary_year == overtime_date.year,
+        SalaryRecord.salary_month == overtime_date.month,
+        SalaryRecord.is_finalized == True,
+    ).first()
+    if record:
+        by = record.finalized_by or "系統"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{overtime_date.year} 年 {overtime_date.month} 月薪資已封存（結算人：{by}），"
+                "無法修改該月份的已核准加班。請先解除封存後再操作。"
+            ),
+        )
+
+
+def _revoke_comp_leave_grant(session, ot: OvertimeRecord) -> None:
+    """撤銷已發放的補休配額，若補休已被使用則阻止回滾。"""
+    if not ot.use_comp_leave or not ot.comp_leave_granted:
+        return
+
+    year = ot.overtime_date.year
+    quota = session.query(LeaveQuota).filter(
+        LeaveQuota.employee_id == ot.employee_id,
+        LeaveQuota.year == year,
+        LeaveQuota.leave_type == "compensatory",
+    ).first()
+
+    if not quota:
+        ot.comp_leave_granted = False
+        logger.warning(
+            "補休回滾時找不到配額紀錄：員工 ID=%d, %d 年（加班 #%d）",
+            ot.employee_id, year, ot.id,
+        )
+        return
+
+    approved = float(
+        session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+            LeaveRecord.employee_id == ot.employee_id,
+            LeaveRecord.leave_type == "compensatory",
+            LeaveRecord.is_approved == True,
+            func.extract("year", LeaveRecord.start_date) == year,
+        ).scalar()
+    )
+    pending = float(
+        session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+            LeaveRecord.employee_id == ot.employee_id,
+            LeaveRecord.leave_type == "compensatory",
+            LeaveRecord.is_approved.is_(None),
+            func.extract("year", LeaveRecord.start_date) == year,
+        ).scalar()
+    )
+    committed = approved + pending
+    new_total = float(quota.total_hours or 0) - float(ot.hours or 0)
+
+    if new_total + 1e-9 < committed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"此筆加班已發放的補休 {ot.hours:.1f} 小時已有 {committed:.1f} 小時被使用或申請，"
+                "請先撤銷相關補休假單後再修改、刪除或駁回此加班申請"
+            ),
+        )
+
+    quota.total_hours = max(0.0, new_total)
+    ot.comp_leave_granted = False
+
+
+def _recalculate_salary_for_overtime_months(employee_id: int, months: set[tuple[int, int]]) -> None:
+    """重算受影響月份的薪資。"""
+    if _salary_engine is None:
+        return
+    for year, month in sorted(months):
+        _salary_engine.process_salary_calculation(employee_id, year, month)
 
 
 def _to_time(val) -> dt_time:
@@ -129,14 +219,30 @@ def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str)
     hourly_base = base_salary / MONTHLY_BASE_DAYS / DAILY_WORK_HOURS
 
     if overtime_type == "weekday":
+        # 平日：前2h × 1.34，超過 × 1.67
         if hours <= WEEKDAY_THRESHOLD_HOURS:
             return round(hourly_base * hours * WEEKDAY_FIRST_2H_RATE)
-        else:
+        return round(
+            hourly_base * WEEKDAY_THRESHOLD_HOURS * WEEKDAY_FIRST_2H_RATE
+            + hourly_base * (hours - WEEKDAY_THRESHOLD_HOURS) * WEEKDAY_AFTER_2H_RATE
+        )
+    elif overtime_type == "weekend":
+        # 休息日：最低計 2h，前2h × 1.33，3~8h × 1.67，超8h × 2.67
+        billable = max(hours, RESTDAY_MIN_HOURS)
+        if billable <= RESTDAY_FIRST_SEGMENT:
+            return round(hourly_base * billable * RESTDAY_FIRST_2H_RATE)
+        elif billable <= RESTDAY_SECOND_SEGMENT:
             return round(
-                hourly_base * WEEKDAY_THRESHOLD_HOURS * WEEKDAY_FIRST_2H_RATE
-                + hourly_base * (hours - WEEKDAY_THRESHOLD_HOURS) * WEEKDAY_AFTER_2H_RATE
+                hourly_base * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
+                + hourly_base * (billable - RESTDAY_FIRST_SEGMENT) * RESTDAY_MID_RATE
             )
+        return round(
+            hourly_base * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
+            + hourly_base * (RESTDAY_SECOND_SEGMENT - RESTDAY_FIRST_SEGMENT) * RESTDAY_MID_RATE
+            + hourly_base * (billable - RESTDAY_SECOND_SEGMENT) * RESTDAY_AFTER_8H_RATE
+        )
     else:
+        # 例假日 / 國定假日：全部 × 2.0
         return round(hourly_base * hours * HOLIDAY_RATE)
 
 
@@ -417,6 +523,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
 
         # 記錄修改前的核准狀態（供後續稽核退審判斷）
         was_approved = ot.is_approved == True
+        original_month = (ot.overtime_date.year, ot.overtime_date.month)
 
         # 先計算更新後的日期與時間（供重疊檢查使用）
         check_date = data.overtime_date or ot.overtime_date
@@ -442,6 +549,12 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
                     f"（ID: {overlap.id}，{overlap.overtime_date} {st}～{et}），請調整時段"
                 ),
             )
+
+        recalculation_months = {original_month, (check_date.year, check_date.month)}
+        if was_approved:
+            for year, month in recalculation_months:
+                _check_salary_month_not_finalized(session, ot.employee_id, date(year, month, 1))
+            _revoke_comp_leave_grant(session, ot)
 
         update_data = data.dict(exclude_unset=True)
         for key, value in update_data.items():
@@ -475,7 +588,16 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
         msg = "加班記錄已更新"
         if was_approved:
             msg += "；原核准狀態已自動退回「待審核」，請重新送審"
-        return {"message": msg, "overtime_pay": ot.overtime_pay, "reset_to_pending": was_approved}
+        result = {"message": msg, "overtime_pay": ot.overtime_pay, "reset_to_pending": was_approved}
+        if was_approved:
+            try:
+                _recalculate_salary_for_overtime_months(ot.employee_id, recalculation_months)
+                result["salary_recalculated"] = True
+            except Exception as e:
+                result["salary_recalculated"] = False
+                result["warning"] = "加班記錄已更新，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                logger.error("加班修改退審後薪資重算失敗：%s", e)
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -493,9 +615,24 @@ def delete_overtime(overtime_id: int, current_user: dict = Depends(require_staff
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
         if not ot:
             raise HTTPException(status_code=404, detail="加班記錄不存在")
+        was_approved = ot.is_approved is True
+        overtime_month = (ot.overtime_date.year, ot.overtime_date.month)
+        employee_id = ot.employee_id
+        if was_approved:
+            _check_salary_month_not_finalized(session, employee_id, ot.overtime_date)
+            _revoke_comp_leave_grant(session, ot)
         session.delete(ot)
         session.commit()
-        return {"message": "加班記錄已刪除"}
+        result = {"message": "加班記錄已刪除"}
+        if was_approved:
+            try:
+                _recalculate_salary_for_overtime_months(employee_id, {overtime_month})
+                result["salary_recalculated"] = True
+            except Exception as e:
+                result["salary_recalculated"] = False
+                result["warning"] = "加班記錄已刪除，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                logger.error("刪除加班後薪資重算失敗：%s", e)
+        return result
     finally:
         session.close()
 
@@ -508,6 +645,7 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
         if not ot:
             raise HTTPException(status_code=404, detail="加班記錄不存在")
+        was_approved = ot.is_approved is True
 
         # ── 角色資格檢查 ──────────────────────────────────────────────────────
         submitter_role = _get_submitter_role(ot.employee_id, session)
@@ -518,8 +656,13 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
                 detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的加班申請",
             )
 
+        if approved or was_approved:
+            _check_salary_month_not_finalized(session, ot.employee_id, ot.overtime_date)
+        if not approved and was_approved:
+            _revoke_comp_leave_grant(session, ot)
+
         ot.is_approved = approved
-        ot.approved_by = current_user.get("username", approved_by)
+        ot.approved_by = current_user.get("username", approved_by) if approved else None
 
         result = {"message": "已核准" if approved else "已駁回"}
 
@@ -553,20 +696,24 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
         _write_approval_log("overtime", overtime_id, action, current_user, None, session)
         session.commit()
 
-        # 核准後自動重算該員工當月薪資（補休模式加班費為 0，仍可重算確保一致性）
-        if approved and _salary_engine is not None:
+        # 核准或撤銷已核准狀態後都需要重算薪資
+        if (approved or was_approved) and _salary_engine is not None:
             try:
                 year = ot.overtime_date.year
                 month = ot.overtime_date.month
                 emp_id = ot.employee_id
                 _salary_engine.process_salary_calculation(emp_id, year, month)
                 result["salary_recalculated"] = True
-                result["message"] = "已核准，薪資已自動重算"
-                logger.info("加班核准後自動重算薪資：emp_id=%d, %d/%d", emp_id, year, month)
+                result["message"] = "已核准，薪資已自動重算" if approved else "已駁回，薪資已自動重算"
+                logger.info("加班審核後自動重算薪資：emp_id=%d, %d/%d", emp_id, year, month)
             except Exception as e:
                 result["salary_recalculated"] = False
-                result["warning"] = "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
-                logger.error("加班核准後薪資重算失敗：%s", e)
+                result["warning"] = (
+                    "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                    if approved else
+                    "已駁回，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                )
+                logger.error("加班審核後薪資重算失敗：%s", e)
 
         return result
     except HTTPException:
@@ -594,6 +741,7 @@ def batch_approve_overtimes(
             if not ot:
                 failed.append({"id": ot_id, "reason": "加班記錄不存在"})
                 continue
+            was_approved = ot.is_approved is True
 
             # 角色資格檢查（403 視為失敗條目，不中斷批次）
             submitter_role = _get_submitter_role(ot.employee_id, session)
@@ -604,6 +752,11 @@ def batch_approve_overtimes(
                     "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的加班申請",
                 })
                 continue
+
+            if data.approved or was_approved:
+                _check_salary_month_not_finalized(session, ot.employee_id, ot.overtime_date)
+            if not data.approved and was_approved:
+                _revoke_comp_leave_grant(session, ot)
 
             ot.is_approved = data.approved
             ot.approved_by = current_user.get("username", "管理員") if data.approved else None
@@ -632,7 +785,7 @@ def batch_approve_overtimes(
             _write_approval_log("overtime", ot_id, action, current_user, None, session)
             session.commit()
 
-            if data.approved and _salary_engine is not None:
+            if (data.approved or was_approved) and _salary_engine is not None:
                 try:
                     _salary_engine.process_salary_calculation(
                         ot.employee_id, ot.overtime_date.year, ot.overtime_date.month
