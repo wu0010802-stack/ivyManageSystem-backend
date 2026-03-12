@@ -96,7 +96,7 @@ OVERTIME_BONUS_PER_PERSON = {
     }
 }
 
-# 主管紅利（依職稱）
+# 主管紅利（依主管職）
 SUPERVISOR_DIVIDEND = {
     '園長': 5000,
     '主任': 4000,
@@ -104,7 +104,7 @@ SUPERVISOR_DIVIDEND = {
     '副組長': 1500
 }
 
-# 主管節慶獎金基數（依職稱）
+# 主管節慶獎金基數（依主管職）
 SUPERVISOR_FESTIVAL_BONUS = {
     '園長': 6500,
     '主任': 3500,

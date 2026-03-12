@@ -55,6 +55,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+OFFICIAL_JOB_TITLES = [
+    "園長",
+    "幼兒園教師",
+    "教保員",
+    "助理教保員",
+    "司機",
+    "廚工",
+    "職員",
+]
+
 
 def _is_production() -> bool:
     return os.environ.get("ENV", "development").lower() in ("production", "prod")
@@ -156,12 +166,29 @@ app.add_middleware(AuditMiddleware)
 def seed_job_titles():
     session = get_session()
     try:
-        if session.query(JobTitle).count() == 0:
-            defaults = ["園長", "主任", "組長", "副組長", "幼兒園教師", "教保員", "助理教保員", "行政", "司機", "廚工"]
-            for i, name in enumerate(defaults):
-                session.add(JobTitle(name=name, sort_order=i))
+        existing_titles = {jt.name: jt for jt in session.query(JobTitle).all()}
+        changed = False
+
+        for i, name in enumerate(OFFICIAL_JOB_TITLES, start=1):
+            job_title = existing_titles.get(name)
+            if job_title:
+                if not job_title.is_active or job_title.sort_order != i:
+                    job_title.is_active = True
+                    job_title.sort_order = i
+                    changed = True
+            else:
+                session.add(JobTitle(name=name, sort_order=i, is_active=True))
+                changed = True
+
+        official_set = set(OFFICIAL_JOB_TITLES)
+        for name, legacy_title in existing_titles.items():
+            if name not in official_set and legacy_title.is_active:
+                changed = True
+                legacy_title.is_active = False
+
+        if changed:
             session.commit()
-            logger.info("Seeded default job titles.")
+            logger.info("Job titles synced to official bureau list.")
     finally:
         session.close()
 

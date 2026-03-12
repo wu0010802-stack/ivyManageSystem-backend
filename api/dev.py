@@ -554,8 +554,12 @@ def debug_employee_salary(
 
         # Office / Supervisor context
         office_staff_context = None
-        is_supervisor = engine.get_supervisor_festival_bonus(title_name, emp.position) is not None
-        if is_supervisor or (emp.is_office_staff and not classroom_context):
+        supervisor_role = emp.supervisor_role or ''
+        is_supervisor = engine.get_supervisor_festival_bonus(
+            title_name, emp.position or '', supervisor_role
+        ) is not None
+        office_bonus_base = engine.get_office_festival_bonus_base(emp.position or '', title_name)
+        if is_supervisor or (office_bonus_base is not None and not classroom_context):
             total_students = session.query(Student).filter(Student.is_active == True).count()
             office_staff_context = {"school_enrollment": total_students}
 
@@ -578,7 +582,9 @@ def debug_employee_salary(
 
         # Festival bonus detail（與引擎一致：非發放月清零；發放月扣除會議缺席罰款）
         festival_detail = {}
-        supervisor_festival_base = engine.get_supervisor_festival_bonus(title_name, emp.position or '')
+        supervisor_festival_base = engine.get_supervisor_festival_bonus(
+            title_name, emp.position or '', supervisor_role
+        )
         if supervisor_festival_base is not None:
             school_enrollment = office_staff_context['school_enrollment'] if office_staff_context else 0
             school_target = engine._school_wide_target or 160
@@ -676,7 +682,9 @@ def debug_employee_salary(
                     festival_detail[key] = 0
 
         # Supervisor dividend
-        supervisor_dividend = engine.get_supervisor_dividend(title_name, emp.position or '') if emp.position else 0
+        supervisor_dividend = engine.get_supervisor_dividend(
+            title_name, emp.position or '', supervisor_role
+        )
         if bonus_forfeited_by_leave:
             supervisor_dividend = 0
 
@@ -767,10 +775,10 @@ def debug_employee_salary(
                 "name": emp.name,
                 "title": title_name,
                 "position": emp.position,
+                "supervisor_role": supervisor_role,
                 "employee_type": emp.employee_type,
                 "base_salary": base_sal,
                 "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
-                "is_office_staff": emp.is_office_staff,
                 "classroom_id": emp.classroom_id,
                 "insurance_salary_level": emp.insurance_salary_level,
                 "dependents": emp.dependents,

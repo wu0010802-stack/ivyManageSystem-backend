@@ -77,6 +77,20 @@ class TestSupervisorDividend:
         """position 參數優先於 title"""
         assert engine.get_supervisor_dividend('幼兒園教師', position='園長') == 5000
 
+    def test_supervisor_role_priority(self, engine):
+        """supervisor_role 應優先於教育局系統職稱與職位"""
+        assert engine.get_supervisor_dividend(
+            '幼兒園教師', position='班導', supervisor_role='主任'
+        ) == 4000
+
+
+class TestSupervisorFestivalBonus:
+
+    def test_supervisor_role_resolves_bonus_base(self, engine):
+        assert engine.get_supervisor_festival_bonus(
+            '教保員', position='班導', supervisor_role='組長'
+        ) == 2000
+
 
 # ──────────────────────────────────────────────
 # 節慶獎金資格

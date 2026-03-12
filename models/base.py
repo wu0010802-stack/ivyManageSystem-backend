@@ -161,6 +161,8 @@ def _run_migrations(engine):
 
     # employees — 節慶獎金等級覆蓋
     _add_column_if_missing(engine, inspector, "employees", "bonus_grade", "CHAR(1)")
+    # employees — 主管職
+    _add_column_if_missing(engine, inspector, "employees", "supervisor_role", "VARCHAR(20)")
     # employees — 勞退自提比例
     _add_column_if_missing(engine, inspector, "employees", "pension_self_rate", "FLOAT DEFAULT 0")
     # employees — 離職日期
