@@ -34,7 +34,6 @@ _BONUS_FIELDS = [
 
 _ATTENDANCE_FIELDS = [
     "default_work_start", "default_work_end",
-    "grace_minutes", "late_threshold",
     "late_deduction", "early_leave_deduction", "missing_punch_deduction",
     "festival_bonus_months", "effective_date",
 ]
@@ -81,8 +80,6 @@ class AttendancePolicyUpdate(BaseModel):
     """考勤政策更新"""
     default_work_start: Optional[str] = None
     default_work_end: Optional[str] = None
-    grace_minutes: Optional[int] = Field(None, ge=0)
-    late_threshold: Optional[int] = Field(None, ge=0)
     late_deduction: Optional[float] = Field(None, ge=0)
     early_leave_deduction: Optional[float] = Field(None, ge=0)
     missing_punch_deduction: Optional[float] = Field(None, ge=0)
@@ -174,6 +171,13 @@ class PositionSalaryUpdate(BaseModel):
     assistant_teacher_a: Optional[float] = Field(None, ge=0)
     assistant_teacher_b: Optional[float] = Field(None, ge=0)
     assistant_teacher_c: Optional[float] = Field(None, ge=0)
+    admin_staff: Optional[float] = Field(None, ge=0)
+    english_teacher: Optional[float] = Field(None, ge=0)
+    art_teacher: Optional[float] = Field(None, ge=0)
+    designer: Optional[float] = Field(None, ge=0)
+    nurse: Optional[float] = Field(None, ge=0)
+    driver: Optional[float] = Field(None, ge=0)
+    kitchen_staff: Optional[float] = Field(None, ge=0)
 
 
 class LineConfigRead(BaseModel):
@@ -206,8 +210,6 @@ def get_attendance_policy(current_user: dict = Depends(require_permission(Permis
             "id": policy.id,
             "default_work_start": policy.default_work_start,
             "default_work_end": policy.default_work_end,
-            "grace_minutes": policy.grace_minutes,
-            "late_threshold": policy.late_threshold,
             "late_deduction": policy.late_deduction,
             "early_leave_deduction": policy.early_leave_deduction,
             "missing_punch_deduction": policy.missing_punch_deduction,
@@ -563,8 +565,6 @@ def get_attendance_policy_history(current_user: dict = Depends(require_permissio
                 "created_at": p.created_at.isoformat() if p.created_at else None,
                 "default_work_start": p.default_work_start,
                 "default_work_end": p.default_work_end,
-                "grace_minutes": p.grace_minutes,
-                "late_threshold": p.late_threshold,
                 "festival_bonus_months": p.festival_bonus_months,
             }
             for p in policies
@@ -620,8 +620,6 @@ def get_all_configs(current_user: dict = Depends(require_permission(Permission.S
             attendance_policy = {
                 "default_work_start": policy.default_work_start,
                 "default_work_end": policy.default_work_end,
-                "grace_minutes": policy.grace_minutes,
-                "late_threshold": policy.late_threshold,
                 "late_deduction": policy.late_deduction,
                 "early_leave_deduction": policy.early_leave_deduction,
                 "missing_punch_deduction": policy.missing_punch_deduction,
@@ -864,6 +862,13 @@ async def get_position_salary(current_user: dict = Depends(require_permission(Pe
                 "assistant_teacher_a": 35240,
                 "assistant_teacher_b": 33000,
                 "assistant_teacher_c": 29500,
+                "admin_staff": 37160,
+                "english_teacher": 32500,
+                "art_teacher": 30000,
+                "designer": 30000,
+                "nurse": 29800,
+                "driver": 30000,
+                "kitchen_staff": 29700,
                 "version": 0,
                 "changed_by": None,
             }
@@ -875,6 +880,13 @@ async def get_position_salary(current_user: dict = Depends(require_permission(Pe
             "assistant_teacher_a": config.assistant_teacher_a,
             "assistant_teacher_b": config.assistant_teacher_b,
             "assistant_teacher_c": config.assistant_teacher_c,
+            "admin_staff": getattr(config, "admin_staff", 37160),
+            "english_teacher": getattr(config, "english_teacher", 32500),
+            "art_teacher": getattr(config, "art_teacher", 30000),
+            "designer": getattr(config, "designer", 30000),
+            "nurse": getattr(config, "nurse", 29800),
+            "driver": getattr(config, "driver", 30000),
+            "kitchen_staff": getattr(config, "kitchen_staff", 29700),
             "version": config.version,
             "changed_by": config.changed_by,
         }

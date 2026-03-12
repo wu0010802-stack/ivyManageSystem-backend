@@ -214,6 +214,15 @@ def _run_migrations(engine):
     _add_column_if_missing(engine, inspector, "students", "emergency_contact_phone",    "VARCHAR(20)")
     _add_column_if_missing(engine, inspector, "students", "emergency_contact_relation", "VARCHAR(20)")
 
+    # position_salary_configs — 新增其他職位底薪欄位
+    _add_column_if_missing(engine, inspector, "position_salary_configs", "admin_staff",       "FLOAT DEFAULT 37160")
+    _add_column_if_missing(engine, inspector, "position_salary_configs", "english_teacher",   "FLOAT DEFAULT 32500")
+    _add_column_if_missing(engine, inspector, "position_salary_configs", "art_teacher",       "FLOAT DEFAULT 30000")
+    _add_column_if_missing(engine, inspector, "position_salary_configs", "designer",          "FLOAT DEFAULT 30000")
+    _add_column_if_missing(engine, inspector, "position_salary_configs", "nurse",             "FLOAT DEFAULT 29800")
+    _add_column_if_missing(engine, inspector, "position_salary_configs", "driver",            "FLOAT DEFAULT 30000")
+    _add_column_if_missing(engine, inspector, "position_salary_configs", "kitchen_staff",     "FLOAT DEFAULT 29700")
+
     # daily_shifts — shift_type_id 改為允許 NULL（換班至無班的情境需要顯式標記排休）
     ds_cols = {c["name"]: c for c in inspector.get_columns("daily_shifts")}
     if not ds_cols.get("shift_type_id", {}).get("nullable", True):
