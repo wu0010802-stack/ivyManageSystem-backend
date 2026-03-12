@@ -152,7 +152,6 @@ def get_attendance_sheet(
         ).all()
         holiday_map = {h.date: h.name for h in holidays_query}
 
-        grace_minutes = 0
         days = []
         total_work_hours = 0.0
         work_hour_days = 0

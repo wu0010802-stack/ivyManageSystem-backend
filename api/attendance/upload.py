@@ -173,7 +173,6 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                         work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
                         work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
-                        grace_minutes = 0
 
                         is_late = False
                         is_early_leave = False
@@ -568,7 +567,6 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
 
                 work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
                 work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
-                grace_minutes = 0
 
                 is_late = False
                 is_early_leave = False

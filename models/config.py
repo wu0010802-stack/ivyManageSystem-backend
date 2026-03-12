@@ -21,9 +21,6 @@ class AttendancePolicy(Base):
 
     default_work_start = Column(String(5), default="08:00")
     default_work_end = Column(String(5), default="17:00")
-    grace_minutes = Column(Integer, default=5)
-
-    late_threshold = Column(Integer, default=2)
     late_deduction = Column(Float, default=50)
     early_leave_deduction = Column(Float, default=50)
     missing_punch_deduction = Column(Float, default=50)
@@ -108,7 +105,7 @@ class InsuranceRate(Base):
     version = Column(Integer, default=1, nullable=False, comment="版本號（每次更新遞增）")
     changed_by = Column(String(50), nullable=True, comment="最後修改人")
 
-    labor_rate = Column(Float, default=0.12)
+    labor_rate = Column(Float, default=0.125)
     labor_employee_ratio = Column(Float, default=0.20)
     labor_employer_ratio = Column(Float, default=0.70)
     labor_government_ratio = Column(Float, default=0.10)
@@ -119,7 +116,7 @@ class InsuranceRate(Base):
 
     pension_employer_rate = Column(Float, default=0.06)
 
-    average_dependents = Column(Float, default=0.57)
+    average_dependents = Column(Float, default=0.56)
 
     is_active = Column(Boolean, default=True)
 
@@ -138,6 +135,13 @@ class PositionSalaryConfig(Base):
     assistant_teacher_a = Column(Float, default=35240, comment="A 級副班導師標準底薪")
     assistant_teacher_b = Column(Float, default=33000, comment="B 級副班導師標準底薪")
     assistant_teacher_c = Column(Float, default=29500, comment="C 級副班導師標準底薪")
+    admin_staff = Column(Float, default=37160, comment="行政標準底薪")
+    english_teacher = Column(Float, default=32500, comment="美語老師標準底薪")
+    art_teacher = Column(Float, default=30000, comment="藝術老師標準底薪")
+    designer = Column(Float, default=30000, comment="美編標準底薪")
+    nurse = Column(Float, default=29800, comment="護理人員標準底薪")
+    driver = Column(Float, default=30000, comment="司機標準底薪")
+    kitchen_staff = Column(Float, default=29700, comment="廚房標準底薪")
     version = Column(Integer, default=1)
     changed_by = Column(String(50))
     created_at = Column(DateTime, server_default=func.now())

@@ -2,22 +2,148 @@
 Student attendance router — 學生每日出席紀錄
 """
 
+import calendar
 import logging
 from datetime import datetime, date as date_type
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
 from pydantic import BaseModel
 
-from models.database import get_session, Student, StudentAttendance
+from models.database import get_session, Student, StudentAttendance, Classroom
+from services.student_attendance_report import build_monthly_attendance_report
 from utils.auth import require_permission
 from utils.permissions import Permission
+from api.exports import (
+    SafeWorksheet, _sanitize_excel_value, _to_response,
+    THIN_BORDER, CENTER_ALIGN, TITLE_FONT,
+    _export_rate_limit, _write_header_row, _auto_width,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["student-attendance"])
 
 VALID_STATUSES = {"出席", "缺席", "病假", "事假", "遲到"}
+
+# ============ Export Helpers ============
+
+_STATUS_SHORT = {"出席": "出", "缺席": "缺", "病假": "病", "事假": "事", "遲到": "遲"}
+_WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
+_WEEKEND_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+
+
+def _fetch_class_data(session, classroom_id, year, month):
+    """查詢班級月報資料。"""
+    return build_monthly_attendance_report(session, classroom_id, year, month)
+
+
+def _write_class_sheet(ws_raw, report_data, year, month):
+    """將單班出席月報寫入 worksheet（橫向格式）。
+    回傳 (summary_dict, workday_count, student_count)。
+    """
+    ws = SafeWorksheet(ws_raw)
+    days = calendar.monthrange(year, month)[1]
+    classroom_name = report_data["classroom_name"]
+    workdays = report_data["school_days_count"]
+
+    total_cols = 2 + days + 6  # 學號 + 姓名 + 每天 + 6 個統計欄
+
+    # 第 1 列：標題（使用 raw ws，字串為我們自己產生，無注入風險）
+    ws._ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    tc = ws._ws.cell(row=1, column=1,
+                     value=f"班級：{classroom_name}  {year}年{month}月出席月報")
+    tc.font = TITLE_FONT
+    tc.alignment = CENTER_ALIGN
+
+    # 第 2 列：表頭
+    headers = ["學號", "姓名"]
+    for d in range(1, days + 1):
+        wd = date_type(year, month, d).weekday()
+        headers.append(f"{d}日({_WEEKDAY_NAMES[wd]})")
+    headers += ["出席", "缺席", "病假", "事假", "遲到", "未點名"]
+    _write_header_row(ws._ws, 2, headers)
+
+    # 週末欄表頭改灰底
+    for d in range(1, days + 1):
+        if date_type(year, month, d).weekday() >= 5:
+            ws._ws.cell(row=2, column=2 + d).fill = _WEEKEND_FILL
+
+    class_summary = {"出席": 0, "缺席": 0, "病假": 0, "事假": 0, "遲到": 0, "未點名": 0}
+
+    for row_idx, student in enumerate(report_data["students"], 3):
+        stu_counts = {key: student[key] for key in class_summary.keys()}
+        daily_map = {
+            date_type.fromisoformat(entry["date"]).day: entry
+            for entry in student["daily_records"]
+        }
+
+        # 學號、姓名：透過 SafeWorksheet 自動清理（防公式注入）
+        c = ws.cell(row=row_idx, column=1, value=student["student_no"])
+        c.border = THIN_BORDER
+        c = ws.cell(row=row_idx, column=2, value=student["name"])
+        c.border = THIN_BORDER
+
+        for d in range(1, days + 1):
+            col = 2 + d
+            day_meta = report_data["calendar_days"][d - 1]
+            daily_entry = daily_map.get(d)
+
+            if day_meta["is_weekend"] or day_meta["is_holiday"]:
+                holiday_label = day_meta["holiday_name"] or "-"
+                cell = ws._ws.cell(row=row_idx, column=col, value=holiday_label)
+                cell.fill = _WEEKEND_FILL
+            else:
+                status = daily_entry["status"] if daily_entry and daily_entry["is_school_day"] else None
+                if status:
+                    cell = ws._ws.cell(row=row_idx, column=col,
+                                       value=_STATUS_SHORT.get(status, status))
+                else:
+                    cell = ws._ws.cell(row=row_idx, column=col, value="")
+            cell.border = THIN_BORDER
+            cell.alignment = CENTER_ALIGN
+
+        for i, key in enumerate(["出席", "缺席", "病假", "事假", "遲到", "未點名"], 1):
+            cell = ws._ws.cell(row=row_idx, column=2 + days + i, value=stu_counts[key])
+            cell.border = THIN_BORDER
+            cell.alignment = CENTER_ALIGN
+            class_summary[key] += stu_counts[key]
+
+    _auto_width(ws._ws)
+    return class_summary, workdays, len(report_data["students"])
+
+
+def _write_summary_sheet(ws_raw, year, month, summary_rows):
+    """寫入全園摘要 sheet（每班一列）。"""
+    ws = SafeWorksheet(ws_raw)
+    headers = ["班級", "總人數", "應出勤天數", "出席", "缺席", "病假", "事假", "遲到", "未點名", "出席率"]
+
+    ws._ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    tc = ws._ws.cell(row=1, column=1, value=f"{year}年{month}月 全園出席摘要")
+    tc.font = TITLE_FONT
+    tc.alignment = CENTER_ALIGN
+
+    _write_header_row(ws._ws, 2, headers)
+
+    for row_idx, row in enumerate(summary_rows, 3):
+        total_possible = row["total_students"] * row["workdays"]
+        rate = (
+            f"{(row['出席'] + row['遲到']) / total_possible * 100:.1f}%"
+            if total_possible > 0 else "N/A"
+        )
+        values = [
+            row["name"], row["total_students"], row["workdays"],
+            row["出席"], row["缺席"], row["病假"], row["事假"], row["遲到"],
+            row["未點名"], rate,
+        ]
+        for col, val in enumerate(values, 1):
+            cell = ws._ws.cell(row=row_idx, column=col,
+                               value=_sanitize_excel_value(val) if isinstance(val, str) else val)
+            cell.border = THIN_BORDER
+
+    _auto_width(ws._ws)
 
 
 # ============ Pydantic Models ============
@@ -146,58 +272,79 @@ async def get_monthly_summary(
     month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
 ):
-    """取得班級整月出席統計（每位學生各狀態次數）"""
-    from calendar import monthrange
-    _, days_in_month = monthrange(year, month)
-    start = date_type(year, month, 1)
-    end = date_type(year, month, days_in_month)
-
+    """取得班級整月出席統計、出席率與連缺告警。"""
     session = get_session()
     try:
-        students = (
-            session.query(Student)
-            .filter(Student.classroom_id == classroom_id, Student.is_active == True)
-            .order_by(Student.student_id)
-            .all()
-        )
-        student_ids = [s.id for s in students]
+        return build_monthly_attendance_report(session, classroom_id, year, month)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        session.close()
 
-        records = (
-            session.query(StudentAttendance)
-            .filter(
-                StudentAttendance.student_id.in_(student_ids),
-                StudentAttendance.date >= start,
-                StudentAttendance.date <= end,
+
+@router.get("/student-attendance/export")
+def export_student_attendance(
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    classroom_id: Optional[int] = Query(None),
+    _rl=Depends(_export_rate_limit),
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+):
+    """匯出班級（或全園）月出席 Excel。
+    classroom_id 不傳時匯出全園（多 sheet + 摘要 sheet）。
+    """
+    session = get_session()
+    try:
+        if classroom_id is not None:
+            classrooms = (
+                session.query(Classroom)
+                .filter(Classroom.id == classroom_id, Classroom.is_active == True)
+                .all()
             )
-            .all()
+            if not classrooms:
+                raise HTTPException(status_code=404, detail="班級不存在")
+        else:
+            classrooms = (
+                session.query(Classroom)
+                .filter(Classroom.is_active == True)
+                .order_by(Classroom.name)
+                .all()
+            )
+
+        wb = Workbook()
+
+        if classroom_id is not None:
+            cr = classrooms[0]
+            report_data = _fetch_class_data(session, cr.id, year, month)
+            ws_raw = wb.active
+            ws_raw.title = cr.name[:31]
+            _write_class_sheet(ws_raw, report_data, year, month)
+            filename = f"{year}年{month}月_{cr.name}_出席月報.xlsx"
+        else:
+            summary_ws = wb.active
+            summary_ws.title = "全園摘要"
+            summary_rows = []
+
+            for cr in classrooms:
+                report_data = _fetch_class_data(session, cr.id, year, month)
+                sheet = wb.create_sheet(title=cr.name[:31])
+                class_summary, workdays, total_students = _write_class_sheet(
+                    sheet, report_data, year, month
+                )
+                summary_rows.append({
+                    "name": cr.name,
+                    "total_students": total_students,
+                    "workdays": workdays,
+                    **class_summary,
+                })
+
+            _write_summary_sheet(summary_ws, year, month, summary_rows)
+            filename = f"{year}年{month}月_全園出席月報.xlsx"
+
+        logger.info(
+            "學生出席月報匯出：year=%d month=%d classroom_id=%s operator=%s",
+            year, month, classroom_id, current_user.get("username"),
         )
-
-        # 統計各學生各狀態次數
-        counts: dict[int, dict[str, int]] = {s.id: {} for s in students}
-        for r in records:
-            counts[r.student_id][r.status] = counts[r.student_id].get(r.status, 0) + 1
-
-        result = []
-        for s in students:
-            c = counts[s.id]
-            result.append({
-                "student_id": s.id,
-                "student_no": s.student_id,
-                "name": s.name,
-                "出席": c.get("出席", 0),
-                "缺席": c.get("缺席", 0),
-                "病假": c.get("病假", 0),
-                "事假": c.get("事假", 0),
-                "遲到": c.get("遲到", 0),
-                "未點名": days_in_month - sum(c.values()),
-            })
-
-        return {
-            "year": year,
-            "month": month,
-            "classroom_id": classroom_id,
-            "days_in_month": days_in_month,
-            "students": result,
-        }
+        return _to_response(wb, filename)
     finally:
         session.close()

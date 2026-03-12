@@ -5,10 +5,10 @@ Data export router - Excel downloads for employees, students, attendance, calend
 import io
 import logging
 import calendar as cal_module
-from datetime import date, timedelta
+from datetime import date, timedelta, time
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.auth import require_permission
 from utils.permissions import Permission, has_permission
 from utils.rate_limit import SlidingWindowLimiter
@@ -723,5 +723,297 @@ def export_shifts(
 
         _auto_width(ws)
         return _to_response(wb, f"排班表_{week_date.isoformat()}.xlsx")
+    finally:
+        session.close()
+
+
+# ============ Employee Attendance (Personal Monthly Report) ============
+
+WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"]
+
+_ANOMALY_FILL = PatternFill(start_color="FFF0CC", end_color="FFF0CC", fill_type="solid")
+_ABSENT_FILL = PatternFill(start_color="FFE0E0", end_color="FFE0E0", fill_type="solid")
+_WEEKEND_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+_SUMMARY_FILL = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+_SUMMARY_FONT = Font(bold=True, size=11)
+
+
+def _calc_work_hours(att) -> float | None:
+    """依打卡時間計算工時（扣午休 1h），無完整打卡回傳 None"""
+    if not (att and att.punch_in_time and att.punch_out_time):
+        return None
+    total = (att.punch_out_time - att.punch_in_time).seconds / 3600
+    pi = att.punch_in_time.time() if hasattr(att.punch_in_time, 'time') else att.punch_in_time
+    po = att.punch_out_time.time() if hasattr(att.punch_out_time, 'time') else att.punch_out_time
+    lunch_s, lunch_e = time(12, 0), time(13, 0)
+    if pi < lunch_e and po > lunch_s:
+        overlap = (
+            (min(po.hour * 60 + po.minute, lunch_e.hour * 60 + lunch_e.minute)
+             - max(pi.hour * 60 + pi.minute, lunch_s.hour * 60 + lunch_s.minute))
+            / 60
+        )
+        total -= max(0, overlap)
+    return max(0, round(total, 1))
+
+
+@router.get("/employee-attendance")
+def export_employee_attendance(
+    _rl=Depends(_export_rate_limit),
+    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    employee_id: int = Query(...),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+):
+    """匯出指定員工的個人出勤月報 Excel（逐日打卡明細）"""
+    session = get_session()
+    try:
+        # 1. 員工基本資料
+        emp = session.query(Employee).filter(Employee.id == employee_id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="員工不存在")
+
+        job_title_name = ""
+        if emp.job_title_id:
+            jt = session.query(JobTitle).filter(JobTitle.id == emp.job_title_id).first()
+            if jt:
+                job_title_name = jt.name
+
+        classroom_name = ""
+        if emp.classroom_id:
+            cr = session.query(Classroom).filter(Classroom.id == emp.classroom_id).first()
+            if cr:
+                classroom_name = cr.name
+
+        _, last_day = cal_module.monthrange(year, month)
+        start = date(year, month, 1)
+        end = date(year, month, last_day)
+
+        # 2. 打卡記錄
+        att_records = session.query(Attendance).filter(
+            Attendance.employee_id == employee_id,
+            Attendance.attendance_date >= start,
+            Attendance.attendance_date <= end,
+        ).all()
+        att_map = {att.attendance_date: att for att in att_records}
+
+        # 3. 請假記錄（無論審核狀態）
+        leave_records = session.query(LeaveRecord).filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.start_date <= end,
+            LeaveRecord.end_date >= start,
+        ).all()
+        leave_map: dict = {}
+        for lv in leave_records:
+            d = max(lv.start_date, start)
+            lv_end = min(lv.end_date, end)
+            while d <= lv_end:
+                leave_map.setdefault(d, []).append(lv)
+                d += timedelta(days=1)
+
+        # 4. 加班記錄
+        ot_records = session.query(OvertimeRecord).filter(
+            OvertimeRecord.employee_id == employee_id,
+            OvertimeRecord.overtime_date >= start,
+            OvertimeRecord.overtime_date <= end,
+        ).all()
+        ot_map: dict = {}
+        for ot in ot_records:
+            ot_map.setdefault(ot.overtime_date, []).append(ot)
+
+        # 5. 國定假日
+        holiday_set = {
+            h.date for h in session.query(Holiday).filter(
+                Holiday.date >= start,
+                Holiday.date <= end,
+                Holiday.is_active.is_(True),
+            ).all()
+        }
+
+        # ---- 建立 Excel ----
+        wb = Workbook()
+        ws = _safe_ws(wb)
+        ws.title = f"{year}年{month}月出勤月報"
+
+        NUM_COLS = 14
+        last_col_letter = chr(ord('A') + NUM_COLS - 1)  # 'N'
+
+        # 列1: 標題
+        ws.merge_cells(f"A1:{last_col_letter}1")
+        ws["A1"] = f"{emp.name}  {year}年{month}月 出勤月報"
+        ws["A1"].font = Font(bold=True, size=14)
+        ws["A1"].alignment = CENTER_ALIGN
+
+        # 列2: 員工資訊
+        ws.merge_cells(f"A2:{last_col_letter}2")
+        info_parts = [f"工號: {emp.employee_id}"]
+        if job_title_name:
+            info_parts.append(f"職稱: {job_title_name}")
+        if classroom_name:
+            info_parts.append(f"所屬班級: {classroom_name}")
+        ws["A2"] = "  ".join(info_parts)
+        ws["A2"].font = Font(size=11)
+        ws["A2"].alignment = CENTER_ALIGN
+
+        # 列3: 欄位標頭（藍底白字）
+        headers = [
+            "日期", "星期", "假日", "上班打卡", "下班打卡",
+            "工時(h)", "狀態", "遲到(分)", "早退(分)",
+            "請假種類", "假時", "加班類型", "加班時數", "備註",
+        ]
+        _write_header_row(ws, 3, headers)
+
+        # ---- 逐日填資料 ----
+        # 統計摘要用
+        expected_workdays = 0
+        actual_workdays = 0
+        late_count = 0
+        late_total_min = 0
+        early_count = 0
+        missing_punch_count = 0
+        leave_day_count = 0
+        absent_count = 0
+
+        row_idx = 4
+        cur = start
+        while cur <= end:
+            is_weekend = cur.weekday() >= 5
+            is_holiday = cur in holiday_set
+            is_non_work = is_weekend or is_holiday
+
+            att = att_map.get(cur)
+            day_leaves = leave_map.get(cur, [])
+            day_ots = ot_map.get(cur, [])
+
+            # 打卡時間
+            punch_in_str = att.punch_in_time.strftime("%H:%M") if att and att.punch_in_time else ""
+            punch_out_str = att.punch_out_time.strftime("%H:%M") if att and att.punch_out_time else ""
+
+            # 工時
+            wh = _calc_work_hours(att)
+            work_hours_str = str(wh) if wh is not None else "-"
+
+            # 狀態
+            status_parts = []
+            if att:
+                if att.is_late:
+                    status_parts.append("遲到")
+                if att.is_early_leave:
+                    status_parts.append("早退")
+                if att.is_missing_punch_in:
+                    status_parts.append("缺卡(上)")
+                if att.is_missing_punch_out:
+                    status_parts.append("缺卡(下)")
+            status_str = "、".join(status_parts) if status_parts else ("正常" if att else "")
+
+            late_min = att.late_minutes or 0 if att and att.is_late else 0
+            early_min = att.early_leave_minutes or 0 if att and att.is_early_leave else 0
+
+            # 請假
+            leave_str = "、".join(LEAVE_TYPE_LABELS.get(lv.leave_type, lv.leave_type) for lv in day_leaves)
+            leave_hours_val = sum(lv.leave_hours or 0 for lv in day_leaves)
+            leave_hours_str = f"{leave_hours_val}h" if day_leaves else ""
+
+            # 加班
+            ot_str = "、".join(OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type) for ot in day_ots)
+            ot_hours_val = sum(ot.hours or 0 for ot in day_ots)
+            ot_hours_str = str(ot_hours_val) if day_ots else ""
+
+            # 備註
+            remark = att.remark if att and hasattr(att, 'remark') and att.remark else ""
+
+            row_values = [
+                cur.isoformat(),
+                WEEKDAY_LABELS[cur.weekday()],
+                "假日" if is_holiday else ("週末" if is_weekend else ""),
+                punch_in_str,
+                punch_out_str,
+                work_hours_str,
+                status_str,
+                late_min if late_min else "",
+                early_min if early_min else "",
+                leave_str,
+                leave_hours_str,
+                ot_str,
+                ot_hours_str,
+                remark,
+            ]
+
+            for col, val in enumerate(row_values, 1):
+                cell = ws.cell(row=row_idx, column=col, value=val)
+                cell.border = THIN_BORDER
+
+            # 列背景色
+            if is_non_work:
+                fill = _WEEKEND_FILL
+            elif att and (att.is_late or att.is_early_leave or att.is_missing_punch_in or att.is_missing_punch_out):
+                fill = _ANOMALY_FILL
+            elif not att and not day_leaves and not is_non_work:
+                fill = _ABSENT_FILL
+            else:
+                fill = None
+
+            if fill:
+                for col in range(1, NUM_COLS + 1):
+                    ws._ws.cell(row=row_idx, column=col).fill = fill
+
+            # 統計累計
+            if not is_non_work:
+                expected_workdays += 1
+                if att:
+                    actual_workdays += 1
+                    if att.is_late:
+                        late_count += 1
+                        late_total_min += att.late_minutes or 0
+                    if att.is_early_leave:
+                        early_count += 1
+                    if att.is_missing_punch_in or att.is_missing_punch_out:
+                        missing_punch_count += 1
+                if day_leaves and not att:
+                    leave_day_count += 1
+                elif day_leaves and att:
+                    # 有請假也有出勤，計為請假
+                    leave_day_count += 1
+                    actual_workdays -= 1  # 避免重複計入
+                if not att and not day_leaves:
+                    absent_count += 1
+
+            row_idx += 1
+            cur += timedelta(days=1)
+
+        # ---- 摘要列（綠底）----
+        ws.merge_cells(f"A{row_idx}:B{row_idx}")
+        summary_label_cell = ws._ws.cell(row=row_idx, column=1, value="摘要")
+        summary_label_cell.font = _SUMMARY_FONT
+        summary_label_cell.border = THIN_BORDER
+
+        summary_values = [
+            expected_workdays, actual_workdays, late_count, late_total_min,
+            early_count, missing_punch_count, leave_day_count, absent_count,
+        ]
+        summary_labels = [
+            "應出勤天數", "實際出勤", "遲到次數", "遲到總分鐘",
+            "早退次數", "缺卡次數", "請假天數", "曠職天數",
+        ]
+        for col_offset, (label, val) in enumerate(zip(summary_labels, summary_values)):
+            # 每個摘要佔一格（從 col 3 開始）
+            col = 3 + col_offset
+            if col > NUM_COLS:
+                break
+            cell_label = ws._ws.cell(row=row_idx, column=col, value=f"{label}: {val}")
+            cell_label.font = _SUMMARY_FONT
+            cell_label.border = THIN_BORDER
+            cell_label.fill = _SUMMARY_FILL
+
+        # 摘要前兩格也加綠底
+        for col in range(1, 3):
+            ws._ws.cell(row=row_idx, column=col).fill = _SUMMARY_FILL
+
+        _auto_width(ws)
+
+        logger.info(
+            "個人出勤月報匯出：emp=%s(%s) year=%d month=%d operator=%s",
+            emp.employee_id, emp.name, year, month, current_user.get("username", "?"),
+        )
+        return _to_response(wb, f"{year}年{month}月_{emp.name}_出勤月報.xlsx")
     finally:
         session.close()

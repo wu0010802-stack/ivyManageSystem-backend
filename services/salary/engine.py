@@ -94,9 +94,8 @@ class SalaryEngine:
         self._meeting_pay = DEFAULT_MEETING_PAY
         self._meeting_pay_6pm = DEFAULT_MEETING_PAY_6PM
         self._meeting_absence_penalty = DEFAULT_MEETING_ABSENCE_PENALTY
-        # 考勤政策設定（無寬限期）
+        # 考勤政策設定
         self._attendance_policy = {
-            'grace_minutes': 0,
             'late_per_minute': 1,
             'early_per_minute': 1,
             'missing_punch_deduction': 0,
@@ -117,7 +116,6 @@ class SalaryEngine:
             if policy:
                 self._attendance_policy_id = policy.id  # 記錄版本 ID
                 self._attendance_policy = {
-                    'grace_minutes': policy.grace_minutes,
                     'late_per_minute': getattr(policy, 'late_per_minute', 1) or 1,
                     'early_per_minute': getattr(policy, 'early_per_minute', 1) or 1,
                     'missing_punch_deduction': 0,

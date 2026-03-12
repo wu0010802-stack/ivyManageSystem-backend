@@ -3,16 +3,20 @@ Portal - 教師學生點名端點
 """
 
 import logging
-from datetime import datetime, date as date_type
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from openpyxl import Workbook
 from pydantic import BaseModel
 
 from models.database import get_session, Student, StudentAttendance
+from services.student_attendance_report import build_monthly_attendance_report
 from utils.auth import get_current_user
 from ._shared import _get_employee
 from .incidents import _get_teacher_classroom_ids
+from api.exports import _export_rate_limit, _to_response
+from api.student_attendance import _fetch_class_data, _write_class_sheet
 
 logger = logging.getLogger(__name__)
 
@@ -174,13 +178,7 @@ def get_my_class_attendance_monthly(
     month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(get_current_user),
 ):
-    """教師取得班級整月出席統計"""
-    from calendar import monthrange
-
-    _, days_in_month = monthrange(year, month)
-    start = date_type(year, month, 1)
-    end = date_type(year, month, days_in_month)
-
+    """教師取得班級整月出席統計、出席率與連缺告警。"""
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
@@ -189,49 +187,47 @@ def get_my_class_attendance_monthly(
         if classroom_id not in classroom_ids:
             raise HTTPException(status_code=403, detail="無權查看此班級的統計資料")
 
-        students = (
-            session.query(Student)
-            .filter(Student.classroom_id == classroom_id, Student.is_active == True)
-            .order_by(Student.student_id)
-            .all()
+        return build_monthly_attendance_report(session, classroom_id, year, month)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        session.close()
+
+
+@router.get("/my-class-attendance/export")
+def export_my_class_attendance(
+    classroom_id: int = Query(...),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    _rl=Depends(_export_rate_limit),
+    current_user: dict = Depends(get_current_user),
+):
+    """教師匯出自己班級的月出席 Excel。"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
+
+        if classroom_id not in classroom_ids:
+            raise HTTPException(status_code=403, detail="無權匯出此班級的出席資料")
+
+        # 取得班級名稱（供 sheet 標題使用）
+        from models.database import Classroom
+        cr = session.query(Classroom).filter(Classroom.id == classroom_id).first()
+        classroom_name = cr.name if cr else str(classroom_id)
+
+        report_data = _fetch_class_data(session, classroom_id, year, month)
+
+        wb = Workbook()
+        ws_raw = wb.active
+        ws_raw.title = classroom_name[:31]
+        _write_class_sheet(ws_raw, report_data, year, month)
+
+        logger.info(
+            "教師匯出學生出席月報：emp=%s classroom_id=%d year=%d month=%d",
+            emp.name, classroom_id, year, month,
         )
-        student_ids = [s.id for s in students]
-
-        records = (
-            session.query(StudentAttendance)
-            .filter(
-                StudentAttendance.student_id.in_(student_ids),
-                StudentAttendance.date >= start,
-                StudentAttendance.date <= end,
-            )
-            .all()
-        )
-
-        counts: dict[int, dict[str, int]] = {s.id: {} for s in students}
-        for r in records:
-            counts[r.student_id][r.status] = counts[r.student_id].get(r.status, 0) + 1
-
-        result = []
-        for s in students:
-            c = counts[s.id]
-            result.append({
-                "student_id": s.id,
-                "student_no": s.student_id,
-                "name": s.name,
-                "出席": c.get("出席", 0),
-                "缺席": c.get("缺席", 0),
-                "病假": c.get("病假", 0),
-                "事假": c.get("事假", 0),
-                "遲到": c.get("遲到", 0),
-                "未點名": days_in_month - sum(c.values()),
-            })
-
-        return {
-            "year": year,
-            "month": month,
-            "classroom_id": classroom_id,
-            "days_in_month": days_in_month,
-            "students": result,
-        }
+        filename = f"{year}年{month}月_{classroom_name}_出席月報.xlsx"
+        return _to_response(wb, filename)
     finally:
         session.close()
