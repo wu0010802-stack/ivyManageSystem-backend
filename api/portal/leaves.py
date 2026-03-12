@@ -32,7 +32,11 @@ from ._shared import (
 )
 from api.leaves import _check_overlap
 from api.leaves_workday import _calc_shift_hours
-from api.leaves_quota import _check_quota, _check_leave_limits, QUOTA_LEAVE_TYPES, STATUTORY_QUOTA_HOURS
+from api.leaves_quota import (
+    _check_quota, _check_leave_limits, QUOTA_LEAVE_TYPES,
+    STATUTORY_QUOTA_HOURS, LEAVE_DEDUCTION_RULES,
+)
+from services.leave_policy import validate_portal_leave_rules
 
 router = APIRouter()
 
@@ -149,6 +153,15 @@ def create_my_leave(
             raise HTTPException(status_code=400, detail="請假時數至少 0.5 小時")
         if round(data.leave_hours * 2) != data.leave_hours * 2:
             raise HTTPException(status_code=400, detail="請假時數必須為 0.5 小時的倍數（如 0.5、1、1.5、2…）")
+        try:
+            validate_portal_leave_rules(
+                data.leave_type,
+                data.start_date,
+                data.end_date,
+                data.leave_hours,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
         # 重疊偵測（含時段精確比對，僅封鎖已核准的假單，待審核可並存）
         overlap = _check_overlap(
@@ -177,6 +190,7 @@ def create_my_leave(
             _validate_substitute(session, emp.id, data.substitute_employee_id)
             substitute_status = "pending"
 
+        effective_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
         leave = LeaveRecord(
             employee_id=emp.id,
             leave_type=data.leave_type,
@@ -185,6 +199,8 @@ def create_my_leave(
             start_time=data.start_time,
             end_time=data.end_time,
             leave_hours=data.leave_hours,
+            is_deductible=effective_ratio > 0,
+            deduction_ratio=effective_ratio,
             reason=data.reason,
             is_approved=None,
             substitute_employee_id=data.substitute_employee_id,

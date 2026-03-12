@@ -24,7 +24,7 @@ from models.database import (
     get_session, Employee, LeaveRecord, LeaveQuota,
     SalaryRecord, User, ApprovalPolicy, ApprovalLog,
 )
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check
 from api.leaves_quota import (
@@ -35,6 +35,7 @@ from api.leaves_quota import (
     _check_quota,
 )
 from api.leaves_workday import workday_router
+from services.leave_policy import requires_supporting_document
 
 _UPLOAD_BASE = Path(__file__).resolve().parent.parent / "uploads" / "leave_attachments"
 
@@ -316,7 +317,7 @@ def get_leaves(
     year: Optional[int] = None,
     month: Optional[int] = None,
     status: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
 ):
     """查詢請假記錄"""
     session = get_session()
@@ -425,7 +426,7 @@ def get_leaves(
 # ── 請假記錄 CRUD ──────────────────────────────────────────────
 
 @router.post("/leaves", status_code=201)
-def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE))):
+def create_leave(data: LeaveCreate, current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE))):
     """新增請假記錄"""
     session = get_session()
     try:
@@ -481,7 +482,7 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_permiss
 
 
 @router.put("/leaves/{leave_id}")
-def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE))):
+def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE))):
     """更新請假記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
     session = get_session()
     try:
@@ -605,7 +606,7 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
 
 
 @router.delete("/leaves/{leave_id}")
-def delete_leave(leave_id: int, current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE))):
+def delete_leave(leave_id: int, current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE))):
     """刪除請假記錄"""
     session = get_session()
     try:
@@ -658,7 +659,7 @@ class LeaveBatchApproveRequest(BaseModel):
 def approve_leave(
     leave_id: int,
     data: ApproveRequest,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """核准/駁回請假。駁回時 rejection_reason 為必填。"""
     if not data.approved and not (data.rejection_reason or "").strip():
@@ -680,6 +681,11 @@ def approve_leave(
 
         warning = None
         if data.approved:
+            if requires_supporting_document(leave.start_date, leave.end_date) and not _parse_paths(leave.attachment_paths):
+                raise HTTPException(
+                    status_code=400,
+                    detail="請假超過 2 天需檢附證明附件後才能核准",
+                )
             # ── 代理人序列式守衛 ──────────────────────────────────────────────
             _check_substitute_guard(leave)
 
@@ -762,7 +768,7 @@ def approve_leave(
 @router.post("/leaves/batch-approve")
 def batch_approve_leaves(
     data: LeaveBatchApproveRequest,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """批次核准/駁回請假。每筆獨立處理，不因單筆失敗而中止，回傳成功/失敗清單。"""
     if not data.approved and not (data.rejection_reason or "").strip():
@@ -791,6 +797,8 @@ def batch_approve_leaves(
 
             if data.approved:
                 try:
+                    if requires_supporting_document(leave.start_date, leave.end_date) and not _parse_paths(leave.attachment_paths):
+                        raise HTTPException(status_code=400, detail="請假超過 2 天需檢附證明附件後才能核准")
                     # 代理人序列式守衛
                     _check_substitute_guard(leave)
                     _check_leave_limits(
@@ -880,7 +888,7 @@ def _lv_write_header(ws, row, headers):
 
 @router.get("/leaves/import-template")
 def get_leave_import_template(
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """下載請假批次匯入 Excel 範本"""
     wb = Workbook()
@@ -911,7 +919,7 @@ def get_leave_import_template(
 @router.post("/leaves/import")
 async def import_leaves(
     file: UploadFile = File(...),
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """批次匯入請假申請（建立草稿假單，is_approved=None，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
@@ -1015,7 +1023,7 @@ async def import_leaves(
 def get_leave_attachment(
     leave_id: int,
     filename: str,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
 ):
     """取得假單附件（管理後台）"""
     session = get_session()

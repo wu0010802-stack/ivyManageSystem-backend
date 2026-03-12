@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 
 from models.database import get_session, Employee, LeaveRecord, LeaveQuota
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,9 @@ LEAVE_DEDUCTION_RULES: dict[str, float] = {
     "family_care": 1.0,        # 家庭照顧假: 不給薪（併入事假）
     "parental_unpaid": 0.0,    # 育嬰留職停薪: 不扣（留停期間無薪）
     "compensatory": 0.0,       # 補休：不扣薪
+    "occupational_injury": 0.0, # 公傷病假：不扣薪
+    "pregnancy_rest": 0.5,     # 安胎休養：依病假規定辦理
+    "typhoon": 1.0,            # 颱風假：依勞基法可不給薪
 }
 
 LEAVE_TYPE_LABELS: dict[str, str] = {
@@ -58,6 +61,9 @@ LEAVE_TYPE_LABELS: dict[str, str] = {
     "family_care": "家庭照顧假",
     "parental_unpaid": "育嬰留職停薪",
     "compensatory": "補休",
+    "occupational_injury": "公傷病假",
+    "pregnancy_rest": "安胎休養假",
+    "typhoon": "颱風假",
 }
 
 # 有年度上限的假別（其餘為事件型，不追蹤）
@@ -379,7 +385,7 @@ def get_leave_quotas(
     employee_id: Optional[int] = None,
     year: Optional[int] = None,
     leave_type: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
 ):
     """查詢請假配額，含動態計算已使用、待審、剩餘時數"""
     if year is None:
@@ -401,7 +407,7 @@ def get_leave_quotas(
 def init_leave_quotas(
     employee_id: int,
     year: Optional[int] = None,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """
     依勞基法自動初始化（或重新計算）指定員工的年度配額。
@@ -474,7 +480,7 @@ def init_leave_quotas(
 def update_leave_quota(
     quota_id: int,
     data: QuotaUpdate,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """手動調整配額（例如主管核准額外特休）"""
     if data.total_hours < 0:

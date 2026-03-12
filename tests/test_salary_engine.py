@@ -1646,3 +1646,62 @@ class TestGradeFromTitle:
         )
         # bonus_grade=None → title='助理教保員'（C 級）→ 班導 C 基數 1500
         assert breakdown.festival_bonus == 1500
+
+
+# ──────────────────────────────────────────────
+# 加班費倍率（calculate_overtime_pay）
+# ──────────────────────────────────────────────
+class TestCalculateOvertimePay:
+    """依勞基法各假日類型加班費倍率驗證"""
+
+    def test_weekday_first_2h(self):
+        """平日2小時：× 1.34"""
+        from api.overtimes import calculate_overtime_pay
+        hourly = 30000 / 30 / 8
+        assert calculate_overtime_pay(30000, 2, 'weekday') == round(hourly * 2 * 1.34)
+
+    def test_weekday_beyond_2h(self):
+        """平日4小時：前2h ×1.34 + 後2h ×1.67"""
+        from api.overtimes import calculate_overtime_pay
+        hourly = 30000 / 30 / 8
+        expected = round(hourly * 2 * 1.34 + hourly * 2 * 1.67)
+        assert calculate_overtime_pay(30000, 4, 'weekday') == expected
+
+    def test_weekend_min_billing(self):
+        """休息日工作0.5h，最低計2h費用"""
+        from api.overtimes import calculate_overtime_pay
+        hourly = 30000 / 30 / 8
+        expected = round(hourly * 2 * 1.33)
+        assert calculate_overtime_pay(30000, 0.5, 'weekend') == expected
+
+    def test_weekend_within_2h(self):
+        """休息日2小時：× 1.33"""
+        from api.overtimes import calculate_overtime_pay
+        hourly = 30000 / 30 / 8
+        expected = round(hourly * 2 * 1.33)
+        assert calculate_overtime_pay(30000, 2, 'weekend') == expected
+
+    def test_weekend_mid_range(self):
+        """休息日4小時：前2h ×1.33 + 後2h ×1.67"""
+        from api.overtimes import calculate_overtime_pay
+        hourly = 30000 / 30 / 8
+        expected = round(hourly * 2 * 1.33 + hourly * 2 * 1.67)
+        assert calculate_overtime_pay(30000, 4, 'weekend') == expected
+
+    def test_weekend_beyond_8h(self):
+        """休息日10小時：前2h ×1.33 + 6h ×1.67 + 2h ×2.67"""
+        from api.overtimes import calculate_overtime_pay
+        hourly = 30000 / 30 / 8
+        expected = round(
+            hourly * 2 * 1.33
+            + hourly * 6 * 1.67
+            + hourly * 2 * 2.67
+        )
+        assert calculate_overtime_pay(30000, 10, 'weekend') == expected
+
+    def test_holiday_flat_rate(self):
+        """例假日4小時：全部 ×2.0"""
+        from api.overtimes import calculate_overtime_pay
+        hourly = 30000 / 30 / 8
+        expected = round(hourly * 4 * 2.0)
+        assert calculate_overtime_pay(30000, 4, 'holiday') == expected

@@ -10,12 +10,18 @@ from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
 from models.database import get_session, ApprovalPolicy, ApprovalLog
-from utils.auth import require_permission
-from utils.permissions import Permission
+from utils.auth import get_current_user, require_staff_permission
+from utils.permissions import Permission, has_permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["approval-settings"])
+
+DOC_TYPE_PERMISSIONS = {
+    "leave": Permission.LEAVES_READ,
+    "overtime": Permission.OVERTIME_READ,
+    "punch_correction": Permission.APPROVALS,
+}
 
 # 預設審核矩陣（申請人角色 → 可審核角色）
 DEFAULT_POLICIES = [
@@ -50,7 +56,7 @@ class PolicyUpdateRequest(BaseModel):
 
 @router.get("/approval-settings/policies")
 def get_approval_policies(
-    current_user: dict = Depends(require_permission(Permission.SETTINGS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
     """查詢全部審核政策（需 SETTINGS_READ 權限）"""
     session = get_session()
@@ -73,7 +79,7 @@ def get_approval_policies(
 @router.put("/approval-settings/policies")
 def update_approval_policies(
     body: PolicyUpdateRequest,
-    current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     """批次更新審核政策（需 SETTINGS_WRITE / admin 權限）"""
     # 只有 admin 可以修改審核政策
@@ -132,9 +138,22 @@ def update_approval_policies(
 def get_approval_logs(
     doc_type: Optional[str] = Query(None, description="leave / overtime / punch_correction"),
     doc_id: Optional[int] = Query(None),
-    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+    current_user: dict = Depends(get_current_user),
 ):
     """查詢簽核記錄（需 LEAVES_READ 或 OVERTIME_READ 權限）"""
+    if current_user.get("role") == "teacher":
+        raise HTTPException(status_code=403, detail="教師帳號不可直接存取管理端 API")
+    if current_user.get("role") != "admin" and not doc_type:
+        raise HTTPException(status_code=400, detail="非管理員查詢簽核紀錄時必須指定 doc_type")
+
+    if doc_type and doc_type not in DOC_TYPE_PERMISSIONS:
+        raise HTTPException(status_code=400, detail="doc_type 僅接受 leave、overtime、punch_correction")
+
+    if doc_type and current_user.get("role") != "admin":
+        user_permissions = current_user.get("permissions", 0)
+        if not has_permission(user_permissions, DOC_TYPE_PERMISSIONS[doc_type]):
+            raise HTTPException(status_code=403, detail="您沒有此簽核類型的查詢權限")
+
     session = get_session()
     try:
         q = session.query(ApprovalLog)

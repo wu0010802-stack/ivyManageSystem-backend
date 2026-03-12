@@ -13,7 +13,7 @@ from models.database import (
     get_session,
     ShiftAssignment, ShiftType, DailyShift, Holiday, AttendancePolicy,
 )
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def get_workday_hours(
     employee_id: int,
     start_date: date,
     end_date: date,
-    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
 ):
     """
     計算員工在指定日期區間每日工作時數，整合：

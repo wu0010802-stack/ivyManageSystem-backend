@@ -9,7 +9,7 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,10 @@ JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 15          # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
 JWT_REFRESH_GRACE_HOURS = 2   # 過期後仍允許刷新的寬限時間（2 小時）；搭配 token_version 機制，帳號停用後舊 token 立即失效
+_PASSWORD_CHANGE_ALLOWED_PATHS = {
+    "/api/auth/change-password",
+    "/api/auth/logout",
+}
 
 # ── 密碼雜湊參數 ───────────────────────────────────────────────────────────
 # OWASP 2023 建議：PBKDF2-HMAC-SHA256 至少 600,000 次迭代
@@ -179,6 +183,24 @@ async def get_current_user(request: Request):
     if not token:
         raise HTTPException(status_code=401, detail="未提供認證 Token")
     payload = decode_token(token)
+    user_id = payload.get("user_id")
+    if user_id is None:
+        return payload
+
+    from models.database import get_session, User
+
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="使用者已停用或不存在")
+        if payload.get("token_version", 0) != (user.token_version or 0):
+            raise HTTPException(status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）")
+        if user.must_change_password and request.url.path not in _PASSWORD_CHANGE_ALLOWED_PATHS:
+            raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
+        payload["must_change_password"] = bool(user.must_change_password)
+    finally:
+        session.close()
     return payload
 
 
@@ -207,3 +229,14 @@ def require_permission(permission):
         return current_user
 
     return check_permission
+
+
+def require_staff_permission(permission):
+    """限制管理端 API 僅供非 teacher 角色使用，並保留既有 permission 檢查。"""
+
+    async def check_staff_permission(current_user: dict = Depends(require_permission(permission))):
+        if current_user.get("role") == "teacher":
+            raise HTTPException(status_code=403, detail="教師帳號不可直接存取管理端 API")
+        return current_user
+
+    return check_staff_permission

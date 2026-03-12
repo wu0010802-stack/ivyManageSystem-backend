@@ -318,6 +318,8 @@ def refresh_token(request: Request):
         user = session.query(User).filter(User.id == user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
+        if user.must_change_password:
+            raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
 
         # 驗證 token_version：帳號停用或權限變更時版本遞增，使舊 token 無法換發
         # payload 缺少 token_version（舊 token 向下相容）時視為 0，與 DB 預設值相符

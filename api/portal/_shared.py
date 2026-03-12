@@ -35,6 +35,9 @@ LEAVE_TYPE_LABELS = {
     "family_care": "家庭照顧假",
     "parental_unpaid": "育嬰留職停薪",
     "compensatory": "補休",
+    "occupational_injury": "公傷病假",
+    "pregnancy_rest": "安胎休養假",
+    "typhoon": "颱風假",
 }
 
 OVERTIME_TYPE_LABELS = {
