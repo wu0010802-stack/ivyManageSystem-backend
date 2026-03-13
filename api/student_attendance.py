@@ -13,7 +13,7 @@ from openpyxl.styles import PatternFill
 from pydantic import BaseModel
 
 from models.database import get_session, Student, StudentAttendance, Classroom
-from services.student_attendance_report import build_monthly_attendance_report
+from services.student_attendance_report import build_daily_classroom_overview, build_monthly_attendance_report
 from utils.auth import require_permission
 from utils.permissions import Permission
 from api.exports import (
@@ -160,6 +160,23 @@ class BatchSaveRequest(BaseModel):
 
 
 # ============ Routes ============
+
+@router.get("/student-attendance/overview")
+async def get_daily_attendance_overview(
+    date: str = Query(..., description="YYYY-MM-DD"),
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+):
+    """取得指定日期的各班學生出席總覽。"""
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD")
+
+    session = get_session()
+    try:
+        return build_daily_classroom_overview(session, target_date)
+    finally:
+        session.close()
 
 @router.get("/student-attendance")
 async def get_daily_attendance(

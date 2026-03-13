@@ -5,12 +5,12 @@ Approval summary router - pending counts for dashboard
 import logging
 from calendar import monthrange
 from datetime import date, timedelta
-from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 
 from models.database import get_session, LeaveRecord, OvertimeRecord, SchoolEvent, PunchCorrectionRequest, Employee, Student, StudentAttendance
+from services.student_attendance_report import build_attendance_summary
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -25,32 +25,6 @@ _EVENT_TYPE_LABELS = {
     "holiday": "假日",
     "general": "一般",
 }
-
-_STUDENT_ATTENDANCE_STATUSES = ("出席", "缺席", "病假", "事假", "遲到")
-
-
-def _build_student_attendance_summary(total_students: int, raw_status_counts: dict[str, int]):
-    """將今日學生點名分佈轉成儀表板摘要。"""
-    status_counts = Counter({status: raw_status_counts.get(status, 0) for status in _STUDENT_ATTENDANCE_STATUSES})
-    recorded_count = sum(status_counts.values())
-    on_campus_count = status_counts["出席"] + status_counts["遲到"]
-    leave_count = status_counts["病假"] + status_counts["事假"]
-    unmarked_count = max(total_students - recorded_count, 0)
-
-    return {
-        "total_students": total_students,
-        "recorded_count": recorded_count,
-        "on_campus_count": on_campus_count,
-        "present_count": status_counts["出席"],
-        "late_count": status_counts["遲到"],
-        "absent_count": status_counts["缺席"],
-        "leave_count": leave_count,
-        "sick_leave_count": status_counts["病假"],
-        "personal_leave_count": status_counts["事假"],
-        "unmarked_count": unmarked_count,
-        "record_completion_rate": round((recorded_count / total_students) * 100, 1) if total_students else 0,
-        "attendance_rate": round((on_campus_count / total_students) * 100, 1) if total_students else 0,
-    }
 
 
 @router.get("/upcoming-events")
@@ -204,7 +178,7 @@ def get_student_attendance_summary(
 
         return {
             "date": today.isoformat(),
-            **_build_student_attendance_summary(total_students, status_counts),
+            **build_attendance_summary(total_students, status_counts),
         }
     finally:
         session.close()

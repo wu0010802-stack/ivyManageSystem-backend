@@ -20,6 +20,7 @@ from models.database import (
     get_session, Employee, Student, Attendance, Classroom, SchoolEvent, JobTitle,
     LeaveRecord, OvertimeRecord, Holiday, ShiftAssignment, ShiftType,
 )
+from services.official_calendar import build_admin_calendar_feed
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +417,7 @@ EVENT_TYPE_LABELS = {
     "meeting": "會議",
     "activity": "活動",
     "holiday": "假日",
+    "makeup_workday": "補班日",
     "general": "一般",
 }
 
@@ -425,25 +427,13 @@ def export_calendar(
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_permission(Permission.CALENDAR)),
     year: int = Query(...),
-    month: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
 ):
     """匯出行事曆 Excel"""
     session = get_session()
     try:
-        from sqlalchemy import or_
-
-        _, last_day = cal_module.monthrange(year, month)
-        start = date(year, month, 1)
-        end = date(year, month, last_day)
-
-        events = session.query(SchoolEvent).filter(
-            SchoolEvent.is_active == True,
-            SchoolEvent.event_date <= end,
-            or_(
-                SchoolEvent.end_date >= start,
-                (SchoolEvent.end_date.is_(None)) & (SchoolEvent.event_date >= start),
-            ),
-        ).order_by(SchoolEvent.event_date).all()
+        feed = build_admin_calendar_feed(session, year, month)
+        events = feed["events"]
 
         wb = Workbook()
         ws = _safe_ws(wb)
@@ -459,19 +449,19 @@ def export_calendar(
 
         for idx, ev in enumerate(events, 4):
             time_str = ""
-            if ev.is_all_day:
+            if ev["is_all_day"]:
                 time_str = "全天"
-            elif ev.start_time and ev.end_time:
-                time_str = f"{ev.start_time} - {ev.end_time}"
+            elif ev["start_time"] and ev["end_time"]:
+                time_str = f"{ev['start_time']} - {ev['end_time']}"
 
             _write_data_row(ws, idx, [
-                ev.event_date.isoformat(),
-                ev.end_date.isoformat() if ev.end_date else "",
-                EVENT_TYPE_LABELS.get(ev.event_type, ev.event_type),
-                ev.title,
-                ev.description or "",
+                ev["event_date"],
+                ev["end_date"] or "",
+                EVENT_TYPE_LABELS.get(ev["event_type"], ev["event_type"]),
+                ev["title"],
+                ev["description"] or "",
                 time_str,
-                ev.location or "",
+                ev["location"] or "",
             ])
 
         _auto_width(ws)

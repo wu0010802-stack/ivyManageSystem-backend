@@ -26,7 +26,8 @@ from models.config import (
     SystemConfig, PositionSalaryConfig,
 )
 from models.event import (
-    Holiday, MeetingRecord, SchoolEvent, Announcement, AnnouncementRead, AnnouncementRecipient,
+    Holiday, WorkdayOverride, OfficialCalendarSync,
+    MeetingRecord, SchoolEvent, Announcement, AnnouncementRead, AnnouncementRecipient,
 )
 from models.auth import User
 from models.audit import AuditLog
@@ -58,7 +59,8 @@ __all__ = [
     "AttendancePolicy", "BonusConfig", "GradeTarget", "InsuranceRate",
     "SystemConfig", "PositionSalaryConfig",
     # event
-    "Holiday", "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead", "AnnouncementRecipient",
+    "Holiday", "WorkdayOverride", "OfficialCalendarSync",
+    "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead", "AnnouncementRecipient",
     # auth
     "User",
     # audit

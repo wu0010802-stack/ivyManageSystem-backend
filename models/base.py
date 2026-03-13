@@ -216,6 +216,11 @@ def _run_migrations(engine):
     _add_column_if_missing(engine, inspector, "students", "emergency_contact_phone",    "VARCHAR(20)")
     _add_column_if_missing(engine, inspector, "students", "emergency_contact_relation", "VARCHAR(20)")
 
+    # holidays — 官方同步來源欄位
+    _add_column_if_missing(engine, inspector, "holidays", "source", "VARCHAR(20)")
+    _add_column_if_missing(engine, inspector, "holidays", "source_year", "INTEGER")
+    _add_column_if_missing(engine, inspector, "holidays", "synced_at", "TIMESTAMP")
+
     # position_salary_configs — 新增其他職位底薪欄位
     _add_column_if_missing(engine, inspector, "position_salary_configs", "admin_staff",       "FLOAT DEFAULT 37160")
     _add_column_if_missing(engine, inspector, "position_salary_configs", "english_teacher",   "FLOAT DEFAULT 32500")

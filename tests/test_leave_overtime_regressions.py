@@ -20,7 +20,7 @@ from api.auth import _account_failures, _ip_attempts
 from api.leaves import router as leaves_router
 from api.overtimes import router as overtimes_router
 from api.portal.leaves import router as portal_leaves_router
-from models.database import Base, Employee, LeaveQuota, LeaveRecord, OvertimeRecord, User
+from models.database import Base, Employee, Holiday, LeaveQuota, LeaveRecord, OvertimeRecord, User
 from utils.auth import hash_password
 
 
@@ -168,6 +168,38 @@ class TestPortalLeaveDeductionRatio:
         )
         assert approve_res.status_code == 400
         assert "超過 2 天" in approve_res.json()["detail"]
+
+    def test_portal_leave_rejects_hours_that_count_weekend_and_holiday(self, leave_overtime_client):
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "T002A", "教師假日")
+            session.add(Holiday(date=date(2026, 3, 16), name="補假", is_active=True))
+            _create_user(
+                session,
+                username="teacher_holiday_guard",
+                password="PortalPass123",
+                role="teacher",
+                permissions=0,
+                employee=employee,
+            )
+            session.commit()
+
+        login_res = _login(client, "teacher_holiday_guard", "PortalPass123")
+        assert login_res.status_code == 200
+
+        create_res = client.post(
+            "/api/portal/my-leaves",
+            json={
+                "leave_type": "annual",
+                "start_date": "2026-03-13",
+                "end_date": "2026-03-16",
+                "leave_hours": 16,
+                "reason": "跨假日測試",
+            },
+        )
+
+        assert create_res.status_code == 400
+        assert "自動排除週末與國定假日" in create_res.json()["detail"]
 
     def test_portal_leave_rejects_substitute_with_overlapping_pending_leave(self, leave_overtime_client):
         client, session_factory, _ = leave_overtime_client
@@ -397,6 +429,49 @@ class TestPortalSubstitutePendingCount:
         res = client.get("/api/portal/substitute-pending-count")
 
         assert res.status_code == 401
+
+
+class TestLeaveScheduleGuard:
+    def test_admin_update_rejects_hours_that_exceed_workdays_after_holiday_exclusion(self, leave_overtime_client):
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "T010", "教師己")
+            leave = LeaveRecord(
+                employee_id=employee.id,
+                leave_type="annual",
+                start_date=date(2026, 3, 13),
+                end_date=date(2026, 3, 13),
+                leave_hours=8,
+                is_approved=None,
+            )
+            session.add_all([
+                leave,
+                Holiday(date=date(2026, 3, 16), name="補假", is_active=True),
+            ])
+            _create_user(
+                session,
+                username="admin_update_guard",
+                password="AdminPass123",
+                role="admin",
+                permissions=-1,
+            )
+            session.commit()
+            leave_id = leave.id
+
+        login_res = _login(client, "admin_update_guard", "AdminPass123")
+        assert login_res.status_code == 200
+
+        update_res = client.put(
+            f"/api/leaves/{leave_id}",
+            json={
+                "start_date": "2026-03-13",
+                "end_date": "2026-03-16",
+                "leave_hours": 16,
+            },
+        )
+
+        assert update_res.status_code == 400
+        assert "自動排除週末與國定假日" in update_res.json()["detail"]
 
 
 class TestApprovedOvertimeRollback:

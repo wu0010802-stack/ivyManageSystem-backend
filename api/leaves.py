@@ -35,7 +35,7 @@ from api.leaves_quota import (
     _check_leave_limits,
     _check_quota,
 )
-from api.leaves_workday import workday_router
+from api.leaves_workday import workday_router, validate_leave_hours_against_schedule
 from services.leave_policy import requires_supporting_document
 
 _UPLOAD_BASE = Path(__file__).resolve().parent.parent / "uploads" / "leave_attachments"
@@ -508,6 +508,16 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_staff_p
                 detail=f"該員工在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄（ID: {overlap.id}），無法重複請假"
             )
 
+        validate_leave_hours_against_schedule(
+            session,
+            data.employee_id,
+            data.start_date,
+            data.end_date,
+            data.leave_hours,
+            data.start_time,
+            data.end_time,
+        )
+
         _check_leave_limits(
             session, data.employee_id, data.leave_type,
             data.start_date, data.leave_hours
@@ -588,6 +598,15 @@ def update_leave(leave_id: int, data: LeaveUpdate, current_user: dict = Depends(
 
         new_type = data.leave_type or leave.leave_type
         new_hours = data.leave_hours if data.leave_hours is not None else leave.leave_hours
+        validate_leave_hours_against_schedule(
+            session,
+            leave.employee_id,
+            new_start,
+            new_end,
+            new_hours,
+            new_start_time,
+            new_end_time,
+        )
         # 已核准的假單退審後視同重新提交：用 include_pending=True 重新過一次配額（排除自身）
         _check_leave_limits(
             session, leave.employee_id, new_type,
