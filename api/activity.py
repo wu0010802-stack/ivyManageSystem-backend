@@ -115,10 +115,34 @@ def _get_active_classroom(session, classroom_name: str):
 async def get_stats(
     current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得儀表板統計資料"""
+    """取得儀表板統計資料（相容舊版：summary + charts）。"""
     session = get_session()
     try:
         return activity_service.get_stats(session)
+    finally:
+        session.close()
+
+
+@router.get("/stats-summary")
+async def get_stats_summary(
+    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+):
+    """取得儀表板摘要統計資料。"""
+    session = get_session()
+    try:
+        return activity_service.get_stats_summary(session)
+    finally:
+        session.close()
+
+
+@router.get("/stats-charts")
+async def get_stats_charts(
+    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+):
+    """取得儀表板圖表資料。"""
+    session = get_session()
+    try:
+        return activity_service.get_stats_charts(session)
     finally:
         session.close()
 

@@ -4,12 +4,16 @@
 
 import logging
 import os
+from pathlib import Path
+import subprocess
+import shutil
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect as sa_inspect
 
 from models.database import (
-    init_database, get_session,
+    get_engine, init_database, get_session,
     AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate, JobTitle,
     User, Employee, ShiftType, ApprovalPolicy, LineConfig,
     ActivityRegistrationSettings,
@@ -57,6 +61,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+ALEMBIC_BASELINE_REVISION = "4ddf3ebad3e8"
 
 OFFICIAL_JOB_TITLES = [
     "園長",
@@ -457,10 +462,51 @@ def _load_line_config():
         session.close()
 
 
-@app.on_event("startup")
-def on_startup():
+def needs_alembic_baseline_stamp():
+    """舊部署若已有 schema 但未建立 alembic_version，先 stamp baseline。"""
+    inspector = sa_inspect(get_engine())
+    tables = set(inspector.get_table_names())
+    if "alembic_version" in tables:
+        return False
+
+    user_tables = tables - {"alembic_version"}
+    return bool(user_tables)
+
+
+def run_alembic_upgrade():
+    """執行 Alembic schema migration。"""
+    backend_root = Path(__file__).resolve().parent
+    alembic_bin = shutil.which("alembic")
+    if not alembic_bin:
+        bundled_alembic = backend_root / "venv_sec" / "bin" / "alembic"
+        if bundled_alembic.exists():
+            alembic_bin = str(bundled_alembic)
+    if not alembic_bin:
+        raise RuntimeError("找不到 alembic 可執行檔，請先安裝 backend/requirements.txt 或啟用正確虛擬環境。")
+
+    base_cmd = [
+        alembic_bin,
+        "-c",
+        str(backend_root / "alembic.ini"),
+    ]
+    if needs_alembic_baseline_stamp():
+        logger.info("偵測到既有 schema 但沒有 alembic_version，先 stamp baseline=%s", ALEMBIC_BASELINE_REVISION)
+        subprocess.run(
+            [*base_cmd, "stamp", ALEMBIC_BASELINE_REVISION],
+            cwd=backend_root,
+            check=True,
+        )
+
+    subprocess.run(
+        [*base_cmd, "upgrade", "head"],
+        cwd=backend_root,
+        check=True,
+    )
+
+
+def run_startup_bootstrap():
+    """執行啟動必要任務，不包含 schema/data migration。"""
     init_database()
-    migrate_permissions_rw()
     seed_job_titles()
     seed_default_configs()
     seed_shift_types()
@@ -469,6 +515,17 @@ def on_startup():
     seed_activity_settings()
     salary_engine.load_config_from_db()
     _load_line_config()
+
+
+def run_maintenance_tasks():
+    """執行部署/維運任務：schema migration 與資料回填。"""
+    run_alembic_upgrade()
+    migrate_permissions_rw()
+
+
+@app.on_event("startup")
+def on_startup():
+    run_startup_bootstrap()
     logger.info("Application started successfully.")
 
 

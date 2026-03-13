@@ -9,12 +9,14 @@ from collections import Counter, defaultdict
 from datetime import date, timedelta
 
 from models.database import Classroom, Holiday, Student, StudentAttendance, User
+from services.report_cache_service import report_cache_service
 
 VALID_STATUSES = ("出席", "缺席", "病假", "事假", "遲到")
 ATTENDED_STATUSES = {"出席", "遲到"}
 ABSENCE_STATUS = "缺席"
 ALERT_STREAK_THRESHOLD = 3
 WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"]
+MONTHLY_ATTENDANCE_REPORT_CACHE_TTL_SECONDS = 1800
 
 
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -174,7 +176,7 @@ def build_daily_classroom_overview(session, target_date: date) -> dict:
     }
 
 
-def build_monthly_attendance_report(session, classroom_id: int, year: int, month: int) -> dict:
+def _compute_monthly_attendance_report(session, classroom_id: int, year: int, month: int) -> dict:
     start_date, end_date = _month_bounds(year, month)
 
     classroom = (
@@ -348,3 +350,25 @@ def build_monthly_attendance_report(session, classroom_id: int, year: int, month
         "alerts": flagged_students,
         "calendar_days": calendar_days,
     }
+
+
+def build_monthly_attendance_report(
+    session,
+    classroom_id: int,
+    year: int,
+    month: int,
+    *,
+    force_refresh: bool = False,
+) -> dict:
+    return report_cache_service.get_or_build(
+        session,
+        category="student_attendance_monthly",
+        ttl_seconds=MONTHLY_ATTENDANCE_REPORT_CACHE_TTL_SECONDS,
+        params={
+            "classroom_id": classroom_id,
+            "year": year,
+            "month": month,
+        },
+        force_refresh=force_refresh,
+        builder=lambda: _compute_monthly_attendance_report(session, classroom_id, year, month),
+    )

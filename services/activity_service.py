@@ -3,17 +3,22 @@ services/activity_service.py — 課後才藝報名業務邏輯
 """
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from models.activity import (
     ActivityCourse, ActivitySupply, ActivityRegistration,
     RegistrationCourse, RegistrationSupply,
     ParentInquiry, RegistrationChange, ActivityRegistrationSettings,
 )
+from services.report_cache_service import report_cache_service
 
 logger = logging.getLogger(__name__)
+
+ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS = 60
+ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS = 180
+ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS = 600
 
 
 class ActivityService:
@@ -56,118 +61,129 @@ class ActivityService:
     # 統計儀表板
     # ------------------------------------------------------------------ #
 
-    def get_stats(self, session) -> dict:
-        """取得統計摘要（含報名趨勢、熱門課程）"""
+    def _compute_stats_summary(self, session) -> dict:
+        """取得儀表板摘要統計。"""
         today = date.today()
+        active_registration_filter = ActivityRegistration.is_active.is_(True)
 
-        total_registrations = (
-            session.query(func.count(ActivityRegistration.id))
-            .filter(ActivityRegistration.is_active.is_(True))
-            .scalar() or 0
-        )
-
-        total_enrollments = (
-            session.query(func.count(RegistrationCourse.id))
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
-            .filter(
-                RegistrationCourse.status == "enrolled",
-                ActivityRegistration.is_active.is_(True),
+        summary_row = session.execute(
+            select(
+                select(func.count(ActivityRegistration.id))
+                .where(active_registration_filter)
+                .scalar_subquery()
+                .label("total_registrations"),
+                select(func.count(RegistrationCourse.id))
+                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .where(
+                    RegistrationCourse.status == "enrolled",
+                    active_registration_filter,
+                )
+                .scalar_subquery()
+                .label("total_enrollments"),
+                select(func.count(RegistrationCourse.id))
+                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .where(
+                    RegistrationCourse.status == "waitlist",
+                    active_registration_filter,
+                )
+                .scalar_subquery()
+                .label("total_waitlist"),
+                select(func.count(RegistrationSupply.id))
+                .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
+                .where(active_registration_filter)
+                .scalar_subquery()
+                .label("total_supply_orders"),
+                select(func.count(ActivityRegistration.id))
+                .where(
+                    active_registration_filter,
+                    func.date(ActivityRegistration.created_at) == today,
+                )
+                .scalar_subquery()
+                .label("today_new"),
+                select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
+                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .where(
+                    ActivityRegistration.is_paid.is_(True),
+                    active_registration_filter,
+                    RegistrationCourse.status == "enrolled",
+                )
+                .scalar_subquery()
+                .label("paid_revenue_courses"),
+                select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
+                .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
+                .where(
+                    ActivityRegistration.is_paid.is_(True),
+                    active_registration_filter,
+                )
+                .scalar_subquery()
+                .label("paid_revenue_supplies"),
+                select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
+                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .where(
+                    ActivityRegistration.is_paid.is_(False),
+                    active_registration_filter,
+                    RegistrationCourse.status == "enrolled",
+                )
+                .scalar_subquery()
+                .label("unpaid_revenue_courses"),
+                select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
+                .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
+                .where(
+                    ActivityRegistration.is_paid.is_(False),
+                    active_registration_filter,
+                )
+                .scalar_subquery()
+                .label("unpaid_revenue_supplies"),
+                select(func.coalesce(func.sum(ActivityCourse.capacity), 0))
+                .where(ActivityCourse.is_active.is_(True))
+                .scalar_subquery()
+                .label("total_capacity"),
+                select(func.count(ParentInquiry.id))
+                .where(ParentInquiry.is_read.is_(False))
+                .scalar_subquery()
+                .label("unread_inquiries"),
             )
-            .scalar() or 0
-        )
+        ).one()
 
-        total_waitlist = (
-            session.query(func.count(RegistrationCourse.id))
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
-            .filter(
-                RegistrationCourse.status == "waitlist",
-                ActivityRegistration.is_active.is_(True),
-            )
-            .scalar() or 0
-        )
+        total_enrollments = int(summary_row.total_enrollments or 0)
+        total_capacity = int(summary_row.total_capacity or 0)
+        enrollment_rate = round(total_enrollments / total_capacity * 100, 1) if total_capacity > 0 else 0.0
 
-        total_supply_orders = (
-            session.query(func.count(RegistrationSupply.id))
-            .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
-            .filter(ActivityRegistration.is_active.is_(True))
-            .scalar() or 0
-        )
+        return {
+            "totalRegistrations": int(summary_row.total_registrations or 0),
+            "totalEnrollments": total_enrollments,
+            "totalWaitlist": int(summary_row.total_waitlist or 0),
+            "totalSupplyOrders": int(summary_row.total_supply_orders or 0),
+            "todayNewRegistrations": int(summary_row.today_new or 0),
+            "totalRevenue": int(summary_row.paid_revenue_courses or 0) + int(summary_row.paid_revenue_supplies or 0),
+            "totalUnpaid": int(summary_row.unpaid_revenue_courses or 0) + int(summary_row.unpaid_revenue_supplies or 0),
+            "enrollmentRate": enrollment_rate,
+            "unreadInquiries": int(summary_row.unread_inquiries or 0),
+        }
 
-        today_new = (
-            session.query(func.count(ActivityRegistration.id))
-            .filter(
-                ActivityRegistration.is_active.is_(True),
-                func.date(ActivityRegistration.created_at) == today,
-            )
-            .scalar() or 0
-        )
+    def _compute_stats_charts(self, session) -> dict:
+        """取得儀表板圖表資料。"""
+        chart_window_start = date.today() - timedelta(days=29)
 
-        # 已繳費收入
-        paid_revenue_courses = (
-            session.query(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
-            .filter(
-                ActivityRegistration.is_paid.is_(True),
-                ActivityRegistration.is_active.is_(True),
-                RegistrationCourse.status == "enrolled",
-            )
-            .scalar() or 0
-        )
-        paid_revenue_supplies = (
-            session.query(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
-            .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
-            .filter(
-                ActivityRegistration.is_paid.is_(True),
-                ActivityRegistration.is_active.is_(True),
-            )
-            .scalar() or 0
-        )
-
-        # 未繳費金額
-        unpaid_revenue_courses = (
-            session.query(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
-            .filter(
-                ActivityRegistration.is_paid.is_(False),
-                ActivityRegistration.is_active.is_(True),
-                RegistrationCourse.status == "enrolled",
-            )
-            .scalar() or 0
-        )
-        unpaid_revenue_supplies = (
-            session.query(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
-            .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
-            .filter(
-                ActivityRegistration.is_paid.is_(False),
-                ActivityRegistration.is_active.is_(True),
-            )
-            .scalar() or 0
-        )
-
-        total_capacity = (
-            session.query(func.coalesce(func.sum(ActivityCourse.capacity), 0))
-            .filter(ActivityCourse.is_active.is_(True))
-            .scalar() or 0
-        )
-        enrollment_rate = (
-            round(total_enrollments / total_capacity * 100, 1)
-            if total_capacity > 0 else 0.0
-        )
-
-        unread_inquiries = self.get_unread_inquiries_count(session)
-
-        # 每日報名趨勢（最近 30 筆不同日期）
+        # 每日報名趨勢（最近 30 個有資料日期）
         daily_rows = (
             session.query(
                 func.date(ActivityRegistration.created_at).label("d"),
                 func.count(ActivityRegistration.id).label("c"),
             )
-            .filter(ActivityRegistration.is_active.is_(True))
+            .filter(
+                ActivityRegistration.is_active.is_(True),
+                func.date(ActivityRegistration.created_at) >= chart_window_start,
+            )
             .group_by(func.date(ActivityRegistration.created_at))
-            .order_by(func.date(ActivityRegistration.created_at))
+            .order_by(func.date(ActivityRegistration.created_at).desc())
+            .limit(30)
             .all()
         )
-        daily_stats = [{"date": str(row.d), "count": row.c} for row in daily_rows]
+        daily_stats = [
+            {"date": str(row.d), "count": row.c}
+            for row in reversed(daily_rows)
+        ]
 
         # 熱門課程（top 5）
         top_courses_rows = (
@@ -189,28 +205,39 @@ class ActivityService:
         top_courses = [{"name": row[0], "count": row[1]} for row in top_courses_rows]
 
         return {
-            "statistics": {
-                "totalRegistrations": total_registrations,
-                "totalEnrollments": total_enrollments,
-                "totalWaitlist": total_waitlist,
-                "totalSupplyOrders": total_supply_orders,
-                "todayNewRegistrations": today_new,
-                "totalRevenue": int(paid_revenue_courses) + int(paid_revenue_supplies),
-                "totalUnpaid": int(unpaid_revenue_courses) + int(unpaid_revenue_supplies),
-                "enrollmentRate": enrollment_rate,
-                "unreadInquiries": unread_inquiries,
-            },
-            "charts": {
-                "daily": daily_stats,
-                "topCourses": top_courses,
-            },
+            "daily": daily_stats,
+            "topCourses": top_courses,
+        }
+
+    def get_stats_summary(self, session, *, force_refresh: bool = False) -> dict:
+        return report_cache_service.get_or_build(
+            session,
+            category="activity_stats_summary",
+            ttl_seconds=ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS,
+            force_refresh=force_refresh,
+            builder=lambda: self._compute_stats_summary(session),
+        )
+
+    def get_stats_charts(self, session, *, force_refresh: bool = False) -> dict:
+        return report_cache_service.get_or_build(
+            session,
+            category="activity_stats_charts",
+            ttl_seconds=ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS,
+            force_refresh=force_refresh,
+            builder=lambda: self._compute_stats_charts(session),
+        )
+
+    def get_stats(self, session, *, force_refresh: bool = False) -> dict:
+        return {
+            "statistics": self.get_stats_summary(session, force_refresh=force_refresh),
+            "charts": self.get_stats_charts(session, force_refresh=force_refresh),
         }
 
     # ------------------------------------------------------------------ #
     # 統計儀表板表格 (依班級)
     # ------------------------------------------------------------------ #
 
-    def get_dashboard_table(self, session) -> dict:
+    def _compute_dashboard_table(self, session) -> dict:
         """取得課後才藝儀表板統計表格（含依班級與年級的小計與達成率）"""
         from models.classroom import Classroom, ClassGrade, Student
         from models.employee import Employee
@@ -368,6 +395,15 @@ class ActivityService:
             "grades": result_grades,
             "grand_total": grand_total
         }
+
+    def get_dashboard_table(self, session, *, force_refresh: bool = False) -> dict:
+        return report_cache_service.get_or_build(
+            session,
+            category="activity_dashboard_table",
+            ttl_seconds=ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS,
+            force_refresh=force_refresh,
+            builder=lambda: self._compute_dashboard_table(session),
+        )
 
     # ------------------------------------------------------------------ #
     # 候補升正式

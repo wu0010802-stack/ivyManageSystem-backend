@@ -168,6 +168,8 @@ class TestNotificationSummary:
             "leaves": 1,
             "overtimes": 1,
             "punch_corrections": 1,
+            "this_month_pending_leaves": 1,
+            "this_month_pending_overtimes": 1,
         }
         assert action_items["activity_inquiry"]["count"] == 1
         assert action_items["activity_inquiry"]["route"] == "/activity/inquiries"
