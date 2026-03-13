@@ -33,6 +33,11 @@ from models.auth import User
 from models.audit import AuditLog
 from models.approval import ApprovalPolicy, ApprovalLog
 from models.line_config import LineConfig
+from models.activity import (
+    ActivityCourse, ActivitySupply, ActivityRegistration,
+    RegistrationCourse, RegistrationSupply,
+    ParentInquiry, RegistrationChange, ActivityRegistrationSettings,
+)
 
 __all__ = [
     # base
@@ -69,4 +74,8 @@ __all__ = [
     "ApprovalPolicy", "ApprovalLog",
     # line
     "LineConfig",
+    # activity
+    "ActivityCourse", "ActivitySupply", "ActivityRegistration",
+    "RegistrationCourse", "RegistrationSupply",
+    "ParentInquiry", "RegistrationChange", "ActivityRegistrationSettings",
 ]

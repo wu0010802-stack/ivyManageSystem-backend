@@ -519,11 +519,12 @@ def substitute_respond(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        leave = session.query(LeaveRecord).filter(
+            LeaveRecord.id == leave_id,
+            LeaveRecord.substitute_employee_id == emp.id,
+        ).first()
         if not leave:
             raise HTTPException(status_code=404, detail="請假記錄不存在")
-        if leave.substitute_employee_id != emp.id:
-            raise HTTPException(status_code=403, detail="您不是此假單的指定代理人")
         if leave.substitute_status != "pending":
             raise HTTPException(status_code=409, detail="此代理請求已回應過，無法重複操作")
 

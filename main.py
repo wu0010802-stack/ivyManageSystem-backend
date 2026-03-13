@@ -12,6 +12,7 @@ from models.database import (
     init_database, get_session,
     AttendancePolicy, BonusConfig as DBBonusConfig, GradeTarget, InsuranceRate, JobTitle,
     User, Employee, ShiftType, ApprovalPolicy, LineConfig,
+    ActivityRegistrationSettings,
 )
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
@@ -39,11 +40,13 @@ from api.events import router as events_router
 from api.meetings import router as meetings_router
 from api.announcements import router as announcements_router
 from api.approvals import router as approvals_router
+from api.notifications import router as notifications_router
 from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
 from api.punch_corrections import router as punch_corrections_router
 from api.approval_settings import router as approval_settings_router
+from api.activity import router as activity_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -86,7 +89,10 @@ _cors_env = os.environ.get("CORS_ORIGINS", "")
 CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else [
     "http://localhost:5173",
     "http://localhost:3000",
+    "http://localhost:5500",   # VSCode Live Server（前台靜態頁）
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5500",
 ]
 
 app.add_middleware(
@@ -143,6 +149,7 @@ app.include_router(events_router)
 app.include_router(meetings_router)
 app.include_router(announcements_router)
 app.include_router(approvals_router)
+app.include_router(notifications_router)
 app.include_router(reports_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
@@ -153,6 +160,7 @@ if not _is_production():
     logger.warning("Dev router 已掛載（/api/dev/*），正式環境請設定 ENV=production")
 app.include_router(punch_corrections_router)
 app.include_router(approval_settings_router)
+app.include_router(activity_router)
 
 # Audit middleware (must be added after CORS middleware)
 from utils.audit import AuditMiddleware
@@ -395,6 +403,22 @@ def seed_approval_policies():
         session.close()
 
 
+def seed_activity_settings():
+    """初始化課後才藝報名設定 singleton（若不存在則建立）"""
+    session = get_session()
+    try:
+        if session.query(ActivityRegistrationSettings).count() == 0:
+            session.add(ActivityRegistrationSettings(
+                is_open=False,
+                open_at=None,
+                close_at=None,
+            ))
+            session.commit()
+            logger.info("Seeded default activity registration settings.")
+    finally:
+        session.close()
+
+
 def migrate_permissions_rw():
     """為既有非全權用戶自動補上 _WRITE 位元（冪等）"""
     session = get_session()
@@ -442,6 +466,7 @@ def on_startup():
     seed_shift_types()
     seed_default_admin()
     seed_approval_policies()
+    seed_activity_settings()
     salary_engine.load_config_from_db()
     _load_line_config()
     logger.info("Application started successfully.")

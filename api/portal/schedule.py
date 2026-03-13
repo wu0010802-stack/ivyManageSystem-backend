@@ -357,11 +357,12 @@ def respond_swap_request(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        swap = session.query(ShiftSwapRequest).filter(ShiftSwapRequest.id == request_id).first()
+        swap = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.id == request_id,
+            ShiftSwapRequest.target_id == emp.id,
+        ).first()
         if not swap:
             raise HTTPException(status_code=404, detail="找不到該換班申請")
-        if swap.target_id != emp.id:
-            raise HTTPException(status_code=403, detail="您不是此申請的換班對象")
         if swap.status != "pending":
             raise HTTPException(status_code=400, detail="此申請已不是待處理狀態")
 
@@ -476,11 +477,12 @@ def cancel_swap_request(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        swap = session.query(ShiftSwapRequest).filter(ShiftSwapRequest.id == request_id).first()
+        swap = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.id == request_id,
+            ShiftSwapRequest.requester_id == emp.id,
+        ).first()
         if not swap:
             raise HTTPException(status_code=404, detail="找不到該換班申請")
-        if swap.requester_id != emp.id:
-            raise HTTPException(status_code=403, detail="您不是此申請的發起人")
         if swap.status != "pending":
             raise HTTPException(status_code=400, detail="只能撤銷待處理的申請")
 
