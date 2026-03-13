@@ -39,6 +39,8 @@ class Permission(IntFlag):
     SETTINGS_WRITE = 1 << 25        # 系統設定 (編輯)
     USER_MANAGEMENT_READ = 1 << 16  # 帳號管理 (檢視)
     USER_MANAGEMENT_WRITE = 1 << 26 # 帳號管理 (編輯)
+    ACTIVITY_READ  = 1 << 27        # 課後才藝 (檢視)
+    ACTIVITY_WRITE = 1 << 28        # 課後才藝 (編輯)
 
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
@@ -59,6 +61,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "ANNOUNCEMENTS": {"read": "ANNOUNCEMENTS_READ", "write": "ANNOUNCEMENTS_WRITE"},
     "SETTINGS": {"read": "SETTINGS_READ", "write": "SETTINGS_WRITE"},
     "USER_MANAGEMENT": {"read": "USER_MANAGEMENT_READ", "write": "USER_MANAGEMENT_WRITE"},
+    "ACTIVITY": {"read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -73,6 +76,7 @@ _RW_PAIRS: List[tuple] = [
     (Permission.ANNOUNCEMENTS_READ, Permission.ANNOUNCEMENTS_WRITE),
     (Permission.SETTINGS_READ, Permission.SETTINGS_WRITE),
     (Permission.USER_MANAGEMENT_READ, Permission.USER_MANAGEMENT_WRITE),
+    (Permission.ACTIVITY_READ, Permission.ACTIVITY_WRITE),
 ]
 
 
@@ -156,6 +160,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     "SETTINGS_WRITE": "系統設定 (編輯)",
     "USER_MANAGEMENT_READ": "帳號管理 (檢視)",
     "USER_MANAGEMENT_WRITE": "帳號管理 (編輯)",
+    "ACTIVITY_READ": "課後才藝 (檢視)",
+    "ACTIVITY_WRITE": "課後才藝 (編輯)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -183,6 +189,7 @@ PERMISSION_GROUPS: List[Dict] = [
             {"module": "學生管理", "read": "STUDENTS_READ", "write": "STUDENTS_WRITE"},
             {"module": "班級管理", "read": "CLASSROOMS_READ", "write": "CLASSROOMS_WRITE"},
             {"module": "薪資管理", "read": "SALARY_READ", "write": "SALARY_WRITE"},
+            {"module": "課後才藝", "read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
         ],
     },
     {

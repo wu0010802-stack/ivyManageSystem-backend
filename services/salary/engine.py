@@ -381,6 +381,123 @@ class SalaryEngine:
         """返回發放月的會議缺席扣款起算日"""
         return get_meeting_deduction_period_start(year, month)
 
+    @staticmethod
+    def _get_bonus_reference_date(year: int, month: int) -> date:
+        """節慶獎金資格判斷固定以薪資月份首日為準。"""
+        return date(year, month, 1)
+
+    @staticmethod
+    def _get_effective_bonus_title(title: str, bonus_grade_override: Optional[str]) -> str:
+        """依 bonus_grade 覆蓋節慶獎金職稱等級。"""
+        grade_to_title = {'A': '幼兒園教師', 'B': '教保員', 'C': '助理教保員'}
+        if not bonus_grade_override:
+            return title
+        return grade_to_title.get(bonus_grade_override, title)
+
+    def _calculate_classroom_bonus_result(self, bonus_title: str, classroom_context: Optional[dict]) -> dict:
+        """統一帶班老師節慶獎金計算，避免主流程與明細頁規則分叉。"""
+        if not classroom_context:
+            return {
+                'festival_bonus': 0,
+                'overtime_bonus': 0,
+                'target': 0,
+                'ratio': 0,
+                'base_amount': 0,
+                'overtime_target': 0,
+                'overtime_count': 0,
+                'overtime_per_person': 0,
+            }
+
+        bonus_result = self.calculate_festival_bonus_v2(
+            position=bonus_title,
+            role=classroom_context.get('role', ''),
+            grade_name=classroom_context.get('grade_name', ''),
+            current_enrollment=classroom_context.get('current_enrollment', 0),
+            has_assistant=classroom_context.get('has_assistant', False),
+            is_shared_assistant=classroom_context.get('is_shared_assistant', False),
+        )
+
+        shared_second = classroom_context.get('shared_second_class')
+        if not shared_second:
+            return bonus_result
+
+        bonus_result2 = self.calculate_festival_bonus_v2(
+            position=bonus_title,
+            role=classroom_context.get('role', ''),
+            grade_name=shared_second.get('grade_name', ''),
+            current_enrollment=shared_second.get('current_enrollment', 0),
+            has_assistant=True,
+            is_shared_assistant=True,
+        )
+        averaged_festival_bonus = round(
+            (bonus_result['festival_bonus'] + bonus_result2['festival_bonus']) / 2
+        )
+        averaged_overtime_bonus = round(
+            (bonus_result['overtime_bonus'] + bonus_result2['overtime_bonus']) / 2
+        )
+        base_amount = bonus_result.get('base_amount', 0) or 0
+        averaged_ratio = (averaged_festival_bonus / base_amount) if base_amount else 0
+
+        return {
+            **bonus_result,
+            'festival_bonus': averaged_festival_bonus,
+            'overtime_bonus': averaged_overtime_bonus,
+            'ratio': averaged_ratio,
+            'shared_second_result': bonus_result2,
+        }
+
+    def _build_classroom_context_from_db(self, session, classroom, employee_id: int) -> Optional[dict]:
+        """從 DB 班級資料建構帶班獎金計算上下文。"""
+        if not classroom:
+            return None
+
+        from models.database import Classroom as DBClassroom, Student
+
+        role = 'assistant_teacher'
+        if classroom.head_teacher_id == employee_id:
+            role = 'head_teacher'
+        elif classroom.art_teacher_id == employee_id:
+            role = 'art_teacher'
+
+        has_assistant = (
+            classroom.assistant_teacher_id is not None
+            and classroom.assistant_teacher_id > 0
+        )
+        student_count = session.query(Student).filter(
+            Student.classroom_id == classroom.id,
+            Student.is_active == True,
+        ).count()
+
+        classroom_context = {
+            'role': role,
+            'grade_name': classroom.grade.name if classroom.grade else '',
+            'current_enrollment': student_count,
+            'has_assistant': has_assistant,
+            'is_shared_assistant': False,
+        }
+
+        if role == 'assistant_teacher':
+            shared_classes = session.query(DBClassroom).filter(
+                DBClassroom.assistant_teacher_id == employee_id
+            ).all()
+            if len(shared_classes) >= 2:
+                classroom_context['is_shared_assistant'] = True
+                second_class = next(
+                    (candidate for candidate in shared_classes if candidate.id != classroom.id),
+                    None,
+                )
+                if second_class:
+                    second_count = session.query(Student).filter(
+                        Student.classroom_id == second_class.id,
+                        Student.is_active == True,
+                    ).count()
+                    classroom_context['shared_second_class'] = {
+                        'grade_name': second_class.grade.name if second_class.grade else '',
+                        'current_enrollment': second_count,
+                    }
+
+        return classroom_context
+
     # ─── 主要計算方法 ────────────────────────────────────────────────────────
 
     def calculate_attendance_deduction(self, attendance: AttendanceResult, daily_salary: float = 0, base_salary: float = 0, late_details: list = None) -> dict:
@@ -562,7 +679,11 @@ class SalaryEngine:
 
             # 檢查是否符合領取節慶獎金資格（入職滿3個月）
             hire_date = employee.get('hire_date')
-            is_eligible = self.is_eligible_for_festival_bonus(hire_date)
+            bonus_reference_date = self._get_bonus_reference_date(year, month)
+            is_eligible = self.is_eligible_for_festival_bonus(
+                hire_date,
+                reference_date=bonus_reference_date,
+            )
 
             # 獎金計算
             emp_title = employee.get('title', '')
@@ -570,12 +691,8 @@ class SalaryEngine:
             emp_supervisor_role = employee.get('supervisor_role', '')
 
             # 計算節慶獎金用的有效職稱（bonus_grade 可覆蓋職稱等級）
-            _GRADE_TO_TITLE = {'A': '幼兒園教師', 'B': '教保員', 'C': '助理教保員'}
             bonus_grade_override = employee.get('bonus_grade')
-            _effective_title = (
-                _GRADE_TO_TITLE.get(bonus_grade_override, emp_title)
-                if bonus_grade_override else emp_title
-            )
+            _effective_title = self._get_effective_bonus_title(emp_title, bonus_grade_override)
 
             supervisor_festival_base = self.get_supervisor_festival_bonus(
                 emp_title, emp_position, emp_supervisor_role
@@ -602,33 +719,10 @@ class SalaryEngine:
                     breakdown.festival_bonus = 0
                 breakdown.overtime_bonus = 0
             elif classroom_context and emp_position:
-                bonus_result = self.calculate_festival_bonus_v2(
-                    position=_effective_title,
-                    role=classroom_context.get('role', ''),
-                    grade_name=classroom_context.get('grade_name', ''),
-                    current_enrollment=classroom_context.get('current_enrollment', 0),
-                    has_assistant=classroom_context.get('has_assistant', False),
-                    is_shared_assistant=classroom_context.get('is_shared_assistant', False)
+                bonus_result = self._calculate_classroom_bonus_result(
+                    _effective_title,
+                    classroom_context,
                 )
-                # 第九條：兩班共用一位副班導，節慶獎金取兩班分數平均
-                shared_second = classroom_context.get('shared_second_class')
-                if shared_second:
-                    bonus_result2 = self.calculate_festival_bonus_v2(
-                        position=_effective_title,
-                        role=classroom_context.get('role', ''),
-                        grade_name=shared_second['grade_name'],
-                        current_enrollment=shared_second['current_enrollment'],
-                        has_assistant=True,
-                        is_shared_assistant=True,
-                    )
-                    bonus_result = {
-                        'festival_bonus': round(
-                            (bonus_result['festival_bonus'] + bonus_result2['festival_bonus']) / 2
-                        ),
-                        'overtime_bonus': round(
-                            (bonus_result['overtime_bonus'] + bonus_result2['overtime_bonus']) / 2
-                        ),
-                    }
                 if is_eligible:
                     breakdown.festival_bonus = bonus_result['festival_bonus']
                     breakdown.overtime_bonus = bonus_result['overtime_bonus']
@@ -811,7 +905,15 @@ class SalaryEngine:
             title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
             supervisor_role = emp.supervisor_role or ''
 
-            is_eligible = self.is_eligible_for_festival_bonus(emp.hire_date)
+            bonus_reference_date = self._get_bonus_reference_date(year, month)
+            is_eligible = self.is_eligible_for_festival_bonus(
+                emp.hire_date,
+                reference_date=bonus_reference_date,
+            )
+            effective_title = self._get_effective_bonus_title(
+                title_name,
+                getattr(emp, 'bonus_grade', None),
+            )
 
             if not position:
                 is_eligible = False
@@ -849,32 +951,19 @@ class SalaryEngine:
 
             elif classroom:
                 category = "帶班老師"
-                grade_name = classroom.grade.name if classroom.grade else ''
-                current_enrollment = session.query(Student).filter(
-                    Student.classroom_id == classroom.id,
-                    Student.is_active == True
-                ).count()
+                classroom_context = self._build_classroom_context_from_db(session, classroom, emp.id)
+                current_enrollment = classroom_context.get('current_enrollment', 0)
+                bonus_result = self._calculate_classroom_bonus_result(
+                    effective_title,
+                    classroom_context,
+                )
 
-                role = 'assistant_teacher'
-                if classroom.head_teacher_id == emp.id:
-                    role = 'head_teacher'
-                elif classroom.assistant_teacher_id == emp.id:
-                    role = 'assistant_teacher'
-                elif classroom.art_teacher_id == emp.id:
-                    role = 'art_teacher'
-
-                has_assistant = (classroom.assistant_teacher_id is not None and classroom.assistant_teacher_id > 0)
-                is_shared = False
-
-                role_for_base = role
-                if role == 'art_teacher':
-                    role_for_base = 'assistant_teacher'
-
-                bonus_base = self.get_festival_bonus_base(position, role_for_base)
-                target_enrollment = self.get_target_enrollment(grade_name, has_assistant, is_shared)
-
-                ratio = current_enrollment / target_enrollment if target_enrollment > 0 else 0
-                festival_bonus = round(bonus_base * ratio) if is_eligible else 0
+                bonus_base = bonus_result.get('base_amount', 0)
+                target_enrollment = bonus_result.get('target', 0)
+                ratio = bonus_result.get('ratio', 0)
+                festival_bonus = bonus_result['festival_bonus'] if is_eligible else 0
+                if classroom_context.get('shared_second_class') and is_eligible:
+                    remark = "兩班平均"
 
             else:
                 category = "其他"
@@ -1026,47 +1115,7 @@ class SalaryEngine:
 
             if emp.classroom_id:
                 classroom = session.query(Classroom).get(emp.classroom_id)
-                if classroom:
-                    role = 'assistant_teacher'
-                    if classroom.head_teacher_id == emp.id:
-                        role = 'head_teacher'
-                    elif classroom.art_teacher_id == emp.id:
-                        role = 'art_teacher'
-
-                    has_assistant = (classroom.assistant_teacher_id is not None and classroom.assistant_teacher_id > 0)
-
-                    student_count = session.query(Student).filter(
-                        Student.classroom_id == classroom.id,
-                        Student.is_active == True
-                    ).count()
-
-                    classroom_context = {
-                        'role': role,
-                        'grade_name': classroom.grade.name if classroom.grade else '',
-                        'current_enrollment': student_count,
-                        'has_assistant': has_assistant,
-                        'is_shared_assistant': False
-                    }
-
-                    # 第九條：偵測共用副班導（同一員工擔任兩個班級的 assistant_teacher）
-                    if role == 'assistant_teacher':
-                        shared_classes = session.query(Classroom).filter(
-                            Classroom.assistant_teacher_id == emp.id
-                        ).all()
-                        if len(shared_classes) >= 2:
-                            classroom_context['is_shared_assistant'] = True
-                            second_class = next(
-                                (c for c in shared_classes if c.id != classroom.id), None
-                            )
-                            if second_class:
-                                second_count = session.query(Student).filter(
-                                    Student.classroom_id == second_class.id,
-                                    Student.is_active == True
-                                ).count()
-                                classroom_context['shared_second_class'] = {
-                                    'grade_name': second_class.grade.name if second_class.grade else '',
-                                    'current_enrollment': second_count,
-                                }
+                classroom_context = self._build_classroom_context_from_db(session, classroom, emp.id)
 
             # 5b. 主管或特定非帶班職位需要全校比例
             title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')

@@ -19,6 +19,51 @@ class Holiday(Base):
     name = Column(String(100), nullable=False, comment="假日名稱")
     is_active = Column(Boolean, default=True)
     description = Column(String(200), nullable=True)
+    source = Column(String(20), nullable=True, comment="資料來源，例如 dgpa/manual")
+    source_year = Column(Integer, nullable=True, comment="同步來源年份")
+    synced_at = Column(DateTime, nullable=True, comment="最後同步時間")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("ix_holidays_source_year", "source", "source_year"),
+    )
+
+
+class WorkdayOverride(Base):
+    """補班日 / 工作日覆蓋表"""
+    __tablename__ = "workday_overrides"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date, unique=True, nullable=False, comment="覆蓋日期")
+    name = Column(String(100), nullable=False, comment="顯示名稱")
+    description = Column(String(200), nullable=True)
+    is_active = Column(Boolean, default=True)
+    source = Column(String(20), nullable=True, comment="資料來源，例如 dgpa")
+    source_year = Column(Integer, nullable=True, comment="同步來源年份")
+    synced_at = Column(DateTime, nullable=True, comment="最後同步時間")
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("ix_workday_overrides_source_year", "source", "source_year"),
+    )
+
+
+class OfficialCalendarSync(Base):
+    """官方年度日曆同步狀態"""
+    __tablename__ = "official_calendar_syncs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_year = Column(Integer, unique=True, nullable=False, index=True)
+    is_synced = Column(Boolean, default=False, nullable=False)
+    used_cache = Column(Boolean, default=False, nullable=False)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    source = Column(String(20), nullable=False, default="dgpa")
+    source_modified_at = Column(String(50), nullable=True, comment="來源端資源更新時間")
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

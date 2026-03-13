@@ -5,15 +5,18 @@
 from __future__ import annotations
 
 import calendar as cal_module
+from collections import Counter, defaultdict
 from datetime import date, timedelta
 
-from models.database import Classroom, Holiday, Student, StudentAttendance
+from models.database import Classroom, Holiday, Student, StudentAttendance, User
+from services.report_cache_service import report_cache_service
 
 VALID_STATUSES = ("出席", "缺席", "病假", "事假", "遲到")
 ATTENDED_STATUSES = {"出席", "遲到"}
 ABSENCE_STATUS = "缺席"
 ALERT_STREAK_THRESHOLD = 3
 WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"]
+MONTHLY_ATTENDANCE_REPORT_CACHE_TTL_SECONDS = 1800
 
 
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -36,7 +39,144 @@ def _student_active_on(student: Student, target_date: date) -> bool:
     return True
 
 
-def build_monthly_attendance_report(session, classroom_id: int, year: int, month: int) -> dict:
+def build_attendance_summary(total_students: int, raw_status_counts: dict[str, int]) -> dict:
+    """將學生出席狀態分佈轉成管理端/首頁共用摘要。"""
+    status_counts = Counter({status: raw_status_counts.get(status, 0) for status in VALID_STATUSES})
+    recorded_count = sum(status_counts.values())
+    on_campus_count = sum(status_counts[status] for status in ATTENDED_STATUSES)
+    leave_count = status_counts["病假"] + status_counts["事假"]
+    unmarked_count = max(total_students - recorded_count, 0)
+
+    return {
+        "total_students": total_students,
+        "recorded_count": recorded_count,
+        "on_campus_count": on_campus_count,
+        "present_count": status_counts["出席"],
+        "late_count": status_counts["遲到"],
+        "absent_count": status_counts["缺席"],
+        "leave_count": leave_count,
+        "sick_leave_count": status_counts["病假"],
+        "personal_leave_count": status_counts["事假"],
+        "unmarked_count": unmarked_count,
+        "record_completion_rate": round((recorded_count / total_students) * 100, 1) if total_students else 0,
+        "attendance_rate": round((on_campus_count / total_students) * 100, 1) if total_students else 0,
+    }
+
+
+def _resolve_rollcall_status(recorded_count: int, student_count: int) -> str:
+    if recorded_count == 0:
+        return "unstarted"
+    if recorded_count < student_count:
+        return "partial"
+    return "complete"
+
+
+def build_daily_classroom_overview(session, target_date: date) -> dict:
+    """建立指定日期的各班出席總覽。"""
+    classrooms = (
+        session.query(Classroom)
+        .filter(Classroom.is_active == True)
+        .order_by(Classroom.name)
+        .all()
+    )
+    classroom_ids = [classroom.id for classroom in classrooms]
+
+    students = []
+    if classroom_ids:
+        students = (
+            session.query(Student)
+            .filter(
+                Student.classroom_id.in_(classroom_ids),
+                Student.is_active == True,
+            )
+            .order_by(Student.classroom_id, Student.student_id)
+            .all()
+        )
+
+    classroom_students = defaultdict(list)
+    student_map = {}
+    for student in students:
+        if not _student_active_on(student, target_date):
+            continue
+        classroom_students[student.classroom_id].append(student)
+        student_map[student.id] = student
+
+    attendance_records = []
+    student_ids = list(student_map.keys())
+    if student_ids:
+        attendance_records = (
+            session.query(StudentAttendance)
+            .filter(
+                StudentAttendance.date == target_date,
+                StudentAttendance.student_id.in_(student_ids),
+            )
+            .all()
+        )
+
+    user_ids = sorted({record.recorded_by for record in attendance_records if record.recorded_by})
+    user_map = {}
+    if user_ids:
+        user_map = {
+            user.id: user.username
+            for user in session.query(User).filter(User.id.in_(user_ids)).all()
+        }
+
+    class_status_counts = defaultdict(Counter)
+    class_records = defaultdict(list)
+    total_status_counts = Counter()
+    for record in attendance_records:
+        student = student_map.get(record.student_id)
+        if not student or record.status not in VALID_STATUSES:
+            continue
+        class_status_counts[student.classroom_id][record.status] += 1
+        total_status_counts[record.status] += 1
+        class_records[student.classroom_id].append(record)
+
+    classrooms_payload = []
+    total_students = 0
+    for classroom in classrooms:
+        student_count = len(classroom_students.get(classroom.id, []))
+        total_students += student_count
+
+        summary = build_attendance_summary(student_count, class_status_counts.get(classroom.id, {}))
+        latest_record = max(
+            class_records.get(classroom.id, []),
+            key=lambda record: record.updated_at or record.created_at,
+            default=None,
+        )
+        last_recorded_at = None
+        last_recorded_by = None
+        if latest_record:
+            last_recorded_at = (latest_record.updated_at or latest_record.created_at).isoformat()
+            if latest_record.recorded_by:
+                last_recorded_by = user_map.get(latest_record.recorded_by)
+
+        classrooms_payload.append({
+            "classroom_id": classroom.id,
+            "classroom_name": classroom.name,
+            "student_count": student_count,
+            "recorded_count": summary["recorded_count"],
+            "on_campus_count": summary["on_campus_count"],
+            "present_count": summary["present_count"],
+            "late_count": summary["late_count"],
+            "absent_count": summary["absent_count"],
+            "leave_count": summary["leave_count"],
+            "unmarked_count": summary["unmarked_count"],
+            "record_completion_rate": summary["record_completion_rate"],
+            "attendance_rate": summary["attendance_rate"],
+            "last_recorded_at": last_recorded_at,
+            "last_recorded_by": last_recorded_by,
+            "rollcall_status": _resolve_rollcall_status(summary["recorded_count"], student_count),
+        })
+
+    return {
+        "date": target_date.isoformat(),
+        "totals": build_attendance_summary(total_students, total_status_counts),
+        "classrooms": classrooms_payload,
+    }
+
+
+def _compute_monthly_attendance_report(session, classroom_id: int, year: int, month: int) -> dict:
     start_date, end_date = _month_bounds(year, month)
 
     classroom = (
@@ -210,3 +350,25 @@ def build_monthly_attendance_report(session, classroom_id: int, year: int, month
         "alerts": flagged_students,
         "calendar_days": calendar_days,
     }
+
+
+def build_monthly_attendance_report(
+    session,
+    classroom_id: int,
+    year: int,
+    month: int,
+    *,
+    force_refresh: bool = False,
+) -> dict:
+    return report_cache_service.get_or_build(
+        session,
+        category="student_attendance_monthly",
+        ttl_seconds=MONTHLY_ATTENDANCE_REPORT_CACHE_TTL_SECONDS,
+        params={
+            "classroom_id": classroom_id,
+            "year": year,
+            "month": month,
+        },
+        force_refresh=force_refresh,
+        builder=lambda: _compute_monthly_attendance_report(session, classroom_id, year, month),
+    )

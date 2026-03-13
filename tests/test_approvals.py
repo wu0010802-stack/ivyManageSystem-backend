@@ -97,8 +97,8 @@ class TestStudentAttendanceSummary:
 
     @pytest.fixture(autouse=True)
     def _import_builder(self):
-        from api.approvals import _build_student_attendance_summary
-        self.build_summary = _build_student_attendance_summary
+        from services.student_attendance_report import build_attendance_summary
+        self.build_summary = build_attendance_summary
 
     def test_counts_are_aggregated_correctly(self):
         summary = self.build_summary(20, {

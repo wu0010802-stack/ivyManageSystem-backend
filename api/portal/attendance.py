@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, Query
 
 from models.database import (
     get_session, Attendance, Classroom, LeaveRecord, OvertimeRecord,
-    ShiftAssignment, DailyShift, Holiday,
+    ShiftAssignment, DailyShift,
 )
+from services.workday_rules import classify_day, load_day_rule_maps
 from utils.auth import get_current_user
 from ._shared import _get_employee, _get_shift_type_map, WEEKDAY_NAMES, LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
 from services.salary_engine import _calc_lunch_overlap_hours
@@ -145,12 +146,7 @@ def get_attendance_sheet(
             })
 
         # Holidays
-        holidays_query = session.query(Holiday).filter(
-            Holiday.date >= start,
-            Holiday.date <= end,
-            Holiday.is_active == True
-        ).all()
-        holiday_map = {h.date: h.name for h in holidays_query}
+        holiday_map, makeup_map = load_day_rule_maps(session, start, end)
 
         days = []
         total_work_hours = 0.0
@@ -160,16 +156,18 @@ def get_attendance_sheet(
             d = date(year, month, day_num)
             weekday = d.weekday()
             weekday_name = WEEKDAY_NAMES[weekday]
-            is_weekend = weekday >= 5
+            day_rule = classify_day(d, holiday_map, makeup_map)
+            is_weekend = day_rule["is_weekend"]
 
             row = {
                 "date": d.isoformat(),
                 "day": day_num,
                 "weekday": weekday_name,
                 "is_weekend": is_weekend,
+                "is_makeup_workday": day_rule["is_makeup_workday"],
                 "punch_in": None,
                 "punch_out": None,
-                "status": "weekend" if is_weekend else "no_record",
+                "status": day_rule["kind"] if day_rule["kind"] in ("weekend", "holiday") else "no_record",
                 "is_late": False,
                 "late_minutes": 0,
                 "is_early_leave": False,
@@ -182,18 +180,12 @@ def get_attendance_sheet(
                 "scheduled_start": None,
                 "scheduled_end": None,
                 "work_hours": None,
-                "is_holiday": False,
-                "holiday_name": None,
+                "is_holiday": day_rule["is_holiday"],
+                "holiday_name": day_rule["holiday_name"],
+                "workday_override_name": day_rule["workday_override_name"],
                 "leave_requests": [],
                 "overtime_requests": [],
             }
-
-            # Check if holiday
-            if d in holiday_map:
-                row["is_holiday"] = True
-                row["holiday_name"] = holiday_map[d]
-                if row["status"] == "no_record":
-                     row["status"] = "holiday"
 
             # Look up shift for this day
             daily_override = daily_shift_map.get(d)
@@ -324,7 +316,7 @@ def get_attendance_sheet(
             days.append(row)
 
         # Summary
-        total_work = sum(1 for r in days if r["status"] in ("normal", "late") and not r["is_weekend"])
+        total_work = sum(1 for r in days if r["status"] in ("normal", "late") and not r["is_weekend"] and not r["is_holiday"])
         late_count = sum(1 for r in days if r["is_late"])
         early_leave_count = sum(1 for r in days if r["is_early_leave"])
         missing_punch_count = sum(1 for r in days if r["is_missing_punch_in"] or r["is_missing_punch_out"])

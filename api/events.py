@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent, Holiday
+from services.official_calendar import build_admin_calendar_feed
 from utils.auth import require_permission
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check
@@ -110,6 +111,20 @@ def get_events(
 
         events = q.order_by(SchoolEvent.event_date).all()
         return [_event_to_dict(ev) for ev in events]
+    finally:
+        session.close()
+
+
+@router.get("/events/calendar-feed")
+def get_calendar_feed(
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+):
+    """取得後台學校行事曆 feed（人工事件 + 官方國定假日/補班日）。"""
+    session = get_session()
+    try:
+        return build_admin_calendar_feed(session, year, month)
     finally:
         session.close()
 
@@ -323,6 +338,9 @@ async def import_holidays(
                     existing.name = name
                     existing.description = description
                     existing.is_active = True
+                    existing.source = "manual"
+                    existing.source_year = holiday_date.year
+                    existing.synced_at = datetime.now()
                     existing.updated_at = datetime.now()
                 else:
                     session.add(Holiday(
@@ -330,6 +348,9 @@ async def import_holidays(
                         name=name,
                         description=description,
                         is_active=True,
+                        source="manual",
+                        source_year=holiday_date.year,
+                        synced_at=datetime.now(),
                     ))
 
                 session.flush()

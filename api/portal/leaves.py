@@ -31,7 +31,7 @@ from ._shared import (
     LeaveCreatePortal, LEAVE_TYPE_LABELS, SubstituteRespond,
 )
 from api.leaves import _check_overlap, _check_substitute_leave_conflict
-from api.leaves_workday import _calc_shift_hours
+from api.leaves_workday import _calc_shift_hours, validate_leave_hours_against_schedule, _build_workday_hours_payload
 from api.leaves_quota import (
     _check_quota, _check_leave_limits, QUOTA_LEAVE_TYPES,
     STATUTORY_QUOTA_HOURS, LEAVE_DEDUCTION_RULES,
@@ -173,6 +173,16 @@ def create_my_leave(
                 status_code=409,
                 detail=f"您在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄，無法重複請假",
             )
+
+        validate_leave_hours_against_schedule(
+            session,
+            emp.id,
+            data.start_date,
+            data.end_date,
+            data.leave_hours,
+            data.start_time,
+            data.end_time,
+        )
 
         # 配額檢查（已核准 + 待審合計不得超出年度上限，防止併發刷假）
         _check_leave_limits(
@@ -434,55 +444,7 @@ def get_my_workday_hours(
         emp = _get_employee(session, current_user)
         employee_id = emp.id
 
-        holidays = {
-            h.date: h.name
-            for h in session.query(Holiday).filter(
-                Holiday.date >= start_date,
-                Holiday.date <= end_date,
-                Holiday.is_active.is_(True),
-            ).all()
-        }
-        daily_shifts = {
-            ds.date: ds.shift_type
-            for ds in session.query(DailyShift)
-            .filter(DailyShift.employee_id == employee_id, DailyShift.date >= start_date, DailyShift.date <= end_date)
-            .options(joinedload(DailyShift.shift_type)).all()
-        }
-        monday_start = start_date - timedelta(days=start_date.weekday())
-        monday_end = end_date - timedelta(days=end_date.weekday())
-        weekly_shifts = {
-            a.week_start_date: a.shift_type
-            for a in session.query(ShiftAssignment)
-            .filter(ShiftAssignment.employee_id == employee_id,
-                    ShiftAssignment.week_start_date >= monday_start,
-                    ShiftAssignment.week_start_date <= monday_end)
-            .options(joinedload(ShiftAssignment.shift_type)).all()
-        }
-
-        # 系統預設上下班時間（當員工無排班時使用）
-        policy = session.query(AttendancePolicy).first()
-        default_ws = policy.default_work_start if policy and policy.default_work_start else "08:00"
-        default_we = policy.default_work_end if policy and policy.default_work_end else "17:00"
-
-        breakdown, total_hours, cur = [], 0.0, start_date
-        while cur <= end_date:
-            wd = cur.weekday()
-            if wd >= 5:
-                breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "weekend", "hours": 0, "shift": None, "work_start": None, "work_end": None, "holiday_name": None})
-            elif cur in holidays:
-                breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "holiday", "hours": 0, "shift": None, "work_start": None, "work_end": None, "holiday_name": holidays[cur]})
-            else:
-                st = daily_shifts.get(cur) or weekly_shifts.get(cur - timedelta(days=wd))
-                if st:
-                    hours = _calc_shift_hours(st.work_start, st.work_end)
-                    breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "workday", "hours": hours, "shift": st.name, "work_start": st.work_start, "work_end": st.work_end, "holiday_name": None})
-                else:
-                    hours = _calc_shift_hours(default_ws, default_we)
-                    breakdown.append({"date": cur.isoformat(), "weekday": wd, "type": "workday", "hours": hours, "shift": None, "work_start": default_ws, "work_end": default_we, "holiday_name": None})
-                total_hours += hours
-            cur += timedelta(days=1)
-
-        return {"total_hours": round(total_hours * 2) / 2, "breakdown": breakdown}
+        return _build_workday_hours_payload(session, employee_id, start_date, end_date)
     finally:
         session.close()
 
@@ -557,11 +519,12 @@ def substitute_respond(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        leave = session.query(LeaveRecord).filter(
+            LeaveRecord.id == leave_id,
+            LeaveRecord.substitute_employee_id == emp.id,
+        ).first()
         if not leave:
             raise HTTPException(status_code=404, detail="請假記錄不存在")
-        if leave.substitute_employee_id != emp.id:
-            raise HTTPException(status_code=403, detail="您不是此假單的指定代理人")
         if leave.substitute_status != "pending":
             raise HTTPException(status_code=409, detail="此代理請求已回應過，無法重複操作")
 

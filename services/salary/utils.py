@@ -6,6 +6,7 @@ from datetime import date
 from typing import Optional
 
 from .constants import LEAVE_DEDUCTION_RULES, MONTHLY_BASE_DAYS
+from services.workday_rules import classify_day, load_day_rule_maps
 
 
 def _sum_leave_deduction(leaves, daily_salary: float) -> float:
@@ -29,34 +30,27 @@ def _sum_leave_deduction(leaves, daily_salary: float) -> float:
 
 
 def get_working_days(year: int, month: int, session=None) -> int:
-    """計算指定月份的法定工作日數（週一至週五，排除國定假日）"""
+    """計算指定月份的法定工作日數（含補班日，排除國定假日）"""
     if not 1 <= month <= 12:
         raise ValueError(f"month 必須介於 1–12，收到 {month!r}")
     import calendar
-    from models.database import Holiday, get_session
-
-    cal = calendar.Calendar()
-    # 取得當月所有工作日（週一=0 到 週五=4）
-    workdays = [d for d in cal.itermonthdays2(year, month)
-                if d[0] != 0 and d[1] < 5]
+    from models.database import get_session
 
     # 查詢當月國定假日
     _session = session or get_session()
     try:
         month_start = date(year, month, 1)
         month_end = date(year, month, calendar.monthrange(year, month)[1])
-        holidays = _session.query(Holiday.date).filter(
-            Holiday.date >= month_start,
-            Holiday.date <= month_end,
-            Holiday.is_active == True
-        ).all()
-        holiday_dates = {h.date for h in holidays}
+        holiday_map, makeup_map = load_day_rule_maps(_session, month_start, month_end)
     finally:
         if not session:
             _session.close()
 
-    # 排除落在工作日的國定假日
-    working_days = len([d for d in workdays if date(year, month, d[0]) not in holiday_dates])
+    working_days = 0
+    for day in range(1, month_end.day + 1):
+        current = date(year, month, day)
+        if classify_day(current, holiday_map, makeup_map)["kind"] == "workday":
+            working_days += 1
     return working_days
 
 

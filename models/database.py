@@ -26,12 +26,19 @@ from models.config import (
     SystemConfig, PositionSalaryConfig,
 )
 from models.event import (
-    Holiday, MeetingRecord, SchoolEvent, Announcement, AnnouncementRead, AnnouncementRecipient,
+    Holiday, WorkdayOverride, OfficialCalendarSync,
+    MeetingRecord, SchoolEvent, Announcement, AnnouncementRead, AnnouncementRecipient,
 )
 from models.auth import User
 from models.audit import AuditLog
 from models.approval import ApprovalPolicy, ApprovalLog
 from models.line_config import LineConfig
+from models.report_cache import ReportSnapshot
+from models.activity import (
+    ActivityCourse, ActivitySupply, ActivityRegistration,
+    RegistrationCourse, RegistrationSupply,
+    ParentInquiry, RegistrationChange, ActivityRegistrationSettings,
+)
 
 __all__ = [
     # base
@@ -58,7 +65,8 @@ __all__ = [
     "AttendancePolicy", "BonusConfig", "GradeTarget", "InsuranceRate",
     "SystemConfig", "PositionSalaryConfig",
     # event
-    "Holiday", "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead", "AnnouncementRecipient",
+    "Holiday", "WorkdayOverride", "OfficialCalendarSync",
+    "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead", "AnnouncementRecipient",
     # auth
     "User",
     # audit
@@ -67,4 +75,10 @@ __all__ = [
     "ApprovalPolicy", "ApprovalLog",
     # line
     "LineConfig",
+    # report cache
+    "ReportSnapshot",
+    # activity
+    "ActivityCourse", "ActivitySupply", "ActivityRegistration",
+    "RegistrationCourse", "RegistrationSupply",
+    "ParentInquiry", "RegistrationChange", "ActivityRegistrationSettings",
 ]

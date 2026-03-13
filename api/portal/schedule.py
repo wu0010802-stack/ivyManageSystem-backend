@@ -14,6 +14,7 @@ from models.database import (
     get_session, Employee, Classroom, ShiftAssignment,
     DailyShift, ShiftSwapRequest,
 )
+from services.workday_rules import classify_day, load_day_rule_maps
 from utils.auth import get_current_user
 from utils.schedule_utils import check_weekly_hours_warning
 from ._shared import (
@@ -70,6 +71,7 @@ def get_my_schedule(
         _, last_day = cal_module.monthrange(year, month)
         start = date(year, month, 1)
         end = date(year, month, last_day)
+        holiday_map, makeup_map = load_day_rule_maps(session, start, end)
 
         shift_types = _get_shift_type_map(session, active_only=True)
 
@@ -96,7 +98,8 @@ def get_my_schedule(
         for day_num in range(1, last_day + 1):
             d = date(year, month, day_num)
             weekday = d.weekday()
-            is_weekend = weekday >= 5
+            day_rule = classify_day(d, holiday_map, makeup_map)
+            is_weekend = day_rule["is_weekend"]
 
             # 以 record 存在性（非 shift_type_id 非空）判斷是否為覆蓋日
             # DailyShift(shift_type_id=None) = 換班後明確排休，仍算 override
@@ -113,6 +116,7 @@ def get_my_schedule(
                 "day": day_num,
                 "weekday": WEEKDAY_NAMES[weekday],
                 "is_weekend": is_weekend,
+                "is_makeup_workday": day_rule["is_makeup_workday"],
                 "shift_type_id": shift_type_id,
                 "shift_name": st.name if st else None,
                 "work_start": st.work_start if st else None,
@@ -353,11 +357,12 @@ def respond_swap_request(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        swap = session.query(ShiftSwapRequest).filter(ShiftSwapRequest.id == request_id).first()
+        swap = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.id == request_id,
+            ShiftSwapRequest.target_id == emp.id,
+        ).first()
         if not swap:
             raise HTTPException(status_code=404, detail="找不到該換班申請")
-        if swap.target_id != emp.id:
-            raise HTTPException(status_code=403, detail="您不是此申請的換班對象")
         if swap.status != "pending":
             raise HTTPException(status_code=400, detail="此申請已不是待處理狀態")
 
@@ -472,11 +477,12 @@ def cancel_swap_request(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        swap = session.query(ShiftSwapRequest).filter(ShiftSwapRequest.id == request_id).first()
+        swap = session.query(ShiftSwapRequest).filter(
+            ShiftSwapRequest.id == request_id,
+            ShiftSwapRequest.requester_id == emp.id,
+        ).first()
         if not swap:
             raise HTTPException(status_code=404, detail="找不到該換班申請")
-        if swap.requester_id != emp.id:
-            raise HTTPException(status_code=403, detail="您不是此申請的發起人")
         if swap.status != "pending":
             raise HTTPException(status_code=400, detail="只能撤銷待處理的申請")
 
