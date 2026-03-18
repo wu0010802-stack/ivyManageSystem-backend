@@ -73,6 +73,32 @@ def test_report_cache_service_reuses_fresh_snapshot(db_session):
     assert db_session.query(ReportSnapshot).count() == 1
 
 
+def test_report_cache_service_does_not_commit_outer_session(db_session):
+    calls = []
+
+    classroom = Classroom(name="原始班級", is_active=True)
+    db_session.add(classroom)
+    db_session.commit()
+
+    classroom.name = "尚未提交的變更"
+
+    with db_session.no_autoflush:
+        report_cache_service.get_or_build(
+            db_session,
+            category="unit_test_cache",
+            ttl_seconds=300,
+            params={"scope": "outer-session"},
+            builder=lambda: calls.append("build") or {"value": 1},
+        )
+
+    db_session.rollback()
+
+    assert calls == ["build"]
+    stored = db_session.query(Classroom).one()
+    assert stored.name == "原始班級"
+    assert db_session.query(ReportSnapshot).count() == 1
+
+
 def test_activity_stats_are_served_from_cached_snapshot(db_session, monkeypatch):
     service = ActivityService()
     calls = []

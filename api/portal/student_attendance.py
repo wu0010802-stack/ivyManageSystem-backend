@@ -11,7 +11,10 @@ from openpyxl import Workbook
 from pydantic import BaseModel
 
 from models.database import get_session, Student, StudentAttendance
-from services.student_attendance_report import build_monthly_attendance_report
+from services.student_attendance_report import (
+    build_monthly_attendance_report,
+    invalidate_student_attendance_report_caches,
+)
 from utils.auth import get_current_user
 from ._shared import _get_employee
 from .incidents import _get_teacher_classroom_ids
@@ -157,6 +160,7 @@ def batch_save_class_attendance(
                 session.add(rec)
 
         session.commit()
+        invalidate_student_attendance_report_caches(session)
         logger.info(
             "教師學生點名儲存：emp=%s classroom_id=%d date=%s count=%d",
             emp.name, payload.classroom_id, payload.date, len(payload.entries),

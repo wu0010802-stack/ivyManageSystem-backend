@@ -3,12 +3,14 @@ api/activity.py — 課後才藝報名系統管理後台 API
 """
 
 import logging
+from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func
 
 from models.database import (
     get_session, Classroom,
@@ -107,6 +109,13 @@ def _get_active_classroom(session, classroom_name: str):
     ).first()
 
 
+def _invalidate_activity_dashboard_caches(session, *, summary_only: bool = False) -> None:
+    if summary_only:
+        activity_service.invalidate_summary_cache(session)
+        return
+    activity_service.invalidate_dashboard_caches(session)
+
+
 # ============================================================ #
 # 統計儀表板
 # ============================================================ #
@@ -190,28 +199,48 @@ async def get_registrations(
 
         total = q.count()
         regs = q.order_by(ActivityRegistration.created_at.desc()).offset(skip).limit(limit).all()
+        reg_ids = [r.id for r in regs]
+
+        course_count_map = {}
+        supply_count_map = {}
+        course_name_map: dict[int, list[str]] = defaultdict(list)
+
+        if reg_ids:
+            course_count_map = dict(
+                session.query(
+                    RegistrationCourse.registration_id,
+                    func.count(RegistrationCourse.id),
+                )
+                .filter(RegistrationCourse.registration_id.in_(reg_ids))
+                .group_by(RegistrationCourse.registration_id)
+                .all()
+            )
+            supply_count_map = dict(
+                session.query(
+                    RegistrationSupply.registration_id,
+                    func.count(RegistrationSupply.id),
+                )
+                .filter(RegistrationSupply.registration_id.in_(reg_ids))
+                .group_by(RegistrationSupply.registration_id)
+                .all()
+            )
+            course_rows = (
+                session.query(
+                    RegistrationCourse.registration_id,
+                    RegistrationCourse.status,
+                    ActivityCourse.name,
+                )
+                .join(ActivityCourse, RegistrationCourse.course_id == ActivityCourse.id)
+                .filter(RegistrationCourse.registration_id.in_(reg_ids))
+                .all()
+            )
+            for registration_id, status, course_name in course_rows:
+                course_name_map[registration_id].append(
+                    f"{course_name}（候補）" if status == "waitlist" else course_name
+                )
 
         items = []
         for r in regs:
-            course_count = session.query(RegistrationCourse).filter(
-                RegistrationCourse.registration_id == r.id
-            ).count()
-            supply_count = session.query(RegistrationSupply).filter(
-                RegistrationSupply.registration_id == r.id
-            ).count()
-
-            # 課程摘要
-            rc_rows = (
-                session.query(RegistrationCourse, ActivityCourse)
-                .join(ActivityCourse, RegistrationCourse.course_id == ActivityCourse.id)
-                .filter(RegistrationCourse.registration_id == r.id)
-                .all()
-            )
-            course_names = "、".join(
-                f"{ac.name}（候補）" if rc.status == "waitlist" else ac.name
-                for rc, ac in rc_rows
-            )
-
             items.append({
                 "id": r.id,
                 "student_name": r.student_name,
@@ -220,9 +249,9 @@ async def get_registrations(
                 "email": r.email,
                 "is_paid": r.is_paid,
                 "remark": r.remark or "",
-                "course_count": course_count,
-                "supply_count": supply_count,
-                "course_names": course_names,
+                "course_count": course_count_map.get(r.id, 0),
+                "supply_count": supply_count_map.get(r.id, 0),
+                "course_names": "、".join(course_name_map.get(r.id, [])),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             })
@@ -340,6 +369,7 @@ async def update_payment(
             current_user.get("username", ""),
         )
         session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
         return {"message": f"更新成功，狀態為：{status_str}"}
     except HTTPException:
         raise
@@ -405,6 +435,7 @@ async def promote_waitlist(
             current_user.get("username", ""),
         )
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         return {"message": "成功升為正式報名"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -430,6 +461,7 @@ async def delete_registration(
             current_user.get("username", ""),
         )
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         logger.warning(
             "課後才藝報名已刪除：id=%s operator=%s",
             registration_id, current_user.get("username"),
@@ -452,23 +484,46 @@ async def delete_registration(
 
 @router.get("/courses")
 async def get_courses(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
     current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得課程列表（含報名統計）"""
+    """取得課程列表（含報名統計，支援分頁）"""
     session = get_session()
     try:
-        courses = session.query(ActivityCourse).filter(
-            ActivityCourse.is_active.is_(True)
-        ).order_by(ActivityCourse.id).all()
+        q = session.query(ActivityCourse).filter(ActivityCourse.is_active.is_(True))
+        total = q.count()
+        courses = q.order_by(ActivityCourse.id).offset(skip).limit(limit).all()
+
+        course_ids = [c.id for c in courses]
+        enrolled_map: dict[int, int] = {}
+        waitlist_map: dict[int, int] = {}
+        if course_ids:
+            count_rows = (
+                session.query(
+                    RegistrationCourse.course_id,
+                    RegistrationCourse.status,
+                    func.count(RegistrationCourse.id),
+                )
+                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .filter(
+                    RegistrationCourse.course_id.in_(course_ids),
+                    ActivityRegistration.is_active.is_(True),
+                    RegistrationCourse.status.in_(["enrolled", "waitlist"]),
+                )
+                .group_by(RegistrationCourse.course_id, RegistrationCourse.status)
+                .all()
+            )
+            for course_id, status, cnt in count_rows:
+                if status == "enrolled":
+                    enrolled_map[course_id] = cnt
+                else:
+                    waitlist_map[course_id] = cnt
 
         items = []
         for c in courses:
-            enrolled = activity_service.count_active_course_registrations(
-                session, c.id, status="enrolled"
-            )
-            waitlist = activity_service.count_active_course_registrations(
-                session, c.id, status="waitlist"
-            )
+            enrolled = enrolled_map.get(c.id, 0)
+            waitlist = waitlist_map.get(c.id, 0)
             capacity = c.capacity if c.capacity is not None else 30
             items.append({
                 "id": c.id,
@@ -483,7 +538,7 @@ async def get_courses(
                 "waitlist_count": waitlist,
                 "remaining": max(0, capacity - enrolled),
             })
-        return {"courses": items}
+        return {"courses": items, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
 
@@ -541,6 +596,7 @@ async def create_course(
         )
         session.add(course)
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         return {"message": "課程新增成功", "id": course.id}
     except HTTPException:
         raise
@@ -580,6 +636,7 @@ async def update_course(
             setattr(course, k, v)
 
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         return {"message": "課程更新成功"}
     except HTTPException:
         raise
@@ -614,6 +671,7 @@ async def delete_course(
 
         course.is_active = False
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         return {"message": "課程已停用"}
     except HTTPException:
         raise
@@ -630,19 +688,24 @@ async def delete_course(
 
 @router.get("/supplies")
 async def get_supplies(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
     current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得用品列表"""
+    """取得用品列表（支援分頁）"""
     session = get_session()
     try:
-        supplies = session.query(ActivitySupply).filter(
-            ActivitySupply.is_active.is_(True)
-        ).order_by(ActivitySupply.id).all()
+        q = session.query(ActivitySupply).filter(ActivitySupply.is_active.is_(True))
+        total = q.count()
+        supplies = q.order_by(ActivitySupply.id).offset(skip).limit(limit).all()
         return {
             "supplies": [
                 {"id": s.id, "name": s.name, "price": s.price}
                 for s in supplies
-            ]
+            ],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
         }
     finally:
         session.close()
@@ -665,6 +728,7 @@ async def create_supply(
         supply = ActivitySupply(name=body.name, price=body.price)
         session.add(supply)
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         return {"message": "用品新增成功", "id": supply.id}
     except HTTPException:
         raise
@@ -704,6 +768,7 @@ async def update_supply(
             setattr(supply, k, v)
 
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         return {"message": "用品更新成功"}
     except HTTPException:
         raise
@@ -731,6 +796,7 @@ async def delete_supply(
 
         supply.is_active = False
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         return {"message": "用品已停用"}
     except HTTPException:
         raise
@@ -789,6 +855,7 @@ async def mark_inquiry_read(
             raise HTTPException(status_code=404, detail="找不到提問")
         inquiry.is_read = True
         session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
         return {"message": "已標記為已讀"}
     except HTTPException:
         raise
@@ -812,6 +879,7 @@ async def delete_inquiry(
             raise HTTPException(status_code=404, detail="找不到提問")
         session.delete(inquiry)
         session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
         return {"message": "已刪除"}
     except HTTPException:
         raise
@@ -1013,6 +1081,7 @@ async def public_register(body: PublicRegistrationPayload):
             session.add(rs)
 
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         logger.info("新報名提交：id=%s student=%s", reg.id, reg.student_name)
 
         msg = (
@@ -1044,6 +1113,7 @@ async def public_create_inquiry(body: PublicInquiryPayload):
         )
         session.add(inquiry)
         session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
         return {"message": "感謝您的提問，我們會儘快回覆您！"}
     except Exception as e:
         session.rollback()
@@ -1218,6 +1288,7 @@ async def public_update_registration(body: PublicUpdatePayload):
             session.add(rs)
 
         session.commit()
+        _invalidate_activity_dashboard_caches(session)
         logger.info("前台更新報名：id=%s student=%s", reg.id, reg.student_name)
         return {"message": "資料更新成功！"}
     except HTTPException:

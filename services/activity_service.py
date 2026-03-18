@@ -16,6 +16,14 @@ from services.report_cache_service import report_cache_service
 
 logger = logging.getLogger(__name__)
 
+ACTIVITY_SUMMARY_CACHE_CATEGORIES = (
+    "activity_stats_summary",
+)
+ACTIVITY_DASHBOARD_CACHE_CATEGORIES = (
+    "activity_stats_summary",
+    "activity_stats_charts",
+    "activity_dashboard_table",
+)
 ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS = 60
 ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS = 180
 ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS = 600
@@ -56,6 +64,18 @@ class ActivityService:
         if status is not None:
             query = query.filter(RegistrationCourse.status == status)
         return query.count()
+
+    def invalidate_summary_cache(self, session) -> int:
+        return report_cache_service.invalidate_categories(
+            session,
+            *ACTIVITY_SUMMARY_CACHE_CATEGORIES,
+        )
+
+    def invalidate_dashboard_caches(self, session) -> int:
+        return report_cache_service.invalidate_categories(
+            session,
+            *ACTIVITY_DASHBOARD_CACHE_CATEGORIES,
+        )
 
     # ------------------------------------------------------------------ #
     # 統計儀表板
@@ -504,12 +524,11 @@ class ActivityService:
             raise ValueError("課程不存在")
 
         enrolled_count = (
-            session.query(func.count(RegistrationCourse.id))
-            .filter(
-                RegistrationCourse.course_id == course_id,
-                RegistrationCourse.status == "enrolled",
+            self.count_active_course_registrations(
+                session,
+                course_id,
+                status="enrolled",
             )
-            .scalar() or 0
         )
         capacity = course.capacity if course.capacity is not None else 999
         has_vacancy = enrolled_count < capacity

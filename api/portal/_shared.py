@@ -58,6 +58,8 @@ class LeaveCreatePortal(BaseModel):
     leave_hours: float = 8
     reason: Optional[str] = None
     substitute_employee_id: Optional[int] = None
+    # 補休假單關聯來源加班（leave_type='compensatory' 時建議填寫，確保駁回加班時能自動撤銷）
+    source_overtime_id: Optional[int] = None
 
     @field_validator("leave_hours")
     @classmethod

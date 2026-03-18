@@ -2,9 +2,12 @@
 薪資計算引擎 - SalaryEngine 類別
 """
 
+import calendar
 import logging
 from typing import Dict, List, Optional
 from datetime import date, datetime, time, timedelta
+
+from sqlalchemy.exc import IntegrityError
 
 from ..insurance_service import InsuranceService, InsuranceCalculation
 from ..attendance_parser import AttendanceResult
@@ -22,6 +25,7 @@ from .hourly import _compute_hourly_daily_hours, _calc_daily_hourly_pay
 from .proration import _prorate_for_period, _build_expected_workdays
 from .utils import get_bonus_distribution_month, get_meeting_deduction_period_start, _sum_leave_deduction
 from . import festival as _festival
+from services.student_enrollment import count_students_active_on
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,51 @@ logger = logging.getLogger(__name__)
 def _get_db_session():
     from models.database import get_session
     return get_session()
+
+
+def _fill_salary_record(salary_record, breakdown, engine):
+    """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。"""
+    salary_record.bonus_config_id = engine._bonus_config_id
+    salary_record.attendance_policy_id = engine._attendance_policy_id
+
+    salary_record.base_salary = breakdown.base_salary
+    salary_record.supervisor_allowance = breakdown.supervisor_allowance
+    salary_record.teacher_allowance = breakdown.teacher_allowance
+    salary_record.meal_allowance = breakdown.meal_allowance
+    salary_record.transportation_allowance = breakdown.transportation_allowance
+    salary_record.other_allowance = breakdown.other_allowance
+    salary_record.festival_bonus = breakdown.festival_bonus
+    salary_record.overtime_bonus = breakdown.overtime_bonus
+    salary_record.bonus_separate = breakdown.bonus_separate
+    salary_record.performance_bonus = breakdown.performance_bonus
+    salary_record.special_bonus = breakdown.special_bonus
+    salary_record.bonus_amount = (
+        breakdown.festival_bonus + breakdown.overtime_bonus + breakdown.supervisor_dividend
+    )
+    salary_record.supervisor_dividend = breakdown.supervisor_dividend
+    salary_record.overtime_pay = breakdown.overtime_work_pay
+    salary_record.meeting_overtime_pay = breakdown.meeting_overtime_pay
+    salary_record.meeting_absence_deduction = breakdown.meeting_absence_deduction
+    salary_record.birthday_bonus = breakdown.birthday_bonus
+    salary_record.work_hours = breakdown.work_hours
+    salary_record.hourly_rate = breakdown.hourly_rate
+    salary_record.hourly_total = breakdown.hourly_total
+    salary_record.labor_insurance_employee = breakdown.labor_insurance
+    salary_record.health_insurance_employee = breakdown.health_insurance
+    salary_record.pension_employee = breakdown.pension_self
+    salary_record.late_deduction = breakdown.late_deduction
+    salary_record.early_leave_deduction = breakdown.early_leave_deduction
+    salary_record.missing_punch_deduction = breakdown.missing_punch_deduction
+    salary_record.leave_deduction = breakdown.leave_deduction
+    salary_record.absence_deduction = breakdown.absence_deduction
+    salary_record.other_deduction = breakdown.other_deduction
+    salary_record.gross_salary = breakdown.gross_salary
+    salary_record.total_deduction = breakdown.total_deduction
+    salary_record.net_salary = breakdown.net_salary
+    salary_record.late_count = breakdown.late_count
+    salary_record.early_leave_count = breakdown.early_leave_count
+    salary_record.missing_punch_count = breakdown.missing_punch_count
+    salary_record.absent_count = breakdown.absent_count
 
 
 class SalaryEngine:
@@ -446,12 +495,21 @@ class SalaryEngine:
             'shared_second_result': bonus_result2,
         }
 
-    def _build_classroom_context_from_db(self, session, classroom, employee_id: int) -> Optional[dict]:
+    def _build_classroom_context_from_db(
+        self,
+        session,
+        classroom,
+        employee_id: int,
+        reference_date: Optional[date] = None,
+    ) -> Optional[dict]:
         """從 DB 班級資料建構帶班獎金計算上下文。"""
         if not classroom:
             return None
 
         from models.database import Classroom as DBClassroom, Student
+
+        if reference_date is None:
+            reference_date = date.today()
 
         role = 'assistant_teacher'
         if classroom.head_teacher_id == employee_id:
@@ -463,11 +521,14 @@ class SalaryEngine:
             classroom.assistant_teacher_id is not None
             and classroom.assistant_teacher_id > 0
         )
-        student_count = session.query(Student).filter(
-            Student.classroom_id == classroom.id,
-            Student.is_active == True,
-        ).count()
+        student_count = count_students_active_on(session, reference_date, classroom.id)
 
+        if not classroom.grade:
+            logger.warning(
+                "班級 %s（id=%d）缺少 grade_id，節慶獎金將計算為 0。"
+                "請至班級管理設定年級後重新計算薪資。",
+                classroom.name, classroom.id,
+            )
         classroom_context = {
             'role': role,
             'grade_name': classroom.grade.name if classroom.grade else '',
@@ -487,10 +548,7 @@ class SalaryEngine:
                     None,
                 )
                 if second_class:
-                    second_count = session.query(Student).filter(
-                        Student.classroom_id == second_class.id,
-                        Student.is_active == True,
-                    ).count()
+                    second_count = count_students_active_on(session, reference_date, second_class.id)
                     classroom_context['shared_second_class'] = {
                         'grade_name': second_class.grade.name if second_class.grade else '',
                         'current_enrollment': second_count,
@@ -499,6 +557,230 @@ class SalaryEngine:
         return classroom_context
 
     # ─── 主要計算方法 ────────────────────────────────────────────────────────
+
+    def _calculate_base_gross(self, breakdown, employee: dict, year: int, month: int, allowances) -> float:
+        """計算底薪折算與各類津貼，回傳 contracted_base（用於後續保險計算）。"""
+        contracted_base = employee.get('base_salary', 0) or 0
+        breakdown.base_salary = _prorate_for_period(
+            contracted_base,
+            employee.get('hire_date'),
+            employee.get('resign_date'),
+            year,
+            month,
+        )
+
+        # 處理津貼
+        if allowances:
+            for allowance in allowances:
+                amount = allowance.get('amount', 0)
+                name = allowance.get('name', '')
+
+                if '主管' in name:
+                    breakdown.supervisor_allowance += amount
+                elif '導師' in name:
+                    breakdown.teacher_allowance += amount
+                elif '伙食' in name:
+                    breakdown.meal_allowance += amount
+                elif '交通' in name:
+                    breakdown.transportation_allowance += amount
+                else:
+                    breakdown.other_allowance += amount
+
+        # 相容舊版欄位
+        breakdown.supervisor_allowance += employee.get('supervisor_allowance', 0)
+        breakdown.teacher_allowance += employee.get('teacher_allowance', 0)
+        breakdown.meal_allowance += employee.get('meal_allowance', 0)
+        breakdown.transportation_allowance += employee.get('transportation_allowance', 0)
+        breakdown.other_allowance += employee.get('other_allowance', 0)
+
+        breakdown.performance_bonus = employee.get('performance_bonus', 0)
+        breakdown.special_bonus = employee.get('special_bonus', 0)
+
+        return contracted_base
+
+    def _calculate_bonuses(
+        self,
+        breakdown,
+        employee: dict,
+        year: int,
+        month: int,
+        classroom_context,
+        office_staff_context,
+        bonus_settings,
+        personal_sick_leave_hours: float,
+    ) -> None:
+        """計算節慶獎金、超額獎金、主管紅利、生日禮金，並寫入 breakdown。"""
+        hire_date = employee.get('hire_date')
+        bonus_reference_date = self._get_bonus_reference_date(year, month)
+        is_eligible = self.is_eligible_for_festival_bonus(
+            hire_date,
+            reference_date=bonus_reference_date,
+        )
+
+        emp_title = employee.get('title', '')
+        emp_position = employee.get('position', '')
+        emp_supervisor_role = employee.get('supervisor_role', '')
+
+        bonus_grade_override = employee.get('bonus_grade')
+        _effective_title = self._get_effective_bonus_title(emp_title, bonus_grade_override)
+
+        supervisor_festival_base = self.get_supervisor_festival_bonus(
+            emp_title, emp_position, emp_supervisor_role
+        )
+
+        if supervisor_festival_base is not None:
+            if is_eligible:
+                school_enrollment = office_staff_context.get('school_enrollment', 0) if office_staff_context else 0
+                school_target = self._school_wide_target or 160
+                ratio = school_enrollment / school_target if school_target > 0 else 0
+                breakdown.festival_bonus = round(supervisor_festival_base * ratio)
+            else:
+                breakdown.festival_bonus = 0
+            breakdown.overtime_bonus = 0
+        elif office_staff_context and emp_position:
+            office_base = self.get_office_festival_bonus_base(emp_position, emp_title)
+            if office_base and is_eligible:
+                school_enrollment = office_staff_context.get('school_enrollment', 0)
+                school_target = self._school_wide_target or 160
+                ratio = school_enrollment / school_target if school_target > 0 else 0
+                breakdown.festival_bonus = round(office_base * ratio)
+            else:
+                breakdown.festival_bonus = 0
+            breakdown.overtime_bonus = 0
+        elif classroom_context and emp_position:
+            bonus_result = self._calculate_classroom_bonus_result(
+                _effective_title,
+                classroom_context,
+            )
+            if is_eligible:
+                breakdown.festival_bonus = bonus_result['festival_bonus']
+                breakdown.overtime_bonus = bonus_result['overtime_bonus']
+            else:
+                breakdown.festival_bonus = 0
+                breakdown.overtime_bonus = 0
+        elif bonus_settings:
+            base_amount = bonus_settings.get('festival_base', 0)
+            position_bonus_base = bonus_settings.get('position_bonus_base', {})
+
+            if position_bonus_base and emp_title and emp_title in position_bonus_base:
+                base_amount = position_bonus_base[emp_title]
+
+            bonus = self.calculate_bonus(
+                bonus_settings.get('target', 0),
+                bonus_settings.get('current', 0),
+                base_amount,
+                bonus_settings.get('overtime_per', 500)
+            )
+            breakdown.festival_bonus = bonus['festival_bonus']
+            breakdown.overtime_bonus = bonus['overtime_bonus']
+
+        # 計算主管紅利
+        breakdown.supervisor_dividend = self.get_supervisor_dividend(
+            emp_title, emp_position, emp_supervisor_role
+        )
+
+        # 非發放月份不計節慶獎金與超額獎金
+        if not get_bonus_distribution_month(month):
+            breakdown.festival_bonus = 0
+            breakdown.overtime_bonus = 0
+
+        # 事假+病假累計超過40小時：取消所有節慶獎金及紅利（非工資）
+        breakdown.personal_sick_leave_hours = personal_sick_leave_hours
+        if personal_sick_leave_hours > 40:
+            breakdown.festival_bonus = 0
+            breakdown.overtime_bonus = 0
+            breakdown.supervisor_dividend = 0
+
+        # 生日禮金：當月壽星 $500
+        birthday_val = employee.get('birthday')
+        if birthday_val:
+            if isinstance(birthday_val, str):
+                try:
+                    birthday_val = datetime.strptime(birthday_val, '%Y-%m-%d').date()
+                except ValueError:
+                    birthday_val = None
+            if birthday_val and birthday_val.month == month:
+                breakdown.birthday_bonus = 500
+
+    def _calculate_deductions(
+        self,
+        breakdown,
+        employee: dict,
+        attendance,
+        leave_deduction: float,
+        meeting_context,
+        overtime_work_pay: float,
+        month: int,
+    ) -> None:
+        """計算保險、考勤扣款、請假扣款、園務會議費用，彙總 total_deduction。"""
+        if employee.get('employee_type') != 'hourly':
+            contracted_base = employee.get('base_salary', 0) or 0
+            pension_rate = employee.get("pension_self_rate", 0.0)
+            _ins_raw = employee.get('insurance_salary') or contracted_base
+            _ins_salary = (self.insurance_service.get_bracket(_ins_raw)["amount"] if _ins_raw else 0)
+            insurance = self.insurance_service.calculate(
+                _ins_salary,
+                employee.get('dependents', 0),
+                pension_self_rate=pension_rate
+            )
+            breakdown.labor_insurance = insurance.labor_employee
+            breakdown.health_insurance = insurance.health_employee
+            breakdown.pension_self = insurance.pension_employee
+
+        # 考勤扣款
+        base_sal = employee.get('base_salary', 0) or 0
+        daily_salary = base_sal / MONTHLY_BASE_DAYS if base_sal else 0
+        late_details = employee.get('_late_details', None)
+        if attendance:
+            att_ded = self.calculate_attendance_deduction(
+                attendance, daily_salary=daily_salary, base_salary=base_sal, late_details=late_details
+            )
+            breakdown.late_deduction = att_ded['late_deduction']
+            breakdown.early_leave_deduction = att_ded['early_leave_deduction']
+            breakdown.missing_punch_deduction = 0  # 不扣款
+            breakdown.late_count = att_ded['late_count']
+            breakdown.early_leave_count = att_ded['early_leave_count']
+            breakdown.missing_punch_count = att_ded['missing_punch_count']
+            breakdown.total_late_minutes = att_ded['total_late_minutes']
+            breakdown.total_early_minutes = att_ded['total_early_minutes']
+
+        breakdown.leave_deduction = leave_deduction
+
+        # 園務會議加班費與缺席扣款
+        if meeting_context:
+            attended = meeting_context.get('attended', 0)
+            absent = meeting_context.get('absent', 0)
+            work_end = meeting_context.get('work_end_time', '17:00')
+
+            if work_end == '18:00':
+                per_meeting_pay = self._meeting_pay_6pm
+            else:
+                per_meeting_pay = self._meeting_pay
+
+            breakdown.meeting_overtime_pay = attended * per_meeting_pay
+            breakdown.meeting_attended = attended
+            breakdown.meeting_absent = absent
+
+            if get_bonus_distribution_month(month):
+                absent_for_deduction = meeting_context.get('absent_period', absent)
+                breakdown.meeting_absence_deduction = absent_for_deduction * self._meeting_absence_penalty
+                breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
+
+        # 將園務會議加班費與核准加班費加入應發總額
+        breakdown.overtime_work_pay = overtime_work_pay
+        breakdown.gross_salary += breakdown.meeting_overtime_pay + overtime_work_pay
+
+        # 計算扣款總額
+        breakdown.total_deduction = (
+            breakdown.labor_insurance +
+            breakdown.health_insurance +
+            breakdown.pension_self +
+            breakdown.late_deduction +
+            breakdown.early_leave_deduction +
+            breakdown.leave_deduction +
+            breakdown.absence_deduction +
+            breakdown.other_deduction
+        )
 
     def calculate_attendance_deduction(self, attendance: AttendanceResult, daily_salary: float = 0, base_salary: float = 0, late_details: list = None) -> dict:
         """
@@ -644,219 +926,28 @@ class SalaryEngine:
             breakdown.gross_salary = breakdown.hourly_total
         else:
             # 正職員工
-            contracted_base = employee.get('base_salary', 0) or 0
-            breakdown.base_salary = _prorate_for_period(
-                contracted_base,
-                employee.get('hire_date'),
-                employee.get('resign_date'),
-                year,
-                month,
+            self._calculate_base_gross(breakdown, employee, year, month, allowances)
+            self._calculate_bonuses(
+                breakdown, employee, year, month,
+                classroom_context, office_staff_context,
+                bonus_settings, personal_sick_leave_hours,
             )
-
-            # 處理津貼
-            if allowances:
-                for allowance in allowances:
-                    amount = allowance.get('amount', 0)
-                    name = allowance.get('name', '')
-
-                    if '主管' in name:
-                        breakdown.supervisor_allowance += amount
-                    elif '導師' in name:
-                        breakdown.teacher_allowance += amount
-                    elif '伙食' in name:
-                        breakdown.meal_allowance += amount
-                    elif '交通' in name:
-                        breakdown.transportation_allowance += amount
-                    else:
-                        breakdown.other_allowance += amount
-
-            # 相容舊版欄位
-            breakdown.supervisor_allowance += employee.get('supervisor_allowance', 0)
-            breakdown.teacher_allowance += employee.get('teacher_allowance', 0)
-            breakdown.meal_allowance += employee.get('meal_allowance', 0)
-            breakdown.transportation_allowance += employee.get('transportation_allowance', 0)
-            breakdown.other_allowance += employee.get('other_allowance', 0)
-
-            # 檢查是否符合領取節慶獎金資格（入職滿3個月）
-            hire_date = employee.get('hire_date')
-            bonus_reference_date = self._get_bonus_reference_date(year, month)
-            is_eligible = self.is_eligible_for_festival_bonus(
-                hire_date,
-                reference_date=bonus_reference_date,
-            )
-
-            # 獎金計算
-            emp_title = employee.get('title', '')
-            emp_position = employee.get('position', '')
-            emp_supervisor_role = employee.get('supervisor_role', '')
-
-            # 計算節慶獎金用的有效職稱（bonus_grade 可覆蓋職稱等級）
-            bonus_grade_override = employee.get('bonus_grade')
-            _effective_title = self._get_effective_bonus_title(emp_title, bonus_grade_override)
-
-            supervisor_festival_base = self.get_supervisor_festival_bonus(
-                emp_title, emp_position, emp_supervisor_role
-            )
-
-            if supervisor_festival_base is not None:
-                # 主管節慶獎金 = 固定基數 × 全校比例
-                if is_eligible:
-                    school_enrollment = office_staff_context.get('school_enrollment', 0) if office_staff_context else 0
-                    school_target = self._school_wide_target or 160
-                    ratio = school_enrollment / school_target if school_target > 0 else 0
-                    breakdown.festival_bonus = round(supervisor_festival_base * ratio)
-                else:
-                    breakdown.festival_bonus = 0
-                breakdown.overtime_bonus = 0
-            elif office_staff_context and emp_position:
-                office_base = self.get_office_festival_bonus_base(emp_position, emp_title)
-                if office_base and is_eligible:
-                    school_enrollment = office_staff_context.get('school_enrollment', 0)
-                    school_target = self._school_wide_target or 160
-                    ratio = school_enrollment / school_target if school_target > 0 else 0
-                    breakdown.festival_bonus = round(office_base * ratio)
-                else:
-                    breakdown.festival_bonus = 0
-                breakdown.overtime_bonus = 0
-            elif classroom_context and emp_position:
-                bonus_result = self._calculate_classroom_bonus_result(
-                    _effective_title,
-                    classroom_context,
-                )
-                if is_eligible:
-                    breakdown.festival_bonus = bonus_result['festival_bonus']
-                    breakdown.overtime_bonus = bonus_result['overtime_bonus']
-                else:
-                    breakdown.festival_bonus = 0
-                    breakdown.overtime_bonus = 0
-            elif bonus_settings:
-                # 舊版計算方式（相容性保留）
-                base_amount = bonus_settings.get('festival_base', 0)
-                position_bonus_base = bonus_settings.get('position_bonus_base', {})
-
-                if position_bonus_base and emp_title and emp_title in position_bonus_base:
-                    base_amount = position_bonus_base[emp_title]
-
-                bonus = self.calculate_bonus(
-                    bonus_settings.get('target', 0),
-                    bonus_settings.get('current', 0),
-                    base_amount,
-                    bonus_settings.get('overtime_per', 500)
-                )
-                breakdown.festival_bonus = bonus['festival_bonus']
-                breakdown.overtime_bonus = bonus['overtime_bonus']
-
-            breakdown.performance_bonus = employee.get('performance_bonus', 0)
-            breakdown.special_bonus = employee.get('special_bonus', 0)
-
-            # 計算主管紅利
-            breakdown.supervisor_dividend = self.get_supervisor_dividend(
-                emp_title, emp_position, emp_supervisor_role
-            )
-
-            # 非發放月份不計節慶獎金與超額獎金
-            if not get_bonus_distribution_month(month):
-                breakdown.festival_bonus = 0
-                breakdown.overtime_bonus = 0
-
-            # 事假+病假累計超過40小時：取消所有節慶獎金及紅利（非工資）
-            breakdown.personal_sick_leave_hours = personal_sick_leave_hours
-            if personal_sick_leave_hours > 40:
-                breakdown.festival_bonus = 0
-                breakdown.overtime_bonus = 0
-                breakdown.supervisor_dividend = 0
-
-            # 生日禮金：當月壽星 $500
-            birthday_val = employee.get('birthday')
-            if birthday_val:
-                if isinstance(birthday_val, str):
-                    try:
-                        birthday_val = datetime.strptime(birthday_val, '%Y-%m-%d').date()
-                    except ValueError:
-                        birthday_val = None
-                if birthday_val and birthday_val.month == month:
-                    breakdown.birthday_bonus = 500
-
-            # 計算應發總額（festival_bonus / overtime_bonus 獨立轉帳，不計入月薪）
             breakdown.gross_salary = (
-                breakdown.base_salary +
-                breakdown.supervisor_allowance +
-                breakdown.teacher_allowance +
-                breakdown.meal_allowance +
-                breakdown.transportation_allowance +
-                breakdown.other_allowance +
-                breakdown.performance_bonus +
-                breakdown.special_bonus +
-                breakdown.supervisor_dividend +
-                breakdown.birthday_bonus
+                breakdown.base_salary
+                + breakdown.supervisor_allowance
+                + breakdown.teacher_allowance
+                + breakdown.meal_allowance
+                + breakdown.transportation_allowance
+                + breakdown.other_allowance
+                + breakdown.performance_bonus
+                + breakdown.special_bonus
+                + breakdown.supervisor_dividend
+                + breakdown.birthday_bonus
             )
 
-            # 勞健保計算
-            pension_rate = employee.get("pension_self_rate", 0.0)
-            _ins_raw = employee.get('insurance_salary') or contracted_base
-            _ins_salary = (self.insurance_service.get_bracket(_ins_raw)["amount"] if _ins_raw else 0)
-            insurance = self.insurance_service.calculate(
-                _ins_salary,
-                employee.get('dependents', 0),
-                pension_self_rate=pension_rate
-            )
-            breakdown.labor_insurance = insurance.labor_employee
-            breakdown.health_insurance = insurance.health_employee
-            breakdown.pension_self = insurance.pension_employee
-
-        # 考勤扣款
-        base_sal = employee.get('base_salary', 0) or 0
-        daily_salary = base_sal / MONTHLY_BASE_DAYS if base_sal else 0
-        late_details = employee.get('_late_details', None)
-        if attendance:
-            att_ded = self.calculate_attendance_deduction(
-                attendance, daily_salary=daily_salary, base_salary=base_sal, late_details=late_details
-            )
-            breakdown.late_deduction = att_ded['late_deduction']
-            breakdown.early_leave_deduction = att_ded['early_leave_deduction']
-            breakdown.missing_punch_deduction = 0  # 不扣款
-            breakdown.late_count = att_ded['late_count']
-            breakdown.early_leave_count = att_ded['early_leave_count']
-            breakdown.missing_punch_count = att_ded['missing_punch_count']
-            breakdown.total_late_minutes = att_ded['total_late_minutes']
-            breakdown.total_early_minutes = att_ded['total_early_minutes']
-
-        breakdown.leave_deduction = leave_deduction
-
-        # 園務會議加班費與缺席扣款
-        if meeting_context:
-            attended = meeting_context.get('attended', 0)
-            absent = meeting_context.get('absent', 0)
-            work_end = meeting_context.get('work_end_time', '17:00')
-
-            if work_end == '18:00':
-                per_meeting_pay = self._meeting_pay_6pm
-            else:
-                per_meeting_pay = self._meeting_pay
-
-            breakdown.meeting_overtime_pay = attended * per_meeting_pay
-            breakdown.meeting_attended = attended
-            breakdown.meeting_absent = absent
-
-            if get_bonus_distribution_month(month):
-                absent_for_deduction = meeting_context.get('absent_period', absent)
-                breakdown.meeting_absence_deduction = absent_for_deduction * self._meeting_absence_penalty
-                breakdown.festival_bonus = max(0, breakdown.festival_bonus - breakdown.meeting_absence_deduction)
-
-        # 將園務會議加班費與核准加班費加入應發總額
-        breakdown.overtime_work_pay = overtime_work_pay
-        breakdown.gross_salary += breakdown.meeting_overtime_pay + overtime_work_pay
-
-        # 計算扣款總額
-        breakdown.total_deduction = (
-            breakdown.labor_insurance +
-            breakdown.health_insurance +
-            breakdown.pension_self +
-            breakdown.late_deduction +
-            breakdown.early_leave_deduction +
-            breakdown.leave_deduction +
-            breakdown.absence_deduction +
-            breakdown.other_deduction
+        self._calculate_deductions(
+            breakdown, employee, attendance, leave_deduction,
+            meeting_context, overtime_work_pay, month,
         )
 
         # 獎金獨立轉帳旗標
@@ -884,6 +975,9 @@ class SalaryEngine:
         session = _get_db_session()
         try:
             from models.database import Employee, Classroom, ClassGrade, JobTitle, Student
+
+            _, month_last_day = calendar.monthrange(year, month)
+            month_end = date(year, month, month_last_day)
 
             emp = session.query(Employee).get(employee_id)
             if not emp:
@@ -922,7 +1016,7 @@ class SalaryEngine:
                 remark = "未滿3個月"
 
             # 提前查一次全校在籍人數，主管與辦公室分支共用
-            school_active_students = session.query(Student).filter(Student.is_active == True).count()
+            school_active_students = count_students_active_on(session, month_end)
 
             supervisor_base = self.get_supervisor_festival_bonus(title_name, position, supervisor_role)
             if supervisor_base:
@@ -951,7 +1045,9 @@ class SalaryEngine:
 
             elif classroom:
                 category = "帶班老師"
-                classroom_context = self._build_classroom_context_from_db(session, classroom, emp.id)
+                classroom_context = self._build_classroom_context_from_db(
+                    session, classroom, emp.id, reference_date=month_end
+                )
                 current_enrollment = classroom_context.get('current_enrollment', 0)
                 bonus_result = self._calculate_classroom_bonus_result(
                     effective_title,
@@ -989,270 +1085,325 @@ class SalaryEngine:
         finally:
             session.close()
 
+    # ─── process_salary_calculation 私有輔助方法 ─────────────────────────────
+
+    def _load_emp_dict(self, emp) -> dict:
+        """從 Employee ORM 物件建構計算用字典。"""
+        title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
+        return {
+            'employee_id': emp.employee_id,
+            'name': emp.name,
+            'title': title_name,
+            'position': emp.position,
+            'supervisor_role': emp.supervisor_role,
+            'bonus_grade': getattr(emp, 'bonus_grade', None) or None,
+            'employee_type': emp.employee_type,
+            'base_salary': emp.base_salary,
+            'hourly_rate': emp.hourly_rate,
+            'work_hours': 0,
+            'supervisor_allowance': emp.supervisor_allowance,
+            'teacher_allowance': emp.teacher_allowance,
+            'meal_allowance': emp.meal_allowance,
+            'transportation_allowance': emp.transportation_allowance,
+            'other_allowance': emp.other_allowance,
+            'insurance_salary': (
+                self.insurance_service.get_bracket(
+                    emp.insurance_salary_level if emp.insurance_salary_level and emp.insurance_salary_level > 0
+                    else emp.base_salary
+                )["amount"]
+                if (emp.insurance_salary_level or emp.base_salary) else 0
+            ),
+            'dependents': emp.dependents,
+            'pension_self_rate': emp.pension_self_rate or 0,
+            'hire_date': emp.hire_date,
+            'resign_date': getattr(emp, 'resign_date', None),
+            'birthday': emp.birthday,
+        }
+
+    def _load_attendance_result(self, session, emp, start_date: date, end_date: date, emp_dict: dict) -> tuple:
+        """查詢考勤、彙總統計，時薪制計算 hourly_calculated_pay（mutates emp_dict）。回傳 AttendanceResult。"""
+        from models.database import Attendance
+
+        attendances = session.query(Attendance).filter(
+            Attendance.employee_id == emp.id,
+            Attendance.attendance_date >= start_date,
+            Attendance.attendance_date <= end_date
+        ).all()
+
+        late_count = sum(1 for a in attendances if a.is_late)
+        early_count = sum(1 for a in attendances if a.is_early_leave)
+        missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
+        missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
+        total_late_minutes = sum(a.late_minutes or 0 for a in attendances if a.is_late)
+        total_early_minutes = sum(a.early_leave_minutes or 0 for a in attendances if a.is_early_leave)
+
+        late_details = [a.late_minutes or 0 for a in attendances if a.is_late and (a.late_minutes or 0) > 0]
+        emp_dict['_late_details'] = late_details
+
+        if emp.employee_type == 'hourly':
+            _work_end_t = datetime.strptime(emp.work_end_time or "17:00", "%H:%M").time()
+            total_hours = 0.0
+            total_hourly_pay = 0.0
+            for a in attendances:
+                if not a.punch_in_time:
+                    continue
+                day_hours = _compute_hourly_daily_hours(
+                    a.punch_in_time, a.punch_out_time, _work_end_t
+                )
+                total_hours += day_hours
+                total_hourly_pay += _calc_daily_hourly_pay(day_hours, emp.hourly_rate or 0)
+            emp_dict['work_hours'] = round(total_hours, 2)
+            emp_dict['hourly_calculated_pay'] = round(total_hourly_pay, 2)
+
+        return AttendanceResult(
+            employee_name=emp.name,
+            total_days=len(attendances),
+            normal_days=len(attendances) - late_count - early_count,
+            late_count=late_count,
+            early_leave_count=early_count,
+            missing_punch_in_count=missing_in,
+            missing_punch_out_count=missing_out,
+            total_late_minutes=total_late_minutes,
+            total_early_minutes=total_early_minutes,
+            details=[]
+        ), attendances
+
+    def _load_allowances_list(self, session, emp) -> List[dict]:
+        """查詢員工有效津貼，回傳 [{'name': ..., 'amount': ...}, ...]。"""
+        from models.database import EmployeeAllowance, AllowanceType
+
+        emp_allowances = session.query(EmployeeAllowance).filter(
+            EmployeeAllowance.employee_id == emp.id,
+            EmployeeAllowance.is_active == True,
+        ).all()
+
+        allowance_type_ids = [ea.allowance_type_id for ea in emp_allowances]
+        if allowance_type_ids:
+            allowance_type_map = {
+                at.id: at
+                for at in session.query(AllowanceType).filter(
+                    AllowanceType.id.in_(allowance_type_ids)
+                ).all()
+            }
+        else:
+            allowance_type_map = {}
+
+        allowances = []
+        for ea in emp_allowances:
+            a_type = allowance_type_map.get(ea.allowance_type_id)
+            if a_type:
+                allowances.append({
+                    'name': a_type.name,
+                    'amount': ea.amount
+                })
+        return allowances
+
+    def _build_contexts(self, session, emp, end_date: date) -> tuple:
+        """建構 (classroom_context, office_staff_context)。"""
+        from models.database import Classroom
+
+        classroom_context = None
+        office_staff_context = None
+
+        if emp.classroom_id:
+            classroom = session.query(Classroom).get(emp.classroom_id)
+            classroom_context = self._build_classroom_context_from_db(
+                session, classroom, emp.id, reference_date=end_date
+            )
+
+        title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
+        supervisor_role = emp.supervisor_role or ''
+        is_supervisor = self.get_supervisor_festival_bonus(
+            title_name, emp.position or '', supervisor_role
+        ) is not None
+        office_bonus_base = self.get_office_festival_bonus_base(emp.position or '', title_name)
+
+        if is_supervisor or (office_bonus_base is not None and not classroom_context):
+            total_students = count_students_active_on(session, end_date)
+            office_staff_context = {
+                'school_enrollment': total_students
+            }
+
+        return classroom_context, office_staff_context
+
+    def _load_period_records(self, session, emp, start_date: date, end_date: date, year: int, month: int, daily_salary: float) -> dict:
+        """查詢請假、加班、園務會議記錄，回傳計算所需彙總資料。"""
+        from models.database import LeaveRecord, OvertimeRecord as DBOvertimeRecord, MeetingRecord
+
+        # 已核准請假
+        approved_leaves = session.query(LeaveRecord).filter(
+            LeaveRecord.employee_id == emp.id,
+            LeaveRecord.is_approved == True,
+            LeaveRecord.start_date <= end_date,
+            LeaveRecord.end_date >= start_date
+        ).all()
+        leave_deduction_total = _sum_leave_deduction(approved_leaves, daily_salary)
+        personal_sick_leave_hours = sum(
+            lv.leave_hours or 0
+            for lv in approved_leaves
+            if lv.leave_type in ('personal', 'sick')
+        )
+
+        # 已核准加班
+        approved_overtimes = session.query(DBOvertimeRecord).filter(
+            DBOvertimeRecord.employee_id == emp.id,
+            DBOvertimeRecord.is_approved == True,
+            DBOvertimeRecord.overtime_date >= start_date,
+            DBOvertimeRecord.overtime_date <= end_date
+        ).all()
+        overtime_work_pay_total = sum(o.overtime_pay or 0 for o in approved_overtimes)
+
+        # 園務會議
+        meeting_records = session.query(MeetingRecord).filter(
+            MeetingRecord.employee_id == emp.id,
+            MeetingRecord.meeting_date >= start_date,
+            MeetingRecord.meeting_date <= end_date
+        ).all()
+
+        meeting_attended = sum(1 for m in meeting_records if m.attended)
+        meeting_absent_current = sum(1 for m in meeting_records if not m.attended)
+
+        absent_period = meeting_absent_current
+        period_start = get_meeting_deduction_period_start(year, month)
+        if period_start is not None and period_start < start_date:
+            prior_records = session.query(MeetingRecord).filter(
+                MeetingRecord.employee_id == emp.id,
+                MeetingRecord.meeting_date >= period_start,
+                MeetingRecord.meeting_date < start_date,
+            ).all()
+            absent_period += sum(1 for m in prior_records if not m.attended)
+
+        meeting_context = None
+        if meeting_records or absent_period > 0:
+            meeting_context = {
+                'attended': meeting_attended,
+                'absent': meeting_absent_current,
+                'absent_period': absent_period,
+                'work_end_time': emp.work_end_time or '17:00',
+            }
+
+        return {
+            'leave_deduction': leave_deduction_total,
+            'personal_sick_leave_hours': personal_sick_leave_hours,
+            'overtime_work_pay': overtime_work_pay_total,
+            'meeting_context': meeting_context,
+            'approved_leaves': approved_leaves,
+        }
+
+    def _detect_absences(self, session, emp, attendances, approved_leaves, start_date: date, end_date: date, year: int, month: int) -> tuple:
+        """曠職偵測邏輯，回傳 (absent_count: int, absence_deduction_amount: float)。"""
+        if emp.employee_type == 'hourly':
+            return 0, 0
+
+        from models.database import Holiday, DailyShift as _DailyShift
+
+        holidays_in_month = session.query(Holiday.date).filter(
+            Holiday.date >= start_date,
+            Holiday.date <= end_date,
+            Holiday.is_active == True
+        ).all()
+        holiday_set = {h.date for h in holidays_in_month}
+
+        daily_shifts_in_month = session.query(_DailyShift).filter(
+            _DailyShift.employee_id == emp.id,
+            _DailyShift.date >= start_date,
+            _DailyShift.date <= end_date,
+        ).all()
+        daily_shift_map = {ds.date: ds.shift_type_id for ds in daily_shifts_in_month}
+
+        expected_workdays = _build_expected_workdays(
+            year=year,
+            month=month,
+            holiday_set=holiday_set,
+            daily_shift_map=daily_shift_map,
+            hire_date_raw=emp.hire_date,
+            resign_date_raw=getattr(emp, 'resign_date', None),
+        )
+
+        attendance_dates = {
+            (a.attendance_date.date() if isinstance(a.attendance_date, datetime) else a.attendance_date)
+            for a in attendances
+        }
+
+        from datetime import timedelta as _td
+        leave_covered: set = set()
+        for lv in approved_leaves:
+            d = lv.start_date.date() if isinstance(lv.start_date, datetime) else lv.start_date
+            lv_end = lv.end_date.date() if isinstance(lv.end_date, datetime) else lv.end_date
+            while d <= lv_end:
+                if start_date <= d <= end_date:
+                    leave_covered.add(d)
+                d += _td(days=1)
+
+        absent_days = expected_workdays - attendance_dates - leave_covered
+        absent_count = len(absent_days)
+        daily_salary_full = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
+        absence_deduction_amount = absent_count * daily_salary_full
+        if absent_count > 0:
+            logger.info(
+                "曠職偵測：emp_id=%d %d/%d 曠職 %d 天，扣款 %d 元（%s）",
+                emp.id, year, month, absent_count, absence_deduction_amount,
+                sorted(absent_days)
+            )
+
+        return absent_count, absence_deduction_amount
+
     def process_salary_calculation(self, employee_id: int, year: int, month: int):
         """處理單一員工薪資計算並儲存結果"""
         session = _get_db_session()
         try:
-            from models.database import Employee, Attendance, SalaryRecord, EmployeeAllowance, AllowanceType, Classroom, ClassGrade, JobTitle, SalaryItem, Student
+            from models.database import Employee, SalaryRecord
 
             # 1. 取得員工資料
             emp = session.query(Employee).get(employee_id)
             if not emp:
                 raise ValueError(f"Employee {employee_id} not found")
 
-            title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
-
             # 2. 轉換為 dict
-            emp_dict = {
-                'employee_id': emp.employee_id,
-                'name': emp.name,
-                'title': title_name,
-                'position': emp.position,
-                'supervisor_role': emp.supervisor_role,
-                'bonus_grade': getattr(emp, 'bonus_grade', None) or None,
-                'employee_type': emp.employee_type,
-                'base_salary': emp.base_salary,
-                'hourly_rate': emp.hourly_rate,
-                'work_hours': 0,
-                'supervisor_allowance': emp.supervisor_allowance,
-                'teacher_allowance': emp.teacher_allowance,
-                'meal_allowance': emp.meal_allowance,
-                'transportation_allowance': emp.transportation_allowance,
-                'other_allowance': emp.other_allowance,
-                'insurance_salary': (
-                    self.insurance_service.get_bracket(
-                        emp.insurance_salary_level if emp.insurance_salary_level and emp.insurance_salary_level > 0
-                        else emp.base_salary
-                    )["amount"]
-                    if (emp.insurance_salary_level or emp.base_salary) else 0
-                ),
-                'dependents': emp.dependents,
-                'pension_self_rate': emp.pension_self_rate or 0,
-                'hire_date': emp.hire_date,
-                'resign_date': getattr(emp, 'resign_date', None),
-                'birthday': emp.birthday,
-            }
+            emp_dict = self._load_emp_dict(emp)
 
-            # 3. 取得考勤並計算統計
+            # 3. 計算日期範圍
             import calendar
             _, last_day = calendar.monthrange(year, month)
             start_date = date(year, month, 1)
             end_date = date(year, month, last_day)
 
-            attendances = session.query(Attendance).filter(
-                Attendance.employee_id == emp.id,
-                Attendance.attendance_date >= start_date,
-                Attendance.attendance_date <= end_date
-            ).all()
-
-            late_count = sum(1 for a in attendances if a.is_late)
-            early_count = sum(1 for a in attendances if a.is_early_leave)
-            missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
-            missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
-            total_late_minutes = sum(a.late_minutes or 0 for a in attendances if a.is_late)
-            total_early_minutes = sum(a.early_leave_minutes or 0 for a in attendances if a.is_early_leave)
-
-            late_details = [a.late_minutes or 0 for a in attendances if a.is_late and (a.late_minutes or 0) > 0]
-            emp_dict['_late_details'] = late_details
-
-            total_hours = 0.0
-            total_hourly_pay = 0.0
-            if emp.employee_type == 'hourly':
-                _work_end_t = datetime.strptime(emp.work_end_time or "17:00", "%H:%M").time()
-                for a in attendances:
-                    if not a.punch_in_time:
-                        continue
-                    day_hours = _compute_hourly_daily_hours(
-                        a.punch_in_time, a.punch_out_time, _work_end_t
-                    )
-                    total_hours += day_hours
-                    total_hourly_pay += _calc_daily_hourly_pay(day_hours, emp.hourly_rate or 0)
-                emp_dict['work_hours'] = round(total_hours, 2)
-                emp_dict['hourly_calculated_pay'] = round(total_hourly_pay, 2)
-
-            attendance_result = AttendanceResult(
-                employee_name=emp.name,
-                total_days=len(attendances),
-                normal_days=len(attendances) - late_count - early_count,
-                late_count=late_count,
-                early_leave_count=early_count,
-                missing_punch_in_count=missing_in,
-                missing_punch_out_count=missing_out,
-                total_late_minutes=total_late_minutes,
-                total_early_minutes=total_early_minutes,
-                details=[]
+            # 4. 取得考勤並計算統計
+            attendance_result, attendances = self._load_attendance_result(
+                session, emp, start_date, end_date, emp_dict
             )
 
-            # 4. 取得津貼
-            allowances = []
-            emp_allowances = session.query(EmployeeAllowance).filter(
-                EmployeeAllowance.employee_id == emp.id,
-                EmployeeAllowance.is_active == True,
-            ).all()
+            # 5. 取得津貼
+            allowances = self._load_allowances_list(session, emp)
 
-            allowance_type_ids = [ea.allowance_type_id for ea in emp_allowances]
-            if allowance_type_ids:
-                allowance_type_map = {
-                    at.id: at
-                    for at in session.query(AllowanceType).filter(
-                        AllowanceType.id.in_(allowance_type_ids)
-                    ).all()
-                }
-            else:
-                allowance_type_map = {}
+            # 6. 建構 Classroom Context 與 Office Context
+            classroom_context, office_staff_context = self._build_contexts(session, emp, end_date)
 
-            for ea in emp_allowances:
-                a_type = allowance_type_map.get(ea.allowance_type_id)
-                if a_type:
-                    allowances.append({
-                        'name': a_type.name,
-                        'amount': ea.amount
-                    })
-
-            # 5. 建構 Classroom Context
-            classroom_context = None
-            office_staff_context = None
-
-            if emp.classroom_id:
-                classroom = session.query(Classroom).get(emp.classroom_id)
-                classroom_context = self._build_classroom_context_from_db(session, classroom, emp.id)
-
-            # 5b. 主管或特定非帶班職位需要全校比例
-            title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or '')
-            supervisor_role = emp.supervisor_role or ''
-            is_supervisor = self.get_supervisor_festival_bonus(
-                title_name, emp.position or '', supervisor_role
-            ) is not None
-            office_bonus_base = self.get_office_festival_bonus_base(emp.position or '', title_name)
-
-            if is_supervisor or (office_bonus_base is not None and not classroom_context):
-                total_students = session.query(Student).filter(Student.is_active == True).count()
-                office_staff_context = {
-                    'school_enrollment': total_students
-                }
-
-            # 5c. 查詢已核准請假記錄
-            from models.database import LeaveRecord, OvertimeRecord as DBOvertimeRecord
-            approved_leaves = session.query(LeaveRecord).filter(
-                LeaveRecord.employee_id == emp.id,
-                LeaveRecord.is_approved == True,
-                LeaveRecord.start_date <= end_date,
-                LeaveRecord.end_date >= start_date
-            ).all()
+            # 7. 查詢請假、加班、園務會議記錄
             daily_salary = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
-            leave_deduction_total = _sum_leave_deduction(approved_leaves, daily_salary)
-            personal_sick_leave_hours = sum(
-                lv.leave_hours or 0
-                for lv in approved_leaves
-                if lv.leave_type in ('personal', 'sick')
+            period_records = self._load_period_records(
+                session, emp, start_date, end_date, year, month, daily_salary
             )
 
-            # 5d. 查詢已核准加班記錄
-            approved_overtimes = session.query(DBOvertimeRecord).filter(
-                DBOvertimeRecord.employee_id == emp.id,
-                DBOvertimeRecord.is_approved == True,
-                DBOvertimeRecord.overtime_date >= start_date,
-                DBOvertimeRecord.overtime_date <= end_date
-            ).all()
-            overtime_work_pay_total = sum(o.overtime_pay or 0 for o in approved_overtimes)
+            # 8. 曠職偵測
+            absent_count, absence_deduction_amount = self._detect_absences(
+                session, emp, attendances, period_records['approved_leaves'],
+                start_date, end_date, year, month,
+            )
 
-            # 5e. 查詢園務會議記錄
-            from models.database import MeetingRecord, Holiday
-            meeting_records = session.query(MeetingRecord).filter(
-                MeetingRecord.employee_id == emp.id,
-                MeetingRecord.meeting_date >= start_date,
-                MeetingRecord.meeting_date <= end_date
-            ).all()
-
-            meeting_attended = sum(1 for m in meeting_records if m.attended)
-            meeting_absent_current = sum(1 for m in meeting_records if not m.attended)
-
-            absent_period = meeting_absent_current
-            period_start = get_meeting_deduction_period_start(year, month)
-            if period_start is not None and period_start < start_date:
-                prior_records = session.query(MeetingRecord).filter(
-                    MeetingRecord.employee_id == emp.id,
-                    MeetingRecord.meeting_date >= period_start,
-                    MeetingRecord.meeting_date < start_date,
-                ).all()
-                absent_period += sum(1 for m in prior_records if not m.attended)
-
-            meeting_context = None
-            if meeting_records or absent_period > 0:
-                meeting_context = {
-                    'attended': meeting_attended,
-                    'absent': meeting_absent_current,
-                    'absent_period': absent_period,
-                    'work_end_time': emp.work_end_time or '17:00',
-                }
-
-            # 5f. 曠職偵測
-            absent_count = 0
-            absence_deduction_amount = 0
-            if emp.employee_type != 'hourly':
-                holidays_in_month = session.query(Holiday.date).filter(
-                    Holiday.date >= start_date,
-                    Holiday.date <= end_date,
-                    Holiday.is_active == True
-                ).all()
-                holiday_set = {h.date for h in holidays_in_month}
-
-                from models.database import DailyShift as _DailyShift
-                daily_shifts_in_month = session.query(_DailyShift).filter(
-                    _DailyShift.employee_id == emp.id,
-                    _DailyShift.date >= start_date,
-                    _DailyShift.date <= end_date,
-                ).all()
-                daily_shift_map = {ds.date: ds.shift_type_id for ds in daily_shifts_in_month}
-
-                expected_workdays = _build_expected_workdays(
-                    year=year,
-                    month=month,
-                    holiday_set=holiday_set,
-                    daily_shift_map=daily_shift_map,
-                    hire_date_raw=emp.hire_date,
-                    resign_date_raw=getattr(emp, 'resign_date', None),
-                )
-
-                attendance_dates = {
-                    (a.attendance_date.date() if isinstance(a.attendance_date, datetime) else a.attendance_date)
-                    for a in attendances
-                }
-
-                from datetime import timedelta as _td
-                leave_covered: set = set()
-                for lv in approved_leaves:
-                    d = lv.start_date.date() if isinstance(lv.start_date, datetime) else lv.start_date
-                    lv_end = lv.end_date.date() if isinstance(lv.end_date, datetime) else lv.end_date
-                    while d <= lv_end:
-                        if start_date <= d <= end_date:
-                            leave_covered.add(d)
-                        d += _td(days=1)
-
-                absent_days = expected_workdays - attendance_dates - leave_covered
-                absent_count = len(absent_days)
-                daily_salary_full = emp.base_salary / MONTHLY_BASE_DAYS if emp.base_salary else 0
-                absence_deduction_amount = absent_count * daily_salary_full
-                if absent_count > 0:
-                    logger.info(
-                        "曠職偵測：emp_id=%d %d/%d 曠職 %d 天，扣款 %d 元（%s）",
-                        emp.id, year, month, absent_count, absence_deduction_amount,
-                        sorted(absent_days)
-                    )
-
-            # 6. 計算薪資
+            # 9. 計算薪資
             breakdown = self.calculate_salary(
                 employee=emp_dict,
                 year=year,
                 month=month,
                 attendance=attendance_result,
-                leave_deduction=leave_deduction_total,
+                leave_deduction=period_records['leave_deduction'],
                 allowances=allowances,
                 classroom_context=classroom_context,
                 office_staff_context=office_staff_context,
-                meeting_context=meeting_context,
-                overtime_work_pay=overtime_work_pay_total,
-                personal_sick_leave_hours=personal_sick_leave_hours,
+                meeting_context=period_records['meeting_context'],
+                overtime_work_pay=period_records['overtime_work_pay'],
+                personal_sick_leave_hours=period_records['personal_sick_leave_hours'],
             )
 
             # 加入曠職扣款
@@ -1264,7 +1415,7 @@ class SalaryEngine:
             assert breakdown.total_deduction >= 0, f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
             assert breakdown.net_salary >= 0, f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
 
-            # 7. 儲存 SalaryRecord
+            # 10. 儲存 SalaryRecord
             salary_record = session.query(SalaryRecord).filter(
                 SalaryRecord.employee_id == emp.id,
                 SalaryRecord.salary_year == year,
@@ -1285,50 +1436,25 @@ class SalaryEngine:
                 )
                 session.add(salary_record)
 
-            # 記錄計算時使用的設定版本
-            salary_record.bonus_config_id = self._bonus_config_id
-            salary_record.attendance_policy_id = self._attendance_policy_id
+            _fill_salary_record(salary_record, breakdown, self)
 
-            salary_record.base_salary = breakdown.base_salary
-            salary_record.supervisor_allowance = breakdown.supervisor_allowance
-            salary_record.teacher_allowance = breakdown.teacher_allowance
-            salary_record.meal_allowance = breakdown.meal_allowance
-            salary_record.transportation_allowance = breakdown.transportation_allowance
-            salary_record.other_allowance = breakdown.other_allowance
-            salary_record.festival_bonus = breakdown.festival_bonus
-            salary_record.overtime_bonus = breakdown.overtime_bonus
-            salary_record.bonus_separate = breakdown.bonus_separate
-            salary_record.performance_bonus = breakdown.performance_bonus
-            salary_record.special_bonus = breakdown.special_bonus
-            salary_record.bonus_amount = (
-                breakdown.festival_bonus + breakdown.overtime_bonus + breakdown.supervisor_dividend
-            )
-            salary_record.supervisor_dividend = breakdown.supervisor_dividend
-            salary_record.overtime_pay = breakdown.overtime_work_pay
-            salary_record.meeting_overtime_pay = breakdown.meeting_overtime_pay
-            salary_record.meeting_absence_deduction = breakdown.meeting_absence_deduction
-            salary_record.birthday_bonus = breakdown.birthday_bonus
-            salary_record.work_hours = breakdown.work_hours
-            salary_record.hourly_rate = breakdown.hourly_rate
-            salary_record.hourly_total = breakdown.hourly_total
-            salary_record.labor_insurance_employee = breakdown.labor_insurance
-            salary_record.health_insurance_employee = breakdown.health_insurance
-            salary_record.pension_employee = breakdown.pension_self
-            salary_record.late_deduction = breakdown.late_deduction
-            salary_record.early_leave_deduction = breakdown.early_leave_deduction
-            salary_record.missing_punch_deduction = breakdown.missing_punch_deduction
-            salary_record.leave_deduction = breakdown.leave_deduction
-            salary_record.absence_deduction = breakdown.absence_deduction
-            salary_record.other_deduction = breakdown.other_deduction
-            salary_record.gross_salary = breakdown.gross_salary
-            salary_record.total_deduction = breakdown.total_deduction
-            salary_record.net_salary = breakdown.net_salary
-            salary_record.late_count = breakdown.late_count
-            salary_record.early_leave_count = breakdown.early_leave_count
-            salary_record.missing_punch_count = breakdown.missing_punch_count
-            salary_record.absent_count = breakdown.absent_count
-
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # 競態條件：另一個請求搶先寫入，rollback 後重新取出那筆再更新
+                session.rollback()
+                salary_record = session.query(SalaryRecord).filter(
+                    SalaryRecord.employee_id == emp.id,
+                    SalaryRecord.salary_year == year,
+                    SalaryRecord.salary_month == month,
+                ).first()
+                if salary_record and salary_record.is_finalized:
+                    raise ValueError(
+                        f"員工「{emp.name}」{year} 年 {month} 月薪資已封存（is_finalized=True），"
+                        "禁止覆寫。如需重新計算，請先至薪資管理頁面解除該月封存。"
+                    )
+                _fill_salary_record(salary_record, breakdown, self)
+                session.commit()
 
             return breakdown
 

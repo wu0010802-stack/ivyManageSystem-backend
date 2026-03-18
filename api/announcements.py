@@ -9,7 +9,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from models.database import get_session, Announcement, AnnouncementRecipient, Employee
 from utils.auth import require_permission
@@ -94,7 +94,9 @@ def list_announcements(
     session = get_session()
     try:
         query = session.query(Announcement).options(
-            joinedload(Announcement.author)
+            joinedload(Announcement.author),
+            selectinload(Announcement.reads),
+            selectinload(Announcement.recipients),
         ).order_by(
             Announcement.is_pinned.desc(),
             Announcement.created_at.desc(),
@@ -102,9 +104,33 @@ def list_announcements(
         total = query.count()
         items = query.offset((page - 1) * page_size).limit(page_size).all()
 
+        read_employee_ids = {
+            read.employee_id
+            for ann in items
+            for read in ann.reads
+            if read.employee_id is not None
+        }
+        read_employee_map = {}
+        if read_employee_ids:
+            employees = session.query(Employee.id, Employee.name).filter(Employee.id.in_(read_employee_ids)).all()
+            read_employee_map = {employee.id: employee.name for employee in employees}
+
         results = []
         for ann in items:
             recipient_ids = [r.employee_id for r in ann.recipients]
+            sorted_reads = sorted(
+                ann.reads,
+                key=lambda read: read.read_at or 0,
+                reverse=True,
+            )
+            readers = [
+                {
+                    "employee_id": read.employee_id,
+                    "name": read_employee_map.get(read.employee_id, "未知"),
+                    "read_at": read.read_at.isoformat() if read.read_at else None,
+                }
+                for read in sorted_reads
+            ]
             results.append({
                 "id": ann.id,
                 "title": ann.title,
@@ -116,6 +142,9 @@ def list_announcements(
                 "created_at": ann.created_at.isoformat() if ann.created_at else None,
                 "updated_at": ann.updated_at.isoformat() if ann.updated_at else None,
                 "read_count": len(ann.reads),
+                "read_preview": readers[:3],
+                "has_more_readers": len(readers) > 3,
+                "readers": readers,
                 "recipient_count": len(recipient_ids),
                 "recipient_ids": recipient_ids,
             })

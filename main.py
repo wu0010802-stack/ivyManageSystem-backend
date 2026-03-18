@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,6 +52,8 @@ from api.audit import router as audit_router
 from api.punch_corrections import router as punch_corrections_router
 from api.approval_settings import router as approval_settings_router
 from api.activity import router as activity_router
+from api.dismissal_calls import router as dismissal_calls_router
+from api.dismissal_ws import ws_router as dismissal_ws_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -82,10 +85,22 @@ def _is_production() -> bool:
 # App
 # ---------------------------------------------------------------------------
 
+def on_startup():
+    run_startup_bootstrap()
+    logger.info("Application started successfully.")
+
+
+@asynccontextmanager
+async def app_lifespan(app_instance: FastAPI):
+    on_startup()
+    yield
+
+
 app = FastAPI(
     title="幼稚園考勤薪資系統",
     description="Kindergarten Payroll Management System API",
     version="2.0.0",
+    lifespan=app_lifespan,
 )
 
 # CORS — 由環境變數 CORS_ORIGINS 控制白名單，逗號分隔
@@ -166,10 +181,16 @@ if not _is_production():
 app.include_router(punch_corrections_router)
 app.include_router(approval_settings_router)
 app.include_router(activity_router)
+app.include_router(dismissal_calls_router)
+app.include_router(dismissal_ws_router)  # WebSocket（路徑已含 /ws/...）
 
 # Audit middleware (must be added after CORS middleware)
 from utils.audit import AuditMiddleware
 app.add_middleware(AuditMiddleware)
+
+# Security headers middleware（X-Content-Type-Options、X-Frame-Options、HSTS 等）
+from utils.security_headers import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
 
 # ---------------------------------------------------------------------------
 # Seed Data
@@ -521,12 +542,6 @@ def run_maintenance_tasks():
     """執行部署/維運任務：schema migration 與資料回填。"""
     run_alembic_upgrade()
     migrate_permissions_rw()
-
-
-@app.on_event("startup")
-def on_startup():
-    run_startup_bootstrap()
-    logger.info("Application started successfully.")
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,8 @@ class Permission(IntFlag):
     USER_MANAGEMENT_WRITE = 1 << 26 # 帳號管理 (編輯)
     ACTIVITY_READ  = 1 << 27        # 課後才藝 (檢視)
     ACTIVITY_WRITE = 1 << 28        # 課後才藝 (編輯)
+    DISMISSAL_CALLS_READ  = 1 << 29 # 接送通知 portal (檢視)
+    DISMISSAL_CALLS_WRITE = 1 << 30 # 接送通知 portal (操作：acknowledge/complete)
 
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
@@ -62,6 +64,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "SETTINGS": {"read": "SETTINGS_READ", "write": "SETTINGS_WRITE"},
     "USER_MANAGEMENT": {"read": "USER_MANAGEMENT_READ", "write": "USER_MANAGEMENT_WRITE"},
     "ACTIVITY": {"read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
+    "DISMISSAL_CALLS": {"read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -77,6 +80,7 @@ _RW_PAIRS: List[tuple] = [
     (Permission.SETTINGS_READ, Permission.SETTINGS_WRITE),
     (Permission.USER_MANAGEMENT_READ, Permission.USER_MANAGEMENT_WRITE),
     (Permission.ACTIVITY_READ, Permission.ACTIVITY_WRITE),
+    (Permission.DISMISSAL_CALLS_READ, Permission.DISMISSAL_CALLS_WRITE),
 ]
 
 
@@ -111,7 +115,9 @@ ROLE_TEMPLATES: Dict[str, int] = {
     "teacher": (
         Permission.DASHBOARD |
         Permission.CALENDAR |
-        Permission.ANNOUNCEMENTS_READ  # 教師僅可檢視公告
+        Permission.ANNOUNCEMENTS_READ |          # 教師僅可檢視公告
+        Permission.DISMISSAL_CALLS_READ |        # 教師 portal：查看接送通知
+        Permission.DISMISSAL_CALLS_WRITE         # 教師 portal：操作接送通知（acknowledge/complete）
     ),
 }
 
@@ -162,6 +168,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     "USER_MANAGEMENT_WRITE": "帳號管理 (編輯)",
     "ACTIVITY_READ": "課後才藝 (檢視)",
     "ACTIVITY_WRITE": "課後才藝 (編輯)",
+    "DISMISSAL_CALLS_READ": "接送通知 (檢視)",
+    "DISMISSAL_CALLS_WRITE": "接送通知 (操作)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -190,6 +198,7 @@ PERMISSION_GROUPS: List[Dict] = [
             {"module": "班級管理", "read": "CLASSROOMS_READ", "write": "CLASSROOMS_WRITE"},
             {"module": "薪資管理", "read": "SALARY_READ", "write": "SALARY_WRITE"},
             {"module": "課後才藝", "read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
+            {"module": "接送通知", "read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
         ],
     },
     {

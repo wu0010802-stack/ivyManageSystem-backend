@@ -7,7 +7,7 @@ import os
 import logging
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
@@ -128,12 +128,31 @@ def needs_rehash(hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 
+def _check_token_algorithm(token: str) -> None:
+    """解碼前顯式驗證 JWT header 的 alg 欄位。
+
+    Defense-in-depth：即使 python-jose 因升版 regression 而不再過濾非白名單算法，
+    此函式仍能獨立攔截 alg:none、RS256 等算法混淆攻擊（RFC 7518 §3.6）。
+    必須在呼叫 jwt.decode() 之前執行。
+
+    Raises:
+        HTTPException(401)：alg 欄位不存在、為空、或不等於 JWT_ALGORITHM。
+    """
+    try:
+        header = jwt.get_unverified_header(token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="無效或過期的 Token")
+    if header.get("alg") != JWT_ALGORITHM:
+        raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+
 def decode_token(token: str) -> dict:
+    _check_token_algorithm(token)
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         return payload
@@ -141,10 +160,48 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="無效或過期的 Token")
 
 
+def verify_ws_token(token: str) -> dict:
+    """驗證 WebSocket 連線的 JWT token，並確認帳號當前狀態有效。
+
+    在 decode_token（簽名 + 過期驗證）的基礎上，額外查詢 DB 確認：
+    - is_active：帳號未被停用
+    - token_version：舊 token 在密碼變更 / 強制登出後立即失效
+    - must_change_password：尚未更改預設密碼的帳號禁止建立 WS 連線
+
+    payload 不含 user_id（無綁定帳號的 guest token）時略過 DB 查詢。
+
+    Raises:
+        HTTPException(401)：token 無效、帳號停用、token_version 不符
+        HTTPException(403)：帳號需先修改密碼
+    """
+    payload = decode_token(token)  # 驗證 JWT 簽名與過期
+
+    user_id = payload.get("user_id")
+    if user_id is None:
+        return payload  # 無帳號綁定，略過 DB 查詢
+
+    from models.database import get_session, User
+
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="使用者已停用或不存在")
+        if payload.get("token_version", 0) != (user.token_version or 0):
+            raise HTTPException(status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）")
+        if user.must_change_password:
+            raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
+    finally:
+        session.close()
+
+    return payload
+
+
 def decode_token_allow_expired(token: str) -> dict:
     """解碼 token，允許在寬限期內的過期 token（用於 refresh）。
     回傳 payload，若 token 無效或超出寬限期則拋出 401。
     """
+    _check_token_algorithm(token)
     try:
         # 先嘗試正常解碼（未過期）
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
@@ -157,7 +214,7 @@ def decode_token_allow_expired(token: str) -> dict:
         )
         # 檢查是否在寬限期內
         exp = payload.get("exp", 0)
-        now = datetime.utcnow().timestamp()
+        now = datetime.now(timezone.utc).timestamp()
         grace_seconds = JWT_REFRESH_GRACE_HOURS * 3600
         if now - exp > grace_seconds:
             raise HTTPException(status_code=401, detail="Token 已超過可刷新期限，請重新登入")

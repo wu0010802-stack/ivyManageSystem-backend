@@ -14,6 +14,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from utils.errors import raise_safe_500
+from utils.file_upload import validate_file_signature
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, or_
@@ -123,7 +124,13 @@ def _check_salary_month_not_finalized(session, employee_id: int, overtime_date: 
 
 
 def _revoke_comp_leave_grant(session, ot: OvertimeRecord) -> None:
-    """撤銷已發放的補休配額，若補休已被使用則阻止回滾。"""
+    """撤銷已發放的補休配額。
+
+    1. 若有與此加班記錄明確關聯（source_overtime_id）的補休假單：
+       - 已核准（已使用）→ 拋出 409，必須人工撤銷
+       - 待審核 → 自動駁回，釋放配額占用
+    2. 全域檢查：確認撤銷後配額不低於仍在使用/申請中的補休總量（含無關聯舊資料）
+    """
     if not ot.use_comp_leave or not ot.comp_leave_granted:
         return
 
@@ -142,24 +149,58 @@ def _revoke_comp_leave_grant(session, ot: OvertimeRecord) -> None:
         )
         return
 
-    approved = float(
+    # ── 步驟 1：處理有明確關聯的補休假單 ──────────────────────────────────
+    linked_leaves = session.query(LeaveRecord).filter(
+        LeaveRecord.source_overtime_id == ot.id,
+    ).all()
+
+    linked_approved = [lv for lv in linked_leaves if lv.is_approved is True]
+    linked_pending  = [lv for lv in linked_leaves if lv.is_approved is None]
+
+    if linked_approved:
+        approved_h = sum(lv.leave_hours for lv in linked_approved)
+        ids = ", ".join(str(lv.id) for lv in linked_approved)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"此筆加班已發放的補休有 {approved_h:.1f} 小時已核准使用"
+                f"（假單 ID：{ids}），請先撤銷相關補休假單後再操作"
+            ),
+        )
+
+    # 自動駁回待審核的關聯補休假單
+    for lv in linked_pending:
+        lv.is_approved = False
+        lv.rejection_reason = f"來源加班申請（#{ot.id}，{ot.overtime_date}）已被撤銷，補休資格取消"
+        logger.info(
+            "補休假單 #%d 因來源加班 #%d 被撤銷而自動駁回（員工 ID=%d）",
+            lv.id, ot.id, ot.employee_id,
+        )
+
+    # ── 步驟 2：全域 committed 檢查（含舊資料或其他來源的補休） ─────────────
+    # autoflush 確保上方的狀態變更在下方查詢前已寫入 session，
+    # 避免自動駁回的假單仍被計入 pending。
+    new_total = float(quota.total_hours or 0) - float(ot.hours or 0)
+
+    approved_committed = float(
         session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
             LeaveRecord.employee_id == ot.employee_id,
             LeaveRecord.leave_type == "compensatory",
             LeaveRecord.is_approved == True,
-            func.extract("year", LeaveRecord.start_date) == year,
+            LeaveRecord.start_date >= date(year, 1, 1),
+            LeaveRecord.start_date < date(year + 1, 1, 1),
         ).scalar()
     )
-    pending = float(
+    pending_committed = float(
         session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
             LeaveRecord.employee_id == ot.employee_id,
             LeaveRecord.leave_type == "compensatory",
             LeaveRecord.is_approved.is_(None),
-            func.extract("year", LeaveRecord.start_date) == year,
+            LeaveRecord.start_date >= date(year, 1, 1),
+            LeaveRecord.start_date < date(year + 1, 1, 1),
         ).scalar()
     )
-    committed = approved + pending
-    new_total = float(quota.total_hours or 0) - float(ot.hours or 0)
+    committed = approved_committed + pending_committed
 
     if new_total + 1e-9 < committed:
         raise HTTPException(
@@ -212,6 +253,11 @@ def _times_overlap(start1, end1, start2, end2) -> bool:
 
 def calculate_overtime_pay(base_salary: float, hours: float, overtime_type: str) -> float:
     """依勞基法計算加班費（時薪 = 月薪 ÷ 30 ÷ 8）"""
+    if not base_salary or base_salary <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="該員工底薪未設定或為 0，無法計算加班費，請先完成薪資設定。",
+        )
     # 防禦縱深：即使前端驗證被繞過，也不允許負數或零時數計算
     if hours <= 0:
         return 0.0
@@ -852,6 +898,9 @@ async def import_overtimes(
 ):
     """批次匯入加班申請（建立草稿加班單，is_approved=None，需後續人工審核）"""
     content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="檔案超過 10MB 限制")
+    validate_file_signature(content, ".xlsx")
     try:
         df = pd.read_excel(BytesIO(content))
     except Exception as e:

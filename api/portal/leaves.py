@@ -31,6 +31,7 @@ from ._shared import (
     LeaveCreatePortal, LEAVE_TYPE_LABELS, SubstituteRespond,
 )
 from api.leaves import _check_overlap, _check_substitute_leave_conflict
+from utils.file_upload import validate_file_signature
 from api.leaves_workday import _calc_shift_hours, validate_leave_hours_against_schedule, _build_workday_hours_payload
 from api.leaves_quota import (
     _check_quota, _check_leave_limits, QUOTA_LEAVE_TYPES,
@@ -129,6 +130,7 @@ def get_my_leaves(
             "substitute_employee_id": lv.substitute_employee_id,
             "substitute_status": lv.substitute_status or "not_required",
             "substitute_remark": lv.substitute_remark,
+            "source_overtime_id": lv.source_overtime_id,
             "created_at": lv.created_at.isoformat() if lv.created_at else None,
         } for lv in leaves]
     finally:
@@ -223,6 +225,7 @@ def create_my_leave(
             is_approved=None,
             substitute_employee_id=data.substitute_employee_id,
             substitute_status=substitute_status,
+            source_overtime_id=data.source_overtime_id if data.leave_type == "compensatory" else None,
         )
         session.add(leave)
         session.commit()
@@ -283,6 +286,7 @@ async def upload_leave_attachments(
             content = await f.read()
             if len(content) > _MAX_FILE_SIZE:
                 raise HTTPException(status_code=400, detail=f"檔案 {f.filename} 超過 5 MB 限制")
+            validate_file_signature(content, raw_ext)
 
             safe_name = f"{uuid.uuid4().hex}{raw_ext}"
             with open(dir_path / safe_name, "wb") as fp:
@@ -469,28 +473,37 @@ def get_my_quotas(
             LeaveQuota.year == year,
         ).all()
 
-        def used_hours(lt):
-            r = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
-                LeaveRecord.employee_id == emp.id,
-                LeaveRecord.leave_type == lt,
-                LeaveRecord.is_approved == True,
-                func.extract('year', LeaveRecord.start_date) == year,
-            ).scalar()
-            return float(r)
+        year_start = date(year, 1, 1)
+        year_end = date(year + 1, 1, 1)
 
-        def pending_hours(lt):
-            r = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
-                LeaveRecord.employee_id == emp.id,
-                LeaveRecord.leave_type == lt,
-                LeaveRecord.is_approved.is_(None),
-                func.extract('year', LeaveRecord.start_date) == year,
-            ).scalar()
-            return float(r)
+        # 批次查詢已核准時數（GROUP BY leave_type，避免 N+1）
+        used_rows = session.query(
+            LeaveRecord.leave_type,
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+        ).filter(
+            LeaveRecord.employee_id == emp.id,
+            LeaveRecord.is_approved == True,
+            LeaveRecord.start_date >= year_start,
+            LeaveRecord.start_date < year_end,
+        ).group_by(LeaveRecord.leave_type).all()
+        used_map = {row.leave_type: float(row.hours) for row in used_rows}
+
+        # 批次查詢待審核時數（GROUP BY leave_type）
+        pending_rows = session.query(
+            LeaveRecord.leave_type,
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+        ).filter(
+            LeaveRecord.employee_id == emp.id,
+            LeaveRecord.is_approved.is_(None),
+            LeaveRecord.start_date >= year_start,
+            LeaveRecord.start_date < year_end,
+        ).group_by(LeaveRecord.leave_type).all()
+        pending_map = {row.leave_type: float(row.hours) for row in pending_rows}
 
         result = []
         for q in quotas:
-            u = used_hours(q.leave_type)
-            p = pending_hours(q.leave_type)
+            u = used_map.get(q.leave_type, 0.0)
+            p = pending_map.get(q.leave_type, 0.0)
             result.append({
                 "leave_type": q.leave_type,
                 "leave_type_label": LEAVE_TYPE_LABELS.get(q.leave_type, q.leave_type),

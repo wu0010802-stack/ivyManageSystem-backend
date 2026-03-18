@@ -27,6 +27,7 @@ def _compute_hourly_daily_hours(
     punch_in: datetime,
     punch_out: Optional[datetime],
     work_end_t: time,
+    max_hours: float = MAX_DAILY_WORK_HOURS,
 ) -> float:
     """計算時薪制員工單日實際工時（含午休扣除與時空穿越防護）。
 
@@ -38,6 +39,7 @@ def _compute_hourly_daily_hours(
         punch_in:    上班打卡時間
         punch_out:   下班打卡時間（None 表示缺打）
         work_end_t:  排班預設下班時間（用於補填缺打）
+        max_hours:   每日工時上限（預設 MAX_DAILY_WORK_HOURS；測試可覆寫）
 
     Returns:
         當日有效工時（小時），已扣午休、已套用每日上限，最小值 0.0
@@ -51,7 +53,7 @@ def _compute_hourly_daily_hours(
         # 若補一天後工時仍合理（≤ 每日上限），視為隔日下班
         if effective_out <= punch_in:
             candidate = effective_out + timedelta(days=1)
-            if (candidate - punch_in).total_seconds() / 3600 <= MAX_DAILY_WORK_HOURS:
+            if (candidate - punch_in).total_seconds() / 3600 <= max_hours:
                 effective_out = candidate
 
     # 防止時空穿越：補填或明確設定的下班時間若早於或等於上班時間，略過該日
@@ -68,7 +70,7 @@ def _compute_hourly_daily_hours(
     )
     diff -= overlap
     # 每日工時上限；max(0.0,...) 為雙重保護，確保不因浮點誤差產生負值
-    return max(0.0, min(diff, MAX_DAILY_WORK_HOURS))
+    return max(0.0, min(diff, max_hours))
 
 
 def _calc_daily_hourly_pay(hours: float, rate: float) -> float:

@@ -64,14 +64,25 @@ def _create_teacher(
     return teacher
 
 
-def _create_students(session, classroom_id: int, count: int, prefix: str):
+def _create_students(
+    session,
+    classroom_id: int,
+    count: int,
+    prefix: str,
+    *,
+    enrollment_date: date | None = None,
+    graduation_date: date | None = None,
+    is_active: bool = True,
+):
     for idx in range(count):
         session.add(
             Student(
                 student_id=f"{prefix}{idx:03d}",
                 name=f"{prefix}學生{idx}",
                 classroom_id=classroom_id,
-                is_active=True,
+                enrollment_date=enrollment_date,
+                graduation_date=graduation_date,
+                is_active=is_active,
             )
         )
 
@@ -114,6 +125,69 @@ class TestFestivalEligibilityReferenceDate:
 
 
 class TestFestivalBonusBreakdownRegressions:
+    def test_uses_month_end_enrollment_for_festival_and_overtime_bonus(self, salary_engine_db):
+        engine, session_factory = salary_engine_db
+
+        with session_factory() as session:
+            grade = ClassGrade(name="大班", is_active=True)
+            session.add(grade)
+            session.flush()
+
+            assistant_teacher = _create_teacher(
+                session,
+                employee_id="T905A",
+                name="月底副班導",
+                title="教保員",
+                position="教保員",
+                hire_date=date(2025, 1, 1),
+            )
+            teacher = _create_teacher(
+                session,
+                employee_id="T905",
+                name="月底老師",
+                title="幼兒園教師",
+                position="幼兒園教師",
+                hire_date=date(2025, 1, 1),
+            )
+            classroom = Classroom(
+                name="月底班",
+                grade_id=grade.id,
+                head_teacher_id=teacher.id,
+                assistant_teacher_id=assistant_teacher.id,
+                is_active=True,
+            )
+            session.add(classroom)
+            session.flush()
+            teacher.classroom_id = classroom.id
+
+            _create_students(
+                session,
+                classroom.id,
+                26,
+                "END",
+                enrollment_date=date(2025, 8, 1),
+                is_active=True,
+            )
+            _create_students(
+                session,
+                classroom.id,
+                1,
+                "GRAD",
+                enrollment_date=date(2025, 8, 1),
+                graduation_date=date(2026, 6, 15),
+                is_active=True,
+            )
+            session.commit()
+            teacher_id = teacher.id
+
+        result = engine.calculate_festival_bonus_breakdown(teacher_id, 2026, 6)
+        salary = engine.process_salary_calculation(teacher_id, 2026, 6)
+
+        assert result["currentEnrollment"] == 26
+        assert result["festivalBonus"] == 2167
+        assert salary.festival_bonus == 2167
+        assert salary.overtime_bonus == 400
+
     def test_breakdown_uses_salary_month_reference_date(self, salary_engine_db):
         engine, session_factory = salary_engine_db
 

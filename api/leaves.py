@@ -27,7 +27,7 @@ from models.database import (
 )
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
-from utils.file_upload import read_upload_with_size_check
+from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from api.leaves_quota import (
     quota_router,
     LEAVE_TYPE_LABELS,
@@ -1029,6 +1029,7 @@ async def import_leaves(
 ):
     """批次匯入請假申請（建立草稿假單，is_approved=None，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
+    validate_file_signature(content, ".xlsx")
     try:
         df = pd.read_excel(BytesIO(content))
     except Exception as e:

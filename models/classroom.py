@@ -9,6 +9,17 @@ from sqlalchemy.orm import relationship
 
 
 from models.base import Base
+from utils.academic import resolve_current_academic_term
+
+
+def _default_school_year() -> int:
+    school_year, _ = resolve_current_academic_term()
+    return school_year
+
+
+def _default_semester() -> int:
+    _, semester = resolve_current_academic_term()
+    return semester
 
 
 class ClassGrade(Base):
@@ -30,10 +41,11 @@ class Classroom(Base):
     __tablename__ = "classrooms"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(50), unique=True, nullable=False)
+    name = Column(String(50), nullable=False)
+    school_year = Column(Integer, nullable=False, default=_default_school_year, comment="學年度（起始年）")
+    semester = Column(Integer, nullable=False, default=_default_semester, comment="學期：1=上學期(8-1), 2=下學期(2-7)")
     grade_id = Column(Integer, ForeignKey("class_grades.id"), nullable=True)
     capacity = Column(Integer, default=30)
-    current_count = Column(Integer, default=0)
 
     head_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
     assistant_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
@@ -47,6 +59,11 @@ class Classroom(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("school_year", "semester", "name", name="uq_classrooms_term_name"),
+        Index("ix_classrooms_term_active", "school_year", "semester", "is_active"),
+    )
 
 
 class Student(Base):

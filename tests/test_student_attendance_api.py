@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import models.base as base_module
 from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
+from api.approvals import router as approvals_router
 from api.student_attendance import router as student_attendance_router
 from models.database import Base, Classroom, Student, StudentAttendance, User
 from utils.auth import hash_password
@@ -41,6 +42,7 @@ def client_with_db(tmp_path):
 
     app = FastAPI()
     app.include_router(auth_router)
+    app.include_router(approvals_router)
     app.include_router(student_attendance_router)
 
     with TestClient(app) as client:
@@ -129,3 +131,66 @@ class TestStudentAttendanceOverviewApi:
 
         res = client.get("/api/student-attendance/overview", params={"date": "2026-03-12"})
         assert res.status_code == 403
+
+    def test_batch_save_invalidates_home_summary_and_monthly_cache(self, client_with_db):
+        client, session_factory = client_with_db
+        target_date = date.today()
+        with session_factory() as session:
+            _create_user(
+                session,
+                "student_editor",
+                Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+            )
+            classroom = Classroom(name="向日葵班", is_active=True)
+            session.add(classroom)
+            session.flush()
+            student = Student(
+                student_id="S001",
+                name="小明",
+                classroom_id=classroom.id,
+                is_active=True,
+            )
+            session.add(student)
+            session.commit()
+            student_id = student.id
+            classroom_id = classroom.id
+
+        login_res = _login(client, "student_editor")
+        assert login_res.status_code == 200
+
+        first_summary = client.get("/api/student-attendance-summary")
+        assert first_summary.status_code == 200
+        assert first_summary.json()["recorded_count"] == 0
+
+        first_monthly = client.get(
+            "/api/student-attendance/monthly",
+            params={"classroom_id": classroom_id, "year": target_date.year, "month": target_date.month},
+        )
+        assert first_monthly.status_code == 200
+        assert first_monthly.json()["classroom_record_completion_rate"] == 0
+
+        save_res = client.post(
+            "/api/student-attendance/batch",
+            json={
+                "date": target_date.isoformat(),
+                "entries": [
+                    {
+                        "student_id": student_id,
+                        "status": "出席",
+                        "remark": "",
+                    }
+                ],
+            },
+        )
+        assert save_res.status_code == 200
+
+        second_summary = client.get("/api/student-attendance-summary")
+        assert second_summary.status_code == 200
+        assert second_summary.json()["recorded_count"] == 1
+
+        second_monthly = client.get(
+            "/api/student-attendance/monthly",
+            params={"classroom_id": classroom_id, "year": target_date.year, "month": target_date.month},
+        )
+        assert second_monthly.status_code == 200
+        assert second_monthly.json()["classroom_record_completion_rate"] > 0

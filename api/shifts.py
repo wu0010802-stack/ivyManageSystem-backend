@@ -22,7 +22,7 @@ from sqlalchemy.orm import joinedload
 from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift, ShiftSwapRequest
 from utils.auth import require_permission
 from utils.permissions import Permission
-from utils.file_upload import read_upload_with_size_check
+from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.schedule_utils import (
     get_week_dates, get_employee_weekly_shift_hours,
     compute_weekly_hours, build_weekly_warning,
@@ -550,6 +550,7 @@ async def import_shifts(
 ):
     """批次匯入排班（覆蓋指定週的排班，per-employee upsert）"""
     content = await read_upload_with_size_check(file)
+    validate_file_signature(content, ".xlsx")
     try:
         df = pd.read_excel(BytesIO(content))
     except Exception as e:

@@ -54,14 +54,19 @@ def get_engine():
                 echo=False,
             )
         else:
+            connect_args: dict = {}
+            if _is_remote_db(DATABASE_URL):
+                connect_args["sslmode"] = "require"
+            connect_args["options"] = "-c statement_timeout=30000"
             kwargs = dict(
                 pool_size=5,
                 max_overflow=10,
                 pool_pre_ping=True,
+                pool_recycle=1800,  # 30 分鐘回收連線，避免 server 端斷線
+                pool_timeout=30,
                 echo=False,
+                connect_args=connect_args,
             )
-            if _is_remote_db(DATABASE_URL):
-                kwargs["connect_args"] = {"sslmode": "require"}
             _engine = create_engine(DATABASE_URL, **kwargs)
     return _engine
 

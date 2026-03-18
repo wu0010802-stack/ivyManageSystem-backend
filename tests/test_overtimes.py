@@ -11,7 +11,8 @@ import types
 import pytest
 from datetime import date, time, datetime
 
-from api.overtimes import _to_time, _times_overlap, _check_overtime_overlap
+from api.overtimes import _to_time, _times_overlap, _check_overtime_overlap, _revoke_comp_leave_grant
+from fastapi import HTTPException
 
 
 # ── 測試用 helpers ────────────────────────────────────────────────────────────
@@ -185,3 +186,133 @@ class TestCheckOvertimeOverlap:
             '18:00', '20:00',
         )
         assert result is None
+
+
+# ──────────────────────────────────────────────
+# _revoke_comp_leave_grant 補休撤銷邏輯
+# ──────────────────────────────────────────────
+
+def _make_ot(ot_id, employee_id, ot_date, hours, use_comp=True, comp_granted=True):
+    ot = types.SimpleNamespace()
+    ot.id = ot_id
+    ot.employee_id = employee_id
+    ot.overtime_date = ot_date
+    ot.hours = hours
+    ot.use_comp_leave = use_comp
+    ot.comp_leave_granted = comp_granted
+    return ot
+
+
+def _make_leave(leave_id, hours, is_approved, source_overtime_id=None):
+    lv = types.SimpleNamespace()
+    lv.id = leave_id
+    lv.leave_hours = hours
+    lv.is_approved = is_approved
+    lv.source_overtime_id = source_overtime_id
+    lv.rejection_reason = None
+    return lv
+
+
+def _make_quota(total_hours):
+    q = types.SimpleNamespace()
+    q.total_hours = total_hours
+    return q
+
+
+class _MockQuery:
+    """支援 .filter().all() 以及 .filter().scalar() 的 session mock，
+    可依 query target 分別回傳不同結果。"""
+
+    def __init__(self, linked_leaves, quota, approved_h=0.0, pending_h=0.0):
+        self._linked_leaves = linked_leaves
+        self._quota = quota
+        self._approved_h = approved_h
+        self._pending_h = pending_h
+        self._target = None
+        self._filters = []
+
+    def query(self, target):
+        self._target = target
+        self._filters = []
+        return self
+
+    def filter(self, *args):
+        self._filters.extend(args)
+        return self
+
+    def all(self):
+        return self._linked_leaves
+
+    def first(self):
+        return self._quota
+
+    def scalar(self):
+        # 判斷是 approved 還是 pending 查詢
+        filter_strs = [str(f) for f in self._filters]
+        if any("is_approved IS NULL" in s or "IS NULL" in s for s in filter_strs):
+            return self._pending_h
+        return self._approved_h
+
+
+class TestRevokeCompLeaveGrant:
+
+    def _make_session(self, linked_leaves, quota, approved_h=0.0, pending_h=0.0):
+        return _MockQuery(linked_leaves, quota, approved_h, pending_h)
+
+    def test_no_op_when_comp_leave_not_granted(self):
+        """comp_leave_granted=False → 直接返回，不做任何變更"""
+        ot = _make_ot(1, 10, date(2026, 3, 1), 8.0, comp_granted=False)
+        session = self._make_session([], _make_quota(0.0))
+        _revoke_comp_leave_grant(session, ot)
+        assert ot.comp_leave_granted is False  # 保持原狀
+
+    def test_no_op_when_use_comp_leave_false(self):
+        """use_comp_leave=False → 直接返回"""
+        ot = _make_ot(1, 10, date(2026, 3, 1), 8.0, use_comp=False, comp_granted=True)
+        session = self._make_session([], _make_quota(8.0))
+        _revoke_comp_leave_grant(session, ot)
+        assert ot.comp_leave_granted is True  # 未被修改
+
+    def test_quota_revoked_when_no_linked_leaves_and_no_committed(self):
+        """無關聯假單、無已提交補休 → 配額成功撤銷"""
+        ot = _make_ot(1, 10, date(2026, 3, 1), 8.0)
+        quota = _make_quota(8.0)
+        session = self._make_session([], quota, approved_h=0.0, pending_h=0.0)
+        _revoke_comp_leave_grant(session, ot)
+        assert quota.total_hours == 0.0
+        assert ot.comp_leave_granted is False
+
+    def test_raises_409_when_linked_approved_leave_exists(self):
+        """有關聯的已核准補休假單 → 拋出 409，不撤銷配額"""
+        ot = _make_ot(1, 10, date(2026, 3, 1), 8.0)
+        quota = _make_quota(8.0)
+        linked = [_make_leave(101, 8.0, True, source_overtime_id=1)]
+        session = self._make_session(linked, quota, approved_h=8.0, pending_h=0.0)
+        with pytest.raises(HTTPException) as exc_info:
+            _revoke_comp_leave_grant(session, ot)
+        assert exc_info.value.status_code == 409
+        assert "101" in exc_info.value.detail
+        assert quota.total_hours == 8.0  # 配額未被修改
+
+    def test_auto_rejects_pending_linked_leaves_and_revokes_quota(self):
+        """有關聯的待審核補休假單 → 自動駁回，配額成功撤銷"""
+        ot = _make_ot(1, 10, date(2026, 3, 1), 8.0)
+        quota = _make_quota(8.0)
+        pending_lv = _make_leave(201, 8.0, None, source_overtime_id=1)
+        # 模擬 autoflush 後 pending_h=0（因為 linked 已被駁回）
+        session = self._make_session([pending_lv], quota, approved_h=0.0, pending_h=0.0)
+        _revoke_comp_leave_grant(session, ot)
+        assert pending_lv.is_approved is False
+        assert pending_lv.rejection_reason is not None
+        assert quota.total_hours == 0.0
+        assert ot.comp_leave_granted is False
+
+    def test_raises_409_when_unlinked_committed_exceeds_new_total(self):
+        """無關聯假單但全域 committed 超過撤銷後配額 → 拋出 409（舊資料兼容）"""
+        ot = _make_ot(1, 10, date(2026, 3, 1), 8.0)
+        quota = _make_quota(8.0)
+        session = self._make_session([], quota, approved_h=0.0, pending_h=6.0)
+        with pytest.raises(HTTPException) as exc_info:
+            _revoke_comp_leave_grant(session, ot)
+        assert exc_info.value.status_code == 409
+        assert quota.total_hours == 8.0  # 配額未被修改

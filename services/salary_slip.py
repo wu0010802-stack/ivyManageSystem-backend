@@ -22,19 +22,15 @@ def _sanitize_excel_value(value):
         return "'" + clean
     return clean
 # ────────────────────────────────────────────────────────────────────────────
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 
 def _register_cjk_font():
     """註冊 CJK 字型（使用 reportlab 內建的 CID 字型）"""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+
     try:
         pdfmetrics.getFont('STSong-Light')
     except KeyError:
@@ -54,6 +50,11 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
     Returns:
         PDF bytes
     """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate
+
     _register_cjk_font()
     font_name = 'STSong-Light'
     styles = getSampleStyleSheet()
@@ -75,6 +76,10 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
 
 def _build_salary_elements(record, employee, year: int, month: int, font_name: str, styles) -> list:
     """建構單人薪資單的 platypus elements 清單（供 generate_salary_pdf 與 generate_salary_all_pdf 共用）"""
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
     title_style = ParagraphStyle(
         'ChineseTitle', parent=styles['Title'],
         fontName=font_name, fontSize=18, alignment=1
@@ -247,6 +252,11 @@ def generate_salary_all_pdf(records_with_employees, year: int, month: int) -> by
     Returns:
         PDF bytes
     """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import PageBreak, SimpleDocTemplate
+
     _register_cjk_font()
     font_name = 'STSong-Light'
     styles = getSampleStyleSheet()
@@ -301,7 +311,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
     money_fmt = '#,##0'
 
     # Title row
-    ws.merge_cells('A1:T1')
+    ws.merge_cells('A1:U1')
     ws['A1'] = f'{year}年{month}月 薪資總表'
     ws['A1'].font = Font(bold=True, size=14)
     ws['A1'].alignment = Alignment(horizontal='center')
@@ -314,7 +324,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
         '獨立獎金合計',
         '月薪應發',
         '勞保', '健保', '考勤扣款', '扣款合計',
-        '實發金額'
+        '實發金額', '編輯紀錄'
     ]
 
     for col, header in enumerate(headers, 1):
@@ -365,6 +375,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
             attendance_deduction,
             record.total_deduction or 0,
             record.net_salary or 0,
+            record.remark or '',
         ]
 
         for col, value in enumerate(values, 1):

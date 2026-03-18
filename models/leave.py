@@ -45,6 +45,9 @@ class LeaveRecord(Base):
     approved_by = Column(String(50), comment="核准人")
     rejection_reason = Column(Text, nullable=True, comment="駁回原因")
 
+    # 補休假單來源加班記錄（僅 leave_type='compensatory' 時有意義）
+    source_overtime_id = Column(Integer, ForeignKey("overtime_records.id", ondelete="SET NULL"), nullable=True, comment="來源加班記錄 ID（補休專用）")
+
     # ── 職務代理人欄位 ──────────────────────────────────────────────────────
     substitute_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, comment="代理人員工 ID")
     substitute_status = Column(String(20), default="not_required", comment="代理狀態：not_required/pending/accepted/rejected")
@@ -70,6 +73,7 @@ class LeaveRecord(Base):
 
     employee = relationship("Employee", foreign_keys=[employee_id], back_populates="leaves")
     substitute = relationship("Employee", foreign_keys=[substitute_employee_id], backref="substitute_leaves")
+    source_overtime = relationship("OvertimeRecord", foreign_keys=[source_overtime_id], backref="comp_leave_records")
 
 
 class LeaveQuota(Base):

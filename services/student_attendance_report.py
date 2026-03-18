@@ -17,6 +17,10 @@ ABSENCE_STATUS = "缺席"
 ALERT_STREAK_THRESHOLD = 3
 WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"]
 MONTHLY_ATTENDANCE_REPORT_CACHE_TTL_SECONDS = 1800
+STUDENT_ATTENDANCE_CACHE_CATEGORIES = (
+    "student_attendance_monthly",
+    "home_student_attendance_summary",
+)
 
 
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -371,4 +375,11 @@ def build_monthly_attendance_report(
         },
         force_refresh=force_refresh,
         builder=lambda: _compute_monthly_attendance_report(session, classroom_id, year, month),
+    )
+
+
+def invalidate_student_attendance_report_caches(session) -> int:
+    return report_cache_service.invalidate_categories(
+        session,
+        *STUDENT_ATTENDANCE_CACHE_CATEGORIES,
     )

@@ -2,6 +2,7 @@
 Portal - my students endpoint
 """
 
+from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -37,6 +38,28 @@ def get_my_students(
 
         classrooms = query.all()
 
+        if not classrooms:
+            return {
+                "employee_name": emp.name,
+                "classrooms": [],
+                "total_students": 0,
+            }
+
+        # 單次 IN 查詢取得所有班級的學生，再按 classroom_id 分組
+        classroom_ids = [cr.id for cr in classrooms]
+        all_students = (
+            session.query(Student)
+            .filter(
+                Student.classroom_id.in_(classroom_ids),
+                Student.is_active == True,
+            )
+            .order_by(Student.name)
+            .all()
+        )
+        students_by_classroom = defaultdict(list)
+        for s in all_students:
+            students_by_classroom[s.classroom_id].append(s)
+
         result = []
         for cr in classrooms:
             role = "教師"
@@ -45,12 +68,9 @@ def get_my_students(
             elif cr.assistant_teacher_id == emp.id:
                 role = "助教老師"
             elif cr.art_teacher_id == emp.id:
-                role = "美術老師"
+                role = "美語老師"
 
-            students = session.query(Student).filter(
-                Student.classroom_id == cr.id,
-                Student.is_active == True,
-            ).order_by(Student.name).all()
+            students = students_by_classroom[cr.id]
 
             result.append({
                 "classroom_id": cr.id,

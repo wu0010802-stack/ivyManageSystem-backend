@@ -1,0 +1,39 @@
+"""
+utils/security_headers.py — HTTP 安全標頭 Middleware
+
+每個回應自動附加：
+  - X-Content-Type-Options: nosniff        防止 MIME 嗅探
+  - X-Frame-Options: DENY                  防止 Clickjacking
+  - Strict-Transport-Security              HSTS（僅正式環境）
+  - Referrer-Policy                        限制 Referer 洩漏
+"""
+
+import os
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+_is_prod = os.environ.get("ENV", "development").lower() in ("production", "prod")
+
+_STATIC_HEADERS: list[tuple[str, str]] = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+]
+
+# HSTS 只在正式環境加（HTTP 環境加了也無害，但避免誤導）
+if _is_prod:
+    _STATIC_HEADERS.append(
+        ("Strict-Transport-Security", "max-age=31536000; includeSubDomains"),
+    )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """為所有回應注入 HTTP 安全標頭。"""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response: Response = await call_next(request)
+        for name, value in _STATIC_HEADERS:
+            response.headers[name] = value
+        return response

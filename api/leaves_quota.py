@@ -6,6 +6,7 @@ It owns all quota-related constants, DB query helpers, limit checks,
 and the three quota CRUD endpoints.
 """
 
+import calendar
 import logging
 from datetime import date
 from typing import Optional
@@ -132,7 +133,8 @@ def _get_used_hours(session, employee_id: int, year: int, leave_type: str) -> fl
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved == True,
-        func.extract('year', LeaveRecord.start_date) == year,
+        LeaveRecord.start_date >= date(year, 1, 1),
+        LeaveRecord.start_date < date(year + 1, 1, 1),
     ).scalar()
     return float(result)
 
@@ -143,7 +145,8 @@ def _get_pending_hours(session, employee_id: int, year: int, leave_type: str) ->
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved.is_(None),
-        func.extract('year', LeaveRecord.start_date) == year,
+        LeaveRecord.start_date >= date(year, 1, 1),
+        LeaveRecord.start_date < date(year + 1, 1, 1),
     ).scalar()
     return float(result)
 
@@ -156,7 +159,8 @@ def _get_approved_hours_in_year(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved == True,
-        func.extract('year', LeaveRecord.start_date) == year,
+        LeaveRecord.start_date >= date(year, 1, 1),
+        LeaveRecord.start_date < date(year + 1, 1, 1),
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -171,7 +175,8 @@ def _get_pending_hours_in_year(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved.is_(None),
-        func.extract('year', LeaveRecord.start_date) == year,
+        LeaveRecord.start_date >= date(year, 1, 1),
+        LeaveRecord.start_date < date(year + 1, 1, 1),
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -183,12 +188,13 @@ def _get_approved_hours_in_month(
     leave_type: str, exclude_id: int = None
 ) -> float:
     """查詢指定月份已核准時數（可排除指定記錄）"""
+    last_day = calendar.monthrange(year, month)[1]
     q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved == True,
-        func.extract('year', LeaveRecord.start_date) == year,
-        func.extract('month', LeaveRecord.start_date) == month,
+        LeaveRecord.start_date >= date(year, month, 1),
+        LeaveRecord.start_date <= date(year, month, last_day),
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -200,12 +206,13 @@ def _get_pending_hours_in_month(
     leave_type: str, exclude_id: int = None
 ) -> float:
     """查詢指定月份待審核時數（可排除指定記錄）"""
+    last_day = calendar.monthrange(year, month)[1]
     q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
         LeaveRecord.is_approved.is_(None),
-        func.extract('year', LeaveRecord.start_date) == year,
-        func.extract('month', LeaveRecord.start_date) == month,
+        LeaveRecord.start_date >= date(year, month, 1),
+        LeaveRecord.start_date <= date(year, month, last_day),
     )
     if exclude_id:
         q = q.filter(LeaveRecord.id != exclude_id)
@@ -398,7 +405,58 @@ def get_leave_quotas(
         if leave_type:
             q = q.filter(LeaveQuota.leave_type == leave_type)
         quotas = q.order_by(LeaveQuota.employee_id, LeaveQuota.leave_type).all()
-        return [_quota_row(session, quota, year) for quota in quotas]
+
+        if not quotas:
+            return []
+
+        year_start = date(year, 1, 1)
+        year_end = date(year + 1, 1, 1)
+        emp_ids = list({qt.employee_id for qt in quotas})
+
+        # 批次查詢所有員工的已核准時數（GROUP BY employee_id, leave_type，避免 N+1）
+        used_rows = session.query(
+            LeaveRecord.employee_id,
+            LeaveRecord.leave_type,
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+        ).filter(
+            LeaveRecord.employee_id.in_(emp_ids),
+            LeaveRecord.is_approved == True,
+            LeaveRecord.start_date >= year_start,
+            LeaveRecord.start_date < year_end,
+        ).group_by(LeaveRecord.employee_id, LeaveRecord.leave_type).all()
+        used_map = {(r.employee_id, r.leave_type): float(r.hours) for r in used_rows}
+
+        # 批次查詢所有員工的待審核時數
+        pending_rows = session.query(
+            LeaveRecord.employee_id,
+            LeaveRecord.leave_type,
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+        ).filter(
+            LeaveRecord.employee_id.in_(emp_ids),
+            LeaveRecord.is_approved.is_(None),
+            LeaveRecord.start_date >= year_start,
+            LeaveRecord.start_date < year_end,
+        ).group_by(LeaveRecord.employee_id, LeaveRecord.leave_type).all()
+        pending_map = {(r.employee_id, r.leave_type): float(r.hours) for r in pending_rows}
+
+        result = []
+        for quota in quotas:
+            key = (quota.employee_id, quota.leave_type)
+            used = used_map.get(key, 0.0)
+            pending = pending_map.get(key, 0.0)
+            result.append({
+                "id": quota.id,
+                "employee_id": quota.employee_id,
+                "year": quota.year,
+                "leave_type": quota.leave_type,
+                "leave_type_label": LEAVE_TYPE_LABELS.get(quota.leave_type, quota.leave_type),
+                "total_hours": quota.total_hours,
+                "used_hours": used,
+                "pending_hours": pending,
+                "remaining_hours": max(0.0, quota.total_hours - used),
+                "note": quota.note,
+            })
+        return result
     finally:
         session.close()
 

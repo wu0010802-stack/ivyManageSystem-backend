@@ -13,7 +13,11 @@ from openpyxl.styles import PatternFill
 from pydantic import BaseModel
 
 from models.database import get_session, Student, StudentAttendance, Classroom
-from services.student_attendance_report import build_daily_classroom_overview, build_monthly_attendance_report
+from services.student_attendance_report import (
+    build_daily_classroom_overview,
+    build_monthly_attendance_report,
+    invalidate_student_attendance_report_caches,
+)
 from utils.auth import require_permission
 from utils.permissions import Permission
 from api.exports import (
@@ -270,6 +274,7 @@ async def batch_save_attendance(
                 session.add(rec)
 
         session.commit()
+        invalidate_student_attendance_report_caches(session)
         logger.info("學生出席批量儲存：date=%s count=%d operator=%s",
                     payload.date, len(payload.entries), current_user.get("username"))
         return {"message": "儲存成功", "saved": len(payload.entries)}

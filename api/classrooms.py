@@ -4,12 +4,14 @@ Classroom management router
 
 import logging
 from typing import Optional
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sqlalchemy import func
 from models.database import get_session, Classroom, ClassGrade, Employee, Student
+from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -23,10 +25,13 @@ router = APIRouter(prefix="/api", tags=["classrooms"])
 class ClassroomCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
     class_code: Optional[str] = Field(None, max_length=20)
+    school_year: Optional[int] = Field(None, ge=2020, le=2100)
+    semester: Optional[int] = Field(None, ge=1, le=2)
     grade_id: Optional[int] = Field(None, ge=1)
     capacity: int = Field(30, ge=1, le=200)
     head_teacher_id: Optional[int] = Field(None, ge=1)
     assistant_teacher_id: Optional[int] = Field(None, ge=1)
+    english_teacher_id: Optional[int] = Field(None, ge=1, description="對外標準欄位，對應 legacy art_teacher_id")
     art_teacher_id: Optional[int] = Field(None, ge=1)
     is_active: bool = True
 
@@ -42,14 +47,24 @@ class ClassroomCreate(BaseModel):
     def empty_class_code_as_none(cls, value):
         return value or None
 
+    @model_validator(mode="before")
+    @classmethod
+    def map_english_teacher_field(cls, data):
+        if isinstance(data, dict) and "english_teacher_id" in data:
+            data["art_teacher_id"] = data.get("english_teacher_id")
+        return data
+
 
 class ClassroomUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50)
     class_code: Optional[str] = Field(None, max_length=20)
+    school_year: Optional[int] = Field(None, ge=2020, le=2100)
+    semester: Optional[int] = Field(None, ge=1, le=2)
     grade_id: Optional[int] = Field(None, ge=1)
     capacity: Optional[int] = Field(None, ge=1, le=200)
     head_teacher_id: Optional[int] = Field(None, ge=1)
     assistant_teacher_id: Optional[int] = Field(None, ge=1)
+    english_teacher_id: Optional[int] = Field(None, ge=1, description="對外標準欄位，對應 legacy art_teacher_id")
     art_teacher_id: Optional[int] = Field(None, ge=1)
     is_active: Optional[bool] = None
 
@@ -65,8 +80,55 @@ class ClassroomUpdate(BaseModel):
     def empty_class_code_as_none(cls, value):
         return value or None
 
+    @model_validator(mode="before")
+    @classmethod
+    def map_english_teacher_field(cls, data):
+        if isinstance(data, dict) and "english_teacher_id" in data:
+            data["art_teacher_id"] = data.get("english_teacher_id")
+        return data
+
+
+class ClassroomCloneTerm(BaseModel):
+    source_school_year: int = Field(..., ge=2020, le=2100)
+    source_semester: int = Field(..., ge=1, le=2)
+    target_school_year: int = Field(..., ge=2020, le=2100)
+    target_semester: int = Field(..., ge=1, le=2)
+    copy_teachers: bool = True
+
+
+class ClassroomPromotionItem(BaseModel):
+    source_classroom_id: int = Field(..., ge=1)
+    target_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    target_grade_id: Optional[int] = Field(None, ge=1)
+    copy_teachers: bool = True
+    move_students: bool = True
+
+    @field_validator("target_name", mode="before")
+    @classmethod
+    def strip_target_name(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
+
+class ClassroomPromoteAcademicYear(BaseModel):
+    source_school_year: int = Field(..., ge=2020, le=2100)
+    source_semester: int = Field(..., ge=1, le=2)
+    target_school_year: int = Field(..., ge=2020, le=2100)
+    target_semester: int = Field(..., ge=1, le=2)
+    classrooms: list[ClassroomPromotionItem] = Field(..., min_length=1)
+
 
 # ============ Helpers ============
+
+SEMESTER_LABELS = {
+    1: "上學期",
+    2: "下學期",
+}
+
+
+def _semester_label(school_year: int, semester: int) -> str:
+    return f"{school_year}學年度{SEMESTER_LABELS.get(semester, str(semester))}"
 
 def _validate_distinct_teacher_assignments(
     head_teacher_id: Optional[int],
@@ -106,20 +168,82 @@ def _validate_teacher_ids(session, teacher_ids: list[int]):
         raise HTTPException(status_code=400, detail=f"指定的教師不存在或已停用: {missing_ids}")
 
 
-def _validate_unique_classroom(session, name: Optional[str], class_code: Optional[str], classroom_id: Optional[int] = None):
+def _validate_unique_classroom(
+    session,
+    name: Optional[str],
+    class_code: Optional[str],
+    school_year: int,
+    semester: int,
+    classroom_id: Optional[int] = None,
+):
     if name:
-        q = session.query(Classroom.id).filter(func.lower(Classroom.name) == name.lower())
+        q = session.query(Classroom.id).filter(
+            func.lower(Classroom.name) == name.lower(),
+            Classroom.school_year == school_year,
+            Classroom.semester == semester,
+        )
         if classroom_id is not None:
             q = q.filter(Classroom.id != classroom_id)
         if q.first():
             raise HTTPException(status_code=400, detail="班級名稱已存在")
 
     if class_code:
-        q = session.query(Classroom.id).filter(func.lower(Classroom.class_code) == class_code.lower())
+        q = session.query(Classroom.id).filter(
+            func.lower(Classroom.class_code) == class_code.lower(),
+            Classroom.school_year == school_year,
+            Classroom.semester == semester,
+        )
         if classroom_id is not None:
             q = q.filter(Classroom.id != classroom_id)
         if q.first():
             raise HTTPException(status_code=400, detail="班級代號已存在")
+
+
+def _get_grade_map(session) -> dict[int, ClassGrade]:
+    grades = session.query(ClassGrade).filter(ClassGrade.is_active == True).all()
+    return {grade.id: grade for grade in grades}
+
+
+def _should_advance_grade(
+    source_school_year: int,
+    source_semester: int,
+    target_school_year: int,
+    target_semester: int,
+) -> bool:
+    return (
+        source_semester == 2
+        and target_semester == 1
+        and target_school_year > source_school_year
+    )
+
+
+def _resolve_next_grade_id(
+    source_classroom: Classroom,
+    grade_map: dict[int, ClassGrade],
+    *,
+    source_school_year: int,
+    source_semester: int,
+    target_school_year: int,
+    target_semester: int,
+) -> Optional[int]:
+    if not source_classroom.grade_id:
+        return None
+    if not _should_advance_grade(source_school_year, source_semester, target_school_year, target_semester):
+        return source_classroom.grade_id
+    source_grade = grade_map.get(source_classroom.grade_id)
+    if not source_grade:
+        return None
+    next_grade = next(
+        (grade for grade in grade_map.values() if grade.sort_order == source_grade.sort_order - 1),
+        None,
+    )
+    return next_grade.id if next_grade else None
+
+
+def _term_start_date(school_year: int, semester: int) -> date:
+    if semester == 1:
+        return date(school_year, 8, 1)
+    return date(school_year + 1, 2, 1)
 
 
 def _serialize_classroom_detail(session, classroom: Classroom):
@@ -140,28 +264,40 @@ def _serialize_classroom_detail(session, classroom: Classroom):
 
     students = session.query(Student).filter(
         Student.classroom_id == classroom.id,
-        Student.is_active == True
-    ).order_by(Student.name).all()
+    ).order_by(
+        Student.is_active.desc(),
+        Student.name,
+    ).all()
 
     student_list = [{
         "id": s.id,
         "student_id": s.student_id,
         "name": s.name,
-        "gender": s.gender
+        "gender": s.gender,
+        "parent_phone": s.parent_phone,
+        "status": s.status or ("在讀中" if s.is_active else "未設定"),
+        "is_active": s.is_active,
     } for s in students]
+
+    active_count = sum(1 for student in students if student.is_active)
 
     return {
         "id": classroom.id,
         "name": classroom.name,
         "class_code": classroom.class_code,
+        "school_year": classroom.school_year,
+        "semester": classroom.semester,
+        "semester_label": _semester_label(classroom.school_year, classroom.semester),
         "grade_id": classroom.grade_id,
         "grade_name": grade_name,
         "capacity": classroom.capacity,
-        "current_count": len(student_list),
+        "current_count": active_count,
         "head_teacher_id": classroom.head_teacher_id,
         "head_teacher_name": teacher_map.get(classroom.head_teacher_id),
         "assistant_teacher_id": classroom.assistant_teacher_id,
         "assistant_teacher_name": teacher_map.get(classroom.assistant_teacher_id),
+        "english_teacher_id": classroom.art_teacher_id,
+        "english_teacher_name": teacher_map.get(classroom.art_teacher_id),
         "art_teacher_id": classroom.art_teacher_id,
         "art_teacher_name": teacher_map.get(classroom.art_teacher_id),
         "students": student_list,
@@ -174,15 +310,35 @@ def _serialize_classroom_detail(session, classroom: Classroom):
 @router.get("/classrooms")
 async def get_classrooms(
     include_inactive: bool = Query(False),
+    school_year: Optional[int] = Query(None, ge=2020, le=2100),
+    semester: Optional[int] = Query(None, ge=1, le=2),
+    current_only: bool = Query(True),
     current_user: dict = Depends(require_permission(Permission.CLASSROOMS_READ)),
 ):
     """取得所有班級列表（含老師和學生數）"""
     session = get_session()
     try:
         q = session.query(Classroom)
+        if school_year is not None or semester is not None:
+            resolved_school_year, resolved_semester = resolve_academic_term_filters(school_year, semester)
+            q = q.filter(
+                Classroom.school_year == resolved_school_year,
+                Classroom.semester == resolved_semester,
+            )
+        elif current_only:
+            resolved_school_year, resolved_semester = resolve_current_academic_term()
+            q = q.filter(
+                Classroom.school_year == resolved_school_year,
+                Classroom.semester == resolved_semester,
+            )
         if not include_inactive:
             q = q.filter(Classroom.is_active == True)
-        classrooms = q.order_by(Classroom.is_active.desc(), Classroom.id).all()
+        classrooms = q.order_by(
+            Classroom.school_year.desc(),
+            Classroom.semester,
+            Classroom.is_active.desc(),
+            Classroom.id,
+        ).all()
         if not classrooms:
             return []
 
@@ -214,12 +370,42 @@ async def get_classrooms(
         ).group_by(Student.classroom_id).all()
         count_map = dict(student_counts)
 
+        preview_rows = session.query(
+            Student.classroom_id,
+            Student.id,
+            Student.student_id,
+            Student.name,
+            Student.gender,
+        ).filter(
+            Student.classroom_id.in_(classroom_ids),
+            Student.is_active == True,
+        ).order_by(
+            Student.classroom_id,
+            Student.name,
+        ).all()
+
+        preview_map: dict[int, list[dict]] = {}
+        for row in preview_rows:
+            classroom_preview = preview_map.setdefault(row.classroom_id, [])
+            if len(classroom_preview) >= 3:
+                continue
+            classroom_preview.append({
+                "id": row.id,
+                "student_id": row.student_id,
+                "name": row.name,
+                "gender": row.gender,
+            })
+
         result = []
         for c in classrooms:
+            student_preview = preview_map.get(c.id, [])
             result.append({
                 "id": c.id,
                 "name": c.name,
                 "class_code": c.class_code,
+                "school_year": c.school_year,
+                "semester": c.semester,
+                "semester_label": _semester_label(c.school_year, c.semester),
                 "grade_id": c.grade_id,
                 "grade_name": grade_map.get(c.grade_id),
                 "capacity": c.capacity,
@@ -228,8 +414,12 @@ async def get_classrooms(
                 "head_teacher_name": teacher_map.get(c.head_teacher_id),
                 "assistant_teacher_id": c.assistant_teacher_id,
                 "assistant_teacher_name": teacher_map.get(c.assistant_teacher_id),
+                "english_teacher_id": c.art_teacher_id,
+                "english_teacher_name": teacher_map.get(c.art_teacher_id),
                 "art_teacher_id": c.art_teacher_id,
                 "art_teacher_name": teacher_map.get(c.art_teacher_id),
+                "student_preview": student_preview,
+                "has_more_students": count_map.get(c.id, 0) > len(student_preview),
                 "is_active": c.is_active
             })
         return result
@@ -271,6 +461,7 @@ async def create_classroom(
     """新增班級"""
     session = get_session()
     try:
+        school_year, semester = resolve_academic_term_filters(item.school_year, item.semester)
         _validate_distinct_teacher_assignments(
             item.head_teacher_id,
             item.assistant_teacher_id,
@@ -287,9 +478,18 @@ async def create_classroom(
                 ) if teacher_id is not None
             ],
         )
-        _validate_unique_classroom(session, item.name, item.class_code)
+        _validate_unique_classroom(
+            session,
+            item.name,
+            item.class_code,
+            school_year,
+            semester,
+        )
 
-        classroom = Classroom(**item.model_dump())
+        payload = item.model_dump(exclude={"english_teacher_id"})
+        payload["school_year"] = school_year
+        payload["semester"] = semester
+        classroom = Classroom(**payload)
         session.add(classroom)
         session.commit()
         return {"message": "班級新增成功", "id": classroom.id}
@@ -316,7 +516,10 @@ async def update_classroom(
         if not classroom:
             raise HTTPException(status_code=404, detail="找不到該班級")
 
-        update_data = item.model_dump(exclude_unset=True)
+        update_data = item.model_dump(exclude_unset=True, exclude={"english_teacher_id"})
+        school_year = update_data.get("school_year", classroom.school_year)
+        semester = update_data.get("semester", classroom.semester)
+        resolve_academic_term_filters(school_year, semester)
 
         head_teacher_id = update_data.get("head_teacher_id", classroom.head_teacher_id)
         assistant_teacher_id = update_data.get("assistant_teacher_id", classroom.assistant_teacher_id)
@@ -341,6 +544,8 @@ async def update_classroom(
             session,
             update_data.get("name"),
             update_data.get("class_code"),
+            school_year,
+            semester,
             classroom_id=classroom.id,
         )
 
@@ -357,6 +562,251 @@ async def update_classroom(
         session.rollback()
         logger.exception("班級更新失敗 classroom_id=%s", classroom_id)
         raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
+    finally:
+        session.close()
+
+
+@router.post("/classrooms/clone-term", status_code=201)
+async def clone_classrooms_to_term(
+    item: ClassroomCloneTerm,
+    current_user: dict = Depends(require_permission(Permission.CLASSROOMS_WRITE)),
+):
+    """將指定學期的班級複製到另一個學期。"""
+    session = get_session()
+    try:
+        if (
+            item.source_school_year == item.target_school_year
+            and item.source_semester == item.target_semester
+        ):
+            raise HTTPException(status_code=400, detail="來源學期與目標學期不可相同")
+
+        source_classrooms = (
+            session.query(Classroom)
+            .filter(
+                Classroom.school_year == item.source_school_year,
+                Classroom.semester == item.source_semester,
+                Classroom.is_active == True,
+            )
+            .order_by(Classroom.id)
+            .all()
+        )
+        if not source_classrooms:
+            raise HTTPException(status_code=404, detail="來源學期沒有可複製的啟用班級")
+
+        source_names = [classroom.name for classroom in source_classrooms]
+        existing_targets = (
+            session.query(Classroom.name)
+            .filter(
+                Classroom.school_year == item.target_school_year,
+                Classroom.semester == item.target_semester,
+                func.lower(Classroom.name).in_([name.lower() for name in source_names]),
+            )
+            .all()
+        )
+        if existing_targets:
+            conflicted_names = "、".join(sorted({row.name for row in existing_targets}))
+            raise HTTPException(
+                status_code=409,
+                detail=f"目標學期已存在相同班級：{conflicted_names}",
+            )
+
+        created = []
+        for source in source_classrooms:
+            cloned = Classroom(
+                name=source.name,
+                class_code=source.class_code,
+                school_year=item.target_school_year,
+                semester=item.target_semester,
+                grade_id=source.grade_id,
+                capacity=source.capacity,
+                head_teacher_id=source.head_teacher_id if item.copy_teachers else None,
+                assistant_teacher_id=source.assistant_teacher_id if item.copy_teachers else None,
+                art_teacher_id=source.art_teacher_id if item.copy_teachers else None,
+                is_active=True,
+            )
+            session.add(cloned)
+            created.append(cloned)
+
+        session.commit()
+        return {
+            "message": "班級複製成功",
+            "created_count": len(created),
+            "target_term": _semester_label(item.target_school_year, item.target_semester),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.exception(
+            "班級學期複製失敗: %s上 -> %s下",
+            item.source_school_year,
+            item.target_school_year,
+        )
+        raise HTTPException(status_code=500, detail=f"複製失敗: {str(e)}")
+    finally:
+        session.close()
+
+
+@router.post("/classrooms/promote-academic-year", status_code=201)
+async def promote_classrooms_to_academic_year(
+    item: ClassroomPromoteAcademicYear,
+    current_user: dict = Depends(require_permission(Permission.CLASSROOMS_WRITE)),
+):
+    """跨學年升班：建立新班、沿用老師並搬移在讀學生。"""
+    session = get_session()
+    try:
+        if (
+            item.source_school_year == item.target_school_year
+            and item.source_semester == item.target_semester
+        ):
+            raise HTTPException(status_code=400, detail="來源學期與目標學期不可相同")
+
+        source_ids = [row.source_classroom_id for row in item.classrooms]
+        source_classrooms = (
+            session.query(Classroom)
+            .filter(
+                Classroom.id.in_(source_ids),
+                Classroom.school_year == item.source_school_year,
+                Classroom.semester == item.source_semester,
+                Classroom.is_active == True,
+            )
+            .all()
+        )
+        source_map = {classroom.id: classroom for classroom in source_classrooms}
+        missing_source_ids = [classroom_id for classroom_id in source_ids if classroom_id not in source_map]
+        if missing_source_ids:
+            raise HTTPException(status_code=404, detail=f"找不到來源班級：{missing_source_ids}")
+
+        grade_map = _get_grade_map(session)
+        prepared_rows = []
+        for row in item.classrooms:
+            source = source_map[row.source_classroom_id]
+            resolved_grade_id = row.target_grade_id or _resolve_next_grade_id(
+                source,
+                grade_map,
+                source_school_year=item.source_school_year,
+                source_semester=item.source_semester,
+                target_school_year=item.target_school_year,
+                target_semester=item.target_semester,
+            )
+            will_graduate = resolved_grade_id is None
+            if not will_graduate and not row.target_name:
+                raise HTTPException(status_code=400, detail=f"班級「{source.name}」缺少新班名")
+            prepared_rows.append((row, source, resolved_grade_id, will_graduate))
+
+        target_names = [row.target_name for row, _, _, will_graduate in prepared_rows if not will_graduate and row.target_name]
+        if len(target_names) != len(set(target_names)):
+            raise HTTPException(status_code=409, detail="目標學期的班級名稱不可重複")
+
+        existing_targets = []
+        if target_names:
+            existing_targets = (
+                session.query(Classroom)
+                .filter(
+                    Classroom.school_year == item.target_school_year,
+                    Classroom.semester == item.target_semester,
+                    func.lower(Classroom.name).in_([name.lower() for name in target_names]),
+                )
+                .all()
+            )
+        active_conflicts = [row for row in existing_targets if row.is_active]
+        reusable_targets = {row.name.lower(): row for row in existing_targets if not row.is_active}
+        if active_conflicts:
+            conflicted_names = "、".join(sorted({row.name for row in active_conflicts}))
+            raise HTTPException(status_code=409, detail=f"目標學期已存在相同班級：{conflicted_names}")
+
+        created_count = 0
+        moved_student_count = 0
+        graduated_count = 0
+        graduation_date = _term_start_date(item.target_school_year, item.target_semester)
+
+        for row, source, target_grade_id, will_graduate in prepared_rows:
+            if will_graduate:
+                graduated = session.query(Student).filter(
+                    Student.classroom_id == source.id,
+                    Student.is_active == True,
+                ).update(
+                    {
+                        Student.is_active: False,
+                        Student.status: "已畢業",
+                        Student.graduation_date: graduation_date,
+                    },
+                    synchronize_session=False,
+                )
+                graduated_count += graduated or 0
+                continue
+
+            if target_grade_id not in grade_map:
+                raise HTTPException(status_code=400, detail="指定的目標年級不存在或已停用")
+
+            reusable_target = reusable_targets.pop(row.target_name.lower(), None)
+            if reusable_target:
+                existing_active_student_count = session.query(func.count(Student.id)).filter(
+                    Student.classroom_id == reusable_target.id,
+                    Student.is_active == True,
+                ).scalar() or 0
+                if existing_active_student_count > 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"目標班級「{reusable_target.name}」仍有在讀學生，無法直接重用",
+                    )
+                reusable_target.class_code = source.class_code
+                reusable_target.grade_id = target_grade_id
+                reusable_target.capacity = source.capacity
+                reusable_target.head_teacher_id = source.head_teacher_id if row.copy_teachers else None
+                reusable_target.assistant_teacher_id = source.assistant_teacher_id if row.copy_teachers else None
+                reusable_target.art_teacher_id = source.art_teacher_id if row.copy_teachers else None
+                reusable_target.is_active = True
+                target_classroom = reusable_target
+            else:
+                target_classroom = Classroom(
+                    name=row.target_name,
+                    class_code=source.class_code,
+                    school_year=item.target_school_year,
+                    semester=item.target_semester,
+                    grade_id=target_grade_id,
+                    capacity=source.capacity,
+                    head_teacher_id=source.head_teacher_id if row.copy_teachers else None,
+                    assistant_teacher_id=source.assistant_teacher_id if row.copy_teachers else None,
+                    art_teacher_id=source.art_teacher_id if row.copy_teachers else None,
+                    is_active=True,
+                )
+                session.add(target_classroom)
+                session.flush()
+            created_count += 1
+
+            if row.move_students:
+                moved = session.query(Student).filter(
+                    Student.classroom_id == source.id,
+                    Student.is_active == True,
+                ).update({Student.classroom_id: target_classroom.id}, synchronize_session=False)
+                moved_student_count += moved or 0
+
+        session.commit()
+        logger.info(
+            "班級跨學年升班成功 source=%s-%s target=%s-%s created=%s moved_students=%s graduated=%s operator=%s",
+            item.source_school_year,
+            item.source_semester,
+            item.target_school_year,
+            item.target_semester,
+            created_count,
+            moved_student_count,
+            graduated_count,
+            current_user.get("username"),
+        )
+        return {
+            "message": "升班完成",
+            "created_count": created_count,
+            "moved_student_count": moved_student_count,
+            "graduated_count": graduated_count,
+            "target_term": _semester_label(item.target_school_year, item.target_semester),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.exception("班級跨學年升班失敗")
+        raise HTTPException(status_code=500, detail=f"升班失敗: {str(e)}")
     finally:
         session.close()
 
@@ -405,7 +855,8 @@ async def get_grades(current_user: dict = Depends(require_permission(Permission.
         return [{
             "id": g.id,
             "name": g.name,
-            "age_range": g.age_range
+            "age_range": g.age_range,
+            "sort_order": g.sort_order,
         } for g in grades]
     finally:
         session.close()

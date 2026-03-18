@@ -4,7 +4,7 @@ models/salary.py — 薪資相關模型
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Index, Text
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from models.base import Base
@@ -246,7 +246,7 @@ class SalaryRecord(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        Index('ix_salary_emp_ym', 'employee_id', 'salary_year', 'salary_month'),
+        UniqueConstraint('employee_id', 'salary_year', 'salary_month', name='uq_salary_emp_ym'),
     )
 
     employee = relationship("Employee", back_populates="salaries")

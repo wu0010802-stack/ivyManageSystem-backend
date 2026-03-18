@@ -20,7 +20,7 @@ from models.database import get_session, SchoolEvent, Holiday
 from services.official_calendar import build_admin_calendar_feed
 from utils.auth import require_permission
 from utils.permissions import Permission
-from utils.file_upload import read_upload_with_size_check
+from utils.file_upload import read_upload_with_size_check, validate_file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +299,7 @@ async def import_holidays(
 ):
     """批次匯入國定假日（UPSERT by date，同日期若已存在則更新）"""
     content = await read_upload_with_size_check(file)
+    validate_file_signature(content, ".xlsx")
     try:
         df = pd.read_excel(BytesIO(content))
     except Exception as e:

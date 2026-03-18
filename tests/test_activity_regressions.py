@@ -23,6 +23,7 @@ from models.database import (
     ActivitySupply,
     Classroom,
     Employee,
+    ParentInquiry,
     RegistrationCourse,
     RegistrationSupply,
     User,
@@ -196,6 +197,71 @@ class TestPublicRegisterValidation:
 
             assert course_row.price_snapshot == 1200
             assert supply_row.price_snapshot == 350
+
+
+class TestActivityCacheInvalidation:
+    def test_mark_inquiry_read_invalidates_stats_summary_cache(self, activity_client):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            inquiry = ParentInquiry(
+                name="王家長",
+                phone="0912345678",
+                question="請問上課時間？",
+                is_read=False,
+            )
+            session.add(inquiry)
+            session.commit()
+            inquiry_id = inquiry.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        first_summary = client.get("/api/activity/stats-summary")
+        assert first_summary.status_code == 200
+        assert first_summary.json()["unreadInquiries"] == 1
+
+        mark_read = client.put(f"/api/activity/inquiries/{inquiry_id}/read")
+        assert mark_read.status_code == 200
+
+        second_summary = client.get("/api/activity/stats-summary")
+        assert second_summary.status_code == 200
+        assert second_summary.json()["unreadInquiries"] == 0
+
+
+class TestRegistrationListAggregation:
+    def test_admin_registration_list_preserves_counts_and_course_names(self, activity_client):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            _create_classroom(session, "海豚班")
+            course_a = _create_course(session, "圍棋", 1200)
+            course_b = _create_course(session, "珠心算", 1500)
+            supply = _create_supply(session, "教材包", 300)
+            reg = _create_registration(
+                session,
+                student_name="王小明",
+                class_name="海豚班",
+                is_paid=True,
+            )
+            session.add(RegistrationCourse(registration_id=reg.id, course_id=course_a.id, status="enrolled", price_snapshot=1200))
+            session.add(RegistrationCourse(registration_id=reg.id, course_id=course_b.id, status="waitlist", price_snapshot=1500))
+            session.add(RegistrationSupply(registration_id=reg.id, supply_id=supply.id, price_snapshot=300))
+            session.commit()
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.get("/api/activity/registrations")
+
+        assert res.status_code == 200
+        payload = res.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["course_count"] == 2
+        assert payload["items"][0]["supply_count"] == 1
+        assert payload["items"][0]["course_names"] == "圍棋、珠心算（候補）"
 
 
 class TestSoftDeleteCapacityConsistency:

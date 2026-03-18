@@ -16,4 +16,4 @@ class LineConfig(Base):
     channel_access_token = Column(String(512), nullable=True)
     target_id = Column(String(100), nullable=True)  # group ID 或 user ID
     is_enabled = Column(Boolean, default=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

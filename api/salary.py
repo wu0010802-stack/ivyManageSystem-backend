@@ -24,6 +24,9 @@ from models.database import (
     SalaryRecord, EmployeeAllowance, AllowanceType, Attendance, OvertimeRecord,
 )
 from services.salary_engine import _compute_hourly_daily_hours
+from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
+from services.salary_field_breakdown import FIELD_LABELS, build_field_breakdown, build_salary_debug_snapshot
+from services.student_enrollment import classroom_student_count_map, count_students_active_on
 from api.salary_fields import calculate_display_bonus_total, calculate_total_allowances
 
 logger = logging.getLogger(__name__)
@@ -155,16 +158,15 @@ def _build_allowance_map(session):
     return allowance_map
 
 
-def _build_classroom_info(session, enrollment_map):
+def _build_classroom_info(session, enrollment_map, year: int, month: int):
     """建立班級詳細資訊對照表與員工角色對照表。"""
     classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
     grade_map = {g.id: g.name for g in session.query(ClassGrade).all()}
+    _, last_day = _cal.monthrange(year, month)
+    month_end = date(year, month, last_day)
 
     # 批次查詢所有班級學生數，避免 N+1
-    db_counts = session.query(
-        Student.classroom_id, func.count(Student.id)
-    ).filter(Student.is_active == True).group_by(Student.classroom_id).all()
-    db_count_map = {classroom_id: cnt for classroom_id, cnt in db_counts}
+    db_count_map = classroom_student_count_map(session, month_end)
 
     classroom_info_map = {}
     for c in classrooms:
@@ -389,7 +391,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
             for ce in request.class_enrollments:
                 enrollment_map[ce.classroom_id] = ce.current_enrollment
 
-        classroom_info_map, emp_role_map = _build_classroom_info(session, enrollment_map)
+        classroom_info_map, emp_role_map = _build_classroom_info(session, enrollment_map, request.year, request.month)
         total_school_enrollment = sum(info['current_enrollment'] for info in classroom_info_map.values())
         meeting_by_emp, prior_absent_by_emp = _build_meeting_map(session, request.year, request.month)
         global_bonus_settings = _build_legacy_bonus_settings(request)
@@ -705,9 +707,192 @@ def get_salary_records(
                 "is_finalized": record.is_finalized,
                 "finalized_at": record.finalized_at.isoformat() if record.finalized_at else None,
                 "finalized_by": record.finalized_by,
+                "remark": record.remark,
             })
 
         return results
+    finally:
+        session.close()
+
+
+@router.put("/salaries/{record_id}/manual-adjust")
+def manual_adjust_salary(
+    record_id: int,
+    data: SalaryManualAdjustRequest,
+    current_user: dict = Depends(require_permission(Permission.SALARY_WRITE)),
+):
+    """手動調整單筆薪資記錄。"""
+    session = get_session()
+    try:
+        record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+        if record.is_finalized:
+            raise HTTPException(status_code=409, detail="此筆薪資已封存，請先解除封存再編輯")
+
+        payload = data.model_dump(exclude_unset=True)
+        if not payload:
+            raise HTTPException(status_code=400, detail="至少需要提供一個調整欄位")
+
+        changed_parts = []
+        for field, value in payload.items():
+            if field not in EDITABLE_SALARY_FIELDS:
+                continue
+            old_value = round(getattr(record, field) or 0)
+            new_value = round(value or 0)
+            if old_value == new_value:
+                continue
+            setattr(record, field, new_value)
+            changed_parts.append(f"{EDITABLE_SALARY_FIELDS[field]} {old_value}→{new_value}")
+
+        if not changed_parts:
+            raise HTTPException(status_code=400, detail="沒有實際變更")
+
+        _recalculate_salary_record_totals(record)
+
+        operator = current_user.get("username") or current_user.get("name") or "管理員"
+        audit_note = (
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 手動編輯："
+            + "；".join(changed_parts)
+            + f"；操作者：{operator}"
+        )
+        record.remark = f"{(record.remark or '').strip()}\n{audit_note}".strip()
+        session.commit()
+
+        logger.warning(
+            "手動調整薪資：record_id=%s employee_id=%s fields=%s operator=%s",
+            record.id,
+            record.employee_id,
+            ",".join(payload.keys()),
+            operator,
+        )
+
+        return {
+            "message": "薪資金額已更新",
+            "record": {
+                "id": record.id,
+                "festival_bonus": record.festival_bonus or 0,
+                "overtime_bonus": record.overtime_bonus or 0,
+                "overtime_pay": record.overtime_pay or 0,
+                "supervisor_dividend": record.supervisor_dividend or 0,
+                "meeting_overtime_pay": record.meeting_overtime_pay or 0,
+                "birthday_bonus": record.birthday_bonus or 0,
+                "leave_deduction": record.leave_deduction or 0,
+                "late_deduction": record.late_deduction or 0,
+                "early_leave_deduction": record.early_leave_deduction or 0,
+                "meeting_absence_deduction": record.meeting_absence_deduction or 0,
+                "absence_deduction": record.absence_deduction or 0,
+                "gross_salary": record.gross_salary or 0,
+                "total_deduction": record.total_deduction or 0,
+                "net_salary": record.net_salary or 0,
+                "bonus_amount": record.bonus_amount or 0,
+                "bonus_separate": bool(record.bonus_separate),
+                "remark": record.remark,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.get("/salaries/{record_id}/breakdown")
+def get_salary_breakdown(
+    record_id: int,
+    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+):
+    """查詢單筆薪資明細。"""
+    session = get_session()
+    try:
+        record, emp = (
+            session.query(SalaryRecord, Employee)
+            .join(Employee, SalaryRecord.employee_id == Employee.id)
+            .options(joinedload(Employee.job_title_rel))
+            .filter(SalaryRecord.id == record_id)
+            .first()
+            or (None, None)
+        )
+        if not record or not emp:
+            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+
+        job_title = ""
+        if emp.job_title_rel:
+            job_title = emp.job_title_rel.name
+        elif emp.title:
+            job_title = emp.title
+
+        return {
+            "employee": {
+                "record_id": record.id,
+                "employee_name": emp.name,
+                "employee_code": emp.employee_id,
+                "job_title": job_title,
+                "year": record.salary_year,
+                "month": record.salary_month,
+            },
+            "earnings": {
+                "base_salary": record.base_salary or 0,
+                "total_allowances": calculate_total_allowances(record),
+                "meeting_overtime_pay": record.meeting_overtime_pay or 0,
+                "overtime_pay": record.overtime_pay or 0,
+                "gross_salary": record.gross_salary or 0,
+            },
+            "bonuses": {
+                "festival_bonus": record.festival_bonus or 0,
+                "overtime_bonus": record.overtime_bonus or 0,
+                "supervisor_dividend": record.supervisor_dividend or 0,
+                "birthday_bonus": record.birthday_bonus or 0,
+            },
+            "deductions": {
+                "leave_deduction": record.leave_deduction or 0,
+                "late_deduction": record.late_deduction or 0,
+                "early_leave_deduction": record.early_leave_deduction or 0,
+                "meeting_absence_deduction": record.meeting_absence_deduction or 0,
+                "absence_deduction": record.absence_deduction or 0,
+                "labor_insurance": record.labor_insurance_employee or 0,
+                "health_insurance": record.health_insurance_employee or 0,
+                "pension": record.pension_employee or 0,
+                "total_deduction": record.total_deduction or 0,
+            },
+            "summary": {
+                "net_salary": record.net_salary or 0,
+                "bonus_separate": bool(record.bonus_separate),
+                "bonus_amount": record.bonus_amount or 0,
+            },
+        }
+    finally:
+        session.close()
+
+
+@router.get("/salaries/{record_id}/field-breakdown")
+def get_salary_field_breakdown(
+    record_id: int,
+    field: str = Query(...),
+    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+):
+    """查詢單筆薪資指定欄位明細。"""
+    if field not in FIELD_LABELS:
+        raise HTTPException(status_code=400, detail="不支援的明細欄位")
+
+    session = get_session()
+    try:
+        record, emp = (
+            session.query(SalaryRecord, Employee)
+            .join(Employee, SalaryRecord.employee_id == Employee.id)
+            .options(joinedload(Employee.job_title_rel))
+            .filter(SalaryRecord.id == record_id)
+            .first()
+            or (None, None)
+        )
+        if not record or not emp:
+            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+
+        engine = _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=False)
+        snapshot = build_salary_debug_snapshot(session, engine, emp, record.salary_year, record.salary_month)
+        return build_field_breakdown(record, emp, snapshot, field)
     finally:
         session.close()
 
@@ -833,40 +1018,51 @@ def get_salary_history(
 @router.get("/salaries/history-all")
 def get_salary_history_all(
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
-    year: int = Query(..., ge=2000, le=2100)
+    year: int = Query(..., ge=2000, le=2100),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
 ):
-    """查詢全部員工年度薪資概覽"""
+    """查詢全部員工年度薪資概覽（支援分頁，依員工分組）"""
     session = get_session()
     try:
-        records = session.query(SalaryRecord, Employee).join(
-            Employee, SalaryRecord.employee_id == Employee.id
-        ).filter(
-            SalaryRecord.salary_year == year
-        ).order_by(
-            Employee.name,
-            SalaryRecord.salary_month
-        ).all()
+        # 先取得符合條件的員工 id 清單（分頁依員工為單位）
+        emp_subq = (
+            session.query(Employee.id, Employee.name)
+            .join(SalaryRecord, SalaryRecord.employee_id == Employee.id)
+            .filter(SalaryRecord.salary_year == year)
+            .group_by(Employee.id, Employee.name)
+            .order_by(Employee.name)
+        )
+        total = emp_subq.count()
+        emp_page = emp_subq.offset(skip).limit(limit).all()
+        emp_ids = [e.id for e in emp_page]
+        emp_name_map = {e.id: e.name for e in emp_page}
 
-        # Group by employee
-        grouped = defaultdict(list)
-        emp_names = {}
-        for r, emp in records:
-            grouped[emp.id].append({
+        if not emp_ids:
+            return {"items": [], "total": total, "skip": skip, "limit": limit}
+
+        records = session.query(SalaryRecord).filter(
+            SalaryRecord.salary_year == year,
+            SalaryRecord.employee_id.in_(emp_ids),
+        ).order_by(SalaryRecord.salary_month).all()
+
+        grouped: dict = {eid: [] for eid in emp_ids}
+        for r in records:
+            grouped[r.employee_id].append({
                 "month": r.salary_month,
                 "net_salary": r.net_salary,
                 "gross_salary": r.gross_salary,
             })
-            emp_names[emp.id] = emp.name
 
-        results = []
-        for emp_id, months_data in grouped.items():
-            results.append({
-                "employee_id": emp_id,
-                "employee_name": emp_names[emp_id],
-                "months": months_data
-            })
-
-        return results
+        results = [
+            {
+                "employee_id": eid,
+                "employee_name": emp_name_map[eid],
+                "months": grouped[eid],
+            }
+            for eid in emp_ids
+        ]
+        return {"items": results, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
 
@@ -876,6 +1072,96 @@ def get_salary_history_all(
 class FinalizeMonthRequest(BaseModel):
     year: int = Field(..., ge=2000, le=2100)
     month: int = Field(..., ge=1, le=12)
+
+
+class SalaryManualAdjustRequest(BaseModel):
+    base_salary: Optional[float] = Field(None, ge=0)
+    supervisor_allowance: Optional[float] = Field(None, ge=0)
+    teacher_allowance: Optional[float] = Field(None, ge=0)
+    meal_allowance: Optional[float] = Field(None, ge=0)
+    transportation_allowance: Optional[float] = Field(None, ge=0)
+    other_allowance: Optional[float] = Field(None, ge=0)
+    performance_bonus: Optional[float] = Field(None, ge=0)
+    special_bonus: Optional[float] = Field(None, ge=0)
+    festival_bonus: Optional[float] = Field(None, ge=0)
+    overtime_bonus: Optional[float] = Field(None, ge=0)
+    overtime_pay: Optional[float] = Field(None, ge=0)
+    supervisor_dividend: Optional[float] = Field(None, ge=0)
+    meeting_overtime_pay: Optional[float] = Field(None, ge=0)
+    birthday_bonus: Optional[float] = Field(None, ge=0)
+    labor_insurance_employee: Optional[float] = Field(None, ge=0)
+    health_insurance_employee: Optional[float] = Field(None, ge=0)
+    pension_employee: Optional[float] = Field(None, ge=0)
+    leave_deduction: Optional[float] = Field(None, ge=0)
+    late_deduction: Optional[float] = Field(None, ge=0)
+    early_leave_deduction: Optional[float] = Field(None, ge=0)
+    missing_punch_deduction: Optional[float] = Field(None, ge=0)
+    meeting_absence_deduction: Optional[float] = Field(None, ge=0)
+    absence_deduction: Optional[float] = Field(None, ge=0)
+    other_deduction: Optional[float] = Field(None, ge=0)
+
+
+EDITABLE_SALARY_FIELDS = {
+    "base_salary": "底薪",
+    "supervisor_allowance": "主管加給",
+    "teacher_allowance": "導師津貼",
+    "meal_allowance": "伙食津貼",
+    "transportation_allowance": "交通津貼",
+    "other_allowance": "其他津貼",
+    "performance_bonus": "績效獎金",
+    "special_bonus": "特別獎金",
+    "festival_bonus": "節慶獎金",
+    "overtime_bonus": "超額獎金",
+    "overtime_pay": "加班津貼",
+    "supervisor_dividend": "主管紅利",
+    "meeting_overtime_pay": "會議加班",
+    "birthday_bonus": "生日禮金",
+    "labor_insurance_employee": "勞保",
+    "health_insurance_employee": "健保",
+    "pension_employee": "勞退自提",
+    "leave_deduction": "請假扣款",
+    "late_deduction": "遲到扣款",
+    "early_leave_deduction": "早退扣款",
+    "missing_punch_deduction": "未打卡扣款",
+    "meeting_absence_deduction": "節慶獎金扣減",
+    "absence_deduction": "曠職扣款",
+    "other_deduction": "其他扣款",
+}
+
+
+def _recalculate_salary_record_totals(record: SalaryRecord):
+    record.gross_salary = round(
+        (record.base_salary or 0)
+        + (record.supervisor_allowance or 0)
+        + (record.teacher_allowance or 0)
+        + (record.meal_allowance or 0)
+        + (record.transportation_allowance or 0)
+        + (record.other_allowance or 0)
+        + (record.performance_bonus or 0)
+        + (record.special_bonus or 0)
+        + (record.supervisor_dividend or 0)
+        + (record.meeting_overtime_pay or 0)
+        + (record.birthday_bonus or 0)
+        + (record.overtime_pay or 0)
+    )
+    record.total_deduction = round(
+        (record.labor_insurance_employee or 0)
+        + (record.health_insurance_employee or 0)
+        + (record.pension_employee or 0)
+        + (record.late_deduction or 0)
+        + (record.early_leave_deduction or 0)
+        + (record.missing_punch_deduction or 0)
+        + (record.leave_deduction or 0)
+        + (record.absence_deduction or 0)
+        + (record.other_deduction or 0)
+    )
+    record.bonus_amount = round(
+        (record.festival_bonus or 0)
+        + (record.overtime_bonus or 0)
+        + (record.supervisor_dividend or 0)
+    )
+    record.bonus_separate = record.bonus_amount > 0
+    record.net_salary = round((record.gross_salary or 0) - (record.total_deduction or 0))
 
 
 @router.post("/salaries/finalize-month")

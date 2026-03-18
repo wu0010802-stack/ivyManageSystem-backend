@@ -18,7 +18,7 @@ from models.database import (
 )
 from utils.auth import require_permission
 from utils.permissions import Permission
-from utils.file_upload import read_upload_with_size_check
+from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from ._shared import AttendanceUploadRequest
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
     # 先讀取檔案內容並檢查大小，防止超大檔案耗盡磁碟空間或記憶體
     content = await read_upload_with_size_check(file)
+    validate_file_signature(content, raw_ext)
 
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     file_path = _UPLOAD_DIR / f"{uuid.uuid4().hex}{raw_ext}"
@@ -103,6 +104,32 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                     "errors": [],
                     "summary": []
                 }
+
+                # 預先批量收集 employee_ids 與 dates，避免迴圈內 N+1 查詢
+                _pre_emp_ids: set = set()
+                _pre_dates: set = set()
+                for _, _row in df.iterrows():
+                    _raw_id = str(_row.get('編號', '')).strip()
+                    if _raw_id.endswith('.0'):
+                        _raw_id = _raw_id[:-2]
+                    _emp = emp_by_id.get(_raw_id) or emp_by_name.get(str(_row.get('姓名', '')).strip())
+                    if _emp:
+                        _pre_emp_ids.add(_emp.id)
+                    _dv = _row.get('日期')
+                    if not pd.isna(_dv):
+                        try:
+                            _d = datetime.strptime(str(_dv).strip(), "%Y/%m/%d").date() if isinstance(_dv, str) else pd.to_datetime(_dv).date()
+                            _pre_dates.add(_d)
+                        except Exception:
+                            pass
+
+                attendance_cache: dict = {}
+                if _pre_emp_ids and _pre_dates:
+                    _cached = session.query(Attendance).filter(
+                        Attendance.employee_id.in_(_pre_emp_ids),
+                        Attendance.attendance_date.in_(_pre_dates),
+                    ).all()
+                    attendance_cache = {(a.employee_id, a.attendance_date): a for a in _cached}
 
                 employee_stats = {}
 
@@ -255,10 +282,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 early_leave_minutes = 0
 
                         department = str(row.get('部門', '')).strip()
-                        existing = session.query(Attendance).filter(
-                            Attendance.employee_id == employee.id,
-                            Attendance.attendance_date == attendance_date
-                        ).first()
+                        existing = attendance_cache.get((employee.id, attendance_date))
 
                         if existing:
                             existing.punch_in_time = punch_in_time
@@ -287,6 +311,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 remark=f"部門: {department}"
                             )
                             session.add(attendance)
+                            attendance_cache[(employee.id, attendance_date)] = attendance
 
                         results_data["success"] += 1
 
@@ -364,6 +389,24 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                 db_save_count = 0
 
+                # 預先批量查詢，避免舊格式迴圈內 N+1
+                _legacy_emp_ids: set = set()
+                _legacy_dates: set = set()
+                for _en, _res in results.items():
+                    _e = emp_by_name.get(_en)
+                    if _e:
+                        _legacy_emp_ids.add(_e.id)
+                        for _d in _res.details:
+                            _legacy_dates.add(_d['date'])
+
+                legacy_attendance_cache: dict = {}
+                if _legacy_emp_ids and _legacy_dates:
+                    _lc = session.query(Attendance).filter(
+                        Attendance.employee_id.in_(_legacy_emp_ids),
+                        Attendance.attendance_date.in_(_legacy_dates),
+                    ).all()
+                    legacy_attendance_cache = {(a.employee_id, a.attendance_date): a for a in _lc}
+
                 for emp_name, result in results.items():
                     employee = emp_by_name.get(emp_name)
                     if not employee:
@@ -426,10 +469,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 is_late = False
                                 is_early_leave = False
 
-                        existing = session.query(Attendance).filter(
-                            Attendance.employee_id == employee.id,
-                            Attendance.attendance_date == a_date
-                        ).first()
+                        existing = legacy_attendance_cache.get((employee.id, a_date))
 
                         db_p_in  = dt_in_full
                         db_p_out = dt_out_full
@@ -466,6 +506,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 remark="Legacy Upload"
                             )
                             session.add(att)
+                            legacy_attendance_cache[(employee.id, a_date)] = att
 
                         db_save_count += 1
 
@@ -513,6 +554,29 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
         employees = session.query(Employee).filter(Employee.is_active == True).all()
         emp_by_id = {emp.employee_id: emp for emp in employees}
         emp_by_name = {emp.name: emp for emp in employees}
+
+        # 預先批量查詢，避免迴圈內 N+1
+        _csv_emp_ids: set = set()
+        _csv_dates: set = set()
+        for _row in request.records:
+            _e = emp_by_id.get(_row.employee_number) or emp_by_name.get(_row.name)
+            if _e:
+                _csv_emp_ids.add(_e.id)
+            try:
+                try:
+                    _csv_dates.add(datetime.strptime(_row.date, "%Y/%m/%d").date())
+                except ValueError:
+                    _csv_dates.add(datetime.strptime(_row.date, "%Y-%m-%d").date())
+            except ValueError:
+                pass
+
+        csv_attendance_cache: dict = {}
+        if _csv_emp_ids and _csv_dates:
+            _cc = session.query(Attendance).filter(
+                Attendance.employee_id.in_(_csv_emp_ids),
+                Attendance.attendance_date.in_(_csv_dates),
+            ).all()
+            csv_attendance_cache = {(a.employee_id, a.attendance_date): a for a in _cc}
 
         employee_stats = {}
 
@@ -598,10 +662,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                 if is_missing_punch_out:
                     status = "missing" if status == "normal" else status + "+missing_out"
 
-                existing = session.query(Attendance).filter(
-                    Attendance.employee_id == employee.id,
-                    Attendance.attendance_date == attendance_date
-                ).first()
+                existing = csv_attendance_cache.get((employee.id, attendance_date))
 
                 if existing:
                     existing.punch_in_time = punch_in_time
@@ -630,6 +691,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                         remark=f"部門: {row.department}"
                     )
                     session.add(attendance)
+                    csv_attendance_cache[(employee.id, attendance_date)] = attendance
 
                 results["success"] += 1
 

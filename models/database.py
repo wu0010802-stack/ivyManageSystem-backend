@@ -39,6 +39,8 @@ from models.activity import (
     RegistrationCourse, RegistrationSupply,
     ParentInquiry, RegistrationChange, ActivityRegistrationSettings,
 )
+from models.dismissal import StudentDismissalCall
+from models.student_transfer import StudentClassroomTransfer
 
 __all__ = [
     # base
@@ -81,4 +83,8 @@ __all__ = [
     "ActivityCourse", "ActivitySupply", "ActivityRegistration",
     "RegistrationCourse", "RegistrationSupply",
     "ParentInquiry", "RegistrationChange", "ActivityRegistrationSettings",
+    # dismissal
+    "StudentDismissalCall",
+    # student transfer history
+    "StudentClassroomTransfer",
 ]

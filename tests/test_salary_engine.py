@@ -1566,6 +1566,26 @@ class TestPensionSelfRate:
 
 
 # ──────────────────────────────────────────────
+# 生日禮金
+# ──────────────────────────────────────────────
+class TestBirthdayBonus:
+
+    def test_awards_birthday_bonus_when_salary_month_matches_birthday(self, engine, sample_employee):
+        emp = {**sample_employee, 'birthday': '1990-03-15'}
+
+        breakdown = engine.calculate_salary(emp, year=2026, month=3)
+
+        assert breakdown.birthday_bonus == 500
+
+    def test_birthday_bonus_is_zero_when_salary_month_does_not_match(self, engine, sample_employee):
+        emp = {**sample_employee, 'birthday': '1990-04-15'}
+
+        breakdown = engine.calculate_salary(emp, year=2026, month=3)
+
+        assert breakdown.birthday_bonus == 0
+
+
+# ──────────────────────────────────────────────
 # bonus_grade 覆蓋機制 & position→title Bug 修復
 # ──────────────────────────────────────────────
 class TestGradeFromTitle:
