@@ -180,9 +180,8 @@ def build_daily_classroom_overview(session, target_date: date) -> dict:
     }
 
 
-def _compute_monthly_attendance_report(session, classroom_id: int, year: int, month: int) -> dict:
-    start_date, end_date = _month_bounds(year, month)
-
+def _load_monthly_data(session, classroom_id: int, start_date: date, end_date: date):
+    """從 DB 載入班級、學生、假日及出席紀錄，回傳 (classroom, students, holiday_map, record_map)。"""
     classroom = (
         session.query(Classroom)
         .filter(Classroom.id == classroom_id)
@@ -226,7 +225,11 @@ def _compute_monthly_attendance_report(session, classroom_id: int, year: int, mo
         (record.student_id, record.date): record
         for record in attendance_records
     }
+    return classroom, students, holiday_map, record_map
 
+
+def _build_calendar_days(start_date: date, end_date: date, holiday_map: dict):
+    """產生月曆日列表及上學日列表。回傳 (calendar_days, school_days)。"""
     calendar_days = []
     school_days = []
     for current_date in _daterange(start_date, end_date):
@@ -234,7 +237,7 @@ def _compute_monthly_attendance_report(session, classroom_id: int, year: int, mo
         is_weekend = weekday >= 5
         holiday_name = holiday_map.get(current_date)
         is_school_day = (not is_weekend) and (holiday_name is None)
-        day_payload = {
+        calendar_days.append({
             "date": current_date.isoformat(),
             "day": current_date.day,
             "weekday": WEEKDAY_LABELS[weekday],
@@ -242,10 +245,85 @@ def _compute_monthly_attendance_report(session, classroom_id: int, year: int, mo
             "is_holiday": holiday_name is not None,
             "holiday_name": holiday_name,
             "is_school_day": is_school_day,
-        }
-        calendar_days.append(day_payload)
+        })
         if is_school_day:
             school_days.append(current_date)
+    return calendar_days, school_days
+
+
+def _compute_student_monthly_stats(student, calendar_days: list, school_days: list, record_map: dict, classroom_status_totals: dict):
+    """計算單一學生的月出席統計，同時累加 classroom_status_totals（就地修改）。
+    回傳 (student_row, attended_days, school_day_count, recorded_days)。
+    """
+    counts = {status: 0 for status in VALID_STATUSES}
+    applicable_school_days = [d for d in school_days if _student_active_on(student, d)]
+    student_calendar_records = []
+    current_absence_streak = 0
+    longest_absence_streak = 0
+    recorded_days = 0
+
+    for day_meta in calendar_days:
+        current_date = date.fromisoformat(day_meta["date"])
+        record = record_map.get((student.id, current_date))
+        status = record.status if record else None
+        is_active_school_day = day_meta["is_school_day"] and _student_active_on(student, current_date)
+
+        if is_active_school_day and status in counts:
+            counts[status] += 1
+            classroom_status_totals[status] += 1
+            recorded_days += 1
+
+        if is_active_school_day:
+            if status == ABSENCE_STATUS:
+                current_absence_streak += 1
+                longest_absence_streak = max(longest_absence_streak, current_absence_streak)
+            else:
+                current_absence_streak = 0
+        else:
+            current_absence_streak = 0
+
+        student_calendar_records.append({
+            "date": day_meta["date"],
+            "status": status,
+            "remark": record.remark if record else None,
+            "is_school_day": is_active_school_day,
+        })
+
+    school_day_count = len(applicable_school_days)
+    attended_days = counts["出席"] + counts["遲到"]
+    unmarked_days = max(school_day_count - recorded_days, 0)
+    attendance_rate = round((attended_days / school_day_count) * 100, 1) if school_day_count else 0.0
+    completion_rate = round((recorded_days / school_day_count) * 100, 1) if school_day_count else 0.0
+
+    student_row = {
+        "student_id": student.id,
+        "student_no": student.student_id,
+        "name": student.name,
+        "school_days": school_day_count,
+        "recorded_days": recorded_days,
+        "attendance_rate": attendance_rate,
+        "record_completion_rate": completion_rate,
+        "current_absence_streak": current_absence_streak,
+        "longest_absence_streak": longest_absence_streak,
+        "absence_alert": longest_absence_streak >= ALERT_STREAK_THRESHOLD,
+        "出席": counts["出席"],
+        "缺席": counts["缺席"],
+        "病假": counts["病假"],
+        "事假": counts["事假"],
+        "遲到": counts["遲到"],
+        "未點名": unmarked_days,
+        "daily_records": student_calendar_records,
+    }
+    return student_row, attended_days, school_day_count, recorded_days
+
+
+def _compute_monthly_attendance_report(session, classroom_id: int, year: int, month: int) -> dict:
+    start_date, end_date = _month_bounds(year, month)
+
+    classroom, students, holiday_map, record_map = _load_monthly_data(
+        session, classroom_id, start_date, end_date
+    )
+    calendar_days, school_days = _build_calendar_days(start_date, end_date, holiday_map)
 
     classroom_status_totals = {status: 0 for status in VALID_STATUSES}
     total_student_school_days = 0
@@ -255,74 +333,17 @@ def _compute_monthly_attendance_report(session, classroom_id: int, year: int, mo
     student_rows = []
 
     for student in students:
-        counts = {status: 0 for status in VALID_STATUSES}
-        applicable_school_days = [d for d in school_days if _student_active_on(student, d)]
-        student_calendar_records = []
-        current_absence_streak = 0
-        longest_absence_streak = 0
-        recorded_days = 0
-
-        for day_meta in calendar_days:
-            current_date = date.fromisoformat(day_meta["date"])
-            record = record_map.get((student.id, current_date))
-            status = record.status if record else None
-            is_active_school_day = day_meta["is_school_day"] and _student_active_on(student, current_date)
-
-            if is_active_school_day and status in counts:
-                counts[status] += 1
-                classroom_status_totals[status] += 1
-                recorded_days += 1
-
-            if is_active_school_day:
-                if status == ABSENCE_STATUS:
-                    current_absence_streak += 1
-                    longest_absence_streak = max(longest_absence_streak, current_absence_streak)
-                else:
-                    current_absence_streak = 0
-            else:
-                current_absence_streak = 0
-
-            student_calendar_records.append({
-                "date": day_meta["date"],
-                "status": status,
-                "remark": record.remark if record else None,
-                "is_school_day": is_active_school_day,
-            })
-
-        school_day_count = len(applicable_school_days)
-        attended_days = counts["出席"] + counts["遲到"]
-        unmarked_days = max(school_day_count - recorded_days, 0)
-        attendance_rate = round((attended_days / school_day_count) * 100, 1) if school_day_count else 0.0
-        completion_rate = round((recorded_days / school_day_count) * 100, 1) if school_day_count else 0.0
-
-        student_row = {
-            "student_id": student.id,
-            "student_no": student.student_id,
-            "name": student.name,
-            "school_days": school_day_count,
-            "recorded_days": recorded_days,
-            "attendance_rate": attendance_rate,
-            "record_completion_rate": completion_rate,
-            "current_absence_streak": current_absence_streak,
-            "longest_absence_streak": longest_absence_streak,
-            "absence_alert": longest_absence_streak >= ALERT_STREAK_THRESHOLD,
-            "出席": counts["出席"],
-            "缺席": counts["缺席"],
-            "病假": counts["病假"],
-            "事假": counts["事假"],
-            "遲到": counts["遲到"],
-            "未點名": unmarked_days,
-            "daily_records": student_calendar_records,
-        }
+        student_row, attended_days, school_day_count, recorded_days = _compute_student_monthly_stats(
+            student, calendar_days, school_days, record_map, classroom_status_totals
+        )
         if student_row["absence_alert"]:
             flagged_students.append({
                 "student_id": student.id,
                 "student_no": student.student_id,
                 "name": student.name,
-                "longest_absence_streak": longest_absence_streak,
-                "current_absence_streak": current_absence_streak,
+                "longest_absence_streak": student_row["longest_absence_streak"],
+                "current_absence_streak": student_row["current_absence_streak"],
             })
-
         total_student_school_days += school_day_count
         total_attended_days += attended_days
         total_recorded_days += recorded_days

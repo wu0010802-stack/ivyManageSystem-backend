@@ -7,12 +7,15 @@ from typing import Optional
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 from models.database import get_session, Classroom, ClassGrade, Employee, Student
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
 from utils.auth import require_permission
+from utils.error_messages import CLASSROOM_NOT_FOUND
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -247,10 +250,8 @@ def _term_start_date(school_year: int, semester: int) -> date:
 
 
 def _serialize_classroom_detail(session, classroom: Classroom):
-    grade_name = None
-    if classroom.grade_id:
-        grade = session.query(ClassGrade).filter(ClassGrade.id == classroom.grade_id).first()
-        grade_name = grade.name if grade else None
+    # Classroom.grade 已透過 joinedload 預載，直接存取即可
+    grade_name = classroom.grade.name if classroom.grade else None
 
     teacher_ids = [
         tid
@@ -445,9 +446,11 @@ async def get_classroom(classroom_id: int, current_user: dict = Depends(require_
     """取得單一班級詳細資料（含學生列表）"""
     session = get_session()
     try:
-        classroom = session.query(Classroom).filter(Classroom.id == classroom_id).first()
+        classroom = session.query(Classroom).options(
+            joinedload(Classroom.grade)
+        ).filter(Classroom.id == classroom_id).first()
         if not classroom:
-            raise HTTPException(status_code=404, detail="找不到該班級")
+            raise HTTPException(status_code=404, detail=CLASSROOM_NOT_FOUND)
         return _serialize_classroom_detail(session, classroom)
     finally:
         session.close()
@@ -498,7 +501,7 @@ async def create_classroom(
     except Exception as e:
         session.rollback()
         logger.exception("班級新增失敗")
-        raise HTTPException(status_code=500, detail=f"新增失敗: {str(e)}")
+        raise_safe_500(e, context="新增失敗")
     finally:
         session.close()
 
@@ -514,7 +517,7 @@ async def update_classroom(
     try:
         classroom = session.query(Classroom).filter(Classroom.id == classroom_id).first()
         if not classroom:
-            raise HTTPException(status_code=404, detail="找不到該班級")
+            raise HTTPException(status_code=404, detail=CLASSROOM_NOT_FOUND)
 
         update_data = item.model_dump(exclude_unset=True, exclude={"english_teacher_id"})
         school_year = update_data.get("school_year", classroom.school_year)
@@ -561,7 +564,7 @@ async def update_classroom(
     except Exception as e:
         session.rollback()
         logger.exception("班級更新失敗 classroom_id=%s", classroom_id)
-        raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
+        raise_safe_500(e, context="更新失敗")
     finally:
         session.close()
 
@@ -642,7 +645,7 @@ async def clone_classrooms_to_term(
             item.source_school_year,
             item.target_school_year,
         )
-        raise HTTPException(status_code=500, detail=f"複製失敗: {str(e)}")
+        raise_safe_500(e, context="複製失敗")
     finally:
         session.close()
 
@@ -806,7 +809,7 @@ async def promote_classrooms_to_academic_year(
     except Exception as e:
         session.rollback()
         logger.exception("班級跨學年升班失敗")
-        raise HTTPException(status_code=500, detail=f"升班失敗: {str(e)}")
+        raise_safe_500(e, context="升班失敗")
     finally:
         session.close()
 
@@ -821,7 +824,7 @@ async def delete_classroom(
     try:
         classroom = session.query(Classroom).filter(Classroom.id == classroom_id).first()
         if not classroom:
-            raise HTTPException(status_code=404, detail="找不到該班級")
+            raise HTTPException(status_code=404, detail=CLASSROOM_NOT_FOUND)
 
         active_student_count = session.query(func.count(Student.id)).filter(
             Student.classroom_id == classroom.id,
@@ -841,7 +844,7 @@ async def delete_classroom(
     except Exception as e:
         session.rollback()
         logger.exception("班級停用失敗 classroom_id=%s", classroom_id)
-        raise HTTPException(status_code=500, detail=f"停用失敗: {str(e)}")
+        raise_safe_500(e, context="停用失敗")
     finally:
         session.close()
 

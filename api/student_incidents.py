@@ -4,13 +4,15 @@ Student incidents router — 學生事件紀錄（管理端）
 
 import logging
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
-from models.database import get_session, Student, StudentIncident, Classroom
+from models.database import get_session, Student, StudentIncident
 from utils.auth import require_permission
+from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -135,7 +137,7 @@ async def create_incident(
     try:
         student = session.query(Student).filter(Student.id == payload.student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
 
         incident = StudentIncident(
             student_id=payload.student_id,
@@ -159,7 +161,7 @@ async def create_incident(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"新增失敗: {str(e)}")
+        raise_safe_500(e, context="新增失敗")
     finally:
         session.close()
 
@@ -218,7 +220,7 @@ async def update_incident(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
+        raise_safe_500(e, context="更新失敗")
     finally:
         session.close()
 
@@ -244,6 +246,6 @@ async def delete_incident(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"刪除失敗: {str(e)}")
+        raise_safe_500(e, context="刪除失敗")
     finally:
         session.close()

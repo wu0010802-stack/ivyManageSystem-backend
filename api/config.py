@@ -12,6 +12,8 @@ from utils.auth import require_permission
 from utils.permissions import Permission
 from pydantic import BaseModel, Field
 
+from sqlalchemy import or_
+
 from models.database import (
     get_session, AttendancePolicy, BonusConfig as DBBonusConfig,
     GradeTarget, InsuranceRate, JobTitle,
@@ -184,12 +186,14 @@ class LineConfigRead(BaseModel):
     is_enabled: bool
     target_id: Optional[str]
     has_token: bool  # 是否已設定 token（不返回原值）
+    has_secret: bool  # 是否已設定 channel_secret
 
 
 class LineConfigUpdate(BaseModel):
     is_enabled: Optional[bool] = None
     target_id: Optional[str] = None
     channel_access_token: Optional[str] = None  # 空字串 = 不更新
+    channel_secret: Optional[str] = None  # 空字串 = 不更新
 
 
 # ============ Routes ============
@@ -239,7 +243,7 @@ def update_attendance_policy(data: AttendancePolicyUpdate, current_user: dict = 
 
         new_policy.changed_by = current_user.get("username")
 
-        update_data = data.dict(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None:
                 setattr(new_policy, key, value)
@@ -319,7 +323,7 @@ def update_bonus_config(data: BonusConfigUpdate, current_user: dict = Depends(re
 
         new_config.changed_by = current_user.get("username")
 
-        update_data = data.dict(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None:
                 setattr(new_config, key, value)
@@ -333,21 +337,13 @@ def update_bonus_config(data: BonusConfigUpdate, current_user: dict = Depends(re
         # 複製年級目標到新版本：合併 NULL（舊資料）與版本特定目標
         # 策略：NULL 目標作為基礎，舊版本目標覆蓋同年級的 NULL 值
         # 這樣即使只有部分年級已綁定到舊版本 ID（其他仍為 NULL），所有年級都能被複製
-        null_targets = {
-            gt.grade_name: gt
-            for gt in session.query(GradeTarget).filter(
-                GradeTarget.bonus_config_id == None  # noqa: E711
-            ).all()
-        }
-        versioned_targets = {}
+        conds = [GradeTarget.bonus_config_id == None]  # noqa: E711
         if old_config:
-            versioned_targets = {
-                gt.grade_name: gt
-                for gt in session.query(GradeTarget).filter(
-                    GradeTarget.bonus_config_id == old_config.id
-                ).all()
-            }
-        # 合併：版本目標優先覆蓋 NULL 目標
+            conds.append(GradeTarget.bonus_config_id == old_config.id)
+        all_grade_targets = session.query(GradeTarget).filter(or_(*conds)).all()
+        # 合併：版本目標（bonus_config_id is not None）優先覆蓋 NULL 目標
+        null_targets = {gt.grade_name: gt for gt in all_grade_targets if gt.bonus_config_id is None}
+        versioned_targets = {gt.grade_name: gt for gt in all_grade_targets if gt.bonus_config_id is not None}
         merged_targets = {**null_targets, **versioned_targets}
 
         for grade_name, gt in merged_targets.items():
@@ -440,7 +436,7 @@ def update_grade_target(data: GradeTargetUpdate, current_user: dict = Depends(re
             )
             session.add(target)
 
-        update_data = data.dict(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None and key != 'grade_name':
                 setattr(target, key, value)
@@ -504,7 +500,7 @@ def update_insurance_rates(data: InsuranceRateUpdate, current_user: dict = Depen
 
         new_rate.changed_by = current_user.get("username")
 
-        update_data = data.dict(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None:
                 setattr(new_rate, key, value)
@@ -655,20 +651,12 @@ def get_all_configs(current_user: dict = Depends(require_permission(Permission.S
 
         # 年級目標（合併邏輯：NULL 為基礎，active bonus 版本優先覆蓋）
         grade_targets = {}
-        null_tgts = {
-            t.grade_name: t
-            for t in session.query(GradeTarget).filter(
-                GradeTarget.bonus_config_id == None  # noqa: E711
-            ).all()
-        }
-        ver_tgts = {}
+        gt_conds = [GradeTarget.bonus_config_id == None]  # noqa: E711
         if bonus:
-            ver_tgts = {
-                t.grade_name: t
-                for t in session.query(GradeTarget).filter(
-                    GradeTarget.bonus_config_id == bonus.id
-                ).all()
-            }
+            gt_conds.append(GradeTarget.bonus_config_id == bonus.id)
+        all_tgts = session.query(GradeTarget).filter(or_(*gt_conds)).all()
+        null_tgts = {t.grade_name: t for t in all_tgts if t.bonus_config_id is None}
+        ver_tgts = {t.grade_name: t for t in all_tgts if t.bonus_config_id is not None}
         for grade_name, t in {**null_tgts, **ver_tgts}.items():
             grade_targets[grade_name] = {
                 "festival_two_teachers": t.festival_two_teachers,
@@ -714,71 +702,104 @@ def get_job_titles(current_user: dict = Depends(require_permission(Permission.SE
         return cached
 
     session = get_session()
-    titles = session.query(JobTitle).filter(JobTitle.is_active == True).order_by(JobTitle.sort_order).all()
-    result = [{"id": t.id, "name": t.name} for t in titles]
-    _cache["titles"] = result
-    return result
+    try:
+        titles = session.query(JobTitle).filter(JobTitle.is_active == True).order_by(JobTitle.sort_order).all()
+        result = [{"id": t.id, "name": t.name} for t in titles]
+        _cache["titles"] = result
+        return result
+    finally:
+        session.close()
 
 
 @router.post("/titles", status_code=201)
 def create_job_title(title: JobTitleCreate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
     session = get_session()
-    existing = session.query(JobTitle).filter(JobTitle.name == title.name).first()
-    if existing:
-        if not existing.is_active:
-            existing.is_active = True
-            session.commit()
-            return {"message": "Job title reactivated", "id": existing.id}
-        raise HTTPException(status_code=400, detail="Job title already exists")
+    try:
+        existing = session.query(JobTitle).filter(JobTitle.name == title.name).first()
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                session.commit()
+                return {"message": "Job title reactivated", "id": existing.id}
+            raise HTTPException(status_code=400, detail="Job title already exists")
 
-    new_title = JobTitle(name=title.name, is_active=True)
-    session.add(new_title)
-    session.commit()
-    _clear_cache("titles")
-    return {"message": "Job title created", "id": new_title.id}
+        new_title = JobTitle(name=title.name, is_active=True)
+        session.add(new_title)
+        session.commit()
+        _clear_cache("titles")
+        return {"message": "Job title created", "id": new_title.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 @router.put("/titles/{title_id}")
 def update_job_title(title_id: int, title: JobTitleCreate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
     session = get_session()
-    # Check if name exists for OTHER titles
-    existing = session.query(JobTitle).filter(JobTitle.name == title.name, JobTitle.id != title_id).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Job title name already exists")
+    try:
+        # Check if name exists for OTHER titles
+        existing = session.query(JobTitle).filter(JobTitle.name == title.name, JobTitle.id != title_id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Job title name already exists")
 
-    db_title = session.query(JobTitle).filter(JobTitle.id == title_id).first()
-    if not db_title:
-        raise HTTPException(status_code=404, detail="Job title not found")
+        db_title = session.query(JobTitle).filter(JobTitle.id == title_id).first()
+        if not db_title:
+            raise HTTPException(status_code=404, detail="Job title not found")
 
-    db_title.name = title.name
-    # Ensure it's active if we are updating it
-    db_title.is_active = True
-    session.commit()
-    _clear_cache("titles")
-    return {"message": "Job title updated"}
+        db_title.name = title.name
+        # Ensure it's active if we are updating it
+        db_title.is_active = True
+        session.commit()
+        _clear_cache("titles")
+        return {"message": "Job title updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 @router.delete("/titles/{title_id}")
 def delete_job_title(title_id: int, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
     session = get_session()
-    db_title = session.query(JobTitle).filter(JobTitle.id == title_id).first()
-    if not db_title:
-        raise HTTPException(status_code=404, detail="Job title not found")
+    try:
+        db_title = session.query(JobTitle).filter(JobTitle.id == title_id).first()
+        if not db_title:
+            raise HTTPException(status_code=404, detail="Job title not found")
 
-    # Soft delete
-    db_title.is_active = False
-    session.commit()
-    _clear_cache("titles")
-    return {"message": "Job title deleted (soft delete)"}
+        # Soft delete
+        db_title.is_active = False
+        session.commit()
+        _clear_cache("titles")
+        return {"message": "Job title deleted (soft delete)"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 # ============ Type Management ============
 
 @router.get("/allowance-types")
 async def get_allowance_types(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
+    cached = _cache.get("allowance_types")
+    if cached is not None:
+        return cached
     session = get_session()
     try:
-        return session.query(AllowanceType).filter(AllowanceType.is_active == True).order_by(AllowanceType.sort_order).all()
+        items = session.query(AllowanceType).filter(AllowanceType.is_active == True).order_by(AllowanceType.sort_order).all()
+        result = [{"id": i.id, "code": i.code, "name": i.name, "is_taxable": i.is_taxable, "sort_order": i.sort_order} for i in items]
+        _cache["allowance_types"] = result
+        return result
     finally:
         session.close()
 
@@ -787,9 +808,10 @@ async def get_allowance_types(current_user: dict = Depends(require_permission(Pe
 async def create_allowance_type(item: AllowanceTypeCreate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
     session = get_session()
     try:
-        new_item = AllowanceType(**item.dict())
+        new_item = AllowanceType(**item.model_dump())
         session.add(new_item)
         session.commit()
+        _clear_cache("allowance_types")
         return {"message": "新增成功", "id": new_item.id}
     except Exception as e:
         session.rollback()
@@ -800,9 +822,15 @@ async def create_allowance_type(item: AllowanceTypeCreate, current_user: dict = 
 
 @router.get("/deduction-types")
 async def get_deduction_types(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
+    cached = _cache.get("deduction_types")
+    if cached is not None:
+        return cached
     session = get_session()
     try:
-        return session.query(DeductionType).filter(DeductionType.is_active == True).order_by(DeductionType.sort_order).all()
+        items = session.query(DeductionType).filter(DeductionType.is_active == True).order_by(DeductionType.sort_order).all()
+        result = [{"id": i.id, "code": i.code, "name": i.name, "category": i.category, "is_employer_paid": i.is_employer_paid, "sort_order": i.sort_order} for i in items]
+        _cache["deduction_types"] = result
+        return result
     finally:
         session.close()
 
@@ -811,9 +839,10 @@ async def get_deduction_types(current_user: dict = Depends(require_permission(Pe
 async def create_deduction_type(item: DeductionTypeCreate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
     session = get_session()
     try:
-        new_item = DeductionType(**item.dict())
+        new_item = DeductionType(**item.model_dump())
         session.add(new_item)
         session.commit()
+        _clear_cache("deduction_types")
         return {"message": "新增成功", "id": new_item.id}
     except Exception as e:
         session.rollback()
@@ -824,9 +853,15 @@ async def create_deduction_type(item: DeductionTypeCreate, current_user: dict = 
 
 @router.get("/bonus-types")
 async def get_bonus_types(current_user: dict = Depends(require_permission(Permission.SETTINGS_READ))):
+    cached = _cache.get("bonus_types")
+    if cached is not None:
+        return cached
     session = get_session()
     try:
-        return session.query(BonusType).filter(BonusType.is_active == True).order_by(BonusType.sort_order).all()
+        items = session.query(BonusType).filter(BonusType.is_active == True).order_by(BonusType.sort_order).all()
+        result = [{"id": i.id, "code": i.code, "name": i.name, "is_separate_transfer": i.is_separate_transfer, "sort_order": i.sort_order} for i in items]
+        _cache["bonus_types"] = result
+        return result
     finally:
         session.close()
 
@@ -835,9 +870,10 @@ async def get_bonus_types(current_user: dict = Depends(require_permission(Permis
 async def create_bonus_type(item: BonusTypeCreate, current_user: dict = Depends(require_permission(Permission.SETTINGS_WRITE))):
     session = get_session()
     try:
-        new_item = BonusType(**item.dict())
+        new_item = BonusType(**item.model_dump())
         session.add(new_item)
         session.commit()
+        _clear_cache("bonus_types")
         return {"message": "新增成功", "id": new_item.id}
     except Exception as e:
         session.rollback()
@@ -939,11 +975,12 @@ def get_line_config(
     try:
         cfg = session.query(LineConfig).first()
         if not cfg:
-            return LineConfigRead(is_enabled=False, target_id=None, has_token=False)
+            return LineConfigRead(is_enabled=False, target_id=None, has_token=False, has_secret=False)
         return LineConfigRead(
             is_enabled=cfg.is_enabled,
             target_id=cfg.target_id,
             has_token=bool(cfg.channel_access_token),
+            has_secret=bool(getattr(cfg, "channel_secret", None)),
         )
     finally:
         session.close()
@@ -968,15 +1005,18 @@ def update_line_config(
             cfg.target_id = data.target_id
         if data.channel_access_token:  # 空字串不更新
             cfg.channel_access_token = data.channel_access_token
+        if data.channel_secret:  # 空字串不更新
+            cfg.channel_secret = data.channel_secret
 
         session.commit()
 
         # 熱更新 LineService（若已注入）
         if _line_service is not None:
+            channel_secret = getattr(cfg, "channel_secret", None)
             if cfg.is_enabled and cfg.channel_access_token and cfg.target_id:
-                _line_service.configure(cfg.channel_access_token, cfg.target_id, True)
+                _line_service.configure(cfg.channel_access_token, cfg.target_id, True, channel_secret)
             else:
-                _line_service.configure("", "", False)
+                _line_service.configure("", "", False, channel_secret)
 
         logger.warning("LINE 通知設定已更新，操作人：%s", current_user.get("username", ""))
         return {"message": "LINE 通知設定已更新"}

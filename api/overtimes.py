@@ -7,7 +7,6 @@ import calendar as cal_module
 from datetime import date, datetime, time as dt_time
 from io import BytesIO
 from typing import Optional, List
-from urllib.parse import quote
 
 import pandas as pd
 from openpyxl import Workbook
@@ -15,16 +14,19 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from utils.errors import raise_safe_500
 from utils.file_upload import validate_file_signature
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import func, or_
 
 from models.database import (
     get_session, Employee, OvertimeRecord, LeaveQuota, User,
-    ApprovalPolicy, ApprovalLog, LeaveRecord, SalaryRecord,
+    LeaveRecord, SalaryRecord,
 )
 from utils.auth import require_staff_permission
+from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST, OVERTIME_RECORD_NOT_FOUND
 from utils.permissions import Permission
+from utils.approval_helpers import _get_submitter_role, _check_approval_eligibility, _write_approval_log
+from utils.excel_utils import xlsx_streaming_response
+from utils.import_utils import build_employee_lookup, resolve_employee_from_row
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +35,17 @@ router = APIRouter(prefix="/api", tags=["overtimes"])
 # ============ Service Injection ============
 
 _salary_engine = None
+_line_service = None
 
 
 def init_overtimes_services(salary_engine_instance):
     global _salary_engine
     _salary_engine = salary_engine_instance
+
+
+def init_overtimes_line_service(line_service):
+    global _line_service
+    _line_service = line_service
 
 
 # ============ Constants ============
@@ -70,38 +78,6 @@ RESTDAY_MIN_HOURS      = 2      # 最低計費時數（工作不足2h仍算2h）
 
 # ============ Helper Functions ============
 
-def _get_submitter_role(employee_id: int, session) -> str:
-    """查詢員工對應 User 帳號的角色，找不到預設 teacher"""
-    user = session.query(User).filter(
-        User.employee_id == employee_id,
-        User.is_active == True,
-    ).first()
-    return user.role if user else "teacher"
-
-
-def _check_approval_eligibility(doc_type: str, submitter_role: str, approver_role: str, session) -> bool:
-    """查詢 ApprovalPolicy，確認 approver_role 是否有資格審核"""
-    policy = session.query(ApprovalPolicy).filter(
-        ApprovalPolicy.is_active == True,
-        ApprovalPolicy.submitter_role == submitter_role,
-        ApprovalPolicy.doc_type.in_([doc_type, "all"]),
-    ).first()
-    if not policy:
-        return approver_role == "admin"
-    return approver_role in [r.strip() for r in policy.approver_roles.split(",")]
-
-
-def _write_approval_log(doc_type: str, doc_id: int, action: str, approver: dict, comment: str | None, session):
-    """寫入簽核記錄"""
-    session.add(ApprovalLog(
-        doc_type=doc_type,
-        doc_id=doc_id,
-        action=action,
-        approver_id=approver.get("id"),
-        approver_username=approver.get("username", ""),
-        approver_role=approver.get("role", ""),
-        comment=comment,
-    ))
 
 
 def _check_salary_month_not_finalized(session, employee_id: int, overtime_date: date) -> None:
@@ -223,6 +199,77 @@ def _recalculate_salary_for_overtime_months(employee_id: int, months: set[tuple[
         _salary_engine.process_salary_calculation(employee_id, year, month)
 
 
+def _grant_comp_leave_quota(session, ot: OvertimeRecord, result: dict) -> None:
+    """核准補休模式加班時，upsert 補休配額並標記 comp_leave_granted。
+
+    防止重複發放：只在 ot.comp_leave_granted 為 False 時才執行。
+    發放後將小時數寫入 result['comp_leave_hours_granted'] 供 API 回傳。
+    """
+    if not (ot.use_comp_leave and not ot.comp_leave_granted):
+        return
+    year = ot.overtime_date.year
+    quota = session.query(LeaveQuota).filter(
+        LeaveQuota.employee_id == ot.employee_id,
+        LeaveQuota.year == year,
+        LeaveQuota.leave_type == "compensatory",
+    ).first()
+    if quota:
+        quota.total_hours += ot.hours
+    else:
+        quota = LeaveQuota(
+            employee_id=ot.employee_id,
+            year=year,
+            leave_type="compensatory",
+            total_hours=ot.hours,
+            note="由加班補休累積",
+        )
+        session.add(quota)
+    ot.comp_leave_granted = True
+    result["comp_leave_hours_granted"] = ot.hours
+    logger.info(
+        "補休配額已發放：員工 ID=%d, %d 年度 +%.1f 小時（加班記錄 #%d）",
+        ot.employee_id, year, ot.hours, ot.id,
+    )
+
+
+def _notify_and_recalc_overtime(session, ot: OvertimeRecord, approved: bool, was_approved: bool, result: dict) -> None:
+    """核准/駁回後的 LINE 推播與薪資重算。
+
+    LINE 通知失敗不影響主流程（僅記錄 warning）。
+    薪資重算失敗則在 result 中寫入 warning 訊息，由 API 回傳給前端。
+    """
+    # 個人 LINE 推播（審核結果）
+    if _line_service is not None:
+        try:
+            emp_user = session.query(User).filter(User.employee_id == ot.employee_id).first()
+            if emp_user and emp_user.line_user_id:
+                emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()
+                emp_name = emp.name if emp else "員工"
+                ot_type_label = OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type)
+                _line_service.notify_overtime_result(
+                    emp_user.line_user_id, emp_name,
+                    ot.overtime_date, ot_type_label, approved,
+                )
+        except Exception as _le:
+            logger.warning("加班審核 LINE 推播失敗: %s", _le)
+
+    # 核准或撤銷已核准狀態後都需要重算薪資
+    if (approved or was_approved) and _salary_engine is not None:
+        try:
+            _salary_engine.process_salary_calculation(ot.employee_id, ot.overtime_date.year, ot.overtime_date.month)
+            result["salary_recalculated"] = True
+            result["message"] = "已核准，薪資已自動重算" if approved else "已駁回，薪資已自動重算"
+            logger.info("加班審核後自動重算薪資：emp_id=%d, %d/%d", ot.employee_id, ot.overtime_date.year, ot.overtime_date.month)
+        except Exception as e:
+            result["salary_recalculated"] = False
+            result["warning"] = (
+                "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                if approved else
+                "已駁回，但薪資重算失敗，請手動前往薪資頁面重新計算"
+            )
+            logger.error("加班審核後薪資重算失敗：%s", e)
+
+
 def _to_time(val) -> dt_time:
     """str / datetime.time / datetime.datetime 統一正規化為 datetime.time。
 
@@ -231,7 +278,7 @@ def _to_time(val) -> dt_time:
     觸發 TypeError，本函式確保任何輸入都能安全轉換為可比較的 datetime.time。
     """
     if isinstance(val, str):
-        h, m = map(int, val.strip().split(':'))
+        h, m = map(int, val.strip().split(':')[:2])
         return dt_time(h, m)
     if isinstance(val, datetime):   # datetime 是 date 的子類別，必須在 date 之前檢查
         return val.time()
@@ -359,6 +406,29 @@ class OvertimeCreate(BaseModel):
             raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS} 小時")
         return v
 
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v):
+        if v is None:
+            return v
+        parts = v.strip().split(":")
+        if len(parts) < 2:
+            raise ValueError("時間格式錯誤，應為 HH:MM")
+        try:
+            h, m = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError("時間格式錯誤，應為 HH:MM")
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError("時間值超出範圍（小時 0-23，分鐘 0-59）")
+        return f"{h:02d}:{m:02d}"
+
+    @model_validator(mode='after')
+    def validate_time_order(self):
+        if self.start_time and self.end_time:
+            if self.start_time >= self.end_time:
+                raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+        return self
+
 
 class OvertimeUpdate(BaseModel):
     overtime_date: Optional[date] = None
@@ -387,6 +457,29 @@ class OvertimeUpdate(BaseModel):
             raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS} 小時")
         return v
 
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v):
+        if v is None:
+            return v
+        parts = v.strip().split(":")
+        if len(parts) < 2:
+            raise ValueError("時間格式錯誤，應為 HH:MM")
+        try:
+            h, m = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError("時間格式錯誤，應為 HH:MM")
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError("時間值超出範圍（小時 0-23，分鐘 0-59）")
+        return f"{h:02d}:{m:02d}"
+
+    @model_validator(mode='after')
+    def validate_time_order(self):
+        if self.start_time and self.end_time:
+            if self.start_time >= self.end_time:
+                raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+        return self
+
 
 # ============ Batch Approve Request Model ============
 
@@ -398,16 +491,6 @@ class OvertimeBatchApproveRequest(BaseModel):
 
 # ============ Excel Helpers (local) ============
 
-def _ot_xlsx_response(wb, filename: str):
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    encoded = quote(filename)
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
-    )
 
 
 _OT_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
@@ -509,7 +592,7 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_s
 
         emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
         if not emp:
-            raise HTTPException(status_code=404, detail="員工不存在")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
 
         pay = 0.0 if data.use_comp_leave else calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
 
@@ -565,7 +648,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
     try:
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
         if not ot:
-            raise HTTPException(status_code=404, detail="加班記錄不存在")
+            raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
 
         # 記錄修改前的核准狀態（供後續稽核退審判斷）
         was_approved = ot.is_approved == True
@@ -602,7 +685,7 @@ def update_overtime(overtime_id: int, data: OvertimeUpdate, current_user: dict =
                 _check_salary_month_not_finalized(session, ot.employee_id, date(year, month, 1))
             _revoke_comp_leave_grant(session, ot)
 
-        update_data = data.dict(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             if value is not None and key not in ('start_time', 'end_time'):
                 setattr(ot, key, value)
@@ -660,7 +743,7 @@ def delete_overtime(overtime_id: int, current_user: dict = Depends(require_staff
     try:
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
         if not ot:
-            raise HTTPException(status_code=404, detail="加班記錄不存在")
+            raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
         was_approved = ot.is_approved is True
         overtime_month = (ot.overtime_date.year, ot.overtime_date.month)
         employee_id = ot.employee_id
@@ -690,8 +773,12 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
     try:
         ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
         if not ot:
-            raise HTTPException(status_code=404, detail="加班記錄不存在")
+            raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
         was_approved = ot.is_approved is True
+
+        # ── 自我核准防護 ─────────────────────────────────────────────────────────
+        if ot.employee_id == current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="不可自我核准加班單")
 
         # ── 角色資格檢查 ──────────────────────────────────────────────────────
         submitter_role = _get_submitter_role(ot.employee_id, session)
@@ -713,53 +800,14 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
         result = {"message": "已核准" if approved else "已駁回"}
 
         # 補休配額發放（核准時才執行，且防止重複發放）
-        if approved and ot.use_comp_leave and not ot.comp_leave_granted:
-            year = ot.overtime_date.year
-            quota = session.query(LeaveQuota).filter(
-                LeaveQuota.employee_id == ot.employee_id,
-                LeaveQuota.year == year,
-                LeaveQuota.leave_type == "compensatory",
-            ).first()
-            if quota:
-                quota.total_hours += ot.hours
-            else:
-                quota = LeaveQuota(
-                    employee_id=ot.employee_id,
-                    year=year,
-                    leave_type="compensatory",
-                    total_hours=ot.hours,
-                    note="由加班補休累積",
-                )
-                session.add(quota)
-            ot.comp_leave_granted = True
-            result["comp_leave_hours_granted"] = ot.hours
-            logger.info(
-                "補休配額已發放：員工 ID=%d, %d 年度 +%.1f 小時（加班記錄 #%d）",
-                ot.employee_id, year, ot.hours, overtime_id,
-            )
+        if approved:
+            _grant_comp_leave_quota(session, ot, result)
 
         action = "approved" if approved else "rejected"
         _write_approval_log("overtime", overtime_id, action, current_user, None, session)
         session.commit()
 
-        # 核准或撤銷已核准狀態後都需要重算薪資
-        if (approved or was_approved) and _salary_engine is not None:
-            try:
-                year = ot.overtime_date.year
-                month = ot.overtime_date.month
-                emp_id = ot.employee_id
-                _salary_engine.process_salary_calculation(emp_id, year, month)
-                result["salary_recalculated"] = True
-                result["message"] = "已核准，薪資已自動重算" if approved else "已駁回，薪資已自動重算"
-                logger.info("加班審核後自動重算薪資：emp_id=%d, %d/%d", emp_id, year, month)
-            except Exception as e:
-                result["salary_recalculated"] = False
-                result["warning"] = (
-                    "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
-                    if approved else
-                    "已駁回，但薪資重算失敗，請手動前往薪資頁面重新計算"
-                )
-                logger.error("加班審核後薪資重算失敗：%s", e)
+        _notify_and_recalc_overtime(session, ot, approved, was_approved, result)
 
         return result
     except HTTPException:
@@ -776,75 +824,87 @@ def batch_approve_overtimes(
     data: OvertimeBatchApproveRequest,
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
-    """批次核准/駁回加班。每筆獨立處理，補休配額只在逐筆成功後發放。"""
+    """批次核准/駁回加班。兩階段原子提交：先全部驗證，再統一 commit。"""
     succeeded = []
     failed = []
 
-    for ot_id in data.ids:
-        session = get_session()
-        try:
-            ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == ot_id).first()
-            if not ot:
-                failed.append({"id": ot_id, "reason": "加班記錄不存在"})
-                continue
-            was_approved = ot.is_approved is True
+    session = get_session()
+    try:
+        # ── Phase 1：驗證 + 準備所有異動（不 commit）────────────────────────
+        changes = []  # list of (ot_id, ot, was_approved)
+        for ot_id in data.ids:
+            try:
+                ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == ot_id).first()
+                if not ot:
+                    failed.append({"id": ot_id, "reason": OVERTIME_RECORD_NOT_FOUND})
+                    continue
+                was_approved = ot.is_approved is True
 
-            # 角色資格檢查（403 視為失敗條目，不中斷批次）
-            submitter_role = _get_submitter_role(ot.employee_id, session)
-            approver_role = current_user.get("role", "")
-            if not _check_approval_eligibility("overtime", submitter_role, approver_role, session):
-                failed.append({
-                    "id": ot_id,
-                    "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的加班申請",
-                })
-                continue
+                submitter_role = _get_submitter_role(ot.employee_id, session)
+                approver_role = current_user.get("role", "")
+                if not _check_approval_eligibility("overtime", submitter_role, approver_role, session):
+                    failed.append({
+                        "id": ot_id,
+                        "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的加班申請",
+                    })
+                    continue
 
-            if data.approved or was_approved:
-                _check_salary_month_not_finalized(session, ot.employee_id, ot.overtime_date)
-            if not data.approved and was_approved:
-                _revoke_comp_leave_grant(session, ot)
+                if data.approved or was_approved:
+                    _check_salary_month_not_finalized(session, ot.employee_id, ot.overtime_date)
+                if not data.approved and was_approved:
+                    _revoke_comp_leave_grant(session, ot)
 
-            ot.is_approved = data.approved
-            ot.approved_by = current_user.get("username", "管理員") if data.approved else None
+                ot.is_approved = data.approved
+                ot.approved_by = current_user.get("username", "管理員") if data.approved else None
 
-            if data.approved and ot.use_comp_leave and not ot.comp_leave_granted:
-                year = ot.overtime_date.year
-                quota = session.query(LeaveQuota).filter(
-                    LeaveQuota.employee_id == ot.employee_id,
-                    LeaveQuota.year == year,
-                    LeaveQuota.leave_type == "compensatory",
-                ).first()
-                if quota:
-                    quota.total_hours += ot.hours
-                else:
-                    quota = LeaveQuota(
-                        employee_id=ot.employee_id,
-                        year=year,
-                        leave_type="compensatory",
-                        total_hours=ot.hours,
-                        note="由加班補休累積",
-                    )
-                    session.add(quota)
-                ot.comp_leave_granted = True
+                if data.approved and ot.use_comp_leave and not ot.comp_leave_granted:
+                    year = ot.overtime_date.year
+                    quota = session.query(LeaveQuota).filter(
+                        LeaveQuota.employee_id == ot.employee_id,
+                        LeaveQuota.year == year,
+                        LeaveQuota.leave_type == "compensatory",
+                    ).first()
+                    if quota:
+                        quota.total_hours += ot.hours
+                    else:
+                        quota = LeaveQuota(
+                            employee_id=ot.employee_id,
+                            year=year,
+                            leave_type="compensatory",
+                            total_hours=ot.hours,
+                            note="由加班補休累積",
+                        )
+                        session.add(quota)
+                    ot.comp_leave_granted = True
 
-            action = "approved" if data.approved else "rejected"
-            _write_approval_log("overtime", ot_id, action, current_user, None, session)
-            session.commit()
+                action = "approved" if data.approved else "rejected"
+                _write_approval_log("overtime", ot_id, action, current_user, None, session)
+                changes.append((ot_id, ot, was_approved))
+            except Exception as e:
+                session.rollback()
+                failed.append({"id": ot_id, "reason": str(e)})
+                # 驗證階段失敗需清除 session 狀態，重新載入後續記錄
+                session.expire_all()
 
-            if (data.approved or was_approved) and _salary_engine is not None:
-                try:
-                    _salary_engine.process_salary_calculation(
-                        ot.employee_id, ot.overtime_date.year, ot.overtime_date.month
-                    )
-                except Exception as se:
-                    logger.error("批次審核後薪資重算失敗（加班 #%d）：%s", ot_id, se)
-
-            succeeded.append(ot_id)
-        except Exception as e:
-            session.rollback()
-            failed.append({"id": ot_id, "reason": str(e)})
-        finally:
-            session.close()
+        # ── Phase 2：所有驗證通過後統一 commit ──────────────────────────────
+        if changes:
+            try:
+                session.commit()
+                for ot_id, ot, was_approved in changes:
+                    succeeded.append(ot_id)
+                    if (data.approved or was_approved) and _salary_engine is not None:
+                        try:
+                            _salary_engine.process_salary_calculation(
+                                ot.employee_id, ot.overtime_date.year, ot.overtime_date.month
+                            )
+                        except Exception as se:
+                            logger.error("批次審核後薪資重算失敗（加班 #%d）：%s", ot_id, se)
+            except Exception as e:
+                session.rollback()
+                for ot_id, _, _ in changes:
+                    failed.append({"id": ot_id, "reason": f"統一提交失敗：{e}"})
+    finally:
+        session.close()
 
     return {"succeeded": succeeded, "failed": failed}
 
@@ -888,7 +948,7 @@ def get_overtime_import_template(
     ws2.cell(row=4, column=2, value="國定假日加班")
     ws2.cell(row=4, column=3, value="×2.0")
 
-    return _ot_xlsx_response(wb, "加班匯入範本.xlsx")
+    return xlsx_streaming_response(wb, "加班匯入範本.xlsx")
 
 
 @router.post("/overtimes/import")
@@ -909,23 +969,13 @@ async def import_overtimes(
     results: dict = {"total": 0, "created": 0, "failed": 0, "errors": []}
     session = get_session()
     try:
-        employees = session.query(Employee).filter(Employee.is_active == True).all()
-        emp_by_id = {str(e.employee_id): e for e in employees}
-        emp_by_name = {e.name: e for e in employees}
+        emp_by_id, emp_by_name = build_employee_lookup(session)
 
         for idx, row in df.iterrows():
             results["total"] += 1
             row_num = int(idx) + 2
             try:
-                emp_id_str = str(row.get("員工編號", "")).strip()
-                emp_name_str = str(row.get("員工姓名", "")).strip()
-                emp = None
-                if emp_id_str and emp_id_str not in ("nan", ""):
-                    emp = emp_by_id.get(emp_id_str)
-                if emp is None and emp_name_str and emp_name_str not in ("nan", ""):
-                    emp = emp_by_name.get(emp_name_str)
-                if emp is None:
-                    raise ValueError(f"找不到員工（編號:{emp_id_str}，姓名:{emp_name_str}）")
+                emp = resolve_employee_from_row(row, emp_by_id, emp_by_name)
 
                 ot_date_raw = row.get("加班日期")
                 if ot_date_raw is None or pd.isna(ot_date_raw):
@@ -967,8 +1017,8 @@ async def import_overtimes(
                                     start_dt = dt
                                 else:
                                     end_dt = dt
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("Excel 時間欄位 %r 解析失敗，略過: %s", val_str, e)
 
                 comp_raw = row.get("補休(是/否,可空)")
                 use_comp_leave = False
@@ -1010,7 +1060,7 @@ async def import_overtimes(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"匯入失敗：{e}")
+        raise_safe_500(e, context="匯入失敗")
     finally:
         session.close()
 

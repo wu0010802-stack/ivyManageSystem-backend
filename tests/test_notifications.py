@@ -16,6 +16,7 @@ import models.base as base_module
 from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
 from api.notifications import router as notifications_router
+from services.dashboard_query_service import dashboard_query_service
 from models.database import (
     Base,
     Employee,
@@ -48,6 +49,10 @@ def notification_client(tmp_path):
     Base.metadata.create_all(engine)
     _ip_attempts.clear()
     _account_failures.clear()
+    # 重置 dashboard_query_service 的跨請求快取，避免不同測試的 SQLite DB 資料互相污染
+    dashboard_query_service._notification_cache.clear()
+    dashboard_query_service._approval_cache.clear()
+    dashboard_query_service._events_cache.clear()
 
     app = FastAPI()
     app.include_router(auth_router)
@@ -76,13 +81,12 @@ def _create_admin(session, *, username="notify_admin", password="TempPass123", p
     return admin
 
 
-def _create_employee(session, *, employee_id: str, name: str, probation_end_date=None) -> Employee:
+def _create_employee(session, *, employee_id: str, name: str) -> Employee:
     employee = Employee(
         employee_id=employee_id,
         name=name,
         base_salary=32000,
         is_active=True,
-        probation_end_date=probation_end_date,
     )
     session.add(employee)
     session.flush()
@@ -97,7 +101,6 @@ class TestNotificationSummary:
     def test_summary_aggregates_action_items_and_reminders_by_permission(self, notification_client):
         client, session_factory = notification_client
         today = date.today()
-        next_month = date(today.year + 1, 1, 10) if today.month == 12 else date(today.year, today.month + 1, 10)
 
         with session_factory() as session:
             _create_admin(
@@ -109,7 +112,7 @@ class TestNotificationSummary:
                     | Permission.EMPLOYEES_READ
                 ),
             )
-            employee = _create_employee(session, employee_id="E001", name="王小明", probation_end_date=next_month)
+            employee = _create_employee(session, employee_id="E001", name="王小明")
             session.add(
                 LeaveRecord(
                     employee_id=employee.id,
@@ -175,11 +178,9 @@ class TestNotificationSummary:
         assert action_items["activity_inquiry"]["route"] == "/activity/inquiries"
 
         reminders = {item["type"]: item for item in data["reminders"]}
-        assert set(reminders) == {"calendar", "probation"}
+        assert set(reminders) == {"calendar"}
         assert reminders["calendar"]["route"] == "/calendar"
         assert reminders["calendar"]["items"][0]["label"] == "親師座談"
-        assert reminders["probation"]["route"] == "/employees"
-        assert reminders["probation"]["items"][0]["label"] == "E001 王小明"
 
     def test_summary_hides_sections_without_permission(self, notification_client):
         client, session_factory = notification_client

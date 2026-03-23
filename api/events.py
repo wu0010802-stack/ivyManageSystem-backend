@@ -6,21 +6,21 @@ import logging
 from datetime import date, datetime
 from io import BytesIO
 from typing import Optional
-from urllib.parse import quote
 
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from utils.errors import raise_safe_500
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent, Holiday
 from services.official_calendar import build_admin_calendar_feed
 from utils.auth import require_permission
+from utils.error_messages import EVENT_NOT_FOUND
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
+from utils.excel_utils import xlsx_streaming_response
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ def get_event(event_id: int, current_user: dict = Depends(require_permission(Per
             SchoolEvent.is_active == True,
         ).first()
         if not ev:
-            raise HTTPException(status_code=404, detail="找不到該事件")
+            raise HTTPException(status_code=404, detail=EVENT_NOT_FOUND)
         return _event_to_dict(ev)
     finally:
         session.close()
@@ -188,9 +188,9 @@ def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(
             SchoolEvent.is_active == True,
         ).first()
         if not ev:
-            raise HTTPException(status_code=404, detail="找不到該事件")
+            raise HTTPException(status_code=404, detail=EVENT_NOT_FOUND)
 
-        update_data = data.dict(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True)
         if "event_type" in update_data and update_data["event_type"] not in EVENT_TYPE_LABELS:
             raise HTTPException(status_code=400, detail=f"無效的事件類型: {update_data['event_type']}")
 
@@ -222,7 +222,7 @@ def delete_event(event_id: int, current_user: dict = Depends(require_permission(
             SchoolEvent.is_active == True,
         ).first()
         if not ev:
-            raise HTTPException(status_code=404, detail="找不到該事件")
+            raise HTTPException(status_code=404, detail=EVENT_NOT_FOUND)
         ev.is_active = False
         session.commit()
         return {"message": "事件已刪除"}
@@ -235,16 +235,6 @@ def delete_event(event_id: int, current_user: dict = Depends(require_permission(
 
 # ============ 假日批次匯入（Holiday 表） ============
 
-def _ev_xlsx_response(wb, filename: str):
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    encoded = quote(filename)
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
-    )
 
 
 _EV_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
@@ -289,7 +279,7 @@ def get_holiday_import_template(
     note_ws.cell(row=3, column=1, value="2. 同日期若已存在則更新，否則新增（UPSERT）")
     note_ws.cell(row=4, column=1, value="3. 匯入後考勤計算將自動排除這些假日")
 
-    return _ev_xlsx_response(wb, "假日匯入範本.xlsx")
+    return xlsx_streaming_response(wb, "假日匯入範本.xlsx")
 
 
 @router.post("/events/holidays/import")
@@ -365,7 +355,7 @@ async def import_holidays(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"匯入失敗：{e}")
+        raise_safe_500(e, context="匯入失敗")
     finally:
         session.close()
 

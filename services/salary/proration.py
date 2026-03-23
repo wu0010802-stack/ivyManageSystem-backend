@@ -6,6 +6,22 @@ from datetime import date, datetime
 from typing import Optional, Set
 
 
+def _to_date(raw) -> Optional[date]:
+    """將 str / datetime / date 正規化為 date，無法轉換時回傳 None。"""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return datetime.strptime(raw, '%Y-%m-%d').date()
+        except ValueError:
+            return None
+    return None
+
+
 def _prorate_base_salary(contracted_base: float, hire_date_raw, year: int, month: int) -> float:
     """
     月中入職者：按「在職天數 ÷ 當月天數」比例折算本月應領底薪。
@@ -27,17 +43,8 @@ def _prorate_base_salary(contracted_base: float, hire_date_raw, year: int, month
     if not hire_date_raw:
         return contracted_base
 
-    # 型別正規化：str / datetime / date → date
-    if isinstance(hire_date_raw, str):
-        try:
-            hire_d = datetime.strptime(hire_date_raw, '%Y-%m-%d').date()
-        except ValueError:
-            return contracted_base
-    elif isinstance(hire_date_raw, datetime):
-        hire_d = hire_date_raw.date()
-    elif isinstance(hire_date_raw, date):
-        hire_d = hire_date_raw
-    else:
+    hire_d = _to_date(hire_date_raw)
+    if hire_d is None:
         return contracted_base
 
     # 僅當入職年月與計算月份相同且非月初（day > 1）才折算
@@ -72,20 +79,6 @@ def _prorate_for_period(
     import calendar as _cal
     if not contracted_base:
         return 0.0
-
-    def _to_date(raw):
-        if raw is None:
-            return None
-        if isinstance(raw, date) and not isinstance(raw, datetime):
-            return raw
-        if isinstance(raw, datetime):
-            return raw.date()
-        if isinstance(raw, str):
-            try:
-                return datetime.strptime(raw, '%Y-%m-%d').date()
-            except ValueError:
-                return None
-        return None
 
     _, month_days = _cal.monthrange(year, month)
     start_day = 1
@@ -133,6 +126,10 @@ def _build_expected_workdays(
     if today is None:
         today = date.today()
 
+    # 預先解析 hire/resign 日期，避免逐日比較時重複轉型
+    hire_d = _to_date(hire_date_raw)
+    resign_d = _to_date(resign_date_raw)
+
     expected_workdays: Set[date] = set()
     for day_num, weekday in _cal.Calendar().itermonthdays2(year, month):
         if day_num == 0:
@@ -142,19 +139,15 @@ def _build_expected_workdays(
             continue
         if d in holiday_set:
             continue
+        if hire_d and d < hire_d:
+            continue
+        if resign_d and d > resign_d:
+            continue
         if d in daily_shift_map:
             if daily_shift_map[d] is not None:
                 expected_workdays.add(d)
         else:
             if weekday < 5:
                 expected_workdays.add(d)
-
-    if hire_date_raw:
-        hire_d = hire_date_raw if isinstance(hire_date_raw, date) else datetime.strptime(str(hire_date_raw), '%Y-%m-%d').date()
-        expected_workdays = {d for d in expected_workdays if d >= hire_d}
-
-    if resign_date_raw:
-        resign_d = resign_date_raw if isinstance(resign_date_raw, date) else datetime.strptime(str(resign_date_raw), '%Y-%m-%d').date()
-        expected_workdays = {d for d in expected_workdays if d <= resign_d}
 
     return expected_workdays

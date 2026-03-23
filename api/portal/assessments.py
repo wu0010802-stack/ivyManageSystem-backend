@@ -7,10 +7,12 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
 from models.database import get_session, Student, StudentAssessment, Classroom
 from utils.auth import get_current_user
+from utils.error_messages import STUDENT_NOT_FOUND
 from ._shared import _get_employee
 from .incidents import _get_teacher_classroom_ids
 
@@ -131,7 +133,7 @@ def create_portal_assessment(
 
         student = session.query(Student).filter(Student.id == payload.student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
         if student.classroom_id not in classroom_ids:
             raise HTTPException(status_code=403, detail="無權為此學生填寫評量記錄")
 
@@ -157,6 +159,6 @@ def create_portal_assessment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"新增失敗: {str(e)}")
+        raise_safe_500(e, context="新增失敗")
     finally:
         session.close()

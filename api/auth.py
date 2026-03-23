@@ -8,12 +8,13 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from utils.errors import raise_safe_500
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
+from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
 from utils.auth import (
     hash_password, verify_password, needs_rehash, create_access_token,
     get_current_user, decode_token_allow_expired, require_permission,
@@ -77,7 +78,7 @@ def _check_account_lockout(username: str) -> None:
         logger.warning("帳號已鎖定: %s（剩餘 %d 分鐘）", username, remaining_min)
         raise HTTPException(
             status_code=429,
-            detail=f"密碼錯誤次數過多，帳號已暫時鎖定，請 {remaining_min} 分鐘後再試",
+            detail="密碼錯誤次數過多，帳號已暫時鎖定，請稍後再試",
         )
 
 
@@ -138,7 +139,7 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
         # 1. 檢查目標員工是否存在
         target_emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
         if not target_emp:
-            raise HTTPException(status_code=404, detail="員工不存在")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
 
         # 2. 尋找該員工的使用者帳號
         target_user = session.query(User).filter(User.employee_id == data.employee_id).first()
@@ -182,9 +183,10 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
                 admin_token = authorization.split(" ", 1)[1]
 
         # 7. 寫入審計日誌（明確標記操作者與被冒充對象，供事後追查）
-        logger.info(
-            "冒充操作：操作者 user_id=%s 切換為 user_id=%s（role=%s）",
-            current_user.get("user_id"), target_user.id, target_user.role,
+        client_ip = request.client.host if request.client else "unknown"
+        logger.warning(
+            "冒充操作：操作者 user_id=%s 切換為 user_id=%s（role=%s）來源 IP=%s",
+            current_user.get("user_id"), target_user.id, target_user.role, client_ip,
         )
         request.state.audit_summary = (
             f"[冒充] 操作者 {current_user.get('name')}（user_id={current_user.get('user_id')}）"
@@ -359,8 +361,32 @@ def refresh_token(request: Request):
 # ============ Logout ============
 
 @router.post("/logout")
-def logout():
-    """登出：清除 access_token 和 admin_token Cookie。"""
+def logout(request: Request):
+    """登出：清除 access_token 和 admin_token Cookie，並廢止目前 token。"""
+    # 廢止目前 token（遞增 token_version）
+    token = request.cookies.get("access_token")
+    if not token:
+        authorization = request.headers.get("authorization", "")
+        if authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+
+    if token:
+        try:
+            from utils.auth import decode_token
+            payload = decode_token(token)
+            user_id = payload.get("user_id")
+            if user_id:
+                session = get_session()
+                try:
+                    user = session.query(User).filter(User.id == user_id).first()
+                    if user:
+                        user.token_version = (user.token_version or 0) + 1
+                        session.commit()
+                finally:
+                    session.close()
+        except Exception:
+            pass  # token 已過期或無效，無需廢止
+
     response = JSONResponse(content={"message": "已登出"})
     clear_access_token_cookie(response)
     clear_admin_token_cookie(response)
@@ -434,7 +460,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
     try:
         user = session.query(User).filter(User.id == current_user["user_id"]).first()
         if not user:
-            raise HTTPException(status_code=404, detail="使用者不存在")
+            raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
         permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
         return {
@@ -458,7 +484,7 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
     try:
         user = session.query(User).filter(User.id == current_user["user_id"]).first()
         if not user:
-            raise HTTPException(status_code=404, detail="使用者不存在")
+            raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         if not verify_password(data.old_password, user.password_hash):
             raise HTTPException(status_code=400, detail="舊密碼錯誤")
         validate_password_strength(data.new_password)
@@ -513,7 +539,7 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_pe
                 raise HTTPException(status_code=400, detail="該員工已有帳號")
             emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
             if not emp:
-                raise HTTPException(status_code=404, detail="員工不存在")
+                raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
         else:
             emp = None
 
@@ -553,7 +579,7 @@ def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict 
     try:
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
-            raise HTTPException(status_code=404, detail="使用者不存在")
+            raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = True  # 管理員代為重設密碼，強制當事人下次登入修改
@@ -586,7 +612,7 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
     try:
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
-            raise HTTPException(status_code=404, detail="使用者不存在")
+            raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
 
         # 記錄舊值，用於審計摘要
         old_role = user.role
@@ -648,7 +674,7 @@ def delete_user(user_id: int, current_user: dict = Depends(require_permission(Pe
     try:
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
-            raise HTTPException(status_code=404, detail="使用者不存在")
+            raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         session.delete(user)
         session.commit()
         return {"message": "帳號已刪除"}

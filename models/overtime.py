@@ -48,6 +48,8 @@ class OvertimeRecord(Base):
 
     __table_args__ = (
         Index('ix_overtime_emp_date', 'employee_id', 'overtime_date'),
+        Index('ix_overtime_emp_approved', 'employee_id', 'is_approved'),
+        Index('ix_overtime_approved_date', 'is_approved', 'overtime_date'),
     )
 
     employee = relationship("Employee", backref="overtimes")

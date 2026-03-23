@@ -4,18 +4,28 @@ Salary calculation and management router
 
 import io
 import logging
-from collections import defaultdict
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from typing import Dict, List, Optional
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from utils.auth import require_permission
+from utils.error_messages import SALARY_RECORD_NOT_FOUND
 from utils.permissions import Permission
+from utils.rate_limit import SlidingWindowLimiter
+
+# 薪資計算為高 CPU 操作，每 IP 每小時最多 20 次（批次計算）
+_salary_calc_limiter = SlidingWindowLimiter(
+    max_calls=20,
+    window_seconds=3600,
+    name="salary_calculate",
+    error_detail="薪資計算操作過於頻繁，請稍後再試",
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
 import calendar as _cal
 
@@ -24,6 +34,7 @@ from models.database import (
     SalaryRecord, EmployeeAllowance, AllowanceType, Attendance, OvertimeRecord,
 )
 from services.salary_engine import _compute_hourly_daily_hours
+from services.salary.utils import get_meeting_deduction_period_start, calc_daily_salary
 from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
 from services.salary_field_breakdown import FIELD_LABELS, build_field_breakdown, build_salary_debug_snapshot
 from services.student_enrollment import classroom_student_count_map, count_students_active_on
@@ -33,20 +44,47 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["salary"])
 
+# 津貼設定很少變更，快取 10 分鐘避免薪資重算時重複查詢
+_allowance_cache: TTLCache = TTLCache(maxsize=1, ttl=600)
+
 
 # ============ Service Init ============
 
 _salary_engine = None
 _insurance_service = None
+_line_service = None
 
 
-def init_salary_services(salary_engine, insurance_service):
-    global _salary_engine, _insurance_service
+def init_salary_services(salary_engine, insurance_service, line_service=None):
+    global _salary_engine, _insurance_service, _line_service
     _salary_engine = salary_engine
     _insurance_service = insurance_service
+    if line_service is not None:
+        _line_service = line_service
 
 
 # ============ Pydantic Models ============
+
+class SalarySimulateOverride(BaseModel):
+    """薪資試算覆蓋參數（None = 使用 DB 實際資料）"""
+    late_count: Optional[int] = Field(None, ge=0)
+    early_leave_count: Optional[int] = Field(None, ge=0)
+    missing_punch_count: Optional[int] = Field(None, ge=0)
+    total_late_minutes: Optional[float] = Field(None, ge=0)
+    total_early_minutes: Optional[float] = Field(None, ge=0)
+    work_days: Optional[int] = Field(None, ge=0, le=31)
+    extra_personal_leave_hours: float = Field(0, ge=0)
+    extra_sick_leave_hours: float = Field(0, ge=0)
+    enrollment_override: Optional[int] = Field(None, ge=0)
+    extra_overtime_pay: float = Field(0, ge=0)
+
+
+class SalarySimulateRequest(BaseModel):
+    employee_id: int = Field(..., ge=1)
+    year: int = Field(..., ge=2000, le=2100)
+    month: int = Field(..., ge=1, le=12)
+    overrides: SalarySimulateOverride = SalarySimulateOverride()
+
 
 class ClassBonusParam(BaseModel):
     classroom_id: int = Field(..., ge=1)
@@ -146,7 +184,10 @@ class CalculateSalaryRequest(BaseModel):
 # ============ Routes ============
 
 def _build_allowance_map(session):
-    """預先抓取所有員工的津貼設定，依 employee_id 分組。"""
+    """預先抓取所有員工的津貼設定，依 employee_id 分組（快取 10 分鐘）。"""
+    cached = _allowance_cache.get("allowance_map")
+    if cached is not None:
+        return cached
     all_allowances = session.query(EmployeeAllowance, AllowanceType).join(AllowanceType).filter(
         EmployeeAllowance.is_active == True
     ).all()
@@ -155,13 +196,14 @@ def _build_allowance_map(session):
         allowance_map.setdefault(ea.employee_id, []).append({
             "name": at.name, "amount": ea.amount, "code": at.code
         })
+    _allowance_cache["allowance_map"] = allowance_map
     return allowance_map
 
 
 def _build_classroom_info(session, enrollment_map, year: int, month: int):
     """建立班級詳細資訊對照表與員工角色對照表。"""
-    classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
-    grade_map = {g.id: g.name for g in session.query(ClassGrade).all()}
+    classrooms = session.query(Classroom).options(joinedload(Classroom.grade)).filter(Classroom.is_active == True).all()
+    grade_map = {c.grade_id: c.grade.name for c in classrooms if c.grade_id and c.grade}
     _, last_day = _cal.monthrange(year, month)
     month_end = date(year, month, last_day)
 
@@ -192,23 +234,6 @@ def _build_classroom_info(session, enrollment_map, year: int, month: int):
     return classroom_info_map, emp_role_map
 
 
-def _meeting_deduction_period_start(year: int, month: int):
-    """
-    返回發放月的會議缺席扣款起算日（與 SalaryEngine 同步，避免循環匯入）。
-    計算範圍 = 上次發放月（不含）至當發放月（含）之間所有非發放月。
-    非發放月返回 None。
-    """
-    if month == 2:
-        return date(year, 1, 1)
-    elif month == 6:
-        return date(year, 3, 1)
-    elif month == 9:
-        return date(year, 7, 1)
-    elif month == 12:
-        return date(year, 10, 1)
-    return None
-
-
 def _build_meeting_map(session, year, month):
     """
     批次載入該月所有園務會議記錄，依 employee_id 分組。
@@ -232,7 +257,7 @@ def _build_meeting_map(session, year, month):
 
     # 發放月：補查前幾個非發放月的缺席記錄，確保不漏扣
     prior_absent_by_emp: dict = {}
-    period_start = _meeting_deduction_period_start(year, month)
+    period_start = get_meeting_deduction_period_start(year, month)
     if period_start is not None and period_start < start:
         prior_records = session.query(MeetingRecord).filter(
             MeetingRecord.meeting_date >= period_start,
@@ -371,7 +396,7 @@ def _compute_salary_breakdown(engine, emp, emp_dict, year, month, emp_allowances
 
 
 @router.post("/salary/calculate")
-async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict = Depends(require_permission(Permission.SALARY_WRITE))):
+async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict = Depends(require_permission(Permission.SALARY_WRITE)), _rl: None = Depends(_salary_calc_limiter.as_dependency())):
     """一鍵結算薪資"""
     from services.salary_engine import SalaryEngine
     session = get_session()
@@ -381,7 +406,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
         engine = SalaryEngine(load_from_db=True)
 
         if request.bonus_config:
-            bonus_config_dict = request.bonus_config.dict() if hasattr(request.bonus_config, 'dict') else request.bonus_config
+            bonus_config_dict = request.bonus_config.model_dump() if hasattr(request.bonus_config, 'model_dump') else request.bonus_config
             engine.set_bonus_config(bonus_config_dict)
 
         allowance_map = _build_allowance_map(session)
@@ -424,8 +449,32 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
             )
         ).all()
 
+        # 批次查詢時薪員工當月出勤，避免迴圈內 N+1（每個時薪員工一條 SQL → 一次批次查詢）
+        _hourly_emp_ids = [e.id for e in employees if e.employee_type == 'hourly']
+        _hourly_att_map: dict = {}
+        if _hourly_emp_ids:
+            _hourly_att_records = session.query(Attendance).filter(
+                Attendance.employee_id.in_(_hourly_emp_ids),
+                Attendance.attendance_date >= _month_start,
+                Attendance.attendance_date <= _month_end,
+            ).all()
+            for _a in _hourly_att_records:
+                _hourly_att_map.setdefault(_a.employee_id, []).append(_a)
+
+        # 預建薪資→投保金額快取，避免迴圈內重複線性掃描 insurance_table
+        _unique_salary_levels = {
+            (emp.insurance_salary_level or emp.base_salary)
+            for emp in employees
+            if (emp.insurance_salary_level or emp.base_salary)
+        }
+        _bracket_cache = {
+            sal: engine.insurance_service.get_bracket(sal)["amount"]
+            for sal in _unique_salary_levels
+        }
+
         results = []
         for emp in employees:
+            _ins_base = emp.insurance_salary_level or emp.base_salary
             emp_dict = {
                 "name": emp.name, "employee_id": emp.employee_id,
                 "employee_type": emp.employee_type, "position": emp.position,
@@ -436,23 +485,14 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
                 "teacher_allowance": emp.teacher_allowance,
                 "meal_allowance": emp.meal_allowance,
                 "transportation_allowance": emp.transportation_allowance,
-                "insurance_salary": (
-                    engine.insurance_service.get_bracket(
-                        emp.insurance_salary_level or emp.base_salary
-                    )["amount"]
-                    if (emp.insurance_salary_level or emp.base_salary) else 0
-                ),
+                "insurance_salary": _bracket_cache.get(_ins_base, 0) if _ins_base else 0,
                 "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
                 "birthday": emp.birthday.isoformat() if emp.birthday else None,
             }
 
-            # 時薪制：從考勤記錄計算當月實際工時，以免 hourly_total 為 0
+            # 時薪制：從批次查詢結果取得當月出勤，計算實際工時
             if emp.employee_type == 'hourly':
-                att_records = session.query(Attendance).filter(
-                    Attendance.employee_id == emp.id,
-                    Attendance.attendance_date >= _month_start,
-                    Attendance.attendance_date <= _month_end,
-                ).all()
+                att_records = _hourly_att_map.get(emp.id, [])
                 _work_end_t = datetime.strptime(emp.work_end_time or "17:00", "%H:%M").time()
                 total_hours = 0.0
                 for a in att_records:
@@ -491,8 +531,7 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
 
     except Exception as e:
         session.rollback()
-        logger.error(f"薪資批量計算失敗: {e}")
-        raise HTTPException(status_code=500, detail=f"薪資計算失敗: {str(e)}")
+        raise_safe_500(e, context="薪資批量計算失敗")
     finally:
         session.close()
 
@@ -501,7 +540,8 @@ async def calculate_salaries(request: CalculateSalaryRequest, current_user: dict
 def calculate_salaries_alt(
     current_user: dict = Depends(require_permission(Permission.SALARY_WRITE)),
     year: int = Query(..., ge=2000, le=2100, description="Calculate for which year"),
-    month: int = Query(..., ge=1, le=12, description="Calculate for which month")
+    month: int = Query(..., ge=1, le=12, description="Calculate for which month"),
+    _rl: None = Depends(_salary_calc_limiter.as_dependency()),
 ):
     """
     Calculate or Recalculate salaries for all employees for a given month.
@@ -533,7 +573,7 @@ def calculate_salaries_alt(
             )
         # ─────────────────────────────────────────────────────────────────────────
 
-        from services.salary_engine import SalaryEngine as Engine
+        from services.salary.engine import SalaryEngine as Engine
         engine = Engine(load_from_db=True)
 
         # 1. 包含在職員工，以及當月才離職的員工（保留最後一個月薪資結算）
@@ -550,54 +590,62 @@ def calculate_salaries_alt(
                 ),
             )
         ).all()
+        employee_ids = [emp.id for emp in employees]
+        emp_name_map = {emp.id: emp.name for emp in employees}
 
-        results = []
-        errors = []
-        for emp in employees:
-            try:
-                # Calculate salary for this employee using new process method
-                salary_record = engine.process_salary_calculation(emp.id, year, month)
-
-                # Convert to dict for response
-                results.append({
-                    "employee_id": emp.id,
-                    "employee_name": emp.name,
-                    "base_salary": salary_record.base_salary,
-                    "total_allowances": salary_record.total_allowances,
-                    "festival_bonus": salary_record.festival_bonus,
-                    "overtime_bonus": salary_record.overtime_bonus,
-                    "overtime_pay": salary_record.overtime_work_pay,
-                    "supervisor_dividend": salary_record.supervisor_dividend,
-                    "labor_insurance": salary_record.labor_insurance,
-                    "health_insurance": salary_record.health_insurance,
-                    "late_deduction": salary_record.late_deduction,
-                    "early_leave_deduction": salary_record.early_leave_deduction,
-                    "missing_punch_deduction": salary_record.missing_punch_deduction,
-                    "leave_deduction": salary_record.leave_deduction,
-                    "absence_deduction": salary_record.absence_deduction or 0,
-                    "attendance_deduction": (salary_record.late_deduction or 0) + (salary_record.early_leave_deduction or 0) + (salary_record.missing_punch_deduction or 0),
-                    "meeting_overtime_pay": salary_record.meeting_overtime_pay or 0,
-                    "meeting_absence_deduction": salary_record.meeting_absence_deduction or 0,
-                    "birthday_bonus": salary_record.birthday_bonus or 0,
-                    "pension_self": salary_record.pension_self or 0,
-                    "total_deductions": salary_record.total_deduction,
-                    "net_pay": salary_record.net_salary
-                })
-
-            except Exception as e:
-                logger.error(f"薪資計算失敗 員工={emp.name}(id={emp.id}): {e}", exc_info=True)
-                errors.append({
-                    "employee_id": emp.id,
-                    "employee_name": emp.name,
-                    "error": str(e),
-                })
-
-        return {"results": results, "errors": errors}
-
+    except HTTPException:
+        raise
     except Exception as e:
         raise_safe_500(e)
     finally:
         session.close()
+
+    # 2. 批次計算（process_bulk_salary_calculation 自行管理 session）
+    try:
+        bulk_results, errors = engine.process_bulk_salary_calculation(employee_ids, year, month)
+    except Exception as e:
+        raise_safe_500(e)
+
+    results = []
+    for emp, breakdown in bulk_results:
+        results.append({
+            "employee_id": emp.id,
+            "employee_name": emp.name,
+            "base_salary": breakdown.base_salary,
+            "total_allowances": calculate_total_allowances(breakdown),
+            "festival_bonus": breakdown.festival_bonus,
+            "overtime_bonus": breakdown.overtime_bonus,
+            "overtime_pay": breakdown.overtime_work_pay,
+            "supervisor_dividend": breakdown.supervisor_dividend,
+            "labor_insurance": breakdown.labor_insurance,
+            "health_insurance": breakdown.health_insurance,
+            "late_deduction": breakdown.late_deduction,
+            "early_leave_deduction": breakdown.early_leave_deduction,
+            "missing_punch_deduction": breakdown.missing_punch_deduction,
+            "leave_deduction": breakdown.leave_deduction,
+            "absence_deduction": breakdown.absence_deduction or 0,
+            "attendance_deduction": (
+                (breakdown.late_deduction or 0)
+                + (breakdown.early_leave_deduction or 0)
+                + (breakdown.missing_punch_deduction or 0)
+            ),
+            "meeting_overtime_pay": breakdown.meeting_overtime_pay or 0,
+            "meeting_absence_deduction": breakdown.meeting_absence_deduction or 0,
+            "birthday_bonus": breakdown.birthday_bonus or 0,
+            "pension_self": breakdown.pension_self or 0,
+            "total_deductions": breakdown.total_deduction,
+            "net_pay": breakdown.net_salary,
+        })
+
+    # LINE 群組推播（薪資批次計算完成）
+    if _line_service is not None and results:
+        try:
+            total_net = sum(r["net_pay"] for r in results)
+            _line_service.notify_salary_batch_complete(year, month, len(results), int(total_net))
+        except Exception as _le:
+            logger.warning("薪資批次計算 LINE 推播失敗: %s", _le)
+
+    return {"results": results, "errors": errors}
 
 
 @router.get("/salaries/festival-bonus")
@@ -611,14 +659,26 @@ def get_festival_bonus(
     """
     session = get_session()
     try:
-        from services.salary_engine import SalaryEngine as Engine
-        engine = Engine(load_from_db=True)
+        # 使用啟動時已載入設定的 singleton，避免每次請求重跑 4 次 DB 查詢
+        engine = _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
 
-        # 包含在職員工，以及當月才離職的員工（保留節慶獎金結算）
         _, _fb_last = _cal.monthrange(year, month)
         _fb_start = date(year, month, 1)
         _fb_end = date(year, month, _fb_last)
-        employees = session.query(Employee).filter(
+        month_end = _fb_end
+
+        # 批次預先查詢共用資料，避免 N+1
+        school_active = count_students_active_on(session, month_end)
+        cls_count_map = classroom_student_count_map(session, month_end)
+        classroom_map = {
+            c.id: c
+            for c in session.query(Classroom).options(joinedload(Classroom.grade)).all()
+        }
+
+        # 包含在職員工，以及當月才離職的員工（保留節慶獎金結算）
+        employees = session.query(Employee).options(
+            joinedload(Employee.job_title_rel)
+        ).filter(
             or_(
                 Employee.is_active == True,
                 and_(
@@ -628,13 +688,19 @@ def get_festival_bonus(
                 ),
             )
         ).all()
-        results = []
 
+        results = []
         for emp in employees:
-            bonus_data = engine.calculate_festival_bonus_breakdown(emp.id, year, month)
+            ctx = {
+                "session": session,
+                "employee": emp,
+                "classroom": classroom_map.get(emp.classroom_id) if emp.classroom_id else None,
+                "school_active_students": school_active,
+                "classroom_count_map": cls_count_map,
+            }
+            bonus_data = engine.calculate_festival_bonus_breakdown(emp.id, year, month, _ctx=ctx)
             results.append(bonus_data)
 
-        # Sort by category/name
         return results
 
     except Exception as e:
@@ -648,19 +714,28 @@ def get_festival_bonus(
 def get_salary_records(
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
     year: int = Query(..., ge=2000, le=2100),
-    month: int = Query(..., ge=1, le=12)
+    month: int = Query(..., ge=1, le=12),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=1000),
 ):
-    """查詢某月薪資記錄"""
+    """查詢某月薪資記錄（支援分頁，預設一次最多 500 筆）"""
     session = get_session()
     try:
-        records = session.query(SalaryRecord, Employee).join(
+        role = current_user.get("role", "")
+        FULL_SALARY_ROLES = {"admin", "hr"}
+        viewer_employee_id = None if role in FULL_SALARY_ROLES else current_user.get("employee_id")
+
+        query = session.query(SalaryRecord, Employee).join(
             Employee, SalaryRecord.employee_id == Employee.id
         ).options(
             joinedload(Employee.job_title_rel)
         ).filter(
             SalaryRecord.salary_year == year,
             SalaryRecord.salary_month == month
-        ).order_by(Employee.name).all()
+        )
+        if viewer_employee_id is not None:
+            query = query.filter(SalaryRecord.employee_id == viewer_employee_id)
+        records = query.order_by(Employee.name).offset(skip).limit(limit).all()
 
         results = []
         for record, emp in records:
@@ -708,6 +783,12 @@ def get_salary_records(
                 "finalized_at": record.finalized_at.isoformat() if record.finalized_at else None,
                 "finalized_by": record.finalized_by,
                 "remark": record.remark,
+                "calculated_at": record.updated_at.isoformat() if record.updated_at else None,
+                # 前端 salaryResults 使用的欄位別名（供頁面重整後重建計算結果列表）
+                "total_allowances": calculate_total_allowances(record),
+                "pension_self": record.pension_employee or 0,
+                "total_deductions": record.total_deduction or 0,
+                "net_pay": record.net_salary or 0,
             })
 
         return results
@@ -726,7 +807,7 @@ def manual_adjust_salary(
     try:
         record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
         if not record:
-            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+            raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
         if record.is_finalized:
             raise HTTPException(status_code=409, detail="此筆薪資已封存，請先解除封存再編輯")
 
@@ -816,7 +897,7 @@ def get_salary_breakdown(
             or (None, None)
         )
         if not record or not emp:
-            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+            raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
 
         job_title = ""
         if emp.job_title_rel:
@@ -888,7 +969,7 @@ def get_salary_field_breakdown(
             or (None, None)
         )
         if not record or not emp:
-            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+            raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
 
         engine = _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=False)
         snapshot = build_salary_debug_snapshot(session, engine, emp, record.salary_year, record.salary_month)
@@ -908,13 +989,15 @@ def export_salary_slip(
 
     session = get_session()
     try:
-        record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
-        if not record:
-            raise HTTPException(status_code=404, detail="薪資記錄不存在")
-
-        emp = session.query(Employee).filter(Employee.id == record.employee_id).first()
-        if not emp:
-            raise HTTPException(status_code=404, detail="員工不存在")
+        result = (
+            session.query(SalaryRecord, Employee)
+            .join(Employee, SalaryRecord.employee_id == Employee.id)
+            .filter(SalaryRecord.id == record_id)
+            .first()
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
+        record, emp = result
 
         pdf_bytes = generate_salary_pdf(record, emp, record.salary_year, record.salary_month)
 
@@ -1222,7 +1305,7 @@ def unfinalize_salary(
     try:
         record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
         if not record:
-            raise HTTPException(status_code=404, detail="薪資記錄不存在")
+            raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
         if not record.is_finalized:
             raise HTTPException(status_code=409, detail="此筆薪資尚未封存，無需解封")
         operator = current_user.get("username") or current_user.get("name") or "管理員"
@@ -1239,6 +1322,235 @@ def unfinalize_salary(
         raise
     except Exception as e:
         session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+# ============ Salary Simulation ============
+
+_SIMULATE_COMPARE_KEYS = [
+    "base_salary", "festival_bonus", "overtime_bonus", "overtime_pay",
+    "late_deduction", "early_leave_deduction", "leave_deduction",
+    "absence_deduction", "gross_salary", "total_deductions", "net_pay",
+]
+
+
+def _breakdown_to_simulate_dict(breakdown, late_count: int, early_count: int, missing_count: int) -> dict:
+    return {
+        "base_salary": breakdown.base_salary,
+        "total_allowances": calculate_total_allowances(breakdown),
+        "festival_bonus": breakdown.festival_bonus,
+        "overtime_bonus": breakdown.overtime_bonus,
+        "overtime_pay": breakdown.overtime_work_pay,
+        "meeting_overtime_pay": breakdown.meeting_overtime_pay or 0,
+        "birthday_bonus": breakdown.birthday_bonus or 0,
+        "supervisor_dividend": breakdown.supervisor_dividend,
+        "labor_insurance": breakdown.labor_insurance,
+        "health_insurance": breakdown.health_insurance,
+        "pension_self": breakdown.pension_self or 0,
+        "late_deduction": breakdown.late_deduction,
+        "early_leave_deduction": breakdown.early_leave_deduction,
+        "missing_punch_deduction": breakdown.missing_punch_deduction,
+        "leave_deduction": breakdown.leave_deduction,
+        "absence_deduction": breakdown.absence_deduction or 0,
+        "meeting_absence_deduction": breakdown.meeting_absence_deduction or 0,
+        "gross_salary": breakdown.gross_salary,
+        "total_deductions": breakdown.total_deduction,
+        "net_pay": breakdown.net_salary,
+        "late_count": late_count,
+        "early_leave_count": early_count,
+        "missing_punch_count": missing_count,
+    }
+
+
+def _record_to_actual_dict(record) -> dict:
+    return {
+        "base_salary": record.base_salary or 0,
+        "total_allowances": (
+            (record.supervisor_allowance or 0)
+            + (record.teacher_allowance or 0)
+            + (record.meal_allowance or 0)
+            + (record.transportation_allowance or 0)
+            + (record.other_allowance or 0)
+        ),
+        "festival_bonus": record.festival_bonus or 0,
+        "overtime_bonus": record.overtime_bonus or 0,
+        "overtime_pay": record.overtime_pay or 0,
+        "meeting_overtime_pay": record.meeting_overtime_pay or 0,
+        "birthday_bonus": record.birthday_bonus or 0,
+        "supervisor_dividend": record.supervisor_dividend or 0,
+        "labor_insurance": record.labor_insurance_employee or 0,
+        "health_insurance": record.health_insurance_employee or 0,
+        "pension_self": record.pension_employee or 0,
+        "late_deduction": record.late_deduction or 0,
+        "early_leave_deduction": record.early_leave_deduction or 0,
+        "missing_punch_deduction": record.missing_punch_deduction or 0,
+        "leave_deduction": record.leave_deduction or 0,
+        "absence_deduction": record.absence_deduction or 0,
+        "meeting_absence_deduction": record.meeting_absence_deduction or 0,
+        "gross_salary": record.gross_salary or 0,
+        "total_deductions": record.total_deduction or 0,
+        "net_pay": record.net_salary or 0,
+        "late_count": record.late_count or 0,
+        "early_leave_count": record.early_leave_count or 0,
+        "missing_punch_count": record.missing_punch_count or 0,
+    }
+
+
+@router.post("/salaries/simulate")
+def simulate_salary(
+    req: SalarySimulateRequest,
+    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+):
+    """薪資試算（沙盒模式，不寫入 DB）——套用覆蓋參數後回傳計算結果與實際紀錄對比。"""
+    if not _salary_engine:
+        raise HTTPException(status_code=503, detail="薪資引擎尚未初始化")
+
+    engine: RuntimeSalaryEngine = _salary_engine
+    ov = req.overrides
+    year, month = req.year, req.month
+
+    import calendar as _calendar
+    _, last_day = _calendar.monthrange(year, month)
+    start_date = date(year, month, 1)
+    end_date = date(year, month, last_day)
+
+    session = get_session()
+    try:
+        emp = (
+            session.query(Employee)
+            .options(joinedload(Employee.job_title_rel))
+            .filter(Employee.id == req.employee_id)
+            .first()
+        )
+        if not emp:
+            raise HTTPException(status_code=404, detail=f"員工 id={req.employee_id} 不存在")
+        if emp.employee_type == "hourly":
+            raise HTTPException(status_code=422, detail="時薪制員工不支援試算功能")
+
+        emp_dict = engine._load_emp_dict(emp)
+
+        # 查詢實際考勤
+        attendances = session.query(Attendance).filter(
+            Attendance.employee_id == emp.id,
+            Attendance.attendance_date >= start_date,
+            Attendance.attendance_date <= end_date,
+        ).all()
+
+        # 實際考勤統計
+        actual_late_count = sum(1 for a in attendances if a.is_late)
+        actual_early_count = sum(1 for a in attendances if a.is_early_leave)
+        actual_missing = sum(
+            1 for a in attendances if a.is_missing_punch_in or a.is_missing_punch_out
+        )
+        actual_late_min = sum(a.late_minutes or 0 for a in attendances if a.is_late)
+        actual_early_min = sum(a.early_leave_minutes or 0 for a in attendances if a.is_early_leave)
+
+        # 套用覆蓋
+        sim_late_count = ov.late_count if ov.late_count is not None else actual_late_count
+        sim_early_count = ov.early_leave_count if ov.early_leave_count is not None else actual_early_count
+        sim_missing = ov.missing_punch_count if ov.missing_punch_count is not None else actual_missing
+        sim_late_min = ov.total_late_minutes if ov.total_late_minutes is not None else actual_late_min
+        sim_early_min = ov.total_early_minutes if ov.total_early_minutes is not None else actual_early_min
+        sim_work_days = ov.work_days if ov.work_days is not None else len(attendances)
+
+        # 將分鐘數均分給每次遲到（給 _calculate_deductions 用）
+        emp_dict["_late_details"] = (
+            [sim_late_min / sim_late_count] * sim_late_count if sim_late_count > 0 else []
+        )
+
+        from services.attendance_parser import AttendanceResult
+        attendance_result = AttendanceResult(
+            employee_name=emp.name,
+            total_days=sim_work_days,
+            normal_days=max(0, sim_work_days - sim_late_count - sim_early_count),
+            late_count=sim_late_count,
+            early_leave_count=sim_early_count,
+            missing_punch_in_count=sim_missing,
+            missing_punch_out_count=0,
+            total_late_minutes=int(sim_late_min),
+            total_early_minutes=int(sim_early_min),
+            details=[],
+        )
+
+        allowances = engine._load_allowances_list(session, emp)
+
+        classroom_context, office_staff_context = engine._build_contexts(session, emp, end_date)
+        if ov.enrollment_override is not None:
+            if classroom_context:
+                classroom_context["current_enrollment"] = ov.enrollment_override
+            if office_staff_context:
+                office_staff_context["school_enrollment"] = ov.enrollment_override
+
+        daily_salary = calc_daily_salary(emp.base_salary)
+        period_records = engine._load_period_records(
+            session, emp, start_date, end_date, year, month, daily_salary
+        )
+
+        extra_leave_hours = ov.extra_personal_leave_hours + ov.extra_sick_leave_hours
+        hourly_rate = calc_daily_salary(emp.base_salary) / 8
+        leave_deduction = period_records["leave_deduction"] + extra_leave_hours * hourly_rate
+        personal_sick_hours = period_records["personal_sick_leave_hours"] + extra_leave_hours
+        overtime_pay = period_records["overtime_work_pay"] + ov.extra_overtime_pay
+
+        absent_count, absence_amount = engine._detect_absences(
+            session, emp, attendances, period_records["approved_leaves"],
+            start_date, end_date, year, month,
+        )
+
+        breakdown = engine.calculate_salary(
+            employee=emp_dict,
+            year=year,
+            month=month,
+            attendance=attendance_result,
+            leave_deduction=leave_deduction,
+            allowances=allowances,
+            classroom_context=classroom_context,
+            office_staff_context=office_staff_context,
+            meeting_context=period_records["meeting_context"],
+            overtime_work_pay=overtime_pay,
+            personal_sick_leave_hours=personal_sick_hours,
+        )
+        breakdown.absent_count = absent_count
+        breakdown.absence_deduction = round(absence_amount)
+        breakdown.total_deduction = round(breakdown.total_deduction + absence_amount)
+        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
+        actual_record = session.query(SalaryRecord).filter(
+            SalaryRecord.employee_id == emp.id,
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month,
+        ).first()
+
+        simulated = _breakdown_to_simulate_dict(breakdown, sim_late_count, sim_early_count, sim_missing)
+        actual = _record_to_actual_dict(actual_record) if actual_record else None
+        diff = (
+            {k: round(simulated.get(k, 0) - actual.get(k, 0)) for k in _SIMULATE_COMPARE_KEYS}
+            if actual else None
+        )
+
+        overrides_active = [
+            k for k, v in ov.model_dump().items()
+            if v is not None and v != 0
+        ]
+
+        return {
+            "employee": {
+                "id": emp.id,
+                "name": emp.name,
+                "employee_id": emp.employee_id,
+                "job_title": emp.title_name,
+            },
+            "period": {"year": year, "month": month},
+            "overrides_active": overrides_active,
+            "simulated": simulated,
+            "actual": actual,
+            "diff": diff,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
         raise_safe_500(e)
     finally:
         session.close()

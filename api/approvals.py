@@ -46,18 +46,6 @@ def get_approval_summary(
         session.close()
 
 
-@router.get("/probation-alerts")
-def get_probation_alerts(
-    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
-):
-    """下個月即將到期的試用期員工"""
-    session = get_session()
-    try:
-        return dashboard_query_service.build_probation_alerts(session)
-    finally:
-        session.close()
-
-
 @router.get("/student-attendance-summary")
 def get_student_attendance_summary(
     current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),

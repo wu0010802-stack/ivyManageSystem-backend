@@ -89,6 +89,7 @@ class RegistrationCourse(Base):
     __table_args__ = (
         UniqueConstraint("registration_id", "course_id", name="uq_reg_course"),
         Index('ix_reg_courses_status', 'course_id', 'status'),
+        Index('ix_reg_course_reg_status', 'registration_id', 'course_id', 'status'),
     )
 
 

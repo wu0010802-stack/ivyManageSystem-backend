@@ -50,13 +50,12 @@ def db_session(tmp_path):
         engine.dispose()
 
 
-def _create_employee(session, *, employee_id: str, name: str, probation_end_date=None) -> Employee:
+def _create_employee(session, *, employee_id: str, name: str) -> Employee:
     employee = Employee(
         employee_id=employee_id,
         name=name,
         base_salary=32000,
         is_active=True,
-        probation_end_date=probation_end_date,
     )
     session.add(employee)
     session.flush()
@@ -67,14 +66,8 @@ class TestDashboardQueryService:
     def test_notification_summary_aggregates_sections_by_permission(self, db_session):
         service = DashboardQueryService()
         today = date.today()
-        next_month = date(today.year + 1, 1, 5) if today.month == 12 else date(today.year, today.month + 1, 5)
 
-        employee = _create_employee(
-            db_session,
-            employee_id="E001",
-            name="王小明",
-            probation_end_date=next_month,
-        )
+        employee = _create_employee(db_session, employee_id="E001", name="王小明")
         db_session.add(
             LeaveRecord(
                 employee_id=employee.id,
@@ -133,7 +126,6 @@ class TestDashboardQueryService:
 
         reminders = {item["type"]: item for item in summary["reminders"]}
         assert reminders["calendar"]["items"][0]["label"] == "親師座談"
-        assert reminders["probation"]["items"][0]["label"] == "E001 王小明"
 
     def test_home_sections_only_include_permitted_queries(self, db_session, monkeypatch):
         service = DashboardQueryService()
@@ -141,7 +133,6 @@ class TestDashboardQueryService:
 
         monkeypatch.setattr(service, "build_approval_summary", lambda session, today=None: calls.append("approval") or {"total": 1})
         monkeypatch.setattr(service, "build_upcoming_events", lambda session, days=7, today=None: calls.append("events") or [])
-        monkeypatch.setattr(service, "build_probation_alerts", lambda session, today=None: calls.append("probation") or {"employees": []})
         monkeypatch.setattr(service, "build_student_attendance_summary", lambda session, today=None: calls.append("student") or {"total_students": 0})
         monkeypatch.setattr(service, "build_activity_stats", lambda session: calls.append("activity") or {"statistics": {}})
 

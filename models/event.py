@@ -89,6 +89,7 @@ class MeetingRecord(Base):
 
     __table_args__ = (
         Index('ix_meeting_emp_date', 'employee_id', 'meeting_date'),
+        Index('ix_meeting_date_attended', 'meeting_date', 'attended'),
     )
 
     employee = relationship("Employee", backref="meeting_records")
@@ -117,6 +118,9 @@ class SchoolEvent(Base):
 class Announcement(Base):
     """公告表"""
     __tablename__ = "announcements"
+    __table_args__ = (
+        Index("ix_announcements_created_at", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String(200), nullable=False, comment="公告標題")

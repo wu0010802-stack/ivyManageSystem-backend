@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.auth import require_permission
+from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
+from utils.masking import mask_bank_account
 from utils.permissions import Permission, has_permission
 from utils.rate_limit import SlidingWindowLimiter
 from fastapi.responses import StreamingResponse
@@ -180,10 +182,7 @@ def _id_name_map(session, model):
 
 
 def _mask_bank_account(account: str | None) -> str:
-    """遮蔽銀行帳號，僅保留末 4 碼（如 ****1234）。"""
-    if not account:
-        return ""
-    return f"****{account[-4:]}" if len(account) > 4 else "****"
+    return mask_bank_account(account) or ""
 
 
 # ============ Employees ============
@@ -356,7 +355,13 @@ def export_attendance(
             s = stats[att.employee_id]
             s["total"] += 1
             att_dates_by_emp[att.employee_id].add(att.attendance_date)
-            if not att.is_late and not att.is_early_leave and not att.is_missing_punch_in and not att.is_missing_punch_out:
+            is_clean_attendance = (
+                not att.is_late
+                and not att.is_early_leave
+                and not att.is_missing_punch_in
+                and not att.is_missing_punch_out
+            )
+            if is_clean_attendance:
                 s["normal"] += 1
             if att.is_late:
                 s["late"] += 1
@@ -760,7 +765,7 @@ def export_employee_attendance(
         # 1. 員工基本資料
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
         if not emp:
-            raise HTTPException(status_code=404, detail="員工不存在")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
 
         job_title_name = ""
         if emp.job_title_id:
@@ -935,7 +940,10 @@ def export_employee_attendance(
             # 列背景色
             if is_non_work:
                 fill = _WEEKEND_FILL
-            elif att and (att.is_late or att.is_early_leave or att.is_missing_punch_in or att.is_missing_punch_out):
+            elif att and (
+                att.is_late or att.is_early_leave
+                or att.is_missing_punch_in or att.is_missing_punch_out
+            ):
                 fill = _ANOMALY_FILL
             elif not att and not day_leaves and not is_non_work:
                 fill = _ABSENT_FILL

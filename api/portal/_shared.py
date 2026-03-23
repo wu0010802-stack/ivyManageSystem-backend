@@ -4,16 +4,23 @@ Portal shared constants, Pydantic models, and helper functions.
 
 import logging
 from datetime import date, timedelta
+from types import SimpleNamespace
 from typing import Optional
 
-from fastapi import Depends, HTTPException
+from cachetools import TTLCache
+from fastapi import HTTPException
+from utils.masking import mask_bank_account
 from pydantic import BaseModel, field_validator, model_validator
+from utils.leave_validators import validate_leave_hours_value, validate_leave_date_order
 
 from models.database import (
     get_session, Employee, DailyShift, ShiftAssignment,
 )
 from utils.auth import get_current_user
 from api.overtimes import MAX_OVERTIME_HOURS
+
+# ShiftType 很少異動，使用 TTLCache 5 分鐘，避免每次請求全表查詢
+_shift_type_cache: TTLCache = TTLCache(maxsize=2, ttl=300)
 
 logger = logging.getLogger(__name__)
 
@@ -64,27 +71,11 @@ class LeaveCreatePortal(BaseModel):
     @field_validator("leave_hours")
     @classmethod
     def validate_leave_hours(cls, v):
-        if v < 0.5:
-            raise ValueError("請假時數至少 0.5 小時")
-        if v > 480:
-            raise ValueError("請假時數不得超過 480 小時")
-        if round(v * 2) != v * 2:
-            raise ValueError("請假時數必須為 0.5 小時的倍數")
-        return v
+        return validate_leave_hours_value(v)
 
     @model_validator(mode="after")
     def validate_date_order(self):
-        if self.start_date and self.end_date and self.end_date < self.start_date:
-            raise ValueError("結束日期不得早於開始日期")
-        if self.start_date and self.end_date and (
-            self.start_date.year != self.end_date.year
-            or self.start_date.month != self.end_date.month
-        ):
-            raise ValueError(
-                "請假區間不可跨月，若需跨越月底請拆成兩張假單分別申請"
-                f"（本次 {self.start_date.year}/{self.start_date.month:02d} 月 →"
-                f" {self.end_date.year}/{self.end_date.month:02d} 月）"
-            )
+        validate_leave_date_order(self.start_date, self.end_date)
         return self
 
 
@@ -120,12 +111,7 @@ class AnomalyConfirm(BaseModel):
     remark: Optional[str] = None
 
 
-def _mask_bank_account(account: Optional[str]) -> Optional[str]:
-    """遮蔽銀行帳號，僅保留末 4 碼（如 ****1234）。"""
-    if not account:
-        return account
-    return f"****{account[-4:]}" if len(account) > 4 else "****"
-
+_mask_bank_account = mask_bank_account
 
 class ProfileUpdate(BaseModel):
     phone: Optional[str] = None
@@ -198,12 +184,28 @@ def _get_employee_shift_for_date(session, employee_id: int, target_date: date):
 
 
 def _get_shift_type_map(session, active_only: bool = False) -> dict:
-    """取得 ShiftType {id: obj} 對照表"""
+    """取得 ShiftType {id: SimpleNamespace} 對照表（快取 5 分鐘）"""
+    cache_key = "active" if active_only else "all"
+    cached = _shift_type_cache.get(cache_key)
+    if cached is not None:
+        return cached
     from models.database import ShiftType
     query = session.query(ShiftType)
     if active_only:
         query = query.filter(ShiftType.is_active == True)
-    return {st.id: st for st in query.all()}
+    result = {
+        st.id: SimpleNamespace(
+            id=st.id,
+            name=st.name,
+            work_start=st.work_start,
+            work_end=st.work_end,
+            sort_order=st.sort_order,
+            is_active=st.is_active,
+        )
+        for st in query.all()
+    }
+    _shift_type_cache[cache_key] = result
+    return result
 
 
 def _calculate_annual_leave_quota(hire_date: date) -> int:

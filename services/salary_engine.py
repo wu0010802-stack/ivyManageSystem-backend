@@ -15,7 +15,7 @@ from services.salary.hourly import (
     _calc_daily_hourly_pay,
     _compute_hourly_daily_hours as _hourly_compute,
 )
-from services.salary.utils import get_working_days, get_bonus_distribution_month, get_meeting_deduction_period_start
+from services.salary.utils import get_working_days, get_bonus_distribution_month, get_meeting_deduction_period_start, calc_daily_salary
 from services.salary.constants import (
     MONTHLY_BASE_DAYS,
     MAX_DAILY_WORK_HOURS,
@@ -51,6 +51,7 @@ __all__ = [
     "get_working_days",
     "get_bonus_distribution_month",
     "get_meeting_deduction_period_start",
+    "calc_daily_salary",
     "MONTHLY_BASE_DAYS",
     "MAX_DAILY_WORK_HOURS",
     "HOURLY_OT1_RATE",

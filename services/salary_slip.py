@@ -74,11 +74,9 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
     return buffer.getvalue()
 
 
-def _build_salary_elements(record, employee, year: int, month: int, font_name: str, styles) -> list:
-    """建構單人薪資單的 platypus elements 清單（供 generate_salary_pdf 與 generate_salary_all_pdf 共用）"""
-    from reportlab.lib import colors
+def _make_paragraph_styles(font_name: str, styles):
+    """建立薪資單所需的三種 ParagraphStyle。"""
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
     title_style = ParagraphStyle(
         'ChineseTitle', parent=styles['Title'],
@@ -92,13 +90,13 @@ def _build_salary_elements(record, employee, year: int, month: int, font_name: s
         'ChineseNormal', parent=styles['Normal'],
         fontName=font_name, fontSize=10
     )
+    return title_style, subtitle_style, normal_style
 
-    elements = []
 
-    elements.append(Paragraph('薪資單', title_style))
-    elements.append(Spacer(1, 3 * mm))
-    elements.append(Paragraph(f'{year} 年 {month} 月', subtitle_style))
-    elements.append(Spacer(1, 6 * mm))
+def _build_employee_info_table(employee, font_name: str):
+    """建立員工基本資料表格（姓名、職稱、員工編號、部門）。"""
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
 
     job_title = ''
     if hasattr(employee, 'job_title_rel') and employee.job_title_rel:
@@ -121,11 +119,13 @@ def _build_salary_elements(record, employee, year: int, month: int, font_name: s
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 6 * mm))
+    return info_table
 
-    def money(val):
-        return f'{int(val):,}' if val else '0'
+
+def _build_earnings_table(record, font_name: str, money_fmt):
+    """建立應領項目表格（底薪、津貼、獎金明細）。"""
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
 
     supervisor_dividend = getattr(record, 'supervisor_dividend', 0) or 0
     bonus_separate = getattr(record, 'bonus_separate', False)
@@ -146,22 +146,22 @@ def _build_salary_elements(record, employee, year: int, month: int, font_name: s
 
     earn_data = [
         ['應領項目', '', '金額'],
-        ['底薪', '', money(record.base_salary)],
-        ['主管加給', '', money(record.supervisor_allowance)],
-        ['導師津貼', '', money(record.teacher_allowance)],
-        ['伙食津貼', '', money(record.meal_allowance)],
-        ['交通津貼', '', money(record.transportation_allowance)],
-        ['其他津貼', '', money(record.other_allowance)],
-        ['津貼小計', '', money(total_allowances)],
-        ['績效獎金', '', money(record.performance_bonus)],
-        ['特別獎金', '', money(record.special_bonus)],
-        ['主管紅利', '', money(supervisor_dividend)],
-        ['獎金小計', '', money(total_bonus)],
+        ['底薪', '', money_fmt(record.base_salary)],
+        ['主管加給', '', money_fmt(record.supervisor_allowance)],
+        ['導師津貼', '', money_fmt(record.teacher_allowance)],
+        ['伙食津貼', '', money_fmt(record.meal_allowance)],
+        ['交通津貼', '', money_fmt(record.transportation_allowance)],
+        ['其他津貼', '', money_fmt(record.other_allowance)],
+        ['津貼小計', '', money_fmt(total_allowances)],
+        ['績效獎金', '', money_fmt(record.performance_bonus)],
+        ['特別獎金', '', money_fmt(record.special_bonus)],
+        ['主管紅利', '', money_fmt(supervisor_dividend)],
+        ['獎金小計', '', money_fmt(total_bonus)],
     ]
     if bonus_separate:
         festival_separate = festival_bonus_val + overtime_bonus_val
-        earn_data.append(['節慶/超額獎金 (另行轉帳)', '', money(festival_separate)])
-    earn_data.append(['月薪應發合計', '', money(record.gross_salary)])
+        earn_data.append(['節慶/超額獎金 (另行轉帳)', '', money_fmt(festival_separate)])
+    earn_data.append(['月薪應發合計', '', money_fmt(record.gross_salary)])
 
     earn_table = Table(earn_data, colWidths=[120, 100, 120])
     earn_table.setStyle(TableStyle([
@@ -175,10 +175,13 @@ def _build_salary_elements(record, employee, year: int, month: int, font_name: s
         ('TOPPADDING', (0, 0), (-1, -1), 3),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
-    elements.append(Paragraph('應領項目', normal_style))
-    elements.append(Spacer(1, 2 * mm))
-    elements.append(earn_table)
-    elements.append(Spacer(1, 6 * mm))
+    return earn_table
+
+
+def _build_deductions_table(record, font_name: str, money_fmt):
+    """建立扣款項目表格（保險、考勤扣款明細）。"""
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
 
     total_insurance = (
         (record.labor_insurance_employee or 0) +
@@ -194,17 +197,17 @@ def _build_salary_elements(record, employee, year: int, month: int, font_name: s
 
     deduct_data = [
         ['扣款項目', '', '金額'],
-        ['勞保費 (自付)', '', money(record.labor_insurance_employee)],
-        ['健保費 (自付)', '', money(record.health_insurance_employee)],
-        ['勞退自提', '', money(record.pension_employee)],
-        ['保險小計', '', money(total_insurance)],
-        ['遲到扣款', f'({record.late_count or 0}次)', money(record.late_deduction)],
-        ['早退扣款', f'({record.early_leave_count or 0}次)', money(record.early_leave_deduction)],
-        ['未打卡扣款', f'({record.missing_punch_count or 0}次)', money(record.missing_punch_deduction)],
-        ['請假扣款', '', money(record.leave_deduction)],
-        ['其他扣款', '', money(record.other_deduction)],
-        ['考勤扣款小計', '', money(total_attendance_deduction)],
-        ['扣款合計', '', money(record.total_deduction)],
+        ['勞保費 (自付)', '', money_fmt(record.labor_insurance_employee)],
+        ['健保費 (自付)', '', money_fmt(record.health_insurance_employee)],
+        ['勞退自提', '', money_fmt(record.pension_employee)],
+        ['保險小計', '', money_fmt(total_insurance)],
+        ['遲到扣款', f'({record.late_count or 0}次)', money_fmt(record.late_deduction)],
+        ['早退扣款', f'({record.early_leave_count or 0}次)', money_fmt(record.early_leave_deduction)],
+        ['未打卡扣款', f'({record.missing_punch_count or 0}次)', money_fmt(record.missing_punch_deduction)],
+        ['請假扣款', '', money_fmt(record.leave_deduction)],
+        ['其他扣款', '', money_fmt(record.other_deduction)],
+        ['考勤扣款小計', '', money_fmt(total_attendance_deduction)],
+        ['扣款合計', '', money_fmt(record.total_deduction)],
     ]
 
     deduct_table = Table(deduct_data, colWidths=[120, 100, 120])
@@ -219,12 +222,15 @@ def _build_salary_elements(record, employee, year: int, month: int, font_name: s
         ('TOPPADDING', (0, 0), (-1, -1), 3),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
-    elements.append(Paragraph('扣款項目', normal_style))
-    elements.append(Spacer(1, 2 * mm))
-    elements.append(deduct_table)
-    elements.append(Spacer(1, 8 * mm))
+    return deduct_table
 
-    net_data = [['實發金額', money(record.net_salary)]]
+
+def _build_net_salary_table(record, font_name: str, money_fmt):
+    """建立實發金額匯總表格。"""
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+
+    net_data = [['實發金額', money_fmt(record.net_salary)]]
     net_table = Table(net_data, colWidths=[220, 120])
     net_table.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (-1, -1), font_name),
@@ -235,7 +241,45 @@ def _build_salary_elements(record, employee, year: int, month: int, font_name: s
         ('TOPPADDING', (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]))
-    elements.append(net_table)
+    return net_table
+
+
+def _build_salary_elements(record, employee, year: int, month: int, font_name: str, styles) -> list:
+    """建構單人薪資單的 platypus elements 清單（供 generate_salary_pdf 與 generate_salary_all_pdf 共用）"""
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Spacer
+
+    title_style, subtitle_style, normal_style = _make_paragraph_styles(font_name, styles)
+
+    def money(val):
+        return f'{int(val):,}' if val else '0'
+
+    elements = []
+
+    # 標題區
+    elements.append(Paragraph('薪資單', title_style))
+    elements.append(Spacer(1, 3 * mm))
+    elements.append(Paragraph(f'{year} 年 {month} 月', subtitle_style))
+    elements.append(Spacer(1, 6 * mm))
+
+    # 員工資料
+    elements.append(_build_employee_info_table(employee, font_name))
+    elements.append(Spacer(1, 6 * mm))
+
+    # 應領項目
+    elements.append(Paragraph('應領項目', normal_style))
+    elements.append(Spacer(1, 2 * mm))
+    elements.append(_build_earnings_table(record, font_name, money))
+    elements.append(Spacer(1, 6 * mm))
+
+    # 扣款項目
+    elements.append(Paragraph('扣款項目', normal_style))
+    elements.append(Spacer(1, 2 * mm))
+    elements.append(_build_deductions_table(record, font_name, money))
+    elements.append(Spacer(1, 8 * mm))
+
+    # 實發金額
+    elements.append(_build_net_salary_table(record, font_name, money))
 
     return elements
 

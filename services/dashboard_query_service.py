@@ -3,7 +3,8 @@
 from calendar import monthrange
 from datetime import date, timedelta
 
-from sqlalchemy import func
+from cachetools import TTLCache
+from sqlalchemy import and_, case, func
 
 from models.database import (
     Employee,
@@ -27,9 +28,26 @@ EVENT_TYPE_LABELS = {
     "general": "一般",
 }
 HOME_STUDENT_ATTENDANCE_CACHE_TTL_SECONDS = 300
+# 通知摘要被前端每 10 秒輪詢，用短暫快取避免高頻 DB 查詢
+NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS = 15
 
 
 class DashboardQueryService:
+    def __init__(self):
+        # 依 user_permissions 分組快取，最多 128 種不同權限組合
+        self._notification_cache: TTLCache = TTLCache(
+            maxsize=128, ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS
+        )
+        # 審核摘要與行事曆是全系統共用資料（非個人化），可跨不同權限組合共用快取
+        # maxsize=1：同一天只需快取一份；key = date ISO string
+        self._approval_cache: TTLCache = TTLCache(
+            maxsize=1, ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS
+        )
+        # maxsize=8：依 (date, days) 組合，最多 8 種查詢視窗
+        self._events_cache: TTLCache = TTLCache(
+            maxsize=8, ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS
+        )
+
     def _priority_for_count(self, count: int) -> str:
         if count >= 5:
             return "high"
@@ -39,15 +57,19 @@ class DashboardQueryService:
 
     def build_upcoming_events(self, session, *, days: int = 7, today: date | None = None) -> list[dict]:
         today = today or date.today()
-        end_date = today + timedelta(days=days)
+        cache_key = (today.isoformat(), days)
+        cached = self._events_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
+        end_date = today + timedelta(days=days)
         events = session.query(SchoolEvent).filter(
             SchoolEvent.is_active == True,
             SchoolEvent.event_date >= today,
             SchoolEvent.event_date <= end_date,
         ).order_by(SchoolEvent.event_date).all()
 
-        return [
+        result = [
             {
                 "id": ev.id,
                 "title": ev.title,
@@ -62,38 +84,46 @@ class DashboardQueryService:
             }
             for ev in events
         ]
+        self._events_cache[cache_key] = result
+        return result
 
     def build_approval_summary(self, session, *, today: date | None = None) -> dict:
-        pending_leaves = session.query(LeaveRecord).filter(
-            LeaveRecord.is_approved.is_(None),
-        ).count()
+        today = today or date.today()
+        cache_key = today.isoformat()
+        cached = self._approval_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-        pending_overtimes = session.query(OvertimeRecord).filter(
-            OvertimeRecord.is_approved.is_(None),
-        ).count()
+        first_day = date(today.year, today.month, 1)
+        _, last = monthrange(today.year, today.month)
+        last_day = date(today.year, today.month, last)
+
+        # 單次條件聚合，同時取得全部待審 + 本月待審（4 次 → 2 次）
+        leave_row = session.query(
+            func.count().label("total"),
+            func.count(case(
+                (and_(LeaveRecord.start_date >= first_day, LeaveRecord.start_date <= last_day), LeaveRecord.id),
+                else_=None,
+            )).label("this_month"),
+        ).filter(LeaveRecord.is_approved.is_(None)).first()
+        pending_leaves = leave_row.total if leave_row else 0
+        this_month_leaves = leave_row.this_month if leave_row else 0
+
+        ot_row = session.query(
+            func.count().label("total"),
+            func.count(case(
+                (and_(OvertimeRecord.overtime_date >= first_day, OvertimeRecord.overtime_date <= last_day), OvertimeRecord.id),
+                else_=None,
+            )).label("this_month"),
+        ).filter(OvertimeRecord.is_approved.is_(None)).first()
+        pending_overtimes = ot_row.total if ot_row else 0
+        this_month_overtimes = ot_row.this_month if ot_row else 0
 
         pending_corrections = session.query(PunchCorrectionRequest).filter(
             PunchCorrectionRequest.is_approved.is_(None),
         ).count()
 
-        today = today or date.today()
-        first_day = date(today.year, today.month, 1)
-        _, last = monthrange(today.year, today.month)
-        last_day = date(today.year, today.month, last)
-
-        this_month_leaves = session.query(LeaveRecord).filter(
-            LeaveRecord.is_approved.is_(None),
-            LeaveRecord.start_date >= first_day,
-            LeaveRecord.start_date <= last_day,
-        ).count()
-
-        this_month_overtimes = session.query(OvertimeRecord).filter(
-            OvertimeRecord.is_approved.is_(None),
-            OvertimeRecord.overtime_date >= first_day,
-            OvertimeRecord.overtime_date <= last_day,
-        ).count()
-
-        return {
+        result = {
             "pending_leaves": pending_leaves,
             "pending_overtimes": pending_overtimes,
             "pending_punch_corrections": pending_corrections,
@@ -101,40 +131,8 @@ class DashboardQueryService:
             "this_month_pending_leaves": this_month_leaves,
             "this_month_pending_overtimes": this_month_overtimes,
         }
-
-    def build_probation_alerts(self, session, *, today: date | None = None) -> dict:
-        today = today or date.today()
-        if today.month == 12:
-            next_year, next_month = today.year + 1, 1
-        else:
-            next_year, next_month = today.year, today.month + 1
-
-        _, last = monthrange(next_year, next_month)
-        first_day = date(next_year, next_month, 1)
-        last_day = date(next_year, next_month, last)
-
-        employees = session.query(Employee).filter(
-            Employee.is_active == True,
-            Employee.probation_end_date >= first_day,
-            Employee.probation_end_date <= last_day,
-        ).order_by(Employee.probation_end_date).all()
-
-        result = []
-        for emp in employees:
-            days_remaining = (emp.probation_end_date - today).days
-            result.append({
-                "id": emp.id,
-                "employee_id": emp.employee_id,
-                "name": emp.name,
-                "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
-                "probation_end_date": emp.probation_end_date.isoformat(),
-                "days_remaining": days_remaining,
-            })
-
-        return {
-            "next_month": f"{next_year}年{next_month}月",
-            "employees": result,
-        }
+        self._approval_cache[cache_key] = result
+        return result
 
     def build_student_attendance_summary(self, session, *, today: date | None = None) -> dict:
         today = today or date.today()
@@ -178,9 +176,6 @@ class DashboardQueryService:
         if has_permission(user_permissions, Permission.CALENDAR):
             sections["upcoming_events"] = self.build_upcoming_events(session, days=event_days)
 
-        if has_permission(user_permissions, Permission.EMPLOYEES_READ):
-            sections["probation_alerts"] = self.build_probation_alerts(session)
-
         if has_permission(user_permissions, Permission.STUDENTS_READ):
             sections["student_attendance_summary"] = self.build_student_attendance_summary(session)
 
@@ -190,6 +185,9 @@ class DashboardQueryService:
         return sections
 
     def build_notification_summary(self, session, *, user_permissions: int) -> dict:
+        cached = self._notification_cache.get(user_permissions)
+        if cached is not None:
+            return cached
         action_items = []
         reminders = []
 
@@ -241,30 +239,13 @@ class DashboardQueryService:
                     ],
                 })
 
-        if has_permission(user_permissions, Permission.EMPLOYEES_READ):
-            probation = self.build_probation_alerts(session)
-            if probation["employees"]:
-                reminders.append({
-                    "type": "probation",
-                    "title": "下月試用期到期",
-                    "route": "/employees",
-                    "priority": "medium",
-                    "items": [
-                        {
-                            "id": item["id"],
-                            "label": f"{item['employee_id']} {item['name']}",
-                            "date": item["probation_end_date"],
-                            "meta": f"剩餘 {item['days_remaining']} 天",
-                        }
-                        for item in probation["employees"]
-                    ],
-                })
-
-        return {
+        result = {
             "total_badge": sum(item["count"] for item in action_items),
             "action_items": action_items,
             "reminders": reminders,
         }
+        self._notification_cache[user_permissions] = result
+        return result
 
 
 dashboard_query_service = DashboardQueryService()

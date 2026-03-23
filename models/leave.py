@@ -49,7 +49,7 @@ class LeaveRecord(Base):
     source_overtime_id = Column(Integer, ForeignKey("overtime_records.id", ondelete="SET NULL"), nullable=True, comment="來源加班記錄 ID（補休專用）")
 
     # ── 職務代理人欄位 ──────────────────────────────────────────────────────
-    substitute_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, comment="代理人員工 ID")
+    substitute_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True, comment="代理人員工 ID")
     substitute_status = Column(String(20), default="not_required", comment="代理狀態：not_required/pending/accepted/rejected")
     substitute_responded_at = Column(DateTime, nullable=True, comment="代理人回覆時間")
     substitute_remark = Column(Text, nullable=True, comment="代理人備註")
@@ -69,6 +69,9 @@ class LeaveRecord(Base):
 
     __table_args__ = (
         Index('ix_leave_emp_dates', 'employee_id', 'start_date', 'end_date'),
+        Index('ix_leave_emp_approved', 'employee_id', 'is_approved'),
+        Index('ix_leave_approved_start_date', 'is_approved', 'start_date'),
+        Index('ix_leave_emp_type_approved', 'employee_id', 'leave_type', 'is_approved'),
     )
 
     employee = relationship("Employee", foreign_keys=[employee_id], back_populates="leaves")
@@ -81,6 +84,7 @@ class LeaveQuota(Base):
     __tablename__ = "leave_quotas"
     __table_args__ = (
         UniqueConstraint("employee_id", "year", "leave_type", name="uq_leave_quota"),
+        Index("ix_leave_quota_year", "year"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -7,6 +7,7 @@ from utils.errors import raise_safe_500
 
 from models.database import get_session, Employee, Announcement, AnnouncementRead, AnnouncementRecipient
 from utils.auth import get_current_user
+from utils.error_messages import ANNOUNCEMENT_NOT_FOUND
 
 router = APIRouter()
 
@@ -82,7 +83,7 @@ def mark_announcement_read(
 
         ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
         if not ann:
-            raise HTTPException(status_code=404, detail="找不到該公告")
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
 
         existing = session.query(AnnouncementRead).filter(
             AnnouncementRead.announcement_id == announcement_id,

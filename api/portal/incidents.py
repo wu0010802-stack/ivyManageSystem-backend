@@ -7,11 +7,13 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel
 from sqlalchemy import or_
 
 from models.database import get_session, Student, StudentIncident, Classroom
 from utils.auth import get_current_user
+from utils.error_messages import STUDENT_NOT_FOUND
 from ._shared import _get_employee
 
 logger = logging.getLogger(__name__)
@@ -155,7 +157,7 @@ def create_portal_incident(
         # 驗證學生屬於教師班級
         student = session.query(Student).filter(Student.id == payload.student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
         if student.classroom_id not in classroom_ids:
             raise HTTPException(status_code=403, detail="無權為此學生填寫事件紀錄")
 
@@ -181,6 +183,6 @@ def create_portal_incident(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"新增失敗: {str(e)}")
+        raise_safe_500(e, context="新增失敗")
     finally:
         session.close()

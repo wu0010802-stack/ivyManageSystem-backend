@@ -316,3 +316,88 @@ class TestRevokeCompLeaveGrant:
             _revoke_comp_leave_grant(session, ot)
         assert exc_info.value.status_code == 409
         assert quota.total_hours == 8.0  # 配額未被修改
+
+
+# ──────────────────────────────────────────────
+# Bug 回歸：OvertimeCreate / OvertimeUpdate 起迄時間順序驗證
+# ──────────────────────────────────────────────
+class TestOvertimeTimeOrderValidation:
+    """
+    Bug 描述：OvertimeCreate / OvertimeUpdate 只驗證個別時間格式，
+    未跨欄位驗證 start_time < end_time。
+    可以提交 start_time="20:00", end_time="08:00"（顛倒），導致重疊檢查失效。
+    """
+
+    def test_create_reversed_times_raises(self):
+        """start_time > end_time → 422 ValidationError"""
+        import pytest
+        from pydantic import ValidationError
+        from api.overtimes import OvertimeCreate
+        from datetime import date as _date
+        with pytest.raises(ValidationError) as exc_info:
+            OvertimeCreate(
+                employee_id=1,
+                overtime_date=_date(2026, 3, 20),
+                overtime_type="weekday",
+                start_time="20:00",
+                end_time="08:00",
+                hours=2.0,
+            )
+        assert "start_time" in str(exc_info.value) or "end_time" in str(exc_info.value)
+
+    def test_create_equal_times_raises(self):
+        """start_time == end_time → 422 ValidationError"""
+        import pytest
+        from pydantic import ValidationError
+        from api.overtimes import OvertimeCreate
+        from datetime import date as _date
+        with pytest.raises(ValidationError):
+            OvertimeCreate(
+                employee_id=1,
+                overtime_date=_date(2026, 3, 20),
+                overtime_type="weekday",
+                start_time="10:00",
+                end_time="10:00",
+                hours=2.0,
+            )
+
+    def test_create_correct_order_passes(self):
+        """start_time < end_time → 建立成功，不拋例外"""
+        from api.overtimes import OvertimeCreate
+        from datetime import date as _date
+        obj = OvertimeCreate(
+            employee_id=1,
+            overtime_date=_date(2026, 3, 20),
+            overtime_type="weekday",
+            start_time="18:00",
+            end_time="20:00",
+            hours=2.0,
+        )
+        assert obj.start_time == "18:00"
+        assert obj.end_time == "20:00"
+
+    def test_create_no_times_passes(self):
+        """start_time / end_time 皆為 None 時，不觸發時間順序驗證"""
+        from api.overtimes import OvertimeCreate
+        from datetime import date as _date
+        obj = OvertimeCreate(
+            employee_id=1,
+            overtime_date=_date(2026, 3, 20),
+            overtime_type="weekday",
+            hours=2.0,
+        )
+        assert obj.start_time is None
+
+    def test_update_reversed_times_raises(self):
+        """OvertimeUpdate: start_time > end_time → 422 ValidationError"""
+        import pytest
+        from pydantic import ValidationError
+        from api.overtimes import OvertimeUpdate
+        with pytest.raises(ValidationError):
+            OvertimeUpdate(start_time="22:00", end_time="09:00")
+
+    def test_update_correct_order_passes(self):
+        """OvertimeUpdate: start_time < end_time → 建立成功"""
+        from api.overtimes import OvertimeUpdate
+        obj = OvertimeUpdate(start_time="09:00", end_time="11:00")
+        assert obj.start_time == "09:00"

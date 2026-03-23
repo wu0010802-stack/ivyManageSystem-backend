@@ -3,15 +3,18 @@ Employee management router
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
-from models.database import get_session, session_scope, Employee, Classroom, ClassGrade, JobTitle
+from models.database import get_session, session_scope, Employee, Classroom, JobTitle
 from utils.auth import require_permission
+from utils.error_messages import EMPLOYEE_NOT_FOUND
+from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
 
 logger = logging.getLogger(__name__)
@@ -94,11 +97,6 @@ class OffboardRequest(BaseModel):
     resign_reason: Optional[str] = None
 
 
-def _mask_bank_account(account: Optional[str]) -> Optional[str]:
-    """遮蔽銀行帳號，僅保留末 4 碼（如 ****1234）。"""
-    if not account:
-        return account
-    return f"****{account[-4:]}" if len(account) > 4 else "****"
 
 
 # ============ Routes ============
@@ -119,7 +117,7 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
                 "id": emp.id,
                 "employee_id": emp.employee_id,
                 "name": emp.name,
-                "id_number": emp.id_number,
+                "id_number": emp.id_number if can_view_full_account else mask_id_number(emp.id_number),
                 "employee_type": emp.employee_type,
                 "title": display_title,  # Return real title name for frontend display compatibility
                 "job_title_id": emp.job_title_id,
@@ -139,15 +137,58 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
                 "work_end_time": emp.work_end_time,
                 "is_active": emp.is_active,
                 "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
-                "probation_end_date": emp.probation_end_date.isoformat() if getattr(emp, 'probation_end_date', None) else None,
+                "probation_end_date": emp.probation_end_date.isoformat() if emp.probation_end_date else None,
                 "resign_date": emp.resign_date.isoformat() if emp.resign_date else None,
                 "resign_reason": getattr(emp, 'resign_reason', None),
                 "birthday": emp.birthday.isoformat() if emp.birthday else None,
-                "bank_code": emp.bank_code,
-                "bank_account": emp.bank_account if can_view_full_account else _mask_bank_account(emp.bank_account),
-                "bank_account_name": emp.bank_account_name,
+                "bank_code": emp.bank_code if can_view_full_account else None,
+                "bank_account": emp.bank_account if can_view_full_account else mask_bank_account(emp.bank_account),
+                "bank_account_name": emp.bank_account_name if can_view_full_account else None,
             })
         return result
+    finally:
+        session.close()
+
+
+@router.get("/employees/probation-alerts")
+async def get_probation_alerts(
+    days: int = 60,
+    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
+):
+    """取得試用期即將到期的員工（預設 60 天內）"""
+    session = get_session()
+    try:
+        today = date.today()
+        deadline = today + timedelta(days=days)
+        next_month_end = today + timedelta(days=30)
+
+        employees = session.query(Employee).filter(
+            Employee.is_active == True,
+            Employee.probation_end_date != None,
+            Employee.probation_end_date >= today,
+            Employee.probation_end_date <= deadline,
+        ).order_by(Employee.probation_end_date).all()
+
+        result = []
+        next_month_count = 0
+        for emp in employees:
+            days_remaining = (emp.probation_end_date - today).days
+            result.append({
+                "id": emp.id,
+                "name": emp.name,
+                "employee_id": emp.employee_id,
+                "probation_end_date": emp.probation_end_date.isoformat(),
+                "days_remaining": days_remaining,
+            })
+            if emp.probation_end_date <= next_month_end:
+                next_month_count += 1
+
+        return {
+            "employees": result,
+            "alerts": {
+                "next_month": next_month_count,
+            },
+        }
     finally:
         session.close()
 
@@ -159,7 +200,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
     try:
         employee = session.query(Employee).options(joinedload(Employee.job_title_rel)).filter(Employee.id == employee_id).first()
         if not employee:
-            raise HTTPException(status_code=404, detail="找不到該員工")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
         can_view_full_account = has_permission(current_user.get("permissions", 0), Permission.SALARY_WRITE)
 
         display_title = employee.job_title_rel.name if employee.job_title_rel else employee.title
@@ -167,16 +208,17 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
         # Get classroom name if assigned
         classroom_name = None
         if employee.classroom_id:
-            classroom = session.query(Classroom).get(employee.classroom_id)
+            classroom = session.query(Classroom).options(
+                joinedload(Classroom.grade)
+            ).filter(Classroom.id == employee.classroom_id).first()
             if classroom:
-                grade = session.query(ClassGrade).get(classroom.grade_id) if classroom.grade_id else None
-                classroom_name = f"{classroom.name} ({grade.name})" if grade else classroom.name
+                classroom_name = f"{classroom.name} ({classroom.grade.name})" if classroom.grade else classroom.name
 
         return {
             "id": employee.id,
             "employee_id": employee.employee_id,
             "name": employee.name,
-            "id_number": employee.id_number,
+            "id_number": employee.id_number if can_view_full_account else mask_id_number(employee.id_number),
             "employee_type": employee.employee_type,
             "title": display_title,
             "job_title_id": employee.job_title_id,
@@ -192,14 +234,15 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             "meal_allowance": employee.meal_allowance,
             "transportation_allowance": employee.transportation_allowance,
             "other_allowance": employee.other_allowance,
-            "bank_code": employee.bank_code,
-            "bank_account": employee.bank_account if can_view_full_account else _mask_bank_account(employee.bank_account),
-            "bank_account_name": employee.bank_account_name,
+            "bank_code": employee.bank_code if can_view_full_account else None,
+            "bank_account": employee.bank_account if can_view_full_account else mask_bank_account(employee.bank_account),
+            "bank_account_name": employee.bank_account_name if can_view_full_account else None,
             "insurance_salary_level": employee.insurance_salary_level,
             "pension_self_rate": employee.pension_self_rate,
             "work_start_time": employee.work_start_time,
             "work_end_time": employee.work_end_time,
             "hire_date": employee.hire_date.isoformat() if employee.hire_date else None,
+            "probation_end_date": employee.probation_end_date.isoformat() if employee.probation_end_date else None,
             "birthday": employee.birthday.isoformat() if employee.birthday else None,
             "is_active": employee.is_active,
         }
@@ -217,7 +260,7 @@ async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(requ
         if existing:
             raise HTTPException(status_code=400, detail="工號已存在")
 
-        emp_data = emp.dict()
+        emp_data = emp.model_dump()
         # 處理日期欄位
         if emp_data.get('hire_date'):
             emp_data['hire_date'] = datetime.strptime(emp_data['hire_date'], '%Y-%m-%d').date()
@@ -257,7 +300,7 @@ async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(requ
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"新增失敗: {str(e)}")
+        raise_safe_500(e, context="新增失敗")
     finally:
         session.close()
 
@@ -269,9 +312,9 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
     try:
         db_employee = session.query(Employee).filter(Employee.id == employee_id).first()
         if not db_employee:
-            raise HTTPException(status_code=404, detail="找不到該員工")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
 
-        update_data = emp.dict(exclude_unset=True)
+        update_data = emp.model_dump(exclude_unset=True)
 
         # 處理日期欄位
         if 'hire_date' in update_data and update_data['hire_date']:
@@ -312,7 +355,7 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
+        raise_safe_500(e, context="更新失敗")
     finally:
         session.close()
 
@@ -324,7 +367,7 @@ async def delete_employee(employee_id: int, current_user: dict = Depends(require
     try:
         employee = session.query(Employee).filter(Employee.id == employee_id).first()
         if not employee:
-            raise HTTPException(status_code=404, detail="找不到該員工")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
 
         employee.is_active = False
         if not employee.resign_date:
@@ -335,7 +378,7 @@ async def delete_employee(employee_id: int, current_user: dict = Depends(require
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"刪除失敗: {str(e)}")
+        raise_safe_500(e, context="刪除失敗")
     finally:
         session.close()
 
@@ -355,7 +398,7 @@ async def offboard_employee(
     with session_scope() as session:
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
         if not emp:
-            raise HTTPException(status_code=404, detail="找不到該員工")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
 
         emp.resign_date = resign_d
         emp.resign_reason = req.resign_reason
@@ -399,19 +442,25 @@ async def final_salary_preview(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("final-salary-preview 計算失敗：employee_id=%s", employee_id)
-        raise HTTPException(status_code=500, detail=f"計算失敗: {str(e)}")
+        raise_safe_500(e, context="計算失敗")
 
     import calendar as _cal
     with session_scope() as session:
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
         if not emp:
-            raise HTTPException(status_code=404, detail="找不到該員工")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
         resign_d = emp.resign_date
         contracted_base = emp.base_salary or 0
 
     _, month_days = _cal.monthrange(year, month)
     proration_note = None
-    if resign_d and resign_d.year == year and resign_d.month == month and resign_d.day < month_days:
+    is_mid_month_resignation = (
+        resign_d is not None
+        and resign_d.year == year
+        and resign_d.month == month
+        and resign_d.day < month_days
+    )
+    if is_mid_month_resignation:
         proration_note = f"在職 {resign_d.day} 天，折算後 NT${breakdown.base_salary:,.0f}"
 
     return {
@@ -436,12 +485,14 @@ async def get_teachers(current_user: dict = Depends(require_permission(Permissio
     """取得所有可作為老師的員工"""
     session = get_session()
     try:
-        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        employees = session.query(
+            Employee.id, Employee.employee_id, Employee.name, Employee.title
+        ).filter(Employee.is_active == True).all()
         return [{
             "id": e.id,
             "employee_id": e.employee_id,
             "name": e.name,
-            "title": e.title if hasattr(e, 'title') else None
+            "title": e.title,
         } for e in employees]
     finally:
         session.close()

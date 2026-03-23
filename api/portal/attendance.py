@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 
+from sqlalchemy import func, case, or_
+
 from models.database import (
     get_session, Attendance, Classroom, LeaveRecord, OvertimeRecord,
     ShiftAssignment, DailyShift,
@@ -21,8 +23,8 @@ router = APIRouter()
 
 @router.get("/attendance-sheet")
 def get_attendance_sheet(
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(get_current_user),
 ):
     """取得個人月考勤表"""
@@ -42,16 +44,16 @@ def get_attendance_sheet(
         # Build lookup
         record_map = {r.attendance_date: r for r in records}
 
-        # Determine employee role
-        all_classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
-        head_teacher_ids = {c.head_teacher_id for c in all_classrooms if c.head_teacher_id}
-        assistant_teacher_ids = set()
-        for c in all_classrooms:
-            if c.assistant_teacher_id:
-                assistant_teacher_ids.add(c.assistant_teacher_id)
-
-        is_head_teacher = emp.id in head_teacher_ids
-        is_assistant = emp.id in assistant_teacher_ids
+        # 一次查詢同時判斷教師角色，避免兩次獨立 DB 查詢
+        role_row = session.query(
+            func.max(case((Classroom.head_teacher_id == emp.id, 1), else_=0)).label("is_head"),
+            func.max(case((Classroom.assistant_teacher_id == emp.id, 1), else_=0)).label("is_asst"),
+        ).filter(
+            or_(Classroom.head_teacher_id == emp.id, Classroom.assistant_teacher_id == emp.id),
+            Classroom.is_active == True,
+        ).first()
+        is_head_teacher = bool(role_row and role_row.is_head)
+        is_assistant = bool(role_row and role_row.is_asst)
         is_driver = "司機" in emp.title_name
         uses_shift = is_head_teacher or is_assistant
 
@@ -75,6 +77,8 @@ def get_attendance_sheet(
                         "work_start": st.work_start,
                         "work_end": st.work_end,
                         "name": st.name,
+                        "work_start_t": datetime.strptime(st.work_start, "%H:%M").time(),
+                        "work_end_t": datetime.strptime(st.work_end, "%H:%M").time(),
                     }
 
             daily_shifts = session.query(DailyShift).filter(
@@ -89,32 +93,23 @@ def get_attendance_sheet(
                         "work_start": st.work_start,
                         "work_end": st.work_end,
                         "name": st.name,
+                        "work_start_t": datetime.strptime(st.work_start, "%H:%M").time(),
+                        "work_end_t": datetime.strptime(st.work_end, "%H:%M").time(),
                     }
 
-        # Approved leaves for status calculation
-        leaves = session.query(LeaveRecord).filter(
-            LeaveRecord.employee_id == emp.id,
-            LeaveRecord.start_date <= end,
-            LeaveRecord.end_date >= start,
-            LeaveRecord.is_approved == True,
-        ).all()
-        leave_dates = {}
-        for lv in leaves:
-            d = max(lv.start_date, start)
-            while d <= min(lv.end_date, end):
-                leave_dates[d] = lv.leave_type
-                d = date.fromordinal(d.toordinal() + 1)
-
-        # ALL leave requests (any status) for display
+        # Single query for all leave requests in range; split in-memory for the two use cases
         all_leaves = session.query(LeaveRecord).filter(
             LeaveRecord.employee_id == emp.id,
             LeaveRecord.start_date <= end,
             LeaveRecord.end_date >= start,
         ).all()
-        leave_request_map = {}
+        leave_dates = {}        # approved leaves → date → leave_type (for status calculation)
+        leave_request_map = {}  # all leaves → date → list of requests (for display)
         for lv in all_leaves:
             d = max(lv.start_date, start)
             while d <= min(lv.end_date, end):
+                if lv.is_approved:
+                    leave_dates[d] = lv.leave_type
                 if d not in leave_request_map:
                     leave_request_map[d] = []
                 leave_request_map[d].append({
@@ -246,8 +241,8 @@ def get_attendance_sheet(
                 # Recalculate status based on role rules
                 if att.punch_in_time and att.punch_out_time:
                     if uses_shift and shift_info:
-                        shift_start = datetime.strptime(shift_info["work_start"], "%H:%M").time()
-                        shift_end = datetime.strptime(shift_info["work_end"], "%H:%M").time()
+                        shift_start = shift_info["work_start_t"]
+                        shift_end = shift_info["work_end_t"]
                         shift_start_dt = datetime.combine(d, shift_start)
                         shift_end_dt = datetime.combine(d, shift_end)
                         # 跨夜班：排班結束在隔日（如 02:00 < 18:00），補一天

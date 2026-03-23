@@ -65,6 +65,11 @@ def get_bonus_distribution_month(month: int) -> bool:
     return month in (2, 6, 9, 12)
 
 
+def calc_daily_salary(base_salary) -> float:
+    """日薪計算：base_salary / 30（勞基法基準 MONTHLY_BASE_DAYS）"""
+    return (base_salary or 0) / MONTHLY_BASE_DAYS
+
+
 def get_meeting_deduction_period_start(year: int, month: int) -> Optional[date]:
     """
     返回發放月的會議缺席扣款起算日。

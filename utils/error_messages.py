@@ -1,0 +1,12 @@
+"""統一管理 HTTP 錯誤回應中的訊息字串，避免跨檔案重複硬編碼。"""
+
+STUDENT_NOT_FOUND = "找不到該學生"
+EMPLOYEE_NOT_FOUND = "找不到該員工"
+EMPLOYEE_DOES_NOT_EXIST = "員工不存在"
+USER_NOT_FOUND = "使用者不存在"
+CLASSROOM_NOT_FOUND = "找不到該班級"
+ANNOUNCEMENT_NOT_FOUND = "找不到該公告"
+LEAVE_RECORD_NOT_FOUND = "請假記錄不存在"
+OVERTIME_RECORD_NOT_FOUND = "加班記錄不存在"
+SALARY_RECORD_NOT_FOUND = "薪資記錄不存在"
+EVENT_NOT_FOUND = "找不到該事件"

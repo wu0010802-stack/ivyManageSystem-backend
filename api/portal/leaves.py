@@ -5,20 +5,26 @@ Portal - leave management endpoints
 import calendar as cal_module
 import json
 import logging
-import os
 import re
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from utils.errors import raise_safe_500
+from utils.rate_limit import SlidingWindowLimiter
+
+# 附件上傳：每 IP 每 10 分鐘最多 30 次（5個檔 × 6次 = 30次）
+_attach_upload_limiter = SlidingWindowLimiter(
+    max_calls=30,
+    window_seconds=600,
+    name="leave_attachment_upload",
+    error_detail="附件上傳過於頻繁，請稍後再試",
+)
 from fastapi.responses import FileResponse
 from sqlalchemy import func
-from sqlalchemy.orm import joinedload
 
-from datetime import datetime
 
 from models.database import (
     get_session, LeaveRecord, LeaveQuota,
@@ -26,6 +32,7 @@ from models.database import (
     AttendancePolicy, Employee,
 )
 from utils.auth import get_current_user
+from utils.error_messages import LEAVE_RECORD_NOT_FOUND
 from ._shared import (
     _get_employee, _calculate_annual_leave_quota,
     LeaveCreatePortal, LEAVE_TYPE_LABELS, SubstituteRespond,
@@ -95,8 +102,8 @@ def _safe_attach_path(leave_id: int, filename: str) -> Path:
 
 @router.get("/my-leaves")
 def get_my_leaves(
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(get_current_user),
 ):
     """取得個人請假記錄"""
@@ -155,6 +162,22 @@ def create_my_leave(
             raise HTTPException(status_code=400, detail="請假時數至少 0.5 小時")
         if round(data.leave_hours * 2) != data.leave_hours * 2:
             raise HTTPException(status_code=400, detail="請假時數必須為 0.5 小時的倍數（如 0.5、1、1.5、2…）")
+
+        # 代理人衝突檢查提前：代理人有假單衝突是影響第三方的硬性條件，
+        # 需優先於請假規則（如事假提前 2 日）等 400 錯誤回傳給用戶。
+        substitute_status = "not_required"
+        if data.substitute_employee_id is not None:
+            _validate_substitute(session, emp.id, data.substitute_employee_id)
+            _check_substitute_leave_conflict(
+                session,
+                data.substitute_employee_id,
+                data.start_date,
+                data.end_date,
+                data.start_time,
+                data.end_time,
+            )
+            substitute_status = "pending"
+
         try:
             validate_portal_leave_rules(
                 data.leave_type,
@@ -195,20 +218,6 @@ def create_my_leave(
             session, emp.id, data.leave_type,
             data.start_date.year, data.leave_hours,
         )
-
-        # 代理人驗證
-        substitute_status = "not_required"
-        if data.substitute_employee_id is not None:
-            _validate_substitute(session, emp.id, data.substitute_employee_id)
-            _check_substitute_leave_conflict(
-                session,
-                data.substitute_employee_id,
-                data.start_date,
-                data.end_date,
-                data.start_time,
-                data.end_time,
-            )
-            substitute_status = "pending"
 
         effective_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
         leave = LeaveRecord(
@@ -258,6 +267,7 @@ async def upload_leave_attachments(
     leave_id: int,
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user),
+    _rl: None = Depends(_attach_upload_limiter.as_dependency()),
 ):
     """上傳假單附件（如診斷證明、喜帖）"""
     session = get_session()
@@ -404,15 +414,17 @@ def get_my_leave_stats(
         start_of_year = date(current_year, 1, 1)
         end_of_year = date(current_year, 12, 31)
 
-        used_leaves = session.query(LeaveRecord).filter(
+        used_hours = session.query(
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0)
+        ).filter(
             LeaveRecord.employee_id == emp.id,
             LeaveRecord.leave_type == "annual",
             LeaveRecord.start_date >= start_of_year,
             LeaveRecord.start_date <= end_of_year,
             LeaveRecord.is_approved == True,
-        ).all()
+        ).scalar()
 
-        used_days = sum(lv.leave_hours for lv in used_leaves) / 8.0
+        used_days = float(used_hours or 0) / 8.0
 
         return {
             "hire_date": hire_date.isoformat() if hire_date else None,
@@ -510,7 +522,7 @@ def get_my_quotas(
                 "total_hours": q.total_hours,
                 "used_hours": u,
                 "pending_hours": p,
-                "remaining_hours": max(0.0, q.total_hours - u),
+                "remaining_hours": max(0.0, q.total_hours - u - p),
                 "note": q.note,
             })
         return result
@@ -537,7 +549,7 @@ def substitute_respond(
             LeaveRecord.substitute_employee_id == emp.id,
         ).first()
         if not leave:
-            raise HTTPException(status_code=404, detail="請假記錄不存在")
+            raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
         if leave.substitute_status != "pending":
             raise HTTPException(status_code=409, detail="此代理請求已回應過，無法重複操作")
 

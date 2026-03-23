@@ -22,7 +22,7 @@ from .constants import (
 from .breakdown import SalaryBreakdown
 from .hourly import _calc_lunch_overlap_hours, _compute_hourly_daily_hours, _calc_daily_hourly_pay
 from .proration import _prorate_base_salary, _prorate_for_period, _build_expected_workdays
-from .utils import _sum_leave_deduction, get_working_days, get_bonus_distribution_month, get_meeting_deduction_period_start
+from .utils import _sum_leave_deduction, get_working_days, get_bonus_distribution_month, get_meeting_deduction_period_start, calc_daily_salary
 from .festival import (
     get_position_grade,
     get_festival_bonus_base,
@@ -65,6 +65,7 @@ __all__ = [
     "get_working_days",
     "get_bonus_distribution_month",
     "get_meeting_deduction_period_start",
+    "calc_daily_salary",
     "get_position_grade",
     "get_festival_bonus_base",
     "get_target_enrollment",

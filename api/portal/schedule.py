@@ -60,8 +60,8 @@ def _assert_swap_snapshot_fresh(session, swap) -> None:
 
 @router.get("/my-schedule")
 def get_my_schedule(
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(get_current_user),
 ):
     """取得自己當月排班"""
@@ -147,13 +147,16 @@ def get_swap_candidates(
 
         shift_types = _get_shift_type_map(session)
 
-        classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
+        rows = session.query(
+            Classroom.head_teacher_id,
+            Classroom.assistant_teacher_id,
+        ).filter(Classroom.is_active == True).all()
         teacher_ids = set()
-        for c in classrooms:
-            if c.head_teacher_id:
-                teacher_ids.add(c.head_teacher_id)
-            if c.assistant_teacher_id:
-                teacher_ids.add(c.assistant_teacher_id)
+        for row in rows:
+            if row.head_teacher_id:
+                teacher_ids.add(row.head_teacher_id)
+            if row.assistant_teacher_id:
+                teacher_ids.add(row.assistant_teacher_id)
         teacher_ids.discard(emp.id)
 
         if not teacher_ids:

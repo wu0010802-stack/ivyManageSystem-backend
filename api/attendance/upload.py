@@ -3,13 +3,13 @@ Attendance - upload endpoints (Excel and CSV)
 """
 
 import logging
-import os
 import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from models.database import (
@@ -19,12 +19,26 @@ from models.database import (
 from utils.auth import require_permission
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
+from utils.errors import raise_safe_500
 from ._shared import AttendanceUploadRequest
 
 logger = logging.getLogger(__name__)
 
 _UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
 _EXCEL_EXT_RE = re.compile(r'^\.[a-z0-9]+$')
+
+# ShiftType 很少異動，快取 5 分鐘，避免每次上傳重複查詢
+_shift_type_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
+
+
+def _get_shift_type_id_map(session) -> dict:
+    """回傳 {id: ShiftType ORM} 快取 5 分鐘。"""
+    cached = _shift_type_cache.get("id_map")
+    if cached is not None:
+        return cached
+    result = {st.id: st for st in session.query(ShiftType).all()}
+    _shift_type_cache["id_map"] = result
+    return result
 
 router = APIRouter()
 
@@ -66,7 +80,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                         assistant_teacher_map.add(c.assistant_teacher_id)
 
                 shift_assignments = session.query(ShiftAssignment).all()
-                shift_types = {st.id: st for st in session.query(ShiftType).all()}
+                shift_types = _get_shift_type_id_map(session)
                 shift_schedule_map = {}
                 for sa in shift_assignments:
                     st = shift_types.get(sa.shift_type_id)
@@ -378,7 +392,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                         assistant_teacher_map.add(c.assistant_teacher_id)
 
                 shift_assignments = session.query(ShiftAssignment).all()
-                shift_types_map = {st.id: st for st in session.query(ShiftType).all()}
+                shift_types_map = _get_shift_type_id_map(session)
                 shift_schedule_map = {}
                 for sa in shift_assignments:
                     st = shift_types_map.get(sa.shift_type_id)
@@ -532,7 +546,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
             }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"解析失敗: {str(e)}")
+        raise_safe_500(e, context="解析失敗")
     finally:
         # 處理完畢後刪除暫存檔，無論成功或失敗
         file_path.unlink(missing_ok=True)
@@ -736,6 +750,6 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
 
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"匯入失敗: {str(e)}")
+        raise_safe_500(e, context="匯入失敗")
     finally:
         session.close()

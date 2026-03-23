@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["employee-allowances"])
 
 
+def _clear_allowance_cache():
+    """清除 salary.py 中的津貼快取，確保下次薪資計算取到最新資料。"""
+    try:
+        from api.salary import _allowance_cache
+        _allowance_cache.clear()
+    except Exception as e:
+        logger.debug("清除津貼快取失敗（可忽略）: %s", e)
+
+
 # ============ Pydantic Models ============
 
 class EmployeeAllowanceCreate(BaseModel):
@@ -74,11 +83,12 @@ async def add_employee_allowance(employee_id: int, data: EmployeeAllowanceCreate
         else:
             new_allowance = EmployeeAllowance(
                 employee_id=employee_id,
-                **data.dict()
+                **data.model_dump()
             )
             session.add(new_allowance)
 
         session.commit()
+        _clear_allowance_cache()
         return {"message": "儲存成功"}
     except Exception as e:
         session.rollback()
@@ -113,6 +123,7 @@ async def update_employee_allowance(
             allowance.remark = data.remark
 
         session.commit()
+        _clear_allowance_cache()
         return {"message": "更新成功"}
     except HTTPException:
         raise
@@ -142,6 +153,7 @@ async def delete_employee_allowance(
 
         allowance.is_active = False
         session.commit()
+        _clear_allowance_cache()
         return {"message": "已刪除"}
     except HTTPException:
         raise

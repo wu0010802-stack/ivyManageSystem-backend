@@ -67,6 +67,8 @@ class TestCheckSalaryMonthsNotFinalized:
 
         mock_record = MagicMock()
         mock_record.finalized_by = "張主任"
+        mock_record.salary_year = 2025
+        mock_record.salary_month = 8
         session = self._make_session(finalized_record=mock_record)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -90,7 +92,7 @@ class TestCheckSalaryMonthsNotFinalized:
         assert "林財務" in exc_info.value.detail
 
     def test_checks_all_months_in_set(self):
-        """多個月份時，每個月份都應被查詢一次"""
+        """多個月份應合批為一次 DB 查詢（批次 OR 條件）"""
         from api.leaves import _check_salary_months_not_finalized
 
         session = MagicMock()
@@ -98,7 +100,8 @@ class TestCheckSalaryMonthsNotFinalized:
 
         _check_salary_months_not_finalized(session, employee_id=5, months={(2025, 1), (2025, 2)})
 
-        assert session.query.call_count == 2
+        # 批次查詢：多個月份只發一次 DB 查詢
+        assert session.query.call_count == 1
 
     def test_stops_at_first_finalized_month(self):
         """找到第一個封存月份就立即拋出，不繼續查詢"""

@@ -8,27 +8,79 @@ import logging
 from datetime import date, timedelta
 from io import BytesIO
 from typing import Optional, List
-from urllib.parse import quote
 
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from cachetools import TTLCache
 from sqlalchemy.orm import joinedload
 
 from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift, ShiftSwapRequest
 from utils.auth import require_permission
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
+from utils.excel_utils import xlsx_streaming_response
 from utils.schedule_utils import (
     get_week_dates, get_employee_weekly_shift_hours,
     compute_weekly_hours, build_weekly_warning,
 )
 
 logger = logging.getLogger(__name__)
+
+# ShiftType 很少變動，使用 TTLCache 減少重複 DB 查詢（5 分鐘 TTL）
+_shift_type_cache: TTLCache = TTLCache(maxsize=3, ttl=300)
+
+
+def _clear_shift_type_cache():
+    _shift_type_cache.clear()
+
+
+def _get_all_shift_types_cached(session) -> list:
+    """回傳 list[dict]，快取 5 分鐘"""
+    cached = _shift_type_cache.get("all")
+    if cached is not None:
+        return cached
+    types = session.query(ShiftType).order_by(ShiftType.sort_order).all()
+    result = [
+        {
+            "id": t.id,
+            "name": t.name,
+            "work_start": t.work_start,
+            "work_end": t.work_end,
+            "sort_order": t.sort_order,
+            "is_active": t.is_active,
+        }
+        for t in types
+    ]
+    _shift_type_cache["all"] = result
+    return result
+
+
+def _get_shift_type_id_map_cached(session) -> dict:
+    """回傳 {id: SimpleNamespace(work_start, work_end, name, is_active)}，快取 5 分鐘。
+    用於需要 .work_start / .work_end 屬性存取的場景（如工時計算）。
+    """
+    from types import SimpleNamespace
+    cached = _shift_type_cache.get("id_map")
+    if cached is not None:
+        return cached
+    types = session.query(ShiftType).all()
+    result = {
+        t.id: SimpleNamespace(
+            id=t.id,
+            name=t.name,
+            work_start=t.work_start,
+            work_end=t.work_end,
+            sort_order=t.sort_order,
+            is_active=t.is_active,
+        )
+        for t in types
+    }
+    _shift_type_cache["id_map"] = result
+    return result
 
 router = APIRouter(prefix="/api/shifts", tags=["shifts"])
 
@@ -76,18 +128,7 @@ class DailyShiftCreate(BaseModel):
 def list_shift_types(current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
     session = get_session()
     try:
-        types = session.query(ShiftType).order_by(ShiftType.sort_order).all()
-        return [
-            {
-                "id": t.id,
-                "name": t.name,
-                "work_start": t.work_start,
-                "work_end": t.work_end,
-                "sort_order": t.sort_order,
-                "is_active": t.is_active,
-            }
-            for t in types
-        ]
+        return _get_all_shift_types_cached(session)
     finally:
         session.close()
 
@@ -105,6 +146,7 @@ def create_shift_type(data: ShiftTypeCreate, current_user: dict = Depends(requir
         session.add(st)
         session.commit()
         session.refresh(st)
+        _clear_shift_type_cache()
         logger.info(f"Created shift type: {st.name}")
         return {"id": st.id, "name": st.name, "work_start": st.work_start, "work_end": st.work_end, "sort_order": st.sort_order, "is_active": st.is_active}
     except Exception as e:
@@ -121,9 +163,10 @@ def update_shift_type(type_id: int, data: ShiftTypeUpdate, current_user: dict = 
         st = session.query(ShiftType).get(type_id)
         if not st:
             raise HTTPException(status_code=404, detail="班別不存在")
-        for field, value in data.dict(exclude_unset=True).items():
+        for field, value in data.model_dump(exclude_unset=True).items():
             setattr(st, field, value)
         session.commit()
+        _clear_shift_type_cache()
         logger.info(f"Updated shift type: {st.name}")
         return {"id": st.id, "name": st.name, "work_start": st.work_start, "work_end": st.work_end, "sort_order": st.sort_order, "is_active": st.is_active}
     except HTTPException:
@@ -174,6 +217,7 @@ def delete_shift_type(type_id: int, current_user: dict = Depends(require_permiss
 
         session.delete(st)
         session.commit()
+        _clear_shift_type_cache()
         logger.info(f"Deleted shift type: {st.name}")
         return {"message": "已刪除"}
     except HTTPException:
@@ -285,7 +329,7 @@ def save_assignments(data: BulkAssignmentRequest, current_user: dict = Depends(r
         }
         warnings = []
         if assigned_ids:
-            shift_type_map = {st.id: st for st in session.query(ShiftType).all()}
+            shift_type_map = _get_shift_type_id_map_cached(session)
             emp_map = {
                 e.id: e.name
                 for e in session.query(Employee).filter(Employee.id.in_(assigned_ids)).all()
@@ -328,20 +372,23 @@ def get_daily_shifts(
         s_date = date.fromisoformat(start_date)
         e_date = date.fromisoformat(end_date)
         
-        query = session.query(DailyShift).filter(
+        query = session.query(DailyShift).options(
+            joinedload(DailyShift.employee),
+            joinedload(DailyShift.shift_type),
+        ).filter(
             DailyShift.date >= s_date,
             DailyShift.date <= e_date
         )
-        
+
         if employee_id:
             query = query.filter(DailyShift.employee_id == employee_id)
-            
+
         daily_shifts = query.order_by(DailyShift.date).all()
-        
+
         result = []
         for ds in daily_shifts:
-            emp = session.query(Employee).get(ds.employee_id)
-            st = session.query(ShiftType).get(ds.shift_type_id)
+            emp = ds.employee
+            st = ds.shift_type
             result.append({
                 "id": ds.id,
                 "employee_id": ds.employee_id,
@@ -448,7 +495,7 @@ def get_swap_history(
             emp_ids.add(s.requester_id)
             emp_ids.add(s.target_id)
         emps = {e.id: e.name for e in session.query(Employee).filter(Employee.id.in_(emp_ids)).all()} if emp_ids else {}
-        sts = {st.id: st.name for st in session.query(ShiftType).all()}
+        sts = {sid: ns.name for sid, ns in _get_shift_type_id_map_cached(session).items()}
 
         return [{
             "id": s.id,
@@ -471,16 +518,6 @@ def get_swap_history(
 # 排班匯入/匯出輔助
 # ---------------------------------------------------------------------------
 
-def _sh_xlsx_response(wb, filename: str):
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    encoded = quote(filename)
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
-    )
 
 
 _SH_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
@@ -508,7 +545,11 @@ def get_shift_import_template(
     """下載排班批次匯入 Excel 範本"""
     session = get_session()
     try:
-        shift_types = session.query(ShiftType).filter(ShiftType.is_active == True).order_by(ShiftType.sort_order).all()
+        shift_types = [
+            ns for ns in _get_shift_type_id_map_cached(session).values()
+            if ns.is_active
+        ]
+        shift_types.sort(key=lambda ns: ns.sort_order)
 
         wb = Workbook()
         ws = wb.active
@@ -537,7 +578,7 @@ def get_shift_import_template(
         note_ws.cell(row=3, column=1, value="2. 班別名稱須完全符合「班別說明」頁的名稱")
         note_ws.cell(row=4, column=1, value="3. 上傳時需指定 week_start 參數（週一日期，格式 YYYY-MM-DD）")
 
-        return _sh_xlsx_response(wb, "排班匯入範本.xlsx")
+        return xlsx_streaming_response(wb, "排班匯入範本.xlsx")
     finally:
         session.close()
 
@@ -569,8 +610,8 @@ async def import_shifts(
         emp_by_id = {str(e.employee_id): e for e in employees}
         emp_by_name = {e.name: e for e in employees}
 
-        shift_types = session.query(ShiftType).filter(ShiftType.is_active == True).all()
-        st_by_name = {st.name: st for st in shift_types}
+        shift_types = [ns for ns in _get_shift_type_id_map_cached(session).values() if ns.is_active]
+        st_by_name = {ns.name: ns for ns in shift_types}
 
         for idx, row in df.iterrows():
             results["total"] += 1
@@ -636,7 +677,7 @@ async def import_shifts(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"匯入失敗：{e}")
+        raise_safe_500(e, context="匯入失敗")
     finally:
         session.close()
 

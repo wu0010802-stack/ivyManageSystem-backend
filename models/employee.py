@@ -5,7 +5,7 @@ models/employee.py — 員工相關模型
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, CHAR
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, CHAR, Index
 from sqlalchemy.orm import relationship
 
 from models.base import Base
@@ -70,12 +70,12 @@ class Employee(Base):
     is_active = Column(Boolean, default=True, comment="是否在職")
     resign_date = Column(Date, nullable=True, comment="離職日期")
     resign_reason = Column(String(200), nullable=True, comment="離職原因")
-    probation_end_date = Column(Date, nullable=True, comment="試用期結束日")
     bonus_grade = Column(CHAR(1), nullable=True, comment="節慶獎金等級覆蓋 (A/B/C)，NULL=依職稱自動判斷")
     supervisor_role = Column(String(20), nullable=True, comment="主管職 (園長/主任/組長/副組長)")
     is_office_staff = Column(Boolean, default=False, comment="是否為辦公室人員（舊欄位，停用）")
     dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
     hire_date = Column(Date, comment="到職日期")
+    probation_end_date = Column(Date, nullable=True, comment="試用期結束日")
     birthday = Column(Date, nullable=True, comment="生日")
 
     phone = Column(String(20), comment="聯絡電話")
@@ -85,6 +85,12 @@ class Employee(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("ix_employee_active_resign", "is_active", "resign_date"),
+        Index("ix_employee_job_title_id", "job_title_id"),
+        Index("ix_employee_classroom_id", "classroom_id"),
+    )
 
     attendances = relationship("Attendance", back_populates="employee", cascade="all, delete-orphan")
     leaves = relationship("LeaveRecord", foreign_keys="[LeaveRecord.employee_id]", back_populates="employee", cascade="all, delete-orphan")

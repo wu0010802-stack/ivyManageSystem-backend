@@ -3,7 +3,8 @@ services/activity_service.py — 課後才藝報名業務邏輯
 """
 
 import logging
-from datetime import datetime, date, timedelta
+from collections import defaultdict
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 
@@ -311,9 +312,20 @@ class ActivityService:
         for row in enrollments:
             enrollment_map[(row.class_name, row.course_id)] = row.count
 
-        # 5. 組裝報表結構
+        # 5. 預載所有班級與班導師（一次 JOIN，取代年級迴圈內 N 次查詢）
+        all_classrooms_with_teachers = (
+            session.query(Classroom, Employee.name.label("teacher_name"))
+            .outerjoin(Employee, Classroom.head_teacher_id == Employee.id)
+            .filter(Classroom.is_active.is_(True))
+            .all()
+        )
+        classrooms_by_grade: dict = defaultdict(list)
+        for _cls, _teacher in all_classrooms_with_teachers:
+            classrooms_by_grade[_cls.grade_id].append((_cls, _teacher))
+
+        # 6. 組裝報表結構
         result_grades = []
-        
+
         gt_student_count = 0
         gt_courses = {str(c.id): 0 for c in courses}
         gt_total_enrollments = 0
@@ -326,17 +338,7 @@ class ActivityService:
                     target_pct = v
                     break
 
-            # 找出這年級所有的班級與班導師
-            classrooms_data = (
-                session.query(Classroom, Employee.name.label("teacher_name"))
-                .outerjoin(Employee, Classroom.head_teacher_id == Employee.id)
-                .filter(
-                    Classroom.grade_id == grade.id,
-                    Classroom.is_active.is_(True)
-                )
-                .all()
-            )
-
+            classrooms_data = classrooms_by_grade.get(grade.id, [])
             if not classrooms_data:
                 continue
 
@@ -429,14 +431,14 @@ class ActivityService:
     # 候補升正式
     # ------------------------------------------------------------------ #
 
-    def promote_waitlist(self, session, registration_id: int, course_id: int) -> bool:
+    def promote_waitlist(self, session, registration_id: int, course_id: int) -> tuple[str, str]:
         """
         將指定報名的指定課程從候補升為正式。
         使用 with_for_update() 防止並發超額。
-        回傳 True 成功，ValueError 失敗。
+        回傳 (student_name, course_name)，失敗時拋 ValueError。
         """
-        rc = (
-            session.query(RegistrationCourse)
+        row = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
             .join(
                 ActivityRegistration,
                 RegistrationCourse.registration_id == ActivityRegistration.id,
@@ -450,8 +452,9 @@ class ActivityService:
             .with_for_update()
             .first()
         )
-        if not rc:
+        if not row:
             raise ValueError("報名課程項目不存在或非候補狀態")
+        rc, student_name = row
 
         enrolled_count = self.count_active_course_registrations(
             session,
@@ -466,7 +469,7 @@ class ActivityService:
             raise ValueError("課程容量已滿，無法升為正式")
 
         rc.status = "enrolled"
-        return True
+        return (student_name or str(registration_id), course.name)
 
     # ------------------------------------------------------------------ #
     # 軟刪除報名

@@ -4,7 +4,7 @@ models/auth.py — 用戶認證模型
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, BigInteger, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, BigInteger, DateTime, Boolean, ForeignKey, Index
 from sqlalchemy.orm import relationship
 
 from models.base import Base
@@ -24,8 +24,13 @@ class User(Base):
     must_change_password = Column(Boolean, default=False, comment="是否強制下次登入修改密碼")
     token_version = Column(Integer, default=0, nullable=False, comment="Token 版本號；帳號停用或權限變更時遞增，使所有現有 Token 無法刷新")
     last_login = Column(DateTime, comment="最後登入時間")
+    line_user_id = Column(String(100), nullable=True, unique=True, index=True, comment="綁定的 LINE User ID")
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("ix_user_emp_active", "employee_id", "is_active"),
+    )
 
     employee = relationship("Employee", backref="user_account")

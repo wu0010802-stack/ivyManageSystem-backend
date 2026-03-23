@@ -5,7 +5,7 @@ Audit log query router
 import logging
 from datetime import datetime, date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from typing import Optional
 
 from models.database import get_session, AuditLog

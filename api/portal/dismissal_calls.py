@@ -2,8 +2,9 @@
 api/portal/dismissal_calls.py — 教師 portal 接送通知 HTTP endpoints
 """
 
+import asyncio
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -11,7 +12,7 @@ from models.database import get_session, Classroom, Student, Employee, User
 from models.dismissal import StudentDismissalCall
 from utils.auth import require_permission
 from utils.permissions import Permission
-from api.dismissal_calls import _call_base_dict
+from api.dismissal_calls import _call_base_dict, _DAY_START, _DAY_END
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +88,8 @@ def portal_list_dismissal_calls(
             return []
 
         today = date.today()
-        day_start = datetime(today.year, today.month, today.day, 0, 0, 0)
-        day_end = datetime(today.year, today.month, today.day, 23, 59, 59)
+        day_start = datetime.combine(today, _DAY_START)
+        day_end = datetime.combine(today, _DAY_END)
 
         calls = session.query(StudentDismissalCall).filter(
             StudentDismissalCall.classroom_id.in_(classroom_ids),
@@ -115,8 +116,8 @@ def portal_pending_count(
             return {"count": 0}
 
         today = date.today()
-        day_start = datetime(today.year, today.month, today.day, 0, 0, 0)
-        day_end = datetime(today.year, today.month, today.day, 23, 59, 59)
+        day_start = datetime.combine(today, _DAY_START)
+        day_end = datetime.combine(today, _DAY_END)
 
         count = session.query(StudentDismissalCall).filter(
             StudentDismissalCall.classroom_id.in_(classroom_ids),
@@ -129,12 +130,8 @@ def portal_pending_count(
         session.close()
 
 
-@router.post("/dismissal-calls/{call_id}/acknowledge")
-async def portal_acknowledge(
-    call_id: int,
-    current_user: dict = Depends(require_permission(Permission.DISMISSAL_CALLS_WRITE)),
-):
-    """老師確認已收到接送通知（pending → acknowledged）。"""
+def _db_acknowledge(call_id: int, current_user: dict) -> tuple[dict, int]:
+    """同步 DB 操作：確認已收到通知，回傳 (out_dict, classroom_id)。"""
     session = get_session()
     try:
         emp = _require_employee(current_user, session)
@@ -146,7 +143,6 @@ async def portal_acknowledge(
         if not call:
             raise HTTPException(status_code=404, detail="找不到通知")
 
-        # IDOR 防護
         if call.classroom_id not in classroom_ids:
             raise HTTPException(status_code=403, detail="無權操作此通知")
 
@@ -159,12 +155,65 @@ async def portal_acknowledge(
         classroom_id = call.classroom_id
         call.status = "acknowledged"
         call.acknowledged_by_employee_id = emp.id
-        call.acknowledged_at = datetime.now()
-        session.commit()
+        call.acknowledged_at = datetime.now(timezone.utc)
+        try:
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
         out = _build_call_out(call, session)
         logger.info("接送通知已收到：ID %d，教師 %s", call_id, emp.name)
+        return out, classroom_id
     finally:
         session.close()
+
+
+def _db_complete(call_id: int, current_user: dict) -> tuple[dict, int]:
+    """同步 DB 操作：確認學生已放學，回傳 (out_dict, classroom_id)。"""
+    session = get_session()
+    try:
+        emp = _require_employee(current_user, session)
+        classroom_ids = _get_teacher_classroom_ids(emp.id, session)
+
+        call = session.query(StudentDismissalCall).filter(
+            StudentDismissalCall.id == call_id
+        ).first()
+        if not call:
+            raise HTTPException(status_code=404, detail="找不到通知")
+
+        if call.classroom_id not in classroom_ids:
+            raise HTTPException(status_code=403, detail="無權操作此通知")
+
+        if call.status != "acknowledged":
+            raise HTTPException(
+                status_code=422,
+                detail=f"狀態為 {call.status} 的通知無法執行已放學操作",
+            )
+
+        classroom_id = call.classroom_id
+        call.status = "completed"
+        call.completed_by_employee_id = emp.id
+        call.completed_at = datetime.now(timezone.utc)
+        try:
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        out = _build_call_out(call, session)
+        logger.info("接送通知已完成：ID %d，教師 %s", call_id, emp.name)
+        return out, classroom_id
+    finally:
+        session.close()
+
+
+@router.post("/dismissal-calls/{call_id}/acknowledge")
+async def portal_acknowledge(
+    call_id: int,
+    current_user: dict = Depends(require_permission(Permission.DISMISSAL_CALLS_WRITE)),
+):
+    """老師確認已收到接送通知（pending → acknowledged）。"""
+    loop = asyncio.get_running_loop()
+    out, classroom_id = await loop.run_in_executor(None, _db_acknowledge, call_id, current_user)
 
     await _get_manager().broadcast(classroom_id, {
         "type": "dismissal_call_updated",
@@ -183,36 +232,8 @@ async def portal_complete(
     current_user: dict = Depends(require_permission(Permission.DISMISSAL_CALLS_WRITE)),
 ):
     """老師確認學生已放學（acknowledged → completed）。"""
-    session = get_session()
-    try:
-        emp = _require_employee(current_user, session)
-        classroom_ids = _get_teacher_classroom_ids(emp.id, session)
-
-        call = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.id == call_id
-        ).first()
-        if not call:
-            raise HTTPException(status_code=404, detail="找不到通知")
-
-        # IDOR 防護
-        if call.classroom_id not in classroom_ids:
-            raise HTTPException(status_code=403, detail="無權操作此通知")
-
-        if call.status != "acknowledged":
-            raise HTTPException(
-                status_code=422,
-                detail=f"狀態為 {call.status} 的通知無法執行已放學操作",
-            )
-
-        classroom_id = call.classroom_id
-        call.status = "completed"
-        call.completed_by_employee_id = emp.id
-        call.completed_at = datetime.now()
-        session.commit()
-        out = _build_call_out(call, session)
-        logger.info("接送通知已完成：ID %d，教師 %s", call_id, emp.name)
-    finally:
-        session.close()
+    loop = asyncio.get_running_loop()
+    out, classroom_id = await loop.run_in_executor(None, _db_complete, call_id, current_user)
 
     await _get_manager().broadcast(classroom_id, {
         "type": "dismissal_call_updated",

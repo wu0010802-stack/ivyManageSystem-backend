@@ -18,6 +18,7 @@ from sqlalchemy import func
 
 from models.database import get_session, Employee, LeaveRecord, LeaveQuota
 from utils.auth import require_staff_permission
+from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -222,7 +223,7 @@ def _get_pending_hours_in_month(
 def _quota_row(session, quota: "LeaveQuota", year: int) -> dict:
     used = _get_used_hours(session, quota.employee_id, year, quota.leave_type)
     pending = _get_pending_hours(session, quota.employee_id, year, quota.leave_type)
-    remaining = max(0.0, quota.total_hours - used)
+    remaining = max(0.0, quota.total_hours - used - pending)
     return {
         "id": quota.id,
         "employee_id": quota.employee_id,
@@ -453,7 +454,7 @@ def get_leave_quotas(
                 "total_hours": quota.total_hours,
                 "used_hours": used,
                 "pending_hours": pending,
-                "remaining_hours": max(0.0, quota.total_hours - used),
+                "remaining_hours": max(0.0, quota.total_hours - used - pending),
                 "note": quota.note,
             })
         return result
@@ -479,7 +480,14 @@ def init_leave_quotas(
     try:
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
         if not emp:
-            raise HTTPException(status_code=404, detail="員工不存在")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
+
+        existing_quotas = session.query(LeaveQuota).filter(
+            LeaveQuota.employee_id == employee_id,
+            LeaveQuota.year == year,
+            LeaveQuota.leave_type.in_(QUOTA_LEAVE_TYPES),
+        ).all()
+        quota_map = {q.leave_type: q for q in existing_quotas}
 
         upserted = []
         for lt in QUOTA_LEAVE_TYPES:
@@ -497,11 +505,7 @@ def init_leave_quotas(
                 hours = STATUTORY_QUOTA_HOURS[lt]
                 note = "法定年度上限"
 
-            quota = session.query(LeaveQuota).filter(
-                LeaveQuota.employee_id == employee_id,
-                LeaveQuota.year == year,
-                LeaveQuota.leave_type == lt,
-            ).first()
+            quota = quota_map.get(lt)
             if quota:
                 quota.total_hours = hours
                 quota.note = note
@@ -519,12 +523,48 @@ def init_leave_quotas(
         session.commit()
         logger.info("初始化員工 %s（ID:%d）%d 年度假別配額：%s", emp.name, employee_id, year, upserted)
 
-        # 重新查詢後回傳
+        # 重新查詢後回傳（批次查詢 used/pending，避免 N+1）
         quotas = session.query(LeaveQuota).filter(
             LeaveQuota.employee_id == employee_id,
             LeaveQuota.year == year,
         ).all()
-        return [_quota_row(session, q, year) for q in quotas]
+        year_start = date(year, 1, 1)
+        year_end = date(year + 1, 1, 1)
+        used_rows = session.query(
+            LeaveRecord.leave_type,
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+        ).filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.is_approved == True,
+            LeaveRecord.start_date >= year_start,
+            LeaveRecord.start_date < year_end,
+        ).group_by(LeaveRecord.leave_type).all()
+        used_map = {r.leave_type: float(r.hours) for r in used_rows}
+        pending_rows = session.query(
+            LeaveRecord.leave_type,
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+        ).filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.is_approved.is_(None),
+            LeaveRecord.start_date >= year_start,
+            LeaveRecord.start_date < year_end,
+        ).group_by(LeaveRecord.leave_type).all()
+        pending_map = {r.leave_type: float(r.hours) for r in pending_rows}
+        return [
+            {
+                "id": q.id,
+                "employee_id": q.employee_id,
+                "year": q.year,
+                "leave_type": q.leave_type,
+                "leave_type_label": LEAVE_TYPE_LABELS.get(q.leave_type, q.leave_type),
+                "total_hours": q.total_hours,
+                "used_hours": used_map.get(q.leave_type, 0.0),
+                "pending_hours": pending_map.get(q.leave_type, 0.0),
+                "remaining_hours": max(0.0, q.total_hours - used_map.get(q.leave_type, 0.0)),
+                "note": q.note,
+            }
+            for q in quotas
+        ]
     except HTTPException:
         raise
     except Exception as e:

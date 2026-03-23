@@ -247,6 +247,10 @@ class SalaryRecord(Base):
 
     __table_args__ = (
         UniqueConstraint('employee_id', 'salary_year', 'salary_month', name='uq_salary_emp_ym'),
+        Index('ix_salary_emp_ym_finalized', 'employee_id', 'salary_year', 'salary_month', 'is_finalized'),
+        Index('ix_salary_ym_finalized', 'salary_year', 'salary_month', 'is_finalized'),
+        Index('ix_salary_bonus_config_id', 'bonus_config_id'),
+        Index('ix_salary_attendance_policy_id', 'attendance_policy_id'),
     )
 
     employee = relationship("Employee", back_populates="salaries")

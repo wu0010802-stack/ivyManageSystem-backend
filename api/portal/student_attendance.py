@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from openpyxl import Workbook
 from pydantic import BaseModel
 
@@ -170,7 +171,7 @@ def batch_save_class_attendance(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"儲存失敗: {str(e)}")
+        raise_safe_500(e, context="儲存失敗")
     finally:
         session.close()
 

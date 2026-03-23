@@ -34,8 +34,8 @@ from api.classrooms import router as classrooms_router
 from api.attendance import router as attendance_router
 from api.salary import router as salary_router, init_salary_services
 from api.config import router as config_router, init_config_services
-from api.leaves import router as leaves_router, init_leaves_services
-from api.overtimes import router as overtimes_router, init_overtimes_services
+from api.leaves import router as leaves_router, init_leaves_services, init_leaves_line_service
+from api.overtimes import router as overtimes_router, init_overtimes_services, init_overtimes_line_service
 from api.insurance import router as insurance_router, init_insurance_services
 from api.employee_allowances import router as employee_allowances_router
 from api.auth import router as auth_router
@@ -52,8 +52,10 @@ from api.audit import router as audit_router
 from api.punch_corrections import router as punch_corrections_router
 from api.approval_settings import router as approval_settings_router
 from api.activity import router as activity_router
-from api.dismissal_calls import router as dismissal_calls_router
+from api.dismissal_calls import router as dismissal_calls_router, init_dismissal_line_service
 from api.dismissal_ws import ws_router as dismissal_ws_router
+from api.line_webhook import router as line_webhook_router, init_webhook_service
+from api.gov_reports import router as gov_reports_router, init_gov_report_services
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -109,18 +111,16 @@ _cors_env = os.environ.get("CORS_ORIGINS", "")
 CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else [
     "http://localhost:5173",
     "http://localhost:3000",
-    "http://localhost:5500",   # VSCode Live Server（前台靜態頁）
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
-    "http://127.0.0.1:5500",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
 
 # ---------------------------------------------------------------------------
@@ -132,13 +132,18 @@ salary_engine = SalaryEngine(load_from_db=True)
 line_service = LineService()
 
 # Initialize service dependencies for routers that need them
-init_salary_services(salary_engine, insurance_service)
+init_salary_services(salary_engine, insurance_service, line_service)
 init_employee_services(salary_engine)
 init_config_services(salary_engine, line_service)
 init_insurance_services(insurance_service)
 init_overtimes_services(salary_engine)
+init_overtimes_line_service(line_service)
 init_leaves_services(salary_engine)
+init_leaves_line_service(line_service)
+init_dismissal_line_service(line_service)
 init_portal_notify_services(line_service)
+init_webhook_service(line_service)
+init_gov_report_services(insurance_service)
 
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)
@@ -183,6 +188,8 @@ app.include_router(approval_settings_router)
 app.include_router(activity_router)
 app.include_router(dismissal_calls_router)
 app.include_router(dismissal_ws_router)  # WebSocket（路徑已含 /ws/...）
+app.include_router(line_webhook_router)
+app.include_router(gov_reports_router)
 
 # Audit middleware (must be added after CORS middleware)
 from utils.audit import AuditMiddleware
@@ -475,7 +482,8 @@ def _load_line_config():
     try:
         cfg = session.query(LineConfig).first()
         if cfg and cfg.is_enabled and cfg.channel_access_token and cfg.target_id:
-            line_service.configure(cfg.channel_access_token, cfg.target_id, True)
+            channel_secret = getattr(cfg, "channel_secret", None)
+            line_service.configure(cfg.channel_access_token, cfg.target_id, True, channel_secret)
             logger.info("LINE 通知服務已啟用")
         else:
             logger.info("LINE 通知服務未啟用或尚未設定")

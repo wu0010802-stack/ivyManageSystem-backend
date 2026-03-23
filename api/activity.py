@@ -27,6 +27,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/activity", tags=["activity"])
 
 
+# ── 共用 HTTPException helpers ────────────────────────────────────────────────
+
+def _not_found(resource: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"找不到{resource}")
+
+def _duplicate_name(resource: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=f"{resource}名稱已存在")
+
+def _invalid_class() -> HTTPException:
+    return HTTPException(status_code=400, detail="班級不存在或已停用")
+
+def _item_not_found_in_list(resource: str, name: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=f"找不到{resource}：{name}")
+
+
 # ============================================================ #
 # Pydantic Models
 # ============================================================ #
@@ -273,7 +288,7 @@ async def get_registration_detail(
             ActivityRegistration.is_active.is_(True),
         ).first()
         if not reg:
-            raise HTTPException(status_code=404, detail="找不到報名資料")
+            raise _not_found("報名資料")
 
         rc_rows = (
             session.query(RegistrationCourse, ActivityCourse)
@@ -357,7 +372,7 @@ async def update_payment(
             ActivityRegistration.is_active.is_(True),
         ).first()
         if not reg:
-            raise HTTPException(status_code=404, detail="找不到報名資料")
+            raise _not_found("報名資料")
 
         old_paid = reg.is_paid
         reg.is_paid = body.is_paid
@@ -394,7 +409,7 @@ async def update_remark(
             ActivityRegistration.is_active.is_(True),
         ).first()
         if not reg:
-            raise HTTPException(status_code=404, detail="找不到報名資料")
+            raise _not_found("報名資料")
 
         reg.remark = body.remark
         activity_service.log_change(
@@ -422,16 +437,11 @@ async def promote_waitlist(
     """將候補升為正式報名"""
     session = get_session()
     try:
-        activity_service.promote_waitlist(session, registration_id, course_id)
-
-        reg = session.query(ActivityRegistration).filter(
-            ActivityRegistration.id == registration_id
-        ).first()
-        course = session.query(ActivityCourse).filter(ActivityCourse.id == course_id).first()
+        student_name, course_name = activity_service.promote_waitlist(session, registration_id, course_id)
 
         activity_service.log_change(
-            session, registration_id, reg.student_name if reg else str(registration_id),
-            "候補升正式", f"課程「{course.name if course else course_id}」候補升為正式",
+            session, registration_id, student_name,
+            "候補升正式", f"課程「{course_name}」候補升為正式",
             current_user.get("username", ""),
         )
         session.commit()
@@ -556,7 +566,7 @@ async def get_course_detail(
             ActivityCourse.is_active.is_(True),
         ).first()
         if not c:
-            raise HTTPException(status_code=404, detail="找不到課程")
+            raise _not_found("課程")
         return {
             "id": c.id,
             "name": c.name,
@@ -583,7 +593,7 @@ async def create_course(
             ActivityCourse.name == body.name
         ).first()
         if existing:
-            raise HTTPException(status_code=400, detail="課程名稱已存在")
+            raise _duplicate_name("課程")
 
         course = ActivityCourse(
             name=body.name,
@@ -621,7 +631,7 @@ async def update_course(
             ActivityCourse.is_active.is_(True),
         ).first()
         if not course:
-            raise HTTPException(status_code=404, detail="找不到課程")
+            raise _not_found("課程")
 
         if body.name and body.name != course.name:
             dup = session.query(ActivityCourse).filter(
@@ -629,9 +639,9 @@ async def update_course(
                 ActivityCourse.id != course_id,
             ).first()
             if dup:
-                raise HTTPException(status_code=400, detail="課程名稱已被使用")
+                raise _duplicate_name("課程")
 
-        update_data = body.dict(exclude_unset=True)
+        update_data = body.model_dump(exclude_unset=True)
         for k, v in update_data.items():
             setattr(course, k, v)
 
@@ -660,7 +670,7 @@ async def delete_course(
             ActivityCourse.is_active.is_(True),
         ).first()
         if not course:
-            raise HTTPException(status_code=404, detail="找不到課程")
+            raise _not_found("課程")
 
         count = activity_service.count_active_course_registrations(session, course_id)
         if count > 0:
@@ -723,7 +733,7 @@ async def create_supply(
             ActivitySupply.name == body.name
         ).first()
         if existing:
-            raise HTTPException(status_code=400, detail="用品名稱已存在")
+            raise _duplicate_name("用品")
 
         supply = ActivitySupply(name=body.name, price=body.price)
         session.add(supply)
@@ -753,7 +763,7 @@ async def update_supply(
             ActivitySupply.is_active.is_(True),
         ).first()
         if not supply:
-            raise HTTPException(status_code=404, detail="找不到用品")
+            raise _not_found("用品")
 
         if body.name and body.name != supply.name:
             dup = session.query(ActivitySupply).filter(
@@ -761,9 +771,9 @@ async def update_supply(
                 ActivitySupply.id != supply_id,
             ).first()
             if dup:
-                raise HTTPException(status_code=400, detail="用品名稱已被使用")
+                raise _duplicate_name("用品")
 
-        update_data = body.dict(exclude_unset=True)
+        update_data = body.model_dump(exclude_unset=True)
         for k, v in update_data.items():
             setattr(supply, k, v)
 
@@ -792,7 +802,7 @@ async def delete_supply(
             ActivitySupply.is_active.is_(True),
         ).first()
         if not supply:
-            raise HTTPException(status_code=404, detail="找不到用品")
+            raise _not_found("用品")
 
         supply.is_active = False
         session.commit()
@@ -852,7 +862,7 @@ async def mark_inquiry_read(
     try:
         inquiry = session.query(ParentInquiry).filter(ParentInquiry.id == inquiry_id).first()
         if not inquiry:
-            raise HTTPException(status_code=404, detail="找不到提問")
+            raise _not_found("提問")
         inquiry.is_read = True
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
@@ -876,7 +886,7 @@ async def delete_inquiry(
     try:
         inquiry = session.query(ParentInquiry).filter(ParentInquiry.id == inquiry_id).first()
         if not inquiry:
-            raise HTTPException(status_code=404, detail="找不到提問")
+            raise _not_found("提問")
         session.delete(inquiry)
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
@@ -987,11 +997,22 @@ async def get_public_courses_availability():
         courses = session.query(ActivityCourse).filter(
             ActivityCourse.is_active.is_(True)
         ).all()
+        # 批量查詢所有課程報名數，避免 N+1 查詢
+        course_ids = [c.id for c in courses]
+        enrolled_map = dict(
+            session.query(RegistrationCourse.course_id, func.count(RegistrationCourse.id))
+            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            .filter(
+                RegistrationCourse.course_id.in_(course_ids),
+                RegistrationCourse.status == "enrolled",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .group_by(RegistrationCourse.course_id)
+            .all()
+        ) if course_ids else {}
         availability = {}
         for course in courses:
-            enrolled = activity_service.count_active_course_registrations(
-                session, course.id, status="enrolled"
-            )
+            enrolled = enrolled_map.get(course.id, 0)
             capacity = course.capacity if course.capacity is not None else 30
             remaining = capacity - enrolled
             if remaining <= 0:
@@ -1021,7 +1042,7 @@ async def public_register(body: PublicRegistrationPayload):
         classroom_name = body.class_.strip()
         classroom = _get_active_classroom(session, classroom_name)
         if not classroom:
-            raise HTTPException(status_code=400, detail="班級不存在或已停用")
+            raise _invalid_class()
 
         reg = ActivityRegistration(
             student_name=body.name,
@@ -1031,18 +1052,38 @@ async def public_register(body: PublicRegistrationPayload):
         session.add(reg)
         session.flush()  # 取得 reg.id
 
+        course_names = [item.name for item in body.courses]
+        courses_by_name = {c.name: c for c in session.query(ActivityCourse).filter(
+            ActivityCourse.name.in_(course_names),
+            ActivityCourse.is_active.is_(True),
+        ).all()} if course_names else {}
+
+        supply_names = [item.name for item in body.supplies]
+        supplies_by_name = {s.name: s for s in session.query(ActivitySupply).filter(
+            ActivitySupply.name.in_(supply_names),
+            ActivitySupply.is_active.is_(True),
+        ).all()} if supply_names else {}
+
+        # 批量查詢所有報名課程的已報名人數，避免迴圈中逐一查詢
+        _reg_course_ids = [c.id for c in courses_by_name.values()]
+        enrolled_count_map = dict(
+            session.query(RegistrationCourse.course_id, func.count(RegistrationCourse.id))
+            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            .filter(
+                RegistrationCourse.course_id.in_(_reg_course_ids),
+                RegistrationCourse.status == "enrolled",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .group_by(RegistrationCourse.course_id)
+            .all()
+        ) if _reg_course_ids else {}
         has_waitlist = False
         for course_item in body.courses:
-            course = session.query(ActivityCourse).filter(
-                ActivityCourse.name == course_item.name,
-                ActivityCourse.is_active.is_(True),
-            ).first()
+            course = courses_by_name.get(course_item.name)
             if not course:
-                raise HTTPException(status_code=400, detail=f"找不到課程：{course_item.name}")
+                raise _item_not_found_in_list("課程", course_item.name)
 
-            enrolled_count = activity_service.count_active_course_registrations(
-                session, course.id, status="enrolled"
-            )
+            enrolled_count = enrolled_count_map.get(course.id, 0)
             capacity = course.capacity if course.capacity is not None else 30
             remaining = capacity - enrolled_count
 
@@ -1066,12 +1107,9 @@ async def public_register(body: PublicRegistrationPayload):
             session.add(rc)
 
         for supply_item in body.supplies:
-            supply = session.query(ActivitySupply).filter(
-                ActivitySupply.name == supply_item.name,
-                ActivitySupply.is_active.is_(True),
-            ).first()
+            supply = supplies_by_name.get(supply_item.name)
             if not supply:
-                raise HTTPException(status_code=400, detail=f"找不到用品：{supply_item.name}")
+                raise _item_not_found_in_list("用品", supply_item.name)
 
             rs = RegistrationSupply(
                 registration_id=reg.id,
@@ -1159,7 +1197,7 @@ async def public_query_registration(name: str, birthday: str):
             ActivityRegistration.is_active.is_(True),
         ).first()
         if not reg:
-            raise HTTPException(status_code=404, detail="找不到該名幼兒的報名資料")
+            raise _not_found("該名幼兒的報名資料")
 
         rc_rows = (
             session.query(RegistrationCourse, ActivityCourse)
@@ -1222,7 +1260,7 @@ async def public_update_registration(body: PublicUpdatePayload):
             ActivityRegistration.is_active.is_(True),
         ).first()
         if not reg:
-            raise HTTPException(status_code=404, detail="找不到報名資料")
+            raise _not_found("報名資料")
 
         # 驗證姓名+生日（防止他人竄改）
         if reg.student_name != body.name or reg.birthday != body.birthday:
@@ -1230,7 +1268,7 @@ async def public_update_registration(body: PublicUpdatePayload):
 
         classroom = _get_active_classroom(session, body.class_)
         if not classroom:
-            raise HTTPException(status_code=400, detail="班級不存在或已停用")
+            raise _invalid_class()
         reg.class_name = classroom.name
 
         # 刪除舊的課程/用品關聯，重新建立
@@ -1242,18 +1280,38 @@ async def public_update_registration(body: PublicUpdatePayload):
         ).delete()
         session.flush()
 
+        course_names = [item.name for item in body.courses]
+        courses_by_name = {c.name: c for c in session.query(ActivityCourse).filter(
+            ActivityCourse.name.in_(course_names),
+            ActivityCourse.is_active.is_(True),
+        ).all()} if course_names else {}
+
+        supply_names = [item.name for item in body.supplies]
+        supplies_by_name = {s.name: s for s in session.query(ActivitySupply).filter(
+            ActivitySupply.name.in_(supply_names),
+            ActivitySupply.is_active.is_(True),
+        ).all()} if supply_names else {}
+
+        # 批量查詢所有課程已報名人數，避免迴圈中逐一查詢
+        _upd_course_ids = [c.id for c in courses_by_name.values()]
+        upd_enrolled_map = dict(
+            session.query(RegistrationCourse.course_id, func.count(RegistrationCourse.id))
+            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            .filter(
+                RegistrationCourse.course_id.in_(_upd_course_ids),
+                RegistrationCourse.status == "enrolled",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .group_by(RegistrationCourse.course_id)
+            .all()
+        ) if _upd_course_ids else {}
         has_waitlist = False
         for course_item in body.courses:
-            course = session.query(ActivityCourse).filter(
-                ActivityCourse.name == course_item.name,
-                ActivityCourse.is_active.is_(True),
-            ).first()
+            course = courses_by_name.get(course_item.name)
             if not course:
-                raise HTTPException(status_code=400, detail=f"找不到課程：{course_item.name}")
+                raise _item_not_found_in_list("課程", course_item.name)
 
-            enrolled_count = activity_service.count_active_course_registrations(
-                session, course.id, status="enrolled"
-            )
+            enrolled_count = upd_enrolled_map.get(course.id, 0)
             capacity = course.capacity if course.capacity is not None else 30
             if enrolled_count < capacity:
                 status = "enrolled"
@@ -1274,12 +1332,9 @@ async def public_update_registration(body: PublicUpdatePayload):
             session.add(rc)
 
         for supply_item in body.supplies:
-            supply = session.query(ActivitySupply).filter(
-                ActivitySupply.name == supply_item.name,
-                ActivitySupply.is_active.is_(True),
-            ).first()
+            supply = supplies_by_name.get(supply_item.name)
             if not supply:
-                raise HTTPException(status_code=400, detail=f"找不到用品：{supply_item.name}")
+                raise _item_not_found_in_list("用品", supply_item.name)
             rs = RegistrationSupply(
                 registration_id=reg.id,
                 supply_id=supply.id,

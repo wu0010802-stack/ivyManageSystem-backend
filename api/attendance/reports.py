@@ -10,9 +10,11 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlalchemy import case, func, or_
 
 from models.database import get_session, Employee, Attendance, LeaveRecord, OvertimeRecord
 from utils.auth import require_permission
+from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.permissions import Permission
 from ._shared import LEAVE_TYPE_LABELS
 
@@ -32,16 +34,18 @@ async def get_today_attendance_summary(
 
         total_employees = session.query(Employee).filter(Employee.is_active == True).count()
 
-        today_records = session.query(Attendance).filter(
-            Attendance.attendance_date == today
-        ).all()
+        # SQL aggregate 取代 Python 逐行計算
+        today_counts = session.query(
+            func.count(Attendance.id).label("present"),
+            func.sum(case((Attendance.is_late == True, 1), else_=0)).label("late"),
+            func.sum(case((
+                or_(Attendance.is_missing_punch_in == True, Attendance.is_missing_punch_out == True), 1
+            ), else_=0)).label("missing"),
+        ).filter(Attendance.attendance_date == today).first()
 
-        present_count = len(today_records)
-        late_count = sum(1 for a in today_records if a.is_late)
-        missing_count = sum(
-            1 for a in today_records
-            if a.is_missing_punch_in or a.is_missing_punch_out
-        )
+        present_count = int(today_counts.present or 0)
+        late_count = int(today_counts.late or 0)
+        missing_count = int(today_counts.missing or 0)
 
         return {
             "date": today.isoformat(),
@@ -68,45 +72,50 @@ async def get_attendance_summary(
         _, last_day = monthrange(year, month)
         end_date = date(year, month, last_day)
 
-        employees = session.query(Employee).filter(Employee.is_active == True).all()
+        # SQL GROUP BY 取代 Python 端逐行累加，避免把整月打卡記錄載入記憶體
+        rows = (
+            session.query(
+                Attendance.employee_id,
+                func.count(Attendance.id).label("total_days"),
+                func.sum(case((Attendance.status == "normal", 1), else_=0)).label("normal_days"),
+                func.sum(case((Attendance.is_late == True, 1), else_=0)).label("late_count"),
+                func.sum(case((Attendance.is_early_leave == True, 1), else_=0)).label("early_leave_count"),
+                func.sum(case((Attendance.is_missing_punch_in == True, 1), else_=0)).label("missing_punch_in"),
+                func.sum(case((Attendance.is_missing_punch_out == True, 1), else_=0)).label("missing_punch_out"),
+                func.coalesce(func.sum(Attendance.late_minutes), 0).label("total_late_minutes"),
+                func.coalesce(func.sum(Attendance.early_leave_minutes), 0).label("total_early_minutes"),
+            )
+            .filter(
+                Attendance.attendance_date >= start_date,
+                Attendance.attendance_date <= end_date,
+            )
+            .group_by(Attendance.employee_id)
+            .all()
+        )
 
-        all_attendances = session.query(Attendance).filter(
-            Attendance.attendance_date >= start_date,
-            Attendance.attendance_date <= end_date
-        ).all()
-
-        att_by_emp = {}
-        for a in all_attendances:
-            att_by_emp.setdefault(a.employee_id, []).append(a)
+        # 只需要在職員工的名稱對照（離職員工自動排除）
+        emp_map = {
+            e.id: e
+            for e in session.query(Employee).filter(Employee.is_active == True).all()
+        }
 
         result = []
-        for emp in employees:
-            attendances = att_by_emp.get(emp.id, [])
-
-            if not attendances:
+        for row in rows:
+            emp = emp_map.get(row.employee_id)
+            if not emp:
                 continue
-
-            total_days = len(attendances)
-            normal_days = sum(1 for a in attendances if a.status == "normal")
-            late_count = sum(1 for a in attendances if a.is_late)
-            early_leave_count = sum(1 for a in attendances if a.is_early_leave)
-            missing_punch_in = sum(1 for a in attendances if a.is_missing_punch_in)
-            missing_punch_out = sum(1 for a in attendances if a.is_missing_punch_out)
-            total_late_minutes = sum(a.late_minutes or 0 for a in attendances)
-            total_early_minutes = sum(a.early_leave_minutes or 0 for a in attendances)
-
             result.append({
                 "employee_id": emp.id,
                 "employee_name": emp.name,
                 "employee_number": emp.employee_id,
-                "total_days": total_days,
-                "normal_days": normal_days,
-                "late_count": late_count,
-                "early_leave_count": early_leave_count,
-                "missing_punch_in": missing_punch_in,
-                "missing_punch_out": missing_punch_out,
-                "total_late_minutes": total_late_minutes,
-                "total_early_minutes": total_early_minutes
+                "total_days": row.total_days,
+                "normal_days": row.normal_days,
+                "late_count": row.late_count,
+                "early_leave_count": row.early_leave_count,
+                "missing_punch_in": row.missing_punch_in,
+                "missing_punch_out": row.missing_punch_out,
+                "total_late_minutes": row.total_late_minutes,
+                "total_early_minutes": row.total_early_minutes,
             })
 
         return result
@@ -185,7 +194,7 @@ def get_attendance_calendar(
     try:
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
         if not emp:
-            raise HTTPException(status_code=404, detail="員工不存在")
+            raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
 
         _, last_day = cal_module.monthrange(year, month)
         start_date = date(year, month, 1)

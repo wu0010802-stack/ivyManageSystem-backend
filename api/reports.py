@@ -6,7 +6,7 @@ import logging
 from datetime import date
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import extract, func, Integer
 
 from models.database import (
@@ -22,12 +22,9 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 REPORT_DASHBOARD_CACHE_TTL_SECONDS = 1800
 
 
-def _build_report_dashboard_data(session, year: int) -> dict:
-    start = date(year, 1, 1)
-    end = date(year, 12, 31)
-
-    # ---- 1. Monthly Attendance ----
-    attendance_records = session.query(
+def _query_attendance_monthly(session, start: date, end: date) -> list:
+    """查詢並整理年度每月考勤統計（正常/遲到/早退/漏打卡）。"""
+    rows = session.query(
         extract("month", Attendance.attendance_date).label("month"),
         func.count(Attendance.id).label("total"),
         func.sum(func.cast(Attendance.is_late, Integer)).label("late"),
@@ -38,17 +35,16 @@ def _build_report_dashboard_data(session, year: int) -> dict:
         Attendance.attendance_date <= end,
     ).group_by("month").order_by("month").all()
 
-    attendance_monthly = []
-    for row in attendance_records:
-        month = int(row.month)
+    result = []
+    for row in rows:
         total = int(row.total)
         late = int(row.late or 0)
         early = int(row.early_leave or 0)
         missing = int(row.missing or 0)
         anomaly = late + early + missing
         rate = round((total - anomaly) / total * 100, 1) if total > 0 else 0
-        attendance_monthly.append({
-            "month": month,
+        result.append({
+            "month": int(row.month),
             "total_records": total,
             "normal": total - anomaly,
             "late": late,
@@ -56,9 +52,12 @@ def _build_report_dashboard_data(session, year: int) -> dict:
             "missing": missing,
             "rate": rate,
         })
+    return result
 
-    # ---- 2. Attendance by Classroom ----
-    classroom_rows = session.query(
+
+def _query_attendance_by_classroom(session, start: date, end: date) -> list:
+    """查詢並整理各班級年度考勤出勤率。"""
+    rows = session.query(
         Classroom.name.label("classroom"),
         func.count(Attendance.id).label("total"),
         func.sum(func.cast(Attendance.is_late, Integer)).label("late"),
@@ -73,23 +72,31 @@ def _build_report_dashboard_data(session, year: int) -> dict:
         Classroom.is_active == True,
     ).group_by(Classroom.name).order_by(Classroom.name).all()
 
-    attendance_by_classroom = []
-    for row in classroom_rows:
+    result = []
+    for row in rows:
         total = int(row.total)
         late = int(row.late or 0)
         early = int(row.early_leave or 0)
         anomaly = late + early
         rate = round((total - anomaly) / total * 100, 1) if total > 0 else 0
-        attendance_by_classroom.append({
+        result.append({
             "classroom": row.classroom,
             "total_records": total,
             "late": late,
             "early_leave": early,
             "rate": rate,
         })
+    return result
 
-    # ---- 3. Monthly Leave ----
-    leave_records = session.query(
+
+def _query_leave_monthly(session, start: date, end: date) -> list:
+    """查詢並整理年度每月各假別請假統計（12 個月完整列表）。"""
+    _EMPTY_MONTH = {
+        "personal": 0, "sick": 0, "annual": 0,
+        "menstrual": 0, "maternity": 0, "paternity": 0,
+        "total_hours": 0,
+    }
+    rows = session.query(
         extract("month", LeaveRecord.start_date).label("month"),
         LeaveRecord.leave_type,
         func.count(LeaveRecord.id).label("count"),
@@ -99,31 +106,20 @@ def _build_report_dashboard_data(session, year: int) -> dict:
         LeaveRecord.start_date <= end,
     ).group_by("month", LeaveRecord.leave_type).order_by("month").all()
 
-    leave_by_month = defaultdict(lambda: {
-        "personal": 0, "sick": 0, "annual": 0,
-        "menstrual": 0, "maternity": 0, "paternity": 0,
-        "total_hours": 0,
-    })
-    for row in leave_records:
+    leave_by_month = defaultdict(lambda: dict(_EMPTY_MONTH))
+    for row in rows:
         month = int(row.month)
         lt = row.leave_type
-        count = int(row.count)
-        hours = float(row.total_hours or 0)
         if lt in leave_by_month[month]:
-            leave_by_month[month][lt] = count
-        leave_by_month[month]["total_hours"] += hours
+            leave_by_month[month][lt] = int(row.count)
+        leave_by_month[month]["total_hours"] += float(row.total_hours or 0)
 
-    leave_monthly = []
-    for m in range(1, 13):
-        data = leave_by_month.get(m, {
-            "personal": 0, "sick": 0, "annual": 0,
-            "menstrual": 0, "maternity": 0, "paternity": 0,
-            "total_hours": 0,
-        })
-        leave_monthly.append({"month": m, **data})
+    return [{"month": m, **leave_by_month.get(m, dict(_EMPTY_MONTH))} for m in range(1, 13)]
 
-    # ---- 4. Monthly Salary ----
-    salary_records = session.query(
+
+def _query_salary_monthly(session, year: int) -> list:
+    """查詢並整理年度每月薪資彙總（總應發、實發、扣款、獎金）。"""
+    rows = session.query(
         SalaryRecord.salary_month.label("month"),
         func.count(SalaryRecord.id).label("employee_count"),
         func.sum(SalaryRecord.gross_salary).label("total_gross"),
@@ -140,9 +136,8 @@ def _build_report_dashboard_data(session, year: int) -> dict:
         SalaryRecord.salary_year == year,
     ).group_by(SalaryRecord.salary_month).order_by(SalaryRecord.salary_month).all()
 
-    salary_monthly = []
-    for row in salary_records:
-        salary_monthly.append({
+    return [
+        {
             "month": int(row.month),
             "employee_count": int(row.employee_count),
             "total_gross": round(float(row.total_gross or 0)),
@@ -150,14 +145,21 @@ def _build_report_dashboard_data(session, year: int) -> dict:
             "total_deductions": round(float(row.total_deductions or 0)),
             "total_bonus": round(float(row.total_bonus or 0)),
             "total_overtime_pay": round(float(row.total_overtime_pay or 0)),
-        })
+        }
+        for row in rows
+    ]
+
+
+def _build_report_dashboard_data(session, year: int) -> dict:
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
 
     return {
         "year": year,
-        "attendance_monthly": attendance_monthly,
-        "attendance_by_classroom": attendance_by_classroom,
-        "leave_monthly": leave_monthly,
-        "salary_monthly": salary_monthly,
+        "attendance_monthly": _query_attendance_monthly(session, start, end),
+        "attendance_by_classroom": _query_attendance_by_classroom(session, start, end),
+        "leave_monthly": _query_leave_monthly(session, start, end),
+        "salary_monthly": _query_salary_monthly(session, year),
     }
 
 

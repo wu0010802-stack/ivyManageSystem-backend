@@ -18,6 +18,7 @@ from api.leaves_quota import (
     _calc_annual_leave_hours,
     _check_leave_limits,
     _check_quota,
+    _quota_row,
     QUOTA_LEAVE_TYPES,
     STATUTORY_QUOTA_HOURS,
     ANNUAL_MAX_HOURS,
@@ -234,3 +235,64 @@ class TestConstants:
 
     def test_monthly_max_hours_menstrual(self):
         assert MONTHLY_MAX_HOURS["menstrual"] == 8.0
+
+
+# ============================================================
+# Bug 回歸：remaining_hours 必須扣除 pending 時數
+# ============================================================
+
+class TestQuotaRowRemainingIncludesPending:
+    """
+    Bug 描述：_quota_row 及批量查詢的 remaining_hours 只扣 used，未扣 pending，
+    導致教師看到虛高的可用配額，可能超額申請。
+
+    配額 56h、核准 24h、待審 24h → remaining 應為 8h，修復前顯示 32h。
+    """
+
+    def _make_quota(self, total, leave_type="annual"):
+        import types
+        q = types.SimpleNamespace()
+        q.id = 1
+        q.employee_id = 1
+        q.year = 2026
+        q.leave_type = leave_type
+        q.total_hours = float(total)
+        q.note = None
+        return q
+
+    def test_remaining_deducts_pending_hours(self):
+        """remaining_hours = total - used - pending（不再只扣 used）"""
+        quota = self._make_quota(56.0)
+        with (
+            patch("api.leaves_quota._get_used_hours", return_value=24.0),
+            patch("api.leaves_quota._get_pending_hours", return_value=24.0),
+        ):
+            row = _quota_row(MagicMock(), quota, 2026)
+
+        assert row["used_hours"] == 24.0
+        assert row["pending_hours"] == 24.0
+        assert row["remaining_hours"] == 8.0, (
+            f"修復前顯示 32h，修復後應為 8h，實際：{row['remaining_hours']}"
+        )
+
+    def test_remaining_never_negative(self):
+        """used + pending > total 時，remaining 應為 0（不為負數）"""
+        quota = self._make_quota(16.0)
+        with (
+            patch("api.leaves_quota._get_used_hours", return_value=8.0),
+            patch("api.leaves_quota._get_pending_hours", return_value=16.0),
+        ):
+            row = _quota_row(MagicMock(), quota, 2026)
+
+        assert row["remaining_hours"] == 0.0
+
+    def test_remaining_when_no_pending(self):
+        """無待審記錄時，remaining = total - used（與原行為一致）"""
+        quota = self._make_quota(56.0)
+        with (
+            patch("api.leaves_quota._get_used_hours", return_value=24.0),
+            patch("api.leaves_quota._get_pending_hours", return_value=0.0),
+        ):
+            row = _quota_row(MagicMock(), quota, 2026)
+
+        assert row["remaining_hours"] == 32.0

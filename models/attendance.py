@@ -52,6 +52,9 @@ class Attendance(Base):
 
     __table_args__ = (
         Index('ix_attendance_emp_date', 'employee_id', 'attendance_date'),
+        Index('ix_attendance_date', 'attendance_date'),
+        Index('ix_attendance_anomaly', 'attendance_date', 'is_late', 'is_early_leave',
+              'is_missing_punch_in', 'is_missing_punch_out'),
     )
 
     employee = relationship("Employee", back_populates="attendances")

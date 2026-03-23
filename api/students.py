@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 from sqlalchemy import func, or_
@@ -16,6 +17,7 @@ from models.database import get_session, Student, Classroom, StudentClassroomTra
 from models.dismissal import StudentDismissalCall
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
 from utils.auth import require_permission
+from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -289,7 +291,7 @@ async def get_student(student_id: int, current_user: dict = Depends(require_perm
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
         return {
             "id": student.id,
             "student_id": student.student_id,
@@ -334,7 +336,7 @@ async def create_student(item: StudentCreate, current_user: dict = Depends(requi
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"新增失敗: {str(e)}")
+        raise_safe_500(e, context="新增失敗")
     finally:
         session.close()
 
@@ -346,9 +348,9 @@ async def update_student(student_id: int, item: StudentUpdate, current_user: dic
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
 
-        update_data = item.dict(exclude_unset=True)
+        update_data = item.model_dump(exclude_unset=True)
 
         NULLABLE_FK_FIELDS = {'classroom_id'}
         for key, value in update_data.items():
@@ -361,7 +363,7 @@ async def update_student(student_id: int, item: StudentUpdate, current_user: dic
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
+        raise_safe_500(e, context="更新失敗")
     finally:
         session.close()
 
@@ -373,7 +375,7 @@ async def delete_student(student_id: int, current_user: dict = Depends(require_p
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
 
         # commit 前取消進行中通知，並收集廣播資料（需要 student.name）
         dismissal_broadcasts = _cancel_active_dismissal_calls(session, student)
@@ -385,7 +387,7 @@ async def delete_student(student_id: int, current_user: dict = Depends(require_p
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"刪除失敗: {str(e)}")
+        raise_safe_500(e, context="刪除失敗")
     finally:
         session.close()
 
@@ -409,7 +411,7 @@ async def graduate_student(
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
         if not student.is_active:
             raise HTTPException(status_code=400, detail="該學生已非在讀狀態")
 
@@ -430,7 +432,7 @@ async def graduate_student(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"操作失敗: {str(e)}")
+        raise_safe_500(e, context="操作失敗")
     finally:
         session.close()
 
@@ -501,6 +503,6 @@ async def bulk_transfer_students(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"轉班失敗: {str(e)}")
+        raise_safe_500(e, context="轉班失敗")
     finally:
         session.close()

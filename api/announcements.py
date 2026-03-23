@@ -13,6 +13,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from models.database import get_session, Announcement, AnnouncementRecipient, Employee
 from utils.auth import require_permission
+from utils.error_messages import ANNOUNCEMENT_NOT_FOUND
 from utils.permissions import Permission
 
 
@@ -199,7 +200,7 @@ def update_announcement(
     try:
         ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
         if not ann:
-            raise HTTPException(status_code=404, detail="找不到該公告")
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
 
         if data.title is not None:
             ann.title = _strip_html(data.title)
@@ -241,7 +242,7 @@ def delete_announcement(
     try:
         ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
         if not ann:
-            raise HTTPException(status_code=404, detail="找不到該公告")
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
 
         session.delete(ann)
         session.commit()

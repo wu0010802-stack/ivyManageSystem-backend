@@ -1725,3 +1725,156 @@ class TestCalculateOvertimePay:
         hourly = 30000 / 30 / 8
         expected = round(hourly * 4 * 2.0)
         assert calculate_overtime_pay(30000, 4, 'holiday') == expected
+
+
+# ──────────────────────────────────────────────
+# calc_daily_salary 工具函式
+# ──────────────────────────────────────────────
+class TestCalcDailySalary:
+    """驗證 calc_daily_salary() 的邊界條件"""
+
+    def test_normal_base_salary(self):
+        """標準底薪 30000 → 日薪 1000.0"""
+        from services.salary.utils import calc_daily_salary
+        assert calc_daily_salary(30000) == 1000.0
+
+    def test_zero_base_salary(self):
+        """底薪 0 → 日薪 0.0"""
+        from services.salary.utils import calc_daily_salary
+        assert calc_daily_salary(0) == 0.0
+
+    def test_none_base_salary(self):
+        """底薪 None → 日薪 0.0（防護 None）"""
+        from services.salary.utils import calc_daily_salary
+        assert calc_daily_salary(None) == 0.0
+
+    def test_fractional_result(self):
+        """底薪 31000 → 日薪 1033.333...（不截斷）"""
+        from services.salary.utils import calc_daily_salary
+        result = calc_daily_salary(31000)
+        assert abs(result - 31000 / 30) < 1e-9
+
+
+# ──────────────────────────────────────────────
+# 組合扣款邊界測試
+# ──────────────────────────────────────────────
+class TestCombinedDeductions:
+    """遲到 + 請假同時發生的扣款行為"""
+
+    def test_late_plus_half_day_leave(self, engine, sample_employee):
+        """遲到30分 → late_deduction = base_salary / (30 * 8 * 60) * 30（不截斷）"""
+        from services.attendance_parser import AttendanceResult
+        base = 30000
+        daily = base / 30
+        # 引擎的 per_minute_rate = base / (30 * 8 * 60)
+        expected_late = base / (30 * 8 * 60) * 30
+        att = AttendanceResult(
+            employee_name='王小明',
+            total_days=22, normal_days=21,
+            late_count=1, early_leave_count=0,
+            missing_punch_in_count=0, missing_punch_out_count=0,
+            total_late_minutes=30, total_early_minutes=0,
+            details=[]
+        )
+        # 直接測試 calculate_attendance_deduction
+        result = engine.calculate_attendance_deduction(att, daily_salary=daily, base_salary=base)
+        assert abs(result['late_deduction'] - expected_late) < 1e-9
+
+    def test_net_salary_not_negative(self, engine, sample_employee):
+        """極端扣款情境下 net_salary 不應為負數（引擎應拋出 ValueError）"""
+        from services.attendance_parser import AttendanceResult
+        # 讓底薪極低，而遲到極多
+        sample_employee['base_salary'] = 100
+        att = AttendanceResult(
+            employee_name='王小明',
+            total_days=22, normal_days=0,
+            late_count=100, early_leave_count=0,
+            missing_punch_in_count=0, missing_punch_out_count=0,
+            total_late_minutes=999999, total_early_minutes=0,
+            details=[]
+        )
+        # 超過底薪的扣款應觸發 ValueError
+        try:
+            breakdown = engine.calculate_salary(
+                employee=sample_employee, year=2026, month=3, attendance=att
+            )
+            # 若未拋出，net_salary 不得為負數
+            assert breakdown.net_salary >= 0
+        except ValueError as e:
+            assert 'net_salary' in str(e) or '異常負值' in str(e)
+
+
+# ──────────────────────────────────────────────
+# 到職折算邊界測試（擴充 TestProrations）
+# ──────────────────────────────────────────────
+class TestProrateEdgeCases:
+    """入職日期在月初/月末/跨年的折算邏輯"""
+
+    def test_hire_first_day_of_month(self, engine, sample_employee):
+        """月1日到職 → 全月薪資（無折算），base_salary 應為原值"""
+        sample_employee['hire_date'] = '2026-03-01'
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=3
+        )
+        # 月1日到職不折算
+        assert breakdown.base_salary == sample_employee['base_salary']
+
+    def test_hire_last_day_of_month(self, engine, sample_employee):
+        """3月30日到職 → 折算2天（3/30~3/31），使用實際月天數31天"""
+        import calendar
+        sample_employee['hire_date'] = '2026-03-30'
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=3
+        )
+        # 3/30 ~ 3/31 = 2天；折算基準 = 31（3月實際天數）
+        days_in_month = calendar.monthrange(2026, 3)[1]  # 31
+        worked_days = days_in_month - 30 + 1             # 2
+        assert abs(breakdown.base_salary - sample_employee['base_salary'] * worked_days / days_in_month) < 1
+
+    def test_cross_year_proration(self, engine, sample_employee):
+        """12月15日入職，計算當月 → 折算 17/31（使用12月實際天數）"""
+        import calendar
+        sample_employee['hire_date'] = '2026-12-15'
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=12
+        )
+        # 12/15 ~ 12/31 = 17天；折算基準 = 31
+        days_in_month = calendar.monthrange(2026, 12)[1]  # 31
+        worked_days = days_in_month - 15 + 1              # 17
+        assert abs(breakdown.base_salary - sample_employee['base_salary'] * worked_days / days_in_month) < 1
+
+
+# ──────────────────────────────────────────────
+# 會議缺席扣款邊界測試（擴充 TestMeetingAbsencePeriod）
+# ──────────────────────────────────────────────
+class TestMeetingAbsenceEdgeCases:
+    """多次缺席、跨期累積、非發放月行為"""
+
+    def test_multiple_absences_in_bonus_month(self, engine, sample_employee, sample_classroom_context):
+        """發放月（6月）當月缺席3次 → 3 × 100 = 300 元扣款"""
+        meeting = {'attended': 0, 'absent': 3, 'absent_period': 3, 'work_end_time': '17:00'}
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=6,
+            classroom_context=sample_classroom_context,
+            meeting_context=meeting,
+        )
+        assert breakdown.meeting_absence_deduction == 300
+
+    def test_prior_plus_current_absence_adds_up(self, engine, sample_employee, sample_classroom_context):
+        """前期1次 + 當月2次 → absent_period=3 → 300 元扣款"""
+        meeting = {'attended': 1, 'absent': 2, 'absent_period': 3, 'work_end_time': '17:00'}
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=6,
+            classroom_context=sample_classroom_context,
+            meeting_context=meeting,
+        )
+        assert breakdown.meeting_absence_deduction == 300
+
+    def test_non_bonus_month_no_prior_lookup(self, engine, sample_employee):
+        """非發放月（5月），無論缺席幾次，meeting_absence_deduction 為 0"""
+        meeting = {'attended': 0, 'absent': 5, 'absent_period': 5, 'work_end_time': '17:00'}
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=5,
+            meeting_context=meeting,
+        )
+        assert breakdown.meeting_absence_deduction == 0

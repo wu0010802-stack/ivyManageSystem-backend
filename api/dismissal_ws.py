@@ -33,9 +33,10 @@ WS_CLOSE_FORBIDDEN      = 4007   # Token 有效但權限不足（含 must_change
 # ---------------------------------------------------------------------------
 # 心跳與廣播參數
 # ---------------------------------------------------------------------------
-PING_INTERVAL        = 30    # 秒：伺服器送 ping 的間隔
-PONG_TIMEOUT         = 90    # 秒：超過此時間無任何 client 訊息即視為僵死
-MAX_BROADCAST_RETRIES = 2    # 廣播失敗後的最大重試次數（含首次）
+PING_INTERVAL          = 30     # 秒：伺服器送 ping 的間隔
+PONG_TIMEOUT           = 90     # 秒：超過此時間無任何 client 訊息即視為僵死
+MAX_BROADCAST_RETRIES  = 2      # 廣播失敗後的最大重試次數（含首次）
+BROADCAST_RETRY_DELAY  = 0.05   # 秒：廣播重試間隔
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +95,7 @@ class DismissalConnectionManager:
                     break
                 except Exception as exc:
                     if attempt < MAX_BROADCAST_RETRIES:
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(BROADCAST_RETRY_DELAY)
                     else:
                         logger.warning(
                             "廣播失敗，標記僵死連線（event=%s, 嘗試次數=%d）: %s",
@@ -254,6 +255,10 @@ async def admin_dismissal_ws(ws: WebSocket):
         return
     except Exception:
         await ws.close(code=WS_CLOSE_INVALID_TOKEN, reason="Token 無效或已過期")
+        return
+
+    if payload.get("role") == "teacher":
+        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="教師帳號不可存取管理端接送通知")
         return
 
     permissions = payload.get("permissions", 0)

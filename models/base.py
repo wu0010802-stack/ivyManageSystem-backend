@@ -59,11 +59,11 @@ def get_engine():
                 connect_args["sslmode"] = "require"
             connect_args["options"] = "-c statement_timeout=30000"
             kwargs = dict(
-                pool_size=5,
-                max_overflow=10,
+                pool_size=10,
+                max_overflow=20,
                 pool_pre_ping=True,
                 pool_recycle=1800,  # 30 分鐘回收連線，避免 server 端斷線
-                pool_timeout=30,
+                pool_timeout=10,
                 echo=False,
                 connect_args=connect_args,
             )

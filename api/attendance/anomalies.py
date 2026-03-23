@@ -16,7 +16,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from pydantic import BaseModel
 
+from sqlalchemy import or_
+
 from models.database import get_session, Employee, Attendance
+from services.salary.utils import calc_daily_salary
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -100,22 +103,34 @@ def _build_anomaly_rows(session, year: int, month: int, status_filter: str):
     start = date(year, month, 1)
     end = date(year, month, last_day)
 
-    records = (
+    # 在 SQL 層過濾：只取有異常的記錄，大幅減少資料傳輸
+    query = (
         session.query(Attendance, Employee)
         .join(Employee, Attendance.employee_id == Employee.id)
         .filter(
             Attendance.attendance_date >= start,
             Attendance.attendance_date <= end,
             Employee.is_active == True,
+            or_(
+                Attendance.is_late == True,
+                Attendance.is_early_leave == True,
+                Attendance.is_missing_punch_in == True,
+                Attendance.is_missing_punch_out == True,
+            ),
         )
-        .all()
     )
 
-    # 取所有員工底薪（用於預估遲到扣款）
+    # 狀態篩選也在 SQL 層完成
+    if status_filter == "pending":
+        query = query.filter(Attendance.confirmed_action == None)
+    elif status_filter == "confirmed":
+        query = query.filter(Attendance.confirmed_action != None)
+
+    records = query.all()
+
     rows = []
     for att, emp in records:
-        # 計算工作天數（用每月固定 30 天基準，與 salary_engine 一致）
-        daily_salary = emp.base_salary / 30 if emp.base_salary else 0
+        daily_salary = calc_daily_salary(emp.base_salary)
 
         items = []
         if att.is_late and att.late_minutes and att.late_minutes > 0:
@@ -149,14 +164,6 @@ def _build_anomaly_rows(session, year: int, month: int, status_filter: str):
             })
 
         for item in items:
-            is_confirmed = att.confirmed_action is not None
-
-            # 狀態篩選
-            if status_filter == "pending" and is_confirmed:
-                continue
-            if status_filter == "confirmed" and not is_confirmed:
-                continue
-
             rows.append({
                 "id": att.id,
                 "employee_name": emp.name,
@@ -211,8 +218,11 @@ def batch_confirm_anomalies(
     try:
         processed = 0
         now = datetime.now()
+        att_map = {a.id: a for a in session.query(Attendance).filter(
+            Attendance.id.in_(data.attendance_ids)
+        ).all()}
         for att_id in data.attendance_ids:
-            att = session.query(Attendance).filter(Attendance.id == att_id).first()
+            att = att_map.get(att_id)
             if not att:
                 continue
             att.confirmed_action = data.action

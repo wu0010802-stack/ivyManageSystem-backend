@@ -6,7 +6,6 @@
 勞退提撥: 雇主6%
 """
 
-from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
 

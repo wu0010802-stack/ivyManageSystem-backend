@@ -7,10 +7,12 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
-from models.database import get_session, Student, StudentAssessment, Classroom
+from models.database import get_session, Student, StudentAssessment
 from utils.auth import require_permission
+from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -127,7 +129,7 @@ async def create_assessment(
     try:
         student = session.query(Student).filter(Student.id == payload.student_id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="找不到該學生")
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
 
         assessment = StudentAssessment(
             student_id=payload.student_id,
@@ -152,7 +154,7 @@ async def create_assessment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"新增失敗: {str(e)}")
+        raise_safe_500(e, context="新增失敗")
     finally:
         session.close()
 
@@ -206,7 +208,7 @@ async def update_assessment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
+        raise_safe_500(e, context="更新失敗")
     finally:
         session.close()
 
@@ -232,6 +234,6 @@ async def delete_assessment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"刪除失敗: {str(e)}")
+        raise_safe_500(e, context="刪除失敗")
     finally:
         session.close()
