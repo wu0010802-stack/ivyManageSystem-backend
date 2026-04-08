@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     get_engine, init_database, get_session,
@@ -51,11 +52,13 @@ from api.exports import router as exports_router
 from api.audit import router as audit_router
 from api.punch_corrections import router as punch_corrections_router
 from api.approval_settings import router as approval_settings_router
-from api.activity import router as activity_router
+from api.activity import router as activity_router, init_activity_services
 from api.dismissal_calls import router as dismissal_calls_router, init_dismissal_line_service
 from api.dismissal_ws import ws_router as dismissal_ws_router
 from api.line_webhook import router as line_webhook_router, init_webhook_service
 from api.gov_reports import router as gov_reports_router, init_gov_report_services
+from api.fees import router as fees_router
+from api.student_enrollment import router as student_enrollment_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -141,6 +144,7 @@ init_overtimes_line_service(line_service)
 init_leaves_services(salary_engine)
 init_leaves_line_service(line_service)
 init_dismissal_line_service(line_service)
+init_activity_services(line_service)
 init_portal_notify_services(line_service)
 init_webhook_service(line_service)
 init_gov_report_services(insurance_service)
@@ -190,6 +194,8 @@ app.include_router(dismissal_calls_router)
 app.include_router(dismissal_ws_router)  # WebSocket（路徑已含 /ws/...）
 app.include_router(line_webhook_router)
 app.include_router(gov_reports_router)
+app.include_router(fees_router)
+app.include_router(student_enrollment_router)
 
 # Audit middleware (must be added after CORS middleware)
 from utils.audit import AuditMiddleware
@@ -202,6 +208,33 @@ app.add_middleware(SecurityHeadersMiddleware)
 # ---------------------------------------------------------------------------
 # Seed Data
 # ---------------------------------------------------------------------------
+
+
+def seed_class_grades():
+    """確保標準年級存在於 class_grades 表（幂等，只補缺漏，不覆蓋已有）"""
+    from models.classroom import ClassGrade
+    default_grades = [
+        {"name": "大班",   "age_range": "5-6歲",   "sort_order": 1},
+        {"name": "中班",   "age_range": "4-5歲",   "sort_order": 2},
+        {"name": "小班",   "age_range": "3-4歲",   "sort_order": 3},
+        {"name": "幼兒班", "age_range": "2-3歲",   "sort_order": 4},
+        {"name": "幼幼班", "age_range": "2歲以下",  "sort_order": 5},
+    ]
+    session = get_session()
+    try:
+        added = 0
+        for g in default_grades:
+            if not session.query(ClassGrade).filter_by(name=g["name"]).first():
+                session.add(ClassGrade(**g))
+                added += 1
+        if added:
+            session.commit()
+            logger.info("seed_class_grades：新增 %d 個預設年級", added)
+    except Exception:
+        session.rollback()
+        logger.exception("seed_class_grades 失敗")
+    finally:
+        session.close()
 
 
 def seed_job_titles():
@@ -356,14 +389,6 @@ def seed_default_admin():
     """
     from utils.auth import hash_password
 
-    # 若已存在任何 admin 帳號，跳過
-    session = get_session()
-    try:
-        if session.query(User).filter(User.role == "admin").count() > 0:
-            return
-    finally:
-        session.close()
-
     init_username = os.environ.get("ADMIN_INIT_USERNAME", "").strip()
     init_password = os.environ.get("ADMIN_INIT_PASSWORD", "").strip()
 
@@ -389,8 +414,13 @@ def seed_default_admin():
         init_username = init_username or "admin"
         must_change = False
 
+    # V15：使用單一 session 執行「檢查 + 建立」，避免多進程同時啟動造成重複 admin。
+    # username 有 DB-level unique constraint，IntegrityError 作為最終安全網。
     session = get_session()
     try:
+        if session.query(User).filter(User.role == "admin").count() > 0:
+            return  # 已有 admin，不重複建立
+
         # 確保至少有一位員工可以關聯
         emp = session.query(Employee).first()
         if not emp:
@@ -413,6 +443,12 @@ def seed_default_admin():
         session.add(admin_user)
         session.commit()
         logger.info("已建立初始管理員帳號：%s（linked to %s）", init_username, emp.name)
+    except IntegrityError:
+        session.rollback()
+        logger.info(
+            "seed_default_admin：另一進程已搶先建立管理員帳號（username=%s），忽略此次 seed。",
+            init_username,
+        )
     finally:
         session.close()
 
@@ -536,6 +572,8 @@ def run_alembic_upgrade():
 def run_startup_bootstrap():
     """執行啟動必要任務，不包含 schema/data migration。"""
     init_database()
+    migrate_school_year_to_roc()
+    seed_class_grades()
     seed_job_titles()
     seed_default_configs()
     seed_shift_types()
@@ -546,9 +584,44 @@ def run_startup_bootstrap():
     _load_line_config()
 
 
+def migrate_school_year_to_roc():
+    """將 school_year / period 從西元年遷移為民國年（幂等，只處理 > 1911 的值）。"""
+    import re as _re
+    from models.classroom import Classroom
+    from models.fees import FeeItem, StudentFeeRecord
+    session = get_session()
+    try:
+        count = (
+            session.query(Classroom)
+            .filter(Classroom.school_year > 1911)
+            .update({"school_year": Classroom.school_year - 1911}, synchronize_session=False)
+        )
+
+        def _convert(period: str) -> str:
+            m = _re.match(r'^(\d{4})-(\d)$', period)
+            if m and int(m.group(1)) > 1911:
+                return f"{int(m.group(1)) - 1911}-{m.group(2)}"
+            return period
+
+        for item in session.query(FeeItem).all():
+            item.period = _convert(item.period)
+        for rec in session.query(StudentFeeRecord).all():
+            rec.period = _convert(rec.period)
+
+        session.commit()
+        if count:
+            logger.info("migrate_school_year_to_roc：已遷移 %d 筆班級學年度", count)
+    except Exception:
+        session.rollback()
+        logger.exception("migrate_school_year_to_roc 失敗")
+    finally:
+        session.close()
+
+
 def run_maintenance_tasks():
     """執行部署/維運任務：schema migration 與資料回填。"""
     run_alembic_upgrade()
+    migrate_school_year_to_roc()
     migrate_permissions_rw()
 
 

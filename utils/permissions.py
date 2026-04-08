@@ -43,6 +43,11 @@ class Permission(IntFlag):
     ACTIVITY_WRITE = 1 << 28        # 課後才藝 (編輯)
     DISMISSAL_CALLS_READ  = 1 << 29 # 接送通知 portal (檢視)
     DISMISSAL_CALLS_WRITE = 1 << 30 # 接送通知 portal (操作：acknowledge/complete)
+    FEES_READ  = 1 << 31            # 學費管理 (檢視)
+    # ⚠️  注意：1 << 32 超出 JavaScript 32 位元 bitwise 安全範圍（最大 1 << 30）。
+    # 前端進行權限位元運算時必須使用 BigInt（如 BigInt(permissions) & BigInt(1) << 32n）
+    # 以避免整數溢出。後端 Python IntFlag 不受此限制影響。
+    FEES_WRITE = 1 << 32            # 學費管理 (編輯)
 
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
@@ -65,6 +70,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "USER_MANAGEMENT": {"read": "USER_MANAGEMENT_READ", "write": "USER_MANAGEMENT_WRITE"},
     "ACTIVITY": {"read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
     "DISMISSAL_CALLS": {"read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
+    "FEES": {"read": "FEES_READ", "write": "FEES_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -81,6 +87,7 @@ _RW_PAIRS: List[tuple] = [
     (Permission.USER_MANAGEMENT_READ, Permission.USER_MANAGEMENT_WRITE),
     (Permission.ACTIVITY_READ, Permission.ACTIVITY_WRITE),
     (Permission.DISMISSAL_CALLS_READ, Permission.DISMISSAL_CALLS_WRITE),
+    (Permission.FEES_READ, Permission.FEES_WRITE),
 ]
 
 
@@ -110,6 +117,7 @@ ROLE_TEMPLATES: Dict[str, int] = {
         Permission.MEETINGS |
         Permission.STUDENTS_READ | Permission.STUDENTS_WRITE |
         Permission.CLASSROOMS_READ | Permission.CLASSROOMS_WRITE |
+        Permission.FEES_READ | Permission.FEES_WRITE |
         Permission.REPORTS
     ),
     "teacher": (
@@ -170,6 +178,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     "ACTIVITY_WRITE": "課後才藝 (編輯)",
     "DISMISSAL_CALLS_READ": "接送通知 (檢視)",
     "DISMISSAL_CALLS_WRITE": "接送通知 (操作)",
+    "FEES_READ": "學費管理 (檢視)",
+    "FEES_WRITE": "學費管理 (編輯)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -199,6 +209,7 @@ PERMISSION_GROUPS: List[Dict] = [
             {"module": "薪資管理", "read": "SALARY_READ", "write": "SALARY_WRITE"},
             {"module": "課後才藝", "read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
             {"module": "接送通知", "read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
+            {"module": "學費管理", "read": "FEES_READ", "write": "FEES_WRITE"},
         ],
     },
     {

@@ -92,7 +92,7 @@ class TestCheckSalaryMonthsNotFinalized:
         assert "林財務" in exc_info.value.detail
 
     def test_checks_all_months_in_set(self):
-        """多個月份應合批為一次 DB 查詢（批次 OR 條件）"""
+        """多個月份合併為一次批次 OR 查詢，全部未封存時不拋例外"""
         from api.leaves import _check_salary_months_not_finalized
 
         session = MagicMock()

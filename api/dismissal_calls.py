@@ -64,6 +64,11 @@ class DismissalCallOut(BaseModel):
 # 輔助函式
 # ---------------------------------------------------------------------------
 
+def _dt(value) -> str | None:
+    """將 datetime 轉為 ISO 字串，None 值回傳 None。"""
+    return value.isoformat() if value else None
+
+
 def _call_base_dict(call: StudentDismissalCall, student, classroom) -> dict:
     """接送通知公共欄位（管理端與教師 portal 共用）。"""
     return {
@@ -73,9 +78,9 @@ def _call_base_dict(call: StudentDismissalCall, student, classroom) -> dict:
         "classroom_id": call.classroom_id,
         "classroom_name": classroom.name if classroom else "未知班級",
         "status": call.status,
-        "requested_at": call.requested_at,
-        "acknowledged_at": call.acknowledged_at,
-        "completed_at": call.completed_at,
+        "requested_at": _dt(call.requested_at),
+        "acknowledged_at": _dt(call.acknowledged_at),
+        "completed_at": _dt(call.completed_at),
         "note": call.note,
     }
 
@@ -192,7 +197,7 @@ async def create_dismissal_call(
     # WebSocket 廣播
     await _get_manager().broadcast(classroom_id, {
         "type": "dismissal_call_created",
-        "payload": {**out, "requested_at": out["requested_at"].isoformat()},
+        "payload": out,
     })
 
     # LINE 群組推播
@@ -233,7 +238,11 @@ def list_dismissal_calls(
             StudentDismissalCall.requested_at <= day_end,
         )
         if status:
-            q = q.filter(StudentDismissalCall.status == status)
+            statuses = [s.strip() for s in status.split(",") if s.strip()]
+            if len(statuses) == 1:
+                q = q.filter(StudentDismissalCall.status == statuses[0])
+            elif statuses:
+                q = q.filter(StudentDismissalCall.status.in_(statuses))
         if classroom_id:
             q = q.filter(StudentDismissalCall.classroom_id == classroom_id)
 
@@ -283,6 +292,6 @@ async def cancel_dismissal_call(
 
     await _get_manager().broadcast(classroom_id, {
         "type": "dismissal_call_cancelled",
-        "payload": {**out, "requested_at": out["requested_at"].isoformat()},
+        "payload": out,
     })
     return out

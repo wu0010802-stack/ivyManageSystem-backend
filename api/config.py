@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from utils.errors import raise_safe_500
 from utils.auth import require_permission
 from utils.permissions import Permission
+from utils.constants import MIN_CONFIG_YEAR, MAX_CONFIG_YEAR
 from pydantic import BaseModel, Field
 
 from sqlalchemy import or_
@@ -90,7 +91,7 @@ class AttendancePolicyUpdate(BaseModel):
 
 class BonusConfigUpdate(BaseModel):
     """獎金設定更新"""
-    config_year: Optional[int] = Field(None, ge=2000, le=2100)
+    config_year: Optional[int] = Field(None, ge=MIN_CONFIG_YEAR, le=MAX_CONFIG_YEAR)
     head_teacher_ab: Optional[float] = Field(None, ge=0)
     head_teacher_c: Optional[float] = Field(None, ge=0)
     assistant_teacher_ab: Optional[float] = Field(None, ge=0)
@@ -125,7 +126,7 @@ class GradeTargetUpdate(BaseModel):
 
 class InsuranceRateUpdate(BaseModel):
     """勞健保費率更新"""
-    rate_year: Optional[int] = Field(None, ge=2000, le=2100)
+    rate_year: Optional[int] = Field(None, ge=MIN_CONFIG_YEAR, le=MAX_CONFIG_YEAR)
     labor_rate: Optional[float] = Field(None, ge=0, le=1)
     labor_employee_ratio: Optional[float] = Field(None, ge=0, le=1)
     labor_employer_ratio: Optional[float] = Field(None, ge=0, le=1)

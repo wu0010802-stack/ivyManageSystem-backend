@@ -2,10 +2,13 @@
 考勤解析引擎 - 解析打卡記錄 Excel 並計算遲到/未打卡次數
 """
 
+import logging
 import pandas as pd
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Tuple
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -416,7 +419,5 @@ if __name__ == "__main__":
     # 測試解析
     results, anomaly, summary = parse_attendance_file(test_file)
     
-    print("=== 考勤統計摘要 ===")
-    print(summary)
-    print("\n=== 異常清單 ===")
-    print(anomaly)
+    logger.info("考勤統計摘要: %s", summary)
+    logger.info("異常清單: %s", anomaly)

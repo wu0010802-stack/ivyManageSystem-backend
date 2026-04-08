@@ -15,16 +15,25 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from utils.errors import raise_safe_500
 from utils.file_upload import validate_file_signature
 from pydantic import BaseModel, field_validator, model_validator
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 
 from models.database import (
     get_session, Employee, OvertimeRecord, LeaveQuota, User,
     LeaveRecord, SalaryRecord,
 )
 from utils.auth import require_staff_permission
+from utils.constants import (
+    OVERTIME_TYPE_LABELS,
+    MAX_OVERTIME_HOURS, DAILY_WORK_HOURS,
+    WEEKDAY_FIRST_2H_RATE, WEEKDAY_AFTER_2H_RATE, WEEKDAY_THRESHOLD_HOURS,
+    HOLIDAY_RATE,
+    RESTDAY_FIRST_2H_RATE, RESTDAY_MID_RATE, RESTDAY_AFTER_8H_RATE,
+    RESTDAY_FIRST_SEGMENT, RESTDAY_SECOND_SEGMENT, RESTDAY_MIN_HOURS,
+)
+from utils.validators import validate_hhmm_format
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST, OVERTIME_RECORD_NOT_FOUND
 from utils.permissions import Permission
-from utils.approval_helpers import _get_submitter_role, _check_approval_eligibility, _write_approval_log
+from utils.approval_helpers import _get_submitter_role, _check_approval_eligibility, _write_approval_log, _get_finalized_salary_record
 from utils.excel_utils import xlsx_streaming_response
 from utils.import_utils import build_employee_lookup, resolve_employee_from_row
 
@@ -48,32 +57,7 @@ def init_overtimes_line_service(line_service):
     _line_service = line_service
 
 
-# ============ Constants ============
-
-OVERTIME_TYPE_LABELS = {
-    "weekday": "平日",
-    "weekend": "假日",
-    "holiday": "國定假日",
-}
-
-
-# ============ 加班倍率常數（勞基法） ============
-WEEKDAY_FIRST_2H_RATE = 1.34   # 平日前 2 小時
-WEEKDAY_AFTER_2H_RATE = 1.67   # 平日第 3-4 小時
-WEEKDAY_THRESHOLD_HOURS = 2     # 平日倍率分界時數
-HOLIDAY_RATE = 2.0              # 例假日 / 國定假日
-DAILY_WORK_HOURS = 8            # 每日法定工時
 MONTHLY_BASE_DAYS = 30          # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
-# 單筆加班記錄的合法上限：勞基法假日最多可加班至 12 小時（正常 8H + 延長 4H）
-MAX_OVERTIME_HOURS = 12.0
-
-# 休息日（週休二日第一天）倍率常數（勞基法第24條第2項）
-RESTDAY_FIRST_2H_RATE  = 1.33   # 前 2 小時
-RESTDAY_MID_RATE       = 1.67   # 第 3-8 小時
-RESTDAY_AFTER_8H_RATE  = 2.67   # 超過 8 小時
-RESTDAY_FIRST_SEGMENT  = 2      # 第一分段上限
-RESTDAY_SECOND_SEGMENT = 8      # 第二分段上限
-RESTDAY_MIN_HOURS      = 2      # 最低計費時數（工作不足2h仍算2h）
 
 
 # ============ Helper Functions ============
@@ -82,12 +66,7 @@ RESTDAY_MIN_HOURS      = 2      # 最低計費時數（工作不足2h仍算2h）
 
 def _check_salary_month_not_finalized(session, employee_id: int, overtime_date: date) -> None:
     """避免修改已封存月份的已核准加班，造成薪資與原始資料不一致。"""
-    record = session.query(SalaryRecord).filter(
-        SalaryRecord.employee_id == employee_id,
-        SalaryRecord.salary_year == overtime_date.year,
-        SalaryRecord.salary_month == overtime_date.month,
-        SalaryRecord.is_finalized == True,
-    ).first()
+    record = _get_finalized_salary_record(session, employee_id, overtime_date.year, overtime_date.month)
     if record:
         by = record.finalized_by or "系統"
         raise HTTPException(
@@ -212,7 +191,7 @@ def _grant_comp_leave_quota(session, ot: OvertimeRecord, result: dict) -> None:
         LeaveQuota.employee_id == ot.employee_id,
         LeaveQuota.year == year,
         LeaveQuota.leave_type == "compensatory",
-    ).first()
+    ).with_for_update().first()
     if quota:
         quota.total_hours += ot.hours
     else:
@@ -363,21 +342,27 @@ def _check_overtime_overlap(
     if exclude_id is not None:
         q = q.filter(OvertimeRecord.id != exclude_id)
 
-    for record in q.all():
-        if (
-            start_time is None
-            or end_time is None
-            or record.start_time is None
-            or record.end_time is None
-        ):
-            return record  # 缺乏時間資訊，同日即視為重疊
-        if _times_overlap(start_time, end_time, record.start_time, record.end_time):
-            return record  # 時間區間重疊
+    # 若新申請缺少時間，同日任何記錄均視為重疊（維持原邏輯）
+    if start_time is None or end_time is None:
+        return q.first()
 
-    return None
+    # 有明確時間：DB 端排除「確定不重疊」的記錄
+    # 保留：既有記錄缺少時間（無法比對，視為重疊），或時間區間重疊
+    q = q.filter(
+        or_(
+            OvertimeRecord.start_time.is_(None),
+            OvertimeRecord.end_time.is_(None),
+            and_(
+                OvertimeRecord.start_time < end_time,
+                OvertimeRecord.end_time > start_time,
+            ),
+        )
+    )
+    return q.first()
 
 
 # ============ Pydantic Models ============
+
 
 class OvertimeCreate(BaseModel):
     employee_id: int
@@ -409,18 +394,7 @@ class OvertimeCreate(BaseModel):
     @field_validator("start_time", "end_time")
     @classmethod
     def validate_time_format(cls, v):
-        if v is None:
-            return v
-        parts = v.strip().split(":")
-        if len(parts) < 2:
-            raise ValueError("時間格式錯誤，應為 HH:MM")
-        try:
-            h, m = int(parts[0]), int(parts[1])
-        except ValueError:
-            raise ValueError("時間格式錯誤，應為 HH:MM")
-        if not (0 <= h <= 23 and 0 <= m <= 59):
-            raise ValueError("時間值超出範圍（小時 0-23，分鐘 0-59）")
-        return f"{h:02d}:{m:02d}"
+        return validate_hhmm_format(v)
 
     @model_validator(mode='after')
     def validate_time_order(self):
@@ -460,18 +434,7 @@ class OvertimeUpdate(BaseModel):
     @field_validator("start_time", "end_time")
     @classmethod
     def validate_time_format(cls, v):
-        if v is None:
-            return v
-        parts = v.strip().split(":")
-        if len(parts) < 2:
-            raise ValueError("時間格式錯誤，應為 HH:MM")
-        try:
-            h, m = int(parts[0]), int(parts[1])
-        except ValueError:
-            raise ValueError("時間格式錯誤，應為 HH:MM")
-        if not (0 <= h <= 23 and 0 <= m <= 59):
-            raise ValueError("時間值超出範圍（小時 0-23，分鐘 0-59）")
-        return f"{h:02d}:{m:02d}"
+        return validate_hhmm_format(v)
 
     @model_validator(mode='after')
     def validate_time_order(self):
@@ -587,9 +550,6 @@ def create_overtime(data: OvertimeCreate, current_user: dict = Depends(require_s
     """新增加班記錄（自動計算加班費）"""
     session = get_session()
     try:
-        if data.overtime_type not in OVERTIME_TYPE_LABELS:
-            raise HTTPException(status_code=400, detail=f"無效的加班類型: {data.overtime_type}")
-
         emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
         if not emp:
             raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
@@ -771,13 +731,17 @@ def approve_overtime(overtime_id: int, approved: bool = True, approved_by: str =
     """核准/駁回加班；核准後自動重算該員工當月薪資，補休模式核准後自動累積配額"""
     session = get_session()
     try:
-        ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
+        # with_for_update() 鎖定加班記錄，防止並發核准觸發補休配額重複發放（Race Condition）
+        ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).with_for_update().first()
         if not ot:
             raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
         was_approved = ot.is_approved is True
 
         # ── 自我核准防護 ─────────────────────────────────────────────────────────
-        if ot.employee_id == current_user.get("employee_id"):
+        # 僅在 approver 確實擁有 employee_id 且與申請人相同時才拒絕。
+        # 無 employee_id 的帳號（如純管理員）本身無法提出加班單，不構成自我核准風險。
+        approver_eid = current_user.get("employee_id")
+        if approver_eid and ot.employee_id == approver_eid:
             raise HTTPException(status_code=403, detail="不可自我核准加班單")
 
         # ── 角色資格檢查 ──────────────────────────────────────────────────────
@@ -830,19 +794,46 @@ def batch_approve_overtimes(
 
     session = get_session()
     try:
+        # ── 預先批次載入，避免 N+1 ────────────────────────────────────────
+        ot_map = {
+            ot.id: ot
+            for ot in session.query(OvertimeRecord)
+            .filter(OvertimeRecord.id.in_(data.ids))
+            .with_for_update()
+            .all()
+        }
+        emp_ids = {ot.employee_id for ot in ot_map.values()}
+        submitter_role_map: dict[int, str] = {
+            u.employee_id: u.role
+            for u in session.query(User.employee_id, User.role)
+            .filter(User.employee_id.in_(emp_ids), User.is_active == True)
+            .all()
+        } if emp_ids else {}
+        approver_role = current_user.get("role", "")
+        _eligibility_cache: dict[str, bool] = {}
+
         # ── Phase 1：驗證 + 準備所有異動（不 commit）────────────────────────
         changes = []  # list of (ot_id, ot, was_approved)
         for ot_id in data.ids:
             try:
-                ot = session.query(OvertimeRecord).filter(OvertimeRecord.id == ot_id).first()
+                ot = ot_map.get(ot_id)
                 if not ot:
                     failed.append({"id": ot_id, "reason": OVERTIME_RECORD_NOT_FOUND})
                     continue
                 was_approved = ot.is_approved is True
 
-                submitter_role = _get_submitter_role(ot.employee_id, session)
-                approver_role = current_user.get("role", "")
-                if not _check_approval_eligibility("overtime", submitter_role, approver_role, session):
+                # 防止自我核准
+                approver_eid = current_user.get("employee_id")
+                if approver_eid and ot.employee_id == approver_eid:
+                    failed.append({"id": ot_id, "reason": "不可自我核准"})
+                    continue
+
+                submitter_role = submitter_role_map.get(ot.employee_id, "teacher")
+                if submitter_role not in _eligibility_cache:
+                    _eligibility_cache[submitter_role] = _check_approval_eligibility(
+                        "overtime", submitter_role, approver_role, session
+                    )
+                if not _eligibility_cache[submitter_role]:
                     failed.append({
                         "id": ot_id,
                         "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的加班申請",

@@ -22,7 +22,7 @@ from sqlalchemy import or_, and_
 
 from models.database import (
     get_session, Employee, LeaveRecord, LeaveQuota,
-    SalaryRecord, User,
+    OvertimeRecord, SalaryRecord, User,
 )
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST, LEAVE_RECORD_NOT_FOUND
@@ -313,25 +313,22 @@ def _find_overlapping_leave(
 
     is_new_single_day = (start_date == end_date)
 
-    for record in q.all():
-        is_record_single_day = (record.start_date == record.end_date)
+    # 只有新假單是單日且提供時間資訊時，才能在 DB 層排除確定不重疊的單日記錄
+    # HH:MM 字串字典序與時間順序一致，可直接在 SQL 比較
+    if is_new_single_day and start_time and end_time:
+        q = q.filter(
+            ~and_(
+                LeaveRecord.start_date == LeaveRecord.end_date,
+                LeaveRecord.start_time.isnot(None),
+                LeaveRecord.end_time.isnot(None),
+                or_(
+                    LeaveRecord.end_time <= start_time,
+                    LeaveRecord.start_time >= end_time,
+                ),
+            )
+        )
 
-        # 雙方都是同一天的單日假單，且雙方都有時間資訊 → 做時間段精確比對
-        if (
-            is_new_single_day
-            and is_record_single_day
-            and start_time
-            and end_time
-            and record.start_time
-            and record.end_time
-        ):
-            # HH:MM 字串可直接做字典序比較（00:00 ~ 23:59 均正確）
-            if end_time <= record.start_time or record.end_time <= start_time:
-                continue  # 時間不重疊，放行
-
-        return record  # 日期重疊且不符合放行條件 → 衝突
-
-    return None
+    return q.first()
 
 
 def _check_overlap(
@@ -364,11 +361,12 @@ def _check_substitute_leave_conflict(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
 ) -> None:
-    """代理人不可在相同時段有待審或已核准假單。"""
+    """代理人不可在相同時段有待審或已核准的請假或加班記錄（V14）。"""
     if substitute_employee_id is None:
         return
 
-    conflict = _find_overlapping_leave(
+    # ── 檢查請假衝突 ────────────────────────────────────────────────────
+    leave_conflict = _find_overlapping_leave(
         session,
         substitute_employee_id,
         start_date,
@@ -377,17 +375,37 @@ def _check_substitute_leave_conflict(
         end_time=end_time,
         include_pending=True,
     )
-    if not conflict:
-        return
+    if leave_conflict:
+        status_label = "待審核" if leave_conflict.is_approved is None else "已核准"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"代理人在 {leave_conflict.start_date} ~ {leave_conflict.end_date} "
+                f"已有{status_label}請假記錄，請改派其他代理人"
+            ),
+        )
 
-    status_label = "待審核" if conflict.is_approved is None else "已核准"
-    raise HTTPException(
-        status_code=409,
-        detail=(
-            f"代理人在 {conflict.start_date} ~ {conflict.end_date} "
-            f"已有{status_label}請假記錄，請改派其他代理人"
-        ),
+    # ── 檢查加班衝突（V14）──────────────────────────────────────────────
+    # 代理人若有與請假時段重疊的待審/已核准加班記錄，同樣不適合擔任代理人
+    ot_conflict = (
+        session.query(OvertimeRecord)
+        .filter(
+            OvertimeRecord.employee_id == substitute_employee_id,
+            OvertimeRecord.is_approved.in_([None, True]),
+            OvertimeRecord.overtime_date >= start_date,
+            OvertimeRecord.overtime_date <= end_date,
+        )
+        .first()
     )
+    if ot_conflict:
+        ot_status = "待審核" if ot_conflict.is_approved is None else "已核准"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"代理人在 {ot_conflict.overtime_date} 有{ot_status}加班記錄，"
+                "代理人當日已安排加班，請改派其他代理人"
+            ),
+        )
 
 
 # ============ Routes ============
@@ -551,6 +569,14 @@ def create_leave(data: LeaveCreate, current_user: dict = Depends(require_staff_p
         effective_ratio = data.deduction_ratio \
             if data.deduction_ratio is not None \
             else LEAVE_DEDUCTION_RULES[data.leave_type]
+        if data.deduction_ratio is not None:
+            default_ratio = LEAVE_DEDUCTION_RULES.get(data.leave_type, -1)
+            logger.warning(
+                "假單扣薪比例被手動覆蓋 by user=%s employee_id=%s leave_type=%s "
+                "default_ratio=%s overridden_ratio=%s",
+                current_user.get("username"), data.employee_id,
+                data.leave_type, default_ratio, data.deduction_ratio,
+            )
         leave = LeaveRecord(
             employee_id=data.employee_id,
             leave_type=data.leave_type,
@@ -721,12 +747,15 @@ def approve_leave(
         raise HTTPException(status_code=400, detail="駁回時必須填寫原因")
     session = get_session()
     try:
-        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).with_for_update().first()
         if not leave:
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
         # ── 自我核准防護 ─────────────────────────────────────────────────────────
-        if leave.employee_id == current_user.get("employee_id"):
+        # 僅在 approver 確實擁有 employee_id 且與申請人相同時才拒絕。
+        # 無 employee_id 的帳號（如純管理員）本身無法提出假單，不構成自我核准風險。
+        approver_eid = current_user.get("employee_id")
+        if approver_eid and leave.employee_id == approver_eid:
             raise HTTPException(status_code=403, detail="不可自我核准請假單")
 
         # ── 角色資格檢查 ────────────────────────────────────────────────────────
@@ -770,18 +799,18 @@ def approve_leave(
                 )
 
             # ── 配額硬檢查（核准動作）──────────────────────────────────────────
-            # 此假單目前仍是待審（is_approved=None），不在 approved 計數內，
-            # 故用 include_pending=False 直接檢查「已核准 + 本次」是否超出年度配額。
-            # 防止主管把多張待審假單全部核准造成額度嚴重超支（-N 天）。
+            # 使用 include_pending=True + exclude_id=leave_id：
+            # 計算「所有已核准 + 其他待審（排除本張）+ 本次時數」是否超出年度配額。
+            # 此策略防止主管同時批准多張待審假單造成配額超支（concurrent approval race）。
             _check_leave_limits(
                 session, leave.employee_id, leave.leave_type,
                 leave.start_date, leave.leave_hours,
-                include_pending=False,
+                include_pending=True, exclude_id=leave_id,
             )
             _check_quota(
                 session, leave.employee_id, leave.leave_type,
                 leave.start_date.year, leave.leave_hours,
-                include_pending=False,
+                include_pending=True, exclude_id=leave_id,
             )
 
             # ── 封存月薪保護（commit 前）────────────────────────────────────────
@@ -791,6 +820,26 @@ def approve_leave(
                 session, leave.employee_id,
                 {(leave.start_date.year, leave.start_date.month)},
             )
+
+        # ── V8：防禦性扣款比例同步 ───────────────────────────────────────────
+        # 核准時確保 deduction_ratio 與 is_deductible 已正確設定。
+        # 場景：假單經多次編輯後，deduction_ratio 可能為 None 或與假別不符。
+        # 只補全 None；若已有明確值（含自訂覆蓋）則保留，僅記錄警告。
+        if data.approved and leave.leave_type in LEAVE_DEDUCTION_RULES:
+            standard_ratio = LEAVE_DEDUCTION_RULES[leave.leave_type]
+            if leave.deduction_ratio is None:
+                leave.deduction_ratio = standard_ratio
+                leave.is_deductible = standard_ratio > 0
+                logger.info(
+                    "核准假單 #%d 時補全缺失的 deduction_ratio：%s → %.2f",
+                    leave_id, leave.leave_type, standard_ratio,
+                )
+            elif leave.deduction_ratio != standard_ratio:
+                logger.warning(
+                    "核准假單 #%d 發現自訂扣款比例：%s 標準值=%.2f，實際值=%.2f（admin 自訂）",
+                    leave_id, leave.leave_type, standard_ratio, leave.deduction_ratio,
+                )
+            leave.is_deductible = (leave.deduction_ratio or 0) > 0
 
         leave.is_approved = data.approved
         leave.approved_by = current_user.get("username", "管理員") if data.approved else None
@@ -858,7 +907,7 @@ def batch_approve_leaves(
     data: LeaveBatchApproveRequest,
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
-    """批次核准/駁回請假。每筆獨立處理，不因單筆失敗而中止，回傳成功/失敗清單。"""
+    """批次核准/駁回請假。兩階段原子提交：先全部驗證，再統一 commit。"""
     if not data.approved and not (data.rejection_reason or "").strip():
         raise HTTPException(status_code=400, detail="批次駁回時必須填寫原因")
 
@@ -867,17 +916,46 @@ def batch_approve_leaves(
 
     session = get_session()
     try:
+        # ── 預先批次載入，避免 N+1 ────────────────────────────────────────
+        leave_map = {
+            lv.id: lv
+            for lv in session.query(LeaveRecord)
+            .filter(LeaveRecord.id.in_(data.ids))
+            .with_for_update()
+            .all()
+        }
+        emp_ids = {lv.employee_id for lv in leave_map.values()}
+        submitter_role_map: dict[int, str] = {
+            u.employee_id: u.role
+            for u in session.query(User.employee_id, User.role)
+            .filter(User.employee_id.in_(emp_ids), User.is_active == True)
+            .all()
+        } if emp_ids else {}
+        approver_role = current_user.get("role", "")
+        _eligibility_cache: dict[str, bool] = {}
+
+        # ── Phase 1：驗證 + 準備所有異動（不 commit）────────────────────────
+        changes = []  # list of (leave_id, leave)
         for leave_id in data.ids:
             try:
-                leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+                leave = leave_map.get(leave_id)
                 if not leave:
                     failed.append({"id": leave_id, "reason": LEAVE_RECORD_NOT_FOUND})
                     continue
 
+                # 防止自我核准
+                approver_eid = current_user.get("employee_id")
+                if approver_eid and leave.employee_id == approver_eid:
+                    failed.append({"id": leave_id, "reason": "不可自我核准"})
+                    continue
+
                 # 角色資格檢查（403 視為失敗條目，不中斷批次）
-                submitter_role = _get_submitter_role(leave.employee_id, session)
-                approver_role = current_user.get("role", "")
-                if not _check_approval_eligibility("leave", submitter_role, approver_role, session):
+                submitter_role = submitter_role_map.get(leave.employee_id, "teacher")
+                if submitter_role not in _eligibility_cache:
+                    _eligibility_cache[submitter_role] = _check_approval_eligibility(
+                        "leave", submitter_role, approver_role, session
+                    )
+                if not _eligibility_cache[submitter_role]:
                     failed.append({
                         "id": leave_id,
                         "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的請假申請",
@@ -900,11 +978,13 @@ def batch_approve_leaves(
                         )
                         _check_leave_limits(
                             session, leave.employee_id, leave.leave_type,
-                            leave.start_date, leave.leave_hours, include_pending=False,
+                            leave.start_date, leave.leave_hours,
+                            include_pending=True, exclude_id=leave_id,
                         )
                         _check_quota(
                             session, leave.employee_id, leave.leave_type,
-                            leave.start_date.year, leave.leave_hours, include_pending=False,
+                            leave.start_date.year, leave.leave_hours,
+                            include_pending=True, exclude_id=leave_id,
                         )
                         _check_salary_months_not_finalized(
                             session, leave.employee_id,
@@ -913,6 +993,14 @@ def batch_approve_leaves(
                     except HTTPException as e:
                         failed.append({"id": leave_id, "reason": e.detail})
                         continue
+
+                # V8：批次核准時同步補全 deduction_ratio
+                if data.approved and leave.leave_type in LEAVE_DEDUCTION_RULES:
+                    standard_ratio = LEAVE_DEDUCTION_RULES[leave.leave_type]
+                    if leave.deduction_ratio is None:
+                        leave.deduction_ratio = standard_ratio
+                        leave.is_deductible = standard_ratio > 0
+                    leave.is_deductible = (leave.deduction_ratio or 0) > 0
 
                 leave.is_approved = data.approved
                 leave.approved_by = current_user.get("username", "管理員") if data.approved else None
@@ -924,44 +1012,65 @@ def batch_approve_leaves(
                 action = "approved" if data.approved else "rejected"
                 _write_approval_log("leave", leave_id, action, current_user,
                                     data.rejection_reason if not data.approved else None, session)
-                session.commit()
-
-                # 個人 LINE 推播（審核結果）
-                if _line_service is not None:
-                    try:
-                        emp_user = session.query(User).filter(User.employee_id == leave.employee_id).first()
-                        if emp_user and emp_user.line_user_id:
-                            emp = session.query(Employee).filter(Employee.id == leave.employee_id).first()
-                            emp_name = emp.name if emp else "員工"
-                            _line_service.notify_leave_result(
-                                emp_user.line_user_id, emp_name,
-                                leave.leave_type, leave.start_date, leave.end_date,
-                                data.approved, data.rejection_reason,
-                            )
-                    except Exception as _le:
-                        logger.warning("批次假單審核 LINE 推播失敗（#%d）: %s", leave_id, _le)
-
-                if data.approved and _salary_engine is not None:
-                    try:
-                        emp_id = leave.employee_id
-                        months: set = set()
-                        cur = date(leave.start_date.year, leave.start_date.month, 1)
-                        end_m = date(leave.end_date.year, leave.end_date.month, 1)
-                        while cur <= end_m:
-                            months.add((cur.year, cur.month))
-                            cur = (
-                                date(cur.year + 1, 1, 1) if cur.month == 12
-                                else date(cur.year, cur.month + 1, 1)
-                            )
-                        for yr, mo in sorted(months):
-                            _salary_engine.process_salary_calculation(emp_id, yr, mo)
-                    except Exception as se:
-                        logger.error("批次審核後薪資重算失敗（假單 #%d）：%s", leave_id, se)
-
-                succeeded.append(leave_id)
+                changes.append((leave_id, leave))
             except Exception as e:
                 session.rollback()
                 failed.append({"id": leave_id, "reason": str(e)})
+                # 驗證階段失敗需清除 session 狀態，重新載入後續記錄
+                session.expire_all()
+
+        # ── Phase 2：所有驗證通過後統一 commit ──────────────────────────────
+        if changes:
+            try:
+                session.commit()
+
+                # 批次預載 LINE 通知所需的 User 與 Employee（1+1 查詢取代 2N）
+                _line_user_map: dict = {}
+                _emp_name_map: dict = {}
+                if _line_service is not None:
+                    change_emp_ids = list({lv.employee_id for _, lv in changes})
+                    for u in session.query(User).filter(User.employee_id.in_(change_emp_ids)).all():
+                        _line_user_map[u.employee_id] = u
+                    for e in session.query(Employee.id, Employee.name).filter(Employee.id.in_(change_emp_ids)).all():
+                        _emp_name_map[e.id] = e.name
+
+                for leave_id, leave in changes:
+                    succeeded.append(leave_id)
+
+                    # 個人 LINE 推播（審核結果）
+                    if _line_service is not None:
+                        try:
+                            emp_user = _line_user_map.get(leave.employee_id)
+                            if emp_user and emp_user.line_user_id:
+                                emp_name = _emp_name_map.get(leave.employee_id, "員工")
+                                _line_service.notify_leave_result(
+                                    emp_user.line_user_id, emp_name,
+                                    leave.leave_type, leave.start_date, leave.end_date,
+                                    data.approved, data.rejection_reason,
+                                )
+                        except Exception as _le:
+                            logger.warning("批次假單審核 LINE 推播失敗（#%d）: %s", leave_id, _le)
+
+                    if data.approved and _salary_engine is not None:
+                        try:
+                            emp_id = leave.employee_id
+                            months: set = set()
+                            cur = date(leave.start_date.year, leave.start_date.month, 1)
+                            end_m = date(leave.end_date.year, leave.end_date.month, 1)
+                            while cur <= end_m:
+                                months.add((cur.year, cur.month))
+                                cur = (
+                                    date(cur.year + 1, 1, 1) if cur.month == 12
+                                    else date(cur.year, cur.month + 1, 1)
+                                )
+                            for yr, mo in sorted(months):
+                                _salary_engine.process_salary_calculation(emp_id, yr, mo)
+                        except Exception as se:
+                            logger.error("批次審核後薪資重算失敗（假單 #%d）：%s", leave_id, se)
+            except Exception as e:
+                session.rollback()
+                for leave_id, _ in changes:
+                    failed.append({"id": leave_id, "reason": f"統一提交失敗：{e}"})
     finally:
         session.close()
 

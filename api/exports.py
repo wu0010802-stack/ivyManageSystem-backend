@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.auth import require_permission
+from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.masking import mask_bank_account
 from utils.permissions import Permission, has_permission
@@ -59,8 +60,8 @@ def _write_header_row(ws, row, headers):
         cell.alignment = CENTER_ALIGN
 
 
-# Excel 公式觸發前綴：= + - @（試算表公式），| 可觸發 DDE 攻擊
-_FORMULA_PREFIXES = ('=', '+', '-', '@', '|')
+# Excel 公式觸發前綴：= + - @（試算表公式），| 可觸發 DDE 攻擊，% 可觸發部分試算表注入
+_FORMULA_PREFIXES = ('=', '+', '-', '@', '|', '%')
 
 
 def _sanitize_excel_value(value):
@@ -195,10 +196,15 @@ def export_employees(
     """匯出員工名冊 Excel"""
     session = get_session()
     try:
-        employees = session.query(Employee).order_by(Employee.employee_id).all()
+        employees = list(session.query(Employee).order_by(Employee.employee_id).yield_per(500))
         classrooms = _id_name_map(session, Classroom)
         job_titles = _id_name_map(session, JobTitle)
         can_view_full_account = has_permission(current_user.get("permissions", 0), Permission.SALARY_WRITE)
+        if can_view_full_account:
+            logger.warning(
+                "員工名冊含完整銀行帳號已匯出 by user=%s role=%s",
+                current_user.get("username"), current_user.get("role"),
+            )
 
         wb = Workbook()
         ws = _safe_ws(wb)
@@ -247,7 +253,7 @@ def export_students(
     """匯出學生名冊 Excel"""
     session = get_session()
     try:
-        students = session.query(Student).order_by(Student.student_id).all()
+        students = list(session.query(Student).order_by(Student.student_id).yield_per(500))
         classrooms = _id_name_map(session, Classroom)
 
         wb = Workbook()
@@ -301,7 +307,7 @@ def export_attendance(
         start = date(year, month, 1)
         end = date(year, month, last_day)
 
-        employees = session.query(Employee).filter(Employee.is_active == True).order_by(Employee.employee_id).all()
+        employees = list(session.query(Employee).filter(Employee.is_active == True).order_by(Employee.employee_id).yield_per(500))
         emp_map = {e.id: e for e in employees}
 
         # 1. 計算當月應出勤天數（排除週末與國定假日）
@@ -477,24 +483,6 @@ def export_calendar(
 
 # ============ Leaves ============
 
-LEAVE_TYPE_LABELS = {
-    "personal": "事假",
-    "sick": "病假",
-    "menstrual": "生理假",
-    "annual": "特休",
-    "maternity": "產假",
-    "paternity": "陪產假",
-    "official": "公假",
-    "marriage": "婚假",
-    "bereavement": "喪假",
-    "prenatal": "產檢假",
-    "paternity_new": "陪產檢及陪產假",
-    "miscarriage": "流產假",
-    "family_care": "家庭照顧假",
-    "parental_unpaid": "育嬰留職停薪",
-}
-
-
 def _approval_label(is_approved):
     if is_approved is True:
         return "已核准"
@@ -556,13 +544,6 @@ def export_leaves(
 
 
 # ============ Overtimes ============
-
-OVERTIME_TYPE_LABELS = {
-    "weekday": "平日",
-    "weekend": "假日",
-    "holiday": "國定假日",
-}
-
 
 @router.get("/overtimes")
 def export_overtimes(

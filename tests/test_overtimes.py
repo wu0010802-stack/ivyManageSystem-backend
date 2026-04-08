@@ -18,13 +18,20 @@ from fastapi import HTTPException
 # ── 測試用 helpers ────────────────────────────────────────────────────────────
 
 def _mock_session(records):
-    """回傳指定記錄的假 session（支援 .query().filter().all() 鏈式呼叫）。"""
+    """回傳指定記錄的假 session（支援 .query().filter().all()/.first() 鏈式呼叫）。
+
+    注意：mock 的 filter() 為 no-op，不實際執行 SQL 條件。
+    傳入 records 應代表「SQL 過濾後會回傳的結果集」。
+    """
     class _Q:
         def filter(self, *a, **kw):
             return self
 
         def all(self):
             return records
+
+        def first(self):
+            return records[0] if records else None
 
     class _S:
         def query(self, *a):
@@ -141,12 +148,10 @@ class TestCheckOvertimeOverlap:
         )
         assert result is existing
 
-    def test_string_input_vs_time_obj_record_no_type_error(self):
-        """
-        Bug 復現：record.start_time / end_time 為 datetime.time 物件，
-        傳入 start_time / end_time 為字串 '18:00' / '21:00'。
-        修復前：'18:00' < time(20, 0) → TypeError → HTTP 500
-        修復後：統一轉型後正確比對，回傳衝突記錄。
+    def test_overlapping_record_returned(self):
+        """時間重疊時回傳衝突記錄（SQL 過濾後 DB 回傳該筆）。
+
+        18:00-21:00 與 17:00-20:00 重疊，mock 模擬 DB 過濾後回傳該筆。
         """
         existing = _make_record(time(17, 0), time(20, 0))
         session = _mock_session([existing])
@@ -154,13 +159,15 @@ class TestCheckOvertimeOverlap:
             session, 1, date(2026, 1, 15),
             '18:00', '21:00',
         )
-        # 18:00-21:00 與 17:00-20:00 重疊，應回傳衝突記錄而非 TypeError
         assert result is existing
 
     def test_non_overlapping_returns_none(self):
-        """時間不重疊 → 回傳 None"""
-        existing = _make_record(time(14, 0), time(16, 0))
-        session = _mock_session([existing])
+        """時間不重疊 → DB 端過濾後無結果，回傳 None。
+
+        重疊過濾邏輯已移至 SQL 層（start_time < end AND end_time > start）。
+        mock 傳入空 records，模擬 DB 將不重疊記錄過濾掉的結果。
+        """
+        session = _mock_session([])
         result = _check_overtime_overlap(
             session, 1, date(2026, 1, 15),
             '17:00', '20:00',
@@ -178,9 +185,12 @@ class TestCheckOvertimeOverlap:
         assert result is existing
 
     def test_adjacent_times_not_overlap(self):
-        """相接不重疊：新申請 18:00-20:00，既有 16:00-18:00 → 不重疊"""
-        existing = _make_record(time(16, 0), time(18, 0))
-        session = _mock_session([existing])
+        """相接不重疊：新申請 18:00-20:00，既有 16:00-18:00 → 不重疊。
+
+        SQL 過濾條件 start_time < end_time AND end_time > start_time 使用嚴格不等式，
+        相接端點不算重疊，DB 不回傳該記錄。mock 傳入空 records 模擬此結果。
+        """
+        session = _mock_session([])
         result = _check_overtime_overlap(
             session, 1, date(2026, 1, 15),
             '18:00', '20:00',

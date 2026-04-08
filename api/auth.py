@@ -164,6 +164,14 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
             )
             raise HTTPException(status_code=403, detail="無法冒充已停用的帳號")
 
+        # NV7：禁止冒充已離職員工（員工軟刪除後即使帳號未停用亦不可被模擬）
+        if not target_emp.is_active:
+            logger.warning(
+                "冒充被拒（員工已離職）：操作者 user_id=%s 嘗試冒充已離職 employee_id=%s",
+                current_user.get("user_id"), target_emp.id,
+            )
+            raise HTTPException(status_code=403, detail="無法冒充已離職員工")
+
         # 5. 產生該使用者的 token
         permissions = target_user.permissions if target_user.permissions is not None else get_role_default_permissions(target_user.role)
         target_token = create_access_token({

@@ -1,0 +1,508 @@
+"""
+api/activity/_shared.py — 才藝系統共用 schemas、helpers、常數
+"""
+
+import re
+import logging
+from collections import defaultdict
+from datetime import datetime, date
+from typing import Optional, List, Literal
+from zoneinfo import ZoneInfo
+
+from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy import func, or_, select as sa_select
+
+from models.database import (
+    get_session, Classroom,
+    ActivityCourse, ActivitySupply, ActivityRegistration,
+    RegistrationCourse, RegistrationSupply,
+    ActivityPaymentRecord,
+    ActivityRegistrationSettings,
+    ActivitySession, ActivityAttendance,
+)
+from services.activity_service import activity_service
+from utils.auth import require_permission
+from utils.permissions import Permission
+
+logger = logging.getLogger(__name__)
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+# ── 服務注入 ──────────────────────────────────────────────────────────────
+
+_line_service = None
+
+
+def init_activity_services(line_svc) -> None:
+    global _line_service
+    _line_service = line_svc
+    activity_service.set_line_service(line_svc)
+
+
+def get_line_service():
+    return _line_service
+
+
+# ── 共用 HTTPException helpers ─────────────────────────────────────────────
+
+def _not_found(resource: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"找不到{resource}")
+
+def _duplicate_name(resource: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=f"{resource}名稱已存在")
+
+def _invalid_class() -> HTTPException:
+    return HTTPException(status_code=400, detail="班級不存在或已停用")
+
+def _item_not_found_in_list(resource: str, name: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=f"找不到{resource}：{name}")
+
+
+# ── Pydantic Schemas ────────────────────────────────────────────────────────
+
+class CourseCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    price: int = Field(..., ge=0)
+    sessions: Optional[int] = Field(None, ge=1)
+    capacity: int = Field(30, ge=1)
+    video_url: Optional[str] = None
+    allow_waitlist: bool = True
+    description: Optional[str] = None
+
+
+class CourseUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    price: Optional[int] = Field(None, ge=0)
+    sessions: Optional[int] = Field(None, ge=1)
+    capacity: Optional[int] = Field(None, ge=1)
+    video_url: Optional[str] = None
+    allow_waitlist: Optional[bool] = None
+    description: Optional[str] = None
+
+
+class SupplyCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    price: int = Field(..., ge=0)
+
+
+class SupplyUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    price: Optional[int] = Field(None, ge=0)
+
+
+class PaymentUpdate(BaseModel):
+    is_paid: bool
+
+
+class RemarkUpdate(BaseModel):
+    remark: str
+
+
+class InquiryReply(BaseModel):
+    reply: str = Field(..., min_length=1, max_length=2000)
+
+
+class RegistrationTimeSettings(BaseModel):
+    is_open: bool
+    open_at: Optional[str] = None
+    close_at: Optional[str] = None
+
+    @field_validator('open_at', 'close_at')
+    @classmethod
+    def validate_iso_format(cls, v):
+        if v is not None:
+            pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$'
+            if not re.match(pattern, v):
+                raise ValueError('時間格式必須為 ISO 8601（YYYY-MM-DDTHH:MM）')
+        return v
+
+    @model_validator(mode='after')
+    def validate_close_after_open(self):
+        if self.open_at and self.close_at and self.close_at <= self.open_at:
+            raise ValueError('close_at 必須晚於 open_at')
+        return self
+
+
+class BatchPaymentUpdate(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=500)
+    is_paid: bool
+
+
+class AddPaymentRequest(BaseModel):
+    type: Literal["payment", "refund"] = "payment"
+    amount: int = Field(..., gt=0, description="金額（正整數，type 決定方向）")
+    payment_date: date
+    payment_method: str = "現金"
+    notes: str = ""
+
+
+class PublicCourseItem(BaseModel):
+    name: str
+    price: str  # 相容保留，後端實際以 DB 價格為準
+
+
+class PublicSupplyItem(BaseModel):
+    name: str
+    price: str  # 相容保留，後端實際以 DB 價格為準
+
+
+class PublicInquiryPayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    phone: str = Field(..., min_length=1, max_length=30)
+    question: str = Field(..., min_length=1, max_length=2000)
+
+
+class PublicRegistrationPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(..., min_length=1, max_length=50)
+    birthday: str
+    class_: str = Field(..., min_length=1, alias="class")
+    courses: list[PublicCourseItem] = Field(..., max_length=20)
+    supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
+
+    @field_validator('birthday')
+    @classmethod
+    def validate_birthday(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError('生日格式必須為 YYYY-MM-DD')
+        return v
+
+    @field_validator('name', 'class_', mode='before')
+    @classmethod
+    def strip_whitespace(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
+class PublicUpdatePayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    name: str = Field(..., min_length=1, max_length=50)
+    birthday: str
+    class_: str = Field(..., min_length=1, alias="class")
+    courses: list[PublicCourseItem] = Field(..., max_length=20)
+    supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
+    remark: str = ""
+
+    @field_validator('birthday')
+    @classmethod
+    def validate_birthday(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError('生日格式必須為 YYYY-MM-DD')
+        return v
+
+    @field_validator('name', 'class_', mode='before')
+    @classmethod
+    def strip_whitespace(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
+# ── DB 輔助函式 ─────────────────────────────────────────────────────────────
+
+def _get_active_classroom(session, classroom_name: str):
+    """依名稱取得啟用中的班級。"""
+    return session.query(Classroom).filter(
+        Classroom.name == classroom_name.strip(),
+        Classroom.is_active.is_(True),
+    ).first()
+
+
+def _require_active_classroom(session, classroom_name: str):
+    """取得啟用中班級，不存在則拋 HTTPException(400)。"""
+    c = _get_active_classroom(session, classroom_name)
+    if not c:
+        raise _invalid_class()
+    return c
+
+
+def _invalidate_activity_dashboard_caches(session, *, summary_only: bool = False) -> None:
+    if summary_only:
+        activity_service.invalidate_summary_cache(session)
+        return
+    activity_service.invalidate_dashboard_caches(session)
+
+
+def _check_registration_open(session) -> None:
+    """驗證報名時間是否開放，不符合時拋出 HTTPException。"""
+    settings = session.query(ActivityRegistrationSettings).first()
+    if settings:
+        if not settings.is_open:
+            raise HTTPException(status_code=400, detail="報名尚未開放")
+        now_str = datetime.now(TAIPEI_TZ).replace(tzinfo=None).isoformat()
+        if settings.open_at and now_str < settings.open_at:
+            raise HTTPException(status_code=400, detail="報名尚未開始")
+        if settings.close_at and now_str > settings.close_at:
+            raise HTTPException(status_code=400, detail="報名已截止")
+
+
+def _attach_courses(
+    session,
+    reg_id: int,
+    course_items,
+    courses_by_name: dict,
+    enrolled_count_map: dict,
+) -> tuple[bool, list]:
+    """建立 RegistrationCourse 記錄，回傳 (has_waitlist, waitlist_course_names)。"""
+    has_waitlist = False
+    waitlist_course_names: list = []
+    for course_item in course_items:
+        course = courses_by_name.get(course_item.name)
+        if not course:
+            raise _item_not_found_in_list("課程", course_item.name)
+        enrolled_count = enrolled_count_map.get(course.id, 0)
+        capacity = course.capacity if course.capacity is not None else 30
+        if enrolled_count < capacity:
+            status = "enrolled"
+        elif course.allow_waitlist:
+            status = "waitlist"
+            has_waitlist = True
+            waitlist_course_names.append(course.name)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"課程「{course.name}」已額滿且不開放候補",
+            )
+        rc = RegistrationCourse(
+            registration_id=reg_id,
+            course_id=course.id,
+            status=status,
+            price_snapshot=course.price,
+        )
+        session.add(rc)
+    return has_waitlist, waitlist_course_names
+
+
+def _attach_supplies(session, reg_id: int, supply_items, supplies_by_name: dict) -> None:
+    """建立 RegistrationSupply 記錄。"""
+    for supply_item in supply_items:
+        supply = supplies_by_name.get(supply_item.name)
+        if not supply:
+            raise _item_not_found_in_list("用品", supply_item.name)
+        rs = RegistrationSupply(
+            registration_id=reg_id,
+            supply_id=supply.id,
+            price_snapshot=supply.price,
+        )
+        session.add(rs)
+
+
+def _calc_total_amount(session, registration_id: int) -> int:
+    """計算報名的應繳總金額（enrolled 課程 + 用品，候補不計）"""
+    course_total = (
+        session.query(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
+        .filter(
+            RegistrationCourse.registration_id == registration_id,
+            RegistrationCourse.status == "enrolled",
+        )
+        .scalar()
+    ) or 0
+    supply_total = (
+        session.query(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
+        .filter(RegistrationSupply.registration_id == registration_id)
+        .scalar()
+    ) or 0
+    return course_total + supply_total
+
+
+def _derive_payment_status(paid_amount: int, total_amount: int) -> str:
+    """根據已繳金額衍生四態狀態字串（unpaid / partial / paid / overpaid）"""
+    if total_amount == 0:
+        return "paid" if paid_amount == 0 else "overpaid"
+    if paid_amount > total_amount:
+        return "overpaid"
+    if paid_amount == total_amount:
+        return "paid"
+    if paid_amount > 0:
+        return "partial"
+    return "unpaid"
+
+
+def _batch_calc_total_amounts(session, reg_ids: list) -> dict:
+    """批次計算多筆報名的應繳總金額（2 次 GROUP BY，避免 N+1 查詢）"""
+    course_totals = dict(
+        session.query(
+            RegistrationCourse.registration_id,
+            func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0),
+        )
+        .filter(
+            RegistrationCourse.registration_id.in_(reg_ids),
+            RegistrationCourse.status == "enrolled",
+        )
+        .group_by(RegistrationCourse.registration_id)
+        .all()
+    )
+    supply_totals = dict(
+        session.query(
+            RegistrationSupply.registration_id,
+            func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0),
+        )
+        .filter(RegistrationSupply.registration_id.in_(reg_ids))
+        .group_by(RegistrationSupply.registration_id)
+        .all()
+    )
+    return {
+        rid: (course_totals.get(rid, 0) or 0) + (supply_totals.get(rid, 0) or 0)
+        for rid in reg_ids
+    }
+
+
+def _build_registration_filter_query(
+    session,
+    *,
+    search: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    course_id: Optional[int] = None,
+    classroom_name: Optional[str] = None,
+):
+    """回傳已套用篩選條件的 SQLAlchemy query，調用方可繼續加 .offset/.limit 或 .all()。"""
+    q = session.query(ActivityRegistration).filter(
+        ActivityRegistration.is_active.is_(True)
+    )
+    if search:
+        like = f"%{search}%"
+        q = q.filter(
+            or_(
+                ActivityRegistration.student_name.ilike(like),
+                ActivityRegistration.class_name.ilike(like),
+            )
+        )
+    if payment_status == "paid":
+        q = q.filter(ActivityRegistration.is_paid.is_(True))
+    elif payment_status == "partial":
+        q = q.filter(
+            ActivityRegistration.paid_amount > 0,
+            ActivityRegistration.is_paid.is_(False),
+        )
+    elif payment_status == "unpaid":
+        q = q.filter(ActivityRegistration.paid_amount == 0)
+    elif payment_status == "overpaid":
+        course_total_sq = (
+            sa_select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
+            .where(
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+                RegistrationCourse.status == "enrolled",
+            )
+            .scalar_subquery()
+        )
+        supply_total_sq = (
+            sa_select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
+            .where(RegistrationSupply.registration_id == ActivityRegistration.id)
+            .scalar_subquery()
+        )
+        q = q.filter(
+            ActivityRegistration.paid_amount > course_total_sq + supply_total_sq,
+            ActivityRegistration.paid_amount > 0,
+        )
+    if course_id is not None:
+        q = q.join(
+            RegistrationCourse,
+            RegistrationCourse.registration_id == ActivityRegistration.id,
+        ).filter(RegistrationCourse.course_id == course_id)
+    if classroom_name:
+        q = q.filter(ActivityRegistration.class_name == classroom_name)
+    return q
+
+
+def _fetch_reg_course_names(session, reg_ids: list) -> dict:
+    """批次查詢報名對應的課程名稱（含候補標記），回傳 {reg_id: [course_name, ...]}。"""
+    course_name_map: dict = defaultdict(list)
+    if reg_ids:
+        course_rows = (
+            session.query(
+                RegistrationCourse.registration_id,
+                RegistrationCourse.status,
+                ActivityCourse.name,
+            )
+            .join(ActivityCourse, RegistrationCourse.course_id == ActivityCourse.id)
+            .filter(RegistrationCourse.registration_id.in_(reg_ids))
+            .all()
+        )
+        for registration_id, status, course_name in course_rows:
+            course_name_map[registration_id].append(
+                f"{course_name}（候補）" if status == "waitlist" else course_name
+            )
+    return course_name_map
+
+
+def _build_session_detail_response(
+    db_session,
+    sess: "ActivitySession",
+    *,
+    class_names_filter: list | None = None,
+) -> dict:
+    """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
+
+    class_names_filter=None  → 包含所有 enrolled 學生（管理端）
+    class_names_filter=[...] → 只包含指定班級的學生（Portal）
+    """
+    course = db_session.query(ActivityCourse).filter(ActivityCourse.id == sess.course_id).first()
+
+    enrolled_query = (
+        db_session.query(
+            RegistrationCourse.registration_id,
+            ActivityRegistration.student_name,
+            ActivityRegistration.class_name,
+        )
+        .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+        .filter(
+            RegistrationCourse.course_id == sess.course_id,
+            RegistrationCourse.status == "enrolled",
+            ActivityRegistration.is_active.is_(True),
+        )
+        .order_by(ActivityRegistration.class_name, ActivityRegistration.student_name)
+    )
+    if class_names_filter is not None:
+        if class_names_filter:
+            enrolled_query = enrolled_query.filter(
+                ActivityRegistration.class_name.in_(class_names_filter)
+            )
+        else:
+            # 空列表表示沒有管轄班級，不應看到任何學生
+            enrolled_query = enrolled_query.filter(False)
+    enrolled = enrolled_query.all()
+
+    reg_ids = [e.registration_id for e in enrolled]
+    att_map: dict = {}
+    if reg_ids:
+        atts = (
+            db_session.query(ActivityAttendance)
+            .filter(
+                ActivityAttendance.session_id == sess.id,
+                ActivityAttendance.registration_id.in_(reg_ids),
+            )
+            .all()
+        )
+        att_map = {a.registration_id: a for a in atts}
+
+    students = []
+    for e in enrolled:
+        att = att_map.get(e.registration_id)
+        students.append({
+            "registration_id": e.registration_id,
+            "student_name": e.student_name,
+            "class_name": e.class_name or "",
+            "is_present": att.is_present if att is not None else None,
+            "attendance_notes": att.notes or "" if att is not None else "",
+        })
+    present_count = sum(1 for s in students if s["is_present"] is True)
+    absent_count = sum(1 for s in students if s["is_present"] is False)
+
+    return {
+        "id": sess.id,
+        "course_id": sess.course_id,
+        "course_name": course.name if course else "",
+        "session_date": sess.session_date.isoformat(),
+        "notes": sess.notes or "",
+        "created_by": sess.created_by,
+        "created_at": sess.created_at.isoformat() if sess.created_at else None,
+        "students": students,
+        "total": len(students),
+        "present_count": present_count,
+        "absent_count": absent_count,
+    }

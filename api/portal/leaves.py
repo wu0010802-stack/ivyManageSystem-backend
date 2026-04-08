@@ -23,7 +23,7 @@ _attach_upload_limiter = SlidingWindowLimiter(
     error_detail="附件上傳過於頻繁，請稍後再試",
 )
 from fastapi.responses import FileResponse
-from sqlalchemy import func
+from sqlalchemy import func, case
 
 
 from models.database import (
@@ -104,6 +104,8 @@ def _safe_attach_path(leave_id: int, filename: str) -> Path:
 def get_my_leaves(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
     current_user: dict = Depends(get_current_user),
 ):
     """取得個人請假記錄"""
@@ -118,7 +120,7 @@ def get_my_leaves(
             LeaveRecord.employee_id == emp.id,
             LeaveRecord.start_date <= end,
             LeaveRecord.end_date >= start,
-        ).order_by(LeaveRecord.start_date.desc()).all()
+        ).order_by(LeaveRecord.start_date.desc()).offset(skip).limit(limit).all()
 
         return [{
             "id": lv.id,
@@ -140,6 +142,10 @@ def get_my_leaves(
             "source_overtime_id": lv.source_overtime_id,
             "created_at": lv.created_at.isoformat() if lv.created_at else None,
         } for lv in leaves]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="取得假單失敗")
     finally:
         session.close()
 
@@ -488,29 +494,22 @@ def get_my_quotas(
         year_start = date(year, 1, 1)
         year_end = date(year + 1, 1, 1)
 
-        # 批次查詢已核准時數（GROUP BY leave_type，避免 N+1）
-        used_rows = session.query(
+        # 單次查詢同時取得已核准與待審核時數（CASE WHEN 合併，減少一次 DB 往返）
+        combined_rows = session.query(
             LeaveRecord.leave_type,
-            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+            func.coalesce(
+                func.sum(case((LeaveRecord.is_approved.is_(True), LeaveRecord.leave_hours), else_=0)), 0
+            ).label("used_hours"),
+            func.coalesce(
+                func.sum(case((LeaveRecord.is_approved.is_(None), LeaveRecord.leave_hours), else_=0)), 0
+            ).label("pending_hours"),
         ).filter(
             LeaveRecord.employee_id == emp.id,
-            LeaveRecord.is_approved == True,
             LeaveRecord.start_date >= year_start,
             LeaveRecord.start_date < year_end,
         ).group_by(LeaveRecord.leave_type).all()
-        used_map = {row.leave_type: float(row.hours) for row in used_rows}
-
-        # 批次查詢待審核時數（GROUP BY leave_type）
-        pending_rows = session.query(
-            LeaveRecord.leave_type,
-            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
-        ).filter(
-            LeaveRecord.employee_id == emp.id,
-            LeaveRecord.is_approved.is_(None),
-            LeaveRecord.start_date >= year_start,
-            LeaveRecord.start_date < year_end,
-        ).group_by(LeaveRecord.leave_type).all()
-        pending_map = {row.leave_type: float(row.hours) for row in pending_rows}
+        used_map = {row.leave_type: float(row.used_hours) for row in combined_rows}
+        pending_map = {row.leave_type: float(row.pending_hours) for row in combined_rows}
 
         result = []
         for q in quotas:

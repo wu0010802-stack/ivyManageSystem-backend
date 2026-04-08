@@ -629,3 +629,308 @@ class TestApprovedOvertimeRollback:
             assert overtime.approved_by is None
             assert overtime.comp_leave_granted is False
             assert quota.total_hours == 0.0
+
+
+class TestSelfApprovalGuard:
+    """H2：自我核准防護——有 employee_id 的帳號不可核准自己的假單/加班。"""
+
+    def test_employee_with_account_cannot_self_approve_leave(self, leave_overtime_client):
+        """提交假單的教師若同時具備 LEAVES_WRITE 權限，不可自我核准。"""
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "SA001", "雙角色教師")
+            leave = LeaveRecord(
+                employee_id=employee.id,
+                leave_type="personal",
+                start_date=date(2026, 4, 1),
+                end_date=date(2026, 4, 1),
+                leave_hours=8,
+                is_approved=None,
+            )
+            session.add(leave)
+            _create_user(
+                session,
+                username="dual_role_teacher",
+                password="DualPass123",
+                role="hr",
+                permissions=-1,
+                employee=employee,
+            )
+            session.commit()
+            leave_id = leave.id
+
+        login_res = _login(client, "dual_role_teacher", "DualPass123")
+        assert login_res.status_code == 200
+
+        approve_res = client.put(
+            f"/api/leaves/{leave_id}/approve",
+            json={"approved": True},
+        )
+        assert approve_res.status_code == 403
+        assert "自我核准" in approve_res.json()["detail"]
+
+    def test_admin_without_employee_id_can_approve_others_leave(self, leave_overtime_client):
+        """純管理員帳號（無 employee_id）可正常核准他人假單。"""
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "SA002", "一般教師")
+            leave = LeaveRecord(
+                employee_id=employee.id,
+                leave_type="personal",
+                start_date=date(2026, 4, 2),
+                end_date=date(2026, 4, 2),
+                leave_hours=8,
+                is_approved=None,
+            )
+            session.add(leave)
+            _create_user(
+                session,
+                username="pure_admin_approver",
+                password="AdminPass123",
+                role="admin",
+                permissions=-1,
+                # employee=None（無 employee_id）
+            )
+            session.commit()
+            leave_id = leave.id
+
+        login_res = _login(client, "pure_admin_approver", "AdminPass123")
+        assert login_res.status_code == 200
+
+        approve_res = client.put(
+            f"/api/leaves/{leave_id}/approve",
+            json={"approved": True},
+        )
+        # 純管理員（無 employee_id）核准他人假單應成功（200）
+        assert approve_res.status_code == 200
+
+
+class TestBatchSelfApprovalGuard:
+    """C1：批次核准中的自我核准防護。"""
+
+    def test_batch_approve_leaves_blocks_self_approval(self, leave_overtime_client):
+        """員工不可在批次核准中核准自己的假單。"""
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            # 申請人本身
+            self_employee = _create_employee(session, "BA001", "批次自我核准教師")
+            # 另一位員工的假單（應可正常核准）
+            other_employee = _create_employee(session, "BA002", "他人教師")
+
+            self_leave = LeaveRecord(
+                employee_id=self_employee.id,
+                leave_type="personal",
+                start_date=date(2026, 5, 1),
+                end_date=date(2026, 5, 1),
+                leave_hours=8,
+                is_approved=None,
+            )
+            other_leave = LeaveRecord(
+                employee_id=other_employee.id,
+                leave_type="personal",
+                start_date=date(2026, 5, 2),
+                end_date=date(2026, 5, 2),
+                leave_hours=8,
+                is_approved=None,
+            )
+            session.add_all([self_leave, other_leave])
+            # 使用 admin 角色：無 ApprovalPolicy 時 admin 可核准任何人
+            _create_user(
+                session,
+                username="batch_self_approver",
+                password="BatchPass123",
+                role="admin",
+                permissions=-1,
+                employee=self_employee,
+            )
+            session.commit()
+            self_leave_id = self_leave.id
+            other_leave_id = other_leave.id
+
+        login_res = _login(client, "batch_self_approver", "BatchPass123")
+        assert login_res.status_code == 200
+
+        res = client.post(
+            "/api/leaves/batch-approve",
+            json={"ids": [self_leave_id, other_leave_id], "approved": True},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        # 自己的假單應在 failed 清單中
+        failed_ids = [f["id"] for f in data["failed"]]
+        assert self_leave_id in failed_ids
+        failed_reasons = [f["reason"] for f in data["failed"] if f["id"] == self_leave_id]
+        assert any("自我核准" in r for r in failed_reasons)
+        # 他人假單應成功
+        assert other_leave_id in data["succeeded"]
+
+    def test_batch_approve_overtimes_blocks_self_approval(self, leave_overtime_client):
+        """員工不可在批次核准中核准自己的加班單。"""
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            self_employee = _create_employee(session, "BA003", "批次加班自核員工")
+            other_employee = _create_employee(session, "BA004", "他人加班員工")
+
+            self_ot = OvertimeRecord(
+                employee_id=self_employee.id,
+                overtime_date=date(2026, 5, 3),
+                overtime_type="weekday",
+                hours=2.0,
+                is_approved=None,
+            )
+            other_ot = OvertimeRecord(
+                employee_id=other_employee.id,
+                overtime_date=date(2026, 5, 4),
+                overtime_type="weekday",
+                hours=2.0,
+                is_approved=None,
+            )
+            session.add_all([self_ot, other_ot])
+            # 使用 admin 角色：無 ApprovalPolicy 時 admin 可核准任何人
+            _create_user(
+                session,
+                username="batch_ot_self_approver",
+                password="BatchOTPass123",
+                role="admin",
+                permissions=-1,
+                employee=self_employee,
+            )
+            session.commit()
+            self_ot_id = self_ot.id
+            other_ot_id = other_ot.id
+
+        login_res = _login(client, "batch_ot_self_approver", "BatchOTPass123")
+        assert login_res.status_code == 200
+
+        res = client.post(
+            "/api/overtimes/batch-approve",
+            json={"ids": [self_ot_id, other_ot_id], "approved": True},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        # 自己的加班單應在 failed 清單中
+        failed_ids = [f["id"] for f in data["failed"]]
+        assert self_ot_id in failed_ids
+        failed_reasons = [f["reason"] for f in data["failed"] if f["id"] == self_ot_id]
+        assert any("自我核准" in r for r in failed_reasons)
+        # 他人加班單應成功
+        assert other_ot_id in data["succeeded"]
+
+
+class TestConcurrentApprovalQuotaGuard:
+    """V11：多張待審假單同時核准時，配額應正確計算不超支。"""
+
+    def test_approving_second_leave_blocked_when_first_is_pending(self, leave_overtime_client):
+        """核准第二張待審假單時，應計入其他待審假單使用量，防止超額核准（race condition 防護）。"""
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            emp = _create_employee(session, "QR001", "配額競態教師")
+            quota = LeaveQuota(
+                employee_id=emp.id,
+                year=2026,
+                leave_type="annual",
+                total_hours=8.0,  # 只有 1 天
+            )
+            session.add(quota)
+            _create_user(
+                session,
+                username="quota_race_approver",
+                password="QuotaPass123",
+                role="admin",
+                permissions=-1,
+            )
+            # 兩張各 8 小時的待審特休（總計 16 小時 > 配額 8 小時）
+            leave1 = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="annual",
+                start_date=date(2026, 4, 1),
+                end_date=date(2026, 4, 1),
+                leave_hours=8,
+                is_approved=None,
+            )
+            leave2 = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="annual",
+                start_date=date(2026, 4, 2),
+                end_date=date(2026, 4, 2),
+                leave_hours=8,
+                is_approved=None,
+            )
+            session.add_all([leave1, leave2])
+            session.commit()
+            leave1_id = leave1.id
+            leave2_id = leave2.id
+
+        login_res = _login(client, "quota_race_approver", "QuotaPass123")
+        assert login_res.status_code == 200
+
+        # 核准第一張：此時 leave2 仍 pending，include_pending=True 會計入
+        # approved=0, pending=8(leave2), committed=8, leave1.hours=8 > remaining=0 → 應被阻擋
+        res1 = client.put(f"/api/leaves/{leave1_id}/approve", json={"approved": True})
+        assert res1.status_code == 400, (
+            f"第一張核准應因另一張待審假單佔用配額而被阻擋，但回傳 {res1.status_code}: {res1.json()}"
+        )
+
+    def test_approving_second_leave_blocked_after_first_approved(self, leave_overtime_client):
+        """第一張核准後，第二張因配額耗盡應被阻擋。"""
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            emp = _create_employee(session, "QR002", "配額序列教師")
+            quota = LeaveQuota(
+                employee_id=emp.id,
+                year=2026,
+                leave_type="annual",
+                total_hours=8.0,
+            )
+            session.add(quota)
+            _create_user(
+                session,
+                username="quota_seq_approver",
+                password="QuotaSeq123",
+                role="admin",
+                permissions=-1,
+            )
+            # 第一張 8 小時（pending），第二張 8 小時（pending）
+            leave_a = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="annual",
+                start_date=date(2026, 5, 1),
+                end_date=date(2026, 5, 1),
+                leave_hours=8,
+                is_approved=None,
+            )
+            session.add(leave_a)
+            session.commit()
+            leave_a_id = leave_a.id
+
+        login_res = _login(client, "quota_seq_approver", "QuotaSeq123")
+        assert login_res.status_code == 200
+
+        # 先核准第一張（唯一一張 pending，應成功）
+        res_a = client.put(f"/api/leaves/{leave_a_id}/approve", json={"approved": True})
+        assert res_a.status_code == 200
+
+        # 再建立第二張（核准後才新增，模擬真實情境）
+        with session_factory() as session:
+            leave_b = LeaveRecord(
+                employee_id=_get_employee_id(session, "QR002"),
+                leave_type="annual",
+                start_date=date(2026, 5, 2),
+                end_date=date(2026, 5, 2),
+                leave_hours=8,
+                is_approved=None,
+            )
+            session.add(leave_b)
+            session.commit()
+            leave_b_id = leave_b.id
+
+        res_b = client.put(f"/api/leaves/{leave_b_id}/approve", json={"approved": True})
+        assert res_b.status_code == 400, (
+            f"第二張 8 小時特休核准應因配額耗盡而被阻擋，但回傳 {res_b.status_code}: {res_b.json()}"
+        )
+
+
+def _get_employee_id(session, employee_code: str) -> int:
+    """輔助：依員工編號查 DB 主鍵"""
+    emp = session.query(Employee).filter(Employee.employee_id == employee_code).first()
+    return emp.id

@@ -110,6 +110,18 @@ def build_salary_batch_message(year: int, month: int, count: int, total_net: int
     )
 
 
+def build_activity_waitlist_promoted_message(
+    student_name: str, course_name: str
+) -> str:
+    """建構才藝候補升位通知訊息文字"""
+    return (
+        f"🎨 才藝候補升位通知\n"
+        f"學生：{student_name}\n"
+        f"課程：{course_name}\n"
+        f"已自動升為正式報名！"
+    )
+
+
 def build_dismissal_message(
     student_name: str,
     classroom_name: str,
@@ -278,6 +290,15 @@ class LineService:
     ) -> None:
         """薪資批次計算完成後群組推播（失敗時 log warning，不拋出）"""
         text = build_salary_batch_message(year, month, count, total_net)
+        self._push(text)
+
+    def notify_activity_waitlist_promoted(
+        self,
+        student_name: str,
+        course_name: str,
+    ) -> None:
+        """才藝候補升位後群組推播（失敗時 log warning，不拋出）"""
+        text = build_activity_waitlist_promoted_message(student_name, course_name)
         self._push(text)
 
     def notify_dismissal_created(

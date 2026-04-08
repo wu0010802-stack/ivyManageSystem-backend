@@ -17,8 +17,9 @@ from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
-from models.database import get_session, Classroom
+from models.database import get_session
 from utils.auth import verify_ws_token
+from api.portal._shared import _get_teacher_classroom_ids as _get_teacher_classroom_ids_shared
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -181,15 +182,10 @@ def _get_token_from_ws(ws: WebSocket) -> str | None:
 
 
 def _get_teacher_classroom_ids(employee_id: int) -> list[int]:
-    """查詢教師目前所屬的班級 ID 列表（head_teacher 或 assistant_teacher）。"""
+    """查詢教師目前所屬的班級 ID 列表（含 art_teacher_id）。"""
     session = get_session()
     try:
-        classrooms = session.query(Classroom).filter(
-            (Classroom.head_teacher_id == employee_id)
-            | (Classroom.assistant_teacher_id == employee_id),
-            Classroom.is_active == True,
-        ).all()
-        return [c.id for c in classrooms]
+        return _get_teacher_classroom_ids_shared(session, employee_id)
     finally:
         session.close()
 
@@ -226,6 +222,12 @@ async def portal_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="此帳號無對應教師身分")
         return
 
+    # NV10：只允許 teacher 角色訂閱接送通知 WebSocket，防止司機/行政等帳號存取學生接送隱私
+    role = payload.get("role", "")
+    if role != "teacher":
+        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="僅教師帳號可使用接送通知 WebSocket")
+        return
+
     classroom_ids = _get_teacher_classroom_ids(employee_id)
     if not classroom_ids:
         # 若老師尚未分班，仍允許連線但不會收到任何班級事件
@@ -257,7 +259,9 @@ async def admin_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_INVALID_TOKEN, reason="Token 無效或已過期")
         return
 
-    if payload.get("role") == "teacher":
+    # 白名單檢查：role 欄位缺失或不在允許角色清單時一律拒絕，
+    # 避免 payload 缺少 role 欄位（None）時跳過防護。
+    if payload.get("role") not in ("admin", "hr", "supervisor"):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="教師帳號不可存取管理端接送通知")
         return
 

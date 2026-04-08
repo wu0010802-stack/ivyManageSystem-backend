@@ -2,6 +2,7 @@
 Portal - overtime management endpoints
 """
 
+import logging
 import calendar as cal_module
 from datetime import date, datetime
 
@@ -10,12 +11,12 @@ from utils.errors import raise_safe_500
 
 from models.database import get_session, OvertimeRecord
 from utils.auth import get_current_user
+from utils.approval_helpers import _get_finalized_salary_record
 from ._shared import _get_employee, OvertimeCreatePortal, OVERTIME_TYPE_LABELS
 
-router = APIRouter()
-
-import logging
 logger = logging.getLogger(__name__)
+
+router = APIRouter()
 
 _line_service = None
 
@@ -29,6 +30,8 @@ def init_overtime_notify(line_service):
 def get_my_overtimes(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
     current_user: dict = Depends(get_current_user),
 ):
     """取得個人加班記錄"""
@@ -43,7 +46,7 @@ def get_my_overtimes(
             OvertimeRecord.employee_id == emp.id,
             OvertimeRecord.overtime_date >= start,
             OvertimeRecord.overtime_date <= end,
-        ).order_by(OvertimeRecord.overtime_date.desc()).all()
+        ).order_by(OvertimeRecord.overtime_date.desc()).offset(skip).limit(limit).all()
 
         return [{
             "id": ot.id,
@@ -158,6 +161,23 @@ def delete_my_overtime(
         if ot.is_approved is not None:
             status = "已核准" if ot.is_approved else "已駁回"
             raise HTTPException(status_code=400, detail=f"此申請已{status}，無法撤回")
+        # NV5：薪資已封存時不可撤回（避免薪資記錄與加班記錄不一致）
+        year = ot.overtime_date.year
+        month = ot.overtime_date.month
+        finalized = _get_finalized_salary_record(session, emp.id, year, month)
+        if finalized:
+            by = finalized.finalized_by or "系統"
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"{year} 年 {month} 月薪資已封存（結算人：{by}），"
+                    "無法撤回加班申請。請先至薪資管理頁面解除封存後再操作。"
+                ),
+            )
+        logger.warning(
+            "加班申請撤回：operator=%s employee_id=%d overtime_id=%d overtime_date=%s",
+            current_user.get("username"), emp.id, overtime_id, ot.overtime_date,
+        )
         session.delete(ot)
         session.commit()
         return {"message": "加班申請已撤回"}

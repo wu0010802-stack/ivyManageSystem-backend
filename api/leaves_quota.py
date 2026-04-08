@@ -18,6 +18,7 @@ from sqlalchemy import func
 
 from models.database import get_session, Employee, LeaveRecord, LeaveQuota
 from utils.auth import require_staff_permission
+from utils.constants import LEAVE_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.permissions import Permission
 
@@ -45,27 +46,6 @@ LEAVE_DEDUCTION_RULES: dict[str, float] = {
     "occupational_injury": 0.0, # 公傷病假：不扣薪
     "pregnancy_rest": 0.5,     # 安胎休養：依病假規定辦理
     "typhoon": 1.0,            # 颱風假：依勞基法可不給薪
-}
-
-LEAVE_TYPE_LABELS: dict[str, str] = {
-    "personal": "事假",
-    "sick": "病假",
-    "menstrual": "生理假",
-    "annual": "特休",
-    "maternity": "產假",
-    "paternity": "陪產假",
-    "official": "公假",
-    "marriage": "婚假",
-    "bereavement": "喪假",
-    "prenatal": "產檢假",
-    "paternity_new": "陪產檢及陪產假",
-    "miscarriage": "流產假",
-    "family_care": "家庭照顧假",
-    "parental_unpaid": "育嬰留職停薪",
-    "compensatory": "補休",
-    "occupational_injury": "公傷病假",
-    "pregnancy_rest": "安胎休養假",
-    "typhoon": "颱風假",
 }
 
 # 有年度上限的假別（其餘為事件型，不追蹤）
@@ -476,6 +456,9 @@ def init_leave_quotas(
     """
     if year is None:
         year = date.today().year
+    current_year = date.today().year
+    if year < current_year:
+        raise HTTPException(status_code=400, detail="禁止重新初始化過去年份的配額，以維護稽核紀錄完整性")
     session = get_session()
     try:
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
@@ -560,7 +543,7 @@ def init_leave_quotas(
                 "total_hours": q.total_hours,
                 "used_hours": used_map.get(q.leave_type, 0.0),
                 "pending_hours": pending_map.get(q.leave_type, 0.0),
-                "remaining_hours": max(0.0, q.total_hours - used_map.get(q.leave_type, 0.0)),
+                "remaining_hours": max(0.0, q.total_hours - used_map.get(q.leave_type, 0.0) - pending_map.get(q.leave_type, 0.0)),
                 "note": q.note,
             }
             for q in quotas

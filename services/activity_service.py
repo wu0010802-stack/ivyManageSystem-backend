@@ -4,9 +4,12 @@ services/activity_service.py — 課後才藝報名業務邏輯
 
 import logging
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, case
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 from models.activity import (
     ActivityCourse, ActivitySupply, ActivityRegistration,
@@ -25,12 +28,18 @@ ACTIVITY_DASHBOARD_CACHE_CATEGORIES = (
     "activity_stats_charts",
     "activity_dashboard_table",
 )
-ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS = 60
-ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS = 180
-ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS = 600
+ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS = 300
+ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS = 600
+ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS = 1800
 
 
 class ActivityService:
+    def __init__(self):
+        self._line_svc = None
+
+    def set_line_service(self, svc) -> None:
+        self._line_svc = svc
+
     def get_unread_inquiries_count(self, session) -> int:
         """取得未讀家長提問數量。"""
         return (
@@ -84,7 +93,7 @@ class ActivityService:
 
     def _compute_stats_summary(self, session) -> dict:
         """取得儀表板摘要統計。"""
-        today = date.today()
+        today = datetime.now(TAIPEI_TZ).date()
         active_registration_filter = ActivityRegistration.is_active.is_(True)
 
         summary_row = session.execute(
@@ -184,7 +193,7 @@ class ActivityService:
 
     def _compute_stats_charts(self, session) -> dict:
         """取得儀表板圖表資料。"""
-        chart_window_start = date.today() - timedelta(days=29)
+        chart_window_start = datetime.now(TAIPEI_TZ).date() - timedelta(days=29)
 
         # 每日報名趨勢（最近 30 個有資料日期）
         daily_rows = (
@@ -252,92 +261,127 @@ class ActivityService:
         return {
             "statistics": self.get_stats_summary(session, force_refresh=force_refresh),
             "charts": self.get_stats_charts(session, force_refresh=force_refresh),
+            "attendance_stats": self.get_attendance_stats(session),
+        }
+
+    def get_attendance_stats(self, session) -> dict:
+        """取得課程出席率統計（SQL 直接 GROUP BY 課程，省去 Python 端二次聚合）。"""
+        from models.activity import ActivitySession, ActivityAttendance
+
+        rows = (
+            session.query(
+                ActivityCourse.name.label("course_name"),
+                func.count(ActivitySession.id.distinct()).label("sessions"),
+                func.count(ActivityAttendance.id).label("total"),
+                func.sum(
+                    case((ActivityAttendance.is_present.is_(True), 1), else_=0)
+                ).label("present"),
+            )
+            .filter(ActivityCourse.is_active.is_(True))
+            .join(ActivitySession, ActivityCourse.id == ActivitySession.course_id)
+            .join(ActivityAttendance, ActivitySession.id == ActivityAttendance.session_id)
+            .group_by(ActivityCourse.name)
+            .all()
+        )
+
+        if not rows:
+            return {"total_sessions": 0, "avg_attendance_rate": 0.0, "by_course": []}
+
+        total_sessions = sum(row.sessions or 0 for row in rows)
+        total_present = sum(row.present or 0 for row in rows)
+        total_records = sum(row.total or 0 for row in rows)
+        avg_rate = round(total_present / total_records, 2) if total_records > 0 else 0.0
+
+        by_course = [
+            {
+                "course_name": row.course_name,
+                "sessions": row.sessions or 0,
+                "avg_rate": round((row.present or 0) / row.total, 2) if row.total else 0.0,
+            }
+            for row in rows
+        ]
+        by_course.sort(key=lambda x: x["avg_rate"], reverse=True)
+
+        return {
+            "total_sessions": total_sessions,
+            "avg_attendance_rate": avg_rate,
+            "by_course": by_course,
         }
 
     # ------------------------------------------------------------------ #
     # 統計儀表板表格 (依班級)
     # ------------------------------------------------------------------ #
 
-    def _compute_dashboard_table(self, session) -> dict:
-        """取得課後才藝儀表板統計表格（含依班級與年級的小計與達成率）"""
-        from models.classroom import Classroom, ClassGrade, Student
+    _GRADE_TARGET_MAPPING = {
+        "大班": 100,
+        "中班": 90,
+        "小班": 80,
+        "幼娃班": 70,
+        "娃娃班": 70,
+        "幼幼班": 70,
+        "幼班": 70,
+    }
+
+    def _get_grade_target_percent(self, grade_name: str) -> int:
+        """依年級名稱查對應達成率目標。"""
+        for key, pct in self._GRADE_TARGET_MAPPING.items():
+            if key in grade_name:
+                return pct
+        return 0
+
+    def _query_classroom_stats(self, session, courses):
+        """一次查出所有班級的在籍人數、各課程報名數及班導師。"""
+        from models.classroom import Classroom, Student
         from models.employee import Employee
 
-        # 1. 取得所有開放的課程
-        courses = session.query(ActivityCourse).filter(ActivityCourse.is_active.is_(True)).order_by(ActivityCourse.id).all()
-        course_list = [{"id": c.id, "name": c.name} for c in courses]
-
-        # 2. 取得所有年級
-        grades = session.query(ClassGrade).filter(ClassGrade.is_active.is_(True)).order_by(ClassGrade.sort_order).all()
-
-        target_mapping = {
-            "大班": 100,
-            "中班": 90,
-            "小班": 80,
-            "幼娃班": 70,
-            "娃娃班": 70,
-            "幼幼班": 70,
-            "幼班": 70
-        }
-
-        # 3. 抓取每個班級的在籍人數
-        classroom_students = (
+        # 查詢一：一次 JOIN 同時建立 student_count_map 和 classrooms_by_grade
+        student_count_map = {}
+        classrooms_by_grade: dict = defaultdict(list)
+        for cls, teacher_name, student_count in (
             session.query(
-                Classroom.id,
-                func.count(Student.id).label("student_count")
+                Classroom,
+                Employee.name.label("teacher_name"),
+                func.count(Student.id).label("student_count"),
             )
-            .outerjoin(Student, (Student.classroom_id == Classroom.id) & (Student.is_active.is_(True)))
+            .outerjoin(Employee, Classroom.head_teacher_id == Employee.id)
+            .outerjoin(Student, (Student.classroom_id == Classroom.id) & Student.is_active.is_(True))
             .filter(Classroom.is_active.is_(True))
-            .group_by(Classroom.id)
+            .group_by(Classroom.id, Employee.name)
             .all()
-        )
-        student_count_map = {row.id: row.student_count for row in classroom_students}
+        ):
+            student_count_map[cls.id] = student_count
+            classrooms_by_grade[cls.grade_id].append((cls, teacher_name))
 
-        # 4. 抓取每個班級、每個課程的報名人數
-        enrollments = (
+        # 查詢二：enrollment_map（維持不變）
+        enrollment_map = {}
+        for row in (
             session.query(
                 ActivityRegistration.class_name,
                 RegistrationCourse.course_id,
-                func.count(RegistrationCourse.id).label("count")
+                func.count(RegistrationCourse.id).label("count"),
             )
             .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
             .filter(
                 ActivityRegistration.is_active.is_(True),
-                RegistrationCourse.status == "enrolled"
+                RegistrationCourse.status == "enrolled",
             )
             .group_by(ActivityRegistration.class_name, RegistrationCourse.course_id)
             .all()
-        )
-        enrollment_map = {}
-        for row in enrollments:
+        ):
             enrollment_map[(row.class_name, row.course_id)] = row.count
 
-        # 5. 預載所有班級與班導師（一次 JOIN，取代年級迴圈內 N 次查詢）
-        all_classrooms_with_teachers = (
-            session.query(Classroom, Employee.name.label("teacher_name"))
-            .outerjoin(Employee, Classroom.head_teacher_id == Employee.id)
-            .filter(Classroom.is_active.is_(True))
-            .all()
-        )
-        classrooms_by_grade: dict = defaultdict(list)
-        for _cls, _teacher in all_classrooms_with_teachers:
-            classrooms_by_grade[_cls.grade_id].append((_cls, _teacher))
+        return student_count_map, enrollment_map, classrooms_by_grade
 
-        # 6. 組裝報表結構
+    def _build_grade_rows(self, grades, courses, student_count_map, enrollment_map, classrooms_by_grade):
+        """組裝各年級列表，回傳 (result_grades, gt_student_count, gt_courses, gt_total_enrollments)。"""
         result_grades = []
-
         gt_student_count = 0
         gt_courses = {str(c.id): 0 for c in courses}
         gt_total_enrollments = 0
 
         for grade in grades:
             grade_name = grade.name
-            target_pct = 0
-            for k, v in target_mapping.items():
-                if k in grade_name:
-                    target_pct = v
-                    break
-
+            target_pct = self._get_grade_target_percent(grade_name)
             classrooms_data = classrooms_by_grade.get(grade.id, [])
             if not classrooms_data:
                 continue
@@ -345,28 +389,23 @@ class ActivityService:
             sub_student_count = 0
             sub_courses = {str(c.id): 0 for c in courses}
             sub_total_enrollments = 0
-            
             classroom_list = []
 
             for cls, teacher_name in classrooms_data:
                 cls_student_count = student_count_map.get(cls.id, 0)
                 cls_enrollments = 0
                 cls_course_data = {}
-
                 for c in courses:
                     c_id_str = str(c.id)
                     count = enrollment_map.get((cls.name, c.id), 0)
                     cls_course_data[c_id_str] = count
                     cls_enrollments += count
-
                     sub_courses[c_id_str] += count
                     gt_courses[c_id_str] += count
 
                 cls_ratio = int(round(cls_enrollments / cls_student_count * 100)) if cls_student_count > 0 else 0
-
                 sub_student_count += cls_student_count
                 sub_total_enrollments += cls_enrollments
-
                 gt_student_count += cls_student_count
                 gt_total_enrollments += cls_enrollments
 
@@ -380,14 +419,9 @@ class ActivityService:
                     "ratio": cls_ratio,
                 })
 
-            # 計算年級小計
             sub_ratio = int(round(sub_total_enrollments / sub_student_count * 100)) if sub_student_count > 0 else 0
-
-            sub_bonus = 0
-            sub_points = 0
-            if target_pct > 0 and sub_ratio >= target_pct:
-                sub_bonus = 1000
-                sub_points = target_pct
+            sub_bonus = 1000 if target_pct > 0 and sub_ratio >= target_pct else 0
+            sub_points = target_pct if sub_bonus else 0
 
             result_grades.append({
                 "grade_id": grade.id,
@@ -401,8 +435,34 @@ class ActivityService:
                     "ratio": sub_ratio,
                     "bonus": sub_bonus,
                     "points": sub_points,
-                }
+                },
             })
+
+        return result_grades, gt_student_count, gt_courses, gt_total_enrollments
+
+    def _compute_dashboard_table(self, session) -> dict:
+        """取得課後才藝儀表板統計表格（含依班級與年級的小計與達成率）"""
+        from models.classroom import ClassGrade
+
+        courses = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.is_active.is_(True))
+            .order_by(ActivityCourse.id)
+            .all()
+        )
+        course_list = [{"id": c.id, "name": c.name} for c in courses]
+
+        grades = (
+            session.query(ClassGrade)
+            .filter(ClassGrade.is_active.is_(True))
+            .order_by(ClassGrade.sort_order)
+            .all()
+        )
+
+        student_count_map, enrollment_map, classrooms_by_grade = self._query_classroom_stats(session, courses)
+        result_grades, gt_student_count, gt_courses, gt_total_enrollments = self._build_grade_rows(
+            grades, courses, student_count_map, enrollment_map, classrooms_by_grade
+        )
 
         gt_ratio = int(round(gt_total_enrollments / gt_student_count * 100)) if gt_student_count > 0 else 0
         grand_total = {
@@ -412,11 +472,7 @@ class ActivityService:
             "ratio": gt_ratio,
         }
 
-        return {
-            "courses": course_list,
-            "grades": result_grades,
-            "grand_total": grand_total
-        }
+        return {"courses": course_list, "grades": result_grades, "grand_total": grand_total}
 
     def get_dashboard_table(self, session, *, force_refresh: bool = False) -> dict:
         return report_cache_service.get_or_build(
@@ -456,15 +512,20 @@ class ActivityService:
             raise ValueError("報名課程項目不存在或非候補狀態")
         rc, student_name = row
 
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id)
+            .with_for_update()
+            .first()
+        )
+        if not course:
+            raise ValueError("課程不存在")
+
         enrolled_count = self.count_active_course_registrations(
             session,
             course_id,
             status="enrolled",
         )
-        course = session.query(ActivityCourse).filter(ActivityCourse.id == course_id).first()
-        if not course:
-            raise ValueError("課程不存在")
-
         if course.capacity is not None and enrolled_count >= course.capacity:
             raise ValueError("課程容量已滿，無法升為正式")
 
@@ -472,11 +533,11 @@ class ActivityService:
         return (student_name or str(registration_id), course.name)
 
     # ------------------------------------------------------------------ #
-    # 軟刪除報名
+    # 軟刪除報名（含自動候補升位）
     # ------------------------------------------------------------------ #
 
     def delete_registration(self, session, registration_id: int, operator: str):
-        """軟刪除報名，並記錄修改紀錄"""
+        """軟刪除報名，並對每門正式課程嘗試自動升位候補。"""
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -488,11 +549,60 @@ class ActivityService:
         if not reg:
             raise ValueError("找不到報名資料")
 
+        # 先取出此報名的所有正式課程
+        enrolled_courses = session.query(RegistrationCourse).filter(
+            RegistrationCourse.registration_id == registration_id,
+            RegistrationCourse.status == "enrolled",
+        ).all()
+        enrolled_course_ids = [rc.course_id for rc in enrolled_courses]
+
+        # 軟刪除
         reg.is_active = False
         self.log_change(
             session, registration_id, reg.student_name,
             "刪除報名", "管理員刪除報名", operator,
         )
+        session.flush()  # 先 flush，確保刪除生效後再升位
+
+        # 對每門課嘗試升位候補第一位
+        for course_id in enrolled_course_ids:
+            self._auto_promote_first_waitlist(session, course_id)
+
+    def _auto_promote_first_waitlist(self, session, course_id: int):
+        """找出該課程候補排序最前的一筆，嘗試升正式。無候補則靜默跳過。"""
+        first_waitlist = (
+            session.query(RegistrationCourse)
+            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            .filter(
+                RegistrationCourse.course_id == course_id,
+                RegistrationCourse.status == "waitlist",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .order_by(RegistrationCourse.id)
+            .with_for_update()
+            .first()
+        )
+        if not first_waitlist:
+            return
+        try:
+            student_name, course_name = self.promote_waitlist(
+                session, first_waitlist.registration_id, course_id
+            )
+            self.log_change(
+                session,
+                first_waitlist.registration_id,
+                student_name,
+                "候補升正式",
+                f"課程「{course_name}」因報名刪除自動升為正式",
+                "system",
+            )
+            logger.info(
+                "自動候補升位：student=%s course=%s", student_name, course_name
+            )
+            if self._line_svc is not None:
+                self._line_svc.notify_activity_waitlist_promoted(student_name, course_name)
+        except ValueError:
+            pass  # 課程已滿或資料異常，靜默跳過
 
     # ------------------------------------------------------------------ #
     # 記錄修改紀錄

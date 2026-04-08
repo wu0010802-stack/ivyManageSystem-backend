@@ -120,6 +120,7 @@ class Announcement(Base):
     __tablename__ = "announcements"
     __table_args__ = (
         Index("ix_announcements_created_at", "created_at"),
+        Index("ix_announcements_created_by", "created_by"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

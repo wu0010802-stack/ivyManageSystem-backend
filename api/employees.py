@@ -16,16 +16,72 @@ from utils.auth import require_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
+from utils.validators import parse_optional_date
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["employees"])
+
+_DATE_FIELDS = ('hire_date', 'probation_end_date', 'birthday')
+
 
 _salary_engine = None
 
 def init_employee_services(salary_engine):
     global _salary_engine
     _salary_engine = salary_engine
+
+
+# ============ Helpers ============
+
+def _format_employee_response(
+    emp,
+    can_view_full_account: bool,
+    *,
+    resign_fields: bool = False,
+    include_transportation_allowance: bool = False,
+    classroom_name: str | None = None,
+) -> dict:
+    """共用員工響應格式化，避免 GET /employees 與 GET /employees/{id} 重複組裝相同欄位。"""
+    display_title = emp.job_title_rel.name if emp.job_title_rel else emp.title
+    data = {
+        "id": emp.id,
+        "employee_id": emp.employee_id,
+        "name": emp.name,
+        "id_number": emp.id_number if can_view_full_account else mask_id_number(emp.id_number),
+        "employee_type": emp.employee_type,
+        "title": display_title,
+        "job_title_id": emp.job_title_id,
+        "position": emp.position,
+        "supervisor_role": emp.supervisor_role,
+        "bonus_grade": getattr(emp, 'bonus_grade', None),
+        "classroom_id": emp.classroom_id,
+        "base_salary": emp.base_salary,
+        "hourly_rate": emp.hourly_rate,
+        "supervisor_allowance": emp.supervisor_allowance,
+        "teacher_allowance": emp.teacher_allowance,
+        "meal_allowance": emp.meal_allowance,
+        "other_allowance": emp.other_allowance,
+        "bank_code": emp.bank_code if can_view_full_account else None,
+        "bank_account": emp.bank_account if can_view_full_account else mask_bank_account(emp.bank_account),
+        "bank_account_name": emp.bank_account_name if can_view_full_account else None,
+        "insurance_salary_level": emp.insurance_salary_level,
+        "pension_self_rate": emp.pension_self_rate,
+        "work_start_time": emp.work_start_time,
+        "work_end_time": emp.work_end_time,
+        "is_active": emp.is_active,
+        "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
+        "probation_end_date": emp.probation_end_date.isoformat() if emp.probation_end_date else None,
+        "birthday": emp.birthday.isoformat() if emp.birthday else None,
+    }
+    if resign_fields:
+        data["resign_date"] = emp.resign_date.isoformat() if emp.resign_date else None
+        data["resign_reason"] = getattr(emp, 'resign_reason', None)
+    if include_transportation_allowance:
+        data["transportation_allowance"] = emp.transportation_allowance
+    if classroom_name is not None:
+        data["classroom_name"] = classroom_name
+    return data
 
 
 # ============ Pydantic Models ============
@@ -110,41 +166,7 @@ def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(
 
         result = []
         for emp in employees:
-            # Determine strict title to return (from relation)
-            display_title = emp.job_title_rel.name if emp.job_title_rel else emp.title
-
-            result.append({
-                "id": emp.id,
-                "employee_id": emp.employee_id,
-                "name": emp.name,
-                "id_number": emp.id_number if can_view_full_account else mask_id_number(emp.id_number),
-                "employee_type": emp.employee_type,
-                "title": display_title,  # Return real title name for frontend display compatibility
-                "job_title_id": emp.job_title_id,
-                "position": emp.position,
-                "supervisor_role": emp.supervisor_role,
-                "bonus_grade": getattr(emp, 'bonus_grade', None),
-                "classroom_id": emp.classroom_id,
-                "base_salary": emp.base_salary,
-                "hourly_rate": emp.hourly_rate,
-                "supervisor_allowance": emp.supervisor_allowance,
-                "teacher_allowance": emp.teacher_allowance,
-                "meal_allowance": emp.meal_allowance,
-                "other_allowance": emp.other_allowance,
-                "insurance_salary_level": emp.insurance_salary_level,
-                "pension_self_rate": emp.pension_self_rate,
-                "work_start_time": emp.work_start_time,
-                "work_end_time": emp.work_end_time,
-                "is_active": emp.is_active,
-                "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
-                "probation_end_date": emp.probation_end_date.isoformat() if emp.probation_end_date else None,
-                "resign_date": emp.resign_date.isoformat() if emp.resign_date else None,
-                "resign_reason": getattr(emp, 'resign_reason', None),
-                "birthday": emp.birthday.isoformat() if emp.birthday else None,
-                "bank_code": emp.bank_code if can_view_full_account else None,
-                "bank_account": emp.bank_account if can_view_full_account else mask_bank_account(emp.bank_account),
-                "bank_account_name": emp.bank_account_name if can_view_full_account else None,
-            })
+            result.append(_format_employee_response(emp, can_view_full_account, resign_fields=True))
         return result
     finally:
         session.close()
@@ -203,8 +225,6 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
         can_view_full_account = has_permission(current_user.get("permissions", 0), Permission.SALARY_WRITE)
 
-        display_title = employee.job_title_rel.name if employee.job_title_rel else employee.title
-
         # Get classroom name if assigned
         classroom_name = None
         if employee.classroom_id:
@@ -214,38 +234,12 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
             if classroom:
                 classroom_name = f"{classroom.name} ({classroom.grade.name})" if classroom.grade else classroom.name
 
-        return {
-            "id": employee.id,
-            "employee_id": employee.employee_id,
-            "name": employee.name,
-            "id_number": employee.id_number if can_view_full_account else mask_id_number(employee.id_number),
-            "employee_type": employee.employee_type,
-            "title": display_title,
-            "job_title_id": employee.job_title_id,
-            "position": employee.position,
-            "supervisor_role": employee.supervisor_role,
-            "bonus_grade": getattr(employee, 'bonus_grade', None),
-            "classroom_id": employee.classroom_id,
-            "classroom_name": classroom_name,
-            "base_salary": employee.base_salary,
-            "hourly_rate": employee.hourly_rate,
-            "supervisor_allowance": employee.supervisor_allowance,
-            "teacher_allowance": employee.teacher_allowance,
-            "meal_allowance": employee.meal_allowance,
-            "transportation_allowance": employee.transportation_allowance,
-            "other_allowance": employee.other_allowance,
-            "bank_code": employee.bank_code if can_view_full_account else None,
-            "bank_account": employee.bank_account if can_view_full_account else mask_bank_account(employee.bank_account),
-            "bank_account_name": employee.bank_account_name if can_view_full_account else None,
-            "insurance_salary_level": employee.insurance_salary_level,
-            "pension_self_rate": employee.pension_self_rate,
-            "work_start_time": employee.work_start_time,
-            "work_end_time": employee.work_end_time,
-            "hire_date": employee.hire_date.isoformat() if employee.hire_date else None,
-            "probation_end_date": employee.probation_end_date.isoformat() if employee.probation_end_date else None,
-            "birthday": employee.birthday.isoformat() if employee.birthday else None,
-            "is_active": employee.is_active,
-        }
+        return _format_employee_response(
+            employee, can_view_full_account,
+            resign_fields=True,
+            include_transportation_allowance=True,
+            classroom_name=classroom_name,
+        )
     finally:
         session.close()
 
@@ -262,20 +256,12 @@ async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(requ
 
         emp_data = emp.model_dump()
         # 處理日期欄位
-        if emp_data.get('hire_date'):
-            emp_data['hire_date'] = datetime.strptime(emp_data['hire_date'], '%Y-%m-%d').date()
-        else:
-            emp_data.pop('hire_date', None)
-
-        if emp_data.get('probation_end_date'):
-            emp_data['probation_end_date'] = datetime.strptime(emp_data['probation_end_date'], '%Y-%m-%d').date()
-        else:
-            emp_data.pop('probation_end_date', None)
-
-        if emp_data.get('birthday'):
-            emp_data['birthday'] = datetime.strptime(emp_data['birthday'], '%Y-%m-%d').date()
-        else:
-            emp_data.pop('birthday', None)
+        for _field in _DATE_FIELDS:
+            parsed = parse_optional_date(emp_data.get(_field))
+            if parsed:
+                emp_data[_field] = parsed
+            else:
+                emp_data.pop(_field, None)
 
         if not emp_data.get('supervisor_role'):
             emp_data['supervisor_role'] = None
@@ -317,14 +303,9 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
         update_data = emp.model_dump(exclude_unset=True)
 
         # 處理日期欄位
-        if 'hire_date' in update_data and update_data['hire_date']:
-            update_data['hire_date'] = datetime.strptime(update_data['hire_date'], '%Y-%m-%d').date()
-
-        if 'probation_end_date' in update_data and update_data['probation_end_date']:
-            update_data['probation_end_date'] = datetime.strptime(update_data['probation_end_date'], '%Y-%m-%d').date()
-
-        if 'birthday' in update_data and update_data['birthday']:
-            update_data['birthday'] = datetime.strptime(update_data['birthday'], '%Y-%m-%d').date()
+        for _field in _DATE_FIELDS:
+            if _field in update_data and update_data[_field]:
+                update_data[_field] = parse_optional_date(update_data[_field])
 
         for key, value in update_data.items():
             if value is not None:

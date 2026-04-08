@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 
 def resolve_current_academic_term(target_date: Optional[date] = None) -> tuple[int, int]:
-    """根據日期決定當前學年度與學期。
+    """根據日期決定當前學年度與學期（學年度以西元年表示）。
 
     - 8月以後 → 當年上學期（semester=1）
     - 2月~7月 → 前一年下學期（semester=2）

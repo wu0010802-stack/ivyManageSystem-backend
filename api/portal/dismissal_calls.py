@@ -8,11 +8,12 @@ from datetime import datetime, date, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from models.database import get_session, Classroom, Student, Employee, User
+from models.database import get_session, Classroom, Student
 from models.dismissal import StudentDismissalCall
 from utils.auth import require_permission
 from utils.permissions import Permission
 from api.dismissal_calls import _call_base_dict, _DAY_START, _DAY_END
+from ._shared import _get_teacher_classroom_ids, _get_employee
 
 logger = logging.getLogger(__name__)
 
@@ -22,22 +23,6 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # 輔助函式
 # ---------------------------------------------------------------------------
-
-def _get_teacher_classroom_ids(employee_id: int, session) -> list[int]:
-    classrooms = session.query(Classroom).filter(
-        (Classroom.head_teacher_id == employee_id)
-        | (Classroom.assistant_teacher_id == employee_id),
-        Classroom.is_active == True,
-    ).all()
-    return [c.id for c in classrooms]
-
-
-def _build_call_out(call: StudentDismissalCall, session) -> dict:
-    """將單筆 ORM 物件組成 API 回傳 dict（用於單筆操作）。"""
-    student = session.query(Student).filter(Student.id == call.student_id).first()
-    classroom = session.query(Classroom).filter(Classroom.id == call.classroom_id).first()
-    return _call_base_dict(call, student, classroom)
-
 
 def _build_calls_out_bulk(calls: list, session) -> list[dict]:
     """批量組裝 API 回傳 dict，避免 N+1 查詢（用於列表端點）。"""
@@ -61,15 +46,6 @@ def _get_manager():
     return manager
 
 
-def _require_employee(current_user: dict, session) -> Employee:
-    employee_id = current_user.get("employee_id")
-    if not employee_id:
-        raise HTTPException(status_code=403, detail="此帳號無關聯員工資料")
-    emp = session.query(Employee).filter(Employee.id == employee_id).first()
-    if not emp:
-        raise HTTPException(status_code=404, detail="找不到對應的員工資料")
-    return emp
-
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -82,8 +58,8 @@ def portal_list_dismissal_calls(
     """列出我的班級今日的 pending + acknowledged 通知。"""
     session = get_session()
     try:
-        emp = _require_employee(current_user, session)
-        classroom_ids = _get_teacher_classroom_ids(emp.id, session)
+        emp = _get_employee(session, current_user)
+        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
         if not classroom_ids:
             return []
 
@@ -110,8 +86,8 @@ def portal_pending_count(
     """我的班級今日 pending 狀態通知數量。"""
     session = get_session()
     try:
-        emp = _require_employee(current_user, session)
-        classroom_ids = _get_teacher_classroom_ids(emp.id, session)
+        emp = _get_employee(session, current_user)
+        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
         if not classroom_ids:
             return {"count": 0}
 
@@ -130,80 +106,71 @@ def portal_pending_count(
         session.close()
 
 
-def _db_acknowledge(call_id: int, current_user: dict) -> tuple[dict, int]:
-    """同步 DB 操作：確認已收到通知，回傳 (out_dict, classroom_id)。"""
+def _db_transition_call(
+    call_id: int,
+    current_user: dict,
+    *,
+    required_status: str,
+    new_status: str,
+    by_field: str,
+    at_field: str,
+    action_label: str,
+) -> tuple[dict, int]:
+    """驗證教師權限 → 查詢通知 → 確認狀態 → 更新狀態，回傳 (out_dict, classroom_id)。"""
     session = get_session()
     try:
-        emp = _require_employee(current_user, session)
-        classroom_ids = _get_teacher_classroom_ids(emp.id, session)
+        emp = _get_employee(session, current_user)
+        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
 
         call = session.query(StudentDismissalCall).filter(
             StudentDismissalCall.id == call_id
         ).first()
         if not call:
             raise HTTPException(status_code=404, detail="找不到通知")
-
         if call.classroom_id not in classroom_ids:
             raise HTTPException(status_code=403, detail="無權操作此通知")
-
-        if call.status != "pending":
+        if call.status != required_status:
             raise HTTPException(
                 status_code=422,
-                detail=f"狀態為 {call.status} 的通知無法執行已收到操作",
+                detail=f"狀態為 {call.status} 的通知無法執行{action_label}操作",
             )
 
+        # 在 commit 前預讀，避免 post-commit N+1 查詢
+        student = session.query(Student).filter(Student.id == call.student_id).first()
+        classroom = session.query(Classroom).filter(Classroom.id == call.classroom_id).first()
+
         classroom_id = call.classroom_id
-        call.status = "acknowledged"
-        call.acknowledged_by_employee_id = emp.id
-        call.acknowledged_at = datetime.now(timezone.utc)
+        call.status = new_status
+        setattr(call, by_field, emp.id)
+        setattr(call, at_field, datetime.now(timezone.utc))
         try:
             session.commit()
         except Exception as e:
             session.rollback()
             raise e
-        out = _build_call_out(call, session)
-        logger.info("接送通知已收到：ID %d，教師 %s", call_id, emp.name)
+        out = _call_base_dict(call, student, classroom)
+        logger.info("接送通知%s：ID %d，教師 %s", action_label, call_id, emp.name)
         return out, classroom_id
     finally:
         session.close()
+
+
+def _db_acknowledge(call_id: int, current_user: dict) -> tuple[dict, int]:
+    return _db_transition_call(
+        call_id, current_user,
+        required_status="pending", new_status="acknowledged",
+        by_field="acknowledged_by_employee_id", at_field="acknowledged_at",
+        action_label="已收到",
+    )
 
 
 def _db_complete(call_id: int, current_user: dict) -> tuple[dict, int]:
-    """同步 DB 操作：確認學生已放學，回傳 (out_dict, classroom_id)。"""
-    session = get_session()
-    try:
-        emp = _require_employee(current_user, session)
-        classroom_ids = _get_teacher_classroom_ids(emp.id, session)
-
-        call = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.id == call_id
-        ).first()
-        if not call:
-            raise HTTPException(status_code=404, detail="找不到通知")
-
-        if call.classroom_id not in classroom_ids:
-            raise HTTPException(status_code=403, detail="無權操作此通知")
-
-        if call.status != "acknowledged":
-            raise HTTPException(
-                status_code=422,
-                detail=f"狀態為 {call.status} 的通知無法執行已放學操作",
-            )
-
-        classroom_id = call.classroom_id
-        call.status = "completed"
-        call.completed_by_employee_id = emp.id
-        call.completed_at = datetime.now(timezone.utc)
-        try:
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            raise e
-        out = _build_call_out(call, session)
-        logger.info("接送通知已完成：ID %d，教師 %s", call_id, emp.name)
-        return out, classroom_id
-    finally:
-        session.close()
+    return _db_transition_call(
+        call_id, current_user,
+        required_status="acknowledged", new_status="completed",
+        by_field="completed_by_employee_id", at_field="completed_at",
+        action_label="已放學",
+    )
 
 
 @router.post("/dismissal-calls/{call_id}/acknowledge")
@@ -217,11 +184,7 @@ async def portal_acknowledge(
 
     await _get_manager().broadcast(classroom_id, {
         "type": "dismissal_call_updated",
-        "payload": {
-            **out,
-            "requested_at": out["requested_at"].isoformat(),
-            "acknowledged_at": out["acknowledged_at"].isoformat() if out["acknowledged_at"] else None,
-        },
+        "payload": out,
     })
     return out
 
@@ -237,11 +200,6 @@ async def portal_complete(
 
     await _get_manager().broadcast(classroom_id, {
         "type": "dismissal_call_updated",
-        "payload": {
-            **out,
-            "requested_at": out["requested_at"].isoformat(),
-            "acknowledged_at": out["acknowledged_at"].isoformat() if out["acknowledged_at"] else None,
-            "completed_at": out["completed_at"].isoformat() if out["completed_at"] else None,
-        },
+        "payload": out,
     })
     return out

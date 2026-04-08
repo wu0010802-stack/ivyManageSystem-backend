@@ -352,46 +352,49 @@ def _resolve_bonus_for_employee(engine, emp, emp_dict, emp_role_map, classroom_i
     return classroom_context
 
 
+def _apply_precalculated_bonus(engine, emp, emp_dict, breakdown, month) -> None:
+    """預算獎金路徑的後處理：將事先計算好的節慶獎金/加班獎金寫回 breakdown，並修正 gross_salary。
+
+    僅在 emp_dict 含 '_calculated_festival_bonus' 時呼叫。
+    """
+    breakdown.festival_bonus = emp_dict['_calculated_festival_bonus']
+    breakdown.overtime_bonus = emp_dict.get('_calculated_overtime_bonus', 0)
+    # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
+    if not engine.get_bonus_distribution_month(month):
+        breakdown.festival_bonus = 0
+    breakdown.supervisor_dividend = engine.get_supervisor_dividend(
+        emp.title_name, emp.position or '', emp.supervisor_role or ''
+    )
+    # 時薪制：gross_salary 已由 calculate_salary() 正確設為 hourly_total，不可覆蓋
+    if emp_dict.get('employee_type') != 'hourly':
+        breakdown.gross_salary = (
+            breakdown.base_salary + breakdown.supervisor_allowance +
+            breakdown.teacher_allowance + breakdown.meal_allowance +
+            breakdown.transportation_allowance + breakdown.other_allowance +
+            breakdown.performance_bonus + breakdown.special_bonus +
+            breakdown.supervisor_dividend + breakdown.meeting_overtime_pay +
+            breakdown.birthday_bonus + breakdown.overtime_work_pay)
+    breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
+
 def _compute_salary_breakdown(engine, emp, emp_dict, year, month, emp_allowances,
                               classroom_context, meeting_context, global_bonus_settings,
                               overtime_work_pay: float = 0):
-    """呼叫 salary_engine 計算薪資明細。"""
-    if '_calculated_festival_bonus' in emp_dict:
-        breakdown = engine.calculate_salary(
-            emp_dict, year, month,
-            bonus_settings=None, allowances=emp_allowances,
-            classroom_context=None, meeting_context=meeting_context,
-            overtime_work_pay=overtime_work_pay)
-        breakdown.festival_bonus = emp_dict['_calculated_festival_bonus']
-        breakdown.overtime_bonus = emp_dict.get('_calculated_overtime_bonus', 0)
-        # 非發放月份不計節慶獎金（季度合併發放：2月、6月、9月、12月）
-        if not engine.get_bonus_distribution_month(month):
-            breakdown.festival_bonus = 0
-        breakdown.supervisor_dividend = engine.get_supervisor_dividend(
-            emp.title_name, emp.position or '', emp.supervisor_role or ''
-        )
-        # 時薪制：gross_salary 已由 calculate_salary() 正確設為 hourly_total，不可覆蓋
-        if emp_dict.get('employee_type') != 'hourly':
-            breakdown.gross_salary = (
-                breakdown.base_salary + breakdown.supervisor_allowance +
-                breakdown.teacher_allowance + breakdown.meal_allowance +
-                breakdown.transportation_allowance + breakdown.other_allowance +
-                breakdown.performance_bonus + breakdown.special_bonus +
-                breakdown.supervisor_dividend + breakdown.meeting_overtime_pay +
-                breakdown.birthday_bonus + breakdown.overtime_work_pay)
-        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
-    elif classroom_context:
-        breakdown = engine.calculate_salary(
-            emp_dict, year, month,
-            bonus_settings=None, allowances=emp_allowances,
-            classroom_context=classroom_context, meeting_context=meeting_context,
-            overtime_work_pay=overtime_work_pay)
-    else:
-        breakdown = engine.calculate_salary(
-            emp_dict, year, month,
-            bonus_settings=global_bonus_settings, allowances=emp_allowances,
-            meeting_context=meeting_context,
-            overtime_work_pay=overtime_work_pay)
+    """呼叫 salary_engine 計算薪資明細，依獎金路徑分三條分支。"""
+    use_precalculated = '_calculated_festival_bonus' in emp_dict
+    effective_classroom = None if use_precalculated else classroom_context
+    effective_bonus_settings = None if (use_precalculated or classroom_context) else global_bonus_settings
+
+    breakdown = engine.calculate_salary(
+        emp_dict, year, month,
+        bonus_settings=effective_bonus_settings,
+        allowances=emp_allowances,
+        classroom_context=effective_classroom,
+        meeting_context=meeting_context,
+        overtime_work_pay=overtime_work_pay)
+
+    if use_precalculated:
+        _apply_precalculated_bonus(engine, emp, emp_dict, breakdown, month)
     return breakdown
 
 
@@ -724,6 +727,8 @@ def get_salary_records(
         role = current_user.get("role", "")
         FULL_SALARY_ROLES = {"admin", "hr"}
         viewer_employee_id = None if role in FULL_SALARY_ROLES else current_user.get("employee_id")
+        if viewer_employee_id is None and role not in FULL_SALARY_ROLES:
+            raise HTTPException(status_code=403, detail="無法識別員工身分，禁止查詢薪資")
 
         query = session.query(SalaryRecord, Employee).join(
             Employee, SalaryRecord.employee_id == Employee.id
@@ -830,6 +835,12 @@ def manual_adjust_salary(
             raise HTTPException(status_code=400, detail="沒有實際變更")
 
         _recalculate_salary_record_totals(record)
+
+        if (record.net_salary or 0) < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"調整後淨薪資為負數（{record.net_salary} 元），請確認扣款設定是否正確",
+            )
 
         operator = current_user.get("username") or current_user.get("name") or "管理員"
         audit_note = (
@@ -1300,7 +1311,9 @@ def unfinalize_salary(
     record_id: int,
     current_user: dict = Depends(require_permission(Permission.SALARY_WRITE)),
 ):
-    """解除單筆薪資封存（危險操作，會記錄稽核備註）"""
+    """解除單筆薪資封存（危險操作，僅限 admin/hr，會記錄稽核備註）"""
+    if current_user.get("role") not in ("admin", "hr"):
+        raise HTTPException(status_code=403, detail="薪資封存解除僅限系統管理員或人事主管操作")
     session = get_session()
     try:
         record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
@@ -1336,66 +1349,80 @@ _SIMULATE_COMPARE_KEYS = [
 ]
 
 
+def _build_salary_display_dict(**kwargs) -> dict:
+    """共用薪資欄位 dict 建構器，確保兩個轉換函式的欄位名稱與順序一致。"""
+    keys = [
+        "base_salary", "total_allowances", "festival_bonus", "overtime_bonus", "overtime_pay",
+        "meeting_overtime_pay", "birthday_bonus", "supervisor_dividend",
+        "labor_insurance", "health_insurance", "pension_self",
+        "late_deduction", "early_leave_deduction", "missing_punch_deduction",
+        "leave_deduction", "absence_deduction", "meeting_absence_deduction",
+        "gross_salary", "total_deductions", "net_pay",
+        "late_count", "early_leave_count", "missing_punch_count",
+    ]
+    return {k: kwargs.get(k, 0) for k in keys}
+
+
 def _breakdown_to_simulate_dict(breakdown, late_count: int, early_count: int, missing_count: int) -> dict:
-    return {
-        "base_salary": breakdown.base_salary,
-        "total_allowances": calculate_total_allowances(breakdown),
-        "festival_bonus": breakdown.festival_bonus,
-        "overtime_bonus": breakdown.overtime_bonus,
-        "overtime_pay": breakdown.overtime_work_pay,
-        "meeting_overtime_pay": breakdown.meeting_overtime_pay or 0,
-        "birthday_bonus": breakdown.birthday_bonus or 0,
-        "supervisor_dividend": breakdown.supervisor_dividend,
-        "labor_insurance": breakdown.labor_insurance,
-        "health_insurance": breakdown.health_insurance,
-        "pension_self": breakdown.pension_self or 0,
-        "late_deduction": breakdown.late_deduction,
-        "early_leave_deduction": breakdown.early_leave_deduction,
-        "missing_punch_deduction": breakdown.missing_punch_deduction,
-        "leave_deduction": breakdown.leave_deduction,
-        "absence_deduction": breakdown.absence_deduction or 0,
-        "meeting_absence_deduction": breakdown.meeting_absence_deduction or 0,
-        "gross_salary": breakdown.gross_salary,
-        "total_deductions": breakdown.total_deduction,
-        "net_pay": breakdown.net_salary,
-        "late_count": late_count,
-        "early_leave_count": early_count,
-        "missing_punch_count": missing_count,
-    }
+    return _build_salary_display_dict(
+        base_salary=breakdown.base_salary,
+        total_allowances=calculate_total_allowances(breakdown),
+        festival_bonus=breakdown.festival_bonus,
+        overtime_bonus=breakdown.overtime_bonus,
+        overtime_pay=breakdown.overtime_work_pay,
+        meeting_overtime_pay=breakdown.meeting_overtime_pay or 0,
+        birthday_bonus=breakdown.birthday_bonus or 0,
+        supervisor_dividend=breakdown.supervisor_dividend,
+        labor_insurance=breakdown.labor_insurance,
+        health_insurance=breakdown.health_insurance,
+        pension_self=breakdown.pension_self or 0,
+        late_deduction=breakdown.late_deduction,
+        early_leave_deduction=breakdown.early_leave_deduction,
+        missing_punch_deduction=breakdown.missing_punch_deduction,
+        leave_deduction=breakdown.leave_deduction,
+        absence_deduction=breakdown.absence_deduction or 0,
+        meeting_absence_deduction=breakdown.meeting_absence_deduction or 0,
+        gross_salary=breakdown.gross_salary,
+        total_deductions=breakdown.total_deduction,
+        net_pay=breakdown.net_salary,
+        late_count=late_count,
+        early_leave_count=early_count,
+        missing_punch_count=missing_count,
+    )
 
 
 def _record_to_actual_dict(record) -> dict:
-    return {
-        "base_salary": record.base_salary or 0,
-        "total_allowances": (
+    return _build_salary_display_dict(
+        base_salary=record.base_salary or 0,
+        total_allowances=(
             (record.supervisor_allowance or 0)
             + (record.teacher_allowance or 0)
             + (record.meal_allowance or 0)
             + (record.transportation_allowance or 0)
             + (record.other_allowance or 0)
         ),
-        "festival_bonus": record.festival_bonus or 0,
-        "overtime_bonus": record.overtime_bonus or 0,
-        "overtime_pay": record.overtime_pay or 0,
-        "meeting_overtime_pay": record.meeting_overtime_pay or 0,
-        "birthday_bonus": record.birthday_bonus or 0,
-        "supervisor_dividend": record.supervisor_dividend or 0,
-        "labor_insurance": record.labor_insurance_employee or 0,
-        "health_insurance": record.health_insurance_employee or 0,
-        "pension_self": record.pension_employee or 0,
-        "late_deduction": record.late_deduction or 0,
-        "early_leave_deduction": record.early_leave_deduction or 0,
-        "missing_punch_deduction": record.missing_punch_deduction or 0,
-        "leave_deduction": record.leave_deduction or 0,
-        "absence_deduction": record.absence_deduction or 0,
-        "meeting_absence_deduction": record.meeting_absence_deduction or 0,
-        "gross_salary": record.gross_salary or 0,
-        "total_deductions": record.total_deduction or 0,
-        "net_pay": record.net_salary or 0,
-        "late_count": record.late_count or 0,
-        "early_leave_count": record.early_leave_count or 0,
-        "missing_punch_count": record.missing_punch_count or 0,
-    }
+        festival_bonus=record.festival_bonus or 0,
+        overtime_bonus=record.overtime_bonus or 0,
+        overtime_pay=record.overtime_pay or 0,
+        meeting_overtime_pay=record.meeting_overtime_pay or 0,
+        birthday_bonus=record.birthday_bonus or 0,
+        supervisor_dividend=record.supervisor_dividend or 0,
+        labor_insurance=record.labor_insurance_employee or 0,
+        health_insurance=record.health_insurance_employee or 0,
+        pension_self=record.pension_employee or 0,
+        late_deduction=record.late_deduction or 0,
+        early_leave_deduction=record.early_leave_deduction or 0,
+        missing_punch_deduction=record.missing_punch_deduction or 0,
+        leave_deduction=record.leave_deduction or 0,
+        absence_deduction=record.absence_deduction or 0,
+        meeting_absence_deduction=record.meeting_absence_deduction or 0,
+        gross_salary=record.gross_salary or 0,
+        total_deductions=record.total_deduction or 0,
+        net_pay=record.net_salary or 0,
+        late_count=record.late_count or 0,
+        early_leave_count=record.early_leave_count or 0,
+        missing_punch_count=record.missing_punch_count or 0,
+    )
 
 
 @router.post("/salaries/simulate")

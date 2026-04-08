@@ -11,13 +11,15 @@ from cachetools import TTLCache
 from fastapi import HTTPException
 from utils.masking import mask_bank_account
 from pydantic import BaseModel, field_validator, model_validator
+from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS, MAX_OVERTIME_HOURS
 from utils.leave_validators import validate_leave_hours_value, validate_leave_date_order
 
+from sqlalchemy import or_
+
 from models.database import (
-    get_session, Employee, DailyShift, ShiftAssignment,
+    get_session, Employee, DailyShift, ShiftAssignment, Classroom, Student,
 )
 from utils.auth import get_current_user
-from api.overtimes import MAX_OVERTIME_HOURS
 
 # ShiftType 很少異動，使用 TTLCache 5 分鐘，避免每次請求全表查詢
 _shift_type_cache: TTLCache = TTLCache(maxsize=2, ttl=300)
@@ -25,34 +27,6 @@ _shift_type_cache: TTLCache = TTLCache(maxsize=2, ttl=300)
 logger = logging.getLogger(__name__)
 
 WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
-
-LEAVE_TYPE_LABELS = {
-    "personal": "事假",
-    "sick": "病假",
-    "menstrual": "生理假",
-    "annual": "特休",
-    "maternity": "產假",
-    "paternity": "陪產假",
-    "official": "公假",
-    "marriage": "婚假",
-    "bereavement": "喪假",
-    "prenatal": "產檢假",
-    "paternity_new": "陪產檢及陪產假",
-    "miscarriage": "流產假",
-    "family_care": "家庭照顧假",
-    "parental_unpaid": "育嬰留職停薪",
-    "compensatory": "補休",
-    "occupational_injury": "公傷病假",
-    "pregnancy_rest": "安胎休養假",
-    "typhoon": "颱風假",
-}
-
-OVERTIME_TYPE_LABELS = {
-    "weekday": "平日",
-    "weekend": "假日",
-    "holiday": "國定假日",
-}
-
 
 # ============ Pydantic Models ============
 
@@ -147,6 +121,54 @@ class SubstituteRespond(BaseModel):
 
 
 # ============ Helpers ============
+
+def _get_teacher_classroom_ids(session, emp_id: int) -> list[int]:
+    """取得教師所屬班級 ID 列表"""
+    classrooms = session.query(Classroom).filter(
+        Classroom.is_active == True,
+        or_(
+            Classroom.head_teacher_id == emp_id,
+            Classroom.assistant_teacher_id == emp_id,
+            Classroom.art_teacher_id == emp_id,
+        ),
+    ).all()
+    return [c.id for c in classrooms]
+
+
+def _get_teacher_student_ids(
+    session,
+    emp_id: int,
+    classroom_id: int | None = None,
+    forbidden_detail: str = "無權查看此班級的學生記錄",
+) -> tuple[list[int], list[int]]:
+    """取得教師有權查看的班級及學生 ID 列表。
+
+    Returns:
+        (classroom_ids, student_ids)：student_ids 為空代表無可查看學生，
+        呼叫端應直接回傳空結果。
+
+    Raises:
+        HTTPException 403：指定 classroom_id 不屬於教師管轄班級。
+    """
+    classroom_ids = _get_teacher_classroom_ids(session, emp_id)
+    if not classroom_ids:
+        return classroom_ids, []
+
+    if classroom_id:
+        if classroom_id not in classroom_ids:
+            raise HTTPException(status_code=403, detail=forbidden_detail)
+        target_ids = [classroom_id]
+    else:
+        target_ids = classroom_ids
+
+    student_ids = [
+        s.id for s in session.query(Student.id).filter(
+            Student.classroom_id.in_(target_ids),
+            Student.is_active == True,
+        ).all()
+    ]
+    return target_ids, student_ids
+
 
 def _get_employee(session, current_user: dict) -> Employee:
     employee_id = current_user.get("employee_id")
