@@ -42,7 +42,7 @@ from models.activity import (
 )
 from models.dismissal import StudentDismissalCall
 from models.student_transfer import StudentClassroomTransfer
-from models.recruitment import RecruitmentVisit, RecruitmentPeriod
+from models.recruitment import RecruitmentVisit, RecruitmentPeriod, RecruitmentGeocodeCache
 
 __all__ = [
     # base

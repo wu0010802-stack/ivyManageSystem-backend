@@ -158,10 +158,19 @@ class OffboardRequest(BaseModel):
 # ============ Routes ============
 
 @router.get("/employees")
-def get_employees(skip: int = 0, limit: int = 100, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
+def get_employees(
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
+):
     session = get_session()
     try:
-        employees = session.query(Employee).options(joinedload(Employee.job_title_rel)).offset(skip).limit(limit).all()
+        q = session.query(Employee).options(joinedload(Employee.job_title_rel))
+        if search:
+            like = f"%{search}%"
+            q = q.filter(Employee.name.ilike(like) | Employee.employee_id.ilike(like))
+        employees = q.offset(skip).limit(limit).all()
         can_view_full_account = has_permission(current_user.get("permissions", 0), Permission.SALARY_WRITE)
 
         result = []

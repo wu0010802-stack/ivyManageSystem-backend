@@ -122,6 +122,7 @@ ROLE_TEMPLATES: Dict[str, int] = {
         Permission.STUDENTS_READ | Permission.STUDENTS_WRITE |
         Permission.CLASSROOMS_READ | Permission.CLASSROOMS_WRITE |
         Permission.FEES_READ | Permission.FEES_WRITE |
+        Permission.RECRUITMENT_READ | Permission.RECRUITMENT_WRITE |
         Permission.REPORTS
     ),
     "teacher": (

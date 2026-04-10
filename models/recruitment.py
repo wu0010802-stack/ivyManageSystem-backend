@@ -3,7 +3,7 @@ models/recruitment.py — 招生訪視記錄
 """
 
 from datetime import datetime, date
-from sqlalchemy import Column, Integer, String, Boolean, Date, DateTime, Text, Index
+from sqlalchemy import Column, Integer, String, Boolean, Date, DateTime, Text, Index, Float
 
 from models.base import Base
 
@@ -58,6 +58,24 @@ class RecruitmentMonth(Base):
     id         = Column(Integer, primary_key=True, index=True)
     month      = Column(String(10), nullable=False, unique=True)  # 民國月份，如 "115.04"
     created_at = Column(DateTime, default=datetime.now)
+
+
+class RecruitmentGeocodeCache(Base):
+    """招生地址 geocoding 快取，避免重複打外部 API。"""
+    __tablename__ = "recruitment_geocode_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    address = Column(String(200), nullable=False, unique=True, index=True)
+    district = Column(String(30), nullable=True)
+    formatted_address = Column(String(255), nullable=True)
+    provider = Column(String(20), nullable=True)
+    status = Column(String(20), nullable=False, default="pending")  # pending/resolved/failed
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
+    error_message = Column(String(255), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class RecruitmentPeriod(Base):

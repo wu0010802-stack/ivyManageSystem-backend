@@ -574,13 +574,14 @@ def run_alembic_upgrade():
 
 def run_startup_bootstrap():
     """執行啟動必要任務，不包含 schema/data migration。"""
-    from models.recruitment import RecruitmentVisit, RecruitmentPeriod, RecruitmentMonth
+    from models.recruitment import RecruitmentVisit, RecruitmentPeriod, RecruitmentMonth, RecruitmentGeocodeCache
     from models.fees import FeeItem, StudentFeeRecord
     init_database()
     engine = get_engine()
     RecruitmentVisit.__table__.create(engine, checkfirst=True)
     RecruitmentPeriod.__table__.create(engine, checkfirst=True)
     RecruitmentMonth.__table__.create(engine, checkfirst=True)
+    RecruitmentGeocodeCache.__table__.create(engine, checkfirst=True)
     FeeItem.__table__.create(engine, checkfirst=True)
     StudentFeeRecord.__table__.create(engine, checkfirst=True)
     migrate_school_year_to_roc()
@@ -593,6 +594,8 @@ def run_startup_bootstrap():
     seed_activity_settings()
     salary_engine.load_config_from_db()
     _load_line_config()
+    from api.recruitment import normalize_existing_months
+    normalize_existing_months()
 
 
 def migrate_school_year_to_roc():

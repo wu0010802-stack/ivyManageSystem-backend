@@ -249,7 +249,7 @@ async def get_students(
         if search:
             like = f"%{search}%"
             q = q.filter(
-                (Student.name.ilike(like)) | (Student.student_id.ilike(like))
+                (Student.name.ilike(like)) | (Student.student_id.ilike(like)) | (Student.parent_name.ilike(like))
             )
 
         total = q.count()

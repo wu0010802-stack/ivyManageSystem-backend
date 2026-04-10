@@ -2,7 +2,9 @@
 Authentication & user management router
 """
 
+import ipaddress
 import logging
+import os
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -28,6 +30,32 @@ from utils.permissions import Permission
 from utils.permissions import get_permissions_definition, get_role_default_permissions, ROLE_LABELS
 
 logger = logging.getLogger(__name__)
+
+
+def _get_school_wifi_networks() -> list:
+    raw = os.getenv("SCHOOL_WIFI_IPS", "").strip()
+    if not raw:
+        return []
+    result = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if entry:
+            try:
+                result.append(ipaddress.ip_network(entry, strict=False))
+            except ValueError:
+                logger.warning("SCHOOL_WIFI_IPS 無效項目: %s", entry)
+    return result
+
+
+def _is_school_wifi(ip_str: str) -> bool:
+    networks = _get_school_wifi_networks()
+    if not networks:
+        return True  # 未設定白名單 → 全部放行
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return any(addr in net for net in networks)
+    except ValueError:
+        return False
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -251,6 +279,10 @@ def login(data: LoginRequest, request: Request):
 
         # 登入成功：清除帳號失敗記錄
         _clear_login_failures(data.username)
+
+        # 教師角色須從學校 WiFi 登入
+        if user.role == "teacher" and not _is_school_wifi(client_ip):
+            raise HTTPException(status_code=403, detail="請連接學校 WiFi 後再登入")
 
         # 透明升級：若密碼是舊格式（100,000 次迭代），趁登入時無感升級至 600,000 次
         if needs_rehash(user.password_hash):
