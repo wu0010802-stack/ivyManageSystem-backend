@@ -58,6 +58,7 @@ from api.dismissal_ws import ws_router as dismissal_ws_router
 from api.line_webhook import router as line_webhook_router, init_webhook_service
 from api.gov_reports import router as gov_reports_router, init_gov_report_services
 from api.fees import router as fees_router
+from api.recruitment import router as recruitment_router
 from api.student_enrollment import router as student_enrollment_router
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,7 @@ def _is_production() -> bool:
 # ---------------------------------------------------------------------------
 
 def on_startup():
+    run_alembic_upgrade()
     run_startup_bootstrap()
     logger.info("Application started successfully.")
 
@@ -195,6 +197,7 @@ app.include_router(dismissal_ws_router)  # WebSocket（路徑已含 /ws/...）
 app.include_router(line_webhook_router)
 app.include_router(gov_reports_router)
 app.include_router(fees_router)
+app.include_router(recruitment_router)
 app.include_router(student_enrollment_router)
 
 # Audit middleware (must be added after CORS middleware)
@@ -563,7 +566,7 @@ def run_alembic_upgrade():
         )
 
     subprocess.run(
-        [*base_cmd, "upgrade", "head"],
+        [*base_cmd, "upgrade", "heads"],
         cwd=backend_root,
         check=True,
     )
@@ -571,7 +574,15 @@ def run_alembic_upgrade():
 
 def run_startup_bootstrap():
     """執行啟動必要任務，不包含 schema/data migration。"""
+    from models.recruitment import RecruitmentVisit, RecruitmentPeriod, RecruitmentMonth
+    from models.fees import FeeItem, StudentFeeRecord
     init_database()
+    engine = get_engine()
+    RecruitmentVisit.__table__.create(engine, checkfirst=True)
+    RecruitmentPeriod.__table__.create(engine, checkfirst=True)
+    RecruitmentMonth.__table__.create(engine, checkfirst=True)
+    FeeItem.__table__.create(engine, checkfirst=True)
+    StudentFeeRecord.__table__.create(engine, checkfirst=True)
     migrate_school_year_to_roc()
     seed_class_grades()
     seed_job_titles()

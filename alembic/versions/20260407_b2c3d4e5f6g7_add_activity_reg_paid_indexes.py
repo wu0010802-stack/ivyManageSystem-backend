@@ -5,7 +5,7 @@
 - activity_registrations: (is_active, is_paid) — 同時過濾有效報名與繳費狀態
 
 Revision ID: b2c3d4e5f6g7
-Revises: a1b2c3d4e5f6
+Revises: a2b3c4d5e6f7
 Create Date: 2026-04-07 00:00:00.000000
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy import inspect
 
 revision = "b2c3d4e5f6g7"
-down_revision = "a1b2c3d4e5f6"
+down_revision = "a2b3c4d5e6f7"
 branch_labels = None
 depends_on = None
 

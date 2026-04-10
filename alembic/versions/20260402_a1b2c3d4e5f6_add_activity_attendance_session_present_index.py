@@ -2,7 +2,7 @@
 
 新增 (session_id, is_present) 複合索引，加速 GROUP BY 聚合查詢。
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: a2b3c4d5e6f7
 Revises: z5a6b7c8d9e0
 Create Date: 2026-04-02 00:00:00.000000
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "a1b2c3d4e5f6"
+revision = "a2b3c4d5e6f7"
 down_revision = "z5a6b7c8d9e0"
 branch_labels = None
 depends_on = None

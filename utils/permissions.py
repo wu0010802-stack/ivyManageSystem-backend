@@ -48,6 +48,8 @@ class Permission(IntFlag):
     # 前端進行權限位元運算時必須使用 BigInt（如 BigInt(permissions) & BigInt(1) << 32n）
     # 以避免整數溢出。後端 Python IntFlag 不受此限制影響。
     FEES_WRITE = 1 << 32            # 學費管理 (編輯)
+    RECRUITMENT_READ  = 1 << 33    # 招生統計 (檢視)
+    RECRUITMENT_WRITE = 1 << 34    # 招生統計 (編輯)
 
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
@@ -71,6 +73,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "ACTIVITY": {"read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
     "DISMISSAL_CALLS": {"read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
     "FEES": {"read": "FEES_READ", "write": "FEES_WRITE"},
+    "RECRUITMENT": {"read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -88,6 +91,7 @@ _RW_PAIRS: List[tuple] = [
     (Permission.ACTIVITY_READ, Permission.ACTIVITY_WRITE),
     (Permission.DISMISSAL_CALLS_READ, Permission.DISMISSAL_CALLS_WRITE),
     (Permission.FEES_READ, Permission.FEES_WRITE),
+    (Permission.RECRUITMENT_READ, Permission.RECRUITMENT_WRITE),
 ]
 
 
@@ -180,6 +184,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     "DISMISSAL_CALLS_WRITE": "接送通知 (操作)",
     "FEES_READ": "學費管理 (檢視)",
     "FEES_WRITE": "學費管理 (編輯)",
+    "RECRUITMENT_READ": "招生統計 (檢視)",
+    "RECRUITMENT_WRITE": "招生統計 (編輯)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -210,6 +216,7 @@ PERMISSION_GROUPS: List[Dict] = [
             {"module": "課後才藝", "read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
             {"module": "接送通知", "read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
             {"module": "學費管理", "read": "FEES_READ", "write": "FEES_WRITE"},
+            {"module": "招生統計", "read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
         ],
     },
     {

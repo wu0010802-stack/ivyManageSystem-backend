@@ -6,8 +6,8 @@
 - users: (employee_id, is_active) — 請假/加班列表批次查角色
 - registration_courses: (registration_id, course_id, status) — 改善 JOIN 效能（補充現有 ix_reg_courses_status）
 
-Revision ID: n1o2p3q4r5s6
-Revises: m9n0o1p2q3r4
+Revision ID: n2o3p4q5r6s7
+Revises: n1o2p3q4r5s6
 Create Date: 2026-03-19 00:00:00.000000
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "n1o2p3q4r5s6"
-down_revision = "m9n0o1p2q3r4"
+revision = "n2o3p4q5r6s7"
+down_revision = "n1o2p3q4r5s6"
 branch_labels = None
 depends_on = None
 

@@ -5,7 +5,7 @@
 - leave_quotas: (year) — filter(year == year) 全年查詢，現有 UniqueConstraint 前導是 employee_id
 
 Revision ID: o2p3q4r5s6t7
-Revises: n1o2p3q4r5s6
+Revises: n2o3p4q5r6s7
 Create Date: 2026-03-19 00:00:00.000000
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy import inspect
 
 revision = "o2p3q4r5s6t7"
-down_revision = "n1o2p3q4r5s6"
+down_revision = "n2o3p4q5r6s7"
 branch_labels = None
 depends_on = None
 
