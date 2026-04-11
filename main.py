@@ -2,6 +2,7 @@
 幼稚園考勤薪資系統 - FastAPI 後端
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ from models.database import (
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
 from services.line_service import LineService
+from services import recruitment_ivykids_sync as recruitment_ivykids_sync_service
 from utils.permissions import _RW_PAIRS
 
 # Routers
@@ -100,7 +102,18 @@ def on_startup():
 @asynccontextmanager
 async def app_lifespan(app_instance: FastAPI):
     on_startup()
-    yield
+    scheduler_stop_event = asyncio.Event()
+    scheduler_task = None
+    if recruitment_ivykids_sync_service.scheduler_configured():
+        scheduler_task = asyncio.create_task(
+            recruitment_ivykids_sync_service.run_sync_scheduler(scheduler_stop_event)
+        )
+    try:
+        yield
+    finally:
+        if scheduler_task:
+            scheduler_stop_event.set()
+            await scheduler_task
 
 
 app = FastAPI(
@@ -574,7 +587,15 @@ def run_alembic_upgrade():
 
 def run_startup_bootstrap():
     """執行啟動必要任務，不包含 schema/data migration。"""
-    from models.recruitment import RecruitmentVisit, RecruitmentPeriod, RecruitmentMonth, RecruitmentGeocodeCache
+    from models.recruitment import (
+        RecruitmentVisit,
+        RecruitmentPeriod,
+        RecruitmentMonth,
+        RecruitmentGeocodeCache,
+        RecruitmentCampusSetting,
+        RecruitmentAreaInsightCache,
+        RecruitmentSyncState,
+    )
     from models.fees import FeeItem, StudentFeeRecord
     init_database()
     engine = get_engine()
@@ -582,6 +603,9 @@ def run_startup_bootstrap():
     RecruitmentPeriod.__table__.create(engine, checkfirst=True)
     RecruitmentMonth.__table__.create(engine, checkfirst=True)
     RecruitmentGeocodeCache.__table__.create(engine, checkfirst=True)
+    RecruitmentCampusSetting.__table__.create(engine, checkfirst=True)
+    RecruitmentAreaInsightCache.__table__.create(engine, checkfirst=True)
+    RecruitmentSyncState.__table__.create(engine, checkfirst=True)
     FeeItem.__table__.create(engine, checkfirst=True)
     StudentFeeRecord.__table__.create(engine, checkfirst=True)
     migrate_school_year_to_roc()

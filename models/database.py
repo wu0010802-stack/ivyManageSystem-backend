@@ -42,7 +42,14 @@ from models.activity import (
 )
 from models.dismissal import StudentDismissalCall
 from models.student_transfer import StudentClassroomTransfer
-from models.recruitment import RecruitmentVisit, RecruitmentPeriod, RecruitmentGeocodeCache
+from models.recruitment import (
+    RecruitmentVisit,
+    RecruitmentPeriod,
+    RecruitmentGeocodeCache,
+    RecruitmentCampusSetting,
+    RecruitmentAreaInsightCache,
+    RecruitmentSyncState,
+)
 
 __all__ = [
     # base
@@ -90,4 +97,7 @@ __all__ = [
     "StudentDismissalCall",
     # student transfer history
     "StudentClassroomTransfer",
+    # recruitment
+    "RecruitmentVisit", "RecruitmentPeriod", "RecruitmentGeocodeCache",
+    "RecruitmentCampusSetting", "RecruitmentAreaInsightCache", "RecruitmentSyncState",
 ]

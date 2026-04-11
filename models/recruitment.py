@@ -25,6 +25,9 @@ class RecruitmentVisit(Base):
     source = Column(String(50), nullable=True, index=True)          # 幼生來源
     referrer = Column(String(50), nullable=True, index=True)        # 介紹者
     deposit_collector = Column(String(50), nullable=True)           # 收預繳人員
+    external_source = Column(String(50), nullable=True, index=True) # 外部同步來源
+    external_id = Column(String(100), nullable=True, index=True)    # 外部系統原始 ID
+    external_status = Column(String(50), nullable=True)             # 外部系統狀態
     has_deposit = Column(Boolean, default=False, nullable=False)    # 是否預繳
     notes = Column(Text, nullable=True)                             # 備註（含預計就讀月份）
     parent_response = Column(Text, nullable=True)                   # 電訪後家長回應
@@ -48,6 +51,7 @@ class RecruitmentVisit(Base):
         Index("ix_rv_referrer_grade",        "referrer",    "grade"),
         Index("ix_rv_month_has_deposit",     "month",       "has_deposit"),
         Index("ix_rv_expected_start_label",  "expected_start_label"),
+        Index("ux_rv_external_source_id",    "external_source", "external_id", unique=True),
     )
 
 
@@ -68,12 +72,69 @@ class RecruitmentGeocodeCache(Base):
     address = Column(String(200), nullable=False, unique=True, index=True)
     district = Column(String(30), nullable=True)
     formatted_address = Column(String(255), nullable=True)
+    matched_address = Column(String(255), nullable=True)
+    google_place_id = Column(Text, nullable=True)
     provider = Column(String(20), nullable=True)
     status = Column(String(20), nullable=False, default="pending")  # pending/resolved/failed
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
+    town_code = Column(String(20), nullable=True, index=True)
+    town_name = Column(String(50), nullable=True)
+    county_name = Column(String(50), nullable=True)
+    land_use_label = Column(String(120), nullable=True)
+    travel_minutes = Column(Float, nullable=True)
+    travel_distance_km = Column(Float, nullable=True)
+    data_quality = Column(String(20), nullable=False, default="partial")
     error_message = Column(String(255), nullable=True)
     resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class RecruitmentCampusSetting(Base):
+    """招生生活圈分析主園所設定。v1 僅使用單筆資料。"""
+    __tablename__ = "recruitment_campus_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campus_name = Column(String(100), nullable=False, default="本園")
+    campus_address = Column(String(255), nullable=False, default="")
+    campus_lat = Column(Float, nullable=True)
+    campus_lng = Column(Float, nullable=True)
+    travel_mode = Column(String(20), nullable=False, default="driving")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class RecruitmentAreaInsightCache(Base):
+    """行政區 / 鄉鎮市區層級的市場情報快取。"""
+    __tablename__ = "recruitment_area_insight_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    county_name = Column(String(50), nullable=True)
+    district = Column(String(50), nullable=False, index=True)
+    town_code = Column(String(20), nullable=True, unique=True, index=True)
+    population_density = Column(Float, nullable=True)
+    population_0_6 = Column(Integer, nullable=True)
+    data_completeness = Column(String(20), nullable=False, default="partial")
+    source_notes = Column(Text, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class RecruitmentSyncState(Base):
+    """外部招生資料同步狀態。"""
+    __tablename__ = "recruitment_sync_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider_name = Column(String(50), nullable=False, unique=True, index=True)
+    provider_label = Column(String(100), nullable=True)
+    sync_in_progress = Column(Boolean, default=False, nullable=False)
+    last_started_at = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_sync_status = Column(String(20), nullable=True)
+    last_sync_message = Column(Text, nullable=True)
+    last_sync_counts = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

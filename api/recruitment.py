@@ -4,7 +4,7 @@ api/recruitment.py — 招生統計 API endpoints
 
 import logging
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,7 +20,8 @@ from models.recruitment import (
     RecruitmentMonth,
     RecruitmentGeocodeCache,
 )
-from services.geocoding_service import can_geocode, current_geocoding_provider, geocode_address
+from services import recruitment_market_intelligence as market_service
+from services import recruitment_ivykids_sync as ivykids_sync_service
 from utils.auth import require_permission
 from utils.excel_utils import xlsx_streaming_response
 from utils.permissions import Permission
@@ -45,10 +46,41 @@ NO_DEPOSIT_REASONS = [
 ]
 
 TOP_SOURCES_COUNT = 10   # 接待×來源交叉表顯示最大來源數
+ADDRESS_SYNC_MODES = {"incremental", "resync_google"}
+HOTSPOT_CACHE_LOOKUP_CHUNK_SIZE = 200
+HIGH_PRIORITY_NO_DEPOSIT_REASONS = {
+    "時程未到／仍在觀望",
+    "課程／環境仍在評估",
+}
+MEDIUM_PRIORITY_NO_DEPOSIT_REASONS = {
+    "距離／地點因素",
+    "費用考量",
+    "家庭照顧安排考量",
+}
+LOW_PRIORITY_NO_DEPOSIT_REASONS = {
+    "已有其他就學選項／比較他校",
+    "特殊需求／名額限制",
+}
+NO_DEPOSIT_PRIORITY_REASON_MAP = {
+    "high": HIGH_PRIORITY_NO_DEPOSIT_REASONS,
+    "medium": MEDIUM_PRIORITY_NO_DEPOSIT_REASONS,
+    "low": LOW_PRIORITY_NO_DEPOSIT_REASONS,
+}
+FUNNEL_DROP_THRESHOLD = 10.0
+HIGH_POTENTIAL_BACKLOG_THRESHOLD = 5
+DEFAULT_OVERDUE_DAYS = 14
+COLD_LEAD_DAYS = 90
+SOURCE_IMBALANCE_SHARE_THRESHOLD = 40.0
+ACTION_QUEUE_LIMIT = 3
 
 # 童年綠地判定關鍵字
 _CHUANNIAN_KW = "童年綠地"
 _YAOTING_KW   = "班導-雅婷"
+_BRANCH_INTRO_KW = "分校介紹"
+_SOURCE_GROUP_ALIASES = {
+    _CHUANNIAN_KW: {"二人同行", "七人同行", "9人同行", "九人同行", "Ruby老師"},
+    _BRANCH_INTRO_KW: {"國際校介紹", "仁武校介紹", "明華校介紹", "崇德校介紹", _BRANCH_INTRO_KW},
+}
 
 # 就讀月份 / 班別 regex
 _EXPECTED_MONTH_RE = re.compile(r'(1\d\d)\.(\d{1,2})')
@@ -89,6 +121,33 @@ def _extract_expected_label_from_text(
 
 def _extract_expected_label(r: RecruitmentVisit) -> str:
     return _extract_expected_label_from_text(r.notes, r.parent_response, r.grade)
+
+
+def _clean_source_label(source: Optional[str]) -> str:
+    text = re.sub(r"\s+", " ", (source or "").strip())
+    return text or "未填寫"
+
+
+def _normalize_source_label(source: Optional[str]) -> str:
+    label = _clean_source_label(source)
+    if label.startswith(_CHUANNIAN_KW):
+        return _CHUANNIAN_KW
+    for canonical, aliases in _SOURCE_GROUP_ALIASES.items():
+        if label == canonical or label in aliases:
+            return canonical
+    return label
+
+
+def _build_source_filter_condition(source: Optional[str]):
+    label = _clean_source_label(source)
+    if label == _CHUANNIAN_KW:
+        return or_(
+            RecruitmentVisit.source.like(f"{_CHUANNIAN_KW}%"),
+            RecruitmentVisit.source.in_(tuple(sorted(_SOURCE_GROUP_ALIASES[_CHUANNIAN_KW]))),
+        )
+    if label == _BRANCH_INTRO_KW:
+        return RecruitmentVisit.source.in_(tuple(sorted(_SOURCE_GROUP_ALIASES[_BRANCH_INTRO_KW])))
+    return RecruitmentVisit.source == label
 
 
 def _parse_period_range(period_name: str) -> Optional[tuple]:
@@ -149,6 +208,309 @@ def _roc_month_sort_key(value: Optional[str]) -> tuple:
     return (int(parts[0]), int(parts[1]), normalized)
 
 
+def _parse_roc_month_parts(value: Optional[str]) -> Optional[tuple[int, int]]:
+    normalized = _normalize_roc_month(value)
+    year_text, month_text = normalized.split(".")
+    return int(year_text), int(month_text)
+
+
+def _shift_roc_month(value: Optional[str], delta_months: int) -> Optional[str]:
+    if value in (None, ""):
+        return None
+
+    year_num, month_num = _parse_roc_month_parts(value)
+    total_months = year_num * 12 + (month_num - 1) + delta_months
+    if total_months < 0:
+        return None
+
+    shifted_year = total_months // 12
+    shifted_month = total_months % 12 + 1
+    return f"{shifted_year}.{shifted_month:02d}"
+
+
+def _roc_month_start(value: Optional[str]) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    year_num, month_num = _parse_roc_month_parts(value)
+    return datetime(year_num + 1911, month_num, 1)
+
+
+def _metric_snapshot(
+    visit: int = 0,
+    deposit: int = 0,
+    enrolled: int = 0,
+    transfer_term: int = 0,
+    pending_deposit: int = 0,
+    effective_deposit: int = 0,
+) -> dict:
+    def _pct_value(num: int, den: int) -> float:
+        return round(num / den * 100, 1) if den else 0
+
+    return {
+        "visit": visit,
+        "deposit": deposit,
+        "enrolled": enrolled,
+        "transfer_term": transfer_term,
+        "pending_deposit": pending_deposit,
+        "effective_deposit": effective_deposit,
+        "visit_to_deposit_rate": _pct_value(deposit, visit),
+        "visit_to_enrolled_rate": _pct_value(enrolled, visit),
+        "deposit_to_enrolled_rate": _pct_value(enrolled, deposit),
+        "effective_to_enrolled_rate": _pct_value(enrolled, effective_deposit),
+    }
+
+
+def _empty_snapshot() -> dict:
+    return _metric_snapshot()
+
+
+def _aggregate_snapshot(session, *filters) -> dict:
+    dep_case = case((RecruitmentVisit.has_deposit == True, 1), else_=0)
+    enrolled_case = case((RecruitmentVisit.enrolled == True, 1), else_=0)
+    transfer_case = case((RecruitmentVisit.transfer_term == True, 1), else_=0)
+    pending_dep_case = case((
+        and_(
+            RecruitmentVisit.has_deposit == True,
+            RecruitmentVisit.enrolled == False,
+            RecruitmentVisit.transfer_term == False,
+        ),
+        1,
+    ), else_=0)
+    effective_dep_case = case((
+        and_(
+            RecruitmentVisit.has_deposit == True,
+            RecruitmentVisit.transfer_term == False,
+        ),
+        1,
+    ), else_=0)
+
+    query = session.query(
+        func.count(RecruitmentVisit.id),
+        func.sum(dep_case),
+        func.sum(enrolled_case),
+        func.sum(transfer_case),
+        func.sum(pending_dep_case),
+        func.sum(effective_dep_case),
+    )
+    applied_filters = [item for item in filters if item is not None]
+    if applied_filters:
+        query = query.filter(*applied_filters)
+
+    row = query.one()
+    return _metric_snapshot(
+        visit=row[0] or 0,
+        deposit=row[1] or 0,
+        enrolled=row[2] or 0,
+        transfer_term=row[3] or 0,
+        pending_deposit=row[4] or 0,
+        effective_deposit=row[5] or 0,
+    )
+
+
+def _select_reference_month(monthly: list[dict], requested: Optional[str]) -> Optional[str]:
+    if requested:
+        return _normalize_roc_month(requested)
+    if not monthly:
+        return None
+    return _safe_normalize_roc_month(monthly[-1]["month"])
+
+
+def _build_month_over_month(current_month: Optional[str], previous_month: Optional[str], monthly_map: dict[str, dict]) -> dict:
+    current_row = monthly_map.get(current_month, _empty_snapshot()) if current_month else _empty_snapshot()
+    previous_row = monthly_map.get(previous_month, _empty_snapshot()) if previous_month else _empty_snapshot()
+    tracked_fields = [
+        "visit",
+        "deposit",
+        "enrolled",
+        "effective_deposit",
+        "pending_deposit",
+        "visit_to_deposit_rate",
+        "visit_to_enrolled_rate",
+        "deposit_to_enrolled_rate",
+        "effective_to_enrolled_rate",
+    ]
+    diff = {
+        field: {
+            "current": current_row.get(field, 0),
+            "previous": previous_row.get(field, 0),
+            "delta": round((current_row.get(field, 0) or 0) - (previous_row.get(field, 0) or 0), 1),
+        }
+        for field in tracked_fields
+    }
+    return {
+        "current_month": current_month,
+        "previous_month": previous_month,
+        **diff,
+    }
+
+
+def _build_ytd_snapshot(reference_month: Optional[str], monthly_map: dict[str, dict]) -> dict:
+    if not reference_month:
+        return _empty_snapshot()
+
+    ref_year, ref_month = _parse_roc_month_parts(reference_month)
+    totals = _empty_snapshot()
+    for label, snapshot in monthly_map.items():
+        try:
+            year_num, month_num = _parse_roc_month_parts(label)
+        except ValueError:
+            continue
+        if year_num != ref_year or month_num > ref_month:
+            continue
+        for field in ("visit", "deposit", "enrolled", "transfer_term", "pending_deposit", "effective_deposit"):
+            totals[field] += snapshot.get(field, 0) or 0
+
+    return _metric_snapshot(
+        visit=totals["visit"],
+        deposit=totals["deposit"],
+        enrolled=totals["enrolled"],
+        transfer_term=totals["transfer_term"],
+        pending_deposit=totals["pending_deposit"],
+        effective_deposit=totals["effective_deposit"],
+    )
+
+
+def _build_alerts(
+    month_over_month: dict,
+    high_potential_backlog_count: int,
+    source_imbalance: Optional[dict],
+    reference_month: Optional[str],
+) -> list[dict]:
+    alerts: list[dict] = []
+
+    visit_to_deposit_delta = month_over_month.get("visit_to_deposit_rate", {}).get("delta", 0)
+    visit_to_enrolled_delta = month_over_month.get("visit_to_enrolled_rate", {}).get("delta", 0)
+    if visit_to_deposit_delta <= -FUNNEL_DROP_THRESHOLD or visit_to_enrolled_delta <= -FUNNEL_DROP_THRESHOLD:
+        alerts.append({
+            "code": "FUNNEL_DROP",
+            "level": "warning",
+            "title": "本月漏斗轉換下滑",
+            "message": (
+                f"{reference_month or '當期'} 參觀轉預繳 {visit_to_deposit_delta:.1f} 個百分點，"
+                f"參觀轉註冊 {visit_to_enrolled_delta:.1f} 個百分點。"
+            ),
+            "target_tab": "detail",
+            "target_filter": {"month": reference_month},
+        })
+
+    if high_potential_backlog_count >= HIGH_POTENTIAL_BACKLOG_THRESHOLD:
+        alerts.append({
+            "code": "HIGH_POTENTIAL_BACKLOG",
+            "level": "danger",
+            "title": "高潛力未預繳名單堆積",
+            "message": f"超過 {DEFAULT_OVERDUE_DAYS} 天仍未預繳的高潛力名單有 {high_potential_backlog_count} 筆。",
+            "target_tab": "nodeposit",
+            "target_filter": {"priority": "high", "overdue_days": DEFAULT_OVERDUE_DAYS},
+        })
+
+    if source_imbalance:
+        alerts.append({
+            "code": "SOURCE_IMBALANCE",
+            "level": "info",
+            "title": "來源結構失衡",
+            "message": (
+                f"{source_imbalance['source']} 近 90 天占比 {source_imbalance['share']:.1f}% ，"
+                f"預繳率 {source_imbalance['deposit_rate']:.1f}% 低於整體 {source_imbalance['overall_rate']:.1f}%。"
+            ),
+            "target_tab": "area",
+            "target_filter": {"source": source_imbalance["source"]},
+        })
+
+    return alerts
+
+
+def _build_action_queue(
+    current_month: Optional[str],
+    high_potential_backlog_count: int,
+    dominant_district: Optional[str],
+    source_imbalance: Optional[dict],
+) -> list[dict]:
+    actions: list[dict] = []
+
+    if high_potential_backlog_count:
+        actions.append({
+            "code": "FOLLOW_HIGH_POTENTIAL",
+            "title": "查看高風險未預繳",
+            "description": f"目前有 {high_potential_backlog_count} 筆高潛力名單逾期未追。",
+            "target_tab": "nodeposit",
+            "target_filter": {"priority": "high", "overdue_days": DEFAULT_OVERDUE_DAYS},
+        })
+
+    if current_month:
+        actions.append({
+            "code": "REVIEW_CURRENT_MONTH",
+            "title": "查看本月明細",
+            "description": f"切換到 {current_month} 明細，檢查本月漏斗掉點。",
+            "target_tab": "detail",
+            "target_filter": {"month": current_month},
+        })
+
+    if dominant_district or source_imbalance:
+        target_filter = {}
+        if dominant_district:
+            target_filter["district"] = dominant_district
+        if source_imbalance:
+            target_filter["source"] = source_imbalance["source"]
+        actions.append({
+            "code": "AREA_OPPORTUNITY",
+            "title": "查看區域機會",
+            "description": f"優先檢查 {dominant_district or '重點行政區'} 的來源分布與通勤熱區。",
+            "target_tab": "area",
+            "target_filter": target_filter,
+        })
+
+    return actions[:ACTION_QUEUE_LIMIT]
+
+
+def _find_source_imbalance(session, window_start: datetime) -> Optional[dict]:
+    dep_case = case((RecruitmentVisit.has_deposit == True, 1), else_=0)
+    rows = (
+        session.query(
+            func.coalesce(RecruitmentVisit.source, "未填寫").label("source"),
+            func.count(RecruitmentVisit.id).label("visit"),
+            func.sum(dep_case).label("deposit"),
+        )
+        .filter(RecruitmentVisit.created_at >= window_start)
+        .group_by(RecruitmentVisit.source)
+        .all()
+    )
+    normalized_rows: list[dict] = []
+    grouped_rows: dict[str, dict] = {}
+    for row in rows:
+        normalized_source = _normalize_source_label(row.source)
+        bucket = grouped_rows.setdefault(
+            normalized_source,
+            {"source": normalized_source, "visit": 0, "deposit": 0},
+        )
+        bucket["visit"] += row.visit or 0
+        bucket["deposit"] += row.deposit or 0
+    normalized_rows = list(grouped_rows.values())
+
+    total_visit = sum((row["visit"] or 0) for row in normalized_rows)
+    total_deposit = sum((row["deposit"] or 0) for row in normalized_rows)
+    overall_rate = round(total_deposit / total_visit * 100, 1) if total_visit else 0
+    candidate: Optional[dict] = None
+    for row in normalized_rows:
+        visit = row["visit"] or 0
+        if not visit or not total_visit:
+            continue
+        share = round(visit / total_visit * 100, 1)
+        deposit = row["deposit"] or 0
+        deposit_rate = round(deposit / visit * 100, 1) if visit else 0
+        if share >= SOURCE_IMBALANCE_SHARE_THRESHOLD and deposit_rate < overall_rate:
+            current = {
+                "source": row["source"],
+                "visit": visit,
+                "deposit": deposit,
+                "share": share,
+                "deposit_rate": deposit_rate,
+                "overall_rate": overall_rate,
+            }
+            if candidate is None or current["share"] > candidate["share"]:
+                candidate = current
+    return candidate
+
+
 def _extract_district_from_address(address: Optional[str]) -> Optional[str]:
     """從完整地址盡量提取行政區，例如「高雄市三民區民族一路...」→「三民區」"""
     if not address:
@@ -194,6 +556,42 @@ def _build_period_month_labels(periods: list[RecruitmentPeriod]) -> list[str]:
             continue
         labels |= _expand_roc_month_range(*period_range)
     return sorted(labels, key=_roc_month_sort_key)
+
+
+def _normalize_hotspot_sync_mode(sync_mode: str) -> str:
+    normalized = (sync_mode or "").strip().lower() or "incremental"
+    if normalized not in ADDRESS_SYNC_MODES:
+        raise HTTPException(status_code=400, detail="sync_mode 僅支援 incremental 或 resync_google")
+    return normalized
+
+
+def _is_google_stale_cache(cached: Optional[RecruitmentGeocodeCache]) -> bool:
+    return market_service.is_google_stale_cache_row(cached)
+
+
+def _needs_incremental_sync(cached: Optional[RecruitmentGeocodeCache]) -> bool:
+    if not cached:
+        return True
+    if cached.status in {"pending", "failed"}:
+        return True
+    return cached.status == "resolved" and (cached.lat is None or cached.lng is None)
+
+
+def _load_hotspot_cache_rows(session, addresses: list[str]) -> dict[str, RecruitmentGeocodeCache]:
+    cache_rows: dict[str, RecruitmentGeocodeCache] = {}
+    deduped_addresses = list(dict.fromkeys(addresses))
+    if not deduped_addresses:
+        return cache_rows
+
+    for index in range(0, len(deduped_addresses), HOTSPOT_CACHE_LOOKUP_CHUNK_SIZE):
+        chunk = deduped_addresses[index:index + HOTSPOT_CACHE_LOOKUP_CHUNK_SIZE]
+        for row in (
+            session.query(RecruitmentGeocodeCache)
+            .filter(RecruitmentGeocodeCache.address.in_(chunk))
+            .all()
+        ):
+            cache_rows[row.address] = row
+    return cache_rows
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +698,18 @@ class PeriodUpdate(BaseModel):
     sort_order: Optional[int] = None
 
 
+class CampusSettingPayload(BaseModel):
+    campus_name: str = Field(..., min_length=1, max_length=100)
+    campus_address: str = Field("", max_length=255)
+    campus_lat: Optional[float] = Field(None, ge=-90, le=90)
+    campus_lng: Optional[float] = Field(None, ge=-180, le=180)
+    travel_mode: str = Field("driving", pattern="^(driving|walking|cycling)$")
+
+
+class IvykidsBackendSyncPayload(BaseModel):
+    max_pages: int = Field(ivykids_sync_service.MAX_SYNC_PAGES, ge=1, le=100)
+
+
 def _parse_roc_date(s: Optional[str]) -> Optional[date]:
     if not s:
         return None
@@ -337,7 +747,7 @@ def list_recruitment_records(
         if grade:
             q = q.filter(RecruitmentVisit.grade == grade)
         if source:
-            q = q.filter(RecruitmentVisit.source == source)
+            q = q.filter(_build_source_filter_condition(source))
         if referrer:
             q = q.filter(RecruitmentVisit.referrer == referrer)
         if has_deposit is not None:
@@ -468,6 +878,48 @@ def delete_recruitment_record(
         _auto_sync_periods_for_months(session, {month})
 
 
+@router.get("/campus-setting")
+def get_recruitment_campus_setting(
+    _=Depends(require_permission(Permission.RECRUITMENT_READ)),
+):
+    with session_scope() as session:
+        setting = market_service.get_or_create_campus_setting(session)
+        return market_service.serialize_campus_setting(setting)
+
+
+@router.put("/campus-setting")
+def update_recruitment_campus_setting(
+    payload: CampusSettingPayload,
+    _=Depends(require_permission(Permission.RECRUITMENT_WRITE)),
+):
+    with session_scope() as session:
+        setting = market_service.upsert_campus_setting(session, payload.model_dump())
+        return market_service.serialize_campus_setting(setting)
+
+
+@router.get("/nearby-kindergartens")
+def get_nearby_kindergartens(
+    south: float = Query(..., ge=-90, le=90),
+    west: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    zoom: int = Query(..., ge=1, le=22),
+    _=Depends(require_permission(Permission.RECRUITMENT_READ)),
+):
+    if south >= north or west >= east:
+        raise HTTPException(status_code=422, detail="查詢視野範圍無效")
+
+    with session_scope() as session:
+        return market_service.search_nearby_kindergartens(
+            session,
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+            zoom=zoom,
+        )
+
+
 @router.get("/address-hotspots")
 def get_recruitment_address_hotspots(
     limit: int = Query(200, ge=1, le=500),
@@ -480,66 +932,90 @@ def get_recruitment_address_hotspots(
 
 @router.post("/address-hotspots/sync")
 def sync_recruitment_address_hotspots(
-    batch_size: int = Query(5, ge=1, le=20),
+    batch_size: int = Query(10, ge=1, le=20),
     limit: int = Query(200, ge=1, le=500),
+    sync_mode: str = "incremental",
     _=Depends(require_permission(Permission.RECRUITMENT_WRITE)),
 ):
     """同步一小批地址座標到快取，避免每次前端渲染時重複 geocode。"""
-    if not can_geocode():
-        raise HTTPException(status_code=400, detail="尚未設定 geocoding provider")
+    if not market_service.market_provider_available():
+        raise HTTPException(status_code=400, detail="尚未設定 Google / TGOS / geocoding provider")
+    normalized_sync_mode = _normalize_hotspot_sync_mode(sync_mode)
 
     with session_scope() as session:
-        hotspots, _records_with_address, _total_hotspots = _query_address_hotspots(session, limit)
+        hotspots, _records_with_address, _total_hotspots = _query_address_hotspots(session)
         addresses = [hotspot["address"] for hotspot in hotspots]
-        cached_rows = {
-            row.address: row
-            for row in session.query(RecruitmentGeocodeCache)
-            .filter(RecruitmentGeocodeCache.address.in_(addresses))
-            .all()
-        }
+        cached_rows = _load_hotspot_cache_rows(session, addresses)
 
+        campus = market_service.serialize_campus_setting(market_service.get_or_create_campus_setting(session))
+        eligible_targets: list[tuple[dict, Optional[RecruitmentGeocodeCache]]] = []
+        skipped = 0
+        for hotspot in hotspots:
+            cached = cached_rows.get(hotspot["address"])
+            should_sync = (
+                _needs_incremental_sync(cached)
+                if normalized_sync_mode == "incremental"
+                else _is_google_stale_cache(cached)
+            )
+            if should_sync:
+                eligible_targets.append((hotspot, cached))
+            else:
+                skipped += 1
+
+        sync_targets = eligible_targets[:batch_size]
+        attempted = len(sync_targets)
         synced = 0
         failed = 0
-        for hotspot in hotspots:
-            if synced + failed >= batch_size:
-                break
-
-            cached = cached_rows.get(hotspot["address"])
-            if cached and cached.status == "resolved" and cached.lat is not None and cached.lng is not None:
-                continue
-
-            result = geocode_address(hotspot["address"])
+        for hotspot, cached in sync_targets:
+            result = market_service.resolve_address_metadata(hotspot["address"], campus=campus)
             if not cached:
                 cached = RecruitmentGeocodeCache(address=hotspot["address"])
                 session.add(cached)
                 cached_rows[cached.address] = cached
 
-            cached.district = hotspot["district"]
-            cached.provider = current_geocoding_provider()
-            cached.updated_at = datetime.now()
-
-            if result:
-                cached.status = "resolved"
-                cached.lat = result["lat"]
-                cached.lng = result["lng"]
-                cached.provider = result.get("provider") or cached.provider
-                cached.formatted_address = result.get("formatted_address") or hotspot["address"]
-                cached.error_message = None
-                cached.resolved_at = datetime.now()
+            market_service._apply_metadata_to_geocode_cache(
+                cached,
+                result or {},
+                district=hotspot["district"],
+            )
+            if cached.status == "resolved":
                 synced += 1
             else:
-                cached.status = "failed"
-                cached.error_message = "geocoding failed"
                 failed += 1
 
         session.flush()
         response = _build_address_hotspots_response(session, limit)
+        response["sync_mode"] = normalized_sync_mode
+        response["attempted"] = attempted
         response["synced"] = synced
         response["failed"] = failed
+        response["skipped"] = skipped
         return response
 
 
-def _query_address_hotspots(session, limit: int) -> tuple[list[dict], int, int]:
+@router.post("/market-intelligence/sync")
+def sync_recruitment_market_intelligence(
+    hotspot_limit: int = Query(200, ge=50, le=500),
+    _=Depends(require_permission(Permission.RECRUITMENT_WRITE)),
+):
+    with session_scope() as session:
+        result = market_service.sync_market_intelligence(session, hotspot_limit=hotspot_limit)
+        snapshot = market_service.build_market_intelligence_snapshot(session)
+        return {
+            **result,
+            "snapshot": snapshot,
+        }
+
+
+@router.get("/market-intelligence")
+def get_recruitment_market_intelligence(
+    _=Depends(require_permission(Permission.RECRUITMENT_READ)),
+):
+    with session_scope() as session:
+        return market_service.build_market_intelligence_snapshot(session)
+
+
+def _query_address_hotspots(session, limit: Optional[int] = None) -> tuple[list[dict], int, int]:
     dep_case = case((RecruitmentVisit.has_deposit == True, 1), else_=0)
     normalized_address = func.trim(RecruitmentVisit.address)
     rows = (
@@ -587,26 +1063,24 @@ def _query_address_hotspots(session, limit: int) -> tuple[list[dict], int, int]:
     hotspots = sorted(
         merged.values(),
         key=lambda item: (-item["visit"], item["address"]),
-    )[:limit]
+    )
+    if limit is not None:
+        hotspots = hotspots[:limit]
     return hotspots, records_with_address, len(merged)
 
 
 def _build_address_hotspots_response(session, limit: int) -> dict:
-    hotspots, records_with_address, total_hotspots = _query_address_hotspots(session, limit)
-    addresses = [hotspot["address"] for hotspot in hotspots]
-    cache_rows = {}
-    if addresses:
-        cache_rows = {
-            row.address: row
-            for row in session.query(RecruitmentGeocodeCache)
-            .filter(RecruitmentGeocodeCache.address.in_(addresses))
-            .all()
-        }
+    all_hotspots, records_with_address, total_hotspots = _query_address_hotspots(session)
+    hotspots = all_hotspots[:limit]
+    cache_rows = _load_hotspot_cache_rows(
+        session,
+        [hotspot["address"] for hotspot in all_hotspots],
+    )
 
     geocoded_hotspots = 0
     failed_hotspots = 0
-    enriched_hotspots = []
-    for hotspot in hotspots:
+    stale_hotspots = 0
+    for hotspot in all_hotspots:
         cached = cache_rows.get(hotspot["address"])
         status = cached.status if cached else "pending"
         lat = cached.lat if cached and cached.status == "resolved" else None
@@ -615,7 +1089,15 @@ def _build_address_hotspots_response(session, limit: int) -> dict:
             geocoded_hotspots += 1
         elif status == "failed":
             failed_hotspots += 1
+        if _is_google_stale_cache(cached):
+            stale_hotspots += 1
 
+    enriched_hotspots = []
+    for hotspot in hotspots:
+        cached = cache_rows.get(hotspot["address"])
+        status = cached.status if cached else "pending"
+        lat = cached.lat if cached and cached.status == "resolved" else None
+        lng = cached.lng if cached and cached.status == "resolved" else None
         enriched_hotspots.append({
             **hotspot,
             "lat": lat,
@@ -623,16 +1105,27 @@ def _build_address_hotspots_response(session, limit: int) -> dict:
             "geocode_status": status,
             "provider": cached.provider if cached else None,
             "formatted_address": cached.formatted_address if cached else None,
+            "matched_address": cached.matched_address if cached else None,
+            "google_place_id": cached.google_place_id if cached else None,
+            "town_code": cached.town_code if cached else None,
+            "town_name": cached.town_name if cached else None,
+            "county_name": cached.county_name if cached else None,
+            "land_use_label": cached.land_use_label if cached else None,
+            "travel_minutes": cached.travel_minutes if cached else None,
+            "travel_distance_km": cached.travel_distance_km if cached else None,
+            "data_quality": cached.data_quality if cached else "partial",
         })
 
     pending_hotspots = max(total_hotspots - geocoded_hotspots - failed_hotspots, 0)
-    provider_name = current_geocoding_provider()
+    provider_name = market_service.current_market_provider()
     return {
         "records_with_address": records_with_address,
         "total_hotspots": total_hotspots,
         "geocoded_hotspots": geocoded_hotspots,
         "pending_hotspots": pending_hotspots,
+        "remaining_hotspots": pending_hotspots,
         "failed_hotspots": failed_hotspots,
+        "stale_hotspots": stale_hotspots,
         "provider_available": provider_name is not None,
         "provider_name": provider_name,
         "hotspots": enriched_hotspots,
@@ -654,7 +1147,7 @@ def _chuannian_sql_cond():
     )
 
 
-def _query_stats(session) -> dict:
+def _query_stats(session, reference_month: Optional[str] = None) -> dict:
     """執行招生統計所有 SQL 查詢，回傳統計字典（供 /stats 與 /stats/export 共用）。"""
     def _pct_value(num: int, den: int) -> float:
         return round(num / den * 100, 1) if den else 0
@@ -839,10 +1332,20 @@ def _query_stats(session) -> dict:
         func.sum(dep_case).label('deposit'),
     ).group_by(RecruitmentVisit.source).order_by(func.count(RecruitmentVisit.id).desc()).all()
 
-    by_source = [
-        {'source': r.source, 'visit': r.visit or 0, 'deposit': r.deposit or 0}
-        for r in source_rows
-    ]
+    source_summary_map: dict[str, dict] = {}
+    for row in source_rows:
+        normalized_source = _normalize_source_label(row.source)
+        bucket = source_summary_map.setdefault(
+            normalized_source,
+            {"source": normalized_source, "visit": 0, "deposit": 0},
+        )
+        bucket["visit"] += row.visit or 0
+        bucket["deposit"] += row.deposit or 0
+
+    by_source = sorted(
+        source_summary_map.values(),
+        key=lambda item: (-item["visit"], -item["deposit"], item["source"]),
+    )
 
     # ── 7. 接待人員 × 各年級（GROUP BY referrer + grade）─────────
     ref_grade_rows = session.query(
@@ -875,14 +1378,15 @@ def _query_stats(session) -> dict:
     source_totals: dict = {}
     _cross_raw: dict = {}
     for r in cross_qrows:
-        source_totals[r.source] = source_totals.get(r.source, 0) + r.cnt
+        normalized_source = _normalize_source_label(r.source)
+        source_totals[normalized_source] = source_totals.get(normalized_source, 0) + (r.cnt or 0)
         if r.referrer not in _cross_raw:
             _cross_raw[r.referrer] = {}
-        _cross_raw[r.referrer][r.source] = r.cnt
+        _cross_raw[r.referrer][normalized_source] = (
+            _cross_raw[r.referrer].get(normalized_source, 0) + (r.cnt or 0)
+        )
 
-    top_source_names = [
-        s for s, _ in sorted(source_totals.items(), key=lambda x: -x[1])[:TOP_SOURCES_COUNT]
-    ]
+    top_source_names = [item["source"] for item in by_source[:TOP_SOURCES_COUNT]]
 
     cross_rows_out = sorted(
         [
@@ -965,6 +1469,67 @@ def _query_stats(session) -> dict:
         key=lambda x: -x['visit'],
     )
 
+    monthly_map = {
+        _safe_normalize_roc_month(item["month"]) or item["month"]: item
+        for item in monthly
+    }
+    resolved_reference_month = _select_reference_month(monthly, reference_month)
+    previous_month = _shift_roc_month(resolved_reference_month, -1) if resolved_reference_month else None
+    rolling_30d = _aggregate_snapshot(session, RecruitmentVisit.created_at >= datetime.now() - timedelta(days=30))
+    rolling_90d = _aggregate_snapshot(session, RecruitmentVisit.created_at >= datetime.now() - timedelta(days=90))
+    current_month_snapshot = (
+        _metric_snapshot(
+            visit=monthly_map.get(resolved_reference_month, {}).get("visit", 0),
+            deposit=monthly_map.get(resolved_reference_month, {}).get("deposit", 0),
+            enrolled=monthly_map.get(resolved_reference_month, {}).get("enrolled", 0),
+            transfer_term=monthly_map.get(resolved_reference_month, {}).get("transfer_term", 0),
+            pending_deposit=monthly_map.get(resolved_reference_month, {}).get("pending_deposit", 0),
+            effective_deposit=monthly_map.get(resolved_reference_month, {}).get("effective_deposit", 0),
+        )
+        if resolved_reference_month
+        else _empty_snapshot()
+    )
+    month_over_month = _build_month_over_month(resolved_reference_month, previous_month, monthly_map)
+
+    overdue_cutoff = datetime.now() - timedelta(days=DEFAULT_OVERDUE_DAYS)
+    high_potential_backlog_count = (
+        session.query(func.count(RecruitmentVisit.id))
+        .filter(
+            RecruitmentVisit.has_deposit == False,
+            RecruitmentVisit.no_deposit_reason.in_(tuple(HIGH_PRIORITY_NO_DEPOSIT_REASONS)),
+            RecruitmentVisit.created_at <= overdue_cutoff,
+        )
+        .scalar()
+        or 0
+    )
+    source_imbalance = _find_source_imbalance(session, datetime.now() - timedelta(days=90))
+
+    dominant_district_row = (
+        session.query(
+            func.coalesce(RecruitmentVisit.district, "未填寫").label("district"),
+            func.count(RecruitmentVisit.id).label("visit"),
+        )
+        .filter(RecruitmentVisit.month == resolved_reference_month)
+        .group_by(RecruitmentVisit.district)
+        .order_by(func.count(RecruitmentVisit.id).desc(), func.coalesce(RecruitmentVisit.district, "未填寫"))
+        .first()
+        if resolved_reference_month
+        else None
+    )
+    dominant_district = dominant_district_row.district if dominant_district_row else None
+    alerts = _build_alerts(
+        month_over_month=month_over_month,
+        high_potential_backlog_count=high_potential_backlog_count,
+        source_imbalance=source_imbalance,
+        reference_month=resolved_reference_month,
+    )
+    top_action_queue = _build_action_queue(
+        current_month=resolved_reference_month,
+        high_potential_backlog_count=high_potential_backlog_count,
+        dominant_district=dominant_district,
+        source_imbalance=source_imbalance,
+    )
+
     return {
         'total_visit': total_visit,
         'total_deposit': total_deposit,
@@ -993,6 +1558,20 @@ def _query_stats(session) -> dict:
         'chuannian_by_expected': chuannian_by_expected_list,
         'chuannian_by_grade': chuannian_by_grade,
         'by_year': by_year,
+        'reference_month': resolved_reference_month,
+        'decision_summary': {
+            'current_month': current_month_snapshot,
+            'rolling_30d': rolling_30d,
+            'rolling_90d': rolling_90d,
+            'ytd': _build_ytd_snapshot(resolved_reference_month, monthly_map),
+        },
+        'funnel_snapshot': {
+            field: current_month_snapshot[field]
+            for field in ("visit", "deposit", "enrolled", "transfer_term", "effective_deposit", "pending_deposit")
+        },
+        'month_over_month': month_over_month,
+        'alerts': alerts,
+        'top_action_queue': top_action_queue,
     }
 
 
@@ -1002,11 +1581,12 @@ def _query_stats(session) -> dict:
 
 @router.get("/stats")
 def get_recruitment_stats(
+    reference_month: Optional[str] = None,
     _=Depends(require_permission(Permission.RECRUITMENT_READ)),
 ):
     """完整統計匯總（全 SQL GROUP BY，效能最佳化版）"""
     with session_scope() as session:
-        return _query_stats(session)
+        return _query_stats(session, reference_month=reference_month)
 
 
 _HEADER_FONT  = Font(bold=True, color="FFFFFF")
@@ -1027,17 +1607,63 @@ def _pct(num: int, den: int) -> str:
 
 @router.get("/stats/export")
 def export_recruitment_stats(
+    reference_month: Optional[str] = None,
     _=Depends(require_permission(Permission.RECRUITMENT_READ)),
 ):
     """匯出招生統計 Excel（多頁簽）"""
     with session_scope() as session:
-        s = _query_stats(session)
+        s = _query_stats(session, reference_month=reference_month)
 
     wb = Workbook()
 
-    # ── Sheet 1：總覽 KPI ─────────────────────────────────────────
+    # ── Sheet 1：決策摘要 ─────────────────────────────────────────
     ws = wb.active
-    ws.title = "總覽"
+    ws.title = "決策摘要"
+    ws.append(["招生決策摘要"])
+    ws["A1"].font = _TITLE_FONT
+    ws.append([f"參考月份：{s['reference_month'] or '無資料'}"])
+    ws.append([])
+    _hrow(ws, 4, ["區塊", "指標", "數值"])
+    summary_rows = []
+    summary_label_map = {
+        "current_month": "本月",
+        "rolling_30d": "近 30 天",
+        "rolling_90d": "近 90 天",
+        "ytd": "年度累計",
+    }
+    for key, label in summary_label_map.items():
+        snapshot = s["decision_summary"][key]
+        summary_rows.extend([
+            (label, "參觀", snapshot["visit"]),
+            (label, "預繳", snapshot["deposit"]),
+            (label, "註冊", snapshot["enrolled"]),
+            (label, "參觀→預繳率", _pct(snapshot["deposit"], snapshot["visit"])),
+            (label, "參觀→註冊率", _pct(snapshot["enrolled"], snapshot["visit"])),
+        ])
+    for row in summary_rows:
+        ws.append(list(row))
+
+    ws.append([])
+    month_over_month = s["month_over_month"]
+    ws.append(["月比觀察", "本月", month_over_month["current_month"] or "—"])
+    ws.append(["月比觀察", "上月", month_over_month["previous_month"] or "—"])
+    ws.append(["月比觀察", "參觀→預繳率變化", f"{month_over_month['visit_to_deposit_rate']['delta']:.1f} 個百分點"])
+    ws.append(["月比觀察", "參觀→註冊率變化", f"{month_over_month['visit_to_enrolled_rate']['delta']:.1f} 個百分點"])
+
+    ws.append([])
+    _hrow(ws, ws.max_row + 1, ["警示代碼", "等級", "標題", "說明"])
+    if s["alerts"]:
+        for alert in s["alerts"]:
+            ws.append([alert["code"], alert["level"], alert["title"], alert["message"]])
+    else:
+        ws.append(["—", "info", "目前無警示", "本期未觸發決策警示。"])
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 48
+
+    # ── Sheet 2：總覽 KPI ─────────────────────────────────────────
+    ws = wb.create_sheet("總覽")
     ws.append(["招生統計總覽"])
     ws["A1"].font = _TITLE_FONT
     ws.append([])
@@ -1065,7 +1691,7 @@ def export_recruitment_stats(
     ws.column_dimensions["A"].width = 22
     ws.column_dimensions["B"].width = 14
 
-    # ── Sheet 2：月度明細 ─────────────────────────────────────────
+    # ── Sheet 3：月度明細 ─────────────────────────────────────────
     ws2 = wb.create_sheet("月度明細")
     _hrow(ws2, 1, [
         "月份", "參觀人數", "預繳人數", "註冊人數", "轉其他學期", "有效預繳", "預繳未註冊",
@@ -1092,7 +1718,7 @@ def export_recruitment_stats(
     for col_letter, width in zip("ABCDEFGHIJKLMN", [10, 10, 10, 10, 10, 10, 10, 12, 12, 12, 14, 12, 12, 14]):
         ws2.column_dimensions[col_letter].width = width
 
-    # ── Sheet 3：班別分析 ─────────────────────────────────────────
+    # ── Sheet 4：班別分析 ─────────────────────────────────────────
     ws3 = wb.create_sheet("班別分析")
     _hrow(ws3, 1, ["班別", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_grade"]:
@@ -1100,7 +1726,7 @@ def export_recruitment_stats(
     for col_letter, width in zip("ABCD", [10, 10, 10, 10]):
         ws3.column_dimensions[col_letter].width = width
 
-    # ── Sheet 4：來源分析 ─────────────────────────────────────────
+    # ── Sheet 5：來源分析 ─────────────────────────────────────────
     ws4 = wb.create_sheet("來源分析")
     _hrow(ws4, 1, ["來源", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_source"]:
@@ -1109,7 +1735,7 @@ def export_recruitment_stats(
     for col_letter, width in zip("BCD", [10, 10, 10]):
         ws4.column_dimensions[col_letter].width = width
 
-    # ── Sheet 5：接待人員 ─────────────────────────────────────────
+    # ── Sheet 6：接待人員 ─────────────────────────────────────────
     ws5 = wb.create_sheet("接待人員")
     _hrow(ws5, 1, ["接待人員", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_referrer"]:
@@ -1118,7 +1744,7 @@ def export_recruitment_stats(
     for col_letter, width in zip("BCD", [10, 10, 10]):
         ws5.column_dimensions[col_letter].width = width
 
-    # ── Sheet 6：行政區 ───────────────────────────────────────────
+    # ── Sheet 7：行政區 ───────────────────────────────────────────
     ws6 = wb.create_sheet("行政區")
     _hrow(ws6, 1, ["行政區", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_district"]:
@@ -1127,7 +1753,7 @@ def export_recruitment_stats(
     for col_letter, width in zip("BCD", [10, 10, 10]):
         ws6.column_dimensions[col_letter].width = width
 
-    # ── Sheet 7：未預繳原因 ───────────────────────────────────────
+    # ── Sheet 8：未預繳原因 ───────────────────────────────────────
     ws7 = wb.create_sheet("未預繳原因")
     _hrow(ws7, 1, ["原因", "人數"])
     for r in s["no_deposit_reasons"]:
@@ -1136,7 +1762,7 @@ def export_recruitment_stats(
     ws7.column_dimensions["A"].width = 28
     ws7.column_dimensions["B"].width = 10
 
-    # ── Sheet 8：年度統計 ─────────────────────────────────────────
+    # ── Sheet 9：年度統計 ─────────────────────────────────────────
     ws8 = wb.create_sheet("年度統計")
     _hrow(ws8, 1, [
         "年份", "參觀人數", "預繳人數", "註冊人數", "轉其他學期", "有效預繳", "預繳未註冊",
@@ -1169,6 +1795,9 @@ def export_recruitment_stats(
 def get_no_deposit_analysis(
     reason: Optional[str] = Query(None),
     grade: Optional[str] = Query(None),
+    priority: Optional[str] = Query(None, pattern="^(high|medium|low)$"),
+    overdue_days: Optional[int] = Query(None, ge=1, le=365),
+    cold_only: Optional[bool] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
     _=Depends(require_permission(Permission.RECRUITMENT_READ)),
@@ -1182,6 +1811,23 @@ def get_no_deposit_analysis(
             q = q.filter(RecruitmentVisit.no_deposit_reason == reason)
         if grade:
             q = q.filter(RecruitmentVisit.grade == grade)
+        base_query = q
+        effective_overdue_days = overdue_days or DEFAULT_OVERDUE_DAYS
+        overdue_cutoff = datetime.now() - timedelta(days=effective_overdue_days)
+        cold_cutoff = datetime.now() - timedelta(days=COLD_LEAD_DAYS)
+        summary = {
+            "high_potential_count": (
+                base_query.filter(RecruitmentVisit.no_deposit_reason.in_(tuple(HIGH_PRIORITY_NO_DEPOSIT_REASONS))).count()
+            ),
+            "overdue_followup_count": base_query.filter(RecruitmentVisit.created_at <= overdue_cutoff).count(),
+            "cold_count": base_query.filter(RecruitmentVisit.created_at <= cold_cutoff).count(),
+        }
+        if priority:
+            q = q.filter(RecruitmentVisit.no_deposit_reason.in_(tuple(NO_DEPOSIT_PRIORITY_REASON_MAP[priority])))
+        if overdue_days is not None:
+            q = q.filter(RecruitmentVisit.created_at <= overdue_cutoff)
+        if cold_only is True:
+            q = q.filter(RecruitmentVisit.created_at <= cold_cutoff)
         total = q.count()
         records = (
             q.order_by(RecruitmentVisit.month.desc(), RecruitmentVisit.seq_no)
@@ -1193,6 +1839,7 @@ def get_no_deposit_analysis(
             "total": total,
             "page": page,
             "page_size": page_size,
+            "summary": summary,
             "records": [_to_dict(r) for r in records],
         }
 
@@ -1434,7 +2081,10 @@ def get_recruitment_options(
             if normalized
         }
         grades_set = set(_distinct_values(RecruitmentVisit.grade))
-        sources_set = set(_distinct_values(RecruitmentVisit.source))
+        sources_set = {
+            _normalize_source_label(value)
+            for value in _distinct_values(RecruitmentVisit.source)
+        }
         referrers_set = set(_distinct_values(RecruitmentVisit.referrer))
 
         # 合併手動登記月份
@@ -1567,6 +2217,38 @@ def import_recruitment_records(
         return {"inserted": inserted, "skipped": skipped}
 
 
+@router.post("/ivykids-backend/sync")
+def sync_recruitment_ivykids_backend(
+    payload: IvykidsBackendSyncPayload,
+    _=Depends(require_permission(Permission.RECRUITMENT_WRITE)),
+):
+    with session_scope() as session:
+        result = ivykids_sync_service.sync_backend_records(
+            session,
+            max_pages=payload.max_pages,
+            trigger="manual",
+        )
+        if result.get("provider_available"):
+            logger.info(
+                "義華校官網同步：抓取 %s 筆，新增 %s 筆，更新 %s 筆，略過 %s 筆",
+                result.get("total_fetched", 0),
+                result.get("inserted", 0),
+                result.get("updated", 0),
+                result.get("skipped", 0),
+            )
+        else:
+            logger.warning("義華校官網同步未啟用：%s", result.get("message"))
+        return result
+
+
+@router.get("/ivykids-backend/status")
+def get_recruitment_ivykids_backend_status(
+    _=Depends(require_permission(Permission.RECRUITMENT_READ)),
+):
+    with session_scope() as session:
+        return ivykids_sync_service.get_backend_sync_status(session)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1586,6 +2268,9 @@ def _to_dict(r: RecruitmentVisit) -> dict:
         "source": r.source,
         "referrer": r.referrer,
         "deposit_collector": r.deposit_collector,
+        "external_source": r.external_source,
+        "external_id": r.external_id,
+        "external_status": r.external_status,
         "has_deposit": r.has_deposit,
         "notes": r.notes,
         "parent_response": r.parent_response,
