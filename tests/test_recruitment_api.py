@@ -21,13 +21,11 @@ from api import recruitment as recruitment_api
 from api.recruitment import (
     CampusSettingPayload,
     ImportRecord,
-    IvykidsBackendSyncPayload,
     MonthCreate,
     RecruitmentVisitCreate,
     RecruitmentVisitUpdate,
     get_recruitment_campus_setting,
     get_recruitment_address_hotspots,
-    get_recruitment_ivykids_backend_status,
     get_recruitment_market_intelligence,
     get_recruitment_options,
     get_nearby_kindergartens,
@@ -35,7 +33,7 @@ from api.recruitment import (
     get_periods_summary,
     import_recruitment_records,
     list_recruitment_records,
-    sync_recruitment_ivykids_backend,
+    normalize_existing_months,
     export_recruitment_stats,
     sync_recruitment_market_intelligence,
     sync_recruitment_address_hotspots,
@@ -47,10 +45,8 @@ from models.recruitment import (
     RecruitmentCampusSetting,
     RecruitmentGeocodeCache,
     RecruitmentPeriod,
-    RecruitmentSyncState,
     RecruitmentVisit,
 )
-from services import recruitment_ivykids_sync as ivykids_sync_service
 
 
 @pytest.fixture
@@ -116,6 +112,85 @@ class TestRecruitmentMonthNormalization:
             record = session.query(RecruitmentVisit).one()
             assert record.month == "115.04"
 
+    def test_import_preserves_multiple_visits_for_same_child_in_same_month(self, recruitment_session_factory):
+        result = import_recruitment_records(
+            [
+                ImportRecord(**{
+                    "月份": "114.12",
+                    "序號": "60",
+                    "日期": "114.12.19媽咪參觀",
+                    "幼生姓名": "范廖翊程",
+                    "幼生來源": "自行蒞園",
+                    "是否預繳": "否",
+                    "備註": "115.07 讀中班",
+                    "電訪後家長回應": "童年綠地,情緒障礙,已告知無名額",
+                }),
+                ImportRecord(**{
+                    "月份": "114.12",
+                    "序號": "69",
+                    "日期": "114.12.19媽咪參觀",
+                    "幼生姓名": "范廖翊程",
+                    "幼生來源": "童年綠地 19-2",
+                    "是否預繳": "是",
+                    "備註": "115.08 讀大班",
+                    "電訪後家長回應": "班導-雅婷",
+                }),
+            ],
+            _=None,
+        )
+
+        assert result == {"inserted": 2, "skipped": 0}
+
+        with recruitment_session_factory() as session:
+            rows = (
+                session.query(RecruitmentVisit)
+                .filter(RecruitmentVisit.child_name == "范廖翊程")
+                .order_by(RecruitmentVisit.seq_no)
+                .all()
+            )
+            assert len(rows) == 2
+            assert [row.seq_no for row in rows] == ["60", "69"]
+            assert [row.has_deposit for row in rows] == [False, True]
+
+    def test_import_uses_visit_date_month_when_month_column_conflicts(self, recruitment_session_factory):
+        result = import_recruitment_records(
+            [
+                ImportRecord(**{
+                    "月份": "114.11",
+                    "日期": "114.10.23爸媽參觀",
+                    "幼生姓名": "洪苡真",
+                }),
+            ],
+            _=None,
+        )
+
+        assert result == {"inserted": 1, "skipped": 0}
+
+        with recruitment_session_factory() as session:
+            record = session.query(RecruitmentVisit).one()
+            assert record.month == "114.10"
+            assert record.visit_date == "114.10.23爸媽參觀"
+
+    def test_normalize_existing_months_repairs_records_using_visit_date(self, recruitment_session_factory):
+        with recruitment_session_factory() as session:
+            session.add(
+                RecruitmentVisit(
+                    month="114.11",
+                    visit_date="114.10.23爸媽參觀",
+                    child_name="洪苡真",
+                    has_deposit=False,
+                )
+            )
+            session.commit()
+
+        updated = normalize_existing_months()
+
+        assert updated == 1
+
+        with recruitment_session_factory() as session:
+            record = session.query(RecruitmentVisit).one()
+            assert record.month == "114.10"
+
 
 class TestPeriodsSummary:
     def test_by_grade_only_counts_visits_within_defined_periods(self, recruitment_session_factory):
@@ -178,409 +253,6 @@ class TestPeriodsSummary:
                 "deposit_to_enrolled_rate": 0,
             },
         ]
-
-
-class TestIvykidsBackendSync:
-    def test_fetch_backend_records_reads_multiple_pages_and_dedupes_ids(self, monkeypatch):
-        page_one_html = """
-        <html><body>
-          <table id="sortable">
-            <tr>
-              <td>預約正常</td><td>2026-04-12 10:30</td><td>小安</td><td>--</td>
-              <td>0912000111</td><td>官網預約</td><td>2026-04-10 09:15</td>
-              <td><a href="form.php?id=1001">編輯</a></td>
-            </tr>
-          </table>
-          <a href="https://www.ivykids.tw/manage/make_an_appointment/?page=2">2</a>
-        </body></html>
-        """
-        page_two_html = """
-        <html><body>
-          <table id="sortable">
-            <tr>
-              <td>預約正常</td><td>2026-04-13 09:00</td><td>小寶</td><td>--</td>
-              <td>0912000222</td><td>Google</td><td>2026-04-10 10:00</td>
-              <td><a href="form.php?id=1002">編輯</a></td>
-            </tr>
-            <tr>
-              <td>預約正常</td><td>2026-04-12 10:30</td><td>小安</td><td>--</td>
-              <td>0912000111</td><td>官網預約</td><td>2026-04-10 09:15</td>
-              <td><a href="form.php?id=1001">編輯</a></td>
-            </tr>
-          </table>
-        </body></html>
-        """
-
-        class FakeResponse:
-            def __init__(self, text):
-                self.text = text
-
-            def raise_for_status(self):
-                return None
-
-        class FakeSession:
-            def __init__(self):
-                self.headers = {}
-
-            def post(self, url, data=None, timeout=None):
-                return FakeResponse("ok")
-
-            def get(self, url, timeout=None):
-                if url == ivykids_sync_service.IVYKIDS_DATA_URL:
-                    return FakeResponse(page_one_html)
-                if url == "https://www.ivykids.tw/manage/make_an_appointment/?page=2":
-                    return FakeResponse(page_two_html)
-                raise AssertionError(f"unexpected url: {url}")
-
-        monkeypatch.setattr(ivykids_sync_service, "_build_requests_session", lambda: FakeSession())
-        monkeypatch.setattr(ivykids_sync_service, "_get_credentials", lambda: ("demo", "secret"))
-
-        records, page_count = ivykids_sync_service.fetch_backend_records(max_pages=5)
-
-        assert page_count == 2
-        assert [row.external_id for row in records] == ["1002", "1001"]
-        assert records[0].child_name == "小寶"
-        assert records[1].month == "115.04"
-
-    def test_parse_backend_record_detail_extracts_optional_fields(self):
-        detail_html = """
-        <html><body>
-          <table>
-            <tr><td>生日</td><td><input name="birthday" value="2021-05-06" /></td></tr>
-            <tr><td>適讀班級</td><td><select name="grade"><option>幼幼班</option><option selected>小班</option></select></td></tr>
-            <tr><td>地址</td><td><textarea name="address">高雄市三民區民族一路100號</textarea></td></tr>
-            <tr><td>行政區</td><td><input name="district" value="三民區" /></td></tr>
-            <tr><td>介紹者</td><td><input name="referrer" value="王主任" /></td></tr>
-            <tr><td>備註</td><td><textarea name="notes">需先追蹤排隊狀況</textarea></td></tr>
-            <tr><td>電訪後家長回應</td><td><textarea name="parent_response">六月後再決定</textarea></td></tr>
-            <tr><td>收預繳人員</td><td><input name="deposit_collector" value="Ruby老師" /></td></tr>
-            <tr><td>是否預繳</td><td><input name="has_deposit" value="是" /></td></tr>
-            <tr><td>是否報到</td><td><input name="enrolled" value="否" /></td></tr>
-            <tr><td>轉其他學期</td><td><input name="transfer_term" value="是" /></td></tr>
-          </table>
-        </body></html>
-        """
-
-        detail = ivykids_sync_service.parse_backend_record_detail(detail_html)
-
-        assert detail["birthday"] == date(2021, 5, 6)
-        assert detail["grade"] == "小班"
-        assert detail["address"] == "高雄市三民區民族一路100號"
-        assert detail["district"] == "三民區"
-        assert detail["referrer"] == "王主任"
-        assert detail["notes"] == "需先追蹤排隊狀況"
-        assert detail["parent_response"] == "六月後再決定"
-        assert detail["deposit_collector"] == "Ruby老師"
-        assert detail["has_deposit"] is True
-        assert detail["enrolled"] is False
-        assert detail["transfer_term"] is True
-
-    def test_parse_backend_record_detail_returns_none_for_missing_fields(self):
-        detail = ivykids_sync_service.parse_backend_record_detail("<html><body><form></form></body></html>")
-
-        assert detail["birthday"] is None
-        assert detail["grade"] is None
-        assert detail["address"] is None
-        assert detail["notes"] is None
-        assert detail["has_deposit"] is None
-
-    def test_sync_imports_records_and_attaches_external_identity(
-        self,
-        recruitment_session_factory,
-        monkeypatch,
-    ):
-        monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "_login_session", lambda _session: None)
-        monkeypatch.setattr(
-            ivykids_sync_service,
-            "_build_requests_session",
-            lambda: type(
-                "FakeSession",
-                (),
-                {
-                    "__enter__": lambda self: self,
-                    "__exit__": lambda self, exc_type, exc, tb: None,
-                    "close": lambda self: None,
-                },
-            )(),
-        )
-        monkeypatch.setattr(
-            ivykids_sync_service,
-            "fetch_backend_records",
-            lambda max_pages=20, http_session=None, authenticated=False: (
-                [
-                    ivykids_sync_service.IvykidsBackendRecord(
-                        external_id="1001",
-                        status="預約正常",
-                        visit_date="2026-04-12 10:30",
-                        child_name="小安",
-                        phone="0912000111",
-                        source="官網預約",
-                        created_at="2026-04-10 09:15",
-                        detail_url=None,
-                        month="115.04",
-                        birthday=date(2021, 5, 6),
-                        grade="小班",
-                        address="高雄市三民區民族一路100號",
-                        district="三民區",
-                        notes="六月再聯繫",
-                        parent_response="媽媽表示會再評估",
-                    ),
-                    ivykids_sync_service.IvykidsBackendRecord(
-                        external_id="1002",
-                        status="已取消",
-                        visit_date="2026-04-13 09:00",
-                        child_name="小寶",
-                        phone="0912000222",
-                        source="Google",
-                        created_at="2026-04-10 10:00",
-                        detail_url=None,
-                        month="115.04",
-                    ),
-                ],
-                1,
-            ),
-        )
-        monkeypatch.setattr(
-            ivykids_sync_service,
-            "enrich_backend_records",
-            lambda records, http_session: list(records),
-        )
-
-        result = sync_recruitment_ivykids_backend(
-            IvykidsBackendSyncPayload(max_pages=5),
-            _=None,
-        )
-
-        assert result["provider_available"] is True
-        assert result["sync_success"] is True
-        assert result["total_fetched"] == 2
-        assert result["inserted"] == 1
-        assert result["updated"] == 0
-        assert result["skipped"] == 1
-        assert result["page_count"] == 1
-
-        with recruitment_session_factory() as session:
-            rows = session.query(RecruitmentVisit).all()
-            assert len(rows) == 1
-            row = rows[0]
-            assert row.month == "115.04"
-            assert row.child_name == "小安"
-            assert row.phone == "0912000111"
-            assert row.source == "官網預約"
-            assert row.has_deposit is False
-            assert row.external_source == ivykids_sync_service.IVYKIDS_BACKEND_SOURCE
-            assert row.external_id == "1001"
-            assert row.external_status == "預約正常"
-            assert row.birthday == date(2021, 5, 6)
-            assert row.grade == "小班"
-            assert row.address == "高雄市三民區民族一路100號"
-            assert row.notes == "六月再聯繫"
-            assert row.parent_response == "媽媽表示會再評估"
-
-    def test_sync_updates_existing_manual_record_when_signature_matches(
-        self,
-        recruitment_session_factory,
-        monkeypatch,
-    ):
-        with recruitment_session_factory() as session:
-            session.add(
-                RecruitmentVisit(
-                    month="115.04",
-                    visit_date="115.04.12",
-                    child_name="小安",
-                    phone="0912000111",
-                    source="舊來源",
-                    has_deposit=False,
-                )
-            )
-            session.commit()
-
-        monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "_login_session", lambda _session: None)
-        monkeypatch.setattr(
-            ivykids_sync_service,
-            "_build_requests_session",
-            lambda: type(
-                "FakeSession",
-                (),
-                {
-                    "__enter__": lambda self: self,
-                    "__exit__": lambda self, exc_type, exc, tb: None,
-                    "close": lambda self: None,
-                },
-            )(),
-        )
-        monkeypatch.setattr(
-            ivykids_sync_service,
-            "fetch_backend_records",
-            lambda max_pages=20, http_session=None, authenticated=False: (
-                [
-                    ivykids_sync_service.IvykidsBackendRecord(
-                        external_id="1001",
-                        status="預約正常",
-                        visit_date="2026-04-12 10:30",
-                        child_name="小安",
-                        phone="0912000111",
-                        source="官網預約",
-                        created_at="2026-04-10 09:15",
-                        detail_url=None,
-                        month="115.04",
-                        address="高雄市左營區明誠路100號",
-                    ),
-                ],
-                1,
-            ),
-        )
-        monkeypatch.setattr(
-            ivykids_sync_service,
-            "enrich_backend_records",
-            lambda records, http_session: list(records),
-        )
-
-        result = sync_recruitment_ivykids_backend(
-            IvykidsBackendSyncPayload(max_pages=5),
-            _=None,
-        )
-
-        assert result["sync_success"] is True
-        assert result["inserted"] == 0
-        assert result["updated"] == 1
-
-        with recruitment_session_factory() as session:
-            rows = session.query(RecruitmentVisit).all()
-            assert len(rows) == 1
-            row = rows[0]
-            assert row.external_id == "1001"
-            assert row.external_source == ivykids_sync_service.IVYKIDS_BACKEND_SOURCE
-            assert row.external_status == "預約正常"
-            assert row.source == "官網預約"
-            assert row.address == "高雄市左營區明誠路100號"
-
-    def test_sync_returns_provider_unavailable_when_credentials_missing(
-        self,
-        recruitment_session_factory,
-        monkeypatch,
-    ):
-        monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: False)
-
-        result = sync_recruitment_ivykids_backend(
-            IvykidsBackendSyncPayload(max_pages=5),
-            _=None,
-        )
-
-        assert result["provider_available"] is False
-        assert result["sync_success"] is False
-        assert result["inserted"] == 0
-        assert result["updated"] == 0
-        assert "IVYKIDS_USERNAME" in (result["message"] or "")
-
-    def test_sync_failure_updates_sync_state(
-        self,
-        recruitment_session_factory,
-        monkeypatch,
-    ):
-        monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "_login_session", lambda _session: None)
-        monkeypatch.setattr(
-            ivykids_sync_service,
-            "_build_requests_session",
-            lambda: type(
-                "FakeSession",
-                (),
-                {
-                    "__enter__": lambda self: self,
-                    "__exit__": lambda self, exc_type, exc, tb: None,
-                    "close": lambda self: None,
-                },
-            )(),
-        )
-
-        def _raise_fetch(*args, **kwargs):
-            raise RuntimeError("登入失敗")
-
-        monkeypatch.setattr(ivykids_sync_service, "fetch_backend_records", _raise_fetch)
-
-        result = sync_recruitment_ivykids_backend(
-            IvykidsBackendSyncPayload(max_pages=5),
-            _=None,
-        )
-
-        assert result["provider_available"] is True
-        assert result["sync_success"] is False
-        assert result["message"] == "登入失敗"
-
-        with recruitment_session_factory() as session:
-            state = session.query(RecruitmentSyncState).filter_by(
-                provider_name=ivykids_sync_service.IVYKIDS_BACKEND_SOURCE
-            ).one()
-            assert state.sync_in_progress is False
-            assert state.last_sync_status == "failed"
-            assert state.last_sync_message == "登入失敗"
-
-    def test_sync_busy_guard_returns_busy_state(
-        self,
-        recruitment_session_factory,
-        monkeypatch,
-    ):
-        monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-
-        test_lock = threading.Lock()
-        test_lock.acquire()
-        monkeypatch.setattr(ivykids_sync_service, "_SYNC_LOCK", test_lock)
-
-        try:
-            result = sync_recruitment_ivykids_backend(
-                IvykidsBackendSyncPayload(max_pages=5),
-                _=None,
-            )
-        finally:
-            test_lock.release()
-
-        assert result["provider_available"] is True
-        assert result["sync_success"] is False
-        assert result["sync_in_progress"] is True
-        assert "進行中" in result["message"]
-
-    def test_get_status_returns_scheduler_and_last_sync_metadata(
-        self,
-        recruitment_session_factory,
-        monkeypatch,
-    ):
-        monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "scheduler_requested", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "scheduler_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "get_sync_interval_minutes", lambda: 10)
-
-        synced_at = datetime(2026, 4, 12, 9, 30, 0)
-        with recruitment_session_factory() as session:
-            session.add(
-                RecruitmentSyncState(
-                    provider_name=ivykids_sync_service.IVYKIDS_BACKEND_SOURCE,
-                    provider_label="義華校官網",
-                    sync_in_progress=False,
-                    last_synced_at=synced_at,
-                    last_sync_status="success",
-                    last_sync_message="義華校官網同步完成",
-                    last_sync_counts='{"inserted": 2, "updated": 1, "skipped": 0, "total_fetched": 3, "page_count": 1}',
-                )
-            )
-            session.commit()
-
-        result = get_recruitment_ivykids_backend_status(_=None)
-
-        assert result["provider_available"] is True
-        assert result["scheduler_enabled"] is True
-        assert result["sync_interval_minutes"] == 10
-        assert result["last_synced_at"] == synced_at.isoformat()
-        assert result["last_sync_counts"] == {
-            "inserted": 2,
-            "updated": 1,
-            "skipped": 0,
-            "total_fetched": 3,
-            "page_count": 1,
-        }
-
 
 class TestRecruitmentStats:
     def test_live_stats_include_enrollment_funnel_counts_and_rates(self, recruitment_session_factory):
@@ -739,29 +411,20 @@ class TestRecruitmentStats:
 
         stats = get_recruitment_stats(_=None)
 
-        assert stats["by_source"] == [
-            {"source": "童年綠地", "visit": 3, "deposit": 2},
-            {"source": "分校介紹", "visit": 3, "deposit": 1},
-            {"source": "網路", "visit": 1, "deposit": 0},
-        ]
-        assert stats["top_source_names"] == ["童年綠地", "分校介紹", "網路"]
-
-        cross_rows = {
-            row["referrer"]: row
-            for row in stats["referrer_source_cross"]["referrers"]
+        by_source_map = {
+            item["source"]: {"visit": item["visit"], "deposit": item["deposit"]}
+            for item in stats["by_source"]
         }
-        assert cross_rows["Amy"]["sources"] == {
-            "童年綠地": 1,
-            "分校介紹": 3,
-            "網路": 1,
-        }
-        assert cross_rows["Ruby"]["sources"] == {
-            "童年綠地": 2,
-            "分校介紹": 0,
-            "網路": 0,
+        assert by_source_map == {
+            "童年綠地": {"visit": 1, "deposit": 1},
+            "二人同行": {"visit": 1, "deposit": 0},
+            "Ruby老師": {"visit": 1, "deposit": 1},
+            "分校介紹": {"visit": 3, "deposit": 1},
+            "網路": {"visit": 1, "deposit": 0},
         }
 
         options = get_recruitment_options(_=None)
+        assert "二人同行" in options["sources"]
         assert "分校介紹" in options["sources"]
         assert "崇德校介紹" not in options["sources"]
 
@@ -796,12 +459,8 @@ class TestRecruitmentStats:
             page_size=50,
             _=None,
         )
-        assert grouped_result["total"] == 3
-        assert {row["source"] for row in grouped_result["records"]} == {
-            "童年綠地 19-1",
-            "二人同行",
-            "Ruby老師",
-        }
+        assert grouped_result["total"] == 1
+        assert grouped_result["records"][0]["source"] == "童年綠地 19-1"
 
         exact_result = list_recruitment_records(
             month=None,
@@ -817,6 +476,65 @@ class TestRecruitmentStats:
         )
         assert exact_result["total"] == 1
         assert exact_result["records"][0]["child_name"] == "童年乙"
+
+    def test_source_analysis_reclassifies_chuannian_keyword_hits_and_detail_filter_matches(
+        self,
+        recruitment_session_factory,
+    ):
+        with recruitment_session_factory() as session:
+            session.add_all([
+                RecruitmentVisit(
+                    month="115.05",
+                    child_name="關鍵字甲",
+                    source="朋友介紹",
+                    referrer="Ruby",
+                    has_deposit=True,
+                    parent_response="童年綠地家長介紹",
+                ),
+                RecruitmentVisit(
+                    month="115.05",
+                    child_name="關鍵字乙",
+                    source="自行蒞園",
+                    referrer="Amy",
+                    has_deposit=False,
+                    notes="班導-雅婷",
+                ),
+                RecruitmentVisit(
+                    month="115.05",
+                    child_name="一般來源",
+                    source="朋友介紹",
+                    referrer="Amy",
+                    has_deposit=False,
+                ),
+            ])
+            session.commit()
+
+        stats = get_recruitment_stats(_=None)
+
+        assert stats["chuannian_visit"] == 2
+        assert stats["chuannian_deposit"] == 1
+        assert stats["by_source"] == [
+            {"source": "童年綠地", "visit": 2, "deposit": 1},
+            {"source": "朋友介紹", "visit": 1, "deposit": 0},
+        ]
+
+        grouped_result = list_recruitment_records(
+            month=None,
+            grade=None,
+            source="童年綠地",
+            referrer=None,
+            has_deposit=None,
+            no_deposit_reason=None,
+            keyword=None,
+            page=1,
+            page_size=50,
+            _=None,
+        )
+        assert grouped_result["total"] == 2
+        assert {row["child_name"] for row in grouped_result["records"]} == {
+            "關鍵字甲",
+            "關鍵字乙",
+        }
 
     def test_stats_include_decision_summary_alerts_action_queue_and_reference_month(
         self,

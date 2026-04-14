@@ -2,7 +2,6 @@
 幼稚園考勤薪資系統 - FastAPI 後端
 """
 
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -24,7 +23,6 @@ from models.database import (
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
 from services.line_service import LineService
-from services import recruitment_ivykids_sync as recruitment_ivykids_sync_service
 from utils.permissions import _RW_PAIRS
 
 # Routers
@@ -61,6 +59,7 @@ from api.line_webhook import router as line_webhook_router, init_webhook_service
 from api.gov_reports import router as gov_reports_router, init_gov_report_services
 from api.fees import router as fees_router
 from api.recruitment import router as recruitment_router
+from api.recruitment_ivykids import router as recruitment_ivykids_router
 from api.student_enrollment import router as student_enrollment_router
 
 # ---------------------------------------------------------------------------
@@ -102,18 +101,10 @@ def on_startup():
 @asynccontextmanager
 async def app_lifespan(app_instance: FastAPI):
     on_startup()
-    scheduler_stop_event = asyncio.Event()
-    scheduler_task = None
-    if recruitment_ivykids_sync_service.scheduler_configured():
-        scheduler_task = asyncio.create_task(
-            recruitment_ivykids_sync_service.run_sync_scheduler(scheduler_stop_event)
-        )
     try:
         yield
     finally:
-        if scheduler_task:
-            scheduler_stop_event.set()
-            await scheduler_task
+        pass
 
 
 app = FastAPI(
@@ -211,6 +202,7 @@ app.include_router(line_webhook_router)
 app.include_router(gov_reports_router)
 app.include_router(fees_router)
 app.include_router(recruitment_router)
+app.include_router(recruitment_ivykids_router)
 app.include_router(student_enrollment_router)
 
 # Audit middleware (must be added after CORS middleware)
@@ -589,6 +581,7 @@ def run_startup_bootstrap():
     """執行啟動必要任務，不包含 schema/data migration。"""
     from models.recruitment import (
         RecruitmentVisit,
+        RecruitmentIvykidsRecord,
         RecruitmentPeriod,
         RecruitmentMonth,
         RecruitmentGeocodeCache,
@@ -600,6 +593,7 @@ def run_startup_bootstrap():
     init_database()
     engine = get_engine()
     RecruitmentVisit.__table__.create(engine, checkfirst=True)
+    RecruitmentIvykidsRecord.__table__.create(engine, checkfirst=True)
     RecruitmentPeriod.__table__.create(engine, checkfirst=True)
     RecruitmentMonth.__table__.create(engine, checkfirst=True)
     RecruitmentGeocodeCache.__table__.create(engine, checkfirst=True)
@@ -620,7 +614,6 @@ def run_startup_bootstrap():
     _load_line_config()
     from api.recruitment import normalize_existing_months
     normalize_existing_months()
-
 
 def migrate_school_year_to_roc():
     """將 school_year / period 從西元年遷移為民國年（幂等，只處理 > 1911 的值）。"""

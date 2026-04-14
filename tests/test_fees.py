@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from api.fees import _apply_fee_record_filters
 from models.base import Base
 from models.classroom import Classroom, Student
 from models.fees import FeeItem, StudentFeeRecord
@@ -348,57 +349,64 @@ class TestStudentFeeRecordFKRestrict:
 class TestFeeSummarySQLAggregation:
     """驗證 fee_summary 改用 SQL 聚合後，結果與逐筆 Python 計算一致。"""
 
-    def _sql_summary(self, session, period=None, classroom_name=None, fee_item_id=None):
+    def _sql_summary(self, session, period=None, classroom_name=None, status=None, fee_item_id=None):
         """複製 fees.py fee_summary 的 SQL 聚合邏輯。"""
         from sqlalchemy import func, case
-        q = session.query(StudentFeeRecord)
-        if period:
-            q = q.filter(StudentFeeRecord.period == period)
-        if classroom_name:
-            q = q.filter(StudentFeeRecord.classroom_name == classroom_name)
-        if fee_item_id:
-            q = q.filter(StudentFeeRecord.fee_item_id == fee_item_id)
+        q = _apply_fee_record_filters(
+            session.query(StudentFeeRecord),
+            period=period,
+            classroom_name=classroom_name,
+            status=status,
+            fee_item_id=fee_item_id,
+        )
 
         agg_q = q.with_entities(
             func.count(StudentFeeRecord.id).label("total_count"),
             func.coalesce(
                 func.sum(case((StudentFeeRecord.status == "paid", 1), else_=0)), 0
             ).label("paid_count"),
+            func.coalesce(
+                func.sum(case((StudentFeeRecord.status == "partial", 1), else_=0)), 0
+            ).label("partial_count"),
             func.coalesce(func.sum(StudentFeeRecord.amount_due), 0).label("total_due"),
             func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label("total_paid"),
         )
         row = agg_q.one()
         total_count = row.total_count or 0
         paid_count = int(row.paid_count or 0)
+        partial_count = int(row.partial_count or 0)
         total_due = int(row.total_due or 0)
         total_paid = int(row.total_paid or 0)
         return {
             "total_count": total_count,
             "paid_count": paid_count,
-            "unpaid_count": total_count - paid_count,
+            "partial_count": partial_count,
+            "unpaid_count": total_count - paid_count - partial_count,
             "total_due": total_due,
             "total_paid": total_paid,
             "total_unpaid": total_due - total_paid,
         }
 
-    def _python_summary(self, session, period=None, classroom_name=None, fee_item_id=None):
+    def _python_summary(self, session, period=None, classroom_name=None, status=None, fee_item_id=None):
         """原始 Python 端計算（作為比對基準）。"""
-        q = session.query(StudentFeeRecord)
-        if period:
-            q = q.filter(StudentFeeRecord.period == period)
-        if classroom_name:
-            q = q.filter(StudentFeeRecord.classroom_name == classroom_name)
-        if fee_item_id:
-            q = q.filter(StudentFeeRecord.fee_item_id == fee_item_id)
+        q = _apply_fee_record_filters(
+            session.query(StudentFeeRecord),
+            period=period,
+            classroom_name=classroom_name,
+            status=status,
+            fee_item_id=fee_item_id,
+        )
         records = q.all()
         total_count = len(records)
         paid_count = sum(1 for r in records if r.status == "paid")
+        partial_count = sum(1 for r in records if r.status == "partial")
         total_due = sum(r.amount_due for r in records)
         total_paid = sum(r.amount_paid for r in records)
         return {
             "total_count": total_count,
             "paid_count": paid_count,
-            "unpaid_count": total_count - paid_count,
+            "partial_count": partial_count,
+            "unpaid_count": total_count - paid_count - partial_count,
             "total_due": total_due,
             "total_paid": total_paid,
             "total_unpaid": total_due - total_paid,
@@ -407,8 +415,15 @@ class TestFeeSummarySQLAggregation:
     def test_empty_db_all_zero(self, session):
         """無記錄時 SQL 聚合回傳全 0"""
         result = self._sql_summary(session)
-        assert result == {"total_count": 0, "paid_count": 0, "unpaid_count": 0,
-                          "total_due": 0, "total_paid": 0, "total_unpaid": 0}
+        assert result == {
+            "total_count": 0,
+            "paid_count": 0,
+            "partial_count": 0,
+            "unpaid_count": 0,
+            "total_due": 0,
+            "total_paid": 0,
+            "total_unpaid": 0,
+        }
 
     def test_sql_matches_python_mixed_status(self, session):
         """paid / unpaid / partial 混合狀態：SQL 聚合與 Python 計算結果一致"""
@@ -462,3 +477,71 @@ class TestFeeSummarySQLAggregation:
         result = self._sql_summary(session)
         assert result["paid_count"] == 0
         assert result["unpaid_count"] == 1
+
+    def test_summary_can_filter_by_partial_status(self, session):
+        item = _add_fee_item(session, amount=2500)
+        cls = _add_classroom(session)
+        s1 = _add_student(session, "甲", cls.id)
+        s2 = _add_student(session, "乙", cls.id)
+        session.commit()
+
+        partial_record = _add_record(session, s1, item)
+        partial_record.status = "partial"
+        partial_record.amount_paid = 1000
+
+        paid_record = _add_record(session, s2, item)
+        paid_record.status = "paid"
+        paid_record.amount_paid = 2500
+        session.commit()
+
+        sql_result = self._sql_summary(session, status="partial")
+        py_result = self._python_summary(session, status="partial")
+
+        assert sql_result == py_result
+        assert sql_result["total_count"] == 1
+        assert sql_result["partial_count"] == 1
+        assert sql_result["paid_count"] == 0
+
+
+class TestFeeRecordFilterHelper:
+    def test_filter_supports_partial_status(self, session):
+        cls = _add_classroom(session)
+        s1 = _add_student(session, "全繳學生", cls.id)
+        s2 = _add_student(session, "部分學生", cls.id)
+        item = _add_fee_item(session, amount=4000)
+        session.commit()
+
+        paid_record = _add_record(session, s1, item)
+        paid_record.status = "paid"
+        paid_record.amount_paid = 4000
+
+        partial_record = _add_record(session, s2, item)
+        partial_record.status = "partial"
+        partial_record.amount_paid = 1000
+        session.commit()
+
+        rows = _apply_fee_record_filters(
+            session.query(StudentFeeRecord),
+            status="partial",
+        ).all()
+
+        assert [row.student_name for row in rows] == ["部分學生"]
+
+    def test_filter_supports_student_name_keyword(self, session):
+        cls = _add_classroom(session)
+        item = _add_fee_item(session, amount=3500)
+        target = _add_student(session, "王小明", cls.id)
+        other = _add_student(session, "李小華", cls.id)
+        session.commit()
+
+        _add_record(session, target, item)
+        _add_record(session, other, item)
+        session.commit()
+
+        rows = _apply_fee_record_filters(
+            session.query(StudentFeeRecord),
+            student_name="小明",
+        ).all()
+
+        assert len(rows) == 1
+        assert rows[0].student_name == "王小明"

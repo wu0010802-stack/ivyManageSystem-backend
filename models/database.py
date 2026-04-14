@@ -44,6 +44,8 @@ from models.dismissal import StudentDismissalCall
 from models.student_transfer import StudentClassroomTransfer
 from models.recruitment import (
     RecruitmentVisit,
+    RecruitmentIvykidsRecord,
+    RecruitmentMonth,
     RecruitmentPeriod,
     RecruitmentGeocodeCache,
     RecruitmentCampusSetting,
@@ -98,6 +100,7 @@ __all__ = [
     # student transfer history
     "StudentClassroomTransfer",
     # recruitment
-    "RecruitmentVisit", "RecruitmentPeriod", "RecruitmentGeocodeCache",
+    "RecruitmentVisit", "RecruitmentIvykidsRecord", "RecruitmentMonth",
+    "RecruitmentPeriod", "RecruitmentGeocodeCache",
     "RecruitmentCampusSetting", "RecruitmentAreaInsightCache", "RecruitmentSyncState",
 ]

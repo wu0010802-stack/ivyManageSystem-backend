@@ -3,6 +3,8 @@
 import os
 import sys
 
+from sqlalchemy import create_engine, inspect
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -50,6 +52,47 @@ def test_run_startup_bootstrap_skips_schema_migrations(monkeypatch):
         "load_config_from_db",
         "_load_line_config",
     ]
+
+
+def test_run_startup_bootstrap_creates_ivykids_table_for_legacy_db(monkeypatch, tmp_path):
+    import main
+    import models.base as base_module
+    from api import recruitment as recruitment_api
+
+    db_path = tmp_path / "startup-bootstrap.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = None
+
+    monkeypatch.setattr(main, "init_database", lambda: None)
+    monkeypatch.setattr(main, "get_engine", lambda: engine)
+    monkeypatch.setattr(main, "migrate_school_year_to_roc", lambda: None)
+    monkeypatch.setattr(main, "seed_class_grades", lambda: None)
+    monkeypatch.setattr(main, "seed_job_titles", lambda: None)
+    monkeypatch.setattr(main, "seed_default_configs", lambda: None)
+    monkeypatch.setattr(main, "seed_shift_types", lambda: None)
+    monkeypatch.setattr(main, "seed_default_admin", lambda: None)
+    monkeypatch.setattr(main, "seed_approval_policies", lambda: None)
+    monkeypatch.setattr(main, "seed_activity_settings", lambda: None)
+    monkeypatch.setattr(main.salary_engine, "load_config_from_db", lambda: None)
+    monkeypatch.setattr(main, "_load_line_config", lambda: None)
+    monkeypatch.setattr(recruitment_api, "normalize_existing_months", lambda: None)
+
+    try:
+        main.run_startup_bootstrap()
+
+        tables = set(inspect(engine).get_table_names())
+        assert "recruitment_ivykids_records" in tables
+    finally:
+        base_module._engine = old_engine
+        base_module._SessionFactory = old_session_factory
+        engine.dispose()
 
 
 def test_run_maintenance_tasks_executes_alembic_and_permission_backfill(monkeypatch):

@@ -63,6 +63,7 @@ RECRUITMENT_CAMPUS_TRAVEL_MODE = os.environ.get("RECRUITMENT_CAMPUS_TRAVEL_MODE"
 REQUEST_TIMEOUT = float(os.environ.get("RECRUITMENT_MARKET_TIMEOUT_SECONDS", "12"))
 GOOGLE_PLACES_PAGE_SIZE = 20
 GOOGLE_PLACES_MAX_RESULTS = 60
+DATASET_SCOPE_ALL = "all"
 
 TRAVEL_SPEEDS_KMH = {
     "driving": 30.0,
@@ -92,6 +93,22 @@ def _normalize_text(value: Any) -> str:
 
 def _normalize_area_key(value: Any) -> str:
     return _normalize_text(value).replace(" ", "")
+
+
+def _normalize_dataset_scope(dataset_scope: Optional[str]) -> str:
+    return DATASET_SCOPE_ALL
+
+
+def _apply_dataset_scope(query, dataset_scope: Optional[str]):
+    return query
+
+
+def _scoped_visit_query(session, dataset_scope: Optional[str] = None):
+    return _apply_dataset_scope(session.query(RecruitmentVisit), dataset_scope)
+
+
+def _scoped_hotspot_addresses(session, dataset_scope: Optional[str] = None) -> Optional[list[str]]:
+    return None
 
 
 def _extract_county_district(address: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -499,6 +516,8 @@ def search_nearby_kindergartens(
         "places.types,"
         "places.businessStatus,"
         "places.googleMapsUri,"
+        "places.rating,"
+        "places.userRatingCount,"
         "nextPageToken"
     )
 
@@ -548,6 +567,8 @@ def search_nearby_kindergartens(
             if None not in {campus_lat, campus_lng, lat, lng}:
                 distance_km = round(_haversine_km(campus_lat, campus_lng, lat, lng), 2)
 
+            raw_rating = place.get("rating")
+            raw_rating_count = place.get("userRatingCount")
             schools_by_place_id[place_id] = {
                 "place_id": place_id,
                 "name": _extract_place_display_name(place),
@@ -559,6 +580,8 @@ def search_nearby_kindergartens(
                 "business_status": _normalize_text(place.get("businessStatus")),
                 "google_maps_uri": _normalize_text(place.get("googleMapsUri")),
                 "distance_km": distance_km,
+                "rating": float(raw_rating) if raw_rating is not None else None,
+                "user_rating_count": int(raw_rating_count) if raw_rating_count is not None else None,
             }
 
             if len(schools_by_place_id) >= GOOGLE_PLACES_MAX_RESULTS:
@@ -723,20 +746,32 @@ def get_or_create_campus_setting(session) -> RecruitmentCampusSetting:
 
 def upsert_campus_setting(session, payload: dict[str, Any]) -> RecruitmentCampusSetting:
     setting = get_or_create_campus_setting(session)
+    old_address = (setting.campus_address or "").strip()
+
     for field in ("campus_name", "campus_address", "travel_mode"):
         if field in payload and payload[field] is not None:
             setattr(setting, field, str(payload[field]).strip())
 
-    for field in ("campus_lat", "campus_lng"):
-        if field in payload:
-            setattr(setting, field, _safe_float(payload[field]))
+    # Explicit lat/lng from payload take priority
+    explicit_lat = _safe_float(payload.get("campus_lat"))
+    explicit_lng = _safe_float(payload.get("campus_lng"))
+    setting.campus_lat = explicit_lat
+    setting.campus_lng = explicit_lng
 
     if setting.travel_mode not in SUPPORTED_TRAVEL_MODES:
         setting.travel_mode = "driving"
 
-    if (setting.campus_lat is None or setting.campus_lng is None) and setting.campus_address:
+    new_address = (setting.campus_address or "").strip()
+    address_changed = new_address and new_address != old_address
+
+    # Auto-geocode when: coordinates are missing, OR address was changed without supplying new coordinates
+    needs_geocode = (
+        (setting.campus_lat is None or setting.campus_lng is None)
+        or (address_changed and explicit_lat is None and explicit_lng is None)
+    ) and new_address
+    if needs_geocode:
         metadata = resolve_address_metadata(
-            setting.campus_address,
+            new_address,
             campus=serialize_campus_setting(setting),
             include_land_use=False,
         )
@@ -961,28 +996,35 @@ def _apply_metadata_to_geocode_cache(
         row.error_message = error_message
 
 
-def _group_hotspots_by_district(session) -> dict[str, list[RecruitmentGeocodeCache]]:
+def _group_hotspots_by_district(
+    session,
+    addresses: Optional[list[str]] = None,
+) -> dict[str, list[RecruitmentGeocodeCache]]:
     grouped: dict[str, list[RecruitmentGeocodeCache]] = {}
-    rows = (
-        session.query(RecruitmentGeocodeCache)
-        .filter(
-            RecruitmentGeocodeCache.district.isnot(None),
-            RecruitmentGeocodeCache.travel_minutes.isnot(None),
-        )
-        .all()
+    query = session.query(RecruitmentGeocodeCache).filter(
+        RecruitmentGeocodeCache.district.isnot(None),
+        RecruitmentGeocodeCache.travel_minutes.isnot(None),
     )
+    if addresses is not None:
+        if not addresses:
+            return grouped
+        query = query.filter(RecruitmentGeocodeCache.address.in_(addresses))
+    rows = query.all()
     for row in rows:
         grouped.setdefault(row.district, []).append(row)
     return grouped
 
 
-def _preferred_hotspot_row_by_district(session) -> dict[str, RecruitmentGeocodeCache]:
-    rows = (
-        session.query(RecruitmentGeocodeCache)
-        .filter(RecruitmentGeocodeCache.district.isnot(None))
-        .order_by(RecruitmentGeocodeCache.updated_at.desc())
-        .all()
-    )
+def _preferred_hotspot_row_by_district(
+    session,
+    addresses: Optional[list[str]] = None,
+) -> dict[str, RecruitmentGeocodeCache]:
+    query = session.query(RecruitmentGeocodeCache).filter(RecruitmentGeocodeCache.district.isnot(None))
+    if addresses is not None:
+        if not addresses:
+            return {}
+        query = query.filter(RecruitmentGeocodeCache.address.in_(addresses))
+    rows = query.order_by(RecruitmentGeocodeCache.updated_at.desc()).all()
     selected: dict[str, RecruitmentGeocodeCache] = {}
     for row in rows:
         current = selected.get(row.district)
@@ -1096,12 +1138,12 @@ def sync_market_intelligence(session, *, hotspot_limit: int = 200) -> dict[str, 
     }
 
 
-def _district_lead_metrics(session) -> dict[str, dict[str, Any]]:
+def _district_lead_metrics(session, dataset_scope: Optional[str] = None) -> dict[str, dict[str, Any]]:
     threshold_30 = datetime.now() - timedelta(days=30)
     threshold_90 = datetime.now() - timedelta(days=90)
 
     metrics: dict[str, dict[str, Any]] = {}
-    visits = session.query(RecruitmentVisit).all()
+    visits = _scoped_visit_query(session, dataset_scope).all()
     for visit in visits:
         district = visit.district or _extract_county_district(visit.address)[1] or "未填寫"
         bucket = metrics.setdefault(district, {
@@ -1121,16 +1163,20 @@ def _district_lead_metrics(session) -> dict[str, dict[str, Any]]:
     return metrics
 
 
-def _build_market_district_rows(session) -> list[dict[str, Any]]:
-    lead_metrics = _district_lead_metrics(session)
-    hotspot_rows = _preferred_hotspot_row_by_district(session)
-    district_travel_rows = _group_hotspots_by_district(session)
+def _build_market_district_rows(session, dataset_scope: Optional[str] = None) -> list[dict[str, Any]]:
+    lead_metrics = _district_lead_metrics(session, dataset_scope=dataset_scope)
+    scoped_addresses = _scoped_hotspot_addresses(session, dataset_scope=dataset_scope)
+    hotspot_rows = _preferred_hotspot_row_by_district(session, scoped_addresses)
+    district_travel_rows = _group_hotspots_by_district(session, scoped_addresses)
     area_rows = {
         row.district: row
         for row in session.query(RecruitmentAreaInsightCache).all()
     }
 
-    districts = sorted(set(lead_metrics) | set(area_rows) | set(hotspot_rows))
+    if _normalize_dataset_scope(dataset_scope) == DATASET_SCOPE_ALL:
+        districts = sorted(set(lead_metrics) | set(area_rows) | set(hotspot_rows))
+    else:
+        districts = sorted(set(lead_metrics) | set(hotspot_rows))
     rows: list[dict[str, Any]] = []
     for district in districts:
         metrics = lead_metrics.get(district, {})
@@ -1152,10 +1198,10 @@ def _build_market_district_rows(session) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda item: (-item["lead_count_90d"], item["district"]))
 
 
-def build_market_intelligence_snapshot(session) -> dict[str, Any]:
+def build_market_intelligence_snapshot(session, dataset_scope: Optional[str] = None) -> dict[str, Any]:
     campus_setting = get_or_create_campus_setting(session)
     campus = serialize_campus_setting(campus_setting)
-    districts = _build_market_district_rows(session)
+    districts = _build_market_district_rows(session, dataset_scope=dataset_scope)
 
     synced_at = session.query(func.max(RecruitmentAreaInsightCache.synced_at)).scalar()
     dataset_quality = "partial"

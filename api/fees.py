@@ -53,6 +53,29 @@ class PayRequest(BaseModel):
     notes: Optional[str] = ""
 
 
+def _apply_fee_record_filters(
+    query,
+    *,
+    period: Optional[str] = None,
+    classroom_name: Optional[str] = None,
+    status: Optional[str] = None,
+    fee_item_id: Optional[int] = None,
+    student_name: Optional[str] = None,
+):
+    if period:
+        query = query.filter(StudentFeeRecord.period == period)
+    if classroom_name:
+        query = query.filter(StudentFeeRecord.classroom_name == classroom_name)
+    if status:
+        query = query.filter(StudentFeeRecord.status == status)
+    if fee_item_id:
+        query = query.filter(StudentFeeRecord.fee_item_id == fee_item_id)
+    keyword = (student_name or "").strip()
+    if keyword:
+        query = query.filter(StudentFeeRecord.student_name.ilike(f"%{keyword}%"))
+    return query
+
+
 # ---------------------------------------------------------------------------
 # 費用項目
 # ---------------------------------------------------------------------------
@@ -271,23 +294,23 @@ def generate_fee_records(
 def list_fee_records(
     period: Optional[str] = Query(None),
     classroom_name: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, pattern="^(unpaid|partial|paid)$"),
     fee_item_id: Optional[int] = Query(None),
+    student_name: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     _: None = Depends(require_permission(Permission.FEES_READ)),
 ):
     """查詢費用記錄（支援分頁）"""
     with session_scope() as session:
-        q = session.query(StudentFeeRecord)
-        if period:
-            q = q.filter(StudentFeeRecord.period == period)
-        if classroom_name:
-            q = q.filter(StudentFeeRecord.classroom_name == classroom_name)
-        if status:
-            q = q.filter(StudentFeeRecord.status == status)
-        if fee_item_id:
-            q = q.filter(StudentFeeRecord.fee_item_id == fee_item_id)
+        q = _apply_fee_record_filters(
+            session.query(StudentFeeRecord),
+            period=period,
+            classroom_name=classroom_name,
+            status=status,
+            fee_item_id=fee_item_id,
+            student_name=student_name,
+        )
 
         total = q.count()
         records = (
@@ -363,37 +386,45 @@ def pay_fee_record(
 def fee_summary(
     period: Optional[str] = Query(None),
     classroom_name: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, pattern="^(unpaid|partial|paid)$"),
     fee_item_id: Optional[int] = Query(None),
+    student_name: Optional[str] = Query(None),
     _: None = Depends(require_permission(Permission.FEES_READ)),
 ):
     """統計摘要：總應繳金額、已繳、未繳人數/金額"""
     with session_scope() as session:
-        q = session.query(StudentFeeRecord)
-        if period:
-            q = q.filter(StudentFeeRecord.period == period)
-        if classroom_name:
-            q = q.filter(StudentFeeRecord.classroom_name == classroom_name)
-        if fee_item_id:
-            q = q.filter(StudentFeeRecord.fee_item_id == fee_item_id)
+        q = _apply_fee_record_filters(
+            session.query(StudentFeeRecord),
+            period=period,
+            classroom_name=classroom_name,
+            status=status,
+            fee_item_id=fee_item_id,
+            student_name=student_name,
+        )
 
         agg_q = q.with_entities(
             func.count(StudentFeeRecord.id).label("total_count"),
             func.coalesce(
                 func.sum(case((StudentFeeRecord.status == "paid", 1), else_=0)), 0
             ).label("paid_count"),
+            func.coalesce(
+                func.sum(case((StudentFeeRecord.status == "partial", 1), else_=0)), 0
+            ).label("partial_count"),
             func.coalesce(func.sum(StudentFeeRecord.amount_due), 0).label("total_due"),
             func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label("total_paid"),
         )
         row = agg_q.one()
         total_count = row.total_count or 0
         paid_count = int(row.paid_count or 0)
+        partial_count = int(row.partial_count or 0)
         total_due = int(row.total_due or 0)
         total_paid = int(row.total_paid or 0)
 
         return {
             "total_count": total_count,
             "paid_count": paid_count,
-            "unpaid_count": total_count - paid_count,
+            "partial_count": partial_count,
+            "unpaid_count": total_count - paid_count - partial_count,
             "total_due": total_due,
             "total_paid": total_paid,
             "total_unpaid": total_due - total_paid,

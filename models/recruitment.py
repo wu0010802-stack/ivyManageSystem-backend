@@ -25,9 +25,6 @@ class RecruitmentVisit(Base):
     source = Column(String(50), nullable=True, index=True)          # 幼生來源
     referrer = Column(String(50), nullable=True, index=True)        # 介紹者
     deposit_collector = Column(String(50), nullable=True)           # 收預繳人員
-    external_source = Column(String(50), nullable=True, index=True) # 外部同步來源
-    external_id = Column(String(100), nullable=True, index=True)    # 外部系統原始 ID
-    external_status = Column(String(50), nullable=True)             # 外部系統狀態
     has_deposit = Column(Boolean, default=False, nullable=False)    # 是否預繳
     notes = Column(Text, nullable=True)                             # 備註（含預計就讀月份）
     parent_response = Column(Text, nullable=True)                   # 電訪後家長回應
@@ -51,7 +48,38 @@ class RecruitmentVisit(Base):
         Index("ix_rv_referrer_grade",        "referrer",    "grade"),
         Index("ix_rv_month_has_deposit",     "month",       "has_deposit"),
         Index("ix_rv_expected_start_label",  "expected_start_label"),
-        Index("ux_rv_external_source_id",    "external_source", "external_id", unique=True),
+    )
+
+
+class RecruitmentIvykidsRecord(Base):
+    """義華校官網同步報名資料表。"""
+    __tablename__ = "recruitment_ivykids_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(String(100), nullable=False, unique=True, index=True)
+    external_status = Column(String(50), nullable=True)
+    external_created_at = Column(String(50), nullable=True)
+    month = Column(String(10), nullable=False, index=True)
+    visit_date = Column(String(50), nullable=True)
+    child_name = Column(String(50), nullable=False)
+    birthday = Column(Date, nullable=True)
+    grade = Column(String(20), nullable=True)
+    phone = Column(String(100), nullable=True)
+    address = Column(String(200), nullable=True)
+    district = Column(String(30), nullable=True, index=True)
+    source = Column(String(50), nullable=True, index=True)
+    referrer = Column(String(50), nullable=True)
+    deposit_collector = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+    parent_response = Column(Text, nullable=True)
+    has_deposit = Column(Boolean, default=False, nullable=False)
+    enrolled = Column(Boolean, default=False, nullable=False)
+    transfer_term = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("ix_recruitment_ivykids_month_source", "month", "source"),
     )
 
 

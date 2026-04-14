@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 
 from models.base import session_scope
-from models.recruitment import RecruitmentSyncState, RecruitmentVisit
+from models.recruitment import RecruitmentIvykidsRecord, RecruitmentSyncState
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ IVYKIDS_PROVIDER_LABEL = "義華校官網"
 DEFAULT_LOGIN_URL = "https://www.ivykids.tw/manage/"
 DEFAULT_DATA_URL = "https://www.ivykids.tw/manage/make_an_appointment/"
 DEFAULT_SYNC_INTERVAL_MINUTES = 10
+DEFAULT_SYNC_CREATED_AT_CUTOFF = "2024-04-26 10:46:04"
 MAX_SYNC_PAGES = 20
 REQUEST_TIMEOUT_SECONDS = 20
 PREVIEW_LIMIT = 8
@@ -136,6 +137,64 @@ def get_sync_interval_minutes() -> int:
         return max(1, int(raw or DEFAULT_SYNC_INTERVAL_MINUTES))
     except (TypeError, ValueError):
         return DEFAULT_SYNC_INTERVAL_MINUTES
+
+
+def _parse_datetime_value(value: Optional[str]) -> Optional[datetime]:
+    text = _normalize_text(value)
+    if not text:
+        return None
+
+    for pattern in _DATE_PATTERNS:
+        try:
+            parsed = datetime.strptime(text, pattern)
+        except ValueError:
+            continue
+        if "%H" in pattern:
+            return parsed
+        return datetime(parsed.year, parsed.month, parsed.day)
+
+    normalized = (
+        text.replace("年", ".")
+        .replace("月", ".")
+        .replace("日", "")
+        .replace("/", ".")
+        .replace("-", ".")
+    )
+
+    western_match = _FOUR_DIGIT_DATE_RE.search(normalized)
+    if western_match:
+        try:
+            return datetime(
+                int(western_match.group(1)),
+                int(western_match.group(2)),
+                int(western_match.group(3)),
+            )
+        except ValueError:
+            return None
+
+    roc_match = _ROC_DATE_RE.search(normalized)
+    if roc_match:
+        try:
+            return datetime(
+                int(roc_match.group(1)) + 1911,
+                int(roc_match.group(2)),
+                int(roc_match.group(3)),
+            )
+        except ValueError:
+            return None
+
+    return None
+
+
+def get_sync_created_at_cutoff() -> Optional[datetime]:
+    raw = _get_env("IVYKIDS_SYNC_CREATED_AT_CUTOFF", DEFAULT_SYNC_CREATED_AT_CUTOFF)
+    cutoff = _parse_datetime_value(raw)
+    if raw and cutoff is None:
+        logger.warning(
+            "IVYKIDS_SYNC_CREATED_AT_CUTOFF 格式無法解析，將忽略 created_at 門檻：%s",
+            raw,
+        )
+    return cutoff
 
 
 def _build_requests_session() -> requests.Session:
@@ -470,14 +529,39 @@ def _login_session(http_session: requests.Session) -> None:
         raise RuntimeError("義華校官網登入失敗，請確認帳號密碼或登入頁面是否變更。")
 
 
-def _parse_backend_list_row(row_html: str, page_url: str) -> Optional[IvykidsBackendRecord]:
-    cells = _CELL_RE.findall(row_html)
-    if len(cells) < 7:
+def _extract_status_label(cell_html: Optional[str]) -> Optional[str]:
+    """從狀態格取出主標籤文字，忽略 <br> 後的補充說明（如取消時間）。"""
+    if not cell_html:
         return None
+    # 取 <br> 之前的部分
+    before_br = re.split(r"(?i)<br\b[^>]*/?>", cell_html, maxsplit=1)[0]
+    return _strip_tags(before_br)
+
+
+def _parse_backend_list_row(row_html: str, page_url: str) -> Optional[IvykidsBackendRecord]:
+    """解析義華後台列表的一列 <tr>。
+
+    義華後台核心欄位固定為最後 8 欄：
+      0: 預約狀態
+      1: 預約日期/場次
+      2: 寶貝姓名
+      3: 寶貝出生年月日
+      4: 聯絡電話
+      5: 如何知道常春藤幼兒園
+      6: 資料建立時間
+      7: 操作（含 form.php?id=XXX 連結）
+
+    新版列表前方可能多一個排序欄，因此不能直接寫死整列只有 8 欄。
+    """
+    cells = _CELL_RE.findall(row_html)
+    if len(cells) < 8:
+        return None
+
+    cells = cells[-8:]
 
     link_match = re.search(
         r"""(?is)<a\b[^>]*href=(?:"([^"]*form\.php\?id=\d+[^"]*)"|'([^']*form\.php\?id=\d+[^']*)')""",
-        row_html,
+        cells[-1],
     )
     href = (link_match.group(1) or link_match.group(2)) if link_match else None
     if not href:
@@ -491,9 +575,10 @@ def _parse_backend_list_row(row_html: str, page_url: str) -> Optional[IvykidsBac
     visit_date = _strip_tags(cells[1])
     return IvykidsBackendRecord(
         external_id=match.group(1),
-        status=_strip_tags(cells[0]),
+        status=_extract_status_label(cells[0]),
         visit_date=visit_date,
         child_name=_strip_tags(cells[2]),
+        birthday=_parse_date_value(_strip_tags(cells[3])),
         phone=_strip_tags(cells[4]),
         source=_strip_tags(cells[5]),
         created_at=_strip_tags(cells[6]),
@@ -680,11 +765,6 @@ def get_backend_sync_status(session=None) -> dict[str, Any]:
         return _build_status_payload(state)
 
 
-def _is_cancelled_status(status: Optional[str]) -> bool:
-    text = _normalize_text(status)
-    return bool(text and "取消" in text)
-
-
 def _merge_text(existing: Optional[str], incoming: Optional[str]) -> Optional[str]:
     return _normalize_text(incoming) or _normalize_text(existing)
 
@@ -697,51 +777,82 @@ def _merge_bool(existing: Optional[bool], incoming: Optional[bool], default: boo
     return default
 
 
-def _find_manual_match(session, record: IvykidsBackendRecord) -> Optional[RecruitmentVisit]:
-    child_name = _normalize_text(record.child_name)
-    phone = _normalize_text(record.phone)
-    visit_signature = _normalize_signature_date(record.visit_date)
-    if not (child_name and phone and visit_signature):
-        return None
-
-    candidates = session.query(RecruitmentVisit).filter(
-        RecruitmentVisit.child_name == child_name,
-        RecruitmentVisit.phone == phone,
-        RecruitmentVisit.external_id.is_(None),
-    ).all()
-    for candidate in candidates:
-        if _normalize_signature_date(candidate.visit_date) == visit_signature:
-            return candidate
-    return None
+def _record_meets_created_at_cutoff(
+    created_at: Optional[str],
+    cutoff: Optional[datetime],
+) -> bool:
+    if cutoff is None:
+        return True
+    parsed_created_at = _parse_datetime_value(created_at)
+    if parsed_created_at is None:
+        return False
+    return parsed_created_at >= cutoff
 
 
-def _apply_record_to_visit(visit: RecruitmentVisit, record: IvykidsBackendRecord) -> None:
-    visit.month = (
+def _prune_records_before_cutoff(session, cutoff: Optional[datetime]) -> int:
+    if cutoff is None:
+        return 0
+
+    deleted = 0
+    existing_records = session.query(RecruitmentIvykidsRecord).all()
+    for existing_record in existing_records:
+        if _record_meets_created_at_cutoff(existing_record.external_created_at, cutoff):
+            continue
+        session.delete(existing_record)
+        deleted += 1
+
+    if deleted:
+        session.flush()
+    return deleted
+
+
+def _apply_record_to_synced_record(
+    synced_record: RecruitmentIvykidsRecord,
+    record: IvykidsBackendRecord,
+) -> None:
+    synced_record.month = (
         record.month
         or _parse_month_from_value(record.visit_date)
         or _parse_month_from_value(record.created_at)
-        or visit.month
+        or synced_record.month
         or f"{datetime.now().year - 1911}.{datetime.now().month:02d}"
     )
-    visit.visit_date = _merge_text(visit.visit_date, record.visit_date)
-    visit.child_name = _merge_text(visit.child_name, record.child_name) or visit.child_name
-    visit.phone = _merge_text(visit.phone, record.phone)
-    visit.source = _merge_text(visit.source, record.source)
-    visit.external_source = IVYKIDS_BACKEND_SOURCE
-    visit.external_id = record.external_id
-    visit.external_status = _merge_text(visit.external_status, record.status)
-    visit.birthday = record.birthday or visit.birthday
-    visit.grade = _merge_text(visit.grade, record.grade)
-    visit.address = _merge_text(visit.address, record.address)
-    visit.district = _merge_text(visit.district, record.district)
-    visit.referrer = _merge_text(visit.referrer, record.referrer)
-    visit.notes = _merge_text(visit.notes, record.notes)
-    visit.parent_response = _merge_text(visit.parent_response, record.parent_response)
-    visit.deposit_collector = _merge_text(visit.deposit_collector, record.deposit_collector)
-    visit.has_deposit = _merge_bool(getattr(visit, "has_deposit", None), record.has_deposit, default=False)
-    visit.enrolled = _merge_bool(getattr(visit, "enrolled", None), record.enrolled, default=False)
-    visit.transfer_term = _merge_bool(
-        getattr(visit, "transfer_term", None),
+    synced_record.visit_date = _merge_text(synced_record.visit_date, record.visit_date)
+    synced_record.child_name = (
+        _merge_text(synced_record.child_name, record.child_name)
+        or synced_record.child_name
+    )
+    synced_record.phone = _merge_text(synced_record.phone, record.phone)
+    synced_record.source = _merge_text(synced_record.source, record.source)
+    synced_record.external_id = record.external_id
+    synced_record.external_status = _merge_text(synced_record.external_status, record.status)
+    synced_record.external_created_at = record.created_at or synced_record.external_created_at
+    synced_record.birthday = record.birthday or synced_record.birthday
+    synced_record.grade = _merge_text(synced_record.grade, record.grade)
+    synced_record.address = _merge_text(synced_record.address, record.address)
+    synced_record.district = _merge_text(synced_record.district, record.district)
+    synced_record.referrer = _merge_text(synced_record.referrer, record.referrer)
+    synced_record.notes = _merge_text(synced_record.notes, record.notes)
+    synced_record.parent_response = _merge_text(
+        synced_record.parent_response,
+        record.parent_response,
+    )
+    synced_record.deposit_collector = _merge_text(
+        synced_record.deposit_collector,
+        record.deposit_collector,
+    )
+    synced_record.has_deposit = _merge_bool(
+        getattr(synced_record, "has_deposit", None),
+        record.has_deposit,
+        default=False,
+    )
+    synced_record.enrolled = _merge_bool(
+        getattr(synced_record, "enrolled", None),
+        record.enrolled,
+        default=False,
+    )
+    synced_record.transfer_term = _merge_bool(
+        getattr(synced_record, "transfer_term", None),
         record.transfer_term,
         default=False,
     )
@@ -781,6 +892,7 @@ def _busy_sync_result(session) -> dict[str, Any]:
 
 def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
     state = _get_or_create_sync_state(session)
+    created_at_cutoff = get_sync_created_at_cutoff()
     if not sync_configured():
         status = _build_status_payload(state)
         return {
@@ -825,39 +937,36 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
         inserted = 0
         updated = 0
         skipped = 0
+        pruned = _prune_records_before_cutoff(session, created_at_cutoff)
 
         for record in records:
-            if _is_cancelled_status(record.status):
+            if not _record_meets_created_at_cutoff(record.created_at, created_at_cutoff):
                 skipped += 1
                 if len(preview) < PREVIEW_LIMIT:
                     preview.append(_preview_item(record, "skipped"))
                 continue
 
-            existing = session.query(RecruitmentVisit).filter(
-                RecruitmentVisit.external_source == IVYKIDS_BACKEND_SOURCE,
-                RecruitmentVisit.external_id == record.external_id,
+            existing = session.query(RecruitmentIvykidsRecord).filter(
+                RecruitmentIvykidsRecord.external_id == record.external_id,
             ).first()
 
             action = "updated"
             if existing is None:
-                existing = _find_manual_match(session, record)
-                if existing is None:
-                    existing = RecruitmentVisit(
-                        month=record.month or f"{datetime.now().year - 1911}.{datetime.now().month:02d}",
-                        child_name=_normalize_text(record.child_name) or f"外部資料-{record.external_id}",
-                        has_deposit=False,
-                        enrolled=False,
-                        transfer_term=False,
-                    )
-                    session.add(existing)
-                    inserted += 1
-                    action = "inserted"
-                else:
-                    updated += 1
+                existing = RecruitmentIvykidsRecord(
+                    external_id=record.external_id,
+                    month=record.month or f"{datetime.now().year - 1911}.{datetime.now().month:02d}",
+                    child_name=_normalize_text(record.child_name) or f"外部資料-{record.external_id}",
+                    has_deposit=False,
+                    enrolled=False,
+                    transfer_term=False,
+                )
+                session.add(existing)
+                inserted += 1
+                action = "inserted"
             else:
                 updated += 1
 
-            _apply_record_to_visit(existing, record)
+            _apply_record_to_synced_record(existing, record)
             if len(preview) < PREVIEW_LIMIT:
                 preview.append(_preview_item(record, action))
 
@@ -879,12 +988,13 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
         session.flush()
 
         logger.info(
-            "義華校官網同步完成：trigger=%s fetched=%s inserted=%s updated=%s skipped=%s pages=%s duration_ms=%s",
+            "義華校官網同步完成：trigger=%s fetched=%s inserted=%s updated=%s skipped=%s pruned=%s pages=%s duration_ms=%s",
             trigger,
             len(records),
             inserted,
             updated,
             skipped,
+            pruned,
             page_count,
             int((synced_at - started_at).total_seconds() * 1000),
         )
