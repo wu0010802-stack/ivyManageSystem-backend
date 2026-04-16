@@ -1050,6 +1050,26 @@ def get_nearby_kindergartens(
         )
 
 
+@router.get("/competitor-schools/geocode-pending")
+def get_geocode_pending_count(
+    _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
+):
+    """查詢尚無座標的 competitor_school 數量（輕量查詢，不消耗 Google API）。"""
+    with session_scope() as session:
+        from models.competitor_school import CompetitorSchool
+
+        count = (
+            session.query(CompetitorSchool)
+            .filter(
+                CompetitorSchool.latitude.is_(None),
+                CompetitorSchool.city.like("%高雄%"),
+                CompetitorSchool.is_active == True,  # noqa: E712
+            )
+            .count()
+        )
+        return {"pending": count}
+
+
 @router.post("/competitor-schools/geocode")
 def geocode_competitor_schools(
     limit: int = Query(100, ge=1, le=500, description="本次最多 geocode 的學校筆數"),

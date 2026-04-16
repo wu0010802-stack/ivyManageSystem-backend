@@ -545,49 +545,50 @@ def sync_moe_kindergartens() -> dict:
                 logger.warning("[MOE 爬蟲] 第 %d 頁無資料，停止", page_num)
                 break
 
-            for s in schools:
-                school_name = s.get("school_name")
-                if not school_name:
-                    failed += 1
-                    continue
-                try:
-                    city = s.get("city") or TARGET_CITY
-                    owner_name = s.get("owner_name")
+            with session_scope() as db:
+                for s in schools:
+                    school_name = s.get("school_name")
+                    if not school_name:
+                        failed += 1
+                        continue
+                    try:
+                        city = s.get("city") or TARGET_CITY
+                        owner_name = s.get("owner_name")
 
-                    # has_penalty：MOE 直接顯示「無」或其他；再用 kiang 補強
-                    penalty_text = (s.get("penalty_text") or "").strip()
-                    has_penalty = penalty_text not in ("無", "") or _owner_has_penalty(
-                        punish_data, owner_name
-                    )
+                        # has_penalty：MOE 直接顯示「無」或其他；再用 kiang 補強
+                        penalty_text = (s.get("penalty_text") or "").strip()
+                        has_penalty = penalty_text not in (
+                            "無",
+                            "",
+                        ) or _owner_has_penalty(punish_data, owner_name)
 
-                    # 核定人數 → int
-                    capacity: Optional[int] = None
-                    if s.get("approved_capacity"):
-                        m = re.search(r"(\d+)", s["approved_capacity"])
-                        capacity = int(m.group(1)) if m else None
+                        # 核定人數 → int
+                        capacity: Optional[int] = None
+                        if s.get("approved_capacity"):
+                            m = re.search(r"(\d+)", s["approved_capacity"])
+                            capacity = int(m.group(1)) if m else None
 
-                    # 全園總面積 → float
-                    area: Optional[float] = None
-                    if s.get("total_area_sqm"):
-                        m = re.search(r"([\d,]+(?:\.\d+)?)", s["total_area_sqm"])
-                        if m:
-                            try:
-                                area = float(m.group(1).replace(",", ""))
-                            except ValueError:
-                                pass
+                        # 全園總面積 → float
+                        area: Optional[float] = None
+                        if s.get("total_area_sqm"):
+                            m = re.search(r"([\d,]+(?:\.\d+)?)", s["total_area_sqm"])
+                            if m:
+                                try:
+                                    area = float(m.group(1).replace(",", ""))
+                                except ValueError:
+                                    pass
 
-                    # 準公共幼兒園「無」→ None
-                    pre_public = s.get("pre_public_type")
-                    if pre_public in ("無", ""):
-                        pre_public = None
+                        # 準公共幼兒園「無」→ None
+                        pre_public = s.get("pre_public_type")
+                        if pre_public in ("無", ""):
+                            pre_public = None
 
-                    now = datetime.now()
-                    school_id = hashlib.md5(
-                        f"{city}{school_name}".encode("utf-8")
-                    ).hexdigest()[:8]
-                    source_key = f"moe_ece:{school_id}"
+                        now = datetime.now()
+                        school_id = hashlib.md5(
+                            f"{city}{school_name}".encode("utf-8")
+                        ).hexdigest()[:8]
+                        source_key = f"moe_ece:{school_id}"
 
-                    with session_scope() as db:
                         # 用 school_name 比對（新版網站無法取得舊版 schNo）
                         existing = (
                             db.query(CompetitorSchool)
@@ -645,9 +646,9 @@ def sync_moe_kindergartens() -> dict:
                             db.add(record)
                             created += 1
 
-                except Exception as e:
-                    logger.error("[MOE 爬蟲] 處理 %s 失敗：%s", school_name, e)
-                    failed += 1
+                    except Exception as e:
+                        logger.error("[MOE 爬蟲] 處理 %s 失敗：%s", school_name, e)
+                        failed += 1
 
             if page_num % 5 == 0:
                 logger.info(
