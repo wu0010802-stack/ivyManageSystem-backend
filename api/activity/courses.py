@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from models.database import get_session, ActivityCourse, RegistrationCourse, ActivityRegistration
 from sqlalchemy import func
 from services.activity_service import activity_service
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 from ._shared import (
@@ -26,7 +26,7 @@ router = APIRouter()
 async def get_courses(
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得課程列表（含報名統計，支援分頁）"""
     session = get_session()
@@ -86,7 +86,7 @@ async def get_courses(
 @router.get("/courses/{course_id}")
 async def get_course_detail(
     course_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得課程詳情"""
     session = get_session()
@@ -114,7 +114,7 @@ async def get_course_detail(
 @router.post("/courses", status_code=201)
 async def create_course(
     body: CourseCreate,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """新增課程"""
     session = get_session()
@@ -151,7 +151,7 @@ async def create_course(
 async def update_course(
     course_id: int,
     body: CourseUpdate,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新課程"""
     session = get_session()
@@ -190,7 +190,7 @@ async def update_course(
 @router.get("/courses/{course_id}/waitlist")
 async def get_course_waitlist(
     course_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得課程候補名單（按報名序排列）"""
     session = get_session()
@@ -239,7 +239,7 @@ async def get_course_waitlist(
 @router.delete("/courses/{course_id}")
 async def delete_course(
     course_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """停用課程（有報名者回傳 409）"""
     session = get_session()

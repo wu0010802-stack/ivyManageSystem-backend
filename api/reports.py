@@ -13,7 +13,7 @@ from models.database import (
     get_session, Attendance, Employee, Classroom, LeaveRecord, SalaryRecord,
 )
 from services.report_cache_service import report_cache_service
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -166,7 +166,7 @@ def _build_report_dashboard_data(session, year: int) -> dict:
 @router.get("/dashboard")
 def get_report_dashboard(
     year: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.REPORTS)),
+    current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
 ):
     """取得年度報表統計資料"""
     session = get_session()

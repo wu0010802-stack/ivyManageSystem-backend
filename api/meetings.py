@@ -10,7 +10,7 @@ from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
 from models.database import get_session, MeetingRecord, Employee
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 router = APIRouter(prefix="/api", tags=["meetings"])
@@ -65,7 +65,7 @@ def get_meetings(
     year: int = Query(...),
     month: int = Query(...),
     employee_id: Optional[int] = Query(None),
-    current_user: dict = Depends(require_permission(Permission.MEETINGS)),
+    current_user: dict = Depends(require_staff_permission(Permission.MEETINGS)),
 ):
     """查詢園務會議記錄"""
     session = get_session()
@@ -107,7 +107,7 @@ def get_meetings(
 
 
 @router.post("/meetings", status_code=201)
-def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(require_permission(Permission.MEETINGS))):
+def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(require_staff_permission(Permission.MEETINGS))):
     """建立單筆園務會議記錄"""
     session = get_session()
     try:
@@ -148,7 +148,7 @@ def create_meeting(data: MeetingRecordCreate, current_user: dict = Depends(requi
 
 
 @router.post("/meetings/batch", status_code=201)
-def create_meetings_batch(data: MeetingBatchCreate, current_user: dict = Depends(require_permission(Permission.MEETINGS))):
+def create_meetings_batch(data: MeetingBatchCreate, current_user: dict = Depends(require_staff_permission(Permission.MEETINGS))):
     """批次建立園務會議記錄（一次建立同日所有員工）"""
     session = get_session()
     try:
@@ -214,7 +214,7 @@ def create_meetings_batch(data: MeetingBatchCreate, current_user: dict = Depends
 
 
 @router.put("/meetings/{record_id}")
-def update_meeting(record_id: int, data: MeetingRecordUpdate, current_user: dict = Depends(require_permission(Permission.MEETINGS))):
+def update_meeting(record_id: int, data: MeetingRecordUpdate, current_user: dict = Depends(require_staff_permission(Permission.MEETINGS))):
     """更新園務會議記錄"""
     session = get_session()
     try:
@@ -246,7 +246,7 @@ def update_meeting(record_id: int, data: MeetingRecordUpdate, current_user: dict
 
 
 @router.delete("/meetings/{record_id}")
-def delete_meeting(record_id: int, current_user: dict = Depends(require_permission(Permission.MEETINGS))):
+def delete_meeting(record_id: int, current_user: dict = Depends(require_staff_permission(Permission.MEETINGS))):
     """刪除園務會議記錄"""
     session = get_session()
     try:
@@ -270,7 +270,7 @@ def delete_meeting(record_id: int, current_user: dict = Depends(require_permissi
 def get_meeting_summary(
     year: int = Query(...),
     month: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.MEETINGS)),
+    current_user: dict = Depends(require_staff_permission(Permission.MEETINGS)),
 ):
     """查詢當月園務會議出勤統計"""
     session = get_session()

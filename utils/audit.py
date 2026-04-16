@@ -25,6 +25,7 @@ METHOD_ACTION_MAP = {
 ENTITY_PATTERNS = [
     (r"/api/auth/users", "user"),
     (r"/api/auth/impersonate", "user"),
+    (r"/api/auth/end-impersonate", "user"),
     (r"/api/auth/change-password", "user"),
     (r"/api/attendance", "attendance"),
     (r"/api/employees/\d+/allowances", "employee_allowance"),
@@ -100,15 +101,19 @@ def _build_summary(method, path, entity_type):
 
 
 def _extract_user_from_header(request: Request):
-    """從 Authorization header 靜默解析 JWT，不拋錯"""
-    auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer "):
+    """從 Cookie 或 Authorization header 靜默解析 JWT，不拋錯"""
+    token = request.cookies.get("access_token")
+    if not token:
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth.split(" ", 1)[1]
+
+    if not token:
         return None, None
 
     try:
         from jose import jwt
         from utils.auth import JWT_SECRET_KEY, JWT_ALGORITHM
-        token = auth.split(" ", 1)[1]
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         return payload.get("user_id"), payload.get("name")
     except Exception:

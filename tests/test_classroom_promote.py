@@ -64,21 +64,21 @@ def grade_data(session):
 
 @pytest.fixture
 def source_classrooms(session, grade_data):
-    """2025 下學期三個班級，各配一位學生。"""
+    """114學年度下學期三個班級，各配一位學生。"""
     teacher = Employee(employee_id="T001", name="王老師", position="幼兒園教師")
     session.add(teacher)
     session.flush()
 
     c_da = Classroom(
-        name="大班A", class_code="DA", school_year=2025, semester=2,
+        name="大班A", class_code="DA", school_year=114, semester=2,
         grade_id=grade_data["大班"].id, head_teacher_id=teacher.id,
     )
     c_zhong = Classroom(
-        name="中班A", class_code="ZA", school_year=2025, semester=2,
+        name="中班A", class_code="ZA", school_year=114, semester=2,
         grade_id=grade_data["中班"].id, head_teacher_id=teacher.id,
     )
     c_xiao = Classroom(
-        name="小班A", class_code="XA", school_year=2025, semester=2,
+        name="小班A", class_code="XA", school_year=114, semester=2,
         grade_id=grade_data["小班"].id,
     )
     session.add_all([c_da, c_zhong, c_xiao])
@@ -110,19 +110,19 @@ class TestShouldAdvanceGrade:
 
     def test_semester2_to_semester1_next_year_advances(self):
         from api.classrooms import _should_advance_grade
-        assert _should_advance_grade(2025, 2, 2026, 1) is True
+        assert _should_advance_grade(114, 2, 115, 1) is True
 
     def test_same_year_no_advance(self):
         from api.classrooms import _should_advance_grade
-        assert _should_advance_grade(2025, 2, 2025, 1) is False
+        assert _should_advance_grade(114, 2, 114, 1) is False
 
     def test_sem1_to_sem2_same_year_no_advance(self):
         from api.classrooms import _should_advance_grade
-        assert _should_advance_grade(2025, 1, 2025, 2) is False
+        assert _should_advance_grade(114, 1, 114, 2) is False
 
     def test_sem1_to_sem1_next_year_no_advance(self):
         from api.classrooms import _should_advance_grade
-        assert _should_advance_grade(2025, 1, 2026, 1) is False
+        assert _should_advance_grade(114, 1, 115, 1) is False
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +141,8 @@ class TestResolveNextGradeId:
         grade_map = self._grade_map(da)
         result = _resolve_next_grade_id(
             classroom, grade_map,
-            source_school_year=2025, source_semester=1,
-            target_school_year=2025, target_semester=2,
+            source_school_year=114, source_semester=1,
+            target_school_year=114, target_semester=2,
         )
         assert result == da.id
 
@@ -155,8 +155,8 @@ class TestResolveNextGradeId:
         grade_map = self._grade_map(da, zhong)
         result = _resolve_next_grade_id(
             classroom, grade_map,
-            source_school_year=2025, source_semester=2,
-            target_school_year=2026, target_semester=1,
+            source_school_year=114, source_semester=2,
+            target_school_year=115, target_semester=1,
         )
         assert result == da.id
 
@@ -168,8 +168,8 @@ class TestResolveNextGradeId:
         grade_map = self._grade_map(da)
         result = _resolve_next_grade_id(
             classroom, grade_map,
-            source_school_year=2025, source_semester=2,
-            target_school_year=2026, target_semester=1,
+            source_school_year=114, source_semester=2,
+            target_school_year=115, target_semester=1,
         )
         assert result is None
 
@@ -179,8 +179,8 @@ class TestResolveNextGradeId:
         classroom = Classroom(grade_id=None)
         result = _resolve_next_grade_id(
             classroom, {},
-            source_school_year=2025, source_semester=2,
-            target_school_year=2026, target_semester=1,
+            source_school_year=114, source_semester=2,
+            target_school_year=115, target_semester=1,
         )
         assert result is None
 
@@ -192,11 +192,11 @@ class TestResolveNextGradeId:
 class TestTermStartDate:
     def test_semester_1_starts_august_1st(self):
         from api.classrooms import _term_start_date
-        assert _term_start_date(2025, 1) == date(2025, 8, 1)
+        assert _term_start_date(114, 1) == date(2025, 8, 1)
 
     def test_semester_2_starts_february_1st_next_year(self):
         from api.classrooms import _term_start_date
-        assert _term_start_date(2025, 2) == date(2026, 2, 1)
+        assert _term_start_date(114, 2) == date(2026, 2, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +219,9 @@ class TestPromoteAcademicYear:
     def _base_payload(self, source_classroom_id, target_name, grade_data,
                       target_grade_id=None, copy_teachers=True, move_students=True):
         return {
-            "source_school_year": 2025,
+            "source_school_year": 114,
             "source_semester": 2,
-            "target_school_year": 2026,
+            "target_school_year": 115,
             "target_semester": 1,
             "classrooms": [{
                 "source_classroom_id": source_classroom_id,
@@ -237,8 +237,8 @@ class TestPromoteAcademicYear:
         with pytest.raises(HTTPException) as exc_info:
             from api.classrooms import promote_classrooms_to_academic_year, ClassroomPromoteAcademicYear
             item = ClassroomPromoteAcademicYear(
-                source_school_year=2025, source_semester=2,
-                target_school_year=2025, target_semester=2,
+                source_school_year=114, source_semester=2,
+                target_school_year=114, target_semester=2,
                 classrooms=[{"source_classroom_id": source_classrooms["中班A"].id,
                               "target_name": "中班A新", "target_grade_id": grade_data["中班"].id}],
             )
@@ -275,7 +275,7 @@ class TestPromoteAcademicYear:
         assert result["graduated_count"] == 0
 
         new_cls = session.query(Classroom).filter(
-            Classroom.name == "大班B", Classroom.school_year == 2026
+            Classroom.name == "大班B", Classroom.school_year == 115
         ).first()
         assert new_cls is not None
         assert new_cls.grade_id == grade_data["大班"].id
@@ -287,9 +287,9 @@ class TestPromoteAcademicYear:
         """大班升班 → 學生畢業（is_active=False、status=已畢業）。"""
         # 大班沒有下一個年級，所以 will_graduate=True
         payload = {
-            "source_school_year": 2025,
+            "source_school_year": 114,
             "source_semester": 2,
-            "target_school_year": 2026,
+            "target_school_year": 115,
             "target_semester": 1,
             "classrooms": [{
                 "source_classroom_id": source_classrooms["大班A"].id,
@@ -311,9 +311,9 @@ class TestPromoteAcademicYear:
     def test_duplicate_target_names_in_request_raises_409(self, session, grade_data, source_classrooms):
         """同一請求中目標班級名稱重複應回傳 409。"""
         payload = {
-            "source_school_year": 2025,
+            "source_school_year": 114,
             "source_semester": 2,
-            "target_school_year": 2026,
+            "target_school_year": 115,
             "target_semester": 1,
             "classrooms": [
                 {
@@ -380,7 +380,7 @@ class TestPromoteAcademicYear:
     def test_existing_active_classroom_conflict_raises_409(self, session, grade_data, source_classrooms):
         """目標學期已存在同名活躍班級應回傳 409。"""
         existing = Classroom(
-            name="大班F", class_code="DF", school_year=2026, semester=1,
+            name="大班F", class_code="DF", school_year=115, semester=1,
             grade_id=grade_data["大班"].id, is_active=True,
         )
         session.add(existing)

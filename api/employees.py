@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
 from models.database import get_session, session_scope, Employee, Classroom, JobTitle
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
@@ -162,7 +162,7 @@ def get_employees(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     session = get_session()
     try:
@@ -184,7 +184,7 @@ def get_employees(
 @router.get("/employees/probation-alerts")
 async def get_probation_alerts(
     days: int = 60,
-    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     """取得試用期即將到期的員工（預設 60 天內）"""
     session = get_session()
@@ -225,7 +225,7 @@ async def get_probation_alerts(
 
 
 @router.get("/employees/{employee_id}")
-async def get_employee(employee_id: int, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
+async def get_employee(employee_id: int, current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ))):
     """取得單一員工詳細資料"""
     session = get_session()
     try:
@@ -254,7 +254,7 @@ async def get_employee(employee_id: int, current_user: dict = Depends(require_pe
 
 
 @router.post("/employees", status_code=201)
-async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_WRITE))):
+async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE))):
     """新增員工"""
     session = get_session()
     try:
@@ -301,7 +301,7 @@ async def create_employee(emp: EmployeeCreate, current_user: dict = Depends(requ
 
 
 @router.put("/employees/{employee_id}")
-async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_WRITE))):
+async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE))):
     """更新員工資料"""
     session = get_session()
     try:
@@ -351,7 +351,7 @@ async def update_employee(employee_id: int, emp: EmployeeUpdate, current_user: d
 
 
 @router.delete("/employees/{employee_id}")
-async def delete_employee(employee_id: int, current_user: dict = Depends(require_permission(Permission.EMPLOYEES_WRITE))):
+async def delete_employee(employee_id: int, current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE))):
     """刪除員工（軟刪除，設為離職）"""
     session = get_session()
     try:
@@ -377,7 +377,7 @@ async def delete_employee(employee_id: int, current_user: dict = Depends(require
 async def offboard_employee(
     employee_id: int,
     req: OffboardRequest,
-    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
     """辦理離職：設定離職日與離職原因，若離職日 <= 今天則同步設 is_active = False"""
     try:
@@ -418,7 +418,7 @@ async def final_salary_preview(
     employee_id: int,
     year: int,
     month: int,
-    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """最終薪資預覽：呼叫薪資引擎計算指定員工指定月份薪資（含月中離職折算）"""
     if _salary_engine is None:
@@ -471,7 +471,7 @@ async def final_salary_preview(
 
 
 @router.get("/teachers")
-async def get_teachers(current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ))):
+async def get_teachers(current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ))):
     """取得所有可作為老師的員工"""
     session = get_session()
     try:

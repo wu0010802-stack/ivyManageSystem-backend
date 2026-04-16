@@ -19,12 +19,18 @@ from services.student_attendance_report import (
     build_monthly_attendance_report,
     invalidate_student_attendance_report_caches,
 )
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from api.exports import (
-    SafeWorksheet, _sanitize_excel_value, _to_response,
-    THIN_BORDER, CENTER_ALIGN, TITLE_FONT,
-    _export_rate_limit, _write_header_row, _auto_width,
+    SafeWorksheet,
+    _sanitize_excel_value,
+    _to_response,
+    THIN_BORDER,
+    CENTER_ALIGN,
+    TITLE_FONT,
+    _export_rate_limit,
+    _write_header_row,
+    _auto_width,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,8 +64,9 @@ def _write_class_sheet(ws_raw, report_data, year, month):
 
     # 第 1 列：標題（使用 raw ws，字串為我們自己產生，無注入風險）
     ws._ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
-    tc = ws._ws.cell(row=1, column=1,
-                     value=f"班級：{classroom_name}  {year}年{month}月出席月報")
+    tc = ws._ws.cell(
+        row=1, column=1, value=f"班級：{classroom_name}  {year}年{month}月出席月報"
+    )
     tc.font = TITLE_FONT
     tc.alignment = CENTER_ALIGN
 
@@ -101,10 +108,15 @@ def _write_class_sheet(ws_raw, report_data, year, month):
                 cell = ws._ws.cell(row=row_idx, column=col, value=holiday_label)
                 cell.fill = _WEEKEND_FILL
             else:
-                status = daily_entry["status"] if daily_entry and daily_entry["is_school_day"] else None
+                status = (
+                    daily_entry["status"]
+                    if daily_entry and daily_entry["is_school_day"]
+                    else None
+                )
                 if status:
-                    cell = ws._ws.cell(row=row_idx, column=col,
-                                       value=_STATUS_SHORT.get(status, status))
+                    cell = ws._ws.cell(
+                        row=row_idx, column=col, value=_STATUS_SHORT.get(status, status)
+                    )
                 else:
                     cell = ws._ws.cell(row=row_idx, column=col, value="")
             cell.border = THIN_BORDER
@@ -123,7 +135,18 @@ def _write_class_sheet(ws_raw, report_data, year, month):
 def _write_summary_sheet(ws_raw, year, month, summary_rows):
     """寫入全園摘要 sheet（每班一列）。"""
     ws = SafeWorksheet(ws_raw)
-    headers = ["班級", "總人數", "應出勤天數", "出席", "缺席", "病假", "事假", "遲到", "未點名", "出席率"]
+    headers = [
+        "班級",
+        "總人數",
+        "應出勤天數",
+        "出席",
+        "缺席",
+        "病假",
+        "事假",
+        "遲到",
+        "未點名",
+        "出席率",
+    ]
 
     ws._ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     tc = ws._ws.cell(row=1, column=1, value=f"{year}年{month}月 全園出席摘要")
@@ -136,22 +159,34 @@ def _write_summary_sheet(ws_raw, year, month, summary_rows):
         total_possible = row["total_students"] * row["workdays"]
         rate = (
             f"{(row['出席'] + row['遲到']) / total_possible * 100:.1f}%"
-            if total_possible > 0 else "N/A"
+            if total_possible > 0
+            else "N/A"
         )
         values = [
-            row["name"], row["total_students"], row["workdays"],
-            row["出席"], row["缺席"], row["病假"], row["事假"], row["遲到"],
-            row["未點名"], rate,
+            row["name"],
+            row["total_students"],
+            row["workdays"],
+            row["出席"],
+            row["缺席"],
+            row["病假"],
+            row["事假"],
+            row["遲到"],
+            row["未點名"],
+            rate,
         ]
         for col, val in enumerate(values, 1):
-            cell = ws._ws.cell(row=row_idx, column=col,
-                               value=_sanitize_excel_value(val) if isinstance(val, str) else val)
+            cell = ws._ws.cell(
+                row=row_idx,
+                column=col,
+                value=_sanitize_excel_value(val) if isinstance(val, str) else val,
+            )
             cell.border = THIN_BORDER
 
     _auto_width(ws._ws)
 
 
 # ============ Pydantic Models ============
+
 
 class AttendanceEntry(BaseModel):
     student_id: int
@@ -166,12 +201,17 @@ class BatchSaveRequest(BaseModel):
 
 # ============ Routes ============
 
+
 @router.get("/student-attendance/overview")
 async def get_daily_attendance_overview(
     date: str = Query(..., description="YYYY-MM-DD"),
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+    school_year: Optional[int] = Query(
+        None, ge=100, le=200, description="學年度（民國年）"
+    ),
+    semester: Optional[int] = Query(None, ge=1, le=2, description="學期 1=上 2=下"),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
-    """取得指定日期的各班學生出席總覽。"""
+    """取得指定日期的各班學生出席總覽。school_year/semester 不傳時使用目前學期。"""
     try:
         target_date = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:
@@ -179,15 +219,18 @@ async def get_daily_attendance_overview(
 
     session = get_session()
     try:
-        return build_daily_classroom_overview(session, target_date)
+        return build_daily_classroom_overview(
+            session, target_date, school_year=school_year, semester=semester
+        )
     finally:
         session.close()
+
 
 @router.get("/student-attendance")
 async def get_daily_attendance(
     date: str = Query(..., description="YYYY-MM-DD"),
     classroom_id: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得指定日期與班級的出席清單，未點名的學生也會回傳（status=None）"""
     try:
@@ -217,13 +260,15 @@ async def get_daily_attendance(
         result = []
         for s in students:
             rec = existing.get(s.id)
-            result.append({
-                "student_id": s.id,
-                "student_no": s.student_id,
-                "name": s.name,
-                "status": rec.status if rec else None,
-                "remark": rec.remark if rec else None,
-            })
+            result.append(
+                {
+                    "student_id": s.id,
+                    "student_no": s.student_id,
+                    "name": s.name,
+                    "status": rec.status if rec else None,
+                    "remark": rec.remark if rec else None,
+                }
+            )
 
         return {"date": date, "classroom_id": classroom_id, "records": result}
     finally:
@@ -233,7 +278,7 @@ async def get_daily_attendance(
 @router.post("/student-attendance/batch")
 async def batch_save_attendance(
     payload: BatchSaveRequest,
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """批量儲存（upsert）一個日期的出席記錄"""
     try:
@@ -253,7 +298,9 @@ async def batch_save_attendance(
             for r in session.query(StudentAttendance)
             .filter(
                 StudentAttendance.date == target_date,
-                StudentAttendance.student_id.in_([e.student_id for e in payload.entries]),
+                StudentAttendance.student_id.in_(
+                    [e.student_id for e in payload.entries]
+                ),
             )
             .all()
         }
@@ -276,8 +323,12 @@ async def batch_save_attendance(
 
         session.commit()
         invalidate_student_attendance_report_caches(session)
-        logger.info("學生出席批量儲存：date=%s count=%d operator=%s",
-                    payload.date, len(payload.entries), current_user.get("username"))
+        logger.info(
+            "學生出席批量儲存：date=%s count=%d operator=%s",
+            payload.date,
+            len(payload.entries),
+            current_user.get("username"),
+        )
         return {"message": "儲存成功", "saved": len(payload.entries)}
     except HTTPException:
         raise
@@ -293,7 +344,7 @@ async def get_monthly_summary(
     classroom_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得班級整月出席統計、出席率與連缺告警。"""
     session = get_session()
@@ -311,7 +362,7 @@ def export_student_attendance(
     month: int = Query(..., ge=1, le=12),
     classroom_id: Optional[int] = Query(None),
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """匯出班級（或全園）月出席 Excel。
     classroom_id 不傳時匯出全園（多 sheet + 摘要 sheet）。
@@ -354,19 +405,24 @@ def export_student_attendance(
                 class_summary, workdays, total_students = _write_class_sheet(
                     sheet, report_data, year, month
                 )
-                summary_rows.append({
-                    "name": cr.name,
-                    "total_students": total_students,
-                    "workdays": workdays,
-                    **class_summary,
-                })
+                summary_rows.append(
+                    {
+                        "name": cr.name,
+                        "total_students": total_students,
+                        "workdays": workdays,
+                        **class_summary,
+                    }
+                )
 
             _write_summary_sheet(summary_ws, year, month, summary_rows)
             filename = f"{year}年{month}月_全園出席月報.xlsx"
 
         logger.info(
             "學生出席月報匯出：year=%d month=%d classroom_id=%s operator=%s",
-            year, month, classroom_id, current_user.get("username"),
+            year,
+            month,
+            classroom_id,
+            current_user.get("username"),
         )
         return _to_response(wb, filename)
     finally:

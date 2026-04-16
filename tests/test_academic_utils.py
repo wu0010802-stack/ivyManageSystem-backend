@@ -13,32 +13,32 @@ from utils.academic import resolve_current_academic_term, resolve_academic_term_
 
 class TestResolveCurrentAcademicTerm:
     def test_august_is_first_semester(self):
-        """8/1 → 上學期（semester=1）"""
-        assert resolve_current_academic_term(date(2025, 8, 1)) == (2025, 1)
+        """8/1 → 上學期（semester=1），民國114年"""
+        assert resolve_current_academic_term(date(2025, 8, 1)) == (114, 1)
 
     def test_july_is_second_semester(self):
-        """7/31 → 下學期（semester=2）"""
-        assert resolve_current_academic_term(date(2025, 7, 31)) == (2024, 2)
+        """7/31 → 下學期（semester=2），民國113年"""
+        assert resolve_current_academic_term(date(2025, 7, 31)) == (113, 2)
 
     def test_february_is_second_semester(self):
-        """2/1 → 下學期（semester=2）"""
-        assert resolve_current_academic_term(date(2025, 2, 1)) == (2024, 2)
+        """2/1 → 下學期（semester=2），民國113年"""
+        assert resolve_current_academic_term(date(2025, 2, 1)) == (113, 2)
 
     def test_january_is_first_semester(self):
-        """1/31 → 上學期（semester=1，仍屬前一學年）"""
-        assert resolve_current_academic_term(date(2025, 1, 31)) == (2024, 1)
+        """1/31 → 上學期（semester=1，仍屬前一學年），民國113年"""
+        assert resolve_current_academic_term(date(2025, 1, 31)) == (113, 1)
 
     def test_december_is_first_semester(self):
-        """12/1 → 上學期"""
-        assert resolve_current_academic_term(date(2025, 12, 1)) == (2025, 1)
+        """12/1 → 上學期，民國114年"""
+        assert resolve_current_academic_term(date(2025, 12, 1)) == (114, 1)
 
     def test_september_is_first_semester(self):
-        """9/1 → 上學期"""
-        assert resolve_current_academic_term(date(2025, 9, 1)) == (2025, 1)
+        """9/1 → 上學期，民國114年"""
+        assert resolve_current_academic_term(date(2025, 9, 1)) == (114, 1)
 
     def test_march_is_second_semester(self):
-        """3/1 → 下學期"""
-        assert resolve_current_academic_term(date(2025, 3, 1)) == (2024, 2)
+        """3/1 → 下學期，民國113年"""
+        assert resolve_current_academic_term(date(2025, 3, 1)) == (113, 2)
 
     def test_no_date_uses_today(self):
         """不傳 target_date 時，回傳值是有效的 (year, semester) tuple"""
@@ -46,7 +46,7 @@ class TestResolveCurrentAcademicTerm:
         assert isinstance(result, tuple)
         assert len(result) == 2
         year, semester = result
-        assert isinstance(year, int) and year >= 2020
+        assert isinstance(year, int) and year >= 100
         assert semester in (1, 2)
 
 
@@ -57,15 +57,15 @@ class TestResolveAcademicTermFilters:
         assert isinstance(result, tuple) and len(result) == 2
 
     def test_both_provided_returns_them(self):
-        """兩個都提供時，直接回傳"""
-        assert resolve_academic_term_filters(2025, 1) == (2025, 1)
-        assert resolve_academic_term_filters(2024, 2) == (2024, 2)
+        """兩個都提供時，直接回傳（民國年）"""
+        assert resolve_academic_term_filters(114, 1) == (114, 1)
+        assert resolve_academic_term_filters(113, 2) == (113, 2)
 
     def test_only_school_year_raises_400(self):
         """只提供 school_year 時，拋出 400"""
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            resolve_academic_term_filters(2025, None)
+            resolve_academic_term_filters(114, None)
         assert exc_info.value.status_code == 400
 
     def test_only_semester_raises_400(self):

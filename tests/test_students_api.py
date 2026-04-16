@@ -74,9 +74,9 @@ class TestStudentsApi:
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "student_filter_admin")
-            current_classroom = Classroom(name="海豚班", school_year=2025, semester=2, is_active=True)
-            same_term_other_classroom = Classroom(name="星星班", school_year=2025, semester=2, is_active=True)
-            old_classroom = Classroom(name="月亮班", school_year=2024, semester=2, is_active=True)
+            current_classroom = Classroom(name="海豚班", school_year=114, semester=2, is_active=True)
+            same_term_other_classroom = Classroom(name="星星班", school_year=114, semester=2, is_active=True)
+            old_classroom = Classroom(name="月亮班", school_year=113, semester=2, is_active=True)
             session.add_all([current_classroom, same_term_other_classroom, old_classroom])
             session.flush()
             session.add_all([
@@ -92,14 +92,14 @@ class TestStudentsApi:
 
         same_term_res = client.get(
             "/api/students",
-            params={"school_year": 2025, "semester": 2},
+            params={"school_year": 114, "semester": 2},
         )
         assert same_term_res.status_code == 200
         assert [item["student_id"] for item in same_term_res.json()["items"]] == ["S001", "S002"]
 
         classroom_res = client.get(
             "/api/students",
-            params={"school_year": 2025, "semester": 2, "classroom_id": classroom_id},
+            params={"school_year": 114, "semester": 2, "classroom_id": classroom_id},
         )
         assert classroom_res.status_code == 200
         assert [item["student_id"] for item in classroom_res.json()["items"]] == ["S001"]
@@ -108,8 +108,8 @@ class TestStudentsApi:
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "student_transfer_admin")
-            source = Classroom(name="海豚班", school_year=2025, semester=2, is_active=True)
-            target = Classroom(name="星星班", school_year=2025, semester=2, is_active=True)
+            source = Classroom(name="海豚班", school_year=114, semester=2, is_active=True)
+            target = Classroom(name="星星班", school_year=114, semester=2, is_active=True)
             session.add_all([source, target])
             session.flush()
             session.add_all([
@@ -145,8 +145,8 @@ class TestStudentsApi:
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "student_transfer_invalid")
-            source = Classroom(name="海豚班", school_year=2025, semester=2, is_active=True)
-            target = Classroom(name="停用班", school_year=2025, semester=2, is_active=False)
+            source = Classroom(name="海豚班", school_year=114, semester=2, is_active=True)
+            target = Classroom(name="停用班", school_year=114, semester=2, is_active=False)
             session.add_all([source, target])
             session.flush()
             session.add(Student(student_id="S001", name="小明", classroom_id=source.id, is_active=True))
@@ -172,7 +172,7 @@ class TestStudentsApi:
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "delete_test_admin")
-            classroom = Classroom(name="刪除測試班", school_year=2025, semester=2, is_active=True)
+            classroom = Classroom(name="刪除測試班", school_year=114, semester=2, is_active=True)
             session.add(classroom)
             session.flush()
             session.add(Student(student_id="DEL001", name="被刪除的學生", classroom_id=classroom.id, is_active=True))
@@ -182,7 +182,7 @@ class TestStudentsApi:
         assert login_res.status_code == 200
 
         # 取得學生 id
-        list_res = client.get("/api/students", params={"school_year": 2025, "semester": 2})
+        list_res = client.get("/api/students", params={"school_year": 114, "semester": 2})
         assert list_res.status_code == 200
         student_id = list_res.json()["items"][0]["id"]
 

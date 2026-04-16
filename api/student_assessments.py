@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api", tags=["student-assessments"])
 
 # ============ Pydantic Models ============
 
+
 class AssessmentCreate(BaseModel):
     student_id: int
     semester: str
@@ -45,8 +46,8 @@ class AssessmentUpdate(BaseModel):
     assessment_date: Optional[date] = None
 
 
-
 # ============ Helpers ============
+
 
 def _require_classroom_access(session, current_user: dict, classroom_id: int) -> None:
     """確認操作者有權存取指定班級的學生記錄。
@@ -60,17 +61,22 @@ def _require_classroom_access(session, current_user: dict, classroom_id: int) ->
     emp_id = current_user.get("employee_id")
     if not emp_id:
         raise HTTPException(status_code=403, detail="您無權存取此班級的學生記錄")
-    cls = session.query(Classroom).filter(
-        Classroom.id == classroom_id,
-        (Classroom.head_teacher_id == emp_id) |
-        (Classroom.assistant_teacher_id == emp_id) |
-        (Classroom.art_teacher_id == emp_id),
-    ).first()
+    cls = (
+        session.query(Classroom)
+        .filter(
+            Classroom.id == classroom_id,
+            (Classroom.head_teacher_id == emp_id)
+            | (Classroom.assistant_teacher_id == emp_id)
+            | (Classroom.art_teacher_id == emp_id),
+        )
+        .first()
+    )
     if not cls:
         raise HTTPException(status_code=403, detail="您無權存取此班級的學生記錄")
 
 
 # ============ Routes ============
+
 
 @router.get("/student-assessments")
 async def list_assessments(
@@ -84,9 +90,8 @@ async def list_assessments(
 ):
     """列表查詢學生評量記錄"""
     with session_scope() as session:
-        query = (
-            session.query(StudentAssessment, Student)
-            .join(Student, StudentAssessment.student_id == Student.id)
+        query = session.query(StudentAssessment, Student).join(
+            Student, StudentAssessment.student_id == Student.id
         )
 
         if student_id:
@@ -96,7 +101,9 @@ async def list_assessments(
             if role not in ("admin", "hr", "supervisor"):
                 stu = session.query(Student).filter(Student.id == student_id).first()
                 if stu is None or stu.classroom_id is None:
-                    raise HTTPException(status_code=403, detail="您無權存取此學生的評量記錄")
+                    raise HTTPException(
+                        status_code=403, detail="您無權存取此學生的評量記錄"
+                    )
                 _require_classroom_access(session, current_user, stu.classroom_id)
             query = query.filter(StudentAssessment.student_id == student_id)
 
@@ -111,11 +118,18 @@ async def list_assessments(
             query = query.filter(StudentAssessment.assessment_type == assessment_type)
 
         total = query.count()
-        rows = query.order_by(StudentAssessment.assessment_date.desc()).offset(skip).limit(limit).all()
+        rows = (
+            query.order_by(StudentAssessment.assessment_date.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
 
         return {
             "total": total,
-            "items": [assessment_to_dict(a, s, include_updated_at=True) for a, s in rows],
+            "items": [
+                assessment_to_dict(a, s, include_updated_at=True) for a, s in rows
+            ],
         }
 
 
@@ -125,11 +139,17 @@ async def create_assessment(
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
 ):
     """新增學生評量記錄"""
-    validate_assessment_fields(assessment_type=payload.assessment_type, domain=payload.domain, rating=payload.rating)
+    validate_assessment_fields(
+        assessment_type=payload.assessment_type,
+        domain=payload.domain,
+        rating=payload.rating,
+    )
 
     try:
         with session_scope() as session:
-            student = session.query(Student).filter(Student.id == payload.student_id).first()
+            student = (
+                session.query(Student).filter(Student.id == payload.student_id).first()
+            )
             if not student:
                 raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
             if student.classroom_id:
@@ -150,9 +170,13 @@ async def create_assessment(
             session.flush()
             session.refresh(assessment)
 
-            logger.info("新增學生評量記錄：student_id=%d semester=%s type=%s operator=%s",
-                        payload.student_id, payload.semester, payload.assessment_type,
-                        current_user.get("username"))
+            logger.info(
+                "新增學生評量記錄：student_id=%d semester=%s type=%s operator=%s",
+                payload.student_id,
+                payload.semester,
+                payload.assessment_type,
+                current_user.get("username"),
+            )
             return assessment_to_dict(assessment, student, include_updated_at=True)
     except HTTPException:
         raise
@@ -169,11 +193,19 @@ async def update_assessment(
     """更新學生評量記錄"""
     try:
         with session_scope() as session:
-            assessment = session.query(StudentAssessment).filter(StudentAssessment.id == assessment_id).first()
+            assessment = (
+                session.query(StudentAssessment)
+                .filter(StudentAssessment.id == assessment_id)
+                .first()
+            )
             if not assessment:
                 raise HTTPException(status_code=404, detail="找不到該評量記錄")
 
-            student = session.query(Student).filter(Student.id == assessment.student_id).first()
+            student = (
+                session.query(Student)
+                .filter(Student.id == assessment.student_id)
+                .first()
+            )
             if student and student.classroom_id:
                 _require_classroom_access(session, current_user, student.classroom_id)
 
@@ -191,7 +223,11 @@ async def update_assessment(
             session.flush()
             session.refresh(assessment)
 
-            logger.info("更新學生評量記錄：id=%d operator=%s", assessment_id, current_user.get("username"))
+            logger.info(
+                "更新學生評量記錄：id=%d operator=%s",
+                assessment_id,
+                current_user.get("username"),
+            )
             return assessment_to_dict(assessment, student, include_updated_at=True)
     except HTTPException:
         raise
@@ -207,18 +243,32 @@ async def delete_assessment(
     """刪除學生評量記錄"""
     try:
         with session_scope() as session:
-            assessment = session.query(StudentAssessment).filter(StudentAssessment.id == assessment_id).first()
+            assessment = (
+                session.query(StudentAssessment)
+                .filter(StudentAssessment.id == assessment_id)
+                .first()
+            )
             if not assessment:
                 raise HTTPException(status_code=404, detail="找不到該評量記錄")
 
-            student_for_access = session.query(Student).filter(Student.id == assessment.student_id).first()
+            student_for_access = (
+                session.query(Student)
+                .filter(Student.id == assessment.student_id)
+                .first()
+            )
             if student_for_access and student_for_access.classroom_id:
-                _require_classroom_access(session, current_user, student_for_access.classroom_id)
+                _require_classroom_access(
+                    session, current_user, student_for_access.classroom_id
+                )
 
             student_id_for_log = assessment.student_id
             session.delete(assessment)
-            logger.warning("刪除學生評量記錄：id=%d student_id=%d operator=%s",
-                           assessment_id, student_id_for_log, current_user.get("username"))
+            logger.warning(
+                "刪除學生評量記錄：id=%d student_id=%d operator=%s",
+                assessment_id,
+                student_id_for_log,
+                current_user.get("username"),
+            )
             return {"message": "刪除成功"}
     except HTTPException:
         raise

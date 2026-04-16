@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from typing import Optional
 
 from models.database import get_session, AuditLog
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from sqlalchemy import desc
 
@@ -27,7 +27,7 @@ def get_audit_logs(
     username: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    current_user: dict = Depends(require_permission(Permission.AUDIT_LOGS)),
+    current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
 ):
     """查詢操作審計紀錄"""
     session = get_session()

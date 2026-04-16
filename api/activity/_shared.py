@@ -22,7 +22,7 @@ from models.database import (
     ActivitySession, ActivityAttendance,
 )
 from services.activity_service import activity_service
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)

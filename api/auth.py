@@ -19,7 +19,7 @@ from models.database import get_session, User, Employee
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
 from utils.auth import (
     hash_password, verify_password, needs_rehash, create_access_token,
-    get_current_user, decode_token_allow_expired, require_permission,
+    get_current_user, decode_token_allow_expired, require_staff_permission,
     validate_password_strength,
 )
 from utils.cookie import (
@@ -458,6 +458,9 @@ def end_impersonate(request: Request):
         user = session.query(User).filter(User.id == user_id, User.is_active == True).first()
         if not user:
             raise HTTPException(status_code=401, detail="管理員帳號已停用或不存在")
+            
+        if user.role != "admin":
+            raise HTTPException(status_code=403, detail="無效的管理員 Token（角色非 admin）")
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
         permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
@@ -471,6 +474,8 @@ def end_impersonate(request: Request):
             "permissions": permissions,
             "token_version": user.token_version,
         })
+        
+        request.state.audit_summary = f"[結束冒充] 恢復為管理員 {emp.name if emp else user.username}（user_id={user.id}）"
 
         response = JSONResponse(content={
             "user": {
@@ -544,7 +549,7 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
 # ============ Admin Routes ============
 
 @router.get("/users")
-def list_users(current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_READ))):
+def list_users(current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_READ))):
     """列出所有使用者"""
     session = get_session()
     try:
@@ -567,7 +572,7 @@ def list_users(current_user: dict = Depends(require_permission(Permission.USER_M
 
 
 @router.post("/users", status_code=201)
-def create_user(data: CreateUserRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
+def create_user(data: CreateUserRequest, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
     """建立使用者帳號"""
     session = get_session()
     try:
@@ -613,7 +618,7 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_pe
 
 
 @router.put("/users/{user_id}/reset-password")
-def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
+def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
     """重設密碼"""
     session = get_session()
     try:
@@ -642,7 +647,7 @@ def get_permissions():
 
 
 @router.put("/users/{user_id}")
-def update_user(user_id: int, data: UpdateUserRequest, request: Request, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
+def update_user(user_id: int, data: UpdateUserRequest, request: Request, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
     """更新使用者角色與權限"""
     # 禁止管理員停用自己的帳號（防止系統鎖死）
     if user_id == current_user.get("user_id") and data.is_active is False:
@@ -704,7 +709,7 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
 
 
 @router.delete("/users/{user_id}")
-def delete_user(user_id: int, current_user: dict = Depends(require_permission(Permission.USER_MANAGEMENT_WRITE))):
+def delete_user(user_id: int, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
     """刪除使用者帳號"""
     # 禁止管理員刪除自己的帳號（防止系統鎖死）
     if user_id == current_user.get("user_id"):

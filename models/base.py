@@ -25,7 +25,11 @@ Base = declarative_base()
 # ---------------------------------------------------------------------------
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-_is_dev = os.environ.get("ENV", "development").lower() in ("development", "dev", "local")
+_is_dev = os.environ.get("ENV", "development").lower() in (
+    "development",
+    "dev",
+    "local",
+)
 
 if not DATABASE_URL:
     if _is_dev:
@@ -59,11 +63,11 @@ def get_engine():
                 connect_args["sslmode"] = "require"
             connect_args["options"] = "-c statement_timeout=30000"
             kwargs = dict(
-                pool_size=10,
-                max_overflow=20,
+                pool_size=20,
+                max_overflow=40,
                 pool_pre_ping=True,
                 pool_recycle=1800,  # 30 分鐘回收連線，避免 server 端斷線
-                pool_timeout=10,
+                pool_timeout=15,
                 echo=False,
                 connect_args=connect_args,
             )

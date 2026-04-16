@@ -6,6 +6,7 @@ utils/security_headers.py — HTTP 安全標頭 Middleware
   - X-Frame-Options: DENY                  防止 Clickjacking
   - Strict-Transport-Security              HSTS（僅正式環境）
   - Referrer-Policy                        限制 Referer 洩漏
+  - Content-Security-Policy                限制資源載入來源
 """
 
 import os
@@ -20,6 +21,16 @@ _STATIC_HEADERS: list[tuple[str, str]] = [
     ("X-Content-Type-Options", "nosniff"),
     ("X-Frame-Options", "DENY"),
     ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    (
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.tile.openstreetmap.org; "
+        "connect-src 'self' https://maps.googleapis.com https://*.tile.openstreetmap.org wss: ws:; "
+        "frame-ancestors 'none'",
+    ),
 ]
 
 # HSTS 只在正式環境加（HTTP 環境加了也無害，但避免誤導）

@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.database import get_session, ParentInquiry
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 from ._shared import _not_found, _invalidate_activity_dashboard_caches, InquiryReply
@@ -22,7 +22,7 @@ async def get_inquiries(
     is_read: bool = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得家長提問列表"""
     session = get_session()
@@ -53,7 +53,7 @@ async def get_inquiries(
 @router.put("/inquiries/{inquiry_id}/read")
 async def mark_inquiry_read(
     inquiry_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """標記提問為已讀"""
     session = get_session()
@@ -78,7 +78,7 @@ async def mark_inquiry_read(
 async def reply_inquiry(
     inquiry_id: int,
     body: InquiryReply,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """回覆家長提問"""
     session = get_session()
@@ -106,7 +106,7 @@ async def reply_inquiry(
 @router.delete("/inquiries/{inquiry_id}")
 async def delete_inquiry(
     inquiry_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """刪除提問"""
     session = get_session()

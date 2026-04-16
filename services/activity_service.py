@@ -12,17 +12,20 @@ from sqlalchemy import func, select, case
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 from models.activity import (
-    ActivityCourse, ActivitySupply, ActivityRegistration,
-    RegistrationCourse, RegistrationSupply,
-    ParentInquiry, RegistrationChange, ActivityRegistrationSettings,
+    ActivityCourse,
+    ActivitySupply,
+    ActivityRegistration,
+    RegistrationCourse,
+    RegistrationSupply,
+    ParentInquiry,
+    RegistrationChange,
+    ActivityRegistrationSettings,
 )
 from services.report_cache_service import report_cache_service
 
 logger = logging.getLogger(__name__)
 
-ACTIVITY_SUMMARY_CACHE_CATEGORIES = (
-    "activity_stats_summary",
-)
+ACTIVITY_SUMMARY_CACHE_CATEGORIES = ("activity_stats_summary",)
 ACTIVITY_DASHBOARD_CACHE_CATEGORIES = (
     "activity_stats_summary",
     "activity_stats_charts",
@@ -45,7 +48,8 @@ class ActivityService:
         return (
             session.query(func.count(ParentInquiry.id))
             .filter(ParentInquiry.is_read.is_(False))
-            .scalar() or 0
+            .scalar()
+            or 0
         )
 
     def _active_course_query(self, session, course_id: int):
@@ -103,7 +107,10 @@ class ActivityService:
                 .scalar_subquery()
                 .label("total_registrations"),
                 select(func.count(RegistrationCourse.id))
-                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
                 .where(
                     RegistrationCourse.status == "enrolled",
                     active_registration_filter,
@@ -111,7 +118,10 @@ class ActivityService:
                 .scalar_subquery()
                 .label("total_enrollments"),
                 select(func.count(RegistrationCourse.id))
-                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
                 .where(
                     RegistrationCourse.status == "waitlist",
                     active_registration_filter,
@@ -119,7 +129,10 @@ class ActivityService:
                 .scalar_subquery()
                 .label("total_waitlist"),
                 select(func.count(RegistrationSupply.id))
-                .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationSupply.registration_id == ActivityRegistration.id,
+                )
                 .where(active_registration_filter)
                 .scalar_subquery()
                 .label("total_supply_orders"),
@@ -131,7 +144,10 @@ class ActivityService:
                 .scalar_subquery()
                 .label("today_new"),
                 select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
-                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
                 .where(
                     ActivityRegistration.is_paid.is_(True),
                     active_registration_filter,
@@ -140,7 +156,10 @@ class ActivityService:
                 .scalar_subquery()
                 .label("paid_revenue_courses"),
                 select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
-                .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationSupply.registration_id == ActivityRegistration.id,
+                )
                 .where(
                     ActivityRegistration.is_paid.is_(True),
                     active_registration_filter,
@@ -148,7 +167,10 @@ class ActivityService:
                 .scalar_subquery()
                 .label("paid_revenue_supplies"),
                 select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
-                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
                 .where(
                     ActivityRegistration.is_paid.is_(False),
                     active_registration_filter,
@@ -157,7 +179,10 @@ class ActivityService:
                 .scalar_subquery()
                 .label("unpaid_revenue_courses"),
                 select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
-                .join(ActivityRegistration, RegistrationSupply.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationSupply.registration_id == ActivityRegistration.id,
+                )
                 .where(
                     ActivityRegistration.is_paid.is_(False),
                     active_registration_filter,
@@ -177,7 +202,11 @@ class ActivityService:
 
         total_enrollments = int(summary_row.total_enrollments or 0)
         total_capacity = int(summary_row.total_capacity or 0)
-        enrollment_rate = round(total_enrollments / total_capacity * 100, 1) if total_capacity > 0 else 0.0
+        enrollment_rate = (
+            round(total_enrollments / total_capacity * 100, 1)
+            if total_capacity > 0
+            else 0.0
+        )
 
         return {
             "totalRegistrations": int(summary_row.total_registrations or 0),
@@ -185,8 +214,10 @@ class ActivityService:
             "totalWaitlist": int(summary_row.total_waitlist or 0),
             "totalSupplyOrders": int(summary_row.total_supply_orders or 0),
             "todayNewRegistrations": int(summary_row.today_new or 0),
-            "totalRevenue": int(summary_row.paid_revenue_courses or 0) + int(summary_row.paid_revenue_supplies or 0),
-            "totalUnpaid": int(summary_row.unpaid_revenue_courses or 0) + int(summary_row.unpaid_revenue_supplies or 0),
+            "totalRevenue": int(summary_row.paid_revenue_courses or 0)
+            + int(summary_row.paid_revenue_supplies or 0),
+            "totalUnpaid": int(summary_row.unpaid_revenue_courses or 0)
+            + int(summary_row.unpaid_revenue_supplies or 0),
             "enrollmentRate": enrollment_rate,
             "unreadInquiries": int(summary_row.unread_inquiries or 0),
         }
@@ -211,8 +242,7 @@ class ActivityService:
             .all()
         )
         daily_stats = [
-            {"date": str(row.d), "count": row.c}
-            for row in reversed(daily_rows)
+            {"date": str(row.d), "count": row.c} for row in reversed(daily_rows)
         ]
 
         # 熱門課程（top 5）
@@ -222,7 +252,10 @@ class ActivityService:
                 func.count(RegistrationCourse.id).label("c"),
             )
             .join(RegistrationCourse, ActivityCourse.id == RegistrationCourse.course_id)
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
             .filter(
                 RegistrationCourse.status == "enrolled",
                 ActivityRegistration.is_active.is_(True),
@@ -279,7 +312,9 @@ class ActivityService:
             )
             .filter(ActivityCourse.is_active.is_(True))
             .join(ActivitySession, ActivityCourse.id == ActivitySession.course_id)
-            .join(ActivityAttendance, ActivitySession.id == ActivityAttendance.session_id)
+            .join(
+                ActivityAttendance, ActivitySession.id == ActivityAttendance.session_id
+            )
             .group_by(ActivityCourse.name)
             .all()
         )
@@ -296,7 +331,9 @@ class ActivityService:
             {
                 "course_name": row.course_name,
                 "sessions": row.sessions or 0,
-                "avg_rate": round((row.present or 0) / row.total, 2) if row.total else 0.0,
+                "avg_rate": (
+                    round((row.present or 0) / row.total, 2) if row.total else 0.0
+                ),
             }
             for row in rows
         ]
@@ -329,7 +366,7 @@ class ActivityService:
                 return pct
         return 0
 
-    def _query_classroom_stats(self, session, courses):
+    def _query_classroom_stats(self, session, courses, school_year: int, semester: int):
         """一次查出所有班級的在籍人數、各課程報名數及班導師。"""
         from models.classroom import Classroom, Student
         from models.employee import Employee
@@ -344,8 +381,15 @@ class ActivityService:
                 func.count(Student.id).label("student_count"),
             )
             .outerjoin(Employee, Classroom.head_teacher_id == Employee.id)
-            .outerjoin(Student, (Student.classroom_id == Classroom.id) & Student.is_active.is_(True))
-            .filter(Classroom.is_active.is_(True))
+            .outerjoin(
+                Student,
+                (Student.classroom_id == Classroom.id) & Student.is_active.is_(True),
+            )
+            .filter(
+                Classroom.is_active.is_(True),
+                Classroom.school_year == school_year,
+                Classroom.semester == semester,
+            )
             .group_by(Classroom.id, Employee.name)
             .all()
         ):
@@ -360,7 +404,10 @@ class ActivityService:
                 RegistrationCourse.course_id,
                 func.count(RegistrationCourse.id).label("count"),
             )
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
             .filter(
                 ActivityRegistration.is_active.is_(True),
                 RegistrationCourse.status == "enrolled",
@@ -372,7 +419,9 @@ class ActivityService:
 
         return student_count_map, enrollment_map, classrooms_by_grade
 
-    def _build_grade_rows(self, grades, courses, student_count_map, enrollment_map, classrooms_by_grade):
+    def _build_grade_rows(
+        self, grades, courses, student_count_map, enrollment_map, classrooms_by_grade
+    ):
         """組裝各年級列表，回傳 (result_grades, gt_student_count, gt_courses, gt_total_enrollments)。"""
         result_grades = []
         gt_student_count = 0
@@ -403,44 +452,58 @@ class ActivityService:
                     sub_courses[c_id_str] += count
                     gt_courses[c_id_str] += count
 
-                cls_ratio = int(round(cls_enrollments / cls_student_count * 100)) if cls_student_count > 0 else 0
+                cls_ratio = (
+                    int(round(cls_enrollments / cls_student_count * 100))
+                    if cls_student_count > 0
+                    else 0
+                )
                 sub_student_count += cls_student_count
                 sub_total_enrollments += cls_enrollments
                 gt_student_count += cls_student_count
                 gt_total_enrollments += cls_enrollments
 
-                classroom_list.append({
-                    "classroom_id": cls.id,
-                    "classroom_name": cls.name,
-                    "teacher_name": teacher_name or "",
-                    "student_count": cls_student_count,
-                    "courses": cls_course_data,
-                    "total_enrollments": cls_enrollments,
-                    "ratio": cls_ratio,
-                })
+                classroom_list.append(
+                    {
+                        "classroom_id": cls.id,
+                        "classroom_name": cls.name,
+                        "teacher_name": teacher_name or "",
+                        "student_count": cls_student_count,
+                        "courses": cls_course_data,
+                        "total_enrollments": cls_enrollments,
+                        "ratio": cls_ratio,
+                    }
+                )
 
-            sub_ratio = int(round(sub_total_enrollments / sub_student_count * 100)) if sub_student_count > 0 else 0
+            sub_ratio = (
+                int(round(sub_total_enrollments / sub_student_count * 100))
+                if sub_student_count > 0
+                else 0
+            )
             sub_bonus = 1000 if target_pct > 0 and sub_ratio >= target_pct else 0
             sub_points = target_pct if sub_bonus else 0
 
-            result_grades.append({
-                "grade_id": grade.id,
-                "grade_name": grade_name,
-                "target_percent": target_pct,
-                "classrooms": classroom_list,
-                "subtotal": {
-                    "student_count": sub_student_count,
-                    "courses": sub_courses,
-                    "total_enrollments": sub_total_enrollments,
-                    "ratio": sub_ratio,
-                    "bonus": sub_bonus,
-                    "points": sub_points,
-                },
-            })
+            result_grades.append(
+                {
+                    "grade_id": grade.id,
+                    "grade_name": grade_name,
+                    "target_percent": target_pct,
+                    "classrooms": classroom_list,
+                    "subtotal": {
+                        "student_count": sub_student_count,
+                        "courses": sub_courses,
+                        "total_enrollments": sub_total_enrollments,
+                        "ratio": sub_ratio,
+                        "bonus": sub_bonus,
+                        "points": sub_points,
+                    },
+                }
+            )
 
         return result_grades, gt_student_count, gt_courses, gt_total_enrollments
 
-    def _compute_dashboard_table(self, session) -> dict:
+    def _compute_dashboard_table(
+        self, session, school_year: int, semester: int
+    ) -> dict:
         """取得課後才藝儀表板統計表格（含依班級與年級的小計與達成率）"""
         from models.classroom import ClassGrade
 
@@ -459,12 +522,20 @@ class ActivityService:
             .all()
         )
 
-        student_count_map, enrollment_map, classrooms_by_grade = self._query_classroom_stats(session, courses)
-        result_grades, gt_student_count, gt_courses, gt_total_enrollments = self._build_grade_rows(
-            grades, courses, student_count_map, enrollment_map, classrooms_by_grade
+        student_count_map, enrollment_map, classrooms_by_grade = (
+            self._query_classroom_stats(session, courses, school_year, semester)
+        )
+        result_grades, gt_student_count, gt_courses, gt_total_enrollments = (
+            self._build_grade_rows(
+                grades, courses, student_count_map, enrollment_map, classrooms_by_grade
+            )
         )
 
-        gt_ratio = int(round(gt_total_enrollments / gt_student_count * 100)) if gt_student_count > 0 else 0
+        gt_ratio = (
+            int(round(gt_total_enrollments / gt_student_count * 100))
+            if gt_student_count > 0
+            else 0
+        )
         grand_total = {
             "student_count": gt_student_count,
             "courses": gt_courses,
@@ -472,22 +543,40 @@ class ActivityService:
             "ratio": gt_ratio,
         }
 
-        return {"courses": course_list, "grades": result_grades, "grand_total": grand_total}
+        return {
+            "courses": course_list,
+            "grades": result_grades,
+            "grand_total": grand_total,
+            "school_year": school_year,
+            "semester": semester,
+        }
 
-    def get_dashboard_table(self, session, *, force_refresh: bool = False) -> dict:
+    def get_dashboard_table(
+        self,
+        session,
+        *,
+        school_year: int,
+        semester: int,
+        force_refresh: bool = False,
+    ) -> dict:
         return report_cache_service.get_or_build(
             session,
             category="activity_dashboard_table",
             ttl_seconds=ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS,
+            params={"school_year": school_year, "semester": semester},
             force_refresh=force_refresh,
-            builder=lambda: self._compute_dashboard_table(session),
+            builder=lambda: self._compute_dashboard_table(
+                session, school_year, semester
+            ),
         )
 
     # ------------------------------------------------------------------ #
     # 候補升正式
     # ------------------------------------------------------------------ #
 
-    def promote_waitlist(self, session, registration_id: int, course_id: int) -> tuple[str, str]:
+    def promote_waitlist(
+        self, session, registration_id: int, course_id: int
+    ) -> tuple[str, str]:
         """
         將指定報名的指定課程從候補升為正式。
         使用 with_for_update() 防止並發超額。
@@ -550,17 +639,25 @@ class ActivityService:
             raise ValueError("找不到報名資料")
 
         # 先取出此報名的所有正式課程
-        enrolled_courses = session.query(RegistrationCourse).filter(
-            RegistrationCourse.registration_id == registration_id,
-            RegistrationCourse.status == "enrolled",
-        ).all()
+        enrolled_courses = (
+            session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == registration_id,
+                RegistrationCourse.status == "enrolled",
+            )
+            .all()
+        )
         enrolled_course_ids = [rc.course_id for rc in enrolled_courses]
 
         # 軟刪除
         reg.is_active = False
         self.log_change(
-            session, registration_id, reg.student_name,
-            "刪除報名", "管理員刪除報名", operator,
+            session,
+            registration_id,
+            reg.student_name,
+            "刪除報名",
+            "管理員刪除報名",
+            operator,
         )
         session.flush()  # 先 flush，確保刪除生效後再升位
 
@@ -572,7 +669,10 @@ class ActivityService:
         """找出該課程候補排序最前的一筆，嘗試升正式。無候補則靜默跳過。"""
         first_waitlist = (
             session.query(RegistrationCourse)
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
             .filter(
                 RegistrationCourse.course_id == course_id,
                 RegistrationCourse.status == "waitlist",
@@ -596,11 +696,11 @@ class ActivityService:
                 f"課程「{course_name}」因報名刪除自動升為正式",
                 "system",
             )
-            logger.info(
-                "自動候補升位：student=%s course=%s", student_name, course_name
-            )
+            logger.info("自動候補升位：student=%s course=%s", student_name, course_name)
             if self._line_svc is not None:
-                self._line_svc.notify_activity_waitlist_promoted(student_name, course_name)
+                self._line_svc.notify_activity_waitlist_promoted(
+                    student_name, course_name
+                )
         except ValueError:
             pass  # 課程已滿或資料異常，靜默跳過
 
@@ -632,16 +732,16 @@ class ActivityService:
 
     def check_course_capacity(self, session, course_id: int) -> tuple:
         """回傳 (capacity, enrolled_count, has_vacancy)"""
-        course = session.query(ActivityCourse).filter(ActivityCourse.id == course_id).first()
+        course = (
+            session.query(ActivityCourse).filter(ActivityCourse.id == course_id).first()
+        )
         if not course:
             raise ValueError("課程不存在")
 
-        enrolled_count = (
-            self.count_active_course_registrations(
-                session,
-                course_id,
-                status="enrolled",
-            )
+        enrolled_count = self.count_active_course_registrations(
+            session,
+            course_id,
+            status="enrolled",
         )
         capacity = course.capacity if course.capacity is not None else 999
         has_vacancy = enrolled_count < capacity

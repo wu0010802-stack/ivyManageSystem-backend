@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent, Holiday
 from services.official_calendar import build_admin_calendar_feed
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.error_messages import EVENT_NOT_FOUND
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
@@ -85,7 +85,7 @@ def get_events(
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None),
     event_type: Optional[str] = Query(None),
-    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
 ):
     """取得行事曆事件列表"""
     session = get_session()
@@ -119,7 +119,7 @@ def get_events(
 def get_calendar_feed(
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),
-    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
 ):
     """取得後台學校行事曆 feed（人工事件 + 官方國定假日/補班日）。"""
     session = get_session()
@@ -130,7 +130,7 @@ def get_calendar_feed(
 
 
 @router.get("/events/{event_id}")
-def get_event(event_id: int, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
+def get_event(event_id: int, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
     """取得單一事件"""
     session = get_session()
     try:
@@ -146,7 +146,7 @@ def get_event(event_id: int, current_user: dict = Depends(require_permission(Per
 
 
 @router.post("/events", status_code=201)
-def create_event(data: EventCreate, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
+def create_event(data: EventCreate, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
     """新增行事曆事件"""
     session = get_session()
     try:
@@ -179,7 +179,7 @@ def create_event(data: EventCreate, current_user: dict = Depends(require_permiss
 
 
 @router.put("/events/{event_id}")
-def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
+def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
     """更新行事曆事件"""
     session = get_session()
     try:
@@ -213,7 +213,7 @@ def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(
 
 
 @router.delete("/events/{event_id}")
-def delete_event(event_id: int, current_user: dict = Depends(require_permission(Permission.CALENDAR))):
+def delete_event(event_id: int, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
     """刪除行事曆事件（軟刪除）"""
     session = get_session()
     try:
@@ -257,7 +257,7 @@ def _ev_write_header(ws, row, headers):
 
 @router.get("/events/holidays/import-template")
 def get_holiday_import_template(
-    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
 ):
     """下載國定假日批次匯入 Excel 範本"""
     wb = Workbook()
@@ -285,7 +285,7 @@ def get_holiday_import_template(
 @router.post("/events/holidays/import")
 async def import_holidays(
     file: UploadFile = File(...),
-    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
 ):
     """批次匯入國定假日（UPSERT by date，同日期若已存在則更新）"""
     content = await read_upload_with_size_check(file)

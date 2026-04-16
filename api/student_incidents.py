@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api", tags=["student-incidents"])
 
 # ============ Pydantic Models ============
 
+
 class IncidentCreate(BaseModel):
     student_id: int
     incident_type: str
@@ -43,10 +44,14 @@ class IncidentUpdate(BaseModel):
     parent_notified: Optional[bool] = None
     parent_notified_at: Optional[datetime] = None
 
-_INCIDENT_SIMPLE_FIELDS = frozenset({'incident_type', 'severity', 'occurred_at', 'description', 'action_taken'})
+
+_INCIDENT_SIMPLE_FIELDS = frozenset(
+    {"incident_type", "severity", "occurred_at", "description", "action_taken"}
+)
 
 
 # ============ Helpers ============
+
 
 def _require_classroom_access(session, current_user: dict, classroom_id: int) -> None:
     """確認操作者有權存取指定班級的學生記錄。
@@ -60,17 +65,22 @@ def _require_classroom_access(session, current_user: dict, classroom_id: int) ->
     emp_id = current_user.get("employee_id")
     if not emp_id:
         raise HTTPException(status_code=403, detail="您無權存取此班級的學生記錄")
-    cls = session.query(Classroom).filter(
-        Classroom.id == classroom_id,
-        (Classroom.head_teacher_id == emp_id) |
-        (Classroom.assistant_teacher_id == emp_id) |
-        (Classroom.art_teacher_id == emp_id),
-    ).first()
+    cls = (
+        session.query(Classroom)
+        .filter(
+            Classroom.id == classroom_id,
+            (Classroom.head_teacher_id == emp_id)
+            | (Classroom.assistant_teacher_id == emp_id)
+            | (Classroom.art_teacher_id == emp_id),
+        )
+        .first()
+    )
     if not cls:
         raise HTTPException(status_code=403, detail="您無權存取此班級的學生記錄")
 
 
 # ============ Routes ============
+
 
 @router.get("/student-incidents")
 async def list_incidents(
@@ -85,9 +95,8 @@ async def list_incidents(
 ):
     """列表查詢學生事件紀錄"""
     with session_scope() as session:
-        query = (
-            session.query(StudentIncident, Student)
-            .join(Student, StudentIncident.student_id == Student.id)
+        query = session.query(StudentIncident, Student).join(
+            Student, StudentIncident.student_id == Student.id
         )
 
         if student_id:
@@ -96,7 +105,9 @@ async def list_incidents(
             if role not in ("admin", "hr", "supervisor"):
                 stu = session.query(Student).filter(Student.id == student_id).first()
                 if stu is None or stu.classroom_id is None:
-                    raise HTTPException(status_code=403, detail="您無權存取此學生的事件紀錄")
+                    raise HTTPException(
+                        status_code=403, detail="您無權存取此學生的事件紀錄"
+                    )
                 _require_classroom_access(session, current_user, stu.classroom_id)
             query = query.filter(StudentIncident.student_id == student_id)
 
@@ -114,11 +125,18 @@ async def list_incidents(
             query = query.filter(StudentIncident.occurred_at <= end_dt)
 
         total = query.count()
-        rows = query.order_by(StudentIncident.occurred_at.desc()).offset(skip).limit(limit).all()
+        rows = (
+            query.order_by(StudentIncident.occurred_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
 
         return {
             "total": total,
-            "items": [incident_to_dict(inc, stu, include_updated_at=True) for inc, stu in rows],
+            "items": [
+                incident_to_dict(inc, stu, include_updated_at=True) for inc, stu in rows
+            ],
         }
 
 
@@ -128,11 +146,15 @@ async def create_incident(
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
 ):
     """新增學生事件紀錄"""
-    validate_incident_fields(incident_type=payload.incident_type, severity=payload.severity)
+    validate_incident_fields(
+        incident_type=payload.incident_type, severity=payload.severity
+    )
 
     try:
         with session_scope() as session:
-            student = session.query(Student).filter(Student.id == payload.student_id).first()
+            student = (
+                session.query(Student).filter(Student.id == payload.student_id).first()
+            )
             if not student:
                 raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
             if student.classroom_id:
@@ -153,8 +175,12 @@ async def create_incident(
             session.flush()
             session.refresh(incident)
 
-            logger.info("新增學生事件紀錄：student_id=%d type=%s operator=%s",
-                        payload.student_id, payload.incident_type, current_user.get("username"))
+            logger.info(
+                "新增學生事件紀錄：student_id=%d type=%s operator=%s",
+                payload.student_id,
+                payload.incident_type,
+                current_user.get("username"),
+            )
             return incident_to_dict(incident, student, include_updated_at=True)
     except HTTPException:
         raise
@@ -171,15 +197,23 @@ async def update_incident(
     """更新學生事件紀錄（含標記已通知家長）"""
     try:
         with session_scope() as session:
-            incident = session.query(StudentIncident).filter(StudentIncident.id == incident_id).first()
+            incident = (
+                session.query(StudentIncident)
+                .filter(StudentIncident.id == incident_id)
+                .first()
+            )
             if not incident:
                 raise HTTPException(status_code=404, detail="找不到該事件紀錄")
 
-            student = session.query(Student).filter(Student.id == incident.student_id).first()
+            student = (
+                session.query(Student).filter(Student.id == incident.student_id).first()
+            )
             if student and student.classroom_id:
                 _require_classroom_access(session, current_user, student.classroom_id)
 
-            validate_incident_fields(incident_type=payload.incident_type, severity=payload.severity)
+            validate_incident_fields(
+                incident_type=payload.incident_type, severity=payload.severity
+            )
 
             for field, value in payload.model_dump(exclude_unset=True).items():
                 if field in _INCIDENT_SIMPLE_FIELDS and value is not None:
@@ -189,7 +223,9 @@ async def update_incident(
                 prev_notified = incident.parent_notified
                 incident.parent_notified = payload.parent_notified
                 if payload.parent_notified and not prev_notified:
-                    incident.parent_notified_at = payload.parent_notified_at or datetime.now()
+                    incident.parent_notified_at = (
+                        payload.parent_notified_at or datetime.now()
+                    )
                 elif not payload.parent_notified:
                     incident.parent_notified_at = None
 
@@ -200,7 +236,11 @@ async def update_incident(
             session.flush()
             session.refresh(incident)
 
-            logger.info("更新學生事件紀錄：id=%d operator=%s", incident_id, current_user.get("username"))
+            logger.info(
+                "更新學生事件紀錄：id=%d operator=%s",
+                incident_id,
+                current_user.get("username"),
+            )
             return incident_to_dict(incident, student, include_updated_at=True)
     except HTTPException:
         raise
@@ -216,18 +256,30 @@ async def delete_incident(
     """刪除學生事件紀錄"""
     try:
         with session_scope() as session:
-            incident = session.query(StudentIncident).filter(StudentIncident.id == incident_id).first()
+            incident = (
+                session.query(StudentIncident)
+                .filter(StudentIncident.id == incident_id)
+                .first()
+            )
             if not incident:
                 raise HTTPException(status_code=404, detail="找不到該事件紀錄")
 
-            student_for_access = session.query(Student).filter(Student.id == incident.student_id).first()
+            student_for_access = (
+                session.query(Student).filter(Student.id == incident.student_id).first()
+            )
             if student_for_access and student_for_access.classroom_id:
-                _require_classroom_access(session, current_user, student_for_access.classroom_id)
+                _require_classroom_access(
+                    session, current_user, student_for_access.classroom_id
+                )
 
             student_id_for_log = incident.student_id
             session.delete(incident)
-            logger.warning("刪除學生事件紀錄：id=%d student_id=%d operator=%s",
-                           incident_id, student_id_for_log, current_user.get("username"))
+            logger.warning(
+                "刪除學生事件紀錄：id=%d student_id=%d operator=%s",
+                incident_id,
+                student_id_for_log,
+                current_user.get("username"),
+            )
             return {"message": "刪除成功"}
     except HTTPException:
         raise

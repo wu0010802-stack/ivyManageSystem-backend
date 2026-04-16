@@ -9,7 +9,7 @@ from datetime import date, timedelta, time
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.masking import mask_bank_account
@@ -191,7 +191,7 @@ def _mask_bank_account(account: str | None) -> str:
 @router.get("/employees")
 def export_employees(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.EMPLOYEES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     """匯出員工名冊 Excel"""
     session = get_session()
@@ -248,7 +248,7 @@ def export_employees(
 @router.get("/students")
 def export_students(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """匯出學生名冊 Excel"""
     session = get_session()
@@ -296,7 +296,7 @@ def export_students(
 @router.get("/attendance")
 def export_attendance(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
     year: int = Query(...),
     month: int = Query(...),
 ):
@@ -436,7 +436,7 @@ EVENT_TYPE_LABELS = {
 @router.get("/calendar")
 def export_calendar(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),
 ):
@@ -494,7 +494,7 @@ def _approval_label(is_approved):
 @router.get("/leaves")
 def export_leaves(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.LEAVES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
     year: int = Query(...),
     month: int = Query(...),
 ):
@@ -548,7 +548,7 @@ def export_leaves(
 @router.get("/overtimes")
 def export_overtimes(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.OVERTIME_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_READ)),
     year: int = Query(...),
     month: int = Query(...),
 ):
@@ -605,7 +605,7 @@ def export_overtimes(
 @router.get("/holidays")
 def export_holidays(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.CALENDAR)),
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
     year: int = Query(..., description="要匯出的年份"),
 ):
     """匯出指定年份國定假日 Excel"""
@@ -652,7 +652,7 @@ def export_holidays(
 @router.get("/shifts")
 def export_shifts(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+    current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
     week_start: str = Query(..., description="週起始日 YYYY-MM-DD（週一）"),
 ):
     """匯出指定週排班 Excel"""
@@ -735,7 +735,7 @@ def _calc_work_hours(att) -> float | None:
 @router.get("/employee-attendance")
 def export_employee_attendance(
     _rl=Depends(_export_rate_limit),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
     employee_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),

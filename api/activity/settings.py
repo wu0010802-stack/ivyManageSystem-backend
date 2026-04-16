@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.database import get_session, ActivityRegistrationSettings, RegistrationChange, Classroom
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 from ._shared import RegistrationTimeSettings
@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.get("/settings/registration-time")
 async def get_registration_time(
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得報名開放設定（管理後台用，需認證）"""
     session = get_session()
@@ -38,7 +38,7 @@ async def get_registration_time(
 @router.post("/settings/registration-time")
 async def update_registration_time(
     body: RegistrationTimeSettings,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新報名開放設定"""
     session = get_session()
@@ -64,7 +64,7 @@ async def update_registration_time(
 async def get_changes(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得修改紀錄列表"""
     session = get_session()
@@ -96,7 +96,7 @@ async def get_changes(
 
 @router.get("/class-options")
 async def get_class_options(
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """從 Classroom 表動態取得班級名稱選項"""
     session = get_session()

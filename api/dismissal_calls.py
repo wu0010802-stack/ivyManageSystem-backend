@@ -14,7 +14,7 @@ from models.database import (
     get_session, Student, Classroom, User, Employee,
 )
 from models.dismissal import StudentDismissalCall
-from utils.auth import require_permission, get_current_user
+from utils.auth import require_staff_permission, get_current_user
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -187,7 +187,7 @@ def _db_create_dismissal_call(body: DismissalCallCreate, user_id: int) -> tuple[
 @router.post("", status_code=201)
 async def create_dismissal_call(
     body: DismissalCallCreate,
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """建立接送通知。同一學生若已有 pending/acknowledged 通知則拋 409。"""
     user_id = current_user.get("user_id")
@@ -217,7 +217,7 @@ def list_dismissal_calls(
     target_date: Optional[str] = Query(None, description="YYYY-MM-DD，預設今日"),
     status: Optional[str] = Query(None, description="pending/acknowledged/completed/cancelled"),
     classroom_id: Optional[int] = Query(None),
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """列出接送通知（預設今日）。"""
     session = get_session()
@@ -284,7 +284,7 @@ def _db_cancel_dismissal_call(call_id: int) -> tuple[dict, int]:
 @router.post("/{call_id}/cancel")
 async def cancel_dismissal_call(
     call_id: int,
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """取消接送通知（僅 pending/acknowledged 狀態可取消）。"""
     loop = asyncio.get_running_loop()

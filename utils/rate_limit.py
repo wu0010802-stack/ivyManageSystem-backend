@@ -1,6 +1,26 @@
 """
 In-process sliding-window rate limiter (per IP).
 適用單程序部署；若改用多程序/多機部署，應換成 Redis 版本。
+
+⚠️ 生產環境部署注意事項：
+──────────────────────────────────────────────────
+此限流器使用 Python dict 儲存於記憶體中，僅在單一 worker process 內有效。
+
+以下場景限流會失效：
+  1. 多 worker 部署（如 gunicorn -w 4）→ 每個 worker 有獨立計數器
+  2. 多機 / 多實例部署（如 K8s replicas > 1）→ 各實例無法共享狀態
+  3. 程序重啟後計數器歸零
+
+生產環境建議替代方案：
+  - 使用 Redis-backed 限流（如 slowapi + redis / 自行實作）
+  - 在反向代理層（Nginx / Cloudflare）設定 rate limiting
+  - 兩層搭配使用：Nginx 做粗粒度限流 + 應用層做細粒度限流
+
+目前此限流器適用於：
+  - 單機開發環境
+  - 單 worker 的小型部署
+  - 搭配反向代理限流的第二層防護
+──────────────────────────────────────────────────
 """
 
 import logging

@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.database import get_session, ActivitySupply
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 from ._shared import (
@@ -24,7 +24,7 @@ router = APIRouter()
 async def get_supplies(
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得用品列表（支援分頁）"""
     session = get_session()
@@ -48,7 +48,7 @@ async def get_supplies(
 @router.post("/supplies", status_code=201)
 async def create_supply(
     body: SupplyCreate,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """新增用品"""
     session = get_session()
@@ -77,7 +77,7 @@ async def create_supply(
 async def update_supply(
     supply_id: int,
     body: SupplyUpdate,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新用品"""
     session = get_session()
@@ -116,7 +116,7 @@ async def update_supply(
 @router.delete("/supplies/{supply_id}")
 async def delete_supply(
     supply_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """停用用品"""
     session = get_session()

@@ -12,7 +12,7 @@ from sqlalchemy import case, func, or_
 from models.base import session_scope
 from models.recruitment import RecruitmentIvykidsRecord, RecruitmentSyncState
 from services import recruitment_ivykids_sync as ivykids_sync_service
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def _apply_reporting_window(query):
 
 @router.get("/status")
 def get_recruitment_ivykids_backend_status(
-    _=Depends(require_permission(Permission.RECRUITMENT_READ)),
+    _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
     with session_scope() as session:
         return ivykids_sync_service.get_backend_sync_status(session)
@@ -87,7 +87,7 @@ def get_recruitment_ivykids_backend_status(
 @router.post("/sync")
 def sync_recruitment_ivykids_backend(
     payload: IvykidsBackendSyncPayload,
-    _=Depends(require_permission(Permission.RECRUITMENT_WRITE)),
+    _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
 ):
     with session_scope() as session:
         result = ivykids_sync_service.sync_backend_records(
@@ -110,7 +110,7 @@ def sync_recruitment_ivykids_backend(
 
 @router.delete("/records", status_code=200)
 def delete_recruitment_ivykids_backend_records(
-    _=Depends(require_permission(Permission.RECRUITMENT_WRITE)),
+    _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
 ):
     with session_scope() as session:
         deleted_records = session.query(RecruitmentIvykidsRecord).delete(synchronize_session=False)
@@ -129,7 +129,7 @@ def delete_recruitment_ivykids_backend_records(
 
 @router.get("/stats")
 def get_recruitment_ivykids_stats(
-    _=Depends(require_permission(Permission.RECRUITMENT_READ)),
+    _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
     dep_case = case((RecruitmentIvykidsRecord.has_deposit == True, 1), else_=0)
     enrolled_case = case((RecruitmentIvykidsRecord.enrolled == True, 1), else_=0)
@@ -199,7 +199,7 @@ def list_recruitment_ivykids_records(
     source: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _=Depends(require_permission(Permission.RECRUITMENT_READ)),
+    _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
     with session_scope() as session:
         query = _apply_reporting_window(session.query(RecruitmentIvykidsRecord))

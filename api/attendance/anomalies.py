@@ -20,7 +20,7 @@ from sqlalchemy import or_
 
 from models.database import get_session, Employee, Attendance
 from services.salary.utils import calc_daily_salary
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -186,7 +186,7 @@ def get_attendance_anomalies(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     status: str = Query("all", pattern="^(all|pending|confirmed)$"),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """查詢月份異常清單（所有員工）"""
     session = get_session()
@@ -207,7 +207,7 @@ def get_attendance_anomalies(
 @router.post("/anomalies/batch-confirm")
 def batch_confirm_anomalies(
     data: BatchConfirmRequest,
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
 ):
     """批次確認異常處理方式（管理員代確認）"""
     if data.action not in ("admin_accept", "admin_waive"):
@@ -250,7 +250,7 @@ def export_attendance_anomalies(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     status: str = Query("all", pattern="^(all|pending|confirmed)$"),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """匯出考勤異常 Excel"""
     session = get_session()

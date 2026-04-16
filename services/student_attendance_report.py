@@ -43,9 +43,13 @@ def _student_active_on(student: Student, target_date: date) -> bool:
     return True
 
 
-def build_attendance_summary(total_students: int, raw_status_counts: dict[str, int]) -> dict:
+def build_attendance_summary(
+    total_students: int, raw_status_counts: dict[str, int]
+) -> dict:
     """將學生出席狀態分佈轉成管理端/首頁共用摘要。"""
-    status_counts = Counter({status: raw_status_counts.get(status, 0) for status in VALID_STATUSES})
+    status_counts = Counter(
+        {status: raw_status_counts.get(status, 0) for status in VALID_STATUSES}
+    )
     recorded_count = sum(status_counts.values())
     on_campus_count = sum(status_counts[status] for status in ATTENDED_STATUSES)
     leave_count = status_counts["病假"] + status_counts["事假"]
@@ -62,8 +66,12 @@ def build_attendance_summary(total_students: int, raw_status_counts: dict[str, i
         "sick_leave_count": status_counts["病假"],
         "personal_leave_count": status_counts["事假"],
         "unmarked_count": unmarked_count,
-        "record_completion_rate": round((recorded_count / total_students) * 100, 1) if total_students else 0,
-        "attendance_rate": round((on_campus_count / total_students) * 100, 1) if total_students else 0,
+        "record_completion_rate": (
+            round((recorded_count / total_students) * 100, 1) if total_students else 0
+        ),
+        "attendance_rate": (
+            round((on_campus_count / total_students) * 100, 1) if total_students else 0
+        ),
     }
 
 
@@ -75,11 +83,29 @@ def _resolve_rollcall_status(recorded_count: int, student_count: int) -> str:
     return "complete"
 
 
-def build_daily_classroom_overview(session, target_date: date) -> dict:
-    """建立指定日期的各班出席總覽。"""
+def build_daily_classroom_overview(
+    session,
+    target_date: date,
+    *,
+    school_year: int | None = None,
+    semester: int | None = None,
+) -> dict:
+    """建立指定日期的各班出席總覽。
+    school_year / semester 不傳時根據 target_date 自動推算當前學期。
+    """
+    from utils.academic import resolve_academic_term_filters
+
+    resolved_year, resolved_semester = resolve_academic_term_filters(
+        school_year, semester
+    )
+
     classrooms = (
         session.query(Classroom)
-        .filter(Classroom.is_active == True)
+        .filter(
+            Classroom.is_active == True,
+            Classroom.school_year == resolved_year,
+            Classroom.semester == resolved_semester,
+        )
         .order_by(Classroom.name)
         .all()
     )
@@ -117,7 +143,9 @@ def build_daily_classroom_overview(session, target_date: date) -> dict:
             .all()
         )
 
-    user_ids = sorted({record.recorded_by for record in attendance_records if record.recorded_by})
+    user_ids = sorted(
+        {record.recorded_by for record in attendance_records if record.recorded_by}
+    )
     user_map = {}
     if user_ids:
         user_map = {
@@ -142,7 +170,9 @@ def build_daily_classroom_overview(session, target_date: date) -> dict:
         student_count = len(classroom_students.get(classroom.id, []))
         total_students += student_count
 
-        summary = build_attendance_summary(student_count, class_status_counts.get(classroom.id, {}))
+        summary = build_attendance_summary(
+            student_count, class_status_counts.get(classroom.id, {})
+        )
         latest_record = max(
             class_records.get(classroom.id, []),
             key=lambda record: record.updated_at or record.created_at,
@@ -151,27 +181,33 @@ def build_daily_classroom_overview(session, target_date: date) -> dict:
         last_recorded_at = None
         last_recorded_by = None
         if latest_record:
-            last_recorded_at = (latest_record.updated_at or latest_record.created_at).isoformat()
+            last_recorded_at = (
+                latest_record.updated_at or latest_record.created_at
+            ).isoformat()
             if latest_record.recorded_by:
                 last_recorded_by = user_map.get(latest_record.recorded_by)
 
-        classrooms_payload.append({
-            "classroom_id": classroom.id,
-            "classroom_name": classroom.name,
-            "student_count": student_count,
-            "recorded_count": summary["recorded_count"],
-            "on_campus_count": summary["on_campus_count"],
-            "present_count": summary["present_count"],
-            "late_count": summary["late_count"],
-            "absent_count": summary["absent_count"],
-            "leave_count": summary["leave_count"],
-            "unmarked_count": summary["unmarked_count"],
-            "record_completion_rate": summary["record_completion_rate"],
-            "attendance_rate": summary["attendance_rate"],
-            "last_recorded_at": last_recorded_at,
-            "last_recorded_by": last_recorded_by,
-            "rollcall_status": _resolve_rollcall_status(summary["recorded_count"], student_count),
-        })
+        classrooms_payload.append(
+            {
+                "classroom_id": classroom.id,
+                "classroom_name": classroom.name,
+                "student_count": student_count,
+                "recorded_count": summary["recorded_count"],
+                "on_campus_count": summary["on_campus_count"],
+                "present_count": summary["present_count"],
+                "late_count": summary["late_count"],
+                "absent_count": summary["absent_count"],
+                "leave_count": summary["leave_count"],
+                "unmarked_count": summary["unmarked_count"],
+                "record_completion_rate": summary["record_completion_rate"],
+                "attendance_rate": summary["attendance_rate"],
+                "last_recorded_at": last_recorded_at,
+                "last_recorded_by": last_recorded_by,
+                "rollcall_status": _resolve_rollcall_status(
+                    summary["recorded_count"], student_count
+                ),
+            }
+        )
 
     return {
         "date": target_date.isoformat(),
@@ -182,11 +218,7 @@ def build_daily_classroom_overview(session, target_date: date) -> dict:
 
 def _load_monthly_data(session, classroom_id: int, start_date: date, end_date: date):
     """從 DB 載入班級、學生、假日及出席紀錄，回傳 (classroom, students, holiday_map, record_map)。"""
-    classroom = (
-        session.query(Classroom)
-        .filter(Classroom.id == classroom_id)
-        .first()
-    )
+    classroom = session.query(Classroom).filter(Classroom.id == classroom_id).first()
     if not classroom:
         raise ValueError("班級不存在")
 
@@ -222,8 +254,7 @@ def _load_monthly_data(session, classroom_id: int, start_date: date, end_date: d
         )
 
     record_map = {
-        (record.student_id, record.date): record
-        for record in attendance_records
+        (record.student_id, record.date): record for record in attendance_records
     }
     return classroom, students, holiday_map, record_map
 
@@ -237,21 +268,29 @@ def _build_calendar_days(start_date: date, end_date: date, holiday_map: dict):
         is_weekend = weekday >= 5
         holiday_name = holiday_map.get(current_date)
         is_school_day = (not is_weekend) and (holiday_name is None)
-        calendar_days.append({
-            "date": current_date.isoformat(),
-            "day": current_date.day,
-            "weekday": WEEKDAY_LABELS[weekday],
-            "is_weekend": is_weekend,
-            "is_holiday": holiday_name is not None,
-            "holiday_name": holiday_name,
-            "is_school_day": is_school_day,
-        })
+        calendar_days.append(
+            {
+                "date": current_date.isoformat(),
+                "day": current_date.day,
+                "weekday": WEEKDAY_LABELS[weekday],
+                "is_weekend": is_weekend,
+                "is_holiday": holiday_name is not None,
+                "holiday_name": holiday_name,
+                "is_school_day": is_school_day,
+            }
+        )
         if is_school_day:
             school_days.append(current_date)
     return calendar_days, school_days
 
 
-def _compute_student_monthly_stats(student, calendar_days: list, school_days: list, record_map: dict, classroom_status_totals: dict):
+def _compute_student_monthly_stats(
+    student,
+    calendar_days: list,
+    school_days: list,
+    record_map: dict,
+    classroom_status_totals: dict,
+):
     """計算單一學生的月出席統計，同時累加 classroom_status_totals（就地修改）。
     回傳 (student_row, attended_days, school_day_count, recorded_days)。
     """
@@ -266,7 +305,9 @@ def _compute_student_monthly_stats(student, calendar_days: list, school_days: li
         current_date = date.fromisoformat(day_meta["date"])
         record = record_map.get((student.id, current_date))
         status = record.status if record else None
-        is_active_school_day = day_meta["is_school_day"] and _student_active_on(student, current_date)
+        is_active_school_day = day_meta["is_school_day"] and _student_active_on(
+            student, current_date
+        )
 
         if is_active_school_day and status in counts:
             counts[status] += 1
@@ -276,24 +317,32 @@ def _compute_student_monthly_stats(student, calendar_days: list, school_days: li
         if is_active_school_day:
             if status == ABSENCE_STATUS:
                 current_absence_streak += 1
-                longest_absence_streak = max(longest_absence_streak, current_absence_streak)
+                longest_absence_streak = max(
+                    longest_absence_streak, current_absence_streak
+                )
             else:
                 current_absence_streak = 0
         else:
             current_absence_streak = 0
 
-        student_calendar_records.append({
-            "date": day_meta["date"],
-            "status": status,
-            "remark": record.remark if record else None,
-            "is_school_day": is_active_school_day,
-        })
+        student_calendar_records.append(
+            {
+                "date": day_meta["date"],
+                "status": status,
+                "remark": record.remark if record else None,
+                "is_school_day": is_active_school_day,
+            }
+        )
 
     school_day_count = len(applicable_school_days)
     attended_days = counts["出席"] + counts["遲到"]
     unmarked_days = max(school_day_count - recorded_days, 0)
-    attendance_rate = round((attended_days / school_day_count) * 100, 1) if school_day_count else 0.0
-    completion_rate = round((recorded_days / school_day_count) * 100, 1) if school_day_count else 0.0
+    attendance_rate = (
+        round((attended_days / school_day_count) * 100, 1) if school_day_count else 0.0
+    )
+    completion_rate = (
+        round((recorded_days / school_day_count) * 100, 1) if school_day_count else 0.0
+    )
 
     student_row = {
         "student_id": student.id,
@@ -317,7 +366,9 @@ def _compute_student_monthly_stats(student, calendar_days: list, school_days: li
     return student_row, attended_days, school_day_count, recorded_days
 
 
-def _compute_monthly_attendance_report(session, classroom_id: int, year: int, month: int) -> dict:
+def _compute_monthly_attendance_report(
+    session, classroom_id: int, year: int, month: int
+) -> dict:
     start_date, end_date = _month_bounds(year, month)
 
     classroom, students, holiday_map, record_map = _load_monthly_data(
@@ -333,17 +384,21 @@ def _compute_monthly_attendance_report(session, classroom_id: int, year: int, mo
     student_rows = []
 
     for student in students:
-        student_row, attended_days, school_day_count, recorded_days = _compute_student_monthly_stats(
-            student, calendar_days, school_days, record_map, classroom_status_totals
+        student_row, attended_days, school_day_count, recorded_days = (
+            _compute_student_monthly_stats(
+                student, calendar_days, school_days, record_map, classroom_status_totals
+            )
         )
         if student_row["absence_alert"]:
-            flagged_students.append({
-                "student_id": student.id,
-                "student_no": student.student_id,
-                "name": student.name,
-                "longest_absence_streak": student_row["longest_absence_streak"],
-                "current_absence_streak": student_row["current_absence_streak"],
-            })
+            flagged_students.append(
+                {
+                    "student_id": student.id,
+                    "student_no": student.student_id,
+                    "name": student.name,
+                    "longest_absence_streak": student_row["longest_absence_streak"],
+                    "current_absence_streak": student_row["current_absence_streak"],
+                }
+            )
         total_student_school_days += school_day_count
         total_attended_days += attended_days
         total_recorded_days += recorded_days
@@ -395,7 +450,9 @@ def build_monthly_attendance_report(
             "month": month,
         },
         force_refresh=force_refresh,
-        builder=lambda: _compute_monthly_attendance_report(session, classroom_id, year, month),
+        builder=lambda: _compute_monthly_attendance_report(
+            session, classroom_id, year, month
+        ),
     )
 
 

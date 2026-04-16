@@ -19,7 +19,7 @@ from cachetools import TTLCache
 from sqlalchemy.orm import joinedload
 
 from models.database import get_session, ShiftType, ShiftAssignment, Employee, DailyShift, ShiftSwapRequest
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.excel_utils import xlsx_streaming_response
@@ -125,7 +125,7 @@ class DailyShiftCreate(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/types")
-def list_shift_types(current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def list_shift_types(current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     session = get_session()
     try:
         return _get_all_shift_types_cached(session)
@@ -134,7 +134,7 @@ def list_shift_types(current_user: dict = Depends(require_permission(Permission.
 
 
 @router.post("/types", status_code=201)
-def create_shift_type(data: ShiftTypeCreate, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def create_shift_type(data: ShiftTypeCreate, current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     session = get_session()
     try:
         st = ShiftType(
@@ -157,7 +157,7 @@ def create_shift_type(data: ShiftTypeCreate, current_user: dict = Depends(requir
 
 
 @router.put("/types/{type_id}")
-def update_shift_type(type_id: int, data: ShiftTypeUpdate, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def update_shift_type(type_id: int, data: ShiftTypeUpdate, current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     session = get_session()
     try:
         st = session.query(ShiftType).get(type_id)
@@ -193,7 +193,7 @@ def _shift_type_in_use_message(assignment_count: int, daily_count: int, swap_cou
 
 
 @router.delete("/types/{type_id}")
-def delete_shift_type(type_id: int, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def delete_shift_type(type_id: int, current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     session = get_session()
     try:
         st = session.query(ShiftType).get(type_id)
@@ -234,7 +234,7 @@ def delete_shift_type(type_id: int, current_user: dict = Depends(require_permiss
 # ---------------------------------------------------------------------------
 
 @router.get("/assignments")
-def get_assignments(week_start: str, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def get_assignments(week_start: str, current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     """查詢某週排班。week_start 為該週週一日期 (YYYY-MM-DD)"""
     session = get_session()
     try:
@@ -296,7 +296,7 @@ def _apply_employee_assignment_action(session, existing, item, week_date: str) -
 
 
 @router.post("/assignments", status_code=201)
-def save_assignments(data: BulkAssignmentRequest, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def save_assignments(data: BulkAssignmentRequest, current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     """批次儲存某週排班（per-employee upsert，不影響清單外的員工）"""
     session = get_session()
     try:
@@ -364,7 +364,7 @@ def get_daily_shifts(
     start_date: str,
     end_date: str,
     employee_id: Optional[int] = None,
-    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+    current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
 ):
     """查詢日期範圍內的排班調動/每日排班"""
     session = get_session()
@@ -406,7 +406,7 @@ def get_daily_shifts(
 
 
 @router.post("/daily", status_code=201)
-def upsert_daily_shift(data: DailyShiftCreate, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def upsert_daily_shift(data: DailyShiftCreate, current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     """新增或更新每日排班（支援 UPSERT）"""
     session = get_session()
     try:
@@ -444,7 +444,7 @@ def upsert_daily_shift(data: DailyShiftCreate, current_user: dict = Depends(requ
 
 
 @router.delete("/daily/{shift_id}")
-def delete_daily_shift(shift_id: int, current_user: dict = Depends(require_permission(Permission.SCHEDULE))):
+def delete_daily_shift(shift_id: int, current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE))):
     """刪除每日排班（恢復為週排班或預設）"""
     session = get_session()
     try:
@@ -473,7 +473,7 @@ def get_swap_history(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     status: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+    current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
 ):
     """查看換班歷史（管理端）"""
     session = get_session()
@@ -540,7 +540,7 @@ def _sh_write_header(ws, row, headers):
 
 @router.get("/import-template")
 def get_shift_import_template(
-    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+    current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
 ):
     """下載排班批次匯入 Excel 範本"""
     session = get_session()
@@ -587,7 +587,7 @@ def get_shift_import_template(
 async def import_shifts(
     file: UploadFile = File(...),
     week_start: str = Query(..., description="週起始日 YYYY-MM-DD（週一）"),
-    current_user: dict = Depends(require_permission(Permission.SCHEDULE)),
+    current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
 ):
     """批次匯入排班（覆蓋指定週的排班，per-employee upsert）"""
     content = await read_upload_with_size_check(file)

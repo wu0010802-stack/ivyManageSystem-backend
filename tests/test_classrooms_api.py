@@ -94,7 +94,7 @@ class TestClassroomsApi:
         monkeypatch.setattr(
             classrooms_module,
             "resolve_current_academic_term",
-            lambda target_date=None: (2025, 2),
+            lambda target_date=None: (114, 2),
         )
 
         login_res = _login(client, "classroom_term_admin")
@@ -112,7 +112,7 @@ class TestClassroomsApi:
 
         detail_res = client.get(f"/api/classrooms/{res.json()['id']}")
         assert detail_res.status_code == 200
-        assert detail_res.json()["school_year"] == 2025
+        assert detail_res.json()["school_year"] == 114
         assert detail_res.json()["semester"] == 2
         assert "下學期" in detail_res.json()["semester_label"]
 
@@ -130,7 +130,7 @@ class TestClassroomsApi:
             json={
                 "name": "彩虹班",
                 "capacity": 20,
-                "school_year": 2025,
+                "school_year": 114,
                 "semester": 1,
             },
         )
@@ -141,7 +141,7 @@ class TestClassroomsApi:
             json={
                 "name": "彩虹班",
                 "capacity": 20,
-                "school_year": 2025,
+                "school_year": 114,
                 "semester": 2,
             },
         )
@@ -152,7 +152,7 @@ class TestClassroomsApi:
             json={
                 "name": "彩虹班",
                 "capacity": 20,
-                "school_year": 2025,
+                "school_year": 114,
                 "semester": 2,
             },
         )
@@ -163,12 +163,12 @@ class TestClassroomsApi:
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_term_filter")
-            first_term = Classroom(name="海豚班", capacity=20, school_year=2025, semester=1, is_active=True)
-            second_term = Classroom(name="海豚班", capacity=20, school_year=2025, semester=2, is_active=True)
+            first_term = Classroom(name="海豚班", capacity=20, school_year=114, semester=1, is_active=True)
+            second_term = Classroom(name="海豚班", capacity=20, school_year=114, semester=2, is_active=True)
             session.add_all([
                 first_term,
                 second_term,
-                Classroom(name="星星班", capacity=20, school_year=2024, semester=2, is_active=True),
+                Classroom(name="星星班", capacity=20, school_year=113, semester=2, is_active=True),
             ])
             session.flush()
             session.add_all([
@@ -183,12 +183,12 @@ class TestClassroomsApi:
         login_res = _login(client, "classroom_term_filter")
         assert login_res.status_code == 200
 
-        res = client.get("/api/classrooms", params={"school_year": 2025, "semester": 2})
+        res = client.get("/api/classrooms", params={"school_year": 114, "semester": 2})
 
         assert res.status_code == 200
         names = [item["name"] for item in res.json()]
         assert names == ["海豚班"]
-        assert res.json()[0]["semester_label"] == "2025學年度下學期"
+        assert res.json()[0]["semester_label"] == "114學年度下學期"
         assert res.json()[0]["current_count"] == 4
         assert [student["name"] for student in res.json()[0]["student_preview"]] == ["小安", "小寶", "小晴"]
         assert res.json()[0]["has_more_students"] is True
@@ -208,7 +208,7 @@ class TestClassroomsApi:
                     grade_id=grade.id,
                     capacity=22,
                     head_teacher_id=teacher.id,
-                    school_year=2025,
+                    school_year=114,
                     semester=1,
                     is_active=True,
                 ),
@@ -218,7 +218,7 @@ class TestClassroomsApi:
                     grade_id=grade.id,
                     capacity=20,
                     head_teacher_id=teacher.id,
-                    school_year=2025,
+                    school_year=114,
                     semester=1,
                     is_active=True,
                 ),
@@ -231,9 +231,9 @@ class TestClassroomsApi:
         clone_res = client.post(
             "/api/classrooms/clone-term",
             json={
-                "source_school_year": 2025,
+                "source_school_year": 114,
                 "source_semester": 1,
-                "target_school_year": 2025,
+                "target_school_year": 114,
                 "target_semester": 2,
                 "copy_teachers": True,
             },
@@ -242,7 +242,7 @@ class TestClassroomsApi:
         assert clone_res.status_code == 201
         assert clone_res.json()["created_count"] == 2
 
-        target_res = client.get("/api/classrooms", params={"school_year": 2025, "semester": 2})
+        target_res = client.get("/api/classrooms", params={"school_year": 114, "semester": 2})
         assert target_res.status_code == 200
         assert {item["name"] for item in target_res.json()} == {"海豚班", "星星班"}
         assert all(item["semester"] == 2 for item in target_res.json())
@@ -252,8 +252,8 @@ class TestClassroomsApi:
         with session_factory() as session:
             _create_user(session, "classroom_clone_conflict")
             session.add_all([
-                Classroom(name="海豚班", capacity=20, school_year=2025, semester=1, is_active=True),
-                Classroom(name="海豚班", capacity=20, school_year=2025, semester=2, is_active=True),
+                Classroom(name="海豚班", capacity=20, school_year=114, semester=1, is_active=True),
+                Classroom(name="海豚班", capacity=20, school_year=114, semester=2, is_active=True),
             ])
             session.commit()
 
@@ -263,9 +263,9 @@ class TestClassroomsApi:
         clone_res = client.post(
             "/api/classrooms/clone-term",
             json={
-                "source_school_year": 2025,
+                "source_school_year": 114,
                 "source_semester": 1,
-                "target_school_year": 2025,
+                "target_school_year": 114,
                 "target_semester": 2,
                 "copy_teachers": False,
             },
@@ -292,7 +292,7 @@ class TestClassroomsApi:
                 capacity=25,
                 head_teacher_id=teacher_a.id,
                 assistant_teacher_id=teacher_b.id,
-                school_year=2025,
+                school_year=114,
                 semester=2,
                 is_active=True,
             )
@@ -312,9 +312,9 @@ class TestClassroomsApi:
         promote_res = client.post(
             "/api/classrooms/promote-academic-year",
             json={
-                "source_school_year": 2025,
+                "source_school_year": 114,
                 "source_semester": 2,
-                "target_school_year": 2026,
+                "target_school_year": 115,
                 "target_semester": 1,
                 "classrooms": [
                     {
@@ -330,7 +330,7 @@ class TestClassroomsApi:
         assert promote_res.json()["created_count"] == 1
         assert promote_res.json()["moved_student_count"] == 2
 
-        target_res = client.get("/api/classrooms", params={"school_year": 2026, "semester": 1})
+        target_res = client.get("/api/classrooms", params={"school_year": 115, "semester": 1})
         assert target_res.status_code == 200
         assert target_res.json()[0]["name"] == "海洋探索班"
         assert target_res.json()[0]["grade_id"] == target_grade_id
@@ -356,7 +356,7 @@ class TestClassroomsApi:
                 name="薔薇班",
                 grade_id=grade_big.id,
                 capacity=20,
-                school_year=2025,
+                school_year=114,
                 semester=1,
                 is_active=True,
             )
@@ -372,9 +372,9 @@ class TestClassroomsApi:
         promote_res = client.post(
             "/api/classrooms/promote-academic-year",
             json={
-                "source_school_year": 2025,
+                "source_school_year": 114,
                 "source_semester": 1,
-                "target_school_year": 2025,
+                "target_school_year": 114,
                 "target_semester": 2,
                 "classrooms": [
                     {
@@ -389,7 +389,7 @@ class TestClassroomsApi:
         assert promote_res.json()["created_count"] == 1
         assert promote_res.json()["graduated_count"] == 0
 
-        target_res = client.get("/api/classrooms", params={"school_year": 2025, "semester": 2})
+        target_res = client.get("/api/classrooms", params={"school_year": 114, "semester": 2})
         assert target_res.status_code == 200
         assert target_res.json()[0]["grade_name"] == "大班"
 
@@ -404,7 +404,7 @@ class TestClassroomsApi:
                 name="星星班",
                 grade_id=grade.id,
                 capacity=20,
-                school_year=2025,
+                school_year=114,
                 semester=2,
                 is_active=True,
             )
@@ -423,9 +423,9 @@ class TestClassroomsApi:
         promote_res = client.post(
             "/api/classrooms/promote-academic-year",
             json={
-                "source_school_year": 2025,
+                "source_school_year": 114,
                 "source_semester": 2,
-                "target_school_year": 2026,
+                "target_school_year": 115,
                 "target_semester": 1,
                 "classrooms": [
                     {
@@ -439,7 +439,7 @@ class TestClassroomsApi:
         assert promote_res.json()["created_count"] == 0
         assert promote_res.json()["graduated_count"] == 2
 
-        target_res = client.get("/api/classrooms", params={"school_year": 2026, "semester": 1})
+        target_res = client.get("/api/classrooms", params={"school_year": 115, "semester": 1})
         assert target_res.status_code == 200
         assert target_res.json() == []
 
@@ -465,7 +465,7 @@ class TestClassroomsApi:
                 grade_id=grade_small.id,
                 capacity=25,
                 head_teacher_id=teacher.id,
-                school_year=2025,
+                school_year=114,
                 semester=2,
                 is_active=True,
             )
@@ -474,7 +474,7 @@ class TestClassroomsApi:
                 class_code="OLD-01",
                 grade_id=grade_middle.id,
                 capacity=10,
-                school_year=2026,
+                school_year=115,
                 semester=1,
                 is_active=False,
             )
@@ -492,9 +492,9 @@ class TestClassroomsApi:
         promote_res = client.post(
             "/api/classrooms/promote-academic-year",
             json={
-                "source_school_year": 2025,
+                "source_school_year": 114,
                 "source_semester": 2,
-                "target_school_year": 2026,
+                "target_school_year": 115,
                 "target_semester": 1,
                 "classrooms": [
                     {

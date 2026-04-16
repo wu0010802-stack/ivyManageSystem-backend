@@ -13,7 +13,7 @@ from sqlalchemy import outerjoin, func, case
 from models.base import session_scope
 from models.classroom import Classroom, Student
 from models.fees import FeeItem, StudentFeeRecord
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def _apply_fee_record_filters(
 def list_fee_items(
     period: Optional[str] = Query(None),
     is_active: Optional[bool] = Query(None),
-    _: None = Depends(require_permission(Permission.FEES_READ)),
+    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
     """取得費用項目清單（JOIN classroom，一次查詢）"""
     with session_scope() as session:
@@ -115,7 +115,7 @@ def list_fee_items(
 
 @router.get("/periods")
 def list_fee_periods(
-    _: None = Depends(require_permission(Permission.FEES_READ)),
+    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
     """取得所有已建立的學期列表（供前端下拉選單使用）"""
     with session_scope() as session:
@@ -131,7 +131,7 @@ def list_fee_periods(
 @router.post("/items", status_code=201)
 def create_fee_item(
     payload: FeeItemCreate,
-    _: None = Depends(require_permission(Permission.FEES_WRITE)),
+    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """新增費用項目"""
     with session_scope() as session:
@@ -159,7 +159,7 @@ def create_fee_item(
 def update_fee_item(
     item_id: int,
     payload: FeeItemUpdate,
-    _: None = Depends(require_permission(Permission.FEES_WRITE)),
+    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """更新費用項目"""
     with session_scope() as session:
@@ -190,7 +190,7 @@ def update_fee_item(
 @router.delete("/items/{item_id}")
 def delete_fee_item(
     item_id: int,
-    _: None = Depends(require_permission(Permission.FEES_WRITE)),
+    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """刪除費用項目（若有關聯記錄則拒絕）"""
     with session_scope() as session:
@@ -221,7 +221,7 @@ def delete_fee_item(
 @router.post("/generate")
 def generate_fee_records(
     payload: GenerateRequest,
-    _: None = Depends(require_permission(Permission.FEES_WRITE)),
+    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """批次為指定班級或全校的在校學生產生費用記錄"""
     with session_scope() as session:
@@ -299,7 +299,7 @@ def list_fee_records(
     student_name: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _: None = Depends(require_permission(Permission.FEES_READ)),
+    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
     """查詢費用記錄（支援分頁）"""
     with session_scope() as session:
@@ -352,7 +352,7 @@ def list_fee_records(
 def pay_fee_record(
     record_id: int,
     payload: PayRequest,
-    _: None = Depends(require_permission(Permission.FEES_WRITE)),
+    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """登記繳費"""
     with session_scope() as session:
@@ -389,7 +389,7 @@ def fee_summary(
     status: Optional[str] = Query(None, pattern="^(unpaid|partial|paid)$"),
     fee_item_id: Optional[int] = Query(None),
     student_name: Optional[str] = Query(None),
-    _: None = Depends(require_permission(Permission.FEES_READ)),
+    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
     """統計摘要：總應繳金額、已繳、未繳人數/金額"""
     with session_scope() as session:

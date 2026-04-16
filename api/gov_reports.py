@@ -21,7 +21,7 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from sqlalchemy import or_, and_
 
 from models.database import get_session, Employee, SalaryRecord
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
 from utils.excel_utils import xlsx_streaming_response
@@ -181,7 +181,7 @@ def export_labor_insurance(
     fmt: str = Query("xlsx", description="xlsx（Excel）或 txt（純文字）"),
     employer_name: str = Query("（請填入投保單位名稱）", description="投保單位名稱"),
     employer_code: str = Query("（請填入投保單位代號）", description="投保單位代號"),
-    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
     """勞工保險月份投保薪資申報清單（Excel 或 TXT）"""
@@ -316,7 +316,7 @@ def export_health_insurance(
     month: int = Query(..., ge=1, le=12),
     employer_name: str = Query("（請填入投保單位名稱）"),
     employer_code: str = Query("（請填入投保單位代號）"),
-    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
     """全民健康保險被保險人名冊（Excel）"""
@@ -434,7 +434,7 @@ def export_withholding(
     year: int = Query(..., ge=2000, le=2100),
     employer_name: str = Query("（請填入扣繳義務人名稱）"),
     employer_id: str = Query("（請填入統一編號）"),
-    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
     """國稅局年度薪資所得扣繳憑單（所得類別50，Excel）"""
@@ -542,7 +542,7 @@ def export_pension(
     month: int = Query(..., ge=1, le=12),
     employer_name: str = Query("（請填入雇主名稱）"),
     employer_code: str = Query("（請填入雇主代號）"),
-    current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
     """勞工退休金月提繳明細（Excel）"""

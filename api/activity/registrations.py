@@ -22,7 +22,7 @@ from models.database import (
     ActivitySupply,
 )
 from services.activity_service import activity_service
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
 
@@ -51,7 +51,7 @@ _export_limiter = SlidingWindowLimiter(
 @router.put("/registrations/batch-payment")
 async def batch_update_payment(
     body: BatchPaymentUpdate,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """批次標記付款狀態（使用 GROUP BY 避免 N+1 查詢）"""
     session = get_session()
@@ -135,7 +135,7 @@ async def export_registrations(
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """匯出報名名單為 Excel"""
     import openpyxl
@@ -203,7 +203,7 @@ async def export_payment_report(
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
     _: None = Depends(_export_limiter),
 ):
     """匯出繳費帳務報表（兩個工作表：繳費總覽 + 繳費明細）"""
@@ -347,7 +347,7 @@ async def get_registrations(
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得報名列表（分頁、搜尋、付款狀態、課程、班級篩選）"""
     session = get_session()
@@ -440,7 +440,7 @@ async def get_registrations(
 @router.get("/registrations/{registration_id}")
 async def get_registration_detail(
     registration_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得報名詳情（含課程/用品/修改紀錄）"""
     session = get_session()
@@ -527,7 +527,7 @@ async def get_registration_detail(
 async def update_payment(
     registration_id: int,
     body: PaymentUpdate,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新付款狀態"""
     session = get_session()
@@ -587,7 +587,7 @@ async def update_payment(
 async def update_remark(
     registration_id: int,
     body: RemarkUpdate,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新備註"""
     session = get_session()
@@ -619,7 +619,7 @@ async def update_remark(
 @router.get("/registrations/{registration_id}/payments")
 async def get_registration_payments(
     registration_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得報名的繳費／退費明細記錄"""
     session = get_session()
@@ -665,7 +665,7 @@ async def get_registration_payments(
 async def add_registration_payment(
     registration_id: int,
     body: AddPaymentRequest,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """新增繳費或退費記錄"""
     session = get_session()
@@ -724,7 +724,7 @@ async def add_registration_payment(
 async def delete_registration_payment(
     registration_id: int,
     payment_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """刪除繳費記錄（更正用），自動重新計算已繳金額"""
     session = get_session()
@@ -785,7 +785,7 @@ async def promote_waitlist(
     registration_id: int,
     background_tasks: BackgroundTasks,
     course_id: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """將候補升為正式報名"""
     session = get_session()
@@ -820,7 +820,7 @@ async def promote_waitlist(
 async def withdraw_course(
     registration_id: int,
     course_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """退出單一課程（含候補），若為正式報名則自動升位候補"""
     session = get_session()
@@ -879,7 +879,7 @@ async def withdraw_course(
 @router.delete("/registrations/{registration_id}")
 async def delete_registration(
     registration_id: int,
-    current_user: dict = Depends(require_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """軟刪除報名"""
     session = get_session()

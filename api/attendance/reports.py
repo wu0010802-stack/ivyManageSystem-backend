@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import case, func, or_
 
 from models.database import get_session, Employee, Attendance, LeaveRecord, OvertimeRecord
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.permissions import Permission
 from ._shared import LEAVE_TYPE_LABELS
@@ -25,7 +25,7 @@ router = APIRouter()
 
 @router.get("/today")
 async def get_today_attendance_summary(
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得今日出勤即時狀態"""
     session = get_session()
@@ -63,7 +63,7 @@ async def get_today_attendance_summary(
 async def get_attendance_summary(
     year: int = Query(...),
     month: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得考勤統計摘要"""
     session = get_session()
@@ -125,7 +125,7 @@ async def get_attendance_summary(
 
 @router.get("/today-anomalies")
 async def get_today_anomalies(
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """今日打卡異常員工清單"""
     session = get_session()
@@ -174,7 +174,7 @@ async def get_today_anomalies(
 
 
 @router.get("/anomaly-report")
-async def download_anomaly_report(current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ))):
+async def download_anomaly_report(current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ))):
     """下載異常清單"""
     file_path = "output/anomaly_report.xlsx"
     if not os.path.exists(file_path):
@@ -187,7 +187,7 @@ def get_attendance_calendar(
     employee_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(...),
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得員工月出勤日曆資料"""
     session = get_session()

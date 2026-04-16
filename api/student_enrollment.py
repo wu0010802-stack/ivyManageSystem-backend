@@ -14,7 +14,7 @@ from sqlalchemy.orm import aliased
 from models.base import session_scope
 from models.classroom import Classroom, ClassGrade, Student
 from models.database import Employee
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.academic import resolve_academic_term_filters
 
@@ -71,7 +71,7 @@ class TermOption(BaseModel):
 def get_enrollment_stats(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None),
-    _: None = Depends(require_permission(Permission.STUDENTS_READ)),
+    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得指定學年學期的在籍學生統計，未提供則自動使用當前學期。"""
     school_year, semester = resolve_academic_term_filters(school_year, semester)
@@ -203,7 +203,7 @@ class RosterResponse(BaseModel):
 def get_enrollment_roster(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None),
-    _: None = Depends(require_permission(Permission.STUDENTS_READ)),
+    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得花名冊格式的在籍記錄，含每班學生姓名、教師、員工名單。"""
     school_year, semester = resolve_academic_term_filters(school_year, semester)
@@ -339,7 +339,7 @@ def get_enrollment_roster(
 
 @router.get("/student-enrollment/options", response_model=list[TermOption])
 def get_enrollment_options(
-    _: None = Depends(require_permission(Permission.STUDENTS_READ)),
+    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得所有可用的學年/學期組合（用於前端篩選下拉）。"""
     with session_scope() as session:

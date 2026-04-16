@@ -16,7 +16,7 @@ from sqlalchemy import func, or_
 from models.database import get_session, Student, Classroom, StudentClassroomTransfer
 from models.dismissal import StudentDismissalCall
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
 
@@ -29,38 +29,48 @@ def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
     必須在 session.commit() 前呼叫（需要 student.name 還在 session 中）。
     回傳每筆被取消通知的 WS 廣播 payload，供呼叫端 commit 後廣播。
     """
-    calls = session.query(StudentDismissalCall).filter(
-        StudentDismissalCall.student_id == student.id,
-        StudentDismissalCall.status.in_(["pending", "acknowledged"]),
-    ).all()
+    calls = (
+        session.query(StudentDismissalCall)
+        .filter(
+            StudentDismissalCall.student_id == student.id,
+            StudentDismissalCall.status.in_(["pending", "acknowledged"]),
+        )
+        .all()
+    )
 
     broadcasts = []
     for call in calls:
         call.status = "cancelled"
-        broadcasts.append({
-            "classroom_id": call.classroom_id,
-            "event": {
-                "type": "dismissal_call_cancelled",
-                "payload": {
-                    "id": call.id,
-                    "student_id": call.student_id,
-                    "student_name": student.name,
-                    "classroom_id": call.classroom_id,
-                    "status": "cancelled",
-                    "requested_at": call.requested_at.isoformat(),
+        broadcasts.append(
+            {
+                "classroom_id": call.classroom_id,
+                "event": {
+                    "type": "dismissal_call_cancelled",
+                    "payload": {
+                        "id": call.id,
+                        "student_id": call.student_id,
+                        "student_name": student.name,
+                        "classroom_id": call.classroom_id,
+                        "status": "cancelled",
+                        "requested_at": call.requested_at.isoformat(),
+                    },
                 },
-            },
-        })
+            }
+        )
 
     if broadcasts:
         logger.warning(
             "學生刪除/離園：自動取消 %d 筆進行中接送通知，student_id=%s name=%s",
-            len(broadcasts), student.id, student.name,
+            len(broadcasts),
+            student.id,
+            student.name,
         )
     return broadcasts
 
 
-def get_classroom_student_ids_at_date(session, classroom_id: int, at_date: date) -> list[int]:
+def get_classroom_student_ids_at_date(
+    session, classroom_id: int, at_date: date
+) -> list[int]:
     """回傳在 at_date 當天歸屬於 classroom_id 的學生 ID 列表。
 
     查詢邏輯：
@@ -122,6 +132,7 @@ router = APIRouter(prefix="/api", tags=["students"])
 
 # ============ Pydantic Models ============
 
+
 class StudentCreate(BaseModel):
     student_id: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=50)
@@ -150,12 +161,42 @@ class StudentCreate(BaseModel):
             raise ValueError("學號不可為空")
         return v
 
+    @field_validator(
+        "birthday",
+        "enrollment_date",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_date_as_none(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
+
+    @field_validator(
+        "gender",
+        "parent_name",
+        "address",
+        "notes",
+        "status_tag",
+        "allergy",
+        "medication",
+        "special_needs",
+        "emergency_contact_name",
+        "emergency_contact_relation",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_as_none(cls, v):
+        if v == "":
+            return None
+        return v
+
     @field_validator("parent_phone", "emergency_contact_phone", mode="before")
     @classmethod
     def validate_phone(cls, v):
         if v is None or v == "":
-            return v
-        if not re.match(r'^[\d\-\+\(\)\s]{7,20}$', v):
+            return None
+        if not re.match(r"^[\d\-\+\(\)\s]{7,20}$", v):
             raise ValueError("電話格式不正確（僅允許數字、-、+、()、空格，長度 7-20）")
         return v
 
@@ -190,19 +231,49 @@ class StudentUpdate(BaseModel):
             raise ValueError("學號不可為空")
         return v
 
+    @field_validator(
+        "birthday",
+        "enrollment_date",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_date_as_none(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
+
+    @field_validator(
+        "gender",
+        "parent_name",
+        "address",
+        "notes",
+        "status_tag",
+        "allergy",
+        "medication",
+        "special_needs",
+        "emergency_contact_name",
+        "emergency_contact_relation",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_as_none(cls, v):
+        if v == "":
+            return None
+        return v
+
     @field_validator("parent_phone", "emergency_contact_phone", mode="before")
     @classmethod
     def validate_phone(cls, v):
         if v is None or v == "":
-            return v
-        if not re.match(r'^[\d\-\+\(\)\s]{7,20}$', v):
+            return None
+        if not re.match(r"^[\d\-\+\(\)\s]{7,20}$", v):
             raise ValueError("電話格式不正確（僅允許數字、-、+、()、空格，長度 7-20）")
         return v
 
 
 class StudentGraduate(BaseModel):
     graduation_date: str
-    status: Literal['已畢業', '已轉出']
+    status: Literal["已畢業", "已轉出"]
 
 
 class StudentBulkTransfer(BaseModel):
@@ -212,16 +283,17 @@ class StudentBulkTransfer(BaseModel):
 
 # ============ Routes ============
 
+
 @router.get("/students")
 async def get_students(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     classroom_id: Optional[int] = None,
-    school_year: Optional[int] = Query(None, ge=2020, le=2100),
+    school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     search: Optional[str] = None,
     is_active: Optional[bool] = Query(True),
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得學生列表（分頁）。is_active=true 為在讀，is_active=false 為已離園"""
     session = get_session()
@@ -230,7 +302,9 @@ async def get_students(
 
         # 只有明確指定學年/學期時才套用學期過濾，避免預設行為隱性遮蔽資料
         if school_year is not None or semester is not None:
-            resolved_school_year, resolved_semester = resolve_academic_term_filters(school_year, semester)
+            resolved_school_year, resolved_semester = resolve_academic_term_filters(
+                school_year, semester
+            )
             q = q.outerjoin(
                 Classroom,
                 Student.classroom_id == Classroom.id,
@@ -249,7 +323,9 @@ async def get_students(
         if search:
             like = f"%{search}%"
             q = q.filter(
-                (Student.name.ilike(like)) | (Student.student_id.ilike(like)) | (Student.parent_name.ilike(like))
+                (Student.name.ilike(like))
+                | (Student.student_id.ilike(like))
+                | (Student.parent_name.ilike(like))
             )
 
         total = q.count()
@@ -257,35 +333,44 @@ async def get_students(
 
         items = []
         for s in students:
-            items.append({
-                "id": s.id,
-                "student_id": s.student_id,
-                "name": s.name,
-                "gender": s.gender,
-                "birthday": s.birthday.isoformat() if s.birthday else None,
-                "classroom_id": s.classroom_id,
-                "enrollment_date": s.enrollment_date.isoformat() if s.enrollment_date else None,
-                "graduation_date": s.graduation_date.isoformat() if s.graduation_date else None,
-                "status": s.status,
-                "parent_name": s.parent_name,
-                "parent_phone": s.parent_phone,
-                "address": s.address,
-                "status_tag": s.status_tag,
-                "allergy": s.allergy,
-                "medication": s.medication,
-                "special_needs": s.special_needs,
-                "emergency_contact_name": s.emergency_contact_name,
-                "emergency_contact_phone": s.emergency_contact_phone,
-                "emergency_contact_relation": s.emergency_contact_relation,
-                "is_active": s.is_active
-            })
+            items.append(
+                {
+                    "id": s.id,
+                    "student_id": s.student_id,
+                    "name": s.name,
+                    "gender": s.gender,
+                    "birthday": s.birthday.isoformat() if s.birthday else None,
+                    "classroom_id": s.classroom_id,
+                    "enrollment_date": (
+                        s.enrollment_date.isoformat() if s.enrollment_date else None
+                    ),
+                    "graduation_date": (
+                        s.graduation_date.isoformat() if s.graduation_date else None
+                    ),
+                    "status": s.status,
+                    "parent_name": s.parent_name,
+                    "parent_phone": s.parent_phone,
+                    "address": s.address,
+                    "status_tag": s.status_tag,
+                    "allergy": s.allergy,
+                    "medication": s.medication,
+                    "special_needs": s.special_needs,
+                    "emergency_contact_name": s.emergency_contact_name,
+                    "emergency_contact_phone": s.emergency_contact_phone,
+                    "emergency_contact_relation": s.emergency_contact_relation,
+                    "is_active": s.is_active,
+                }
+            )
         return {"items": items, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
 
 
 @router.get("/students/{student_id}")
-async def get_student(student_id: int, current_user: dict = Depends(require_permission(Permission.STUDENTS_READ))):
+async def get_student(
+    student_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+):
     """取得單一學生詳細資料"""
     session = get_session()
     try:
@@ -299,7 +384,9 @@ async def get_student(student_id: int, current_user: dict = Depends(require_perm
             "gender": student.gender,
             "birthday": student.birthday.isoformat() if student.birthday else None,
             "classroom_id": student.classroom_id,
-            "enrollment_date": student.enrollment_date.isoformat() if student.enrollment_date else None,
+            "enrollment_date": (
+                student.enrollment_date.isoformat() if student.enrollment_date else None
+            ),
             "parent_name": student.parent_name,
             "parent_phone": student.parent_phone,
             "address": student.address,
@@ -310,19 +397,24 @@ async def get_student(student_id: int, current_user: dict = Depends(require_perm
             "emergency_contact_name": student.emergency_contact_name,
             "emergency_contact_phone": student.emergency_contact_phone,
             "emergency_contact_relation": student.emergency_contact_relation,
-            "is_active": student.is_active
+            "is_active": student.is_active,
         }
     finally:
         session.close()
 
 
 @router.post("/students", status_code=201)
-async def create_student(item: StudentCreate, current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE))):
+async def create_student(
+    item: StudentCreate,
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+):
     """新增學生"""
     session = get_session()
     try:
         # 檢查學號是否重複
-        existing = session.query(Student).filter(Student.student_id == item.student_id).first()
+        existing = (
+            session.query(Student).filter(Student.student_id == item.student_id).first()
+        )
         if existing:
             raise HTTPException(status_code=400, detail="學號已存在")
 
@@ -330,6 +422,24 @@ async def create_student(item: StudentCreate, current_user: dict = Depends(requi
 
         student = Student(**data)
         session.add(student)
+        session.flush()  # 取得 student.id
+
+        # 自動寫入「入學」異動紀錄
+        from models.student_log import StudentChangeLog
+
+        school_year, semester = resolve_current_academic_term()
+        enrollment_date = student.enrollment_date or date.today()
+        change_log = StudentChangeLog(
+            student_id=student.id,
+            school_year=school_year,
+            semester=semester,
+            event_type="入學",
+            event_date=enrollment_date,
+            classroom_id=student.classroom_id,
+            reason="新生報名",
+            recorded_by=current_user.get("user_id"),
+        )
+        session.add(change_log)
         session.commit()
         return {"message": "學生新增成功", "id": student.id}
     except HTTPException:
@@ -342,7 +452,11 @@ async def create_student(item: StudentCreate, current_user: dict = Depends(requi
 
 
 @router.put("/students/{student_id}")
-async def update_student(student_id: int, item: StudentUpdate, current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE))):
+async def update_student(
+    student_id: int,
+    item: StudentUpdate,
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+):
     """更新學生資料"""
     session = get_session()
     try:
@@ -352,7 +466,7 @@ async def update_student(student_id: int, item: StudentUpdate, current_user: dic
 
         update_data = item.model_dump(exclude_unset=True)
 
-        NULLABLE_FK_FIELDS = {'classroom_id'}
+        NULLABLE_FK_FIELDS = {"classroom_id"}
         for key, value in update_data.items():
             if value is not None or key in NULLABLE_FK_FIELDS:
                 setattr(student, key, value)
@@ -369,7 +483,10 @@ async def update_student(student_id: int, item: StudentUpdate, current_user: dic
 
 
 @router.delete("/students/{student_id}")
-async def delete_student(student_id: int, current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE))):
+async def delete_student(
+    student_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+):
     """刪除學生（軟刪除）。同時取消該學生所有進行中的接送通知並推送 WS 事件。"""
     session = get_session()
     try:
@@ -394,6 +511,7 @@ async def delete_student(student_id: int, current_user: dict = Depends(require_p
     # WS 廣播在 session 關閉後執行，避免長時間佔用連線
     if dismissal_broadcasts:
         from api.dismissal_ws import manager as dismissal_manager
+
         for item in dismissal_broadcasts:
             await dismissal_manager.broadcast(item["classroom_id"], item["event"])
 
@@ -404,7 +522,7 @@ async def delete_student(student_id: int, current_user: dict = Depends(require_p
 async def graduate_student(
     student_id: int,
     item: StudentGraduate,
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """設定學生畢業或轉出，並標記為非在讀。同時取消進行中的接送通知並推送 WS 事件。"""
     session = get_session()
@@ -415,7 +533,7 @@ async def graduate_student(
         if not student.is_active:
             raise HTTPException(status_code=400, detail="該學生已非在讀狀態")
 
-        graduation_date = datetime.strptime(item.graduation_date, '%Y-%m-%d').date()
+        graduation_date = datetime.strptime(item.graduation_date, "%Y-%m-%d").date()
         if student.enrollment_date and graduation_date < student.enrollment_date:
             raise HTTPException(status_code=400, detail="離園日期不可早於入學日期")
 
@@ -425,9 +543,31 @@ async def graduate_student(
         student.graduation_date = graduation_date
         student.status = item.status
         student.is_active = False
+
+        # 自動寫入異動紀錄（畢業/退學/轉出）
+        from models.student_log import StudentChangeLog
+
+        status_to_event = {"已畢業": "畢業", "已退學": "退學", "已轉出": "轉出"}
+        event_type = status_to_event.get(item.status, "退學")
+        school_year, semester = resolve_current_academic_term()
+        change_log = StudentChangeLog(
+            student_id=student.id,
+            school_year=school_year,
+            semester=semester,
+            event_type=event_type,
+            event_date=graduation_date,
+            classroom_id=student.classroom_id,
+            recorded_by=current_user.get("user_id"),
+        )
+        session.add(change_log)
         session.commit()
-        logger.warning("學生離園：id=%s name=%s status=%s operator=%s",
-                       student.id, student.name, item.status, current_user.get("username"))
+        logger.warning(
+            "學生離園：id=%s name=%s status=%s operator=%s",
+            student.id,
+            student.name,
+            item.status,
+            current_user.get("username"),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -438,8 +578,11 @@ async def graduate_student(
 
     if dismissal_broadcasts:
         from api.dismissal_ws import manager as dismissal_manager
+
         for broadcast_item in dismissal_broadcasts:
-            await dismissal_manager.broadcast(broadcast_item["classroom_id"], broadcast_item["event"])
+            await dismissal_manager.broadcast(
+                broadcast_item["classroom_id"], broadcast_item["event"]
+            )
 
     return {"message": f"已設定為「{item.status}」", "id": student_id}
 
@@ -447,7 +590,7 @@ async def graduate_student(
 @router.post("/students/bulk-transfer")
 async def bulk_transfer_students(
     item: StudentBulkTransfer,
-    current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """批次轉班。"""
     session = get_session()
@@ -455,21 +598,35 @@ async def bulk_transfer_students(
         if not item.student_ids:
             raise HTTPException(status_code=400, detail="請先選擇學生")
 
-        target_classroom = session.query(Classroom).filter(
-            Classroom.id == item.target_classroom_id,
-            Classroom.is_active == True,
-        ).first()
+        target_classroom = (
+            session.query(Classroom)
+            .filter(
+                Classroom.id == item.target_classroom_id,
+                Classroom.is_active == True,
+            )
+            .first()
+        )
         if not target_classroom:
             raise HTTPException(status_code=400, detail="班級不存在或已停用")
 
-        students = session.query(Student).filter(
-            Student.id.in_(item.student_ids),
-            Student.is_active == True,
-        ).all()
+        students = (
+            session.query(Student)
+            .filter(
+                Student.id.in_(item.student_ids),
+                Student.is_active == True,
+            )
+            .all()
+        )
         existing_ids = {student.id for student in students}
-        missing_ids = [student_id for student_id in item.student_ids if student_id not in existing_ids]
+        missing_ids = [
+            student_id
+            for student_id in item.student_ids
+            if student_id not in existing_ids
+        ]
         if missing_ids:
-            raise HTTPException(status_code=404, detail=f"找不到在讀學生：{missing_ids}")
+            raise HTTPException(
+                status_code=404, detail=f"找不到在讀學生：{missing_ids}"
+            )
 
         operator_id = current_user.get("user_id")
         now = datetime.now()
@@ -477,13 +634,15 @@ async def bulk_transfer_students(
         for student in students:
             if student.classroom_id == item.target_classroom_id:
                 continue
-            session.add(StudentClassroomTransfer(
-                student_id=student.id,
-                from_classroom_id=student.classroom_id,
-                to_classroom_id=item.target_classroom_id,
-                transferred_at=now,
-                transferred_by=operator_id,
-            ))
+            session.add(
+                StudentClassroomTransfer(
+                    student_id=student.id,
+                    from_classroom_id=student.classroom_id,
+                    to_classroom_id=item.target_classroom_id,
+                    transferred_at=now,
+                    transferred_by=operator_id,
+                )
+            )
             student.classroom_id = item.target_classroom_id
             moved_count += 1
 

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 
 from models.database import get_session, Employee, Attendance
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from ._shared import AttendanceRecordUpdate
 
@@ -25,7 +25,7 @@ async def get_attendance_records(
     year: int = Query(...),
     month: int = Query(...),
     employee_id: Optional[int] = None,
-    current_user: dict = Depends(require_permission(Permission.ATTENDANCE_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """查詢考勤記錄"""
     session = get_session()
@@ -73,7 +73,7 @@ async def get_attendance_records(
 
 
 @router.post("/record", status_code=201)
-async def create_or_update_attendance_record(record: AttendanceRecordUpdate, current_user: dict = Depends(require_permission(Permission.ATTENDANCE_WRITE))):
+async def create_or_update_attendance_record(record: AttendanceRecordUpdate, current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE))):
     """新增或更新單筆考勤記錄"""
     session = get_session()
     try:
@@ -199,7 +199,7 @@ async def create_or_update_attendance_record(record: AttendanceRecordUpdate, cur
 
 
 @router.delete("/record/{employee_id}/{date}")
-async def delete_single_attendance_record(employee_id: int, date: str, current_user: dict = Depends(require_permission(Permission.ATTENDANCE_WRITE))):
+async def delete_single_attendance_record(employee_id: int, date: str, current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE))):
     """刪除單筆考勤記錄"""
     session = get_session()
     try:
@@ -227,7 +227,7 @@ async def delete_single_attendance_record(employee_id: int, date: str, current_u
 
 
 @router.delete("/records/{employee_id}/{date_str}")
-def delete_single_attendance(employee_id: int, date_str: str, current_user: dict = Depends(require_permission(Permission.ATTENDANCE_WRITE))):
+def delete_single_attendance(employee_id: int, date_str: str, current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE))):
     """刪除單筆考勤記錄"""
     session = get_session()
     try:
@@ -258,7 +258,7 @@ def delete_single_attendance(employee_id: int, date_str: str, current_user: dict
 
 
 @router.delete("/records/{year}/{month}")
-async def delete_attendance_records(year: int, month: int, current_user: dict = Depends(require_permission(Permission.ATTENDANCE_WRITE))):
+async def delete_attendance_records(year: int, month: int, current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE))):
     """刪除指定月份的所有考勤記錄"""
     session = get_session()
     try:

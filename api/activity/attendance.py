@@ -22,7 +22,7 @@ from models.activity import (
     ActivityAttendance,
     RegistrationCourse,
 )
-from utils.auth import get_current_user, require_permission
+from utils.auth import get_current_user, require_staff_permission
 from utils.permissions import Permission
 from api.activity._shared import _build_session_detail_response
 
@@ -51,7 +51,7 @@ class BatchAttendanceUpdate(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.get("/sessions", dependencies=[Depends(require_permission(Permission.ACTIVITY_READ))])
+@router.get("/sessions", dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))])
 def list_sessions(
     course_id: Optional[int] = None,
     start_date: Optional[date] = None,
@@ -122,7 +122,7 @@ def list_sessions(
         session.close()
 
 
-@router.post("/sessions", dependencies=[Depends(require_permission(Permission.ACTIVITY_WRITE))])
+@router.post("/sessions", dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_WRITE))])
 def create_session(
     body: SessionCreate,
     current_user: dict = Depends(get_current_user),
@@ -160,7 +160,7 @@ def create_session(
         session.close()
 
 
-@router.delete("/sessions/{session_id}", dependencies=[Depends(require_permission(Permission.ACTIVITY_WRITE))])
+@router.delete("/sessions/{session_id}", dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_WRITE))])
 def delete_session(
     session_id: int,
     current_user: dict = Depends(get_current_user),
@@ -178,7 +178,7 @@ def delete_session(
         session.close()
 
 
-@router.get("/sessions/{session_id}", dependencies=[Depends(require_permission(Permission.ACTIVITY_READ))])
+@router.get("/sessions/{session_id}", dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))])
 def get_session_detail(
     session_id: int,
     current_user: dict = Depends(get_current_user),
@@ -196,7 +196,7 @@ def get_session_detail(
 
 @router.get(
     "/sessions/{session_id}/export",
-    dependencies=[Depends(require_permission(Permission.ACTIVITY_READ))],
+    dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))],
 )
 def export_session_attendance(
     session_id: int,
@@ -241,7 +241,7 @@ def export_session_attendance(
 
 @router.put(
     "/sessions/{session_id}/records",
-    dependencies=[Depends(require_permission(Permission.ACTIVITY_WRITE))],
+    dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_WRITE))],
 )
 def batch_update_attendance(
     session_id: int,

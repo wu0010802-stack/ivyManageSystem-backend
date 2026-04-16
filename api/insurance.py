@@ -6,7 +6,7 @@ import logging
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from pydantic import BaseModel
 
@@ -35,7 +35,7 @@ class InsuranceTableImport(BaseModel):
 # ============ Routes ============
 
 @router.post("/insurance/import")
-async def import_insurance_table(data: InsuranceTableImport, current_user: dict = Depends(require_permission(Permission.SALARY_WRITE))):
+async def import_insurance_table(data: InsuranceTableImport, current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE))):
     """匯入勞健保級距表"""
     success = _insurance_service.import_table(data=data.data, table_type=data.table_type)
     if success:
@@ -44,7 +44,7 @@ async def import_insurance_table(data: InsuranceTableImport, current_user: dict 
 
 
 @router.get("/insurance/calculate")
-async def calculate_insurance(current_user: dict = Depends(require_permission(Permission.SALARY_READ)), salary: float = Query(...), dependents: int = Query(0)):
+async def calculate_insurance(current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)), salary: float = Query(...), dependents: int = Query(0)):
     """計算勞健保"""
     result = _insurance_service.calculate(salary, dependents)
     return {

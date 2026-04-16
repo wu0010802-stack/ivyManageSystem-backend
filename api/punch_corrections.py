@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
 from models.database import get_session, Employee, Attendance, PunchCorrectionRequest
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import _get_submitter_role, _check_approval_eligibility, _write_approval_log
 
@@ -56,7 +56,7 @@ def list_punch_corrections(
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None),
     employee_id: Optional[int] = Query(None),
-    current_user: dict = Depends(require_permission(Permission.APPROVALS)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPROVALS)),
 ):
     """查詢補打卡申請（管理員用）"""
     session = get_session()
@@ -95,7 +95,7 @@ def list_punch_corrections(
 def approve_punch_correction(
     correction_id: int,
     body: ApproveRequest,
-    current_user: dict = Depends(require_permission(Permission.APPROVALS)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPROVALS)),
 ):
     """核准或駁回補打卡申請"""
     session = get_session()

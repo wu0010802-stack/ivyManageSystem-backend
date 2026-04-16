@@ -4,7 +4,18 @@ models/classroom.py — 班級、年級、學生模型
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Date, DateTime, Boolean, ForeignKey, Index, Text, UniqueConstraint
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Date,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 
@@ -24,6 +35,7 @@ def _default_semester() -> int:
 
 class ClassGrade(Base):
     """年級表"""
+
     __tablename__ = "class_grades"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -38,18 +50,35 @@ class ClassGrade(Base):
 
 class Classroom(Base):
     """班級表"""
+
     __tablename__ = "classrooms"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(50), nullable=False)
-    school_year = Column(Integer, nullable=False, default=_default_school_year, comment="學年度（起始年）")
-    semester = Column(Integer, nullable=False, default=_default_semester, comment="學期：1=上學期(8-1), 2=下學期(2-7)")
+    school_year = Column(
+        Integer,
+        nullable=False,
+        default=_default_school_year,
+        comment="學年度（起始年）",
+    )
+    semester = Column(
+        Integer,
+        nullable=False,
+        default=_default_semester,
+        comment="學期：1=上學期(8-1), 2=下學期(2-7)",
+    )
     grade_id = Column(Integer, ForeignKey("class_grades.id"), nullable=True)
     capacity = Column(Integer, default=30)
 
-    head_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
-    assistant_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
-    art_teacher_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    head_teacher_id = Column(
+        Integer, ForeignKey("employees.id"), nullable=True, index=True
+    )
+    assistant_teacher_id = Column(
+        Integer, ForeignKey("employees.id"), nullable=True, index=True
+    )
+    art_teacher_id = Column(
+        Integer, ForeignKey("employees.id"), nullable=True, index=True
+    )
 
     class_code = Column(String(20), nullable=True, comment="班級代號")
 
@@ -61,13 +90,17 @@ class Classroom(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        UniqueConstraint("school_year", "semester", "name", name="uq_classrooms_term_name"),
+        UniqueConstraint(
+            "school_year", "semester", "name", name="uq_classrooms_term_name"
+        ),
         Index("ix_classrooms_term_active", "school_year", "semester", "is_active"),
+        Index("ix_classroom_is_active", "is_active"),
     )
 
 
 class Student(Base):
     """學生表"""
+
     __tablename__ = "students"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -95,11 +128,14 @@ class Student(Base):
 
     # 緊急聯絡人（第二聯絡人）
     emergency_contact_name = Column(String(50), nullable=True, comment="緊急聯絡人姓名")
-    emergency_contact_phone = Column(String(20), nullable=True, comment="緊急聯絡人電話")
+    emergency_contact_phone = Column(
+        String(20), nullable=True, comment="緊急聯絡人電話"
+    )
     emergency_contact_relation = Column(String(20), nullable=True, comment="與學生關係")
 
     __table_args__ = (
-        Index('ix_student_classroom', 'classroom_id', 'is_active'),
+        Index("ix_student_classroom", "classroom_id", "is_active"),
+        Index("ix_student_enrollment_grad", "enrollment_date", "graduation_date"),
     )
 
     created_at = Column(DateTime, default=datetime.now)
@@ -108,12 +144,15 @@ class Student(Base):
 
 class StudentIncident(Base):
     """學生事件紀錄表"""
+
     __tablename__ = "student_incidents"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
-    incident_type = Column(String(20), nullable=False)  # 身體健康 / 意外受傷 / 行為觀察 / 其他
-    severity = Column(String(10), nullable=True)         # 輕微 / 中度 / 嚴重
+    incident_type = Column(
+        String(20), nullable=False
+    )  # 身體健康 / 意外受傷 / 行為觀察 / 其他
+    severity = Column(String(10), nullable=True)  # 輕微 / 中度 / 嚴重
     occurred_at = Column(DateTime, nullable=False)
     description = Column(Text, nullable=False)
     action_taken = Column(Text, nullable=True)
@@ -125,13 +164,14 @@ class StudentIncident(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        Index('ix_student_incidents_student', 'student_id'),
-        Index('ix_student_incidents_date', 'occurred_at'),
+        Index("ix_student_incidents_student", "student_id"),
+        Index("ix_student_incidents_date", "occurred_at"),
     )
 
 
 class StudentAttendance(Base):
     """學生出席紀錄表"""
+
     __tablename__ = "student_attendances"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -146,31 +186,34 @@ class StudentAttendance(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        UniqueConstraint('student_id', 'date', name='uq_student_attendance_date'),
-        Index('ix_student_attendance_date', 'date'),
-        Index('ix_student_attendance_student', 'student_id'),
+        UniqueConstraint("student_id", "date", name="uq_student_attendance_date"),
+        Index("ix_student_attendance_date", "date"),
+        Index("ix_student_attendance_student", "student_id"),
     )
 
 
 class StudentAssessment(Base):
     """學生學期評量記錄表"""
+
     __tablename__ = "student_assessments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
-    semester = Column(String(20), nullable=False)          # e.g. "2025上" / "2025下"
-    assessment_type = Column(String(20), nullable=False)   # 期中 / 期末 / 學期
-    domain = Column(String(30), nullable=True)             # 身體動作與健康/語文/認知/社會/情緒/美感/綜合
-    rating = Column(String(10), nullable=True)             # 優 / 良 / 需加強
-    content = Column(Text, nullable=False)                 # 評量觀察內容
-    suggestions = Column(Text, nullable=True)              # 改善建議
-    assessment_date = Column(Date, nullable=False)         # 評量日期
+    semester = Column(String(20), nullable=False)  # e.g. "2025上" / "2025下"
+    assessment_type = Column(String(20), nullable=False)  # 期中 / 期末 / 學期
+    domain = Column(
+        String(30), nullable=True
+    )  # 身體動作與健康/語文/認知/社會/情緒/美感/綜合
+    rating = Column(String(10), nullable=True)  # 優 / 良 / 需加強
+    content = Column(Text, nullable=False)  # 評量觀察內容
+    suggestions = Column(Text, nullable=True)  # 改善建議
+    assessment_date = Column(Date, nullable=False)  # 評量日期
     recorded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        Index('ix_student_assessments_student', 'student_id'),
-        Index('ix_student_assessments_semester', 'semester'),
+        Index("ix_student_assessments_student", "student_id"),
+        Index("ix_student_assessments_semester", "semester"),
     )

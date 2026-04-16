@@ -1,0 +1,32 @@
+[project]
+name = "ivy-manage-system-backend"
+version = "2.0.0"
+description = "幼稚園考勤薪資管理系統後端"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["api", "services", "utils", "models"]
+omit = [
+    "tests/*",
+    "scripts/*",
+    "alembic/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+]
