@@ -4,10 +4,12 @@ Salary calculation and management router
 
 import io
 import logging
+import time as _time
+import threading
 from datetime import date, datetime, time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from utils.errors import raise_safe_500
 from utils.auth import require_permission, require_staff_permission
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
@@ -21,6 +23,11 @@ _salary_calc_limiter = SlidingWindowLimiter(
     name="salary_calculate",
     error_detail="薪資計算操作過於頻繁，請稍後再試",
 )
+
+# 批次計算硬上限，避免單次 HTTP 呼叫計算過多員工導致超時 / 記憶體異常。
+# 一般園所員工規模 < 100，此值已有充足緩衝；若需計算更多，改用 async job。
+MAX_BULK_EMPLOYEES_SYNC = 300
+from fastapi import BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -44,6 +51,7 @@ from services.salary_field_breakdown import (
     build_field_breakdown,
     build_salary_debug_snapshot,
 )
+from services.salary_job_registry import registry as _salary_job_registry
 from services.student_enrollment import (
     classroom_student_count_map,
     count_students_active_on,
@@ -160,6 +168,15 @@ def calculate_salaries_alt(
         employee_ids = [emp.id for emp in employees]
         emp_name_map = {emp.id: emp.name for emp in employees}
 
+        if len(employee_ids) > MAX_BULK_EMPLOYEES_SYNC:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"待計算員工數 {len(employee_ids)} 超過同步上限 "
+                    f"{MAX_BULK_EMPLOYEES_SYNC}，請改用 /api/salaries/calculate-async"
+                ),
+            )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -221,6 +238,172 @@ def calculate_salaries_alt(
             logger.warning("薪資批次計算 LINE 推播失敗: %s", _le)
 
     return {"results": results, "errors": errors}
+
+
+# ============ 批次計算 async job ============
+
+
+def _breakdown_to_result_dict(emp, breakdown) -> dict:
+    return {
+        "employee_id": emp.id,
+        "employee_name": emp.name,
+        "base_salary": breakdown.base_salary,
+        "total_allowances": calculate_total_allowances(breakdown),
+        "festival_bonus": breakdown.festival_bonus,
+        "overtime_bonus": breakdown.overtime_bonus,
+        "overtime_pay": breakdown.overtime_work_pay,
+        "supervisor_dividend": breakdown.supervisor_dividend,
+        "labor_insurance": breakdown.labor_insurance,
+        "health_insurance": breakdown.health_insurance,
+        "late_deduction": breakdown.late_deduction,
+        "early_leave_deduction": breakdown.early_leave_deduction,
+        "missing_punch_deduction": breakdown.missing_punch_deduction,
+        "leave_deduction": breakdown.leave_deduction,
+        "absence_deduction": breakdown.absence_deduction or 0,
+        "meeting_overtime_pay": breakdown.meeting_overtime_pay or 0,
+        "meeting_absence_deduction": breakdown.meeting_absence_deduction or 0,
+        "birthday_bonus": breakdown.birthday_bonus or 0,
+        "pension_self": breakdown.pension_self or 0,
+        "total_deduction": breakdown.total_deduction,
+        "total_deductions": breakdown.total_deduction,
+        "net_salary": breakdown.net_salary,
+        "net_pay": breakdown.net_salary,
+    }
+
+
+def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
+    """背景執行薪資批次計算，同步更新 job registry 狀態。"""
+    _salary_job_registry.mark_running(job_id)
+    try:
+        with session_scope() as session:
+            finalized = (
+                session.query(SalaryRecord.id)
+                .filter(
+                    SalaryRecord.salary_year == year,
+                    SalaryRecord.salary_month == month,
+                    SalaryRecord.is_finalized == True,
+                )
+                .count()
+            )
+            if finalized:
+                _salary_job_registry.fail(
+                    job_id,
+                    f"{year}/{month} 已有 {finalized} 筆薪資封存，無法整批重算",
+                )
+                return
+
+            _, _last_day = _cal.monthrange(year, month)
+            _start = date(year, month, 1)
+            _end = date(year, month, _last_day)
+            employees = (
+                session.query(Employee)
+                .filter(
+                    or_(
+                        Employee.is_active == True,
+                        and_(
+                            Employee.is_active == False,
+                            Employee.resign_date >= _start,
+                            Employee.resign_date <= _end,
+                        ),
+                    )
+                )
+                .all()
+            )
+            employee_ids = [e.id for e in employees]
+
+        engine = RuntimeSalaryEngine(load_from_db=True)
+
+        def _progress(done: int, total: int, current: str) -> None:
+            _salary_job_registry.update_progress(job_id, done, total, current)
+
+        bulk_results, errors = engine.process_bulk_salary_calculation(
+            employee_ids, year, month, progress_callback=_progress
+        )
+
+        results_dicts = [_breakdown_to_result_dict(e, b) for e, b in bulk_results]
+        _salary_job_registry.complete(job_id, results_dicts, errors)
+
+        if _line_service is not None and results_dicts:
+            try:
+                total_net = sum(r["net_pay"] for r in results_dicts)
+                _line_service.notify_salary_batch_complete(
+                    year, month, len(results_dicts), int(total_net)
+                )
+            except Exception as _le:
+                logger.warning("薪資批次計算 LINE 推播失敗: %s", _le)
+    except Exception as e:
+        logger.exception("async 薪資批次計算失敗 job_id=%s", job_id)
+        _salary_job_registry.fail(job_id, str(e))
+
+
+@router.post("/salaries/calculate-async", status_code=202)
+def calculate_salaries_async_start(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    _rl: None = Depends(_salary_calc_limiter.as_dependency()),
+):
+    """建立 async 批次計算 job，立即回傳 job_id；實際計算於背景執行。
+
+    前端可透過 GET /api/salaries/calculate-jobs/{job_id} 輪詢進度。
+    """
+    with session_scope() as session:
+        finalized = (
+            session.query(SalaryRecord.id)
+            .filter(
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+                SalaryRecord.is_finalized == True,
+            )
+            .count()
+        )
+        if finalized:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{year} 年 {month} 月已有 {finalized} 筆薪資封存，"
+                    "請先解除整月封存再重試"
+                ),
+            )
+
+        _, _last_day = _cal.monthrange(year, month)
+        _start = date(year, month, 1)
+        _end = date(year, month, _last_day)
+        total = (
+            session.query(Employee.id)
+            .filter(
+                or_(
+                    Employee.is_active == True,
+                    and_(
+                        Employee.is_active == False,
+                        Employee.resign_date >= _start,
+                        Employee.resign_date <= _end,
+                    ),
+                )
+            )
+            .count()
+        )
+
+    job = _salary_job_registry.create(year=year, month=month, total=total)
+    background_tasks.add_task(_run_salary_calc_job, job.job_id, year, month)
+    return {"job_id": job.job_id, "status": job.status, "total": job.total}
+
+
+@router.get("/salaries/calculate-jobs/{job_id}")
+def get_salary_calc_job(
+    job_id: str,
+    include_results: bool = Query(False, description="包含 results 列表"),
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
+):
+    """查詢 async 批次計算 job 狀態與進度。"""
+    job = _salary_job_registry.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job 不存在或已過期")
+    payload = job.to_dict()
+    if include_results and job.status == "completed":
+        payload["results"] = job.results
+    return payload
 
 
 @router.get("/salaries/festival-bonus")
@@ -330,6 +513,7 @@ def get_salary_records(
             results.append(
                 {
                     "id": record.id,
+                    "version": int(record.version or 1),
                     "employee_id": emp.id,
                     "employee_code": emp.employee_id,
                     "employee_name": emp.name,
@@ -384,13 +568,34 @@ def get_salary_records(
         return results
 
 
+def _parse_if_match(header_value: Optional[str]) -> Optional[int]:
+    """解析 If-Match header，支援 W/"3" / "3" / 3 等常見格式。回傳 int 版本號或 None。"""
+    if not header_value:
+        return None
+    raw = header_value.strip()
+    if raw.startswith("W/"):
+        raw = raw[2:].strip()
+    raw = raw.strip('"').strip()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 @router.put("/salaries/{record_id}/manual-adjust")
 def manual_adjust_salary(
     record_id: int,
     data: SalaryManualAdjustRequest,
+    response: Response,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
+    if_match: Optional[str] = Header(None, alias="If-Match"),
 ):
-    """手動調整單筆薪資記錄。"""
+    """手動調整單筆薪資記錄。
+
+    若請求帶有 If-Match header，需與目前 record.version 相符才能寫入（樂觀鎖）。
+    不帶 If-Match 時允許寫入（舊版前端相容），仍會累加版本號。
+    成功時於 ETag / X-Record-Version header 回傳新版本。
+    """
     with session_scope() as session:
         record = (
             session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
@@ -400,6 +605,17 @@ def manual_adjust_salary(
         if record.is_finalized:
             raise HTTPException(
                 status_code=409, detail="此筆薪資已封存，請先解除封存再編輯"
+            )
+
+        client_version = _parse_if_match(if_match)
+        current_version = int(record.version or 1)
+        if client_version is not None and client_version != current_version:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"此筆薪資已被他人修改（目前版本 v{current_version}，"
+                    f"你持有 v{client_version}），請重新整理後再編輯"
+                ),
             )
 
         payload = data.model_dump(exclude_unset=True)
@@ -438,18 +654,27 @@ def manual_adjust_salary(
         )
         record.remark = f"{(record.remark or '').strip()}\n{audit_note}".strip()
 
+        record.version = current_version + 1
+
         logger.warning(
-            "手動調整薪資：record_id=%s employee_id=%s fields=%s operator=%s",
+            "手動調整薪資：record_id=%s employee_id=%s fields=%s operator=%s version=%d→%d",
             record.id,
             record.employee_id,
             ",".join(payload.keys()),
             operator,
+            current_version,
+            record.version,
         )
+
+        new_version = int(record.version)
+        response.headers["ETag"] = f'"{new_version}"'
+        response.headers["X-Record-Version"] = str(new_version)
 
         return {
             "message": "薪資金額已更新",
             "record": {
                 "id": record.id,
+                "version": new_version,
                 "festival_bonus": record.festival_bonus or 0,
                 "overtime_bonus": record.overtime_bonus or 0,
                 "overtime_pay": record.overtime_pay or 0,
@@ -536,6 +761,40 @@ def get_salary_breakdown(
         }
 
 
+# ── 薪資 debug snapshot 快取 ─────────────────────────────────────────────
+# 同一筆薪資在 UI 切換不同欄位時，snapshot 內容不變（~13 個 DB 查詢）。
+# 用 (record_id, version) 做 key，版本更動即失效，避免陳舊資料。
+_SNAPSHOT_CACHE_TTL_SEC = 60
+_snapshot_cache: dict = {}
+_snapshot_cache_lock = threading.Lock()
+
+
+def _snapshot_cache_get(record_id: int, version: int):
+    with _snapshot_cache_lock:
+        entry = _snapshot_cache.get(record_id)
+        if not entry:
+            return None
+        cached_version, expires_at, data = entry
+        if cached_version != version or expires_at < _time.monotonic():
+            _snapshot_cache.pop(record_id, None)
+            return None
+        return data
+
+
+def _snapshot_cache_put(record_id: int, version: int, data: dict) -> None:
+    with _snapshot_cache_lock:
+        _snapshot_cache[record_id] = (
+            version,
+            _time.monotonic() + _SNAPSHOT_CACHE_TTL_SEC,
+            data,
+        )
+        # 簡易容量控制：超過 256 筆時清掉最舊一半
+        if len(_snapshot_cache) > 256:
+            items = sorted(_snapshot_cache.items(), key=lambda kv: kv[1][1])
+            for key, _ in items[:128]:
+                _snapshot_cache.pop(key, None)
+
+
 @router.get("/salaries/{record_id}/field-breakdown")
 def get_salary_field_breakdown(
     record_id: int,
@@ -563,9 +822,13 @@ def get_salary_field_breakdown(
             if _salary_engine
             else RuntimeSalaryEngine(load_from_db=False)
         )
-        snapshot = build_salary_debug_snapshot(
-            session, engine, emp, record.salary_year, record.salary_month
-        )
+        version = int(record.version or 1)
+        snapshot = _snapshot_cache_get(record_id, version)
+        if snapshot is None:
+            snapshot = build_salary_debug_snapshot(
+                session, engine, emp, record.salary_year, record.salary_month
+            )
+            _snapshot_cache_put(record_id, version, snapshot)
         return build_field_breakdown(record, emp, snapshot, field)
 
 

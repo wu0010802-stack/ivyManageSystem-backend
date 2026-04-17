@@ -686,6 +686,7 @@ class SalaryEngine:
         if role == "assistant_teacher":
             shared_classes = (
                 session.query(DBClassroom)
+                .options(joinedload(DBClassroom.grade))
                 .filter(DBClassroom.assistant_teacher_id == employee_id)
                 .all()
             )
@@ -1956,12 +1957,16 @@ class SalaryEngine:
             session.close()
 
     def process_bulk_salary_calculation(
-        self, employee_ids: list, year: int, month: int
+        self, employee_ids: list, year: int, month: int, progress_callback=None
     ):
         """批次計算所有員工薪資，使用預先批次載入避免 N+1 查詢。
 
         相較 process_salary_calculation 每人獨立開 session 並執行 ~13 次 DB 查詢，
         此方法以 ~13 次批次查詢完成所有員工，並在一次 commit 寫入全部 SalaryRecord。
+
+        Args:
+            progress_callback: 選用，型別為 callable(done: int, total: int, emp_name: str)。
+                每完成一位員工呼叫一次（錯誤也算），用於 async job 進度回報。
 
         Returns:
             (results: list[dict], errors: list[dict])
@@ -2165,6 +2170,8 @@ class SalaryEngine:
 
             results = []
             errors = []
+            total = len(employee_ids)
+            done = 0
 
             for emp_id in employee_ids:
                 emp = emp_map.get(emp_id)
@@ -2176,6 +2183,12 @@ class SalaryEngine:
                             "error": "Employee not found",
                         }
                     )
+                    done += 1
+                    if progress_callback:
+                        try:
+                            progress_callback(done, total, "(未知)")
+                        except Exception:
+                            logger.debug("progress_callback 失敗，忽略", exc_info=True)
                     continue
 
                 try:
@@ -2365,6 +2378,15 @@ class SalaryEngine:
                             "error": str(e),
                         }
                     )
+                finally:
+                    done += 1
+                    if progress_callback:
+                        try:
+                            progress_callback(
+                                done, total, emp.name if emp else "(未知)"
+                            )
+                        except Exception:
+                            logger.debug("progress_callback 失敗，忽略", exc_info=True)
 
             # 單次 commit（相較 N 次 commit 大幅減少 I/O 往返）
             session.commit()

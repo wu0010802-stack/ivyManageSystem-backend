@@ -4,7 +4,19 @@ models/salary.py — 薪資相關模型
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Index, Text, UniqueConstraint
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Float,
+    Date,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from models.base import Base
@@ -12,6 +24,7 @@ from models.base import Base
 
 class InsuranceTable(Base):
     """勞健保級距表"""
+
     __tablename__ = "insurance_tables"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -38,6 +51,7 @@ class InsuranceTable(Base):
 
 class DeductionRule(Base):
     """扣款規則表"""
+
     __tablename__ = "deduction_rules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -57,6 +71,7 @@ class DeductionRule(Base):
 
 class BonusSetting(Base):
     """獎金設定表"""
+
     __tablename__ = "bonus_settings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -80,6 +95,7 @@ class BonusSetting(Base):
 
 class ClassBonusSetting(Base):
     """班級獎金設定表"""
+
     __tablename__ = "class_bonus_settings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -95,6 +111,7 @@ class ClassBonusSetting(Base):
 
 class AllowanceType(Base):
     """津貼類型表"""
+
     __tablename__ = "allowance_types"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -110,13 +127,14 @@ class AllowanceType(Base):
 
 class DeductionType(Base):
     """扣款類型表"""
+
     __tablename__ = "deduction_types"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String(30), unique=True, nullable=False)
     name = Column(String(50), nullable=False)
     description = Column(String(200))
-    category = Column(String(20), default='other')
+    category = Column(String(20), default="other")
     is_employer_paid = Column(Boolean, default=False)
     sort_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
@@ -126,6 +144,7 @@ class DeductionType(Base):
 
 class BonusType(Base):
     """獎金類型表"""
+
     __tablename__ = "bonus_types"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -141,11 +160,19 @@ class BonusType(Base):
 
 class EmployeeAllowance(Base):
     """員工津貼設定表"""
+
     __tablename__ = "employee_allowances"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
-    allowance_type_id = Column(Integer, ForeignKey("allowance_types.id"), nullable=False)
+    employee_id = Column(
+        Integer,
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    allowance_type_id = Column(
+        Integer, ForeignKey("allowance_types.id"), nullable=False
+    )
     amount = Column(Float, default=0)
     effective_date = Column(Date)
     end_date = Column(Date)
@@ -157,10 +184,13 @@ class EmployeeAllowance(Base):
 
 class SalaryItem(Base):
     """薪資明細項目表"""
+
     __tablename__ = "salary_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    salary_record_id = Column(Integer, ForeignKey("salary_records.id", ondelete="CASCADE"), nullable=False)
+    salary_record_id = Column(
+        Integer, ForeignKey("salary_records.id", ondelete="CASCADE"), nullable=False
+    )
     item_category = Column(String(20), nullable=False)
     item_type_id = Column(Integer, nullable=False)
     item_code = Column(String(30), nullable=False)
@@ -175,14 +205,25 @@ class SalaryItem(Base):
 
 class SalaryRecord(Base):
     """薪資記錄表"""
+
     __tablename__ = "salary_records"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
 
     # 計算時使用的設定版本 FK（用於稽核追蹤）
-    bonus_config_id = Column(Integer, ForeignKey("bonus_configs.id"), nullable=True, comment="計算時使用的獎金設定版本")
-    attendance_policy_id = Column(Integer, ForeignKey("attendance_policies.id"), nullable=True, comment="計算時使用的考勤政策版本")
+    bonus_config_id = Column(
+        Integer,
+        ForeignKey("bonus_configs.id"),
+        nullable=True,
+        comment="計算時使用的獎金設定版本",
+    )
+    attendance_policy_id = Column(
+        Integer,
+        ForeignKey("attendance_policies.id"),
+        nullable=True,
+        comment="計算時使用的考勤政策版本",
+    )
 
     salary_year = Column(Integer, nullable=False, comment="年")
     salary_month = Column(Integer, nullable=False, comment="月")
@@ -202,7 +243,9 @@ class SalaryRecord(Base):
 
     overtime_pay = Column(Float, default=0, comment="加班費")
     meeting_overtime_pay = Column(Float, default=0, comment="園務會議加班費")
-    meeting_absence_deduction = Column(Float, default=0, comment="園務會議缺席扣節慶獎金")
+    meeting_absence_deduction = Column(
+        Float, default=0, comment="園務會議缺席扣節慶獎金"
+    )
     birthday_bonus = Column(Float, default=0, comment="生日禮金")
 
     work_hours = Column(Float, default=0, comment="工作時數（時薪制用）")
@@ -233,7 +276,11 @@ class SalaryRecord(Base):
     net_salary = Column(Float, default=0, comment="實發金額")
 
     bonus_separate = Column(Boolean, default=False, comment="獎金是否獨立轉帳")
-    bonus_amount = Column(Float, default=0, comment="獨立轉帳獎金金額（festival+overtime+supervisor_dividend）")
+    bonus_amount = Column(
+        Float,
+        default=0,
+        comment="獨立轉帳獎金金額（festival+overtime+supervisor_dividend）",
+    )
     supervisor_dividend = Column(Float, default=0, comment="主管紅利（獨立轉帳）")
 
     remark = Column(Text, comment="備註")
@@ -242,15 +289,27 @@ class SalaryRecord(Base):
     finalized_at = Column(DateTime, comment="結算時間")
     finalized_by = Column(String(50), comment="結算人")
 
+    version = Column(
+        Integer, nullable=False, default=1, server_default="1", comment="樂觀鎖版本號"
+    )
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        UniqueConstraint('employee_id', 'salary_year', 'salary_month', name='uq_salary_emp_ym'),
-        Index('ix_salary_emp_ym_finalized', 'employee_id', 'salary_year', 'salary_month', 'is_finalized'),
-        Index('ix_salary_ym_finalized', 'salary_year', 'salary_month', 'is_finalized'),
-        Index('ix_salary_bonus_config_id', 'bonus_config_id'),
-        Index('ix_salary_attendance_policy_id', 'attendance_policy_id'),
+        UniqueConstraint(
+            "employee_id", "salary_year", "salary_month", name="uq_salary_emp_ym"
+        ),
+        Index(
+            "ix_salary_emp_ym_finalized",
+            "employee_id",
+            "salary_year",
+            "salary_month",
+            "is_finalized",
+        ),
+        Index("ix_salary_ym_finalized", "salary_year", "salary_month", "is_finalized"),
+        Index("ix_salary_bonus_config_id", "bonus_config_id"),
+        Index("ix_salary_attendance_policy_id", "attendance_policy_id"),
     )
 
     employee = relationship("Employee", back_populates="salaries")
