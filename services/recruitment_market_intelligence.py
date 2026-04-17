@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Optional
 
 import requests
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from models.recruitment import (
     CompetitorSchool,
@@ -1801,6 +1801,51 @@ def _district_lead_metrics(
     return metrics
 
 
+def _district_competitor_stats(session) -> dict[str, dict[str, Any]]:
+    """按行政區彙總 CompetitorSchool 統計（僅高雄市、啟用中）。"""
+    rows = (
+        session.query(
+            CompetitorSchool.district,
+            func.count(CompetitorSchool.id).label("competitor_count"),
+            func.coalesce(func.sum(CompetitorSchool.approved_capacity), 0).label(
+                "competitor_capacity"
+            ),
+            func.count(
+                case(
+                    (CompetitorSchool.school_type == "公立", 1),
+                )
+            ).label("public_count"),
+            func.count(
+                case(
+                    (CompetitorSchool.school_type == "私立", 1),
+                )
+            ).label("private_count"),
+            func.count(
+                case(
+                    (CompetitorSchool.has_penalty == True, 1),  # noqa: E712
+                )
+            ).label("penalty_count"),
+        )
+        .filter(
+            CompetitorSchool.is_active == True,  # noqa: E712
+            CompetitorSchool.city.like("%高雄%"),
+        )
+        .group_by(CompetitorSchool.district)
+        .all()
+    )
+    return {
+        row.district: {
+            "competitor_count": row.competitor_count,
+            "competitor_capacity": int(row.competitor_capacity),
+            "public_count": row.public_count,
+            "private_count": row.private_count,
+            "penalty_count": row.penalty_count,
+        }
+        for row in rows
+        if row.district
+    }
+
+
 def _build_market_district_rows(
     session, dataset_scope: Optional[str] = None
 ) -> list[dict[str, Any]]:
@@ -1811,38 +1856,53 @@ def _build_market_district_rows(
     area_rows = {
         row.district: row for row in session.query(RecruitmentAreaInsightCache).all()
     }
+    competitor_stats = _district_competitor_stats(session)
 
     if _normalize_dataset_scope(dataset_scope) == DATASET_SCOPE_ALL:
-        districts = sorted(set(lead_metrics) | set(area_rows) | set(hotspot_rows))
+        districts = sorted(
+            set(lead_metrics)
+            | set(area_rows)
+            | set(hotspot_rows)
+            | set(competitor_stats)
+        )
     else:
-        districts = sorted(set(lead_metrics) | set(hotspot_rows))
+        districts = sorted(
+            set(lead_metrics) | set(hotspot_rows) | set(competitor_stats)
+        )
     rows: list[dict[str, Any]] = []
+    _default_competitor = {
+        "competitor_count": 0,
+        "competitor_capacity": 0,
+        "public_count": 0,
+        "private_count": 0,
+        "penalty_count": 0,
+    }
     for district in districts:
         metrics = lead_metrics.get(district, {})
         area_row = area_rows.get(district)
         hotspot = hotspot_rows.get(district)
         visit_90d = metrics.get("visit_90d", 0)
         deposit_90d = metrics.get("deposit_90d", 0)
-        rows.append(
-            {
-                "district": district,
-                "town_code": (hotspot.town_code if hotspot else None)
-                or (area_row.town_code if area_row else None),
-                "lead_count_30d": metrics.get("lead_count_30d", 0),
-                "lead_count_90d": metrics.get("lead_count_90d", 0),
-                "deposit_rate_90d": (
-                    round((deposit_90d / visit_90d) * 100, 1) if visit_90d else 0.0
-                ),
-                "avg_travel_minutes": _average_travel_minutes(
-                    district_travel_rows.get(district, [])
-                ),
-                "population_density": area_row.population_density if area_row else None,
-                "population_0_6": area_row.population_0_6 if area_row else None,
-                "data_completeness": (
-                    area_row.data_completeness if area_row else "partial"
-                ),
-            }
-        )
+        row_dict = {
+            "district": district,
+            "town_code": (hotspot.town_code if hotspot else None)
+            or (area_row.town_code if area_row else None),
+            "lead_count_30d": metrics.get("lead_count_30d", 0),
+            "lead_count_90d": metrics.get("lead_count_90d", 0),
+            "deposit_rate_90d": (
+                round((deposit_90d / visit_90d) * 100, 1) if visit_90d else 0.0
+            ),
+            "avg_travel_minutes": _average_travel_minutes(
+                district_travel_rows.get(district, [])
+            ),
+            "population_density": area_row.population_density if area_row else None,
+            "population_0_6": area_row.population_0_6 if area_row else None,
+            "data_completeness": (
+                area_row.data_completeness if area_row else "partial"
+            ),
+        }
+        row_dict.update(competitor_stats.get(district, _default_competitor))
+        rows.append(row_dict)
     return sorted(rows, key=lambda item: (-item["lead_count_90d"], item["district"]))
 
 
