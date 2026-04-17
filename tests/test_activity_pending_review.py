@@ -1,0 +1,393 @@
+"""才藝報名「待審核佇列 + 隱私契約 + 人工審核」整合測試。"""
+
+import os
+import sys
+from datetime import date
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import models.base as base_module
+from api.activity import router as activity_router
+from api.activity.public import _public_register_limiter_instance
+from api.auth import _account_failures, _ip_attempts
+from api.auth import router as auth_router
+from models.database import (
+    ActivityCourse,
+    ActivityRegistration,
+    Base,
+    Classroom,
+    Student,
+    User,
+)
+from utils.auth import hash_password
+from utils.permissions import Permission
+
+
+@pytest.fixture
+def pending_client(tmp_path):
+    db_path = tmp_path / "pending.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+
+    Base.metadata.create_all(engine)
+    _ip_attempts.clear()
+    _account_failures.clear()
+    _public_register_limiter_instance._timestamps.clear()
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(activity_router)
+
+    with TestClient(app) as client:
+        yield client, session_factory
+
+    _ip_attempts.clear()
+    _account_failures.clear()
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_session_factory
+    engine.dispose()
+
+
+def _add_admin(session, username="admin", password="TempPass123"):
+    session.add(
+        User(
+            username=username,
+            password_hash=hash_password(password),
+            role="admin",
+            permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+            is_active=True,
+        )
+    )
+    session.flush()
+
+
+def _login(client, username="admin", password="TempPass123"):
+    r = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert r.status_code == 200
+    return r
+
+
+def _seed_base(
+    session,
+    *,
+    with_student=True,
+    classroom_name="大象班",
+    phone="0912345678",
+    student_name="王小明",
+    birthday=date(2020, 5, 10),
+):
+    """建立 admin + 活躍班級 + 課程，依參數可建立對應學生。回傳 classroom_id。"""
+    from utils.academic import resolve_current_academic_term
+
+    sy, sem = resolve_current_academic_term()
+    _add_admin(session)
+    classroom = Classroom(
+        name=classroom_name, is_active=True, school_year=sy, semester=sem
+    )
+    session.add(classroom)
+    session.flush()
+    session.add(
+        ActivityCourse(
+            name="圍棋",
+            price=1200,
+            school_year=sy,
+            semester=sem,
+            is_active=True,
+        )
+    )
+    if with_student:
+        session.add(
+            Student(
+                student_id="S001",
+                name=student_name,
+                birthday=birthday,
+                classroom_id=classroom.id,
+                parent_phone=phone,
+                is_active=True,
+            )
+        )
+    session.commit()
+    return classroom.id
+
+
+def _public_register_payload(
+    *,
+    name="王小明",
+    birthday="2020-05-10",
+    phone="0912345678",
+    class_="大象班",
+):
+    return {
+        "name": name,
+        "birthday": birthday,
+        "parent_phone": phone,
+        "class": class_,
+        "courses": [{"name": "圍棋", "price": "1"}],
+        "supplies": [],
+    }
+
+
+class TestPublicRegisterMatching:
+    def test_matched_writes_classroom_id_and_overrides_class_name(self, pending_client):
+        """家長自選班級與真實班級不符時，匹配成功後應覆蓋為真實班級。"""
+        client, sf = pending_client
+        with sf() as s:
+            classroom_id = _seed_base(s, classroom_name="大象班")
+            # 再新增一個家長可能誤選的班級
+            from utils.academic import resolve_current_academic_term
+
+            sy, sem = resolve_current_academic_term()
+            s.add(
+                Classroom(name="長頸鹿班", is_active=True, school_year=sy, semester=sem)
+            )
+            s.commit()
+
+        res = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(class_="長頸鹿班"),
+        )
+        assert res.status_code == 201
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).one()
+            assert reg.student_id is not None
+            assert reg.classroom_id == classroom_id
+            assert reg.class_name == "大象班"
+            assert reg.match_status == "matched"
+            assert reg.pending_review is False
+
+    def test_unmatched_goes_to_pending_review(self, pending_client):
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+
+        res = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(),
+        )
+        assert res.status_code == 201
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).one()
+            assert reg.pending_review is True
+            assert reg.match_status == "pending"
+            assert reg.student_id is None
+            assert reg.classroom_id is None
+            # 保留家長輸入以供人工審核參考
+            assert reg.class_name == "大象班"
+            assert reg.parent_phone == "0912345678"
+
+    def test_phone_mismatch_goes_to_pending(self, pending_client):
+        """三欄中 phone 錯誤時也應走 pending 流程。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)
+
+        res = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0999999999"),
+        )
+        assert res.status_code == 201
+        with sf() as s:
+            reg = s.query(ActivityRegistration).one()
+            assert reg.pending_review is True
+            assert reg.student_id is None
+
+    def test_response_does_not_leak_match_status(self, pending_client):
+        """隱私契約：公開 API response 絕不可回傳匹配結果欄位。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)
+
+        res = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(),
+        )
+        body = res.json()
+        for forbidden in (
+            "match_status",
+            "pending_review",
+            "student_id",
+            "classroom_id",
+        ):
+            assert forbidden not in body, f"response leaked {forbidden}"
+
+    def test_soft_dedup_blocks_duplicate_pending_same_phone(self, pending_client):
+        """同 parent_phone + 同學期已有 pending 時，第二筆應被擋下。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+
+        r1 = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(),
+        )
+        assert r1.status_code == 201
+        # 改個名字但用同手機 → 應被 soft dedup 擋下
+        r2 = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(name="王大明"),
+        )
+        assert r2.status_code == 400
+
+
+class TestPublicQueryPrivacy:
+    def test_query_requires_all_three_fields(self, pending_client):
+        """三欄不齊的 query 應直接 422（Pydantic 擋下）。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)
+
+        # 缺 parent_phone
+        res = client.get(
+            "/api/activity/public/query",
+            params={"name": "王小明", "birthday": "2020-05-10"},
+        )
+        assert res.status_code == 422
+
+    def test_query_generic_error_on_phone_mismatch(self, pending_client):
+        """phone 錯一位數一律回 404（不透露哪一欄錯）。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)
+        r1 = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        assert r1.status_code == 201
+
+        res = client.get(
+            "/api/activity/public/query",
+            params={
+                "name": "王小明",
+                "birthday": "2020-05-10",
+                "parent_phone": "0999999999",
+            },
+        )
+        assert res.status_code == 404
+        assert "請確認" in res.json()["detail"]
+
+
+class TestAdminApprovalWorkflow:
+    def test_pending_list_returns_only_pending_rows(self, pending_client):
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)  # 不建學生 → 報名會走 pending
+
+        r_reg = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        assert r_reg.status_code == 201
+
+        _login(client)
+        res = client.get("/api/activity/registrations/pending")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == 1
+        assert body["items"][0]["pending_review"] is True
+        assert body["items"][0]["match_status"] == "pending"
+
+    def test_match_api_binds_student_and_sets_manual_status(self, pending_client):
+        client, sf = pending_client
+        with sf() as s:
+            classroom_id = _seed_base(s)
+            # 家長填錯名字 → pending
+        r_reg = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(name="王小銘"),  # 名字錯 → 不匹配
+        )
+        assert r_reg.status_code == 201
+
+        _login(client)
+        # 取 pending 列表 + 找 student
+        pending_list = client.get("/api/activity/registrations/pending").json()
+        reg_id = pending_list["items"][0]["id"]
+
+        search = client.get(
+            "/api/activity/students/search", params={"q": "王小明"}
+        ).json()
+        assert len(search["items"]) == 1
+        sid = search["items"][0]["id"]
+
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/match",
+            json={"student_id": sid},
+        )
+        assert res.status_code == 200
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.student_id == sid
+            assert reg.classroom_id == classroom_id
+            assert reg.match_status == "manual"
+            assert reg.pending_review is False
+            assert reg.reviewed_at is not None
+            assert reg.class_name == "大象班"
+
+    def test_reject_api_soft_deletes_and_marks_rejected(self, pending_client):
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/reject",
+            json={"reason": "校外生"},
+        )
+        assert res.status_code == 200
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.is_active is False
+            assert reg.match_status == "rejected"
+            assert reg.pending_review is False
+            assert "校外生" in (reg.remark or "")
+            assert reg.reviewed_at is not None
+
+    def test_rematch_picks_up_updated_phone(self, pending_client):
+        """家長/校方修正資料後，後台 rematch 自動脫離 pending。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, phone="0912345678")
+        # 先用錯 phone 送出 → pending
+        r_reg = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        )
+        reg_id = r_reg.json()["id"]
+
+        # 模擬校方直接在 DB 修正 phone
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            reg.parent_phone = "0912345678"
+            s.commit()
+
+        _login(client)
+        res = client.post(f"/api/activity/registrations/{reg_id}/rematch")
+        assert res.status_code == 200
+        assert res.json()["matched"] is True
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.pending_review is False
+            assert reg.match_status == "matched"
+            assert reg.student_id is not None

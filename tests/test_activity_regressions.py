@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
 from api.activity import router as activity_router
+from api.activity.public import _public_register_limiter_instance
 from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
 from models.database import (
@@ -50,6 +51,7 @@ def activity_client(tmp_path):
     Base.metadata.create_all(engine)
     _ip_attempts.clear()
     _account_failures.clear()
+    _public_register_limiter_instance._timestamps.clear()
 
     app = FastAPI()
     app.include_router(auth_router)
@@ -65,7 +67,9 @@ def activity_client(tmp_path):
     engine.dispose()
 
 
-def _create_admin(session, username: str = "activity_admin", password: str = "TempPass123") -> User:
+def _create_admin(
+    session, username: str = "activity_admin", password: str = "TempPass123"
+) -> User:
     admin = User(
         username=username,
         password_hash=hash_password(password),
@@ -90,8 +94,12 @@ def _create_employee(session, employee_id: str, name: str) -> Employee:
     return employee
 
 
-def _login(client: TestClient, username: str = "activity_admin", password: str = "TempPass123"):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+def _login(
+    client: TestClient, username: str = "activity_admin", password: str = "TempPass123"
+):
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 def _create_classroom(session, name: str, is_active: bool = True) -> Classroom:
@@ -101,13 +109,25 @@ def _create_classroom(session, name: str, is_active: bool = True) -> Classroom:
     return classroom
 
 
-def _create_course(session, name: str, price: int, capacity: int = 30, allow_waitlist: bool = True) -> ActivityCourse:
+def _current_term():
+    """測試用：回傳當前學期 (school_year, semester)。"""
+    from utils.academic import resolve_current_academic_term
+
+    return resolve_current_academic_term()
+
+
+def _create_course(
+    session, name: str, price: int, capacity: int = 30, allow_waitlist: bool = True
+) -> ActivityCourse:
+    sy, sem = _current_term()
     course = ActivityCourse(
         name=name,
         price=price,
         capacity=capacity,
         allow_waitlist=allow_waitlist,
         is_active=True,
+        school_year=sy,
+        semester=sem,
     )
     session.add(course)
     session.flush()
@@ -115,7 +135,10 @@ def _create_course(session, name: str, price: int, capacity: int = 30, allow_wai
 
 
 def _create_supply(session, name: str, price: int) -> ActivitySupply:
-    supply = ActivitySupply(name=name, price=price, is_active=True)
+    sy, sem = _current_term()
+    supply = ActivitySupply(
+        name=name, price=price, is_active=True, school_year=sy, semester=sem
+    )
     session.add(supply)
     session.flush()
     return supply
@@ -128,13 +151,18 @@ def _create_registration(
     class_name: str,
     is_active: bool = True,
     is_paid: bool = False,
+    parent_phone: str = "0912345678",
 ) -> ActivityRegistration:
+    sy, sem = _current_term()
     registration = ActivityRegistration(
         student_name=student_name,
         birthday="2020-01-01",
         class_name=class_name,
         is_active=is_active,
         is_paid=is_paid,
+        school_year=sy,
+        semester=sem,
+        parent_phone=parent_phone,
     )
     session.add(registration)
     session.flush()
@@ -142,7 +170,10 @@ def _create_registration(
 
 
 class TestPublicRegisterValidation:
-    def test_public_register_rejects_unknown_or_inactive_classroom(self, activity_client):
+    def test_public_register_unknown_class_goes_to_pending_review(
+        self, activity_client
+    ):
+        """班級不存在不再擋 400（避免洩漏系統狀態），而是進入待審核佇列。"""
         client, session_factory = activity_client
 
         with session_factory() as session:
@@ -155,14 +186,19 @@ class TestPublicRegisterValidation:
             json={
                 "name": "王小明",
                 "birthday": "2020-01-01",
+                "parent_phone": "0912345678",
                 "class": "不存在班級",
                 "courses": [{"name": "圍棋", "price": "1"}],
                 "supplies": [],
             },
         )
 
-        assert res.status_code == 400
-        assert "班級不存在或已停用" in res.json()["detail"]
+        assert res.status_code == 201
+        with session_factory() as session:
+            reg = session.query(ActivityRegistration).one()
+            assert reg.pending_review is True
+            assert reg.match_status == "pending"
+            assert reg.student_id is None
 
     def test_public_register_uses_db_prices_for_snapshots(self, activity_client):
         client, session_factory = activity_client
@@ -178,6 +214,7 @@ class TestPublicRegisterValidation:
             json={
                 "name": "王小明",
                 "birthday": "2020-01-01",
+                "parent_phone": "0912345678",
                 "class": "海豚班",
                 "courses": [{"name": "圍棋", "price": "1"}],
                 "supplies": [{"name": "教材包", "price": "2"}],
@@ -188,12 +225,16 @@ class TestPublicRegisterValidation:
 
         with session_factory() as session:
             registration = session.query(ActivityRegistration).one()
-            course_row = session.query(RegistrationCourse).filter(
-                RegistrationCourse.registration_id == registration.id
-            ).one()
-            supply_row = session.query(RegistrationSupply).filter(
-                RegistrationSupply.registration_id == registration.id
-            ).one()
+            course_row = (
+                session.query(RegistrationCourse)
+                .filter(RegistrationCourse.registration_id == registration.id)
+                .one()
+            )
+            supply_row = (
+                session.query(RegistrationSupply)
+                .filter(RegistrationSupply.registration_id == registration.id)
+                .one()
+            )
 
             assert course_row.price_snapshot == 1200
             assert supply_row.price_snapshot == 350
@@ -231,7 +272,9 @@ class TestActivityCacheInvalidation:
 
 
 class TestRegistrationListAggregation:
-    def test_admin_registration_list_preserves_counts_and_course_names(self, activity_client):
+    def test_admin_registration_list_preserves_counts_and_course_names(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
@@ -246,9 +289,27 @@ class TestRegistrationListAggregation:
                 class_name="海豚班",
                 is_paid=True,
             )
-            session.add(RegistrationCourse(registration_id=reg.id, course_id=course_a.id, status="enrolled", price_snapshot=1200))
-            session.add(RegistrationCourse(registration_id=reg.id, course_id=course_b.id, status="waitlist", price_snapshot=1500))
-            session.add(RegistrationSupply(registration_id=reg.id, supply_id=supply.id, price_snapshot=300))
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course_a.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course_b.id,
+                    status="waitlist",
+                    price_snapshot=1500,
+                )
+            )
+            session.add(
+                RegistrationSupply(
+                    registration_id=reg.id, supply_id=supply.id, price_snapshot=300
+                )
+            )
             session.commit()
 
         login_res = _login(client)
@@ -265,19 +326,30 @@ class TestRegistrationListAggregation:
 
 
 class TestSoftDeleteCapacityConsistency:
-    def test_soft_deleted_registration_releases_public_availability(self, activity_client):
+    def test_soft_deleted_registration_releases_public_availability(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
             _create_classroom(session, "海豚班")
-            course = _create_course(session, "圍棋", 1200, capacity=1, allow_waitlist=False)
+            course = _create_course(
+                session, "圍棋", 1200, capacity=1, allow_waitlist=False
+            )
             deleted_registration = _create_registration(
                 session,
                 student_name="乙生",
                 class_name="海豚班",
                 is_active=False,
             )
-            session.add(RegistrationCourse(registration_id=deleted_registration.id, course_id=course.id, status="enrolled", price_snapshot=1200))
+            session.add(
+                RegistrationCourse(
+                    registration_id=deleted_registration.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
             session.commit()
 
         res = client.get("/api/activity/public/courses/availability")
@@ -285,22 +357,40 @@ class TestSoftDeleteCapacityConsistency:
         assert res.status_code == 200
         assert res.json()["圍棋"] == 1
 
-    def test_soft_deleted_registration_excluded_from_admin_course_counts(self, activity_client):
+    def test_soft_deleted_registration_excluded_from_admin_course_counts(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
             _create_admin(session)
             _create_classroom(session, "海豚班")
             course = _create_course(session, "圍棋", 1200, capacity=3)
-            active_registration = _create_registration(session, student_name="甲生", class_name="海豚班")
+            active_registration = _create_registration(
+                session, student_name="甲生", class_name="海豚班"
+            )
             deleted_registration = _create_registration(
                 session,
                 student_name="乙生",
                 class_name="海豚班",
                 is_active=False,
             )
-            session.add(RegistrationCourse(registration_id=active_registration.id, course_id=course.id, status="enrolled", price_snapshot=1200))
-            session.add(RegistrationCourse(registration_id=deleted_registration.id, course_id=course.id, status="waitlist", price_snapshot=1200))
+            session.add(
+                RegistrationCourse(
+                    registration_id=active_registration.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=deleted_registration.id,
+                    course_id=course.id,
+                    status="waitlist",
+                    price_snapshot=1200,
+                )
+            )
             session.commit()
 
         login_res = _login(client)
@@ -314,7 +404,9 @@ class TestSoftDeleteCapacityConsistency:
         assert course_row["waitlist_count"] == 0
         assert course_row["remaining"] == 2
 
-    def test_promote_waitlist_ignores_soft_deleted_registration_capacity(self, activity_client):
+    def test_promote_waitlist_ignores_soft_deleted_registration_capacity(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
@@ -327,9 +419,25 @@ class TestSoftDeleteCapacityConsistency:
                 class_name="海豚班",
                 is_active=False,
             )
-            waiting_registration = _create_registration(session, student_name="新候補", class_name="海豚班")
-            session.add(RegistrationCourse(registration_id=deleted_registration.id, course_id=course.id, status="enrolled", price_snapshot=1200))
-            session.add(RegistrationCourse(registration_id=waiting_registration.id, course_id=course.id, status="waitlist", price_snapshot=1200))
+            waiting_registration = _create_registration(
+                session, student_name="新候補", class_name="海豚班"
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=deleted_registration.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=waiting_registration.id,
+                    course_id=course.id,
+                    status="waitlist",
+                    price_snapshot=1200,
+                )
+            )
             session.commit()
             course_id = course.id
             waiting_registration_id = waiting_registration.id
@@ -345,13 +453,19 @@ class TestSoftDeleteCapacityConsistency:
         assert res.status_code == 200
 
         with session_factory() as session:
-            promoted = session.query(RegistrationCourse).filter(
-                RegistrationCourse.registration_id == waiting_registration_id,
-                RegistrationCourse.course_id == course_id,
-            ).one()
+            promoted = (
+                session.query(RegistrationCourse)
+                .filter(
+                    RegistrationCourse.registration_id == waiting_registration_id,
+                    RegistrationCourse.course_id == course_id,
+                )
+                .one()
+            )
             assert promoted.status == "enrolled"
 
-    def test_delete_course_ignores_soft_deleted_historical_registration(self, activity_client):
+    def test_delete_course_ignores_soft_deleted_historical_registration(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
@@ -364,12 +478,14 @@ class TestSoftDeleteCapacityConsistency:
                 class_name="海豚班",
                 is_active=False,
             )
-            session.add(RegistrationCourse(
-                registration_id=deleted_registration.id,
-                course_id=course.id,
-                status="enrolled",
-                price_snapshot=1200,
-            ))
+            session.add(
+                RegistrationCourse(
+                    registration_id=deleted_registration.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
             session.commit()
             course_id = course.id
 
@@ -381,7 +497,11 @@ class TestSoftDeleteCapacityConsistency:
         assert res.status_code == 200
 
         with session_factory() as session:
-            course = session.query(ActivityCourse).filter(ActivityCourse.id == course_id).one()
+            course = (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id == course_id)
+                .one()
+            )
             assert course.is_active is False
 
 
@@ -393,18 +513,24 @@ class TestPublicUpdateRegressions:
             _create_classroom(session, "海豚班")
             course = _create_course(session, "圍棋", 1200)
             supply = _create_supply(session, "教材包", 350)
-            registration = _create_registration(session, student_name="王小明", class_name="海豚班")
-            session.add(RegistrationCourse(
-                registration_id=registration.id,
-                course_id=course.id,
-                status="enrolled",
-                price_snapshot=1200,
-            ))
-            session.add(RegistrationSupply(
-                registration_id=registration.id,
-                supply_id=supply.id,
-                price_snapshot=350,
-            ))
+            registration = _create_registration(
+                session, student_name="王小明", class_name="海豚班"
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=registration.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            session.add(
+                RegistrationSupply(
+                    registration_id=registration.id,
+                    supply_id=supply.id,
+                    price_snapshot=350,
+                )
+            )
             session.commit()
             registration_id = registration.id
 
@@ -414,6 +540,7 @@ class TestPublicUpdateRegressions:
                 "id": registration_id,
                 "name": "王小明",
                 "birthday": "2020-01-01",
+                "parent_phone": "0912345678",
                 "class": "海豚班",
                 "courses": [{"name": "圍棋", "price": "1"}],
                 "supplies": [{"name": "教材包", "price": "2"}],
@@ -423,17 +550,23 @@ class TestPublicUpdateRegressions:
         assert res.status_code == 200
 
         with session_factory() as session:
-            course_row = session.query(RegistrationCourse).filter(
-                RegistrationCourse.registration_id == registration_id
-            ).one()
-            supply_row = session.query(RegistrationSupply).filter(
-                RegistrationSupply.registration_id == registration_id
-            ).one()
+            course_row = (
+                session.query(RegistrationCourse)
+                .filter(RegistrationCourse.registration_id == registration_id)
+                .one()
+            )
+            supply_row = (
+                session.query(RegistrationSupply)
+                .filter(RegistrationSupply.registration_id == registration_id)
+                .one()
+            )
 
             assert course_row.price_snapshot == 1200
             assert supply_row.price_snapshot == 350
 
-    def test_public_update_ignores_soft_deleted_registration_capacity(self, activity_client):
+    def test_public_update_ignores_soft_deleted_registration_capacity(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
@@ -450,12 +583,14 @@ class TestPublicUpdateRegressions:
                 student_name="王小明",
                 class_name="海豚班",
             )
-            session.add(RegistrationCourse(
-                registration_id=deleted_registration.id,
-                course_id=course.id,
-                status="enrolled",
-                price_snapshot=1200,
-            ))
+            session.add(
+                RegistrationCourse(
+                    registration_id=deleted_registration.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
             session.commit()
             course_id = course.id
             registration_id = target_registration.id
@@ -466,6 +601,7 @@ class TestPublicUpdateRegressions:
                 "id": registration_id,
                 "name": "王小明",
                 "birthday": "2020-01-01",
+                "parent_phone": "0912345678",
                 "class": "海豚班",
                 "courses": [{"name": "圍棋", "price": "1200"}],
                 "supplies": [],
@@ -475,13 +611,19 @@ class TestPublicUpdateRegressions:
         assert res.status_code == 200
 
         with session_factory() as session:
-            course_row = session.query(RegistrationCourse).filter(
-                RegistrationCourse.registration_id == registration_id,
-                RegistrationCourse.course_id == course_id,
-            ).one()
+            course_row = (
+                session.query(RegistrationCourse)
+                .filter(
+                    RegistrationCourse.registration_id == registration_id,
+                    RegistrationCourse.course_id == course_id,
+                )
+                .one()
+            )
             assert course_row.status == "enrolled"
 
-    def test_public_query_waitlist_position_excludes_soft_deleted_rows(self, activity_client):
+    def test_public_query_waitlist_position_excludes_soft_deleted_rows(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
@@ -498,23 +640,31 @@ class TestPublicUpdateRegressions:
                 student_name="王小明",
                 class_name="海豚班",
             )
-            session.add(RegistrationCourse(
-                registration_id=deleted_registration.id,
-                course_id=course.id,
-                status="waitlist",
-                price_snapshot=1200,
-            ))
-            session.add(RegistrationCourse(
-                registration_id=target_registration.id,
-                course_id=course.id,
-                status="waitlist",
-                price_snapshot=1200,
-            ))
+            session.add(
+                RegistrationCourse(
+                    registration_id=deleted_registration.id,
+                    course_id=course.id,
+                    status="waitlist",
+                    price_snapshot=1200,
+                )
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=target_registration.id,
+                    course_id=course.id,
+                    status="waitlist",
+                    price_snapshot=1200,
+                )
+            )
             session.commit()
 
         res = client.get(
             "/api/activity/public/query",
-            params={"name": "王小明", "birthday": "2020-01-01"},
+            params={
+                "name": "王小明",
+                "birthday": "2020-01-01",
+                "parent_phone": "0912345678",
+            },
         )
 
         assert res.status_code == 200
@@ -522,13 +672,19 @@ class TestPublicUpdateRegressions:
         assert waitlist_course["status"] == "waitlist"
         assert waitlist_course["waitlist_position"] == 1
 
-    def test_public_update_rejects_unknown_or_inactive_classroom(self, activity_client):
+    def test_public_update_unknown_class_is_soft_accepted_for_pending(
+        self, activity_client
+    ):
+        """public/update 不再硬擋停用班級。若 registration 尚無 classroom_id（pending
+        狀態），接受家長輸入的字串（後台可在審核時修正）。"""
         client, session_factory = activity_client
 
         with session_factory() as session:
             _create_classroom(session, "海豚班")
             _create_classroom(session, "向日葵班", is_active=False)
-            registration = _create_registration(session, student_name="王小明", class_name="海豚班")
+            registration = _create_registration(
+                session, student_name="王小明", class_name="海豚班"
+            )
             session.commit()
             registration_id = registration.id
 
@@ -538,11 +694,16 @@ class TestPublicUpdateRegressions:
                 "id": registration_id,
                 "name": "王小明",
                 "birthday": "2020-01-01",
+                "parent_phone": "0912345678",
                 "class": "向日葵班",
                 "courses": [],
                 "supplies": [],
             },
         )
 
-        assert res.status_code == 400
-        assert "班級不存在或已停用" in res.json()["detail"]
+        assert res.status_code == 200
+        with session_factory() as session:
+            reg = (
+                session.query(ActivityRegistration).filter_by(id=registration_id).one()
+            )
+            assert reg.class_name == "向日葵班"

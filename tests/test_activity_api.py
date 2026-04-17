@@ -34,20 +34,26 @@ from models.activity import (
 )
 from models.database import Classroom
 from api.activity._shared import (
-    _derive_payment_status, _batch_calc_total_amounts,
-    _check_registration_open, _attach_courses, _attach_supplies,
+    _derive_payment_status,
+    _batch_calc_total_amounts,
+    _check_registration_open,
+    _attach_courses,
+    _attach_supplies,
     _build_session_detail_response,
-    PublicCourseItem, PublicSupplyItem,
+    PublicCourseItem,
+    PublicSupplyItem,
 )
-
 
 # ────────────────────────────────────────────────────────────────── #
 # Fixtures
 # ────────────────────────────────────────────────────────────────── #
 
+
 @pytest.fixture
 def session():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     s = Session()
@@ -77,7 +83,9 @@ def _add_reg(session, student="王小明", cls="大班") -> ActivityRegistration
     return r
 
 
-def _enroll(session, reg_id: int, course_id: int, price: int = 1000, status: str = "enrolled") -> RegistrationCourse:
+def _enroll(
+    session, reg_id: int, course_id: int, price: int = 1000, status: str = "enrolled"
+) -> RegistrationCourse:
     rc = RegistrationCourse(
         registration_id=reg_id,
         course_id=course_id,
@@ -89,8 +97,11 @@ def _enroll(session, reg_id: int, course_id: int, price: int = 1000, status: str
     return rc
 
 
-def _add_payment_record(session, reg_id: int, type_: str, amount: int) -> ActivityPaymentRecord:
+def _add_payment_record(
+    session, reg_id: int, type_: str, amount: int
+) -> ActivityPaymentRecord:
     from datetime import date
+
     rec = ActivityPaymentRecord(
         registration_id=reg_id,
         type=type_,
@@ -108,6 +119,7 @@ def _add_payment_record(session, reg_id: int, type_: str, amount: int) -> Activi
 # ────────────────────────────────────────────────────────────────── #
 # P7-1：TestDerivePaymentStatus（純邏輯，無 DB）
 # ────────────────────────────────────────────────────────────────── #
+
 
 class TestDerivePaymentStatus:
     def test_unpaid_when_paid_amount_zero(self):
@@ -134,6 +146,7 @@ class TestDerivePaymentStatus:
 # ────────────────────────────────────────────────────────────────── #
 # P7-1b：TestBatchCalcTotalAmounts（P3 N+1 修正）
 # ────────────────────────────────────────────────────────────────── #
+
 
 class TestBatchCalcTotalAmounts:
     def test_returns_correct_totals(self, session):
@@ -167,6 +180,7 @@ class TestBatchCalcTotalAmounts:
     def test_includes_supply_amount(self, session):
         """包含用品金額"""
         from models.activity import ActivitySupply, RegistrationSupply
+
         course = _add_course(session, price=500)
         supply = ActivitySupply(name="畫筆", price=200)
         session.add(supply)
@@ -189,6 +203,7 @@ class TestBatchCalcTotalAmounts:
 # P7-2：TestBatchPayment（整合，模擬 batch_update_payment 邏輯）
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestBatchPayment:
     def test_batch_mark_paid_updates_paid_amount(self, session):
         """批次標記已繳費後 paid_amount 應補齊至 total_amount"""
@@ -199,6 +214,7 @@ class TestBatchPayment:
 
         # 模擬 batch_update_payment 邏輯
         from api.activity._shared import _batch_calc_total_amounts
+
         total_map = _batch_calc_total_amounts(session, [reg.id])
         total_amount = total_map[reg.id]
         shortfall = total_amount - (reg.paid_amount or 0)
@@ -234,14 +250,18 @@ class TestBatchPayment:
         session.refresh(reg)
         assert reg.paid_amount == 0
         assert reg.is_paid is False
-        assert session.query(ActivityPaymentRecord).filter(
-            ActivityPaymentRecord.registration_id == reg.id
-        ).count() == 0
+        assert (
+            session.query(ActivityPaymentRecord)
+            .filter(ActivityPaymentRecord.registration_id == reg.id)
+            .count()
+            == 0
+        )
 
 
 # ────────────────────────────────────────────────────────────────── #
 # P7-3：TestSinglePayment（整合，模擬 add/delete payment 邏輯）
 # ────────────────────────────────────────────────────────────────── #
+
 
 class TestSinglePayment:
     def test_add_payment_increases_paid_amount(self, session):
@@ -278,6 +298,7 @@ class TestSinglePayment:
     def test_delete_payment_recalculates(self, session):
         """刪除繳費記錄後重新計算正確"""
         from sqlalchemy import func
+
         course = _add_course(session, price=1000)
         reg = _add_reg(session)
         _enroll(session, reg.id, course.id, price=1000)
@@ -292,7 +313,9 @@ class TestSinglePayment:
         session.flush()
 
         totals = (
-            session.query(ActivityPaymentRecord.type, func.sum(ActivityPaymentRecord.amount))
+            session.query(
+                ActivityPaymentRecord.type, func.sum(ActivityPaymentRecord.amount)
+            )
             .filter(ActivityPaymentRecord.registration_id == reg.id)
             .group_by(ActivityPaymentRecord.type)
             .all()
@@ -309,6 +332,7 @@ class TestSinglePayment:
 # ────────────────────────────────────────────────────────────────── #
 # P7-4：TestRegistrationList（查詢篩選邏輯）
 # ────────────────────────────────────────────────────────────────── #
+
 
 class TestRegistrationList:
     def test_active_only_returned(self, session):
@@ -361,9 +385,11 @@ class TestRegistrationList:
             _add_reg(session, f"學生{i}")
         session.commit()
 
-        total = session.query(ActivityRegistration).filter(
-            ActivityRegistration.is_active.is_(True)
-        ).count()
+        total = (
+            session.query(ActivityRegistration)
+            .filter(ActivityRegistration.is_active.is_(True))
+            .count()
+        )
         assert total == 5
 
 
@@ -371,20 +397,22 @@ class TestRegistrationList:
 # P7-5：TestCourseAPI（課程 CRUD 邏輯）
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestCourseAPI:
     def test_duplicate_course_name_detected(self, session):
         """重複課程名稱應可被偵測"""
         _add_course(session, name="圍棋")
         session.commit()
 
-        existing = session.query(ActivityCourse).filter(
-            ActivityCourse.name == "圍棋"
-        ).first()
+        existing = (
+            session.query(ActivityCourse).filter(ActivityCourse.name == "圍棋").first()
+        )
         assert existing is not None, "重複名稱應被偵測到"
 
     def test_course_with_registrations_cannot_be_deleted(self, session):
         """有報名記錄的課程刪除前應先檢查"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         course = _add_course(session, name="芭蕾")
@@ -398,6 +426,7 @@ class TestCourseAPI:
     def test_course_without_registrations_can_be_deleted(self, session):
         """無報名記錄的課程可以停用"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         course = _add_course(session, name="游泳")
@@ -415,7 +444,9 @@ def _add_classroom(session, name="大班") -> Classroom:
 
 
 def _add_settings(session, is_open=True, open_at=None, close_at=None):
-    s = ActivityRegistrationSettings(is_open=is_open, open_at=open_at, close_at=close_at)
+    s = ActivityRegistrationSettings(
+        is_open=is_open, open_at=open_at, close_at=close_at
+    )
     session.add(s)
     session.flush()
     return s
@@ -433,6 +464,7 @@ def _make_supply_item(name: str) -> PublicSupplyItem:
 # TestCheckRegistrationOpen
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestCheckRegistrationOpen:
     def test_no_settings_passes(self, session):
         """無設定時不拋例外（允許報名）"""
@@ -446,6 +478,7 @@ class TestCheckRegistrationOpen:
     def test_open_flag_false_raises(self, session):
         """is_open=False 應拋 400"""
         from fastapi import HTTPException
+
         _add_settings(session, is_open=False)
         with pytest.raises(HTTPException) as exc_info:
             _check_registration_open(session)
@@ -455,6 +488,7 @@ class TestCheckRegistrationOpen:
     def test_before_open_time_raises(self, session):
         """早於 open_at 應拋 400"""
         from fastapi import HTTPException
+
         _add_settings(session, is_open=True, open_at="2099-01-01T00:00")
         with pytest.raises(HTTPException) as exc_info:
             _check_registration_open(session)
@@ -464,6 +498,7 @@ class TestCheckRegistrationOpen:
     def test_after_close_time_raises(self, session):
         """晚於 close_at 應拋 400"""
         from fastapi import HTTPException
+
         _add_settings(session, is_open=True, close_at="2000-01-01T00:00")
         with pytest.raises(HTTPException) as exc_info:
             _check_registration_open(session)
@@ -475,6 +510,7 @@ class TestCheckRegistrationOpen:
 # TestAttachCourses
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestAttachCourses:
     def test_enroll_when_capacity_available(self, session):
         """有名額時應建立 enrolled 記錄"""
@@ -485,13 +521,19 @@ class TestAttachCourses:
         courses_by_name = {course.name: course}
         enrolled_count_map = {course.id: 0}
         has_waitlist, wl_names = _attach_courses(
-            session, reg.id, [_make_course_item("鋼琴")], courses_by_name, enrolled_count_map
+            session,
+            reg.id,
+            [_make_course_item("鋼琴")],
+            courses_by_name,
+            enrolled_count_map,
         )
 
         assert not has_waitlist
-        rc = session.query(RegistrationCourse).filter(
-            RegistrationCourse.registration_id == reg.id
-        ).first()
+        rc = (
+            session.query(RegistrationCourse)
+            .filter(RegistrationCourse.registration_id == reg.id)
+            .first()
+        )
         assert rc is not None
         assert rc.status == "enrolled"
         assert rc.price_snapshot == 1000
@@ -507,20 +549,29 @@ class TestAttachCourses:
         courses_by_name = {course.name: course}
         enrolled_count_map = {course.id: 1}  # 已滿
         has_waitlist, wl_names = _attach_courses(
-            session, reg.id, [_make_course_item("芭蕾")], courses_by_name, enrolled_count_map
+            session,
+            reg.id,
+            [_make_course_item("芭蕾")],
+            courses_by_name,
+            enrolled_count_map,
         )
 
         assert has_waitlist
         assert "芭蕾" in wl_names
-        rc = session.query(RegistrationCourse).filter(
-            RegistrationCourse.registration_id == reg.id
-        ).first()
+        rc = (
+            session.query(RegistrationCourse)
+            .filter(RegistrationCourse.registration_id == reg.id)
+            .first()
+        )
         assert rc.status == "waitlist"
 
     def test_full_no_waitlist_raises(self, session):
         """課程額滿且 allow_waitlist=False 應拋 400"""
         from fastapi import HTTPException
-        course = ActivityCourse(name="游泳", price=500, capacity=1, allow_waitlist=False)
+
+        course = ActivityCourse(
+            name="游泳", price=500, capacity=1, allow_waitlist=False
+        )
         session.add(course)
         session.flush()
         reg = _add_reg(session)
@@ -530,7 +581,11 @@ class TestAttachCourses:
         enrolled_count_map = {course.id: 1}  # 已滿
         with pytest.raises(HTTPException) as exc_info:
             _attach_courses(
-                session, reg.id, [_make_course_item("游泳")], courses_by_name, enrolled_count_map
+                session,
+                reg.id,
+                [_make_course_item("游泳")],
+                courses_by_name,
+                enrolled_count_map,
             )
         assert exc_info.value.status_code == 400
         assert "不開放候補" in exc_info.value.detail
@@ -538,19 +593,19 @@ class TestAttachCourses:
     def test_course_not_found_raises(self, session):
         """找不到課程應拋 400"""
         from fastapi import HTTPException
+
         reg = _add_reg(session)
         session.commit()
 
         with pytest.raises(HTTPException) as exc_info:
-            _attach_courses(
-                session, reg.id, [_make_course_item("不存在的課")], {}, {}
-            )
+            _attach_courses(session, reg.id, [_make_course_item("不存在的課")], {}, {})
         assert exc_info.value.status_code == 400
 
 
 # ────────────────────────────────────────────────────────────────── #
 # TestAttachSupplies
 # ────────────────────────────────────────────────────────────────── #
+
 
 class TestAttachSupplies:
     def test_supply_attached_correctly(self, session):
@@ -564,15 +619,18 @@ class TestAttachSupplies:
         supplies_by_name = {supply.name: supply}
         _attach_supplies(session, reg.id, [_make_supply_item("畫筆")], supplies_by_name)
 
-        rs = session.query(RegistrationSupply).filter(
-            RegistrationSupply.registration_id == reg.id
-        ).first()
+        rs = (
+            session.query(RegistrationSupply)
+            .filter(RegistrationSupply.registration_id == reg.id)
+            .first()
+        )
         assert rs is not None
         assert rs.price_snapshot == 150
 
     def test_supply_not_found_raises(self, session):
         """找不到用品應拋 400"""
         from fastapi import HTTPException
+
         reg = _add_reg(session)
         session.commit()
 
@@ -584,6 +642,7 @@ class TestAttachSupplies:
 # ────────────────────────────────────────────────────────────────── #
 # TestDuplicateRegistrationGuard
 # ────────────────────────────────────────────────────────────────── #
+
 
 class TestDuplicateRegistrationGuard:
     def test_duplicate_detected_via_query(self, session):
@@ -597,11 +656,15 @@ class TestDuplicateRegistrationGuard:
         session.add(reg)
         session.commit()
 
-        existing = session.query(ActivityRegistration).filter(
-            ActivityRegistration.student_name == "王小明",
-            ActivityRegistration.birthday == "2020-01-01",
-            ActivityRegistration.is_active.is_(True),
-        ).first()
+        existing = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.student_name == "王小明",
+                ActivityRegistration.birthday == "2020-01-01",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
+        )
         assert existing is not None
 
     def test_inactive_registration_not_detected_as_duplicate(self, session):
@@ -615,11 +678,15 @@ class TestDuplicateRegistrationGuard:
         session.add(reg)
         session.commit()
 
-        existing = session.query(ActivityRegistration).filter(
-            ActivityRegistration.student_name == "王小明",
-            ActivityRegistration.birthday == "2020-01-01",
-            ActivityRegistration.is_active.is_(True),
-        ).first()
+        existing = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.student_name == "王小明",
+                ActivityRegistration.birthday == "2020-01-01",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
+        )
         assert existing is None
 
     def test_different_student_no_conflict(self, session):
@@ -633,11 +700,15 @@ class TestDuplicateRegistrationGuard:
         session.add(reg)
         session.commit()
 
-        existing = session.query(ActivityRegistration).filter(
-            ActivityRegistration.student_name == "李小華",
-            ActivityRegistration.birthday == "2020-01-01",
-            ActivityRegistration.is_active.is_(True),
-        ).first()
+        existing = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.student_name == "李小華",
+                ActivityRegistration.birthday == "2020-01-01",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
+        )
         assert existing is None
 
 
@@ -645,10 +716,12 @@ class TestDuplicateRegistrationGuard:
 # Phase 4-B：TestPromoteWaitlist（候補升正式邏輯）
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestPromoteWaitlist:
     def test_promote_waitlist_success(self, session):
         """capacity=2、1 enrolled、1 waitlist → 升位後 status 變 enrolled"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         course = _add_course(session, name="鋼琴", capacity=2)
@@ -658,20 +731,27 @@ class TestPromoteWaitlist:
         _enroll(session, reg_waitlist.id, course.id, status="waitlist")
         session.commit()
 
-        student_name, course_name = svc.promote_waitlist(session, reg_waitlist.id, course.id)
+        student_name, course_name = svc.promote_waitlist(
+            session, reg_waitlist.id, course.id
+        )
         session.flush()
 
         assert student_name == "學生B"
         assert course_name == "鋼琴"
-        rc = session.query(RegistrationCourse).filter(
-            RegistrationCourse.registration_id == reg_waitlist.id,
-            RegistrationCourse.course_id == course.id,
-        ).first()
+        rc = (
+            session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == reg_waitlist.id,
+                RegistrationCourse.course_id == course.id,
+            )
+            .first()
+        )
         assert rc.status == "enrolled"
 
     def test_promote_waitlist_not_found_raises(self, session):
         """報名項目不存在或非候補狀態時拋 ValueError"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         course = _add_course(session)
@@ -685,6 +765,7 @@ class TestPromoteWaitlist:
     def test_promote_waitlist_full_raises(self, session):
         """capacity=1 且已有 1 enrolled，再嘗試升位應拋 ValueError 含「容量已滿」"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         course = _add_course(session, name="芭蕾", capacity=1)
@@ -700,6 +781,7 @@ class TestPromoteWaitlist:
     def test_promote_waitlist_course_not_exist_raises(self, session):
         """course_id 不存在時拋 ValueError"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         reg = _add_reg(session)
@@ -721,10 +803,12 @@ class TestPromoteWaitlist:
 # Phase 4-B：TestDeleteRegistration（刪除報名邏輯）
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestDeleteRegistration:
     def test_delete_sets_inactive(self, session):
         """呼叫 delete_registration 後 is_active 變 False"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         reg = _add_reg(session, "王小明")
@@ -739,6 +823,7 @@ class TestDeleteRegistration:
     def test_delete_auto_promotes_waitlist(self, session):
         """刪除 enrolled 報名後，候補第一位自動升正式"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         course = _add_course(session, name="圍棋", capacity=2)
@@ -751,15 +836,20 @@ class TestDeleteRegistration:
         svc.delete_registration(session, reg_enrolled.id, "admin")
         session.flush()
 
-        rc = session.query(RegistrationCourse).filter(
-            RegistrationCourse.registration_id == reg_waitlist.id,
-            RegistrationCourse.course_id == course.id,
-        ).first()
+        rc = (
+            session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == reg_waitlist.id,
+                RegistrationCourse.course_id == course.id,
+            )
+            .first()
+        )
         assert rc.status == "enrolled"
 
     def test_delete_no_waitlist_no_error(self, session):
         """課程無候補時刪除不拋錯"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         course = _add_course(session)
@@ -776,6 +866,7 @@ class TestDeleteRegistration:
     def test_delete_not_found_raises(self, session):
         """傳入不存在的 ID 拋 ValueError"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         with pytest.raises(ValueError, match="找不到報名資料"):
@@ -786,10 +877,12 @@ class TestDeleteRegistration:
 # Phase 4-B：TestGetRegistrationDetail（詳情相關邏輯）
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestGetRegistrationDetail:
     def test_total_amount_excludes_waitlist(self, session):
         """enrolled 課程計入 total_amount，waitlist 不計入"""
         from api.activity._shared import _batch_calc_total_amounts
+
         course = _add_course(session, price=800)
         reg = _add_reg(session)
         _enroll(session, reg.id, course.id, price=800, status="enrolled")
@@ -797,10 +890,14 @@ class TestGetRegistrationDetail:
         # 第二個 course_id 不存在沒關係，只要 price_snapshot 在 DB 裡
         # 改用兩門不同課程
         course2 = _add_course(session, name="游泳", price=500, capacity=1)
-        rc2 = session.query(RegistrationCourse).filter(
-            RegistrationCourse.registration_id == reg.id,
-            RegistrationCourse.course_id != course.id,
-        ).first()
+        rc2 = (
+            session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == reg.id,
+                RegistrationCourse.course_id != course.id,
+            )
+            .first()
+        )
         if rc2:
             session.delete(rc2)
         _enroll(session, reg.id, course2.id, price=500, status="waitlist")
@@ -812,6 +909,7 @@ class TestGetRegistrationDetail:
     def test_total_amount_includes_supplies(self, session):
         """用品金額計入 total_amount"""
         from api.activity._shared import _batch_calc_total_amounts
+
         course = _add_course(session, price=600)
         supply = ActivitySupply(name="畫筆", price=200, is_active=True)
         session.add(supply)
@@ -859,15 +957,21 @@ class TestGetRegistrationDetail:
 # TestBuildSessionDetailResponse（點名詳情計數邏輯）
 # ────────────────────────────────────────────────────────────────── #
 
+
 def _add_session(session, course_id: int) -> ActivitySession:
     from datetime import date
-    s = ActivitySession(course_id=course_id, session_date=date.today(), created_by="test")
+
+    s = ActivitySession(
+        course_id=course_id, session_date=date.today(), created_by="test"
+    )
     session.add(s)
     session.flush()
     return s
 
 
-def _add_attendance(session, session_id: int, registration_id: int, is_present: bool) -> ActivityAttendance:
+def _add_attendance(
+    session, session_id: int, registration_id: int, is_present: bool
+) -> ActivityAttendance:
     a = ActivityAttendance(
         session_id=session_id,
         registration_id=registration_id,
@@ -942,14 +1046,18 @@ class TestBuildSessionDetailResponse:
 # TestAttendanceStatsIsActiveFilter（停用課程不計入統計）
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestAttendanceStatsIsActiveFilter:
     def test_inactive_course_excluded(self, session):
         """停用課程（is_active=False）的點名記錄不計入 get_attendance_stats"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
         active_course = _add_course(session, name="主動課程")
-        inactive_course = ActivityCourse(name="停用課程", price=500, capacity=10, is_active=False)
+        inactive_course = ActivityCourse(
+            name="停用課程", price=500, capacity=10, is_active=False
+        )
         session.add(inactive_course)
         session.flush()
 
@@ -973,9 +1081,12 @@ class TestAttendanceStatsIsActiveFilter:
     def test_only_active_courses_in_stats(self, session):
         """無活躍課程時，by_course 應為空"""
         from services.activity_service import ActivityService
+
         svc = ActivityService()
 
-        inactive_course = ActivityCourse(name="已停用", price=500, capacity=10, is_active=False)
+        inactive_course = ActivityCourse(
+            name="已停用", price=500, capacity=10, is_active=False
+        )
         session.add(inactive_course)
         session.flush()
         reg = _add_reg(session)
@@ -992,11 +1103,13 @@ class TestAttendanceStatsIsActiveFilter:
 # Pydantic 批次上限防禦
 # ────────────────────────────────────────────────────────────────── #
 
+
 class TestBatchInputLimits:
     def test_batch_payment_update_max_length(self):
         """BatchPaymentUpdate.ids 超過 500 筆應拋 ValidationError"""
         from pydantic import ValidationError
         from api.activity._shared import BatchPaymentUpdate
+
         with pytest.raises(ValidationError):
             BatchPaymentUpdate(ids=list(range(501)), is_paid=True)
 
@@ -1004,12 +1117,14 @@ class TestBatchInputLimits:
         """BatchPaymentUpdate.ids 空列表應拋 ValidationError"""
         from pydantic import ValidationError
         from api.activity._shared import BatchPaymentUpdate
+
         with pytest.raises(ValidationError):
             BatchPaymentUpdate(ids=[], is_paid=True)
 
     def test_batch_payment_update_valid(self):
         """BatchPaymentUpdate.ids 正常 500 筆不應拋例外"""
         from api.activity._shared import BatchPaymentUpdate
+
         obj = BatchPaymentUpdate(ids=list(range(500)), is_paid=False)
         assert len(obj.ids) == 500
 
@@ -1017,21 +1132,32 @@ class TestBatchInputLimits:
         """PublicRegistrationPayload.courses 超過 20 筆應拋 ValidationError"""
         from pydantic import ValidationError
         from api.activity._shared import PublicRegistrationPayload, PublicCourseItem
+
         courses = [PublicCourseItem(name=f"課程{i}", price="1000") for i in range(21)]
         with pytest.raises(ValidationError):
             PublicRegistrationPayload(
-                name="王小明", birthday="2020-01-01",
-                **{"class": "大班A"}, courses=courses,
+                name="王小明",
+                birthday="2020-01-01",
+                parent_phone="0912345678",
+                **{"class": "大班A"},
+                courses=courses,
             )
 
     def test_public_registration_supplies_max_length(self):
         """PublicRegistrationPayload.supplies 超過 20 筆應拋 ValidationError"""
         from pydantic import ValidationError
-        from api.activity._shared import PublicRegistrationPayload, PublicCourseItem, PublicSupplyItem
+        from api.activity._shared import (
+            PublicRegistrationPayload,
+            PublicCourseItem,
+            PublicSupplyItem,
+        )
+
         supplies = [PublicSupplyItem(name=f"用品{i}", price="100") for i in range(21)]
         with pytest.raises(ValidationError):
             PublicRegistrationPayload(
-                name="王小明", birthday="2020-01-01",
+                name="王小明",
+                birthday="2020-01-01",
+                parent_phone="0912345678",
                 **{"class": "大班A"},
                 courses=[PublicCourseItem(name="美術", price="1000")],
                 supplies=supplies,
@@ -1041,12 +1167,18 @@ class TestBatchInputLimits:
         """BatchAttendanceUpdate.records 超過 500 筆應拋 ValidationError"""
         from pydantic import ValidationError
         from api.activity.attendance import BatchAttendanceUpdate, AttendanceRecordItem
-        records = [AttendanceRecordItem(registration_id=i, is_present=True) for i in range(501)]
+
+        records = [
+            AttendanceRecordItem(registration_id=i, is_present=True) for i in range(501)
+        ]
         with pytest.raises(ValidationError):
             BatchAttendanceUpdate(records=records)
 
     def test_batch_attendance_update_valid(self):
         """BatchAttendanceUpdate.records 正常 1 筆不應拋例外"""
         from api.activity.attendance import BatchAttendanceUpdate, AttendanceRecordItem
-        obj = BatchAttendanceUpdate(records=[AttendanceRecordItem(registration_id=1, is_present=True)])
+
+        obj = BatchAttendanceUpdate(
+            records=[AttendanceRecordItem(registration_id=1, is_present=True)]
+        )
         assert len(obj.records) == 1

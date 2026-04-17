@@ -3,18 +3,28 @@ api/activity/courses.py — 課程管理端點（5 個）
 """
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from models.database import get_session, ActivityCourse, RegistrationCourse, ActivityRegistration
+from models.database import (
+    get_session,
+    ActivityCourse,
+    RegistrationCourse,
+    ActivityRegistration,
+)
 from sqlalchemy import func
 from services.activity_service import activity_service
+from utils.academic import resolve_academic_term_filters, resolve_current_academic_term
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 from ._shared import (
-    CourseCreate, CourseUpdate,
-    _not_found, _duplicate_name,
+    CopyCoursesRequest,
+    CourseCreate,
+    CourseUpdate,
+    _not_found,
+    _duplicate_name,
     _invalidate_activity_dashboard_caches,
 )
 
@@ -26,12 +36,19 @@ router = APIRouter()
 async def get_courses(
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
+    school_year: Optional[int] = Query(None, ge=100, le=200),
+    semester: Optional[int] = Query(None, ge=1, le=2),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得課程列表（含報名統計，支援分頁）"""
+    """取得課程列表（含報名統計，支援分頁，依學期過濾）"""
     session = get_session()
     try:
-        q = session.query(ActivityCourse).filter(ActivityCourse.is_active.is_(True))
+        sy, sem = resolve_academic_term_filters(school_year, semester)
+        q = session.query(ActivityCourse).filter(
+            ActivityCourse.is_active.is_(True),
+            ActivityCourse.school_year == sy,
+            ActivityCourse.semester == sem,
+        )
         total = q.count()
         courses = q.order_by(ActivityCourse.id).offset(skip).limit(limit).all()
 
@@ -45,7 +62,10 @@ async def get_courses(
                     RegistrationCourse.status,
                     func.count(RegistrationCourse.id),
                 )
-                .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
                 .filter(
                     RegistrationCourse.course_id.in_(course_ids),
                     ActivityRegistration.is_active.is_(True),
@@ -65,20 +85,31 @@ async def get_courses(
             enrolled = enrolled_map.get(c.id, 0)
             waitlist = waitlist_map.get(c.id, 0)
             capacity = c.capacity if c.capacity is not None else 30
-            items.append({
-                "id": c.id,
-                "name": c.name,
-                "price": c.price,
-                "sessions": c.sessions,
-                "capacity": capacity,
-                "video_url": c.video_url or "",
-                "allow_waitlist": c.allow_waitlist,
-                "description": c.description or "",
-                "enrolled": enrolled,
-                "waitlist_count": waitlist,
-                "remaining": max(0, capacity - enrolled),
-            })
-        return {"courses": items, "total": total, "skip": skip, "limit": limit}
+            items.append(
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "price": c.price,
+                    "sessions": c.sessions,
+                    "capacity": capacity,
+                    "video_url": c.video_url or "",
+                    "allow_waitlist": c.allow_waitlist,
+                    "description": c.description or "",
+                    "school_year": c.school_year,
+                    "semester": c.semester,
+                    "enrolled": enrolled,
+                    "waitlist_count": waitlist,
+                    "remaining": max(0, capacity - enrolled),
+                }
+            )
+        return {
+            "courses": items,
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "school_year": sy,
+            "semester": sem,
+        }
     finally:
         session.close()
 
@@ -91,10 +122,14 @@ async def get_course_detail(
     """取得課程詳情"""
     session = get_session()
     try:
-        c = session.query(ActivityCourse).filter(
-            ActivityCourse.id == course_id,
-            ActivityCourse.is_active.is_(True),
-        ).first()
+        c = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.id == course_id,
+                ActivityCourse.is_active.is_(True),
+            )
+            .first()
+        )
         if not c:
             raise _not_found("課程")
         return {
@@ -119,9 +154,17 @@ async def create_course(
     """新增課程"""
     session = get_session()
     try:
-        existing = session.query(ActivityCourse).filter(
-            ActivityCourse.name == body.name
-        ).first()
+        sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
+        existing = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.name == body.name,
+                ActivityCourse.school_year == sy,
+                ActivityCourse.semester == sem,
+                ActivityCourse.is_active.is_(True),
+            )
+            .first()
+        )
         if existing:
             raise _duplicate_name("課程")
 
@@ -133,11 +176,109 @@ async def create_course(
             video_url=body.video_url,
             allow_waitlist=body.allow_waitlist,
             description=body.description,
+            school_year=sy,
+            semester=sem,
         )
         session.add(course)
         session.commit()
         _invalidate_activity_dashboard_caches(session)
-        return {"message": "課程新增成功", "id": course.id}
+        return {
+            "message": "課程新增成功",
+            "id": course.id,
+            "school_year": sy,
+            "semester": sem,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.post("/courses/copy-from-previous", status_code=201)
+async def copy_courses_from_previous(
+    body: CopyCoursesRequest,
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
+):
+    """一鍵複製某學期的所有課程到另一學期（已存在同名課程跳過）。"""
+    if (
+        body.source_school_year == body.target_school_year
+        and body.source_semester == body.target_semester
+    ):
+        raise HTTPException(status_code=400, detail="來源與目標學期不能相同")
+
+    session = get_session()
+    try:
+        source_courses = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.school_year == body.source_school_year,
+                ActivityCourse.semester == body.source_semester,
+                ActivityCourse.is_active.is_(True),
+            )
+            .all()
+        )
+        if not source_courses:
+            return {
+                "message": "來源學期無課程",
+                "created": 0,
+                "skipped": 0,
+                "created_ids": [],
+            }
+
+        existing_names = {
+            r[0]
+            for r in session.query(ActivityCourse.name)
+            .filter(
+                ActivityCourse.school_year == body.target_school_year,
+                ActivityCourse.semester == body.target_semester,
+                ActivityCourse.is_active.is_(True),
+            )
+            .all()
+        }
+
+        created_ids: list = []
+        skipped = 0
+        for src in source_courses:
+            if src.name in existing_names:
+                skipped += 1
+                continue
+            new_course = ActivityCourse(
+                name=src.name,
+                price=src.price,
+                sessions=src.sessions,
+                capacity=src.capacity,
+                video_url=src.video_url,
+                allow_waitlist=src.allow_waitlist,
+                description=src.description,
+                school_year=body.target_school_year,
+                semester=body.target_semester,
+                is_active=True,
+            )
+            session.add(new_course)
+            session.flush()
+            created_ids.append(new_course.id)
+
+        session.commit()
+        _invalidate_activity_dashboard_caches(session)
+        logger.warning(
+            "複製上學期課程：from %s-%s to %s-%s created=%d skipped=%d operator=%s",
+            body.source_school_year,
+            body.source_semester,
+            body.target_school_year,
+            body.target_semester,
+            len(created_ids),
+            skipped,
+            current_user.get("username", ""),
+        )
+        return {
+            "message": f"複製完成：新增 {len(created_ids)} 筆、跳過 {skipped} 筆（已存在）",
+            "created": len(created_ids),
+            "skipped": skipped,
+            "created_ids": created_ids,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -156,18 +297,26 @@ async def update_course(
     """更新課程"""
     session = get_session()
     try:
-        course = session.query(ActivityCourse).filter(
-            ActivityCourse.id == course_id,
-            ActivityCourse.is_active.is_(True),
-        ).first()
+        course = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.id == course_id,
+                ActivityCourse.is_active.is_(True),
+            )
+            .first()
+        )
         if not course:
             raise _not_found("課程")
 
         if body.name and body.name != course.name:
-            dup = session.query(ActivityCourse).filter(
-                ActivityCourse.name == body.name,
-                ActivityCourse.id != course_id,
-            ).first()
+            dup = (
+                session.query(ActivityCourse)
+                .filter(
+                    ActivityCourse.name == body.name,
+                    ActivityCourse.id != course_id,
+                )
+                .first()
+            )
             if dup:
                 raise _duplicate_name("課程")
 
@@ -195,10 +344,14 @@ async def get_course_waitlist(
     """取得課程候補名單（按報名序排列）"""
     session = get_session()
     try:
-        course = session.query(ActivityCourse).filter(
-            ActivityCourse.id == course_id,
-            ActivityCourse.is_active.is_(True),
-        ).first()
+        course = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.id == course_id,
+                ActivityCourse.is_active.is_(True),
+            )
+            .first()
+        )
         if not course:
             raise _not_found("課程")
         rows = (
@@ -208,8 +361,10 @@ async def get_course_waitlist(
                 ActivityRegistration.student_name,
                 ActivityRegistration.class_name,
             )
-            .join(ActivityRegistration,
-                  RegistrationCourse.registration_id == ActivityRegistration.id)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
             .filter(
                 RegistrationCourse.course_id == course_id,
                 RegistrationCourse.status == "waitlist",
@@ -244,10 +399,14 @@ async def delete_course(
     """停用課程（有報名者回傳 409）"""
     session = get_session()
     try:
-        course = session.query(ActivityCourse).filter(
-            ActivityCourse.id == course_id,
-            ActivityCourse.is_active.is_(True),
-        ).first()
+        course = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.id == course_id,
+                ActivityCourse.is_active.is_(True),
+            )
+            .first()
+        )
         if not course:
             raise _not_found("課程")
 

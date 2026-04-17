@@ -14,12 +14,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import func, or_, select as sa_select
 
 from models.database import (
-    get_session, Classroom,
-    ActivityCourse, ActivitySupply, ActivityRegistration,
-    RegistrationCourse, RegistrationSupply,
+    get_session,
+    Classroom,
+    ActivityCourse,
+    ActivitySupply,
+    ActivityRegistration,
+    RegistrationCourse,
+    RegistrationSupply,
     ActivityPaymentRecord,
     ActivityRegistrationSettings,
-    ActivitySession, ActivityAttendance,
+    ActivitySession,
+    ActivityAttendance,
 )
 from services.activity_service import activity_service
 from utils.auth import require_staff_permission
@@ -46,20 +51,25 @@ def get_line_service():
 
 # ── 共用 HTTPException helpers ─────────────────────────────────────────────
 
+
 def _not_found(resource: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"找不到{resource}")
+
 
 def _duplicate_name(resource: str) -> HTTPException:
     return HTTPException(status_code=400, detail=f"{resource}名稱已存在")
 
+
 def _invalid_class() -> HTTPException:
     return HTTPException(status_code=400, detail="班級不存在或已停用")
+
 
 def _item_not_found_in_list(resource: str, name: str) -> HTTPException:
     return HTTPException(status_code=400, detail=f"找不到{resource}：{name}")
 
 
 # ── Pydantic Schemas ────────────────────────────────────────────────────────
+
 
 class CourseCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
@@ -69,6 +79,9 @@ class CourseCreate(BaseModel):
     video_url: Optional[str] = None
     allow_waitlist: bool = True
     description: Optional[str] = None
+    # 學期（不指定時 API 端會用當前學期填入）
+    school_year: Optional[int] = Field(None, ge=100, le=200)
+    semester: Optional[int] = Field(None, ge=1, le=2)
 
 
 class CourseUpdate(BaseModel):
@@ -84,11 +97,22 @@ class CourseUpdate(BaseModel):
 class SupplyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     price: int = Field(..., ge=0)
+    school_year: Optional[int] = Field(None, ge=100, le=200)
+    semester: Optional[int] = Field(None, ge=1, le=2)
 
 
 class SupplyUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     price: Optional[int] = Field(None, ge=0)
+
+
+class CopyCoursesRequest(BaseModel):
+    """一鍵複製上學期課程到新學期的請求。"""
+
+    source_school_year: int = Field(..., ge=100, le=200)
+    source_semester: int = Field(..., ge=1, le=2)
+    target_school_year: int = Field(..., ge=100, le=200)
+    target_semester: int = Field(..., ge=1, le=2)
 
 
 class PaymentUpdate(BaseModel):
@@ -108,19 +132,19 @@ class RegistrationTimeSettings(BaseModel):
     open_at: Optional[str] = None
     close_at: Optional[str] = None
 
-    @field_validator('open_at', 'close_at')
+    @field_validator("open_at", "close_at")
     @classmethod
     def validate_iso_format(cls, v):
         if v is not None:
-            pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$'
+            pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$"
             if not re.match(pattern, v):
-                raise ValueError('時間格式必須為 ISO 8601（YYYY-MM-DDTHH:MM）')
+                raise ValueError("時間格式必須為 ISO 8601（YYYY-MM-DDTHH:MM）")
         return v
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_close_after_open(self):
         if self.open_at and self.close_at and self.close_at <= self.open_at:
-            raise ValueError('close_at 必須晚於 open_at')
+            raise ValueError("close_at 必須晚於 open_at")
         return self
 
 
@@ -153,28 +177,55 @@ class PublicInquiryPayload(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
 
 
+_TW_MOBILE_RE = re.compile(r"^09\d{8}$")
+
+
+def _normalize_phone(raw: Optional[str]) -> Optional[str]:
+    """台灣手機正規化：去除空白/連字號/括號/點，保留數字；空字串回 None。"""
+    if raw is None:
+        return None
+    digits = re.sub(r"[\s\-().]", "", str(raw))
+    return digits or None
+
+
+def _validate_tw_mobile(raw: Optional[str]) -> str:
+    digits = _normalize_phone(raw)
+    if not digits or not _TW_MOBILE_RE.match(digits):
+        raise ValueError("家長手機格式錯誤（請輸入 09 開頭 10 碼）")
+    return digits
+
+
 class PublicRegistrationPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(..., min_length=1, max_length=50)
     birthday: str
     class_: str = Field(..., min_length=1, alias="class")
+    parent_phone: str = Field(..., min_length=8, max_length=30)
     courses: list[PublicCourseItem] = Field(..., max_length=20)
     supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
+    # 前端可選擇性傳入；不傳時 API 端用當前學期
+    school_year: Optional[int] = Field(None, ge=100, le=200)
+    semester: Optional[int] = Field(None, ge=1, le=2)
 
-    @field_validator('birthday')
+    @field_validator("birthday")
     @classmethod
     def validate_birthday(cls, v: str) -> str:
         try:
             date.fromisoformat(v)
         except ValueError:
-            raise ValueError('生日格式必須為 YYYY-MM-DD')
+            raise ValueError("生日格式必須為 YYYY-MM-DD")
         return v
 
-    @field_validator('name', 'class_', mode='before')
+    @field_validator("name", "class_", mode="before")
     @classmethod
     def strip_whitespace(cls, v):
         return v.strip() if isinstance(v, str) else v
+
+    @field_validator("parent_phone", mode="before")
+    @classmethod
+    def normalize_parent_phone(cls, v):
+        return _validate_tw_mobile(v)
 
 
 class PublicUpdatePayload(BaseModel):
@@ -184,20 +235,98 @@ class PublicUpdatePayload(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
     birthday: str
     class_: str = Field(..., min_length=1, alias="class")
+    parent_phone: str = Field(..., min_length=8, max_length=30)
     courses: list[PublicCourseItem] = Field(..., max_length=20)
     supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
     remark: str = ""
 
-    @field_validator('birthday')
+    @field_validator("birthday")
     @classmethod
     def validate_birthday(cls, v: str) -> str:
         try:
             date.fromisoformat(v)
         except ValueError:
-            raise ValueError('生日格式必須為 YYYY-MM-DD')
+            raise ValueError("生日格式必須為 YYYY-MM-DD")
         return v
 
-    @field_validator('name', 'class_', mode='before')
+    @field_validator("name", "class_", mode="before")
+    @classmethod
+    def strip_whitespace(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator("parent_phone", mode="before")
+    @classmethod
+    def normalize_parent_phone(cls, v):
+        return _validate_tw_mobile(v)
+
+
+class AdminRegistrationBasicUpdate(BaseModel):
+    """後台編輯報名基本欄位（不含課程/用品/備註）。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(..., min_length=1, max_length=50)
+    birthday: str
+    class_: str = Field(..., min_length=1, alias="class")
+    email: Optional[str] = Field(None, max_length=200)
+
+    @field_validator("birthday")
+    @classmethod
+    def validate_birthday(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError("生日格式必須為 YYYY-MM-DD")
+        return v
+
+    @field_validator("name", "class_", mode="before")
+    @classmethod
+    def strip_whitespace(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
+class AddCourseRequest(BaseModel):
+    """後台為既有報名新增一筆課程。"""
+
+    course_id: int = Field(..., gt=0)
+
+
+class AddSupplyRequest(BaseModel):
+    """後台為既有報名新增一筆用品。"""
+
+    supply_id: int = Field(..., gt=0)
+
+
+class AdminRegistrationPayload(BaseModel):
+    """後台手動新增報名的 payload。
+
+    與 PublicRegistrationPayload 差異：
+    - 不強制檢查報名開放時間（後台可隨時建立）
+    - 額外可選填 email / remark
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(..., min_length=1, max_length=50)
+    birthday: str
+    class_: str = Field(..., min_length=1, alias="class")
+    courses: list[PublicCourseItem] = Field(default=[], max_length=20)
+    supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
+    email: Optional[str] = Field(None, max_length=200)
+    remark: str = ""
+    school_year: Optional[int] = Field(None, ge=100, le=200)
+    semester: Optional[int] = Field(None, ge=1, le=2)
+
+    @field_validator("birthday")
+    @classmethod
+    def validate_birthday(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError("生日格式必須為 YYYY-MM-DD")
+        return v
+
+    @field_validator("name", "class_", mode="before")
     @classmethod
     def strip_whitespace(cls, v):
         return v.strip() if isinstance(v, str) else v
@@ -205,12 +334,17 @@ class PublicUpdatePayload(BaseModel):
 
 # ── DB 輔助函式 ─────────────────────────────────────────────────────────────
 
+
 def _get_active_classroom(session, classroom_name: str):
     """依名稱取得啟用中的班級。"""
-    return session.query(Classroom).filter(
-        Classroom.name == classroom_name.strip(),
-        Classroom.is_active.is_(True),
-    ).first()
+    return (
+        session.query(Classroom)
+        .filter(
+            Classroom.name == classroom_name.strip(),
+            Classroom.is_active.is_(True),
+        )
+        .first()
+    )
 
 
 def _require_active_classroom(session, classroom_name: str):
@@ -221,7 +355,9 @@ def _require_active_classroom(session, classroom_name: str):
     return c
 
 
-def _invalidate_activity_dashboard_caches(session, *, summary_only: bool = False) -> None:
+def _invalidate_activity_dashboard_caches(
+    session, *, summary_only: bool = False
+) -> None:
     if summary_only:
         activity_service.invalidate_summary_cache(session)
         return
@@ -278,7 +414,9 @@ def _attach_courses(
     return has_waitlist, waitlist_course_names
 
 
-def _attach_supplies(session, reg_id: int, supply_items, supplies_by_name: dict) -> None:
+def _attach_supplies(
+    session, reg_id: int, supply_items, supplies_by_name: dict
+) -> None:
     """建立 RegistrationSupply 記錄。"""
     for supply_item in supply_items:
         supply = supplies_by_name.get(supply_item.name)
@@ -359,17 +497,33 @@ def _build_registration_filter_query(
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
+    school_year: Optional[int] = None,
+    semester: Optional[int] = None,
+    match_status: Optional[str] = None,
+    include_inactive: bool = False,
 ):
-    """回傳已套用篩選條件的 SQLAlchemy query，調用方可繼續加 .offset/.limit 或 .all()。"""
-    q = session.query(ActivityRegistration).filter(
-        ActivityRegistration.is_active.is_(True)
-    )
+    """回傳已套用篩選條件的 SQLAlchemy query，調用方可繼續加 .offset/.limit 或 .all()。
+
+    match_status：pending / matched / manual / rejected / unmatched，用於後台審核分頁。
+    include_inactive：rejected 狀態的 registration 會被設為 is_active=False；若要列出
+      rejected，需設 include_inactive=True。
+    """
+    q = session.query(ActivityRegistration)
+    if not include_inactive:
+        q = q.filter(ActivityRegistration.is_active.is_(True))
+    if school_year is not None:
+        q = q.filter(ActivityRegistration.school_year == school_year)
+    if semester is not None:
+        q = q.filter(ActivityRegistration.semester == semester)
+    if match_status:
+        q = q.filter(ActivityRegistration.match_status == match_status)
     if search:
         like = f"%{search}%"
         q = q.filter(
             or_(
                 ActivityRegistration.student_name.ilike(like),
                 ActivityRegistration.class_name.ilike(like),
+                ActivityRegistration.parent_phone.ilike(like),
             )
         )
     if payment_status == "paid":
@@ -409,6 +563,84 @@ def _build_registration_filter_query(
     return q
 
 
+def _match_student_id(session, name: str, birthday: str) -> Optional[int]:
+    """public 報名時以 (name, birthday) 嘗試匹配 students.id。
+
+    同時匹配到多個學生則回 None（避免錯誤關聯）。
+    """
+    from models.database import Student
+    from datetime import date as _date
+
+    try:
+        bday = _date.fromisoformat(birthday)
+    except (ValueError, TypeError):
+        return None
+
+    q = session.query(Student.id).filter(
+        Student.name == name.strip(),
+        Student.birthday == bday,
+        Student.is_active.is_(True),
+    )
+    rows = q.limit(2).all()
+    if len(rows) == 1:
+        return rows[0][0]
+    return None
+
+
+def _match_student_with_parent_phone(
+    session, name: str, birthday: str, parent_phone: Optional[str]
+) -> tuple[Optional[int], Optional[int]]:
+    """三欄比對（姓名 + 生日 + 家長手機）取得在籍學生。
+
+    - phone 同時與 Student.parent_phone、Student.emergency_contact_phone 比對
+      （任一正規化後相符即匹配）
+    - 先以 (name, birthday, is_active=True) 篩出候選（通常 0-2 筆），再
+      Python 端正規化比對 phone，避開 SQL regex 全表掃描
+    - 多筆匹配（歧義）→ 回 (None, None)，讓上游進入 pending_review
+    - 無匹配 → 回 (None, None)
+    - 成功 → 回 (student_id, classroom_id)
+    """
+    from models.database import Student
+    from datetime import date as _date
+
+    normalized_input = _normalize_phone(parent_phone)
+    if not normalized_input:
+        return (None, None)
+
+    try:
+        bday = _date.fromisoformat(birthday)
+    except (ValueError, TypeError):
+        return (None, None)
+
+    candidates = (
+        session.query(
+            Student.id,
+            Student.classroom_id,
+            Student.parent_phone,
+            Student.emergency_contact_phone,
+        )
+        .filter(
+            Student.name == name.strip(),
+            Student.birthday == bday,
+            Student.is_active.is_(True),
+        )
+        .limit(10)
+        .all()
+    )
+
+    matches: list[tuple[int, Optional[int]]] = []
+    for sid, classroom_id, pp, ep in candidates:
+        if (
+            _normalize_phone(pp) == normalized_input
+            or _normalize_phone(ep) == normalized_input
+        ):
+            matches.append((sid, classroom_id))
+
+    if len(matches) == 1:
+        return matches[0]
+    return (None, None)
+
+
 def _fetch_reg_course_names(session, reg_ids: list) -> dict:
     """批次查詢報名對應的課程名稱（含候補標記），回傳 {reg_id: [course_name, ...]}。"""
     course_name_map: dict = defaultdict(list)
@@ -430,26 +662,95 @@ def _fetch_reg_course_names(session, reg_ids: list) -> dict:
     return course_name_map
 
 
+def _fetch_reg_course_details(session, reg_ids: list) -> dict:
+    """批次查詢報名對應的課程明細，回傳 {reg_id: [{name, price, status}, ...]}。
+
+    與 _fetch_reg_course_names 不同：此函式保留 price_snapshot 與 status 欄位，
+    供 POS 收據列印需要的完整明細。"""
+    detail_map: dict = defaultdict(list)
+    if reg_ids:
+        rows = (
+            session.query(
+                RegistrationCourse.registration_id,
+                RegistrationCourse.status,
+                RegistrationCourse.price_snapshot,
+                ActivityCourse.name,
+            )
+            .join(ActivityCourse, RegistrationCourse.course_id == ActivityCourse.id)
+            .filter(RegistrationCourse.registration_id.in_(reg_ids))
+            .all()
+        )
+        for registration_id, status, price_snapshot, course_name in rows:
+            detail_map[registration_id].append(
+                {
+                    "name": course_name,
+                    "price": price_snapshot or 0,
+                    "status": status,
+                }
+            )
+    return detail_map
+
+
+def _fetch_reg_supplies(session, reg_ids: list) -> dict:
+    """批次查詢報名對應的用品明細，回傳 {reg_id: [{name, price}, ...]}。"""
+    supply_map: dict = defaultdict(list)
+    if reg_ids:
+        rows = (
+            session.query(
+                RegistrationSupply.registration_id,
+                RegistrationSupply.price_snapshot,
+                ActivitySupply.name,
+            )
+            .join(ActivitySupply, RegistrationSupply.supply_id == ActivitySupply.id)
+            .filter(RegistrationSupply.registration_id.in_(reg_ids))
+            .all()
+        )
+        for registration_id, price_snapshot, supply_name in rows:
+            supply_map[registration_id].append(
+                {
+                    "name": supply_name,
+                    "price": price_snapshot or 0,
+                }
+            )
+    return supply_map
+
+
 def _build_session_detail_response(
     db_session,
     sess: "ActivitySession",
     *,
     class_names_filter: list | None = None,
+    group_by: Optional[str] = None,
 ) -> dict:
     """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
 
     class_names_filter=None  → 包含所有 enrolled 學生（管理端）
     class_names_filter=[...] → 只包含指定班級的學生（Portal）
+    group_by="classroom"    → 額外回傳 groups：按 classroom_id 分組（未分班學生歸「未分班」）
     """
-    course = db_session.query(ActivityCourse).filter(ActivityCourse.id == sess.course_id).first()
+    course = (
+        db_session.query(ActivityCourse)
+        .filter(ActivityCourse.id == sess.course_id)
+        .first()
+    )
 
     enrolled_query = (
         db_session.query(
             RegistrationCourse.registration_id,
             ActivityRegistration.student_name,
             ActivityRegistration.class_name,
+            ActivityRegistration.student_id,
+            ActivityRegistration.classroom_id,
+            Classroom.name.label("real_classroom_name"),
         )
-        .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+        .join(
+            ActivityRegistration,
+            RegistrationCourse.registration_id == ActivityRegistration.id,
+        )
+        .outerjoin(
+            Classroom,
+            Classroom.id == ActivityRegistration.classroom_id,
+        )
         .filter(
             RegistrationCourse.course_id == sess.course_id,
             RegistrationCourse.status == "enrolled",
@@ -483,17 +784,22 @@ def _build_session_detail_response(
     students = []
     for e in enrolled:
         att = att_map.get(e.registration_id)
-        students.append({
-            "registration_id": e.registration_id,
-            "student_name": e.student_name,
-            "class_name": e.class_name or "",
-            "is_present": att.is_present if att is not None else None,
-            "attendance_notes": att.notes or "" if att is not None else "",
-        })
+        students.append(
+            {
+                "registration_id": e.registration_id,
+                "student_id": e.student_id,
+                "classroom_id": e.classroom_id,
+                "student_name": e.student_name,
+                # class_name：優先用真實班級（JOIN 到 Classroom），否則 fallback 到字串快照
+                "class_name": e.real_classroom_name or e.class_name or "",
+                "is_present": att.is_present if att is not None else None,
+                "attendance_notes": att.notes or "" if att is not None else "",
+            }
+        )
     present_count = sum(1 for s in students if s["is_present"] is True)
     absent_count = sum(1 for s in students if s["is_present"] is False)
 
-    return {
+    response = {
         "id": sess.id,
         "course_id": sess.course_id,
         "course_name": course.name if course else "",
@@ -506,3 +812,27 @@ def _build_session_detail_response(
         "present_count": present_count,
         "absent_count": absent_count,
     }
+
+    if group_by == "classroom":
+        # 按 classroom_id 分組；未分班（classroom_id=None）歸「未分班」末尾
+        group_map: dict = {}
+        for s in students:
+            cid = s.get("classroom_id")
+            cname = s.get("class_name") or "未分班"
+            key = cid if cid is not None else "__unassigned__"
+            if key not in group_map:
+                group_map[key] = {
+                    "classroom_id": cid,
+                    "classroom_name": cname if cid is not None else "未分班",
+                    "students": [],
+                }
+            group_map[key]["students"].append(s)
+        # 未分班永遠排在最後
+        classified = [g for k, g in group_map.items() if k != "__unassigned__"]
+        classified.sort(key=lambda g: g["classroom_name"])
+        unassigned = group_map.get("__unassigned__")
+        if unassigned:
+            classified.append(unassigned)
+        response["groups"] = classified
+
+    return response
