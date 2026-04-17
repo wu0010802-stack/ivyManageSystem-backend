@@ -25,6 +25,7 @@ In-process sliding-window rate limiter (per IP).
 
 import logging
 import time
+from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from fastapi import HTTPException, Request
@@ -32,7 +33,29 @@ from fastapi import HTTPException, Request
 logger = logging.getLogger(__name__)
 
 
-class SlidingWindowLimiter:
+class BaseLimiter(ABC):
+    """限流器抽象介面。
+
+    所有實作（in-memory、Redis、分散式…）均提供 `check(key)` 與 `as_dependency()`。
+    使用端應以 BaseLimiter 型別宣告依賴，日後切換實作時無需修改呼叫點。
+    """
+
+    @abstractmethod
+    def check(self, key: str) -> None:
+        """檢查 key 是否超出限制；超出則拋 HTTPException(429)。"""
+
+    def as_dependency(self):
+        """回傳可用於 FastAPI Depends() 的函式，自動從 Request 取得來源 IP。"""
+        limiter = self
+
+        def _check(request: Request) -> None:
+            key = request.client.host if request.client else "unknown"
+            limiter.check(key)
+
+        return _check
+
+
+class SlidingWindowLimiter(BaseLimiter):
     """滑動視窗限流器（記憶體版）
 
     Args:
@@ -56,7 +79,6 @@ class SlidingWindowLimiter:
         self._timestamps: dict[str, list[float]] = defaultdict(list)
 
     def check(self, key: str) -> None:
-        """檢查 key 是否超出限制，超出則拋 429。"""
         now = time.time()
         ts = self._timestamps[key]
         self._timestamps[key] = [t for t in ts if now - t < self.window]
@@ -65,12 +87,16 @@ class SlidingWindowLimiter:
             raise HTTPException(status_code=429, detail=self.error_detail)
         self._timestamps[key].append(now)
 
-    def as_dependency(self):
-        """回傳可用於 FastAPI Depends() 的函式，自動從 Request 取得來源 IP。"""
-        limiter = self
 
-        def _check(request: Request) -> None:
-            key = request.client.host if request.client else "unknown"
-            limiter.check(key)
-
-        return _check
+# 未來 Redis 化時的預留 stub。實作時 import redis，建立 RedisLimiter(BaseLimiter)，
+# 於 main.py 啟動 lifespan 中以環境變數 REDIS_URL 決定使用哪個 limiter class，
+# 其他呼叫端完全不變。
+#
+# class RedisLimiter(BaseLimiter):
+#     def __init__(self, redis_client, max_calls: int, window_seconds: int, name: str = "",
+#                  error_detail: str = "請求過於頻繁，請稍後再試"):
+#         ...
+#
+#     def check(self, key: str) -> None:
+#         # INCR + EXPIRE 或 ZADD + ZRANGEBYSCORE
+#         ...
