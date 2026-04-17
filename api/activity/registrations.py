@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func
 
 from models.database import (
@@ -64,6 +64,9 @@ _export_limiter = SlidingWindowLimiter(
     name="activity_export",
     error_detail="匯出過於頻繁，請稍後再試",
 ).as_dependency()
+
+# 匯出單次查詢上限，避免大報表造成記憶體爆炸或 timeout
+MAX_EXPORT_ROWS = 5000
 
 
 # ── 靜態路由（必須優先定義，在 /{id}/... 動態路由之前）─────────────────────
@@ -186,6 +189,15 @@ async def export_registrations(
             course_id=course_id,
             classroom_name=classroom_name,
         )
+        total_count = q.count()
+        if total_count > MAX_EXPORT_ROWS:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"匯出筆數 {total_count} 超過上限 {MAX_EXPORT_ROWS}，"
+                    "請加上條件（如課程/班級/繳費狀態）縮小範圍後再匯出"
+                ),
+            )
         regs = q.order_by(ActivityRegistration.created_at.desc()).all()
         reg_ids = [r.id for r in regs]
         course_name_map = _fetch_reg_course_names(session, reg_ids)
@@ -265,6 +277,15 @@ async def export_payment_report(
             course_id=course_id,
             classroom_name=classroom_name,
         )
+        total_count = q.count()
+        if total_count > MAX_EXPORT_ROWS:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"匯出筆數 {total_count} 超過上限 {MAX_EXPORT_ROWS}，"
+                    "請加上條件（如課程/班級/繳費狀態）縮小範圍後再匯出"
+                ),
+            )
         regs = q.order_by(ActivityRegistration.created_at.desc()).all()
         reg_ids = [r.id for r in regs]
 
@@ -558,6 +579,50 @@ class RegistrationRejectRequest(BaseModel):
     reason: str = Field(default="", max_length=200)
 
 
+class RegistrationRematchRequest(BaseModel):
+    """重新比對可選欄位：校方可即時修正家長打錯的 name/birthday/parent_phone。
+
+    三欄皆可選——未提供時沿用 registration 原值。提供的欄位會在比對前寫回 reg，
+    即使比對仍失敗也保留修改內容，避免校方白打一次字。
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    birthday: Optional[str] = None
+    parent_phone: Optional[str] = Field(None, min_length=8, max_length=30)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, v):
+        if isinstance(v, str):
+            stripped = v.strip()
+            return stripped or None
+        return v
+
+    @field_validator("birthday")
+    @classmethod
+    def _validate_birthday(cls, v):
+        if v is None or v == "":
+            return None
+        from datetime import date as _d
+
+        try:
+            _d.fromisoformat(v)
+        except ValueError:
+            raise ValueError("生日格式必須為 YYYY-MM-DD")
+        return v
+
+    @field_validator("parent_phone", mode="before")
+    @classmethod
+    def _normalize_phone(cls, v):
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return None
+        from ._shared import _validate_tw_mobile
+
+        return _validate_tw_mobile(v)
+
+
 def _serialize_pending_item(
     r: ActivityRegistration,
 ) -> dict:
@@ -587,21 +652,39 @@ async def list_pending_registrations(
     search: Optional[str] = None,
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
+    status: str = Query("all", pattern="^(pending|rejected|all)$"),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得待審核報名清單（pending_review=true，is_active=true）。"""
+    """取得待審核 / 已拒絕報名清單（合併於同一頁）。
+
+    status=pending：pending_review=true、is_active=true
+    status=rejected：match_status='rejected'、is_active=false
+    status=all（預設）：兩者聯集，前端以 match_status / is_active 判斷顯示
+    """
     from utils.academic import resolve_academic_term_filters
-    from sqlalchemy import or_
+    from sqlalchemy import and_, or_
 
     session = get_session()
     try:
         sy, sem = resolve_academic_term_filters(school_year, semester)
         q = session.query(ActivityRegistration).filter(
-            ActivityRegistration.pending_review.is_(True),
-            ActivityRegistration.is_active.is_(True),
             ActivityRegistration.school_year == sy,
             ActivityRegistration.semester == sem,
         )
+        pending_cond = and_(
+            ActivityRegistration.pending_review.is_(True),
+            ActivityRegistration.is_active.is_(True),
+        )
+        rejected_cond = and_(
+            ActivityRegistration.match_status == "rejected",
+            ActivityRegistration.is_active.is_(False),
+        )
+        if status == "pending":
+            q = q.filter(pending_cond)
+        elif status == "rejected":
+            q = q.filter(rejected_cond)
+        else:
+            q = q.filter(or_(pending_cond, rejected_cond))
         if search:
             like = f"%{search}%"
             q = q.filter(
@@ -612,8 +695,12 @@ async def list_pending_registrations(
                 )
             )
         total = q.count()
+        # 合併頁：待審核排前（created_at 倒序），已拒絕排後（reviewed_at 倒序）
         rows = (
-            q.order_by(ActivityRegistration.created_at.desc())
+            q.order_by(
+                ActivityRegistration.is_active.desc(),
+                ActivityRegistration.created_at.desc(),
+            )
             .offset(skip)
             .limit(limit)
             .all()
@@ -625,6 +712,7 @@ async def list_pending_registrations(
             "limit": limit,
             "school_year": sy,
             "semester": sem,
+            "status": status,
         }
     finally:
         session.close()
@@ -794,11 +882,13 @@ async def reject_registration(
 @router.post("/registrations/{registration_id}/rematch")
 async def rematch_registration(
     registration_id: int,
+    body: Optional[RegistrationRematchRequest] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """後台以目前欄位（姓名/生日/家長手機）重跑三欄比對。
+    """後台重跑三欄比對（可同時修正 name/birthday/parent_phone）。
 
-    用於家長修正 phone 後，或校方人工更新 name/birthday 後的再次嘗試。
+    body 任一欄位非 None 時先寫回 registration，再用新值跑比對。
+    即使比對仍失敗，編輯的欄位也會保留，避免校方白打一次。
     """
     from models.database import Classroom
     from ._shared import _match_student_with_parent_phone
@@ -816,9 +906,51 @@ async def rematch_registration(
         if not reg:
             raise _not_found("報名資料")
 
+        new_name = reg.student_name
+        new_birthday = reg.birthday
+        new_phone = reg.parent_phone
+        field_changed = False
+        if body is not None:
+            if body.name is not None and body.name != reg.student_name:
+                new_name = body.name
+                field_changed = True
+            if body.birthday is not None and body.birthday != reg.birthday:
+                new_birthday = body.birthday
+                field_changed = True
+            if body.parent_phone is not None and body.parent_phone != reg.parent_phone:
+                new_phone = body.parent_phone
+                field_changed = True
+
+        # 若 name/birthday 有變，檢查同學期是否已有另一筆有效報名會重複
+        if field_changed and (
+            new_name != reg.student_name or new_birthday != reg.birthday
+        ):
+            dup = (
+                session.query(ActivityRegistration)
+                .filter(
+                    ActivityRegistration.id != reg.id,
+                    ActivityRegistration.student_name == new_name,
+                    ActivityRegistration.birthday == new_birthday,
+                    ActivityRegistration.school_year == reg.school_year,
+                    ActivityRegistration.semester == reg.semester,
+                    ActivityRegistration.is_active.is_(True),
+                )
+                .first()
+            )
+            if dup:
+                raise HTTPException(
+                    status_code=400,
+                    detail="修改後的姓名/生日與本學期另一筆有效報名重複",
+                )
+
+        reg.student_name = new_name
+        reg.birthday = new_birthday
+        reg.parent_phone = new_phone
+
         sid, cid = _match_student_with_parent_phone(
             session, reg.student_name, reg.birthday, reg.parent_phone
         )
+        matched = False
         if sid and cid:
             classroom = session.query(Classroom).filter(Classroom.id == cid).first()
             if classroom:
@@ -829,17 +961,27 @@ async def rematch_registration(
                 reg.match_status = "matched"
                 reg.reviewed_by = current_user.get("username")
                 reg.reviewed_at = datetime.now()
-                session.commit()
-                _invalidate_activity_dashboard_caches(session, summary_only=True)
-                return {
-                    "message": "重新比對成功",
-                    "matched": True,
-                    "registration_id": reg.id,
-                }
-        session.rollback()
+                matched = True
+
+        session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        logger.info(
+            "後台重新比對：reg_id=%s matched=%s fields_edited=%s by %s",
+            reg.id,
+            matched,
+            field_changed,
+            current_user.get("username"),
+        )
+        if matched:
+            msg = "重新比對成功"
+        elif field_changed:
+            msg = "仍無符合的在校生，已保留修改後的資料"
+        else:
+            msg = "仍無符合的在校生，請手動處理"
         return {
-            "message": "仍無符合的在校生，請手動處理",
-            "matched": False,
+            "message": msg,
+            "matched": matched,
+            "field_changed": field_changed,
             "registration_id": reg.id,
         }
     except HTTPException:
@@ -848,6 +990,174 @@ async def rematch_registration(
     except Exception as e:
         session.rollback()
         logger.error("重新比對失敗：%s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.post("/registrations/{registration_id}/force-accept")
+async def force_accept_registration(
+    registration_id: int,
+    body: Optional[RegistrationRematchRequest] = None,
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
+):
+    """跳過三欄比對，強行將報名插入正式課後才藝報名管理並加上 `forced` 標記。
+
+    body 與 rematch 相同三欄可選：校方可同時修正家長打錯的 name/birthday/phone。
+    用途：家長是校外生或資料永遠比對不上，但校方決定收這筆報名。
+    """
+    session = get_session()
+    try:
+        reg = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.id == registration_id,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
+        )
+        if not reg:
+            raise _not_found("報名資料")
+
+        new_name = reg.student_name
+        new_birthday = reg.birthday
+        new_phone = reg.parent_phone
+        field_changed = False
+        if body is not None:
+            if body.name is not None and body.name != reg.student_name:
+                new_name = body.name
+                field_changed = True
+            if body.birthday is not None and body.birthday != reg.birthday:
+                new_birthday = body.birthday
+                field_changed = True
+            if body.parent_phone is not None and body.parent_phone != reg.parent_phone:
+                new_phone = body.parent_phone
+                field_changed = True
+
+        if field_changed and (
+            new_name != reg.student_name or new_birthday != reg.birthday
+        ):
+            dup = (
+                session.query(ActivityRegistration)
+                .filter(
+                    ActivityRegistration.id != reg.id,
+                    ActivityRegistration.student_name == new_name,
+                    ActivityRegistration.birthday == new_birthday,
+                    ActivityRegistration.school_year == reg.school_year,
+                    ActivityRegistration.semester == reg.semester,
+                    ActivityRegistration.is_active.is_(True),
+                )
+                .first()
+            )
+            if dup:
+                raise HTTPException(
+                    status_code=400,
+                    detail="修改後的姓名/生日與本學期另一筆有效報名重複",
+                )
+
+        reg.student_name = new_name
+        reg.birthday = new_birthday
+        reg.parent_phone = new_phone
+        reg.pending_review = False
+        reg.match_status = "forced"
+        reg.reviewed_by = current_user.get("username")
+        reg.reviewed_at = datetime.now()
+        prefix = (reg.remark or "").strip()
+        note = f"[強行收件 by {reg.reviewed_by}]"
+        if prefix and "[強行收件" not in prefix:
+            reg.remark = prefix + "\n" + note
+        elif not prefix:
+            reg.remark = note
+        session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        logger.warning(
+            "後台強行收件報名：reg_id=%s by %s field_changed=%s",
+            reg.id,
+            current_user.get("username"),
+            field_changed,
+        )
+        return {
+            "message": "已強行收件並標記 forced",
+            "matched": False,
+            "forced": True,
+            "field_changed": field_changed,
+            "registration_id": reg.id,
+        }
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error("強行收件失敗：%s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@router.post("/registrations/{registration_id}/restore")
+async def restore_registration(
+    registration_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
+):
+    """後台將已拒絕（軟刪除）的報名復原回待審核狀態。
+
+    僅限 match_status='rejected' 且 is_active=False 的報名。
+    復原後 is_active=True、match_status='pending'、pending_review=True，
+    保留原拒絕人/時間於 remark 作為歷史軌跡。
+    """
+    session = get_session()
+    try:
+        reg = (
+            session.query(ActivityRegistration)
+            .filter(ActivityRegistration.id == registration_id)
+            .first()
+        )
+        if not reg:
+            raise _not_found("報名資料")
+        if reg.match_status != "rejected" or reg.is_active:
+            raise HTTPException(
+                status_code=400, detail="此筆報名非已拒絕狀態，無法復原"
+            )
+
+        # 若本學期已有同姓名/生日的有效報名，擋下避免唯一性衝突
+        dup = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.id != reg.id,
+                ActivityRegistration.student_name == reg.student_name,
+                ActivityRegistration.birthday == reg.birthday,
+                ActivityRegistration.school_year == reg.school_year,
+                ActivityRegistration.semester == reg.semester,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
+        )
+        if dup:
+            raise HTTPException(
+                status_code=400,
+                detail="本學期已有同姓名/生日的有效報名，無法復原此筆",
+            )
+
+        reg.is_active = True
+        reg.match_status = "pending"
+        reg.pending_review = True
+        prefix = (reg.remark or "").strip()
+        note = f"[已還原 by {current_user.get('username')}]"
+        reg.remark = (prefix + "\n" + note).strip() if prefix else note
+        session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        logger.info(
+            "後台還原拒絕報名：reg_id=%s by %s",
+            reg.id,
+            current_user.get("username"),
+        )
+        return {"message": "已還原報名至待審核", "registration_id": reg.id}
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error("還原報名失敗：%s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
@@ -1622,6 +1932,13 @@ async def add_registration_payment(
             raise _not_found("報名資料")
 
         operator = current_user.get("username", "")
+
+        if body.type == "refund" and body.amount > (reg.paid_amount or 0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"退費金額 NT${body.amount} 超過已繳金額 NT${reg.paid_amount or 0}",
+            )
+
         rec = ActivityPaymentRecord(
             registration_id=registration_id,
             type=body.type,
@@ -1636,7 +1953,7 @@ async def add_registration_payment(
         if body.type == "payment":
             reg.paid_amount = (reg.paid_amount or 0) + body.amount
         else:
-            reg.paid_amount = max(0, (reg.paid_amount or 0) - body.amount)
+            reg.paid_amount = (reg.paid_amount or 0) - body.amount
 
         total_amount = _calc_total_amount(session, registration_id)
         reg.is_paid = reg.paid_amount >= total_amount > 0

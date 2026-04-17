@@ -251,6 +251,32 @@ class ActivityRegistrationSettings(Base):
     open_at = Column(String(50), nullable=True, comment="開放時間（ISO string）")
     close_at = Column(String(50), nullable=True, comment="截止時間（ISO string）")
 
+    # 前台可客製化顯示
+    page_title = Column(
+        String(200),
+        nullable=True,
+        comment="頁面主標題（如『114 下藝童趣｜課後才藝報名』）",
+    )
+    term_label = Column(
+        String(50), nullable=True, comment="學期徽章文字（如『114 下學期』）"
+    )
+    event_date_label = Column(
+        String(50), nullable=True, comment="活動日期顯示（如『2026-02-23』）"
+    )
+    target_audience = Column(
+        String(100), nullable=True, comment="對象說明（如『本園在學幼兒』）"
+    )
+    form_card_title = Column(
+        String(200),
+        nullable=True,
+        comment="表單卡片標題（如『114 下藝童趣 · 2026-02-23』）",
+    )
+    poster_url = Column(
+        String(500),
+        nullable=True,
+        comment="海報圖片 URL／路徑；為空時 fallback 至預設圖",
+    )
+
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 

@@ -33,8 +33,11 @@ data/payroll.db
 backend.log
 
 # Uploads (user data)
+# 所有使用者上傳檔案集中在 data/uploads/<module>/
+# 舊 uploads/ 已棄用，保留 ignore 規則避免誤 commit 歷史遺留目錄
 uploads/
 data/uploads/
+data/activity_posters/
 
 # IDE
 .vscode/

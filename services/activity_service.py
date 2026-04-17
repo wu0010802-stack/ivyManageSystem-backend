@@ -396,11 +396,12 @@ class ActivityService:
             student_count_map[cls.id] = student_count
             classrooms_by_grade[cls.grade_id].append((cls, teacher_name))
 
-        # 查詢二：enrollment_map（維持不變）
-        enrollment_map = {}
+        # 查詢二：enrollment_map 以 classroom_id FK 為 key（轉班後仍正確，字串 class_name
+        # 可能過時）；限定同學期且排除 rejected。
+        enrollment_map: dict = {}
         for row in (
             session.query(
-                ActivityRegistration.class_name,
+                ActivityRegistration.classroom_id,
                 RegistrationCourse.course_id,
                 func.count(RegistrationCourse.id).label("count"),
             )
@@ -410,12 +411,16 @@ class ActivityService:
             )
             .filter(
                 ActivityRegistration.is_active.is_(True),
+                ActivityRegistration.match_status != "rejected",
+                ActivityRegistration.school_year == school_year,
+                ActivityRegistration.semester == semester,
+                ActivityRegistration.classroom_id.isnot(None),
                 RegistrationCourse.status == "enrolled",
             )
-            .group_by(ActivityRegistration.class_name, RegistrationCourse.course_id)
+            .group_by(ActivityRegistration.classroom_id, RegistrationCourse.course_id)
             .all()
         ):
-            enrollment_map[(row.class_name, row.course_id)] = row.count
+            enrollment_map[(row.classroom_id, row.course_id)] = row.count
 
         return student_count_map, enrollment_map, classrooms_by_grade
 
@@ -446,7 +451,7 @@ class ActivityService:
                 cls_course_data = {}
                 for c in courses:
                     c_id_str = str(c.id)
-                    count = enrollment_map.get((cls.name, c.id), 0)
+                    count = enrollment_map.get((cls.id, c.id), 0)
                     cls_course_data[c_id_str] = count
                     cls_enrollments += count
                     sub_courses[c_id_str] += count

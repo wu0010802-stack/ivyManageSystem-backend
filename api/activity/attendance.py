@@ -320,18 +320,33 @@ def batch_update_attendance(
             .all()
         }
 
-        # 批次查詢 registration → student_id，供新建 attendance 寫入冗餘欄位
-        reg_student_map = (
-            dict(
-                session.query(ActivityRegistration.id, ActivityRegistration.student_id)
-                .filter(ActivityRegistration.id.in_(req_reg_ids))
-                .all()
+        # 過濾已退課（is_active=False）或已駁回（match_status='rejected'）的報名，
+        # 避免污染出席統計。一併取 student_id 供冗餘欄位使用。
+        valid_reg_rows = (
+            session.query(ActivityRegistration.id, ActivityRegistration.student_id)
+            .filter(
+                ActivityRegistration.id.in_(req_reg_ids),
+                ActivityRegistration.is_active.is_(True),
+                ActivityRegistration.match_status != "rejected",
             )
+            .all()
             if req_reg_ids
-            else {}
+            else []
         )
+        valid_reg_ids = {row[0] for row in valid_reg_rows}
+        reg_student_map = dict(valid_reg_rows)
+
+        skipped = [rid for rid in req_reg_ids if rid not in valid_reg_ids]
+        if skipped:
+            logger.warning(
+                "batch_update_attendance skipped invalid registrations: session=%s ids=%s",
+                session_id,
+                skipped,
+            )
 
         for item in body.records:
+            if item.registration_id not in valid_reg_ids:
+                continue
             existing = existing_map.get(item.registration_id)
             if existing:
                 existing.is_present = item.is_present
@@ -352,6 +367,9 @@ def batch_update_attendance(
                 session.add(att)
 
         session.commit()
-        return {"ok": True, "updated": len(body.records)}
+        applied = sum(
+            1 for item in body.records if item.registration_id in valid_reg_ids
+        )
+        return {"ok": True, "updated": applied, "skipped": len(skipped)}
     finally:
         session.close()

@@ -1163,6 +1163,62 @@ class TestBatchInputLimits:
                 supplies=supplies,
             )
 
+    def test_public_registration_accepts_remark(self):
+        """前端家長備註以 remark 欄位傳入，應正確接收並保留原字串"""
+        from api.activity._shared import PublicRegistrationPayload, PublicCourseItem
+
+        payload = PublicRegistrationPayload(
+            name="王小明",
+            birthday="2020-01-01",
+            parent_phone="0912345678",
+            **{"class": "中班"},
+            courses=[PublicCourseItem(name="美術", price="1000")],
+            remark="不吃蛋與花生",
+        )
+        assert payload.remark == "不吃蛋與花生"
+        assert payload.class_ == "中班"
+
+    def test_public_registration_remark_defaults_empty(self):
+        """remark 未傳時預設為空字串，保持向後相容"""
+        from api.activity._shared import PublicRegistrationPayload, PublicCourseItem
+
+        payload = PublicRegistrationPayload(
+            name="王小明",
+            birthday="2020-01-01",
+            parent_phone="0912345678",
+            **{"class": "中班"},
+            courses=[PublicCourseItem(name="美術", price="1000")],
+        )
+        assert payload.remark == ""
+
+    def test_public_registration_rejects_legacy_class_name_key(self):
+        """前端若誤送 class_name（舊欄位）應拋 ValidationError，防止 422 回歸"""
+        from pydantic import ValidationError
+        from api.activity._shared import PublicRegistrationPayload, PublicCourseItem
+
+        with pytest.raises(ValidationError):
+            PublicRegistrationPayload(
+                name="王小明",
+                birthday="2020-01-01",
+                parent_phone="0912345678",
+                class_name="中班",  # 錯誤欄位名：應為 "class"
+                courses=[PublicCourseItem(name="美術", price="1000")],
+            )
+
+    def test_public_registration_rejects_courses_as_string_list(self):
+        """前端若誤送 courses=['課程A']（字串陣列）應拋 ValidationError，防止 422 回歸"""
+        from pydantic import ValidationError
+        from api.activity._shared import PublicRegistrationPayload
+
+        with pytest.raises(ValidationError):
+            PublicRegistrationPayload(
+                name="王小明",
+                birthday="2020-01-01",
+                parent_phone="0912345678",
+                **{"class": "中班"},
+                courses=["美術", "音樂"],
+            )
+
     def test_batch_attendance_update_max_length(self):
         """BatchAttendanceUpdate.records 超過 500 筆應拋 ValidationError"""
         from pydantic import ValidationError

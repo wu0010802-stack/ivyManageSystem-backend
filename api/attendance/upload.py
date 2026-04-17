@@ -13,19 +13,31 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from models.database import (
-    get_session, Employee, Attendance, Classroom,
-    ShiftAssignment, ShiftType, DailyShift,
+    get_session,
+    Employee,
+    Attendance,
+    Classroom,
+    ShiftAssignment,
+    ShiftType,
+    DailyShift,
 )
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
+from utils.storage import get_storage_path
 from ._shared import AttendanceUploadRequest
 
 logger = logging.getLogger(__name__)
 
-_UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
-_EXCEL_EXT_RE = re.compile(r'^\.[a-z0-9]+$')
+_UPLOAD_MODULE = "attendance_imports"
+
+
+def _upload_dir() -> Path:
+    return get_storage_path(_UPLOAD_MODULE)
+
+
+_EXCEL_EXT_RE = re.compile(r"^\.[a-z0-9]+$")
 
 # ShiftType 很少異動，快取 5 分鐘，避免每次上傳重複查詢
 _shift_type_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
@@ -40,22 +52,29 @@ def _get_shift_type_id_map(session) -> dict:
     _shift_type_cache["id_map"] = result
     return result
 
+
 router = APIRouter()
 
 
 @router.post("/upload")
-async def upload_attendance(file: UploadFile = File(...), current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE))):
+async def upload_attendance(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
+):
     """上傳打卡記錄 Excel（支持分開的上班/下班時間欄位）"""
     raw_ext = Path(file.filename or "").suffix.lower()
-    if not raw_ext or not _EXCEL_EXT_RE.match(raw_ext) or raw_ext not in {'.xlsx', '.xls'}:
+    if (
+        not raw_ext
+        or not _EXCEL_EXT_RE.match(raw_ext)
+        or raw_ext not in {".xlsx", ".xls"}
+    ):
         raise HTTPException(status_code=400, detail="請上傳 Excel 檔案")
 
     # 先讀取檔案內容並檢查大小，防止超大檔案耗盡磁碟空間或記憶體
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, raw_ext)
 
-    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    file_path = _UPLOAD_DIR / f"{uuid.uuid4().hex}{raw_ext}"
+    file_path = _upload_dir() / f"{uuid.uuid4().hex}{raw_ext}"
 
     with open(file_path, "wb") as f:
         f.write(content)
@@ -65,15 +84,21 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
         columns = df.columns.tolist()
 
         # 新格式：部門, 編號, 姓名, 日期, 星期, 上班時間, 下班時間
-        if '上班時間' in columns and '下班時間' in columns:
+        if "上班時間" in columns and "下班時間" in columns:
             session = get_session()
             try:
-                employees = session.query(Employee).filter(Employee.is_active == True).all()
+                employees = (
+                    session.query(Employee).filter(Employee.is_active == True).all()
+                )
                 emp_by_id = {str(emp.employee_id): emp for emp in employees}
                 emp_by_name = {emp.name: emp for emp in employees}
 
-                all_classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
-                head_teacher_map = {c.head_teacher_id for c in all_classrooms if c.head_teacher_id}
+                all_classrooms = (
+                    session.query(Classroom).filter(Classroom.is_active == True).all()
+                )
+                head_teacher_map = {
+                    c.head_teacher_id for c in all_classrooms if c.head_teacher_id
+                }
                 assistant_teacher_map = set()
                 for c in all_classrooms:
                     if c.assistant_teacher_id:
@@ -93,14 +118,19 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                 daily_shift_map = {}
 
-                if '日期' in df.columns:
-                    temp_dates = pd.to_datetime(df['日期'], errors='coerce').dt.date.dropna()
+                if "日期" in df.columns:
+                    temp_dates = pd.to_datetime(
+                        df["日期"], errors="coerce"
+                    ).dt.date.dropna()
                     if not temp_dates.empty:
                         min_date, max_date = temp_dates.min(), temp_dates.max()
-                        daily_shifts_query = session.query(DailyShift).filter(
-                            DailyShift.date >= min_date,
-                            DailyShift.date <= max_date
-                        ).all()
+                        daily_shifts_query = (
+                            session.query(DailyShift)
+                            .filter(
+                                DailyShift.date >= min_date, DailyShift.date <= max_date
+                            )
+                            .all()
+                        )
 
                         for ds in daily_shifts_query:
                             st = shift_types.get(ds.shift_type_id)
@@ -116,53 +146,69 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                     "success": 0,
                     "failed": 0,
                     "errors": [],
-                    "summary": []
+                    "summary": [],
                 }
 
                 # 預先批量收集 employee_ids 與 dates，避免迴圈內 N+1 查詢
                 _pre_emp_ids: set = set()
                 _pre_dates: set = set()
                 for _, _row in df.iterrows():
-                    _raw_id = str(_row.get('編號', '')).strip()
-                    if _raw_id.endswith('.0'):
+                    _raw_id = str(_row.get("編號", "")).strip()
+                    if _raw_id.endswith(".0"):
                         _raw_id = _raw_id[:-2]
-                    _emp = emp_by_id.get(_raw_id) or emp_by_name.get(str(_row.get('姓名', '')).strip())
+                    _emp = emp_by_id.get(_raw_id) or emp_by_name.get(
+                        str(_row.get("姓名", "")).strip()
+                    )
                     if _emp:
                         _pre_emp_ids.add(_emp.id)
-                    _dv = _row.get('日期')
+                    _dv = _row.get("日期")
                     if not pd.isna(_dv):
                         try:
-                            _d = datetime.strptime(str(_dv).strip(), "%Y/%m/%d").date() if isinstance(_dv, str) else pd.to_datetime(_dv).date()
+                            _d = (
+                                datetime.strptime(str(_dv).strip(), "%Y/%m/%d").date()
+                                if isinstance(_dv, str)
+                                else pd.to_datetime(_dv).date()
+                            )
                             _pre_dates.add(_d)
                         except Exception:
                             pass
 
                 attendance_cache: dict = {}
                 if _pre_emp_ids and _pre_dates:
-                    _cached = session.query(Attendance).filter(
-                        Attendance.employee_id.in_(_pre_emp_ids),
-                        Attendance.attendance_date.in_(_pre_dates),
-                    ).all()
-                    attendance_cache = {(a.employee_id, a.attendance_date): a for a in _cached}
+                    _cached = (
+                        session.query(Attendance)
+                        .filter(
+                            Attendance.employee_id.in_(_pre_emp_ids),
+                            Attendance.attendance_date.in_(_pre_dates),
+                        )
+                        .all()
+                    )
+                    attendance_cache = {
+                        (a.employee_id, a.attendance_date): a for a in _cached
+                    }
 
                 employee_stats = {}
 
                 for idx, row in df.iterrows():
                     try:
-                        raw_id = row.get('編號', '')
+                        raw_id = row.get("編號", "")
                         emp_number = str(raw_id).strip()
-                        if emp_number.endswith('.0'):
+                        if emp_number.endswith(".0"):
                             emp_number = emp_number[:-2]
 
-                        emp_name = str(row.get('姓名', '')).strip()
-                        employee = emp_by_id.get(emp_number) or emp_by_name.get(emp_name)
+                        emp_name = str(row.get("姓名", "")).strip()
+                        employee = emp_by_id.get(emp_number) or emp_by_name.get(
+                            emp_name
+                        )
 
                         if not employee:
                             results_data["failed"] += 1
-                            results_data["errors"].append(f"第 {idx+2} 行: 找不到員工 {emp_name}")
+                            results_data["errors"].append(
+                                f"第 {idx+2} 行: 找不到員工 {emp_name}"
+                            )
                             continue
 
-                        date_val = row.get('日期')
+                        date_val = row.get("日期")
                         if pd.isna(date_val):
                             results_data["failed"] += 1
                             results_data["errors"].append(f"第 {idx+2} 行: 日期為空")
@@ -170,50 +216,94 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                         if isinstance(date_val, str):
                             try:
-                                attendance_date = datetime.strptime(date_val, "%Y/%m/%d").date()
+                                attendance_date = datetime.strptime(
+                                    date_val, "%Y/%m/%d"
+                                ).date()
                             except ValueError:
-                                attendance_date = datetime.strptime(date_val, "%Y-%m-%d").date()
+                                attendance_date = datetime.strptime(
+                                    date_val, "%Y-%m-%d"
+                                ).date()
                         else:
                             attendance_date = pd.to_datetime(date_val).date()
 
                         punch_in_time = None
-                        punch_in_val = row.get('上班時間')
+                        punch_in_val = row.get("上班時間")
                         if not pd.isna(punch_in_val) and str(punch_in_val).strip():
                             try:
                                 time_str = str(punch_in_val).strip()
-                                if ':' in time_str:
-                                    parts = time_str.split(':')
+                                if ":" in time_str:
+                                    parts = time_str.split(":")
                                     hour = int(parts[0])
-                                    minute = int(parts[1].split('.')[0]) if '.' in parts[1] else int(parts[1])
-                                    punch_in_time = datetime.combine(attendance_date, datetime.strptime(f"{hour:02d}:{minute:02d}", "%H:%M").time())
+                                    minute = (
+                                        int(parts[1].split(".")[0])
+                                        if "." in parts[1]
+                                        else int(parts[1])
+                                    )
+                                    punch_in_time = datetime.combine(
+                                        attendance_date,
+                                        datetime.strptime(
+                                            f"{hour:02d}:{minute:02d}", "%H:%M"
+                                        ).time(),
+                                    )
                             except (ValueError, IndexError) as e:
-                                logger.warning("第 %d 行: 上班時間格式無法解析 '%s': %s", idx+2, punch_in_val, e)
+                                logger.warning(
+                                    "第 %d 行: 上班時間格式無法解析 '%s': %s",
+                                    idx + 2,
+                                    punch_in_val,
+                                    e,
+                                )
 
                         punch_out_time = None
-                        punch_out_val = row.get('下班時間')
+                        punch_out_val = row.get("下班時間")
                         if not pd.isna(punch_out_val) and str(punch_out_val).strip():
                             try:
                                 time_str = str(punch_out_val).strip()
-                                if ':' in time_str:
-                                    parts = time_str.split(':')
+                                if ":" in time_str:
+                                    parts = time_str.split(":")
                                     hour = int(parts[0])
-                                    minute = int(parts[1].split('.')[0]) if '.' in parts[1] else int(parts[1])
-                                    punch_out_time = datetime.combine(attendance_date, datetime.strptime(f"{hour:02d}:{minute:02d}", "%H:%M").time())
+                                    minute = (
+                                        int(parts[1].split(".")[0])
+                                        if "." in parts[1]
+                                        else int(parts[1])
+                                    )
+                                    punch_out_time = datetime.combine(
+                                        attendance_date,
+                                        datetime.strptime(
+                                            f"{hour:02d}:{minute:02d}", "%H:%M"
+                                        ).time(),
+                                    )
                             except (ValueError, IndexError) as e:
-                                logger.warning("第 %d 行: 下班時間格式無法解析 '%s': %s", idx+2, punch_out_val, e)
+                                logger.warning(
+                                    "第 %d 行: 下班時間格式無法解析 '%s': %s",
+                                    idx + 2,
+                                    punch_out_val,
+                                    e,
+                                )
 
                         # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 18:00→02:00）
-                        if punch_in_time and punch_out_time and punch_out_time < punch_in_time:
+                        if (
+                            punch_in_time
+                            and punch_out_time
+                            and punch_out_time < punch_in_time
+                        ):
                             punch_out_time += timedelta(days=1)
-                        elif punch_in_time and punch_out_time and punch_out_time == punch_in_time:
+                        elif (
+                            punch_in_time
+                            and punch_out_time
+                            and punch_out_time == punch_in_time
+                        ):
                             results_data["failed"] += 1
                             results_data["errors"].append(
                                 f"第 {idx+2} 行 ({emp_name} {attendance_date}): 上下班時間相同 {punch_in_val}，請確認資料"
                             )
                             continue
 
-                        work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
-                        work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
+                        work_start = datetime.strptime(
+                            employee.work_start_time or "08:00", "%H:%M"
+                        ).time()
+                        work_end = datetime.strptime(
+                            employee.work_end_time or "17:00", "%H:%M"
+                        ).time()
 
                         is_late = False
                         is_early_leave = False
@@ -224,65 +314,115 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                         status = "normal"
 
                         if punch_in_time:
-                            work_start_dt = datetime.combine(attendance_date, work_start)
+                            work_start_dt = datetime.combine(
+                                attendance_date, work_start
+                            )
                             if punch_in_time > work_start_dt:
                                 is_late = True
-                                late_minutes = int((punch_in_time - work_start_dt).total_seconds() / 60)
+                                late_minutes = int(
+                                    (punch_in_time - work_start_dt).total_seconds() / 60
+                                )
                                 status = "late"
 
                         if punch_out_time:
                             work_end_dt = datetime.combine(attendance_date, work_end)
                             if punch_out_time < work_end_dt:
                                 is_early_leave = True
-                                early_leave_minutes = int((work_end_dt - punch_out_time).total_seconds() / 60)
-                                status = "early_leave" if status == "normal" else status + "+early_leave"
+                                early_leave_minutes = int(
+                                    (work_end_dt - punch_out_time).total_seconds() / 60
+                                )
+                                status = (
+                                    "early_leave"
+                                    if status == "normal"
+                                    else status + "+early_leave"
+                                )
 
                         if is_missing_punch_in:
-                            status = "missing" if status == "normal" else status + "+missing_in"
+                            status = (
+                                "missing"
+                                if status == "normal"
+                                else status + "+missing_in"
+                            )
                         if is_missing_punch_out:
-                            status = "missing" if status == "normal" else status + "+missing_out"
+                            status = (
+                                "missing"
+                                if status == "normal"
+                                else status + "+missing_out"
+                            )
 
                         is_head_teacher = employee.id in head_teacher_map
                         is_assistant = employee.id in assistant_teacher_map
                         is_driver = "司機" in employee.title_name
 
                         daily_key = (employee.id, attendance_date)
-                        week_monday = attendance_date - timedelta(days=attendance_date.weekday())
+                        week_monday = attendance_date - timedelta(
+                            days=attendance_date.weekday()
+                        )
                         shift_key = (employee.id, week_monday)
 
                         shift_data = None
 
                         if daily_key in daily_shift_map:
-                             shift_data = daily_shift_map[daily_key]
-                        elif (is_head_teacher or is_assistant) and shift_key in shift_schedule_map:
-                             shift_data = shift_schedule_map[shift_key]
+                            shift_data = daily_shift_map[daily_key]
+                        elif (
+                            is_head_teacher or is_assistant
+                        ) and shift_key in shift_schedule_map:
+                            shift_data = shift_schedule_map[shift_key]
 
                         if shift_data and punch_in_time and punch_out_time:
-                             shift_start = datetime.strptime(shift_data["work_start"], "%H:%M").time()
-                             shift_end = datetime.strptime(shift_data["work_end"], "%H:%M").time()
+                            shift_start = datetime.strptime(
+                                shift_data["work_start"], "%H:%M"
+                            ).time()
+                            shift_end = datetime.strptime(
+                                shift_data["work_end"], "%H:%M"
+                            ).time()
 
-                             shift_start_dt = datetime.combine(attendance_date, shift_start)
-                             shift_end_dt = datetime.combine(attendance_date, shift_end)
-                             # 跨夜班：排班結束在隔日（如 shift_end=02:00 < shift_start=18:00）
-                             if shift_end_dt <= shift_start_dt:
-                                 shift_end_dt += timedelta(days=1)
+                            shift_start_dt = datetime.combine(
+                                attendance_date, shift_start
+                            )
+                            shift_end_dt = datetime.combine(attendance_date, shift_end)
+                            # 跨夜班：排班結束在隔日（如 shift_end=02:00 < shift_start=18:00）
+                            if shift_end_dt <= shift_start_dt:
+                                shift_end_dt += timedelta(days=1)
 
-                             is_late = punch_in_time > shift_start_dt
-                             late_minutes = max(0, int((punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
-                             is_early_leave = punch_out_time < shift_end_dt
+                            is_late = punch_in_time > shift_start_dt
+                            late_minutes = (
+                                max(
+                                    0,
+                                    int(
+                                        (punch_in_time - shift_start_dt).total_seconds()
+                                        / 60
+                                    ),
+                                )
+                                if is_late
+                                else 0
+                            )
+                            is_early_leave = punch_out_time < shift_end_dt
 
-                             if is_late and is_early_leave:
-                                 status = "late+early_leave"
-                             elif is_late:
-                                 status = "late"
-                             elif is_early_leave:
-                                 status = "early_leave"
-                             else:
-                                 status = "normal"
-                             early_leave_minutes = max(0, int((shift_end_dt - punch_out_time).total_seconds() / 60)) if is_early_leave else 0
+                            if is_late and is_early_leave:
+                                status = "late+early_leave"
+                            elif is_late:
+                                status = "late"
+                            elif is_early_leave:
+                                status = "early_leave"
+                            else:
+                                status = "normal"
+                            early_leave_minutes = (
+                                max(
+                                    0,
+                                    int(
+                                        (shift_end_dt - punch_out_time).total_seconds()
+                                        / 60
+                                    ),
+                                )
+                                if is_early_leave
+                                else 0
+                            )
 
                         elif punch_in_time and punch_out_time:
-                            duration_minutes = int((punch_out_time - punch_in_time).total_seconds() / 60)
+                            duration_minutes = int(
+                                (punch_out_time - punch_in_time).total_seconds() / 60
+                            )
                             if is_driver:
                                 required_duration = 480
                             else:
@@ -295,7 +435,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 late_minutes = 0
                                 early_leave_minutes = 0
 
-                        department = str(row.get('部門', '')).strip()
+                        department = str(row.get("部門", "")).strip()
                         existing = attendance_cache.get((employee.id, attendance_date))
 
                         if existing:
@@ -322,10 +462,12 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 is_missing_punch_out=is_missing_punch_out,
                                 late_minutes=late_minutes,
                                 early_leave_minutes=early_leave_minutes,
-                                remark=f"部門: {department}"
+                                remark=f"部門: {department}",
                             )
                             session.add(attendance)
-                            attendance_cache[(employee.id, attendance_date)] = attendance
+                            attendance_cache[(employee.id, attendance_date)] = (
+                                attendance
+                            )
 
                         results_data["success"] += 1
 
@@ -338,7 +480,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 "早退次數": 0,
                                 "未打卡(上班)": 0,
                                 "未打卡(下班)": 0,
-                                "遲到總分鐘": 0
+                                "遲到總分鐘": 0,
                             }
 
                         stats = employee_stats[emp_name]
@@ -367,7 +509,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                     "message": f"考勤記錄匯入完成，成功 {results_data['success']} 筆，失敗 {results_data['failed']} 筆",
                     "summary": summary_data,
                     "anomaly_count": results_data["failed"],
-                    "anomalies": results_data["errors"][:20]
+                    "anomalies": results_data["errors"][:20],
                 }
 
             finally:
@@ -381,11 +523,17 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
             session = get_session()
             try:
-                employees = session.query(Employee).filter(Employee.is_active == True).all()
+                employees = (
+                    session.query(Employee).filter(Employee.is_active == True).all()
+                )
                 emp_by_name = {emp.name: emp for emp in employees}
 
-                all_classrooms = session.query(Classroom).filter(Classroom.is_active == True).all()
-                head_teacher_map = {c.head_teacher_id for c in all_classrooms if c.head_teacher_id}
+                all_classrooms = (
+                    session.query(Classroom).filter(Classroom.is_active == True).all()
+                )
+                head_teacher_map = {
+                    c.head_teacher_id for c in all_classrooms if c.head_teacher_id
+                }
                 assistant_teacher_map = set()
                 for c in all_classrooms:
                     if c.assistant_teacher_id:
@@ -398,7 +546,9 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                     st = shift_types_map.get(sa.shift_type_id)
                     if st:
                         shift_schedule_map[(sa.employee_id, sa.week_start_date)] = {
-                            "work_start": st.work_start, "work_end": st.work_end, "name": st.name,
+                            "work_start": st.work_start,
+                            "work_end": st.work_end,
+                            "name": st.name,
                         }
 
                 db_save_count = 0
@@ -411,15 +561,21 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                     if _e:
                         _legacy_emp_ids.add(_e.id)
                         for _d in _res.details:
-                            _legacy_dates.add(_d['date'])
+                            _legacy_dates.add(_d["date"])
 
                 legacy_attendance_cache: dict = {}
                 if _legacy_emp_ids and _legacy_dates:
-                    _lc = session.query(Attendance).filter(
-                        Attendance.employee_id.in_(_legacy_emp_ids),
-                        Attendance.attendance_date.in_(_legacy_dates),
-                    ).all()
-                    legacy_attendance_cache = {(a.employee_id, a.attendance_date): a for a in _lc}
+                    _lc = (
+                        session.query(Attendance)
+                        .filter(
+                            Attendance.employee_id.in_(_legacy_emp_ids),
+                            Attendance.attendance_date.in_(_legacy_dates),
+                        )
+                        .all()
+                    )
+                    legacy_attendance_cache = {
+                        (a.employee_id, a.attendance_date): a for a in _lc
+                    }
 
                 for emp_name, result in results.items():
                     employee = emp_by_name.get(emp_name)
@@ -427,42 +583,62 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                         continue
 
                     for detail in result.details:
-                        p_in = detail['punch_in']
-                        p_out = detail['punch_out']
-                        a_date = detail['date']
+                        p_in = detail["punch_in"]
+                        p_out = detail["punch_out"]
+                        a_date = detail["date"]
 
                         # 取完整 datetime（跨夜班的 punch_out_dt 已是次日）
-                        dt_in_full  = detail.get('punch_in_dt')
-                        dt_out_full = detail.get('punch_out_dt')
+                        dt_in_full = detail.get("punch_in_dt")
+                        dt_out_full = detail.get("punch_out_dt")
                         # 向後相容：若舊資料無 punch_in_dt，fallback 到 combine
                         if dt_in_full is None and p_in:
                             dt_in_full = datetime.combine(a_date, p_in)
                         if dt_out_full is None and p_out:
                             dt_out_full = datetime.combine(a_date, p_out)
 
-                        status = detail['status']
-                        is_late = detail['is_late']
-                        is_early_leave = detail['is_early_leave']
+                        status = detail["status"]
+                        is_late = detail["is_late"]
+                        is_early_leave = detail["is_early_leave"]
 
                         is_head_teacher = employee.id in head_teacher_map
                         is_assistant = employee.id in assistant_teacher_map
                         is_driver = "司機" in employee.title_name
 
-                        if (is_head_teacher or is_assistant) and dt_in_full and dt_out_full:
+                        if (
+                            (is_head_teacher or is_assistant)
+                            and dt_in_full
+                            and dt_out_full
+                        ):
                             week_monday = a_date - timedelta(days=a_date.weekday())
                             shift_key = (employee.id, week_monday)
                             if shift_key in shift_schedule_map:
                                 shift = shift_schedule_map[shift_key]
-                                shift_start = datetime.strptime(shift["work_start"], "%H:%M").time()
-                                shift_end = datetime.strptime(shift["work_end"], "%H:%M").time()
+                                shift_start = datetime.strptime(
+                                    shift["work_start"], "%H:%M"
+                                ).time()
+                                shift_end = datetime.strptime(
+                                    shift["work_end"], "%H:%M"
+                                ).time()
                                 shift_start_dt = datetime.combine(a_date, shift_start)
-                                shift_end_dt   = datetime.combine(a_date, shift_end)
+                                shift_end_dt = datetime.combine(a_date, shift_end)
                                 # 跨夜班：排班結束在隔日
                                 if shift_end_dt <= shift_start_dt:
                                     shift_end_dt += timedelta(days=1)
 
                                 is_late = dt_in_full > shift_start_dt
-                                late_minutes = max(0, int((dt_in_full - shift_start_dt).total_seconds() / 60)) if is_late else 0
+                                late_minutes = (
+                                    max(
+                                        0,
+                                        int(
+                                            (
+                                                dt_in_full - shift_start_dt
+                                            ).total_seconds()
+                                            / 60
+                                        ),
+                                    )
+                                    if is_late
+                                    else 0
+                                )
                                 is_early_leave = dt_out_full < shift_end_dt
 
                                 if is_late and is_early_leave:
@@ -475,7 +651,9 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                     status = "normal"
 
                         elif dt_in_full and dt_out_full:
-                            duration_minutes = int((dt_out_full - dt_in_full).total_seconds() / 60)
+                            duration_minutes = int(
+                                (dt_out_full - dt_in_full).total_seconds() / 60
+                            )
                             required_duration = 480 if is_driver else 540
 
                             if duration_minutes >= required_duration:
@@ -485,7 +663,7 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
                         existing = legacy_attendance_cache.get((employee.id, a_date))
 
-                        db_p_in  = dt_in_full
+                        db_p_in = dt_in_full
                         db_p_out = dt_out_full
 
                         if existing:
@@ -494,14 +672,16 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                             existing.status = status
                             existing.is_late = is_late
                             existing.is_early_leave = is_early_leave
-                            existing.is_missing_punch_in = detail['is_missing_punch_in']
-                            existing.is_missing_punch_out = detail['is_missing_punch_out']
+                            existing.is_missing_punch_in = detail["is_missing_punch_in"]
+                            existing.is_missing_punch_out = detail[
+                                "is_missing_punch_out"
+                            ]
                             if status == "normal":
                                 existing.late_minutes = 0
                                 existing.early_leave_minutes = 0
                             else:
-                                existing.late_minutes = detail['late_minutes']
-                                existing.early_leave_minutes = detail['early_minutes']
+                                existing.late_minutes = detail["late_minutes"]
+                                existing.early_leave_minutes = detail["early_minutes"]
 
                             existing.remark = "Legacy Upload"
                         else:
@@ -513,11 +693,15 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
                                 status=status,
                                 is_late=is_late,
                                 is_early_leave=is_early_leave,
-                                is_missing_punch_in=detail['is_missing_punch_in'],
-                                is_missing_punch_out=detail['is_missing_punch_out'],
-                                late_minutes=0 if status == "normal" else detail['late_minutes'],
-                                early_leave_minutes=0 if status == "normal" else detail['early_minutes'],
-                                remark="Legacy Upload"
+                                is_missing_punch_in=detail["is_missing_punch_in"],
+                                is_missing_punch_out=detail["is_missing_punch_out"],
+                                late_minutes=(
+                                    0 if status == "normal" else detail["late_minutes"]
+                                ),
+                                early_leave_minutes=(
+                                    0 if status == "normal" else detail["early_minutes"]
+                                ),
+                                remark="Legacy Upload",
                             )
                             session.add(att)
                             legacy_attendance_cache[(employee.id, a_date)] = att
@@ -535,14 +719,14 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
             anomaly_df.to_excel("output/anomaly_report.xlsx", index=False)
             summary_df.to_excel("output/attendance_summary.xlsx", index=False)
 
-            summary_data = summary_df.to_dict('records')
-            anomaly_data = anomaly_df.to_dict('records')
+            summary_data = summary_df.to_dict("records")
+            anomaly_data = anomaly_df.to_dict("records")
 
             return {
                 "message": f"考勤記錄解析並存檔完成 (已處理 {len(summary_data)} 人)",
                 "summary": summary_data,
                 "anomaly_count": len(anomaly_data),
-                "anomalies": anomaly_data[:20]
+                "anomalies": anomaly_data[:20],
             }
 
     except Exception as e:
@@ -553,7 +737,10 @@ async def upload_attendance(file: UploadFile = File(...), current_user: dict = D
 
 
 @router.post("/upload-csv")
-async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE))):
+async def upload_attendance_csv(
+    request: AttendanceUploadRequest,
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
+):
     """上傳 CSV 格式考勤記錄並存入資料庫"""
     session = get_session()
     try:
@@ -562,7 +749,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
             "success": 0,
             "failed": 0,
             "errors": [],
-            "summary": []
+            "summary": [],
         }
 
         employees = session.query(Employee).filter(Employee.is_active == True).all()
@@ -586,21 +773,29 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
 
         csv_attendance_cache: dict = {}
         if _csv_emp_ids and _csv_dates:
-            _cc = session.query(Attendance).filter(
-                Attendance.employee_id.in_(_csv_emp_ids),
-                Attendance.attendance_date.in_(_csv_dates),
-            ).all()
+            _cc = (
+                session.query(Attendance)
+                .filter(
+                    Attendance.employee_id.in_(_csv_emp_ids),
+                    Attendance.attendance_date.in_(_csv_dates),
+                )
+                .all()
+            )
             csv_attendance_cache = {(a.employee_id, a.attendance_date): a for a in _cc}
 
         employee_stats = {}
 
         for row in request.records:
             try:
-                employee = emp_by_id.get(row.employee_number) or emp_by_name.get(row.name)
+                employee = emp_by_id.get(row.employee_number) or emp_by_name.get(
+                    row.name
+                )
 
                 if not employee:
                     results["failed"] += 1
-                    results["errors"].append(f"找不到員工: {row.name} (編號: {row.employee_number})")
+                    results["errors"].append(
+                        f"找不到員工: {row.name} (編號: {row.employee_number})"
+                    )
                     continue
 
                 try:
@@ -618,7 +813,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                     try:
                         punch_in_time = datetime.combine(
                             attendance_date,
-                            datetime.strptime(row.punch_in.strip(), "%H:%M").time()
+                            datetime.strptime(row.punch_in.strip(), "%H:%M").time(),
                         )
                     except ValueError:
                         pass
@@ -628,7 +823,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                     try:
                         punch_out_time = datetime.combine(
                             attendance_date,
-                            datetime.strptime(row.punch_out.strip(), "%H:%M").time()
+                            datetime.strptime(row.punch_out.strip(), "%H:%M").time(),
                         )
                     except ValueError:
                         pass
@@ -636,15 +831,21 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                 # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 18:00→02:00）
                 if punch_in_time and punch_out_time and punch_out_time < punch_in_time:
                     punch_out_time += timedelta(days=1)
-                elif punch_in_time and punch_out_time and punch_out_time == punch_in_time:
+                elif (
+                    punch_in_time and punch_out_time and punch_out_time == punch_in_time
+                ):
                     results["failed"] += 1
                     results["errors"].append(
                         f"{row.name} {row.date}: 上下班時間相同 {row.punch_in}，請確認資料"
                     )
                     continue
 
-                work_start = datetime.strptime(employee.work_start_time or "08:00", "%H:%M").time()
-                work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
+                work_start = datetime.strptime(
+                    employee.work_start_time or "08:00", "%H:%M"
+                ).time()
+                work_end = datetime.strptime(
+                    employee.work_end_time or "17:00", "%H:%M"
+                ).time()
 
                 is_late = False
                 is_early_leave = False
@@ -658,14 +859,18 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                     work_start_dt = datetime.combine(attendance_date, work_start)
                     if punch_in_time > work_start_dt:
                         is_late = True
-                        late_minutes = int((punch_in_time - work_start_dt).total_seconds() / 60)
+                        late_minutes = int(
+                            (punch_in_time - work_start_dt).total_seconds() / 60
+                        )
                         status = "late"
 
                 if punch_out_time:
                     work_end_dt = datetime.combine(attendance_date, work_end)
                     if punch_out_time < work_end_dt:
                         is_early_leave = True
-                        early_leave_minutes = int((work_end_dt - punch_out_time).total_seconds() / 60)
+                        early_leave_minutes = int(
+                            (work_end_dt - punch_out_time).total_seconds() / 60
+                        )
                         if status == "normal":
                             status = "early_leave"
                         else:
@@ -674,7 +879,9 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                 if is_missing_punch_in:
                     status = "missing" if status == "normal" else status + "+missing_in"
                 if is_missing_punch_out:
-                    status = "missing" if status == "normal" else status + "+missing_out"
+                    status = (
+                        "missing" if status == "normal" else status + "+missing_out"
+                    )
 
                 existing = csv_attendance_cache.get((employee.id, attendance_date))
 
@@ -702,7 +909,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                         is_missing_punch_out=is_missing_punch_out,
                         late_minutes=late_minutes,
                         early_leave_minutes=early_leave_minutes,
-                        remark=f"部門: {row.department}"
+                        remark=f"部門: {row.department}",
                     )
                     session.add(attendance)
                     csv_attendance_cache[(employee.id, attendance_date)] = attendance
@@ -718,7 +925,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
                         "early_leave_count": 0,
                         "missing_punch_in": 0,
                         "missing_punch_out": 0,
-                        "total_late_minutes": 0
+                        "total_late_minutes": 0,
                     }
 
                 stats = employee_stats[employee.name]
@@ -745,7 +952,7 @@ async def upload_attendance_csv(request: AttendanceUploadRequest, current_user: 
 
         return {
             "message": f"考勤記錄匯入完成，成功 {results['success']} 筆，失敗 {results['failed']} 筆",
-            "results": results
+            "results": results,
         }
 
     except Exception as e:

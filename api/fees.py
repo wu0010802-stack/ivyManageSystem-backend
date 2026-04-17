@@ -6,13 +6,13 @@ import logging
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import outerjoin, func, case
 
 from models.base import session_scope
 from models.classroom import Classroom, Student
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import FeeItem, StudentFeeRecord, StudentFeeRefund
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -25,9 +25,13 @@ router = APIRouter(prefix="/api/fees", tags=["fees"])
 # Pydantic Schemas
 # ---------------------------------------------------------------------------
 
+# 單筆費用金額上限（避免誤輸入或惡意輸入）
+MAX_FEE_AMOUNT = 999_999
+
+
 class FeeItemCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    amount: int = Field(..., ge=0)
+    amount: int = Field(..., ge=0, le=MAX_FEE_AMOUNT)
     classroom_id: Optional[int] = None
     period: str = Field(..., min_length=1, max_length=20)
     is_active: bool = True
@@ -35,7 +39,7 @@ class FeeItemCreate(BaseModel):
 
 class FeeItemUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    amount: Optional[int] = Field(None, ge=0)
+    amount: Optional[int] = Field(None, ge=0, le=MAX_FEE_AMOUNT)
     classroom_id: Optional[int] = None
     period: Optional[str] = Field(None, min_length=1, max_length=20)
     is_active: Optional[bool] = None
@@ -48,9 +52,27 @@ class GenerateRequest(BaseModel):
 
 class PayRequest(BaseModel):
     payment_date: date
-    amount_paid: Optional[int] = Field(None, ge=1, description="繳費金額（None=全額）")
+    amount_paid: Optional[int] = Field(
+        None,
+        ge=1,
+        le=MAX_FEE_AMOUNT,
+        description=f"累計已繳金額（None=全額；上限 NT${MAX_FEE_AMOUNT:,}）",
+    )
     payment_method: str = Field(..., pattern="^(現金|轉帳|其他)$")
-    notes: Optional[str] = ""
+    notes: Optional[str] = Field("", max_length=200)
+
+
+class RefundRequest(BaseModel):
+    """退款請求。退款走獨立流程，於 StudentFeeRefund 表留下歷史。"""
+
+    amount: int = Field(
+        ...,
+        ge=1,
+        le=MAX_FEE_AMOUNT,
+        description=f"退款金額（正整數，上限 NT${MAX_FEE_AMOUNT:,}）",
+    )
+    reason: str = Field(..., min_length=1, max_length=100)
+    notes: Optional[str] = Field("", max_length=200)
 
 
 def _apply_fee_record_filters(
@@ -80,6 +102,7 @@ def _apply_fee_record_filters(
 # 費用項目
 # ---------------------------------------------------------------------------
 
+
 @router.get("/items")
 def list_fee_items(
     period: Optional[str] = Query(None),
@@ -88,9 +111,8 @@ def list_fee_items(
 ):
     """取得費用項目清單（JOIN classroom，一次查詢）"""
     with session_scope() as session:
-        q = (
-            session.query(FeeItem, Classroom)
-            .outerjoin(Classroom, FeeItem.classroom_id == Classroom.id)
+        q = session.query(FeeItem, Classroom).outerjoin(
+            Classroom, FeeItem.classroom_id == Classroom.id
         )
         if period:
             q = q.filter(FeeItem.period == period)
@@ -136,7 +158,11 @@ def create_fee_item(
     """新增費用項目"""
     with session_scope() as session:
         if payload.classroom_id:
-            cls = session.query(Classroom).filter(Classroom.id == payload.classroom_id).first()
+            cls = (
+                session.query(Classroom)
+                .filter(Classroom.id == payload.classroom_id)
+                .first()
+            )
             if not cls:
                 raise HTTPException(status_code=404, detail="班級不存在")
 
@@ -149,9 +175,19 @@ def create_fee_item(
         )
         session.add(item)
         session.flush()
-        result = {"id": item.id, "name": item.name, "amount": item.amount, "period": item.period}
+        result = {
+            "id": item.id,
+            "name": item.name,
+            "amount": item.amount,
+            "period": item.period,
+        }
 
-    logger.info("新增費用項目 id=%s name=%s period=%s", result["id"], result["name"], result["period"])
+    logger.info(
+        "新增費用項目 id=%s name=%s period=%s",
+        result["id"],
+        result["name"],
+        result["period"],
+    )
     return result
 
 
@@ -172,7 +208,11 @@ def update_fee_item(
         if payload.amount is not None:
             item.amount = payload.amount
         if payload.classroom_id is not None:
-            cls = session.query(Classroom).filter(Classroom.id == payload.classroom_id).first()
+            cls = (
+                session.query(Classroom)
+                .filter(Classroom.id == payload.classroom_id)
+                .first()
+            )
             if not cls:
                 raise HTTPException(status_code=404, detail="班級不存在")
             item.classroom_id = payload.classroom_id
@@ -198,9 +238,11 @@ def delete_fee_item(
         if not item:
             raise HTTPException(status_code=404, detail="費用項目不存在")
 
-        linked = session.query(StudentFeeRecord).filter(
-            StudentFeeRecord.fee_item_id == item_id
-        ).count()
+        linked = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.fee_item_id == item_id)
+            .count()
+        )
         if linked > 0:
             raise HTTPException(
                 status_code=400,
@@ -218,6 +260,7 @@ def delete_fee_item(
 # 批次產生費用記錄
 # ---------------------------------------------------------------------------
 
+
 @router.post("/generate")
 def generate_fee_records(
     payload: GenerateRequest,
@@ -225,7 +268,9 @@ def generate_fee_records(
 ):
     """批次為指定班級或全校的在校學生產生費用記錄"""
     with session_scope() as session:
-        fee_item = session.query(FeeItem).filter(FeeItem.id == payload.fee_item_id).first()
+        fee_item = (
+            session.query(FeeItem).filter(FeeItem.id == payload.fee_item_id).first()
+        )
         if not fee_item:
             raise HTTPException(status_code=404, detail="費用項目不存在")
         if not fee_item.is_active:
@@ -247,9 +292,9 @@ def generate_fee_records(
         # 一次查完已存在的 student_id，避免 N 次單筆查詢
         existing_student_ids = {
             r.student_id
-            for r in session.query(StudentFeeRecord.student_id).filter(
-                StudentFeeRecord.fee_item_id == payload.fee_item_id
-            ).all()
+            for r in session.query(StudentFeeRecord.student_id)
+            .filter(StudentFeeRecord.fee_item_id == payload.fee_item_id)
+            .all()
         }
 
         now = datetime.now()
@@ -261,19 +306,21 @@ def generate_fee_records(
                 skipped += 1
                 continue
 
-            new_records.append({
-                "student_id": student.id,
-                "student_name": student.name,
-                "classroom_name": classroom.name if classroom else "",
-                "fee_item_id": fee_item.id,
-                "fee_item_name": fee_item.name,
-                "amount_due": fee_item.amount,
-                "amount_paid": 0,
-                "status": "unpaid",
-                "period": fee_item.period,
-                "created_at": now,
-                "updated_at": now,
-            })
+            new_records.append(
+                {
+                    "student_id": student.id,
+                    "student_name": student.name,
+                    "classroom_name": classroom.name if classroom else "",
+                    "fee_item_id": fee_item.id,
+                    "fee_item_name": fee_item.name,
+                    "amount_due": fee_item.amount,
+                    "amount_paid": 0,
+                    "status": "unpaid",
+                    "period": fee_item.period,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
             created += 1
 
         if new_records:
@@ -281,7 +328,9 @@ def generate_fee_records(
 
     logger.info(
         "批次產生費用記錄 fee_item_id=%s 新建=%s 跳過=%s",
-        payload.fee_item_id, created, skipped,
+        payload.fee_item_id,
+        created,
+        skipped,
     )
     return {"created": created, "skipped": skipped}
 
@@ -289,6 +338,7 @@ def generate_fee_records(
 # ---------------------------------------------------------------------------
 # 費用記錄查詢（含分頁）
 # ---------------------------------------------------------------------------
+
 
 @router.get("/records")
 def list_fee_records(
@@ -314,7 +364,11 @@ def list_fee_records(
 
         total = q.count()
         records = (
-            q.order_by(StudentFeeRecord.period.desc(), StudentFeeRecord.classroom_name, StudentFeeRecord.student_name)
+            q.order_by(
+                StudentFeeRecord.period.desc(),
+                StudentFeeRecord.classroom_name,
+                StudentFeeRecord.student_name,
+            )
             .offset((page - 1) * page_size)
             .limit(page_size)
             .all()
@@ -334,7 +388,9 @@ def list_fee_records(
                     "amount_due": r.amount_due,
                     "amount_paid": r.amount_paid,
                     "status": r.status,
-                    "payment_date": r.payment_date.isoformat() if r.payment_date else None,
+                    "payment_date": (
+                        r.payment_date.isoformat() if r.payment_date else None
+                    ),
                     "payment_method": r.payment_method,
                     "notes": r.notes,
                     "period": r.period,
@@ -348,23 +404,52 @@ def list_fee_records(
 # 登記繳費
 # ---------------------------------------------------------------------------
 
+
 @router.put("/records/{record_id}/pay")
 def pay_fee_record(
     record_id: int,
     payload: PayRequest,
-    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
-    """登記繳費"""
+    """登記繳費（累計已繳金額，覆蓋式）
+
+    稽核：覆蓋前值會記錄 logger.warning 供事後追查；
+    若 new < old 視為調降（疑似退款/誤改）預設拒絕，除非 allow_decrease=True。
+    """
     with session_scope() as session:
-        record = session.query(StudentFeeRecord).filter(StudentFeeRecord.id == record_id).with_for_update().first()
+        record = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.id == record_id)
+            .with_for_update()
+            .first()
+        )
         if not record:
             raise HTTPException(status_code=404, detail="費用記錄不存在")
         if record.status == "paid":
             raise HTTPException(status_code=400, detail="此記錄已完成繳費")
 
-        amount_paid = payload.amount_paid if payload.amount_paid is not None else record.amount_due
+        amount_paid = (
+            payload.amount_paid
+            if payload.amount_paid is not None
+            else record.amount_due
+        )
         if amount_paid > record.amount_due:
-            raise HTTPException(status_code=400, detail=f"繳費金額（{amount_paid}）不得超過應繳金額（{record.amount_due}）")
+            raise HTTPException(
+                status_code=400,
+                detail=f"繳費金額（{amount_paid}）不得超過應繳金額（{record.amount_due}）",
+            )
+
+        previous_paid = record.amount_paid or 0
+        if amount_paid < previous_paid:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"新金額 NT${amount_paid} 低於已登記金額 NT${previous_paid}，"
+                    "請改用退款流程（POST /records/{id}/refund）"
+                ),
+            )
+
         record.amount_paid = amount_paid
         record.payment_date = payload.payment_date
         record.payment_method = payload.payment_method
@@ -373,14 +458,38 @@ def pay_fee_record(
         record.updated_at = datetime.now()
 
         student_name = record.student_name
+        operator = current_user.get("username", "") or "unknown"
 
-    logger.info("登記繳費 record_id=%s student=%s amount=%s", record_id, student_name, amount_paid)
-    return {"ok": True, "amount_paid": amount_paid}
+        # 把金額變動塞進 AuditMiddleware 的 summary（含前後值，不會被 body mask 掉）
+        request.state.audit_summary = (
+            f"繳費登記 {record.period or ''} {student_name}: "
+            f"NT${previous_paid} → NT${amount_paid}"
+            f"（{payload.payment_method}，by {operator}）"
+        )
+        request.state.audit_entity_id = record_id
+
+    # 金額變動 warning 保留一份（AuditLog 寫失敗時仍有日誌可查）
+    if amount_paid != previous_paid:
+        logger.warning(
+            "FEE_PAY_CHANGE record_id=%s student=%s operator=%s prev=%s new=%s method=%s",
+            record_id,
+            student_name,
+            operator,
+            previous_paid,
+            amount_paid,
+            payload.payment_method,
+        )
+    return {
+        "ok": True,
+        "amount_paid": amount_paid,
+        "previous_amount_paid": previous_paid,
+    }
 
 
 # ---------------------------------------------------------------------------
 # 統計摘要
 # ---------------------------------------------------------------------------
+
 
 @router.get("/summary")
 def fee_summary(
@@ -411,7 +520,9 @@ def fee_summary(
                 func.sum(case((StudentFeeRecord.status == "partial", 1), else_=0)), 0
             ).label("partial_count"),
             func.coalesce(func.sum(StudentFeeRecord.amount_due), 0).label("total_due"),
-            func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label("total_paid"),
+            func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label(
+                "total_paid"
+            ),
         )
         row = agg_q.one()
         total_count = row.total_count or 0
@@ -428,4 +539,128 @@ def fee_summary(
             "total_due": total_due,
             "total_paid": total_paid,
             "total_unpaid": total_due - total_paid,
+        }
+
+
+# ---------------------------------------------------------------------------
+# 退款流程
+# ---------------------------------------------------------------------------
+
+
+@router.post("/records/{record_id}/refund", status_code=201)
+def refund_fee_record(
+    record_id: int,
+    payload: RefundRequest,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
+):
+    """建立退款紀錄並扣除已繳金額。
+
+    - 退款金額必須 ≤ 當下已繳
+    - 一次退款一筆，需填退款原因（稽核要求）
+    - 鎖住該筆 fee record，避免與 pay_fee_record 併發衝突
+    """
+    with session_scope() as session:
+        record = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.id == record_id)
+            .with_for_update()
+            .first()
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail="費用記錄不存在")
+
+        paid = record.amount_paid or 0
+        if paid <= 0:
+            raise HTTPException(status_code=400, detail="此記錄尚未有任何繳費可退")
+        if payload.amount > paid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"退款金額 NT${payload.amount} 超過已繳金額 NT${paid}",
+            )
+
+        operator = current_user.get("username") or current_user.get("name") or "unknown"
+
+        refund = StudentFeeRefund(
+            record_id=record.id,
+            amount=payload.amount,
+            reason=payload.reason,
+            notes=payload.notes or "",
+            refunded_by=operator,
+        )
+        session.add(refund)
+
+        record.amount_paid = paid - payload.amount
+        # 若還有剩餘，視為 partial；若清 0 則回 unpaid
+        if record.amount_paid <= 0:
+            record.status = "unpaid"
+        elif record.amount_paid < (record.amount_due or 0):
+            record.status = "partial"
+        else:
+            record.status = "paid"
+        record.updated_at = datetime.now()
+
+        request.state.audit_summary = (
+            f"學費退款 {record.period or ''} {record.student_name}: "
+            f"NT${payload.amount}（{payload.reason}，by {operator}）"
+        )
+        request.state.audit_entity_id = record_id
+        new_paid = record.amount_paid
+        new_status = record.status
+        student_name_snapshot = record.student_name
+
+    logger.warning(
+        "FEE_REFUND record_id=%s student=%s operator=%s amount=%s reason=%s new_paid=%s",
+        record_id,
+        student_name_snapshot,
+        operator,
+        payload.amount,
+        payload.reason,
+        new_paid,
+    )
+    return {
+        "ok": True,
+        "refund_amount": payload.amount,
+        "new_amount_paid": new_paid,
+        "status": new_status,
+    }
+
+
+@router.get("/records/{record_id}/refunds")
+def list_fee_refunds(
+    record_id: int,
+    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
+):
+    """列出某筆學費記錄的退款歷史（按時間新→舊）"""
+    with session_scope() as session:
+        rec = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.id == record_id)
+            .first()
+        )
+        if not rec:
+            raise HTTPException(status_code=404, detail="費用記錄不存在")
+        refunds = (
+            session.query(StudentFeeRefund)
+            .filter(StudentFeeRefund.record_id == record_id)
+            .order_by(StudentFeeRefund.refunded_at.desc())
+            .all()
+        )
+        return {
+            "record_id": record_id,
+            "student_name": rec.student_name,
+            "total_refunded": sum(r.amount for r in refunds),
+            "refunds": [
+                {
+                    "id": r.id,
+                    "amount": r.amount,
+                    "reason": r.reason,
+                    "notes": r.notes or "",
+                    "refunded_by": r.refunded_by,
+                    "refunded_at": (
+                        r.refunded_at.isoformat() if r.refunded_at else None
+                    ),
+                }
+                for r in refunds
+            ],
         }

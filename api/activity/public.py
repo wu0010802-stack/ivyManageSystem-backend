@@ -4,13 +4,32 @@ api/activity/public.py — 公開前台端點（無需認證，10 個）
 
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import hashlib
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import Response as PlainResponse
+from fastapi.responses import FileResponse, Response as PlainResponse
 from sqlalchemy import func
+
+from utils.storage import get_storage_path
+
+_POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_POSTER_MODULE = "activity_posters"
+
+
+def _poster_dir() -> Path:
+    return get_storage_path(_POSTER_MODULE)
+
+
+_POSTER_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 from models.database import (
     get_session,
@@ -50,12 +69,13 @@ from utils.academic import resolve_academic_term_filters
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_public_query_limiter = SlidingWindowLimiter(
+_public_query_limiter_instance = SlidingWindowLimiter(
     max_calls=10,
     window_seconds=60,
     name="activity_public_query",
     error_detail="查詢過於頻繁，請稍後再試",
-).as_dependency()
+)
+_public_query_limiter = _public_query_limiter_instance.as_dependency()
 
 _public_register_limiter_instance = SlidingWindowLimiter(
     max_calls=5,
@@ -65,24 +85,79 @@ _public_register_limiter_instance = SlidingWindowLimiter(
 )
 _public_register_limiter = _public_register_limiter_instance.as_dependency()
 
+# 家長提問：相較報名放寬一些，避免誤擋連續補充問題
+_public_inquiry_limiter_instance = SlidingWindowLimiter(
+    max_calls=3,
+    window_seconds=60,
+    name="activity_public_inquiry",
+    error_detail="提交過於頻繁，請稍後再試",
+)
+_public_inquiry_limiter = _public_inquiry_limiter_instance.as_dependency()
+
+
+_PUBLIC_DISPLAY_FIELDS = (
+    "page_title",
+    "term_label",
+    "event_date_label",
+    "target_audience",
+    "form_card_title",
+    "poster_url",
+)
+
 
 @router.get("/public/registration-time")
 async def get_public_registration_time(response: Response):
-    """公開端點：前台查詢報名開放時間（無需認證）"""
+    """公開端點：前台查詢報名開放時間 + 顯示設定（無需認證）"""
     session = get_session()
     try:
         settings = session.query(ActivityRegistrationSettings).first()
-        if not settings:
-            response.headers["Cache-Control"] = "public, max-age=60"
-            return {"is_open": False, "open_at": None, "close_at": None}
         response.headers["Cache-Control"] = "public, max-age=60"
+        if not settings:
+            return {
+                "is_open": False,
+                "open_at": None,
+                "close_at": None,
+                **{k: None for k in _PUBLIC_DISPLAY_FIELDS},
+            }
         return {
             "is_open": settings.is_open,
             "open_at": settings.open_at,
             "close_at": settings.close_at,
+            **{k: getattr(settings, k, None) for k in _PUBLIC_DISPLAY_FIELDS},
         }
     finally:
         session.close()
+
+
+@router.get("/public/poster/{filename}")
+async def get_public_poster(filename: str, response: Response):
+    """公開端點：回傳已上傳的活動海報圖。
+
+    防穿越：檔名只允許純 hex + 白名單副檔名，同時驗證檔案位於 _POSTER_DIR。
+    """
+    path = Path(filename)
+    if path.name != filename or ".." in filename or "/" in filename:
+        raise HTTPException(status_code=400, detail="非法檔名")
+    ext = path.suffix.lower()
+    stem = path.stem
+    if (
+        ext not in _POSTER_ALLOWED_EXT
+        or not stem
+        or not all(c in "0123456789abcdef" for c in stem)
+    ):
+        raise HTTPException(status_code=400, detail="非法檔名")
+
+    poster_dir = _poster_dir()
+    full_path = (poster_dir / filename).resolve()
+    try:
+        full_path.relative_to(poster_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="非法路徑")
+    if not full_path.is_file():
+        raise HTTPException(status_code=404, detail="海報不存在")
+
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return FileResponse(str(full_path), media_type=_POSTER_MIME.get(ext, "image/*"))
 
 
 @router.get("/public/courses")
@@ -478,6 +553,7 @@ async def public_register(
             student_id=matched_student_id,
             classroom_id=matched_classroom_id,
             parent_phone=body.parent_phone,
+            remark=(body.remark or "").strip(),
             pending_review=not is_matched,
             match_status="matched" if is_matched else "pending",
         )
@@ -680,7 +756,10 @@ async def public_update_registration(
 
 
 @router.post("/public/inquiries", status_code=201)
-async def public_create_inquiry(body: PublicInquiryPayload):
+async def public_create_inquiry(
+    body: PublicInquiryPayload,
+    _: None = Depends(_public_inquiry_limiter),
+):
     """前台：提交家長提問"""
     session = get_session()
     try:

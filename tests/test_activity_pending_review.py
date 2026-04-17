@@ -391,3 +391,288 @@ class TestAdminApprovalWorkflow:
             assert reg.pending_review is False
             assert reg.match_status == "matched"
             assert reg.student_id is not None
+
+    def test_rematch_edits_phone_and_matches(self, pending_client):
+        """rematch body 內直接修 parent_phone，一次完成編輯+比對。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, phone="0912345678")
+        r_reg = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/rematch",
+            json={"parent_phone": "0912345678"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["matched"] is True
+        assert data["field_changed"] is True
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.parent_phone == "0912345678"
+            assert reg.match_status == "matched"
+            assert reg.pending_review is False
+
+    def test_rematch_keeps_edits_when_still_unmatched(self, pending_client):
+        """比對失敗也要保留編輯後的欄位，不讓校方白打。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/rematch",
+            json={"parent_phone": "0922222222", "birthday": "2020-05-11"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["matched"] is False
+        assert data["field_changed"] is True
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.parent_phone == "0922222222"
+            assert reg.birthday == "2020-05-11"
+            assert reg.pending_review is True
+
+    def test_rematch_rejects_invalid_phone_format(self, pending_client):
+        """家長手機格式錯誤應被 Pydantic 攔截。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/rematch",
+            json={"parent_phone": "123"},
+        )
+        assert res.status_code == 422
+
+    def test_rematch_blocks_duplicate_name_birthday_in_same_term(self, pending_client):
+        """若編輯後的 name+birthday 與同學期另一筆有效 reg 重複，應回 400。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        # 第一筆：王小明 2020-05-10
+        r1 = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        )
+        # 第二筆：李小美 2021-01-01 同學期
+        r2 = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(
+                name="李小美", birthday="2021-01-01", phone="0922222222"
+            ),
+        )
+        reg2_id = r2.json()["id"]
+
+        _login(client)
+        # 試圖把第二筆改成和第一筆一樣的 name+birthday
+        res = client.post(
+            f"/api/activity/registrations/{reg2_id}/rematch",
+            json={"name": "王小明", "birthday": "2020-05-10"},
+        )
+        assert res.status_code == 400
+        assert "重複" in res.json()["detail"]
+
+    def test_pending_list_rejected_status_returns_rejected_items(self, pending_client):
+        """status=rejected 應只回已拒絕（is_active=False, rejected）的報名。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        client.post(
+            f"/api/activity/registrations/{reg_id}/reject", json={"reason": "校外生"}
+        )
+
+        res_pending = client.get(
+            "/api/activity/registrations/pending", params={"status": "pending"}
+        )
+        assert all(it["id"] != reg_id for it in res_pending.json()["items"])
+
+        res_rejected = client.get(
+            "/api/activity/registrations/pending", params={"status": "rejected"}
+        )
+        ids = [it["id"] for it in res_rejected.json()["items"]]
+        assert reg_id in ids
+        assert res_rejected.json()["status"] == "rejected"
+
+    def test_restore_rejected_returns_to_pending(self, pending_client):
+        """restore 把已拒絕的報名復原為待審核，可再被 rematch。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        client.post(f"/api/activity/registrations/{reg_id}/reject", json={"reason": ""})
+
+        res = client.post(f"/api/activity/registrations/{reg_id}/restore")
+        assert res.status_code == 200
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.is_active is True
+            assert reg.match_status == "pending"
+            assert reg.pending_review is True
+            assert "已還原" in (reg.remark or "")
+
+    def test_restore_rejects_non_rejected_registration(self, pending_client):
+        """非 rejected 狀態的 reg 呼叫 restore 應回 400。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        res = client.post(f"/api/activity/registrations/{reg_id}/restore")
+        assert res.status_code == 400
+
+    def test_force_accept_inserts_with_forced_status(self, pending_client):
+        """強行收件：跳過比對直接進正式列表，標記 match_status=forced。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        res = client.post(f"/api/activity/registrations/{reg_id}/force-accept")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["forced"] is True
+        assert data["matched"] is False
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.is_active is True
+            assert reg.pending_review is False
+            assert reg.match_status == "forced"
+            assert reg.student_id is None
+            assert "強行收件" in (reg.remark or "")
+
+    def test_force_accept_with_field_edits_saves_changes(self, pending_client):
+        """強行收件同時修正欄位，應保留修改。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/force-accept",
+            json={"parent_phone": "0922222222"},
+        )
+        assert res.status_code == 200
+        assert res.json()["field_changed"] is True
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.parent_phone == "0922222222"
+            assert reg.match_status == "forced"
+
+    def test_force_accept_blocks_duplicate_name_birthday(self, pending_client):
+        """強行收件仍需擋同學期重複的 name+birthday。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r1 = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        r2 = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(
+                name="李小美", birthday="2021-01-01", phone="0922222222"
+            ),
+        )
+        reg2_id = r2.json()["id"]
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg2_id}/force-accept",
+            json={"name": "王小明", "birthday": "2020-05-10"},
+        )
+        assert res.status_code == 400
+
+    def test_pending_list_all_status_merges_pending_and_rejected(self, pending_client):
+        """status=all 應同時包含 pending 與 rejected 筆數。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        # 兩筆 pending
+        r1 = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        r2 = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(name="李小美", phone="0922222222"),
+        )
+        _login(client)
+        # 拒絕其中一筆
+        client.post(
+            f"/api/activity/registrations/{r1.json()['id']}/reject", json={"reason": ""}
+        )
+
+        res = client.get("/api/activity/registrations/pending")  # 預設 all
+        ids = {it["id"] for it in res.json()["items"]}
+        assert r1.json()["id"] in ids
+        assert r2.json()["id"] in ids
+
+    def test_restore_blocks_when_duplicate_active_exists(self, pending_client):
+        """拒絕後又另建了同 name+birthday 的新 reg，不能 restore 避免衝突。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r1 = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        reg1_id = r1.json()["id"]
+
+        _login(client)
+        client.post(
+            f"/api/activity/registrations/{reg1_id}/reject", json={"reason": ""}
+        )
+
+        # 拒絕後又送一筆同 name+birthday
+        r2 = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0922222222"),
+        )
+        assert r2.status_code == 201
+
+        res = client.post(f"/api/activity/registrations/{reg1_id}/restore")
+        assert res.status_code == 400

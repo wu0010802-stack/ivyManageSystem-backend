@@ -39,28 +39,36 @@ def get_portal_activity_registrations(
         emp = _get_employee(session, current_user)
 
         # 找出教師管理的班級（主教、副教、藝術教師皆可查）
-        classrooms = session.query(Classroom).filter(
-            Classroom.is_active.is_(True),
-            or_(
-                Classroom.head_teacher_id == emp.id,
-                Classroom.assistant_teacher_id == emp.id,
-                Classroom.art_teacher_id == emp.id,
-            ),
-        ).all()
+        classrooms = (
+            session.query(Classroom)
+            .filter(
+                Classroom.is_active.is_(True),
+                or_(
+                    Classroom.head_teacher_id == emp.id,
+                    Classroom.assistant_teacher_id == emp.id,
+                    Classroom.art_teacher_id == emp.id,
+                ),
+            )
+            .all()
+        )
 
         if not classrooms:
             return {"classrooms": [], "registrations": []}
 
         class_names = [c.name for c in classrooms]
+        classroom_ids = [c.id for c in classrooms]
 
-        # 查詢班級內學生的報名資料
+        # 查詢班級內學生的報名資料（以 classroom_id FK 比對，避免字串比對在轉班後失準）
         regs = (
             session.query(ActivityRegistration)
             .filter(
-                ActivityRegistration.class_name.in_(class_names),
+                ActivityRegistration.classroom_id.in_(classroom_ids),
                 ActivityRegistration.is_active.is_(True),
+                ActivityRegistration.match_status != "rejected",
             )
-            .order_by(ActivityRegistration.class_name, ActivityRegistration.student_name)
+            .order_by(
+                ActivityRegistration.class_name, ActivityRegistration.student_name
+            )
             .all()
         )
 
@@ -100,20 +108,26 @@ def get_portal_activity_registrations(
                 entry = {
                     "course_name": row.course_name,
                     "status": row.status,
-                    "waitlist_position": waitlist_position_map.get(row.rc_id) if row.status == "waitlist" else None,
+                    "waitlist_position": (
+                        waitlist_position_map.get(row.rc_id)
+                        if row.status == "waitlist"
+                        else None
+                    ),
                 }
                 course_map[row.registration_id].append(entry)
 
         result = []
         for r in regs:
-            result.append({
-                "id": r.id,
-                "student_name": r.student_name,
-                "class_name": r.class_name,
-                "is_paid": r.is_paid,
-                "courses": course_map.get(r.id, []),
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            })
+            result.append(
+                {
+                    "id": r.id,
+                    "student_name": r.student_name,
+                    "class_name": r.class_name,
+                    "is_paid": r.is_paid,
+                    "courses": course_map.get(r.id, []),
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+            )
 
         # 摘要統計
         total_enrolled = sum(
@@ -140,6 +154,7 @@ def get_portal_activity_registrations(
 
 # ── 才藝點名（Portal） ─────────────────────────────────────────────────────────
 
+
 class PortalAttendanceRecordItem(BaseModel):
     registration_id: int
     is_present: bool
@@ -151,7 +166,7 @@ class PortalBatchAttendanceUpdate(BaseModel):
 
 
 def _get_teacher_class_names(session, emp_id: int) -> list[str]:
-    """取得教師管轄班級名稱列表"""
+    """取得教師管轄班級名稱列表（向下相容；新程式請直接用 _get_teacher_classroom_ids）"""
     classroom_ids = _get_teacher_classroom_ids(session, emp_id)
     if not classroom_ids:
         return []
@@ -170,18 +185,22 @@ def portal_list_sessions(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        class_names = _get_teacher_class_names(session, emp.id)
-        if not class_names:
+        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
+        if not classroom_ids:
             return []
 
-        # 取得自班有報名的課程 ID
+        # 取得自班有報名的課程 ID（以 classroom_id FK 比對）
         enrolled_course_ids = [
-            row.course_id for row in
-            session.query(RegistrationCourse.course_id)
-            .join(ActivityRegistration, RegistrationCourse.registration_id == ActivityRegistration.id)
+            row.course_id
+            for row in session.query(RegistrationCourse.course_id)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
             .filter(
-                ActivityRegistration.class_name.in_(class_names),
+                ActivityRegistration.classroom_id.in_(classroom_ids),
                 ActivityRegistration.is_active.is_(True),
+                ActivityRegistration.match_status != "rejected",
                 RegistrationCourse.status == "enrolled",
             )
             .distinct()
@@ -209,16 +228,19 @@ def portal_list_sessions(
             query = query.filter(ActivitySession.session_date >= start_date)
         if end_date:
             query = query.filter(ActivitySession.session_date <= end_date)
-        rows = query.order_by(ActivitySession.session_date.desc(), ActivitySession.id.desc()).all()
+        rows = query.order_by(
+            ActivitySession.session_date.desc(), ActivitySession.id.desc()
+        ).all()
 
-        # 計算自班出席統計
+        # 計算自班出席統計（以 classroom_id FK 比對）
         session_ids = [r.id for r in rows]
         class_reg_ids = set(
-            row.id for row in
-            session.query(ActivityRegistration.id)
+            row.id
+            for row in session.query(ActivityRegistration.id)
             .filter(
-                ActivityRegistration.class_name.in_(class_names),
+                ActivityRegistration.classroom_id.in_(classroom_ids),
                 ActivityRegistration.is_active.is_(True),
+                ActivityRegistration.match_status != "rejected",
             )
             .all()
         )
@@ -226,7 +248,9 @@ def portal_list_sessions(
         attendance_stats: dict[int, dict] = {}
         if session_ids and class_reg_ids:
             raw_atts = (
-                session.query(ActivityAttendance.session_id, ActivityAttendance.is_present)
+                session.query(
+                    ActivityAttendance.session_id, ActivityAttendance.is_present
+                )
                 .filter(
                     ActivityAttendance.session_id.in_(session_ids),
                     ActivityAttendance.registration_id.in_(class_reg_ids),
@@ -243,17 +267,21 @@ def portal_list_sessions(
         result = []
         for r in rows:
             stat = attendance_stats.get(r.id, {"recorded": 0, "present": 0})
-            result.append({
-                "id": r.id,
-                "course_id": r.course_id,
-                "course_name": r.course_name,
-                "session_date": r.session_date.isoformat() if r.session_date else None,
-                "notes": r.notes or "",
-                "created_by": r.created_by,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "recorded_count": stat["recorded"],
-                "present_count": stat["present"],
-            })
+            result.append(
+                {
+                    "id": r.id,
+                    "course_id": r.course_id,
+                    "course_name": r.course_name,
+                    "session_date": (
+                        r.session_date.isoformat() if r.session_date else None
+                    ),
+                    "notes": r.notes or "",
+                    "created_by": r.created_by,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "recorded_count": stat["recorded"],
+                    "present_count": stat["present"],
+                }
+            )
         return result
     finally:
         session.close()
@@ -262,19 +290,30 @@ def portal_list_sessions(
 @router.get("/activity/attendance/sessions/{session_id}")
 def portal_get_session_detail(
     session_id: int,
+    group_by: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """場次詳情（僅含自班學生）"""
+    """場次詳情（僅含自班學生；classroom_id FK 比對）"""
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        class_names = _get_teacher_class_names(session, emp.id)
+        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
 
-        sess = session.query(ActivitySession).filter(ActivitySession.id == session_id).first()
+        sess = (
+            session.query(ActivitySession)
+            .filter(ActivitySession.id == session_id)
+            .first()
+        )
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
 
-        return _build_session_detail_response(session, sess, class_names_filter=class_names)
+        group_key = "classroom" if group_by == "classroom" else None
+        return _build_session_detail_response(
+            session,
+            sess,
+            classroom_ids_filter=classroom_ids,
+            group_by=group_key,
+        )
     finally:
         session.close()
 
@@ -285,24 +324,32 @@ def portal_batch_update_attendance(
     body: PortalBatchAttendanceUpdate,
     current_user: dict = Depends(get_current_user),
 ):
-    """批次點名（只能更新自班學生）"""
+    """批次點名（只能更新自班學生；classroom_id FK 比對）"""
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        class_names = _get_teacher_class_names(session, emp.id)
+        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
 
-        sess = session.query(ActivitySession).filter(ActivitySession.id == session_id).first()
+        sess = (
+            session.query(ActivitySession)
+            .filter(ActivitySession.id == session_id)
+            .first()
+        )
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
 
-        # 驗證所有 registration_id 都屬於自班
+        # 驗證所有 registration_id 都屬於自班（classroom_id FK 比對）
         if body.records:
             req_reg_ids = [item.registration_id for item in body.records]
             allowed_regs = (
                 session.query(ActivityRegistration.id)
                 .filter(
                     ActivityRegistration.id.in_(req_reg_ids),
-                    ActivityRegistration.class_name.in_(class_names) if class_names else False,
+                    (
+                        ActivityRegistration.classroom_id.in_(classroom_ids)
+                        if classroom_ids
+                        else False
+                    ),
                 )
                 .all()
             )
@@ -317,11 +364,24 @@ def portal_batch_update_attendance(
         req_reg_ids = [item.registration_id for item in body.records]
         existing_map = {
             a.registration_id: a
-            for a in session.query(ActivityAttendance).filter(
+            for a in session.query(ActivityAttendance)
+            .filter(
                 ActivityAttendance.session_id == session_id,
                 ActivityAttendance.registration_id.in_(req_reg_ids),
-            ).all()
+            )
+            .all()
         }
+
+        # 冗餘寫入 student_id（與管理端點名一致）
+        reg_student_map = (
+            dict(
+                session.query(ActivityRegistration.id, ActivityRegistration.student_id)
+                .filter(ActivityRegistration.id.in_(req_reg_ids))
+                .all()
+            )
+            if req_reg_ids
+            else {}
+        )
 
         for item in body.records:
             existing = existing_map.get(item.registration_id)
@@ -329,10 +389,13 @@ def portal_batch_update_attendance(
                 existing.is_present = item.is_present
                 existing.notes = item.notes or ""
                 existing.recorded_by = operator
+                if existing.student_id is None:
+                    existing.student_id = reg_student_map.get(item.registration_id)
             else:
                 att = ActivityAttendance(
                     session_id=session_id,
                     registration_id=item.registration_id,
+                    student_id=reg_student_map.get(item.registration_id),
                     is_present=item.is_present,
                     notes=item.notes or "",
                     recorded_by=operator,

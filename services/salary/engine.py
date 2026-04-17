@@ -1908,7 +1908,11 @@ class SalaryEngine:
                     f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
                 )
 
-            # 10. 儲存 SalaryRecord
+            # 10. 儲存 SalaryRecord（advisory lock 保護：多 worker 不會同時寫同筆）
+            from utils.advisory_lock import acquire_salary_lock
+
+            acquire_salary_lock(session, employee_id=emp.id, year=year, month=month)
+
             salary_record = (
                 session.query(SalaryRecord)
                 .filter(
@@ -1932,7 +1936,7 @@ class SalaryEngine:
             try:
                 session.commit()
             except IntegrityError:
-                # 競態條件：另一個請求搶先寫入，rollback 後重新取出那筆再更新
+                # 有 advisory lock 後理論上不會觸發，保留原本重試作為防禦。
                 session.rollback()
                 salary_record = (
                     session.query(SalaryRecord)
@@ -2172,6 +2176,15 @@ class SalaryEngine:
             errors = []
             total = len(employee_ids)
             done = 0
+
+            # ── advisory lock：對每位員工依 id 排序取鎖，避免多 worker 交錯死鎖 ──
+            # 鎖綁定在本 transaction，commit/rollback 時才釋放。
+            from utils.advisory_lock import acquire_salary_lock
+
+            for locked_emp_id in sorted(employee_ids):
+                acquire_salary_lock(
+                    session, employee_id=locked_emp_id, year=year, month=month
+                )
 
             for emp_id in employee_ids:
                 emp = emp_map.get(emp_id)

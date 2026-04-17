@@ -233,7 +233,12 @@ init_bonus_preview_services(salary_engine)
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)
 os.makedirs("output", exist_ok=True)
-os.makedirs("uploads/leave_attachments", exist_ok=True)
+# 上傳檔案實體儲存路徑（集中在 data/uploads/，可用 STORAGE_ROOT 覆寫）
+from utils.storage import get_storage_path  # noqa: E402
+
+get_storage_path("leave_attachments")
+get_storage_path("activity_posters")
+get_storage_path("attendance_imports")
 
 # ---------------------------------------------------------------------------
 # Register Routers

@@ -188,13 +188,27 @@ class TestAttendanceStudentIdRedundancy:
     def test_session_detail_exposes_student_id_and_classroom_id(self, session):
         course = _make_course(session)
         c1 = _make_classroom(session, "大象班")
-        # 建立一個 fake student fixture id；不強求 Student 實體存在，student_id 只是冗餘
+        # 建立真實在籍 Student；_build_session_detail_response 會 JOIN Student 排除
+        # 已離園學生，因此 registration 的 student_id 必須對應啟用中的學生
+        from datetime import date as _date
+
+        stu = Student(
+            student_id="S_A",
+            name="A",
+            birthday=_date(2020, 1, 1),
+            classroom_id=c1.id,
+            parent_phone="0912000001",
+            is_active=True,
+        )
+        session.add(stu)
+        session.flush()
+
         r = _make_registration(
             session,
             name="A",
             class_name="大象班",
             classroom_id=c1.id,
-            student_id=42,
+            student_id=stu.id,
         )
         _enroll(session, r.id, course.id)
         sess = _make_session(session, course.id)
@@ -202,5 +216,57 @@ class TestAttendanceStudentIdRedundancy:
 
         result = _build_session_detail_response(session, sess)
         s = result["students"][0]
-        assert s["student_id"] == 42
+        assert s["student_id"] == stu.id
         assert s["classroom_id"] == c1.id
+
+    def test_session_detail_excludes_graduated_students(self, session):
+        """Student.is_active=False 的學生不應出現在點名名單（同步契約）。"""
+        from datetime import date as _date
+
+        course = _make_course(session)
+        c1 = _make_classroom(session, "大象班")
+        # 在籍學生
+        active_stu = Student(
+            student_id="S_IN",
+            name="在籍",
+            birthday=_date(2020, 1, 1),
+            classroom_id=c1.id,
+            parent_phone="0912000001",
+            is_active=True,
+        )
+        # 已畢業學生
+        graduated_stu = Student(
+            student_id="S_OUT",
+            name="已畢業",
+            birthday=_date(2019, 1, 1),
+            classroom_id=c1.id,
+            parent_phone="0912000002",
+            is_active=False,
+            status="已畢業",
+        )
+        session.add_all([active_stu, graduated_stu])
+        session.flush()
+
+        r_in = _make_registration(
+            session,
+            name="在籍",
+            class_name="大象班",
+            classroom_id=c1.id,
+            student_id=active_stu.id,
+        )
+        r_out = _make_registration(
+            session,
+            name="已畢業",
+            class_name="大象班",
+            classroom_id=c1.id,
+            student_id=graduated_stu.id,
+        )
+        _enroll(session, r_in.id, course.id)
+        _enroll(session, r_out.id, course.id)
+        sess = _make_session(session, course.id)
+        session.commit()
+
+        result = _build_session_detail_response(session, sess)
+        names = [s["student_name"] for s in result["students"]]
+        assert "在籍" in names
+        assert "已畢業" not in names

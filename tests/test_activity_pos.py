@@ -484,14 +484,69 @@ class TestOutstandingByStudent:
         assert any(c["name"] == "美術" for c in reg["courses"])
         assert any(sp["name"] == "畫具包" for sp in reg["supplies"])
 
-    def test_empty_query_rejected(self, pos_client):
+    def test_empty_query_lists_all_outstanding(self, pos_client):
+        """空 q 時列出該學期所有未結清報名（預設瀏覽模式）。"""
         client, sf = pos_client
         with sf() as s:
             _create_admin(s)
+            _setup_reg(s, student_name="王小明", birthday="2020-01-01")
+            _setup_reg(s, student_name="李小美", birthday="2019-07-07")
             s.commit()
         assert _login(client).status_code == 200
-        res = client.get("/api/activity/pos/outstanding-by-student?q=")
-        assert res.status_code == 422
+        res = client.get("/api/activity/pos/outstanding-by-student")
+        assert res.status_code == 200
+        names = {g["student_name"] for g in res.json()["groups"]}
+        assert names == {"王小明", "李小美"}
+
+    def test_search_by_parent_phone(self, pos_client):
+        """關鍵字可比對 parent_phone。"""
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, student_name="王小明")
+            reg.parent_phone = "0912345678"
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.get("/api/activity/pos/outstanding-by-student?q=5678")
+        names = {g["student_name"] for g in res.json()["groups"]}
+        assert "王小明" in names
+
+    def test_classroom_filter_exact_match(self, pos_client):
+        """classroom 參數僅回傳精確符合班級的報名。"""
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s)
+            _setup_reg(s, student_name="王小明", class_name="大班")
+            _setup_reg(
+                s, student_name="李小美", birthday="2019-07-07", class_name="中班"
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.get(
+            "/api/activity/pos/outstanding-by-student",
+            params={"classroom": "大班"},
+        )
+        names = {g["student_name"] for g in res.json()["groups"]}
+        assert names == {"王小明"}
+
+    def test_overdue_only_filter(self, pos_client):
+        """overdue_only 只列 created_at 早於 14 天前的項目。"""
+        from datetime import datetime, timedelta
+
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s)
+            old_reg = _setup_reg(s, student_name="舊生")
+            old_reg.created_at = datetime.now() - timedelta(days=20)
+            _setup_reg(s, student_name="新生", birthday="2019-07-07")
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.get(
+            "/api/activity/pos/outstanding-by-student",
+            params={"overdue_only": "true"},
+        )
+        names = {g["student_name"] for g in res.json()["groups"]}
+        assert names == {"舊生"}
 
 
 # ── Daily Summary ──────────────────────────────────────────────────────

@@ -465,11 +465,26 @@ async def update_student(
             raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
 
         update_data = item.model_dump(exclude_unset=True)
+        old_classroom_id = student.classroom_id
 
         NULLABLE_FK_FIELDS = {"classroom_id"}
         for key, value in update_data.items():
             if value is not None or key in NULLABLE_FK_FIELDS:
                 setattr(student, key, value)
+
+        # 同步：classroom_id 有異動時，更新該生當學期才藝報名的班級快照
+        if "classroom_id" in update_data and student.classroom_id != old_classroom_id:
+            from api.activity._shared import sync_registrations_on_student_transfer
+
+            synced = sync_registrations_on_student_transfer(
+                session, student.id, student.classroom_id
+            )
+            if synced:
+                logger.info(
+                    "學生轉班同步才藝報名：student_id=%s 更新 %s 筆",
+                    student.id,
+                    synced,
+                )
 
         session.commit()
         return {"message": "學生資料更新成功", "id": student.id}
@@ -499,6 +514,18 @@ async def delete_student(
 
         student.is_active = False
         student.status = "已刪除"
+
+        # 同步：刪除學生時軟刪該生當學期才藝報名
+        from api.activity._shared import sync_registrations_on_student_deactivate
+
+        synced = sync_registrations_on_student_deactivate(session, student.id)
+        if synced:
+            logger.info(
+                "學生刪除同步才藝報名：student_id=%s 軟刪 %s 筆",
+                student.id,
+                synced,
+            )
+
         session.commit()
     except HTTPException:
         raise
@@ -560,6 +587,19 @@ async def graduate_student(
             recorded_by=current_user.get("user_id"),
         )
         session.add(change_log)
+
+        # 同步：離園時軟刪該生當學期才藝報名
+        from api.activity._shared import sync_registrations_on_student_deactivate
+
+        synced = sync_registrations_on_student_deactivate(session, student.id)
+        if synced:
+            logger.info(
+                "學生離園同步才藝報名：student_id=%s status=%s 軟刪 %s 筆",
+                student.id,
+                item.status,
+                synced,
+            )
+
         session.commit()
         logger.warning(
             "學生離園：id=%s name=%s status=%s operator=%s",
@@ -631,6 +671,7 @@ async def bulk_transfer_students(
         operator_id = current_user.get("user_id")
         now = datetime.now()
         moved_count = 0
+        moved_student_ids: list[int] = []
         for student in students:
             if student.classroom_id == item.target_classroom_id:
                 continue
@@ -645,6 +686,23 @@ async def bulk_transfer_students(
             )
             student.classroom_id = item.target_classroom_id
             moved_count += 1
+            moved_student_ids.append(student.id)
+
+        # 同步：把這批學生當學期的才藝報名改到新班級
+        if moved_student_ids:
+            from api.activity._shared import sync_registrations_on_student_transfer
+
+            activity_synced = 0
+            for sid in moved_student_ids:
+                activity_synced += sync_registrations_on_student_transfer(
+                    session, sid, item.target_classroom_id
+                )
+            if activity_synced:
+                logger.info(
+                    "批次轉班同步才藝報名：target_classroom_id=%s 更新 %s 筆",
+                    item.target_classroom_id,
+                    activity_synced,
+                )
 
         session.commit()
         logger.info(

@@ -253,13 +253,27 @@ def _find_idempotent_hit(
 # ── 端點 1：依學生聚合未結清報名 ─────────────────────────────────────────
 
 
+OVERDUE_DAYS_THRESHOLD = 14
+
+
 @router.get("/pos/outstanding-by-student")
 async def outstanding_by_student(
-    q: str = Query(..., min_length=1, max_length=50, description="學生姓名模糊搜尋"),
-    limit: int = Query(20, ge=1, le=100),
+    q: Optional[str] = Query(
+        None,
+        max_length=50,
+        description="關鍵字模糊搜尋（姓名 / 班級 / 家長手機）；留空則列出全部",
+    ),
+    limit: int = Query(100, ge=1, le=500),
     filter: Literal["outstanding", "refundable"] = Query(
         "outstanding",
         description="outstanding=未結清(paid<total)，refundable=已繳>0(供退費使用)",
+    ),
+    classroom: Optional[str] = Query(
+        None, max_length=50, description="精確班級名稱過濾（下拉選單用）"
+    ),
+    overdue_only: bool = Query(
+        False,
+        description=f"只列報名超過 {OVERDUE_DAYS_THRESHOLD} 天仍未結清的『逾期』項目",
     ),
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
@@ -269,30 +283,43 @@ async def outstanding_by_student(
 
     filter=outstanding：未結清（繳費模式）
     filter=refundable ：已繳 > 0（退費模式）
+    搜尋 q 為空時回傳該學期全部符合其他條件的項目（預設瀏覽清單）。
+    overdue_only=True 僅在 outstanding 模式下生效。
     """
+    from datetime import datetime, timedelta
+
     from utils.academic import resolve_academic_term_filters
 
     session = get_session()
     try:
         sy, sem = resolve_academic_term_filters(school_year, semester)
-        like = f"%{q.strip()}%"
-        regs = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.is_active.is_(True),
-                ActivityRegistration.school_year == sy,
-                ActivityRegistration.semester == sem,
+        query = session.query(ActivityRegistration).filter(
+            ActivityRegistration.is_active.is_(True),
+            ActivityRegistration.school_year == sy,
+            ActivityRegistration.semester == sem,
+        )
+        keyword = (q or "").strip()
+        if keyword:
+            like = f"%{keyword}%"
+            query = query.filter(
                 or_(
                     ActivityRegistration.student_name.ilike(like),
                     ActivityRegistration.class_name.ilike(like),
-                ),
+                    ActivityRegistration.parent_phone.ilike(like),
+                )
             )
-            .order_by(
+        if classroom:
+            query = query.filter(ActivityRegistration.class_name == classroom)
+        if overdue_only and filter == "outstanding":
+            cutoff = datetime.now() - timedelta(days=OVERDUE_DAYS_THRESHOLD)
+            query = query.filter(ActivityRegistration.created_at < cutoff)
+        regs = (
+            query.order_by(
                 ActivityRegistration.student_name.asc(),
                 ActivityRegistration.birthday.asc(),
                 ActivityRegistration.created_at.asc(),
             )
-            .limit(500)
+            .limit(2000)
             .all()
         )
         if not regs:

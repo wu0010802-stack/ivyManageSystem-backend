@@ -596,12 +596,24 @@ def manual_adjust_salary(
     不帶 If-Match 時允許寫入（舊版前端相容），仍會累加版本號。
     成功時於 ETag / X-Record-Version header 回傳新版本。
     """
+    from utils.advisory_lock import acquire_salary_lock
+
     with session_scope() as session:
         record = (
             session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
         )
         if not record:
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
+
+        # advisory lock：確保與計算引擎不會同時寫入同筆 SalaryRecord
+        acquire_salary_lock(
+            session,
+            employee_id=record.employee_id,
+            year=record.salary_year,
+            month=record.salary_month,
+        )
+        # 鎖住後重讀，取得最新狀態
+        session.refresh(record)
         if record.is_finalized:
             raise HTTPException(
                 status_code=409, detail="此筆薪資已封存，請先解除封存再編輯"
@@ -1121,7 +1133,12 @@ def finalize_salary_month(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
 ):
     """封存整月薪資（封存後禁止重新計算，需手動解封才能修改）"""
+    from utils.advisory_lock import acquire_salary_lock
+
     with session_scope() as session:
+        # 整月鎖，阻止同月任何重算發生於封存期間
+        acquire_salary_lock(session, year=data.year, month=data.month)
+
         records = (
             session.query(SalaryRecord)
             .filter(
@@ -1136,6 +1153,16 @@ def finalize_salary_month(
                 status_code=404,
                 detail=f"{data.year} 年 {data.month} 月無可封存的薪資記錄（可能尚未計算，或全部已封存）",
             )
+
+        # 對每位員工取鎖，與 bulk/manual 重算路徑互斥
+        for r in records:
+            acquire_salary_lock(
+                session,
+                employee_id=r.employee_id,
+                year=data.year,
+                month=data.month,
+            )
+
         now = datetime.now()
         operator = current_user.get("username") or current_user.get("name") or "管理員"
         for r in records:
@@ -1167,12 +1194,21 @@ def unfinalize_salary(
         raise HTTPException(
             status_code=403, detail="薪資封存解除僅限系統管理員或人事主管操作"
         )
+    from utils.advisory_lock import acquire_salary_lock
+
     with session_scope() as session:
         record = (
             session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
         )
         if not record:
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
+        acquire_salary_lock(
+            session,
+            employee_id=record.employee_id,
+            year=record.salary_year,
+            month=record.salary_month,
+        )
+        session.refresh(record)
         if not record.is_finalized:
             raise HTTPException(status_code=409, detail="此筆薪資尚未封存，無需解封")
         operator = current_user.get("username") or current_user.get("name") or "管理員"

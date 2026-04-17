@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
+# 金額上限統一常數（同步 pos.py 的 _MAX_ITEM_AMOUNT）
+MAX_PAYMENT_AMOUNT = 999_999
+
 # ── 服務注入 ──────────────────────────────────────────────────────────────
 
 _line_service = None
@@ -131,6 +134,13 @@ class RegistrationTimeSettings(BaseModel):
     is_open: bool
     open_at: Optional[str] = None
     close_at: Optional[str] = None
+    # 前台顯示客製化（全部可選；為 None 時前端 fallback 至預設）
+    page_title: Optional[str] = Field(None, max_length=200)
+    term_label: Optional[str] = Field(None, max_length=50)
+    event_date_label: Optional[str] = Field(None, max_length=50)
+    target_audience: Optional[str] = Field(None, max_length=100)
+    form_card_title: Optional[str] = Field(None, max_length=200)
+    poster_url: Optional[str] = Field(None, max_length=500)
 
     @field_validator("open_at", "close_at")
     @classmethod
@@ -155,10 +165,15 @@ class BatchPaymentUpdate(BaseModel):
 
 class AddPaymentRequest(BaseModel):
     type: Literal["payment", "refund"] = "payment"
-    amount: int = Field(..., gt=0, description="金額（正整數，type 決定方向）")
+    amount: int = Field(
+        ...,
+        gt=0,
+        le=MAX_PAYMENT_AMOUNT,
+        description=f"金額（正整數，上限 NT${MAX_PAYMENT_AMOUNT:,}；type 決定方向）",
+    )
     payment_date: date
-    payment_method: str = "現金"
-    notes: str = ""
+    payment_method: Literal["現金", "轉帳", "其他"] = "現金"
+    notes: str = Field("", max_length=200)
 
 
 class PublicCourseItem(BaseModel):
@@ -204,6 +219,7 @@ class PublicRegistrationPayload(BaseModel):
     parent_phone: str = Field(..., min_length=8, max_length=30)
     courses: list[PublicCourseItem] = Field(..., max_length=20)
     supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
+    remark: str = Field(default="", max_length=500)
     # 前端可選擇性傳入；不傳時 API 端用當前學期
     school_year: Optional[int] = Field(None, ge=100, le=200)
     semester: Optional[int] = Field(None, ge=1, le=2)
@@ -641,6 +657,76 @@ def _match_student_with_parent_phone(
     return (None, None)
 
 
+def sync_registrations_on_student_transfer(
+    session, student_id: int, new_classroom_id: Optional[int]
+) -> int:
+    """學生轉班時，同步更新該生當前學期仍啟用的 ActivityRegistration 班級資訊。
+
+    - 只處理 is_active=True 的報名（rejected / 軟刪除的不動）
+    - 只處理當前學期（不回頭改歷史，歷史才藝名單應保持原樣）
+    - classroom_id 改寫為 new_classroom_id；class_name 改為新班級的 Classroom.name（當前）
+      若 new_classroom_id 為 None 或查不到班級，只更新 classroom_id，保留原 class_name 字串
+    - 回傳更新筆數
+    """
+    from utils.academic import resolve_current_academic_term
+
+    sy, sem = resolve_current_academic_term()
+
+    regs = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.student_id == student_id,
+            ActivityRegistration.is_active.is_(True),
+            ActivityRegistration.school_year == sy,
+            ActivityRegistration.semester == sem,
+        )
+        .all()
+    )
+    if not regs:
+        return 0
+
+    new_classroom_name: Optional[str] = None
+    if new_classroom_id is not None:
+        new_classroom = (
+            session.query(Classroom).filter(Classroom.id == new_classroom_id).first()
+        )
+        if new_classroom:
+            new_classroom_name = new_classroom.name
+
+    for r in regs:
+        r.classroom_id = new_classroom_id
+        if new_classroom_name:
+            r.class_name = new_classroom_name
+
+    return len(regs)
+
+
+def sync_registrations_on_student_deactivate(session, student_id: int) -> int:
+    """學生畢業 / 退學 / 刪除時，軟刪該生當前學期啟用中 ActivityRegistration。
+
+    - 把 is_active 設為 False；保留原 match_status（供後台稽核）
+    - 只處理當前學期（歷史學期的報名維持原狀，仍可供報表追溯）
+    - 回傳影響筆數
+    """
+    from utils.academic import resolve_current_academic_term
+
+    sy, sem = resolve_current_academic_term()
+
+    regs = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.student_id == student_id,
+            ActivityRegistration.is_active.is_(True),
+            ActivityRegistration.school_year == sy,
+            ActivityRegistration.semester == sem,
+        )
+        .all()
+    )
+    for r in regs:
+        r.is_active = False
+    return len(regs)
+
+
 def _fetch_reg_course_names(session, reg_ids: list) -> dict:
     """批次查詢報名對應的課程名稱（含候補標記），回傳 {reg_id: [course_name, ...]}。"""
     course_name_map: dict = defaultdict(list)
@@ -719,15 +805,23 @@ def _build_session_detail_response(
     db_session,
     sess: "ActivitySession",
     *,
-    class_names_filter: list | None = None,
+    classroom_ids_filter: list | None = None,
     group_by: Optional[str] = None,
 ) -> dict:
     """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
 
-    class_names_filter=None  → 包含所有 enrolled 學生（管理端）
-    class_names_filter=[...] → 只包含指定班級的學生（Portal）
-    group_by="classroom"    → 額外回傳 groups：按 classroom_id 分組（未分班學生歸「未分班」）
+    classroom_ids_filter=None  → 包含所有 enrolled 學生（管理端）
+    classroom_ids_filter=[...] → 只包含指定班級的學生（Portal，FK 比對）
+    group_by="classroom"       → 額外回傳 groups：按 classroom_id 分組
+
+    篩選條件：
+    - RegistrationCourse.status == 'enrolled'
+    - ActivityRegistration.is_active == True
+    - ActivityRegistration.match_status != 'rejected'（保險）
+    - 若有 student_id：對應 Student.is_active == True（已畢業/退學學生不出現）
     """
+    from models.database import Student
+
     course = (
         db_session.query(ActivityCourse)
         .filter(ActivityCourse.id == sess.course_id)
@@ -751,17 +845,27 @@ def _build_session_detail_response(
             Classroom,
             Classroom.id == ActivityRegistration.classroom_id,
         )
+        .outerjoin(
+            Student,
+            Student.id == ActivityRegistration.student_id,
+        )
         .filter(
             RegistrationCourse.course_id == sess.course_id,
             RegistrationCourse.status == "enrolled",
             ActivityRegistration.is_active.is_(True),
+            ActivityRegistration.match_status != "rejected",
+            # 若 student_id 為 None（校外生或 pending），或對應 Student 尚啟用，都保留
+            or_(
+                ActivityRegistration.student_id.is_(None),
+                Student.is_active.is_(True),
+            ),
         )
         .order_by(ActivityRegistration.class_name, ActivityRegistration.student_name)
     )
-    if class_names_filter is not None:
-        if class_names_filter:
+    if classroom_ids_filter is not None:
+        if classroom_ids_filter:
             enrolled_query = enrolled_query.filter(
-                ActivityRegistration.class_name.in_(class_names_filter)
+                ActivityRegistration.classroom_id.in_(classroom_ids_filter)
             )
         else:
             # 空列表表示沒有管轄班級，不應看到任何學生
