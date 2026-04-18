@@ -25,6 +25,7 @@ from models.classroom import (
     Classroom,
     LIFECYCLE_ACTIVE,
     Student,
+    StudentAssessment,
     StudentAttendance,
     StudentIncident,
 )
@@ -36,6 +37,7 @@ from utils.academic import resolve_current_academic_term
 
 DEFAULT_TIMELINE_LIMIT = 20
 DEFAULT_INCIDENT_LIMIT = 5
+DEFAULT_ASSESSMENT_LIMIT = 5
 
 
 def _serialize_guardian(g: Guardian) -> dict[str, Any]:
@@ -138,6 +140,80 @@ def get_incident_summary(
         }
         for r in rows
     ]
+
+
+def get_assessment_summary(
+    session: Session, student_id: int, limit: int = DEFAULT_ASSESSMENT_LIMIT
+) -> list[dict[str, Any]]:
+    rows = (
+        session.query(StudentAssessment)
+        .filter(StudentAssessment.student_id == student_id)
+        .order_by(StudentAssessment.assessment_date.desc(), StudentAssessment.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "semester": r.semester,
+            "assessment_type": r.assessment_type,
+            "domain": r.domain,
+            "rating": r.rating,
+            "content": r.content,
+            "suggestions": r.suggestions,
+            "assessment_date": r.assessment_date.isoformat() if r.assessment_date else None,
+        }
+        for r in rows
+    ]
+
+
+def _merged_timeline(
+    incident_items: list[dict[str, Any]],
+    assessment_items: list[dict[str, Any]],
+    change_log_items: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """合併三類為統一時間軸（最新優先）。每筆加 `record_type`。"""
+    merged: list[dict[str, Any]] = []
+    for it in incident_items:
+        merged.append(
+            {
+                "record_type": "incident",
+                "record_id": it["id"],
+                "occurred_at": it["occurred_at"],
+                "summary": it.get("incident_type") or "",
+                "payload": it,
+            }
+        )
+    for it in assessment_items:
+        merged.append(
+            {
+                "record_type": "assessment",
+                "record_id": it["id"],
+                "occurred_at": it["assessment_date"],
+                "summary": "｜".join(
+                    p for p in [it.get("assessment_type"), it.get("domain"), it.get("rating")] if p
+                ),
+                "payload": it,
+            }
+        )
+    for it in change_log_items:
+        merged.append(
+            {
+                "record_type": "change_log",
+                "record_id": it["id"],
+                "occurred_at": it["event_date"],
+                "summary": it.get("event_type") or "",
+                "payload": it,
+            }
+        )
+
+    def sort_key(item):
+        ts = item["occurred_at"] or ""
+        return (ts, item["record_type"], item["record_id"])
+
+    merged.sort(key=sort_key, reverse=True)
+    return merged[:limit]
 
 
 def get_timeline(
@@ -265,6 +341,23 @@ def assemble_profile(
     period = fee_period
     att_start, att_end = attendance_window or _default_attendance_window()
 
+    incident_summary = get_incident_summary(
+        session, student_id, limit=incident_limit
+    )
+    assessment_summary = get_assessment_summary(
+        session, student_id, limit=DEFAULT_ASSESSMENT_LIMIT
+    )
+    timeline = get_timeline(session, student_id, limit=timeline_limit)
+    # timeline_all 從三類各自取較寬池（limit * 3）再合併截尾，避免某類過多時
+    # 較舊資料提早被 summary 截掉、無法進入 top-N 合併。
+    merge_pool_limit = timeline_limit * 3
+    timeline_all = _merged_timeline(
+        get_incident_summary(session, student_id, limit=merge_pool_limit),
+        get_assessment_summary(session, student_id, limit=merge_pool_limit),
+        get_timeline(session, student_id, limit=merge_pool_limit),
+        limit=timeline_limit,
+    )
+
     return {
         "basic": _serialize_basic(student, classroom),
         "lifecycle": _serialize_lifecycle(student),
@@ -274,8 +367,8 @@ def assemble_profile(
             session, student_id, att_start, att_end
         ),
         "fee_summary": get_fee_summary(session, student_id, period),
-        "incident_summary": get_incident_summary(
-            session, student_id, limit=incident_limit
-        ),
-        "timeline": get_timeline(session, student_id, limit=timeline_limit),
+        "incident_summary": incident_summary,
+        "assessment_summary": assessment_summary,
+        "timeline": timeline,
+        "timeline_all": timeline_all,
     }

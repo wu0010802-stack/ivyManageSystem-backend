@@ -431,6 +431,46 @@ async def get_students(
         session.close()
 
 
+# ============ 學生紀錄聚合端點（事件 + 評量 + 異動統一時間軸）============
+
+
+@router.get("/students/records")
+async def get_student_records_timeline(
+    type: Optional[list[str]] = Query(
+        None,
+        description="可多選：incident / assessment / change_log。未指定代表全部。",
+    ),
+    classroom_id: Optional[int] = Query(None),
+    student_id: Optional[int] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    school_year: Optional[int] = Query(None, ge=100, le=200),
+    semester: Optional[int] = Query(None, ge=1, le=2),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+):
+    """跨三模型的學生紀錄時間軸（事件 / 評量 / 異動）。"""
+    from services.student_records_timeline import list_timeline
+
+    session = get_session()
+    try:
+        return list_timeline(
+            session,
+            types=type,
+            classroom_id=classroom_id,
+            student_id=student_id,
+            date_from=date_from,
+            date_to=date_to,
+            school_year=school_year,
+            semester=semester,
+            page=page,
+            page_size=page_size,
+        )
+    finally:
+        session.close()
+
+
 @router.get("/students/{student_id}")
 async def get_student(
     student_id: int,

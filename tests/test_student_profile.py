@@ -19,6 +19,7 @@ from models.classroom import (
     LIFECYCLE_ACTIVE,
     Classroom,
     Student,
+    StudentAssessment,
     StudentAttendance,
     StudentIncident,
 )
@@ -28,6 +29,7 @@ from models.student_log import StudentChangeLog
 from services.student_profile import (
     _default_attendance_window,
     assemble_profile,
+    get_assessment_summary,
     get_attendance_summary,
     get_fee_summary,
     get_guardians,
@@ -144,6 +146,30 @@ def seed(session):
         )
     )
 
+    # Assessments（兩筆，不同日期）
+    session.add_all(
+        [
+            StudentAssessment(
+                student_id=student.id,
+                semester="114-2",
+                assessment_type="期中",
+                domain="語文",
+                rating="優",
+                content="表達清晰",
+                assessment_date=date(2026, 3, 5),
+            ),
+            StudentAssessment(
+                student_id=student.id,
+                semester="114-1",
+                assessment_type="期末",
+                domain="認知",
+                rating="良",
+                content="數理概念穩定",
+                assessment_date=date(2026, 1, 10),
+            ),
+        ]
+    )
+
     # Change logs
     session.add_all(
         [
@@ -248,7 +274,7 @@ class TestAssembleProfile:
             attendance_window=(date(2026, 3, 1), date(2026, 3, 31)),
         )
         assert profile is not None
-        assert set(profile.keys()) == {
+        expected_keys = {
             "basic",
             "lifecycle",
             "health",
@@ -256,15 +282,39 @@ class TestAssembleProfile:
             "attendance_summary",
             "fee_summary",
             "incident_summary",
+            "assessment_summary",
             "timeline",
+            "timeline_all",
         }
+        assert expected_keys <= set(profile.keys())
         assert profile["basic"]["classroom_name"] == "太陽班"
         assert profile["lifecycle"]["status"] == LIFECYCLE_ACTIVE
         assert profile["health"]["allergy"] == "花生"
         assert len(profile["guardians"]) == 2
         assert profile["fee_summary"]["outstanding"] == 4000
         assert profile["incident_summary"][0]["incident_type"] == "行為觀察"
+        # timeline 意義不變：只含 change_log
         assert len(profile["timeline"]) == 2
+
+
+class TestAssessmentSummary:
+    def test_orders_newest_first(self, session, seed):
+        rows = get_assessment_summary(session, seed["student"].id)
+        assert rows[0]["assessment_date"] == "2026-03-05"
+        assert rows[0]["domain"] == "語文"
+        assert rows[1]["assessment_date"] == "2026-01-10"
+
+
+class TestTimelineAll:
+    def test_merges_three_record_types(self, session, seed):
+        profile = assemble_profile(session, seed["student"].id, fee_period="114-2")
+        rtypes = {it["record_type"] for it in profile["timeline_all"]}
+        assert rtypes == {"incident", "assessment", "change_log"}
+
+    def test_sorted_newest_first(self, session, seed):
+        profile = assemble_profile(session, seed["student"].id, fee_period="114-2")
+        ts = [it["occurred_at"] for it in profile["timeline_all"]]
+        assert ts == sorted(ts, reverse=True)
 
 
 class TestAttendanceWindowROC:
