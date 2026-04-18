@@ -2,6 +2,7 @@
 Audit logging middleware - automatically records all data-modifying API requests
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -12,6 +13,10 @@ from starlette.requests import Request
 from models.database import get_session, AuditLog
 
 logger = logging.getLogger(__name__)
+
+# Hold strong refs to fire-and-forget audit tasks so the event loop
+# does not drop them before they finish (asyncio gotcha).
+_background_tasks: "set[asyncio.Task]" = set()
 
 # HTTP method → action mapping
 METHOD_ACTION_MAP = {
@@ -120,6 +125,32 @@ def _extract_user_from_header(request: Request):
         return None, None
 
 
+def _write_audit_sync(payload: dict) -> None:
+    """在 threadpool 中執行的同步寫入，不可拋出例外到上層。"""
+    try:
+        session = get_session()
+        try:
+            session.add(AuditLog(**payload))
+            session.commit()
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning(f"Audit log write failed: {e}")
+
+
+def _schedule_audit_write(payload: dict) -> None:
+    """把 audit 寫入推到背景 threadpool,不阻塞 request 週期。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # 事件迴圈不可用時（例如測試直接呼叫），退回同步寫入保底。
+        _write_audit_sync(payload)
+        return
+    task = loop.create_task(asyncio.to_thread(_write_audit_sync, payload))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 class AuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         method = request.method.upper()
@@ -143,35 +174,38 @@ class AuditMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         # Only log successful requests
-        if 200 <= response.status_code < 300:
-            try:
-                # 若 endpoint 已設定跳過標記，直接略過
-                if getattr(request.state, "audit_skip", False):
-                    return response
+        if not (200 <= response.status_code < 300):
+            return response
 
-                user_id, username = _extract_user_from_header(request)
-                # endpoint 可透過 request.state 覆寫摘要與 entity_id
-                entity_id = getattr(request.state, "audit_entity_id", None) or _parse_entity_id(path)
-                summary = getattr(request.state, "audit_summary", None) or _build_summary(method, path, entity_type)
-                ip = request.client.host if request.client else None
+        # 若 endpoint 已設定跳過標記，直接略過
+        if getattr(request.state, "audit_skip", False):
+            return response
 
-                session = get_session()
-                try:
-                    log = AuditLog(
-                        user_id=user_id,
-                        username=username or "anonymous",
-                        action=METHOD_ACTION_MAP[method],
-                        entity_type=entity_type,
-                        entity_id=entity_id,
-                        summary=summary,
-                        ip_address=ip,
-                        created_at=datetime.now(),
-                    )
-                    session.add(log)
-                    session.commit()
-                finally:
-                    session.close()
-            except Exception as e:
-                logger.warning(f"Audit log write failed: {e}")
+        try:
+            user_id, username = _extract_user_from_header(request)
+            # endpoint 可透過 request.state 覆寫摘要與 entity_id
+            entity_id = (
+                getattr(request.state, "audit_entity_id", None)
+                or _parse_entity_id(path)
+            )
+            summary = (
+                getattr(request.state, "audit_summary", None)
+                or _build_summary(method, path, entity_type)
+            )
+            ip = request.client.host if request.client else None
+
+            payload = dict(
+                user_id=user_id,
+                username=username or "anonymous",
+                action=METHOD_ACTION_MAP[method],
+                entity_type=entity_type,
+                entity_id=entity_id,
+                summary=summary,
+                ip_address=ip,
+                created_at=datetime.now(),
+            )
+            _schedule_audit_write(payload)
+        except Exception as e:
+            logger.warning(f"Audit log enqueue failed: {e}")
 
         return response
