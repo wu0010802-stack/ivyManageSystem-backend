@@ -7,13 +7,14 @@ api/activity/registrations.py — 報名管理端點（含 batch-payment、expor
 import io
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func
+from sqlalchemy.exc import CompileError, OperationalError
 
 from models.database import (
     get_session,
@@ -41,6 +42,7 @@ from ._shared import (
     AdminRegistrationBasicUpdate,
     AddCourseRequest,
     AddSupplyRequest,
+    SYSTEM_RECONCILE_METHOD,
     _not_found,
     _derive_payment_status,
     _compute_is_paid,
@@ -50,6 +52,7 @@ from ._shared import (
     _build_registration_filter_query,
     _fetch_reg_course_names,
     _require_active_classroom,
+    _require_daily_close_unlocked,
     _attach_courses,
     _attach_supplies,
     _match_student_id,
@@ -98,6 +101,9 @@ async def batch_update_payment(
         operator = current_user.get("username", "")
         today = datetime.now().date()
 
+        # 批次補齊/沖帳皆寫 today；若今日已簽核則拒絕，避免日結 snapshot 失準
+        _require_daily_close_unlocked(session, today)
+
         if body.is_paid:
             # P3 N+1 修正：一次 GROUP BY 查詢所有應繳金額
             unpaid_reg_ids = [reg.id for reg in regs if not reg.is_paid]
@@ -117,7 +123,7 @@ async def batch_update_payment(
                             type="payment",
                             amount=shortfall,
                             payment_date=today,
-                            payment_method="現金",
+                            payment_method=SYSTEM_RECONCILE_METHOD,
                             notes="（批次標記已繳費自動補齊）",
                             operator=operator,
                         )
@@ -133,11 +139,21 @@ async def batch_update_payment(
                     operator,
                 )
         else:
-            reg_ids_to_reset = [reg.id for reg in regs]
-            session.query(ActivityPaymentRecord).filter(
-                ActivityPaymentRecord.registration_id.in_(reg_ids_to_reset)
-            ).delete(synchronize_session=False)
+            # 改為寫退費沖帳（保留歷史紀錄），不 DELETE 任何 ActivityPaymentRecord。
+            # Why: 原本 DELETE 會毀掉審計軌跡，且已 daily-close 的日結 snapshot 會與 DB 永久失準。
             for reg in regs:
+                current_paid = reg.paid_amount or 0
+                if current_paid > 0:
+                    rec = ActivityPaymentRecord(
+                        registration_id=reg.id,
+                        type="refund",
+                        amount=current_paid,
+                        payment_date=today,
+                        payment_method=SYSTEM_RECONCILE_METHOD,
+                        notes="（批次標記未繳費自動沖帳）",
+                        operator=operator,
+                    )
+                    session.add(rec)
                 reg.paid_amount = 0
                 reg.is_paid = False
                 activity_service.log_change(
@@ -145,7 +161,8 @@ async def batch_update_payment(
                     reg.id,
                     reg.student_name,
                     "批次更新付款狀態",
-                    f"付款狀態批次更新為：{status_str}",
+                    f"付款狀態批次更新為：{status_str}"
+                    + (f"（沖帳 NT${current_paid}）" if current_paid > 0 else ""),
                     operator,
                 )
 
@@ -1457,6 +1474,9 @@ async def update_payment(
         total_amount = _calc_total_amount(session, registration_id)
         operator = current_user.get("username", "")
 
+        today = datetime.now().date()
+        # 今日若已簽核，任何補齊/沖帳都會讓 snapshot 失準，先擋
+        _require_daily_close_unlocked(session, today)
         if body.is_paid:
             if not reg.is_paid:
                 shortfall = total_amount - (reg.paid_amount or 0)
@@ -1465,18 +1485,28 @@ async def update_payment(
                         registration_id=registration_id,
                         type="payment",
                         amount=shortfall,
-                        payment_date=datetime.now().date(),
-                        payment_method="現金",
-                        notes="（批次標記已繳費自動補齊）",
+                        payment_date=today,
+                        payment_method=SYSTEM_RECONCILE_METHOD,
+                        notes="（標記已繳費自動補齊）",
                         operator=operator,
                     )
                     session.add(rec)
                     reg.paid_amount = total_amount
                 reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
         else:
-            session.query(ActivityPaymentRecord).filter(
-                ActivityPaymentRecord.registration_id == registration_id
-            ).delete()
+            # 改為寫退費沖帳（保留歷史紀錄），不 DELETE 任何 ActivityPaymentRecord。
+            current_paid = reg.paid_amount or 0
+            if current_paid > 0:
+                rec = ActivityPaymentRecord(
+                    registration_id=registration_id,
+                    type="refund",
+                    amount=current_paid,
+                    payment_date=today,
+                    payment_method=SYSTEM_RECONCILE_METHOD,
+                    notes="（標記未繳費自動沖帳）",
+                    operator=operator,
+                )
+                session.add(rec)
             reg.paid_amount = 0
             reg.is_paid = False
 
@@ -1931,6 +1961,21 @@ async def get_registration_payments(
         session.close()
 
 
+_IDEMPOTENCY_WINDOW_SECONDS = 600
+
+
+def _lock_registration(session, registration_id: int):
+    """對單筆 registration 取得行級鎖；SQLite（單元測試）自動降級為無鎖。"""
+    query = session.query(ActivityRegistration).filter(
+        ActivityRegistration.id == registration_id,
+        ActivityRegistration.is_active.is_(True),
+    )
+    try:
+        return query.with_for_update().first()
+    except (CompileError, OperationalError, NotImplementedError):
+        return query.first()
+
+
 @router.post("/registrations/{registration_id}/payments", status_code=201)
 async def add_registration_payment(
     registration_id: int,
@@ -1940,14 +1985,44 @@ async def add_registration_payment(
     """新增繳費或退費記錄"""
     session = get_session()
     try:
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active.is_(True),
+        # ── 冪等性重送檢查（先於任何寫入） ────────────────────────
+        if body.idempotency_key:
+            threshold = datetime.now() - timedelta(seconds=_IDEMPOTENCY_WINDOW_SECONDS)
+            hit = (
+                session.query(ActivityPaymentRecord)
+                .filter(
+                    ActivityPaymentRecord.idempotency_key == body.idempotency_key,
+                    ActivityPaymentRecord.created_at >= threshold,
+                )
+                .order_by(ActivityPaymentRecord.id.asc())
+                .first()
             )
-            .first()
-        )
+            if hit is not None:
+                # 重送到達時，用當下 reg 狀態回覆；不重複寫入。
+                reg_hit = (
+                    session.query(ActivityRegistration)
+                    .filter(ActivityRegistration.id == hit.registration_id)
+                    .first()
+                )
+                total_amount = _calc_total_amount(session, hit.registration_id)
+                paid = (reg_hit.paid_amount if reg_hit else 0) or 0
+                type_label = "繳費" if hit.type == "payment" else "退費"
+                logger.info(
+                    "add_registration_payment idempotent replay: key=%s reg=%s",
+                    body.idempotency_key,
+                    hit.registration_id,
+                )
+                return {
+                    "message": f"{type_label}記錄新增成功",
+                    "paid_amount": paid,
+                    "payment_status": _derive_payment_status(paid, total_amount),
+                }
+
+        # 已簽核日守衛（payment_date 落在 daily-close 之日則拒絕）
+        _require_daily_close_unlocked(session, body.payment_date)
+
+        # 行級鎖住該 registration，防併發繳/退費 lost update
+        reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
 
@@ -1967,13 +2042,15 @@ async def add_registration_payment(
             payment_method=body.payment_method,
             notes=body.notes,
             operator=operator,
+            idempotency_key=body.idempotency_key,
         )
         session.add(rec)
 
         if body.type == "payment":
             reg.paid_amount = (reg.paid_amount or 0) + body.amount
         else:
-            reg.paid_amount = (reg.paid_amount or 0) - body.amount
+            # max(0, ...) 防禦：即使驗證通過到執行之間狀態被搶改，也不會變負。
+            reg.paid_amount = max(0, (reg.paid_amount or 0) - body.amount)
 
         total_amount = _calc_total_amount(session, registration_id)
         reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
@@ -2033,6 +2110,9 @@ async def delete_registration_payment(
         )
         if not payment:
             raise _not_found("繳費記錄")
+
+        # 若被刪除的付款日期已被日結簽核，拒絕刪除以免 snapshot 與 DB 失準
+        _require_daily_close_unlocked(session, payment.payment_date)
 
         session.delete(payment)
         session.flush()
@@ -2121,6 +2201,10 @@ async def promote_waitlist(
 async def withdraw_course(
     registration_id: int,
     course_id: int,
+    force_refund: bool = Query(
+        False,
+        description="退課後若出現超繳，需顯式帶 true 才允許退課並自動寫退費沖帳紀錄",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """退出單一課程（含候補），若為正式報名則自動升位候補"""
@@ -2156,6 +2240,27 @@ async def withdraw_course(
         course_name = course.name if course else str(course_id)
         was_enrolled = rc.status == "enrolled"
 
+        # 先算退課後的 total，決定是否有退費差額
+        paid_amount = reg.paid_amount or 0
+        # 估算退課後的 new_total：從目前 total 扣掉該 enrolled 項目的 price_snapshot
+        # （candidate 列在 RegistrationCourse，候補 status 非 enrolled 不計入 total）
+        before_total = _calc_total_amount(session, registration_id)
+        if was_enrolled:
+            estimated_after_total = before_total - int(rc.price_snapshot or 0)
+        else:
+            estimated_after_total = before_total
+        refund_needed = max(0, paid_amount - estimated_after_total)
+
+        if refund_needed > 0 and not force_refund:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"退課後將產生超繳 NT${refund_needed}（已繳 NT${paid_amount}、"
+                    f"退課後應繳 NT${estimated_after_total}），請先處理退費或於退課時"
+                    f"指定 force_refund=true 自動沖帳"
+                ),
+            )
+
         session.delete(rc)
         session.flush()
 
@@ -2179,12 +2284,31 @@ async def withdraw_course(
             activity_service._auto_promote_first_waitlist(session, course_id)
 
         new_total = _calc_total_amount(session, registration_id)
-        paid_amount = reg.paid_amount or 0
-        reg.is_paid = _compute_is_paid(paid_amount, new_total)
+
+        # 若需要自動沖帳，寫 refund 紀錄並扣 paid_amount
+        if refund_needed > 0 and force_refund:
+            today = datetime.now().date()
+            _require_daily_close_unlocked(session, today)
+            session.add(
+                ActivityPaymentRecord(
+                    registration_id=registration_id,
+                    type="refund",
+                    amount=refund_needed,
+                    payment_date=today,
+                    payment_method=SYSTEM_RECONCILE_METHOD,
+                    notes=f"（退課「{course_name}」自動沖帳）",
+                    operator=current_user.get("username", ""),
+                )
+            )
+            reg.paid_amount = max(0, paid_amount - refund_needed)
+
+        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, new_total)
 
         log_detail = f"退出課程「{course_name}」"
         if removed_attendance:
             log_detail += f"（同步清除 {removed_attendance} 筆舊點名紀錄）"
+        if refund_needed > 0 and force_refund:
+            log_detail += f"（自動沖帳退費 NT${refund_needed}）"
         activity_service.log_change(
             session,
             registration_id,
@@ -2195,10 +2319,13 @@ async def withdraw_course(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
+        final_paid = reg.paid_amount or 0
         return {
             "message": f"已退出課程「{course_name}」",
             "total_amount": new_total,
-            "payment_status": _derive_payment_status(paid_amount, new_total),
+            "paid_amount": final_paid,
+            "refunded_amount": refund_needed if force_refund else 0,
+            "payment_status": _derive_payment_status(final_paid, new_total),
         }
     except HTTPException:
         raise
@@ -2212,6 +2339,10 @@ async def withdraw_course(
 @router.delete("/registrations/{registration_id}")
 async def delete_registration(
     registration_id: int,
+    force_refund: bool = Query(
+        False,
+        description="若報名已有繳費金額，需顯式帶 true 才允許刪除並自動寫退費沖帳紀錄",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """軟刪除報名"""
@@ -2221,17 +2352,23 @@ async def delete_registration(
             session,
             registration_id,
             current_user.get("username", ""),
+            force_refund=force_refund,
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
         logger.warning(
-            "課後才藝報名已刪除：id=%s operator=%s",
+            "課後才藝報名已刪除：id=%s operator=%s force_refund=%s",
             registration_id,
             current_user.get("username"),
+            force_refund,
         )
         return {"message": "報名已刪除"}
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        msg = str(e)
+        # 找不到報名 → 404；尚有已繳金額 → 409（需呼叫端確認）
+        if "找不到" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=409, detail=msg)
     except HTTPException:
         raise
     except Exception as e:

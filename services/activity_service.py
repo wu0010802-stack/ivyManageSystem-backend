@@ -20,6 +20,8 @@ from models.activity import (
     ParentInquiry,
     RegistrationChange,
     ActivityRegistrationSettings,
+    ActivityPaymentRecord,
+    ActivityPosDailyClose,
 )
 from services.report_cache_service import report_cache_service
 
@@ -630,8 +632,22 @@ class ActivityService:
     # 軟刪除報名（含自動候補升位）
     # ------------------------------------------------------------------ #
 
-    def delete_registration(self, session, registration_id: int, operator: str):
-        """軟刪除報名，並對每門正式課程嘗試自動升位候補。"""
+    def delete_registration(
+        self,
+        session,
+        registration_id: int,
+        operator: str,
+        force_refund: bool = False,
+    ):
+        """軟刪除報名，並對每門正式課程嘗試自動升位候補。
+
+        若 paid_amount > 0：
+          - force_refund=False → 拋 ValueError，迫使呼叫端先退費或確認
+          - force_refund=True  → 自動寫一筆「系統補齊」退費紀錄沖帳
+
+        Why: 原本軟刪時 paid_amount 仍掛著，帳務上成為幽靈金額；新機制保留
+        完整 payment history 供稽核，同時強制操作者在刪除前面對退費責任。
+        """
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -642,6 +658,13 @@ class ActivityService:
         )
         if not reg:
             raise ValueError("找不到報名資料")
+
+        current_paid = reg.paid_amount or 0
+        if current_paid > 0 and not force_refund:
+            raise ValueError(
+                f"此報名尚有已繳金額 NT${current_paid}，請先處理退費"
+                f"或於刪除時指定 force_refund=true 自動沖帳"
+            )
 
         # 先取出此報名的所有正式課程
         enrolled_courses = (
@@ -654,14 +677,47 @@ class ActivityService:
         )
         enrolled_course_ids = [rc.course_id for rc in enrolled_courses]
 
+        # 若有已繳金額，寫退費沖帳紀錄（不 DELETE 舊 payment 歷史）
+        if current_paid > 0:
+            today = datetime.now().date()
+            # 已簽核日守衛：避免 snapshot 與 DB 失準。service 層改拋 ValueError
+            # 由 router 轉為 HTTPException（避免 service 依賴 fastapi）。
+            is_closed = (
+                session.query(ActivityPosDailyClose.close_date)
+                .filter(ActivityPosDailyClose.close_date == today)
+                .first()
+                is not None
+            )
+            if is_closed:
+                raise ValueError(
+                    f"今日（{today.isoformat()}）已完成日結簽核，無法自動沖帳。"
+                    f"請先解鎖日結後再刪除此報名"
+                )
+            session.add(
+                ActivityPaymentRecord(
+                    registration_id=registration_id,
+                    type="refund",
+                    amount=current_paid,
+                    payment_date=today,
+                    payment_method="系統補齊",
+                    notes="（刪除報名自動沖帳）",
+                    operator=operator,
+                )
+            )
+            reg.paid_amount = 0
+            reg.is_paid = False
+
         # 軟刪除
         reg.is_active = False
+        log_detail = "管理員刪除報名"
+        if current_paid > 0:
+            log_detail += f"（自動沖帳退費 NT${current_paid}）"
         self.log_change(
             session,
             registration_id,
             reg.student_name,
             "刪除報名",
-            "管理員刪除報名",
+            log_detail,
             operator,
         )
         session.flush()  # 先 flush，確保刪除生效後再升位

@@ -22,6 +22,7 @@ from models.database import (
     RegistrationCourse,
     RegistrationSupply,
     ActivityPaymentRecord,
+    ActivityPosDailyClose,
     ActivityRegistrationSettings,
     ActivitySession,
     ActivityAttendance,
@@ -36,6 +37,10 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 # 金額上限統一常數（同步 pos.py 的 _MAX_ITEM_AMOUNT）
 MAX_PAYMENT_AMOUNT = 999_999
+
+# 系統補齊標記：用於 batch/update_payment 與退課自動沖帳。
+# 目的：避免把「系統自動生成的繳/退費紀錄」誤算入 POS 日結的「現金」欄。
+SYSTEM_RECONCILE_METHOD = "系統補齊"
 
 # ── 服務注入 ──────────────────────────────────────────────────────────────
 
@@ -174,6 +179,19 @@ class AddPaymentRequest(BaseModel):
     payment_date: date
     payment_method: Literal["現金", "轉帳", "其他"] = "現金"
     notes: str = Field("", max_length=200)
+    idempotency_key: Optional[str] = Field(
+        None,
+        description="冪等 key（8-64 英數/底線/連字號）；同 key 在 10 分鐘內視為重試並回傳先前結果",
+    )
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _validate_idk(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        if not re.match(r"^[A-Za-z0-9_-]{8,64}$", v):
+            raise ValueError("idempotency_key 格式不合（需 8-64 英數/底線/連字號）")
+        return v
 
 
 class PublicCourseItem(BaseModel):
@@ -486,6 +504,34 @@ def _compute_is_paid(paid_amount: int, total_amount: int) -> bool:
     return total_amount > 0 and paid_amount >= total_amount
 
 
+def _is_daily_closed(session, target_date: date) -> bool:
+    """判斷 target_date 是否已完成 POS 日結簽核。供 service / router 共用。"""
+    if target_date is None:
+        return False
+    closed = (
+        session.query(ActivityPosDailyClose.close_date)
+        .filter(ActivityPosDailyClose.close_date == target_date)
+        .first()
+    )
+    return closed is not None
+
+
+def _require_daily_close_unlocked(session, target_date: date) -> None:
+    """拒絕寫入 payment_date 落在已 daily-close 的紀錄。
+
+    Why: payment_date 允許回補 30 天，但若該日已被老闆簽核，snapshot 已凍結。
+    此時新增交易會讓 DB 實際值與 snapshot 永久失準（reconciliation 永遠用 snapshot）。
+    """
+    if _is_daily_closed(session, target_date):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"日期 {target_date.isoformat()} 已完成日結簽核，"
+                f"無法再新增/修改該日交易。請先解鎖日結後再操作。"
+            ),
+        )
+
+
 def compute_daily_snapshot(session, target_date: date) -> dict:
     """某日 POS 流水即時快照：payment_total / refund_total / net_total / transaction_count / by_method。
 
@@ -511,9 +557,7 @@ def compute_daily_snapshot(session, target_date: date) -> dict:
     refund_total = 0
     payment_count = 0
     refund_count = 0
-    by_method_map: dict = defaultdict(
-        lambda: {"payment": 0, "refund": 0, "count": 0}
-    )
+    by_method_map: dict = defaultdict(lambda: {"payment": 0, "refund": 0, "count": 0})
     for rec_type, method, cnt, amt in rows:
         amt_int = int(amt or 0)
         cnt_int = int(cnt or 0)
@@ -785,6 +829,8 @@ def sync_registrations_on_student_deactivate(session, student_id: int) -> int:
 
     - 把 is_active 設為 False；保留原 match_status（供後台稽核）
     - 只處理當前學期（歷史學期的報名維持原狀，仍可供報表追溯）
+    - **若 paid_amount > 0**：自動寫一筆「系統補齊」退費沖帳紀錄並清零，
+      並以 logger.warning 留痕提醒管理員處理實體退款；避免幽靈金額留存
     - 回傳影響筆數
     """
     from utils.academic import resolve_current_academic_term
@@ -801,7 +847,34 @@ def sync_registrations_on_student_deactivate(session, student_id: int) -> int:
         )
         .all()
     )
+    today = datetime.now(TAIPEI_TZ).date()
+    # 若今日已簽核且有任何一筆需沖帳，直接拋以維持 snapshot 一致性
+    # （上層 students.py 的刪除流程會因此回 400；需先解鎖日結再刪學生）
+    if any((r.paid_amount or 0) > 0 for r in regs):
+        _require_daily_close_unlocked(session, today)
     for r in regs:
+        current_paid = r.paid_amount or 0
+        if current_paid > 0:
+            session.add(
+                ActivityPaymentRecord(
+                    registration_id=r.id,
+                    type="refund",
+                    amount=current_paid,
+                    payment_date=today,
+                    payment_method=SYSTEM_RECONCILE_METHOD,
+                    notes="（學生離園同步軟刪自動沖帳）",
+                    operator="system",
+                )
+            )
+            r.paid_amount = 0
+            r.is_paid = False
+            logger.warning(
+                "學生離園同步軟刪報名自動沖帳：reg_id=%s student_id=%s refunded=NT$%d，"
+                "請管理員跟進實體退款",
+                r.id,
+                student_id,
+                current_paid,
+            )
         r.is_active = False
     return len(regs)
 

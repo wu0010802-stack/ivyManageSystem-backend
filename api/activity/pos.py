@@ -43,6 +43,7 @@ from ._shared import (
     _fetch_reg_course_details,
     _fetch_reg_supplies,
     _invalidate_activity_dashboard_caches,
+    _require_daily_close_unlocked,
     compute_daily_snapshot,
 )
 
@@ -452,6 +453,10 @@ async def pos_checkout(
                         operator,
                     )
                     return replay
+
+        # ── 已簽核日守衛：拒絕 payment_date 落在已 daily-close 的日期 ──
+        # Why: snapshot 已凍結，補寫會讓 reconciliation 與實際 DB 永久失準。
+        _require_daily_close_unlocked(session, body.payment_date)
 
         reg_ids = [item.registration_id for item in body.items]
         if len(set(reg_ids)) != len(reg_ids):

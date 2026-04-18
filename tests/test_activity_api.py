@@ -229,33 +229,10 @@ class TestBatchPayment:
         assert reg.paid_amount == 1000
         assert reg.is_paid is True
 
-    def test_batch_mark_unpaid_clears_paid_amount(self, session):
-        """批次標記未繳費後 paid_amount 歸零"""
-        course = _add_course(session, price=1000)
-        reg = _add_reg(session)
-        _enroll(session, reg.id, course.id, price=1000)
-        _add_payment_record(session, reg.id, "payment", 1000)
-        reg.paid_amount = 1000
-        reg.is_paid = True
-        session.commit()
-
-        # 標記未繳費
-        session.query(ActivityPaymentRecord).filter(
-            ActivityPaymentRecord.registration_id == reg.id
-        ).delete()
-        reg.paid_amount = 0
-        reg.is_paid = False
-        session.commit()
-
-        session.refresh(reg)
-        assert reg.paid_amount == 0
-        assert reg.is_paid is False
-        assert (
-            session.query(ActivityPaymentRecord)
-            .filter(ActivityPaymentRecord.registration_id == reg.id)
-            .count()
-            == 0
-        )
+    # 舊的 test_batch_mark_unpaid_clears_paid_amount 已移除：
+    # 原測試用 raw DELETE 模擬「標記未繳費清空記錄」的過時行為；實際端點已改為
+    # 寫 refund 沖帳保留歷史。端點級回歸測試見
+    # tests/test_activity_fee_fixes.py::TestMarkUnpaidWritesRefund。
 
 
 # ────────────────────────────────────────────────────────────────── #
