@@ -50,6 +50,14 @@ class Permission(IntFlag):
     FEES_WRITE = 1 << 32            # 學費管理 (編輯)
     RECRUITMENT_READ  = 1 << 33    # 招生統計 (檢視)
     RECRUITMENT_WRITE = 1 << 34    # 招生統計 (編輯)
+    # ⚠️  同 1<<32 ~ 1<<34：前端 bitwise 必須使用 BigInt
+    ACTIVITY_PAYMENT_APPROVE = 1 << 35  # 才藝課收款簽核（老闆專屬）
+
+    # --- 學生生命週期追蹤（Phase A） ---
+    STUDENTS_LIFECYCLE_WRITE = 1 << 36   # 學生生命週期狀態轉移（退學/休學/畢業等高權操作）
+    GUARDIANS_READ = 1 << 37             # 監護人資料 (檢視) — 家長資料屬敏感
+    GUARDIANS_WRITE = 1 << 38            # 監護人資料 (編輯)
+    RECRUITMENT_CONVERT = 1 << 39        # 招生訪視 → 正式學生 轉化
 
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
@@ -74,6 +82,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "DISMISSAL_CALLS": {"read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
     "FEES": {"read": "FEES_READ", "write": "FEES_WRITE"},
     "RECRUITMENT": {"read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
+    "GUARDIANS": {"read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -92,6 +101,7 @@ _RW_PAIRS: List[tuple] = [
     (Permission.DISMISSAL_CALLS_READ, Permission.DISMISSAL_CALLS_WRITE),
     (Permission.FEES_READ, Permission.FEES_WRITE),
     (Permission.RECRUITMENT_READ, Permission.RECRUITMENT_WRITE),
+    (Permission.GUARDIANS_READ, Permission.GUARDIANS_WRITE),
 ]
 
 
@@ -120,9 +130,12 @@ ROLE_TEMPLATES: Dict[str, int] = {
         Permission.OVERTIME_READ | Permission.OVERTIME_WRITE |
         Permission.MEETINGS |
         Permission.STUDENTS_READ | Permission.STUDENTS_WRITE |
+        Permission.STUDENTS_LIFECYCLE_WRITE |
+        Permission.GUARDIANS_READ | Permission.GUARDIANS_WRITE |
         Permission.CLASSROOMS_READ | Permission.CLASSROOMS_WRITE |
         Permission.FEES_READ | Permission.FEES_WRITE |
         Permission.RECRUITMENT_READ | Permission.RECRUITMENT_WRITE |
+        Permission.RECRUITMENT_CONVERT |
         Permission.REPORTS
     ),
     "teacher": (
@@ -187,6 +200,11 @@ PERMISSION_LABELS: Dict[str, str] = {
     "FEES_WRITE": "學費管理 (編輯)",
     "RECRUITMENT_READ": "招生統計 (檢視)",
     "RECRUITMENT_WRITE": "招生統計 (編輯)",
+    "ACTIVITY_PAYMENT_APPROVE": "才藝課收款簽核",
+    "STUDENTS_LIFECYCLE_WRITE": "學生生命週期 (狀態轉移)",
+    "GUARDIANS_READ": "監護人資料 (檢視)",
+    "GUARDIANS_WRITE": "監護人資料 (編輯)",
+    "RECRUITMENT_CONVERT": "招生轉化為學生",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -208,10 +226,15 @@ PERMISSION_GROUPS: List[Dict] = [
     },
     {
         "name": "人事教務",
-        "permissions": [],
+        "permissions": [
+            "ACTIVITY_PAYMENT_APPROVE",
+            "STUDENTS_LIFECYCLE_WRITE",
+            "RECRUITMENT_CONVERT",
+        ],
         "split_permissions": [
             {"module": "員工管理", "read": "EMPLOYEES_READ", "write": "EMPLOYEES_WRITE"},
             {"module": "學生管理", "read": "STUDENTS_READ", "write": "STUDENTS_WRITE"},
+            {"module": "監護人資料", "read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
             {"module": "班級管理", "read": "CLASSROOMS_READ", "write": "CLASSROOMS_WRITE"},
             {"module": "薪資管理", "read": "SALARY_READ", "write": "SALARY_WRITE"},
             {"module": "課後才藝", "read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},

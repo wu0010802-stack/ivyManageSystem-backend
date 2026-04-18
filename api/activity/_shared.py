@@ -477,6 +477,85 @@ def _derive_payment_status(paid_amount: int, total_amount: int) -> str:
     return "unpaid"
 
 
+def _compute_is_paid(paid_amount: int, total_amount: int) -> bool:
+    """統一 is_paid 計算：應繳為 0 的報名一律視為未結清，避免全免課程誤判為已繳。
+
+    Why: 原先 10+ 處各自 inline 計算、有兩種等價寫法（`paid >= total > 0` vs
+    `total > 0 and paid >= total`），易漂移。以 helper 集中。
+    """
+    return total_amount > 0 and paid_amount >= total_amount
+
+
+def compute_daily_snapshot(session, target_date: date) -> dict:
+    """某日 POS 流水即時快照：payment_total / refund_total / net_total / transaction_count / by_method。
+
+    供 POS daily-summary 端點與日結簽核共用，避免邏輯雙寫。
+    by_method 為 dict：{"現金": 1200, "轉帳": 500, ...}；method 為 NULL 者歸類為「未指定」。
+    """
+    rows = (
+        session.query(
+            ActivityPaymentRecord.type,
+            ActivityPaymentRecord.payment_method,
+            func.count(ActivityPaymentRecord.id),
+            func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
+        )
+        .filter(ActivityPaymentRecord.payment_date == target_date)
+        .group_by(
+            ActivityPaymentRecord.type,
+            ActivityPaymentRecord.payment_method,
+        )
+        .all()
+    )
+
+    payment_total = 0
+    refund_total = 0
+    payment_count = 0
+    refund_count = 0
+    by_method_map: dict = defaultdict(
+        lambda: {"payment": 0, "refund": 0, "count": 0}
+    )
+    for rec_type, method, cnt, amt in rows:
+        amt_int = int(amt or 0)
+        cnt_int = int(cnt or 0)
+        method_key = method or "未指定"
+        if rec_type == "payment":
+            payment_total += amt_int
+            payment_count += cnt_int
+            by_method_map[method_key]["payment"] += amt_int
+        else:
+            refund_total += amt_int
+            refund_count += cnt_int
+            by_method_map[method_key]["refund"] += amt_int
+        by_method_map[method_key]["count"] += cnt_int
+
+    by_method_list = [
+        {
+            "method": method_key,
+            "payment": data["payment"],
+            "refund": data["refund"],
+            "count": data["count"],
+        }
+        for method_key, data in sorted(by_method_map.items())
+    ]
+    # by_method_net：簽核 snapshot 只需要淨額分佈，不需要 payment/refund 拆分
+    by_method_net = {
+        method_key: data["payment"] - data["refund"]
+        for method_key, data in by_method_map.items()
+    }
+
+    return {
+        "date": target_date.isoformat(),
+        "payment_total": payment_total,
+        "refund_total": refund_total,
+        "net": payment_total - refund_total,
+        "payment_count": payment_count,
+        "refund_count": refund_count,
+        "transaction_count": payment_count + refund_count,
+        "by_method": by_method_list,
+        "by_method_net": by_method_net,
+    }
+
+
 def _batch_calc_total_amounts(session, reg_ids: list) -> dict:
     """批次計算多筆報名的應繳總金額（2 次 GROUP BY，避免 N+1 查詢）"""
     course_totals = dict(

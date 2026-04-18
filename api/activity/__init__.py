@@ -21,11 +21,13 @@ from .settings import router as _settings_router
 from .public import router as _public_router
 from .attendance import router as _attendance_router
 from .pos import router as _pos_router
+from .pos_approval import router as _pos_approval_router
 
 router = APIRouter(prefix="/api/activity", tags=["activity"])
 
 # 順序重要：靜態路由（batch-payment、export、pos/*）已在各自檔案內優先定義
 router.include_router(_stats_router)
+router.include_router(_pos_approval_router)
 router.include_router(_pos_router)
 router.include_router(_registrations_router)
 router.include_router(_courses_router)

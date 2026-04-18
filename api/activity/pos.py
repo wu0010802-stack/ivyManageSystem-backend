@@ -38,10 +38,12 @@ from utils.rate_limit import SlidingWindowLimiter
 from ._shared import (
     TAIPEI_TZ,
     _batch_calc_total_amounts,
+    _compute_is_paid,
     _derive_payment_status,
     _fetch_reg_course_details,
     _fetch_reg_supplies,
     _invalidate_activity_dashboard_caches,
+    compute_daily_snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,8 @@ router = APIRouter()
 # 單個品項與實收金額上限（NT$999,999 / NT$9,999,999）— 避免誤輸入或整型誇張值
 _MAX_ITEM_AMOUNT = 999_999
 _MAX_TENDERED = 9_999_999
+# 單次結帳總額上限 NT$1,000,000 — 避免前端繞過大額確認造成誤輸入巨額
+_MAX_CHECKOUT_TOTAL = 1_000_000
 
 # payment_date 合理範圍：最多回補 30 天、不得指定未來
 _PAYMENT_DATE_BACK_LIMIT_DAYS = 30
@@ -86,7 +90,7 @@ class POSCheckoutItem(BaseModel):
 
 
 class POSCheckoutRequest(BaseModel):
-    items: List[POSCheckoutItem] = Field(..., min_length=1, max_length=50)
+    items: List[POSCheckoutItem] = Field(..., min_length=1, max_length=10)
     payment_method: Literal["現金", "轉帳", "其他"] = "現金"
     payment_date: date
     tendered: Optional[int] = Field(
@@ -136,28 +140,35 @@ def _make_receipt_no() -> str:
     return f"POS-{today_str}-{uuid.uuid4().hex[:12].upper()}"
 
 
-def _build_notes(
-    receipt_no: str, user_note: str, idempotency_key: Optional[str]
-) -> str:
-    """組合 notes：含 receipt_no、idempotency_key（若有）、使用者備註。"""
+def _build_notes(receipt_no: str, user_note: str) -> str:
+    """組合 notes：保留 [receipt_no] 標記供舊版解析相容，其餘為使用者備註。
+
+    idempotency_key 已獨立成 ActivityPaymentRecord.idempotency_key 欄位，不再放 notes。
+    """
     parts = [f"[{receipt_no}]"]
-    if idempotency_key:
-        parts.append(f"[IDK:{idempotency_key}]")
     note = (user_note or "").strip()
     if note:
         parts.append(note)
     return " ".join(parts)
 
 
+def _strip_system_tags(raw_notes: str) -> str:
+    """從 notes 字串剝除 [POS-YYYYMMDD-XXX] 與舊版 [IDK:xxx] 標記，取出純使用者備註。"""
+    s = re.sub(r"\[POS-\d{8}-[A-Fa-f0-9]+\]", "", raw_notes or "")
+    s = re.sub(r"\[IDK:[A-Za-z0-9_-]+\]", "", s)
+    return s.strip()
+
+
 def _parse_receipt_response_from_record(
-    session, record: ActivityPaymentRecord, req: POSCheckoutRequest
+    session, record: ActivityPaymentRecord
 ) -> Optional[dict]:
     """用已存在的 ActivityPaymentRecord 重建 checkout response（冪等重試用）。
 
-    從 notes 解析 receipt_no，查出同收據的所有記錄聚合金額。
+    僅依賴 DB 資料，不讀 request body — 確保重試時 response 穩定，
+    與第一次呼叫時的狀態一致。tendered/change 不儲存，故回 None。
     """
     notes = record.notes or ""
-    m = re.search(r"\[(POS-\d{8}-[A-F0-9]+)\]", notes)
+    m = re.search(r"\[(POS-\d{8}-[A-Fa-f0-9]+)\]", notes)
     if not m:
         return None
     receipt_no = m.group(1)
@@ -207,19 +218,14 @@ def _parse_receipt_response_from_record(
         )
 
     first = same_recs[0]
-    user_note_match = re.search(r"\]\s*(?!\[)(.+)$", notes)
-    user_note = user_note_match.group(1).strip() if user_note_match else ""
+    user_note = _strip_system_tags(notes)
 
     return {
         "receipt_no": receipt_no,
         "type": first.type,
         "total": total_charged,
-        "tendered": req.tendered if first.payment_method == "現金" else None,
-        "change": (
-            max(0, (req.tendered or 0) - total_charged)
-            if req.tendered is not None and first.payment_method == "現金"
-            else None
-        ),
+        "tendered": None,
+        "change": None,
         "payment_method": first.payment_method or "",
         "payment_date": first.payment_date.isoformat() if first.payment_date else None,
         "operator": first.operator or "",
@@ -235,14 +241,18 @@ def _parse_receipt_response_from_record(
 def _find_idempotent_hit(
     session, idempotency_key: str
 ) -> Optional[ActivityPaymentRecord]:
-    """查詢視窗內是否已有相同 idempotency_key 的記錄。"""
-    threshold = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(
-        seconds=_IDEMPOTENCY_WINDOW_SECONDS
-    )
+    """查詢視窗內是否已有相同 idempotency_key 的記錄。
+
+    threshold 與 ActivityPaymentRecord.created_at 必須用同一種時間基準：
+    ORM default 為 `datetime.now()`（naive, 伺服器本地），因此 threshold
+    也用 `datetime.now()`；若以 TAIPEI 時區計算，部署在 UTC 伺服器會差 8
+    小時，讓冪等視窗失效、導致網路重送時重複扣款。
+    """
+    threshold = datetime.now() - timedelta(seconds=_IDEMPOTENCY_WINDOW_SECONDS)
     return (
         session.query(ActivityPaymentRecord)
         .filter(
-            ActivityPaymentRecord.notes.like(f"%[IDK:{idempotency_key}]%"),
+            ActivityPaymentRecord.idempotency_key == idempotency_key,
             ActivityPaymentRecord.created_at >= threshold,
         )
         .order_by(ActivityPaymentRecord.id.asc())
@@ -423,7 +433,10 @@ async def pos_checkout(
             status_code=400, detail=f"不支援的付款方式：{body.payment_method}"
         )
 
-    operator = current_user.get("username", "") or ""
+    operator = (current_user.get("username") or "").strip()
+    if not operator:
+        # 依賴層原本就該保證有 username；到這裡代表權限設定異常，拒絕寫入避免匿名交易
+        raise HTTPException(status_code=401, detail="無法識別操作人員")
 
     session = get_session()
     try:
@@ -431,7 +444,7 @@ async def pos_checkout(
         if body.idempotency_key:
             existing = _find_idempotent_hit(session, body.idempotency_key)
             if existing is not None:
-                replay = _parse_receipt_response_from_record(session, existing, body)
+                replay = _parse_receipt_response_from_record(session, existing)
                 if replay is not None:
                     logger.info(
                         "POS checkout idempotent replay: key=%s operator=%s",
@@ -469,7 +482,7 @@ async def pos_checkout(
             if exists is None:
                 break
             receipt_no = _make_receipt_no()
-        stored_notes = _build_notes(receipt_no, body.notes, body.idempotency_key)
+        stored_notes = _build_notes(receipt_no, body.notes)
 
         total_charged = 0
         response_items = []
@@ -491,6 +504,7 @@ async def pos_checkout(
                 payment_method=body.payment_method,
                 notes=stored_notes,
                 operator=operator,
+                idempotency_key=body.idempotency_key,
             )
             session.add(rec)
 
@@ -500,7 +514,9 @@ async def pos_checkout(
                 reg.paid_amount = max(0, (reg.paid_amount or 0) - item.amount)
 
             total_amount = total_map.get(reg.id, 0) or 0
-            reg.is_paid = reg.paid_amount >= total_amount > 0
+            # 應繳為 0 的報名（全免課程）視為未結清，維持 is_paid=False；
+            # 避免被後台「已繳」查詢誤算入營收或人數。
+            reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
             total_charged += item.amount
 
             activity_service.log_change(
@@ -528,7 +544,14 @@ async def pos_checkout(
                 }
             )
 
-        # 現金且提供 tendered：驗證實收 >= 應收
+        # 總額上限保護（後端獨立於前端大額警告）
+        if total_charged > _MAX_CHECKOUT_TOTAL:
+            raise HTTPException(
+                status_code=400,
+                detail=f"單次交易總額超過上限 NT${_MAX_CHECKOUT_TOTAL:,}",
+            )
+
+        # 現金且提供 tendered：驗證實收 >= 應收（前端已不再送 tendered，保留供相容）
         change = None
         if (
             body.type == "payment"
@@ -600,61 +623,16 @@ async def pos_daily_summary(
 
     session = get_session()
     try:
-        rows = (
-            session.query(
-                ActivityPaymentRecord.type,
-                ActivityPaymentRecord.payment_method,
-                func.count(ActivityPaymentRecord.id),
-                func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
-            )
-            .filter(ActivityPaymentRecord.payment_date == target_date)
-            .group_by(
-                ActivityPaymentRecord.type,
-                ActivityPaymentRecord.payment_method,
-            )
-            .all()
-        )
-
-        payment_total = 0
-        refund_total = 0
-        payment_count = 0
-        refund_count = 0
-        by_method_map: dict = defaultdict(
-            lambda: {"payment": 0, "refund": 0, "count": 0}
-        )
-
-        for rec_type, method, cnt, amt in rows:
-            amt_int = int(amt or 0)
-            cnt_int = int(cnt or 0)
-            method_key = method or "未指定"
-            if rec_type == "payment":
-                payment_total += amt_int
-                payment_count += cnt_int
-                by_method_map[method_key]["payment"] += amt_int
-            else:
-                refund_total += amt_int
-                refund_count += cnt_int
-                by_method_map[method_key]["refund"] += amt_int
-            by_method_map[method_key]["count"] += cnt_int
-
-        by_method = [
-            {
-                "method": method_key,
-                "payment": data["payment"],
-                "refund": data["refund"],
-                "count": data["count"],
-            }
-            for method_key, data in sorted(by_method_map.items())
-        ]
-
+        snap = compute_daily_snapshot(session, target_date)
+        # 保持既有 response 結構（不含 transaction_count / by_method_net）
         return {
-            "date": target_date.isoformat(),
-            "payment_total": payment_total,
-            "refund_total": refund_total,
-            "net": payment_total - refund_total,
-            "payment_count": payment_count,
-            "refund_count": refund_count,
-            "by_method": by_method,
+            "date": snap["date"],
+            "payment_total": snap["payment_total"],
+            "refund_total": snap["refund_total"],
+            "net": snap["net"],
+            "payment_count": snap["payment_count"],
+            "refund_count": snap["refund_count"],
+            "by_method": snap["by_method"],
         }
     finally:
         session.close()
@@ -730,10 +708,8 @@ async def pos_recent_transactions(
             tx_type = first.type
             tx_total = sum(rec.amount for rec in recs)
 
-            # 解析使用者備註（notes 剝除 [POS-...] 與 [IDK:...]）
-            raw_notes = first.notes or ""
-            user_note = re.sub(r"\[POS-\d{8}-[A-F0-9]+\]", "", raw_notes)
-            user_note = re.sub(r"\[IDK:[A-Za-z0-9_-]+\]", "", user_note).strip()
+            # 解析使用者備註（notes 剝除 [POS-...] 與舊版 [IDK:...] 標記）
+            user_note = _strip_system_tags(first.notes or "")
 
             items_payload = []
             student_names = []

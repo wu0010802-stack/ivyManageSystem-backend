@@ -363,6 +363,46 @@ class TestAdminApprovalWorkflow:
             assert "校外生" in (reg.remark or "")
             assert reg.reviewed_at is not None
 
+    def test_reject_requires_non_empty_reason(self, pending_client):
+        """拒絕原因必填（≥ 2 字），用於事後稽核追溯。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        reg_id = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        ).json()["id"]
+
+        _login(client)
+        # 空字串：422
+        assert (
+            client.post(
+                f"/api/activity/registrations/{reg_id}/reject", json={"reason": ""}
+            ).status_code
+            == 422
+        )
+        # 只有 1 字：422
+        assert (
+            client.post(
+                f"/api/activity/registrations/{reg_id}/reject", json={"reason": "錯"}
+            ).status_code
+            == 422
+        )
+        # 僅空白：422
+        assert (
+            client.post(
+                f"/api/activity/registrations/{reg_id}/reject", json={"reason": "   "}
+            ).status_code
+            == 422
+        )
+        # 合法：200
+        assert (
+            client.post(
+                f"/api/activity/registrations/{reg_id}/reject",
+                json={"reason": "資料錯誤"},
+            ).status_code
+            == 200
+        )
+
     def test_rematch_picks_up_updated_phone(self, pending_client):
         """家長/校方修正資料後，後台 rematch 自動脫離 pending。"""
         client, sf = pending_client
@@ -530,7 +570,10 @@ class TestAdminApprovalWorkflow:
         reg_id = r_reg.json()["id"]
 
         _login(client)
-        client.post(f"/api/activity/registrations/{reg_id}/reject", json={"reason": ""})
+        client.post(
+            f"/api/activity/registrations/{reg_id}/reject",
+            json={"reason": "測試用拒絕原因"},
+        )
 
         res = client.post(f"/api/activity/registrations/{reg_id}/restore")
         assert res.status_code == 200
@@ -644,7 +687,8 @@ class TestAdminApprovalWorkflow:
         _login(client)
         # 拒絕其中一筆
         client.post(
-            f"/api/activity/registrations/{r1.json()['id']}/reject", json={"reason": ""}
+            f"/api/activity/registrations/{r1.json()['id']}/reject",
+            json={"reason": "測試用拒絕原因"},
         )
 
         res = client.get("/api/activity/registrations/pending")  # 預設 all
@@ -664,7 +708,8 @@ class TestAdminApprovalWorkflow:
 
         _login(client)
         client.post(
-            f"/api/activity/registrations/{reg1_id}/reject", json={"reason": ""}
+            f"/api/activity/registrations/{reg1_id}/reject",
+            json={"reason": "測試用拒絕原因"},
         )
 
         # 拒絕後又送一筆同 name+birthday

@@ -11,7 +11,7 @@
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -28,8 +28,10 @@ from api.auth import router as auth_router
 from models.database import (
     ActivityCourse,
     ActivityPaymentRecord,
+    ActivityPosDailyClose,
     ActivityRegistration,
     ActivitySupply,
+    ApprovalLog,
     Base,
     Classroom,
     RegistrationCourse,
@@ -979,7 +981,8 @@ class TestReceiptNumber:
         )
         assert len(res.json()["groups"]) == 1  # 已繳仍可退費
 
-    def test_idempotency_key_stored_in_notes(self, pos_client):
+    def test_idempotency_key_stored_in_column(self, pos_client):
+        """冪等鍵已改存獨立欄位（非 notes），notes 只保留 [receipt_no] + 使用者備註。"""
         client, sf = pos_client
         with sf() as s:
             _create_admin(s)
@@ -1002,5 +1005,583 @@ class TestReceiptNumber:
 
         with sf() as s:
             rec = s.query(ActivityPaymentRecord).first()
-            assert "[IDK:my-key-abc123]" in (rec.notes or "")
+            assert rec.idempotency_key == "my-key-abc123"
+            # notes 內不再含 IDK 標記，但仍有 receipt_no 與使用者備註
+            assert "[IDK:" not in (rec.notes or "")
             assert "Hello" in (rec.notes or "")
+
+
+# ── POS 日結簽核 ─────────────────────────────────────────────────────────
+
+
+def _make_reg_minimal(session, student_name: str = "test") -> ActivityRegistration:
+    """建立極簡 reg 作為 payment FK 母體；不建 Course/Supply 等雜訊。"""
+    from utils.academic import resolve_current_academic_term
+
+    sy, sem = resolve_current_academic_term()
+    reg = ActivityRegistration(
+        student_name=student_name,
+        birthday="2020-01-01",
+        class_name="A",
+        school_year=sy,
+        semester=sem,
+        is_active=True,
+    )
+    session.add(reg)
+    session.flush()
+    return reg
+
+
+def _add_payment(
+    session,
+    reg_id: int,
+    *,
+    type_: str,
+    amount: int,
+    method: str,
+    day: date,
+    operator: str = "tester",
+) -> ActivityPaymentRecord:
+    rec = ActivityPaymentRecord(
+        registration_id=reg_id,
+        type=type_,
+        amount=amount,
+        payment_date=day,
+        payment_method=method,
+        notes="[T]",
+        operator=operator,
+    )
+    session.add(rec)
+    session.flush()
+    return rec
+
+
+class TestPosDailyClose:
+    """POS 每日收款簽核：老闆核對流水、凍結 snapshot、解鎖重簽、對帳。"""
+
+    APPROVE_PERMS = (
+        Permission.ACTIVITY_READ
+        | Permission.ACTIVITY_WRITE
+        | Permission.ACTIVITY_PAYMENT_APPROVE
+    )
+
+    # ── A. Pending 列表 ────────────────────────────────────────────────
+
+    def test_pending_lists_only_unapproved_dates(self, pos_client):
+        """建立多日交易並簽核其中一日，pending 只含未簽核的日子。"""
+        client, sf = pos_client
+        today = date.today()
+        d1 = today - timedelta(days=3)
+        d2 = today - timedelta(days=2)
+        d3 = today - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="A")
+            for d in (d1, d2, d3):
+                _add_payment(
+                    s, reg.id, type_="payment", amount=500, method="現金", day=d
+                )
+            # 簽核 d2
+            s.add(
+                ActivityPosDailyClose(
+                    close_date=d2,
+                    approver_username="pos_admin",
+                    approved_at=datetime(2026, 4, 18, 10, 0, 0),
+                    note=None,
+                    payment_total=500,
+                    refund_total=0,
+                    net_total=500,
+                    transaction_count=1,
+                    by_method_json='{"現金": 500}',
+                )
+            )
+            s.commit()
+
+        assert _login(client).status_code == 200
+        res = client.get("/api/activity/pos/daily-close/pending")
+        assert res.status_code == 200
+        body = res.json()
+        dates = {item["date"] for item in body["pending"]}
+        assert d1.isoformat() in dates
+        assert d3.isoformat() in dates
+        assert d2.isoformat() not in dates
+
+    def test_pending_includes_refund_only_day(self, pos_client):
+        """某日只 refund 無 payment，仍視為有金流，應列入 pending。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="R")
+            _add_payment(
+                s, reg.id, type_="refund", amount=800, method="現金", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        body = client.get("/api/activity/pos/daily-close/pending").json()
+        row = next(x for x in body["pending"] if x["date"] == target.isoformat())
+        assert row["payment_total"] == 0
+        assert row["refund_total"] == 800
+        assert row["net_total"] == -800
+        assert row["transaction_count"] == 1
+
+    def test_pending_rejects_range_over_92_days(self, pos_client):
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.get(
+            "/api/activity/pos/daily-close/pending",
+            params={"start_date": "2025-01-01", "end_date": "2026-01-01"},
+        )
+        assert res.status_code == 400
+
+    # ── B. 查狀態 GET ──────────────────────────────────────────────────
+
+    def test_get_status_unapproved_returns_live_preview(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="B")
+            _add_payment(
+                s, reg.id, type_="payment", amount=1200, method="現金", day=target
+            )
+            _add_payment(
+                s, reg.id, type_="payment", amount=300, method="轉帳", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        body = client.get(f"/api/activity/pos/daily-close/{target.isoformat()}").json()
+        assert body["is_approved"] is False
+        assert body["approver_username"] is None
+        assert body["payment_total"] == 1500
+        assert body["refund_total"] == 0
+        assert body["net_total"] == 1500
+        assert body["transaction_count"] == 2
+        assert body["by_method"] == {"現金": 1200, "轉帳": 300}
+
+    def test_get_status_approved_returns_snapshot(self, pos_client):
+        """簽核後即便補新交易，GET 仍回 snapshot（不重算）。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="C")
+            _add_payment(
+                s, reg.id, type_="payment", amount=1000, method="現金", day=target
+            )
+            s.commit()
+            reg_id = reg.id
+        assert _login(client).status_code == 200
+        approve = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+        )
+        assert approve.status_code == 201
+
+        # 事後補一筆交易
+        with sf() as s:
+            _add_payment(
+                s, reg_id, type_="payment", amount=999, method="現金", day=target
+            )
+            s.commit()
+
+        body = client.get(f"/api/activity/pos/daily-close/{target.isoformat()}").json()
+        assert body["is_approved"] is True
+        assert body["payment_total"] == 1000  # 仍為簽核當下 snapshot，未加 999
+        assert body["by_method"] == {"現金": 1000}
+
+    # ── C. 簽核 POST ───────────────────────────────────────────────────
+
+    def test_approve_freezes_snapshot_and_writes_approval_log(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="D")
+            _add_payment(
+                s, reg.id, type_="payment", amount=2000, method="現金", day=target
+            )
+            _add_payment(
+                s, reg.id, type_="refund", amount=200, method="現金", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"note": "已核對"},
+        )
+        assert res.status_code == 201
+        data = res.json()
+        assert data["is_approved"] is True
+        assert data["approver_username"] == "pos_admin"
+        assert data["payment_total"] == 2000
+        assert data["refund_total"] == 200
+        assert data["net_total"] == 1800
+        assert data["transaction_count"] == 2
+        assert data["by_method"] == {"現金": 1800}
+
+        with sf() as s:
+            row = (
+                s.query(ActivityPosDailyClose)
+                .filter(ActivityPosDailyClose.close_date == target)
+                .one()
+            )
+            assert row.note == "已核對"
+            log = (
+                s.query(ApprovalLog)
+                .filter(
+                    ApprovalLog.doc_type == "activity_pos_daily",
+                    ApprovalLog.action == "approved",
+                )
+                .one()
+            )
+            assert log.doc_id == int(target.strftime("%Y%m%d"))
+            assert log.approver_username == "pos_admin"
+            assert log.approver_role == "admin"
+            assert log.comment == "已核對"
+
+    def test_approve_with_cash_count_computes_variance(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="E")
+            _add_payment(
+                s, reg.id, type_="payment", amount=1500, method="現金", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"actual_cash_count": 1480},
+        )
+        assert res.status_code == 201
+        data = res.json()
+        assert data["actual_cash_count"] == 1480
+        assert data["cash_variance"] == -20  # 1480 - 1500
+
+    def test_approve_with_zero_actual_cash_count_sets_negative_variance(self, pos_client):
+        """actual_cash_count=0 視為有效盤點（非 None），variance = -1000。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="F")
+            _add_payment(
+                s, reg.id, type_="payment", amount=1000, method="現金", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"actual_cash_count": 0},
+        )
+        assert res.status_code == 201
+        data = res.json()
+        assert data["actual_cash_count"] == 0
+        assert data["cash_variance"] == -1000
+
+    def test_approve_with_actual_cash_but_no_cash_tx(self, pos_client):
+        """當日無現金交易；老闆報 500 → variance = 500 - 0 = 500。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="G")
+            _add_payment(
+                s, reg.id, type_="payment", amount=700, method="轉帳", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"actual_cash_count": 500},
+        )
+        assert res.status_code == 201
+        data = res.json()
+        assert data["by_method"] == {"轉帳": 700}
+        assert data["actual_cash_count"] == 500
+        assert data["cash_variance"] == 500
+
+    def test_approve_rejects_duplicate_with_409(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="H")
+            _add_payment(
+                s, reg.id, type_="payment", amount=100, method="現金", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        first = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        assert first.status_code == 201
+        second = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        assert second.status_code == 409
+
+    def test_approve_rejects_future_date_with_400(self, pos_client):
+        client, sf = pos_client
+        future = date.today() + timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post(f"/api/activity/pos/daily-close/{future.isoformat()}", json={})
+        assert res.status_code == 400
+
+    def test_approve_rejects_bad_date_format(self, pos_client):
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post("/api/activity/pos/daily-close/bad-date", json={})
+        assert res.status_code == 400
+
+    def test_approve_zero_transaction_day_succeeds_currently(self, pos_client):
+        """釘住當前行為：即使當日完全無交易，簽核依然成功（snapshot 全 0）。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        assert res.status_code == 201
+        data = res.json()
+        assert data["payment_total"] == 0
+        assert data["refund_total"] == 0
+        assert data["net_total"] == 0
+        assert data["transaction_count"] == 0
+        assert data["by_method"] == {}
+
+    def test_approve_note_over_length_rejected(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"note": "x" * 600},
+        )
+        assert res.status_code == 422
+
+    # ── D. 解鎖 DELETE ─────────────────────────────────────────────────
+
+    def test_unlock_deletes_row_and_writes_cancel_log(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="I")
+            _add_payment(
+                s, reg.id, type_="payment", amount=100, method="現金", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        assert (
+            client.post(
+                f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+            ).status_code
+            == 201
+        )
+        res = client.delete(f"/api/activity/pos/daily-close/{target.isoformat()}")
+        assert res.status_code == 204
+        assert res.content == b""
+
+        with sf() as s:
+            assert (
+                s.query(ActivityPosDailyClose)
+                .filter(ActivityPosDailyClose.close_date == target)
+                .first()
+                is None
+            )
+            cancel_log = (
+                s.query(ApprovalLog)
+                .filter(
+                    ApprovalLog.doc_type == "activity_pos_daily",
+                    ApprovalLog.action == "cancelled",
+                )
+                .one()
+            )
+            assert cancel_log.doc_id == int(target.strftime("%Y%m%d"))
+            assert "解鎖" in (cancel_log.comment or "")
+            assert "原簽核人 pos_admin" in (cancel_log.comment or "")
+
+    def test_unlock_nonexistent_returns_404(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.delete(f"/api/activity/pos/daily-close/{target.isoformat()}")
+        assert res.status_code == 404
+
+    def test_full_cycle_approve_unlock_reapprove_captures_new_tx(self, pos_client):
+        """核心循環：approve → 補新交易 → DELETE → 再 approve 應吃到新交易。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="J")
+            _add_payment(
+                s, reg.id, type_="payment", amount=1000, method="現金", day=target
+            )
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+        first = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+        )
+        assert first.status_code == 201
+        assert first.json()["payment_total"] == 1000
+
+        with sf() as s:
+            _add_payment(
+                s, reg_id, type_="payment", amount=500, method="現金", day=target
+            )
+            s.commit()
+
+        assert (
+            client.delete(
+                f"/api/activity/pos/daily-close/{target.isoformat()}"
+            ).status_code
+            == 204
+        )
+        second = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+        )
+        assert second.status_code == 201
+        assert second.json()["payment_total"] == 1500  # 解鎖後重算吃到新交易
+
+        with sf() as s:
+            logs = (
+                s.query(ApprovalLog)
+                .filter(
+                    ApprovalLog.doc_type == "activity_pos_daily",
+                    ApprovalLog.doc_id == int(target.strftime("%Y%m%d")),
+                )
+                .order_by(ApprovalLog.id)
+                .all()
+            )
+            actions = [log.action for log in logs]
+            assert actions == ["approved", "cancelled", "approved"]
+
+    # ── E. 權限 ────────────────────────────────────────────────────────
+
+    def test_permission_read_cannot_approve_or_unlock(self, pos_client):
+        """僅 ACTIVITY_READ 可 GET，但 POST/DELETE 應回 403。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(
+                s,
+                username="viewer",
+                password="Viewer12345",
+                permissions=Permission.ACTIVITY_READ,
+            )
+            s.commit()
+        assert _login(client, username="viewer", password="Viewer12345").status_code == 200
+
+        assert client.get(f"/api/activity/pos/daily-close/{target.isoformat()}").status_code == 200
+        assert (
+            client.post(
+                f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+            ).status_code
+            == 403
+        )
+        assert (
+            client.delete(
+                f"/api/activity/pos/daily-close/{target.isoformat()}"
+            ).status_code
+            == 403
+        )
+
+    def test_permission_approve_role_can_approve(self, pos_client):
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(
+                s,
+                username="boss",
+                password="BossPass1234",
+                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_PAYMENT_APPROVE,
+            )
+            s.commit()
+        assert _login(client, username="boss", password="BossPass1234").status_code == 200
+        res = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        assert res.status_code == 201
+        assert res.json()["approver_username"] == "boss"
+
+    # ── F. 對帳 ────────────────────────────────────────────────────────
+
+    def test_reconciliation_mixes_snapshot_and_live(self, pos_client):
+        """已簽核日用 snapshot（補交易後仍為凍結值），未簽核日即時計算。"""
+        client, sf = pos_client
+        today = date.today()
+        d_approved = today - timedelta(days=2)
+        d_live = today - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="K")
+            _add_payment(
+                s, reg.id, type_="payment", amount=1000, method="現金", day=d_approved
+            )
+            _add_payment(
+                s, reg.id, type_="payment", amount=2000, method="轉帳", day=d_live
+            )
+            s.commit()
+            reg_id = reg.id
+        assert _login(client).status_code == 200
+        # 簽核 d_approved
+        assert (
+            client.post(
+                f"/api/activity/pos/daily-close/{d_approved.isoformat()}",
+                json={"actual_cash_count": 1000},
+            ).status_code
+            == 201
+        )
+        # 簽核後補交易（不該影響 d_approved 的 snapshot）
+        with sf() as s:
+            _add_payment(
+                s, reg_id, type_="payment", amount=9999, method="現金", day=d_approved
+            )
+            s.commit()
+
+        res = client.get(
+            "/api/activity/pos/reconciliation",
+            params={
+                "start_date": (today - timedelta(days=3)).isoformat(),
+                "end_date": today.isoformat(),
+            },
+        )
+        assert res.status_code == 200
+        body = res.json()
+        items = {item["date"]: item for item in body["items"]}
+        assert items[d_approved.isoformat()]["is_approved"] is True
+        assert items[d_approved.isoformat()]["payment_total"] == 1000  # 凍結
+        assert items[d_approved.isoformat()]["actual_cash"] == 1000
+        assert items[d_approved.isoformat()]["variance"] == 0
+
+        assert items[d_live.isoformat()]["is_approved"] is False
+        assert items[d_live.isoformat()]["payment_total"] == 2000
+        assert items[d_live.isoformat()]["actual_cash"] is None
+        assert items[d_live.isoformat()]["variance"] is None
+
+    def test_reconciliation_max_days_guard(self, pos_client):
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            s.commit()
+        assert _login(client).status_code == 200
+        res = client.get(
+            "/api/activity/pos/reconciliation",
+            params={"start_date": "2025-01-01", "end_date": "2026-01-01"},
+        )
+        assert res.status_code == 400

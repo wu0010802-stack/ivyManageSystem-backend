@@ -24,6 +24,8 @@ from models.database import (
     ActivityPaymentRecord,
     RegistrationChange,
     ActivitySupply,
+    ActivitySession,
+    ActivityAttendance,
 )
 from services.activity_service import activity_service
 from utils.auth import require_staff_permission
@@ -41,6 +43,7 @@ from ._shared import (
     AddSupplyRequest,
     _not_found,
     _derive_payment_status,
+    _compute_is_paid,
     _calc_total_amount,
     _invalidate_activity_dashboard_caches,
     _batch_calc_total_amounts,
@@ -120,7 +123,7 @@ async def batch_update_payment(
                         )
                         session.add(rec)
                         reg.paid_amount = total_amount
-                    reg.is_paid = True
+                    reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
                 activity_service.log_change(
                     session,
                     reg.id,
@@ -576,7 +579,17 @@ class RegistrationMatchRequest(BaseModel):
 
 
 class RegistrationRejectRequest(BaseModel):
-    reason: str = Field(default="", max_length=200)
+    reason: str = Field(..., min_length=2, max_length=200)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip_reason(cls, v):
+        if isinstance(v, str):
+            stripped = v.strip()
+            if len(stripped) < 2:
+                raise ValueError("拒絕原因至少需 2 個字，方便事後追溯")
+            return stripped
+        return v
 
 
 class RegistrationRematchRequest(BaseModel):
@@ -855,10 +868,18 @@ async def reject_registration(
         reg.pending_review = False
         reg.reviewed_by = current_user.get("username")
         reg.reviewed_at = datetime.now()
-        reason = (body.reason or "").strip()
+        reason = body.reason  # validator 已保證非空且已 strip
         prefix = (reg.remark or "").strip()
-        note = f"[已拒絕 by {reg.reviewed_by}]" + (f" {reason}" if reason else "")
+        note = f"[已拒絕 by {reg.reviewed_by}] {reason}"
         reg.remark = (prefix + "\n" + note).strip() if prefix else note
+        activity_service.log_change(
+            session,
+            registration_id,
+            reg.student_name,
+            "拒絕報名",
+            f"拒絕原因：{reason}",
+            reg.reviewed_by or "",
+        )
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         logger.warning(
@@ -1451,7 +1472,7 @@ async def update_payment(
                     )
                     session.add(rec)
                     reg.paid_amount = total_amount
-                reg.is_paid = True
+                reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
         else:
             session.query(ActivityPaymentRecord).filter(
                 ActivityPaymentRecord.registration_id == registration_id
@@ -1693,11 +1714,10 @@ async def add_registration_course(
         )
 
         # 若報名原本狀態為已繳清，新增課程後可能變為部分繳費
-        total_amount = _calc_total_amount(session, registration_id) + (
-            course.price if status == "enrolled" else 0
-        )
+        # （autoflush 已把新 RegistrationCourse 寫入 session，_calc_total_amount 會涵蓋）
+        total_amount = _calc_total_amount(session, registration_id)
         paid_amount = reg.paid_amount or 0
-        reg.is_paid = paid_amount >= total_amount > 0
+        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
 
         session.commit()
         _invalidate_activity_dashboard_caches(session)
@@ -1770,7 +1790,7 @@ async def add_registration_supply(
         session.flush()
         total_amount = _calc_total_amount(session, registration_id)
         paid_amount = reg.paid_amount or 0
-        reg.is_paid = paid_amount >= total_amount > 0
+        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
 
         session.commit()
         _invalidate_activity_dashboard_caches(session)
@@ -1833,7 +1853,7 @@ async def remove_registration_supply(
 
         total_amount = _calc_total_amount(session, registration_id)
         paid_amount = reg.paid_amount or 0
-        reg.is_paid = paid_amount >= total_amount > 0
+        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
 
         activity_service.log_change(
             session,
@@ -1956,7 +1976,7 @@ async def add_registration_payment(
             reg.paid_amount = (reg.paid_amount or 0) - body.amount
 
         total_amount = _calc_total_amount(session, registration_id)
-        reg.is_paid = reg.paid_amount >= total_amount > 0
+        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
 
         type_label = "繳費" if body.type == "payment" else "退費"
         activity_service.log_change(
@@ -2030,7 +2050,7 @@ async def delete_registration_payment(
         reg.paid_amount = max(0, new_paid)
 
         total_amount = _calc_total_amount(session, registration_id)
-        reg.is_paid = reg.paid_amount >= total_amount > 0
+        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
 
         activity_service.log_change(
             session,
@@ -2139,19 +2159,38 @@ async def withdraw_course(
         session.delete(rc)
         session.flush()
 
+        # 清除該生在此課程所有場次的點名紀錄，避免統計把退課者算入，
+        # 並防止未來重新報名時撞到 uq_activity_attendance_session_reg。
+        session_ids_subq = (
+            session.query(ActivitySession.id)
+            .filter(ActivitySession.course_id == course_id)
+            .subquery()
+        )
+        removed_attendance = (
+            session.query(ActivityAttendance)
+            .filter(
+                ActivityAttendance.registration_id == registration_id,
+                ActivityAttendance.session_id.in_(session_ids_subq),
+            )
+            .delete(synchronize_session=False)
+        )
+
         if was_enrolled:
             activity_service._auto_promote_first_waitlist(session, course_id)
 
         new_total = _calc_total_amount(session, registration_id)
         paid_amount = reg.paid_amount or 0
-        reg.is_paid = paid_amount >= new_total > 0
+        reg.is_paid = _compute_is_paid(paid_amount, new_total)
 
+        log_detail = f"退出課程「{course_name}」"
+        if removed_attendance:
+            log_detail += f"（同步清除 {removed_attendance} 筆舊點名紀錄）"
         activity_service.log_change(
             session,
             registration_id,
             reg.student_name,
             "退課",
-            f"退出課程「{course_name}」",
+            log_detail,
             current_user.get("username", ""),
         )
         session.commit()

@@ -15,7 +15,11 @@ from jose import JWTError, jwt
 logger = logging.getLogger(__name__)
 
 _jwt_secret = os.environ.get("JWT_SECRET_KEY", "")
-_is_dev = os.environ.get("ENV", "development").lower() in ("development", "dev", "local")
+_is_dev = os.environ.get("ENV", "development").lower() in (
+    "development",
+    "dev",
+    "local",
+)
 
 if not _jwt_secret:
     if _is_dev:
@@ -26,8 +30,8 @@ if not _jwt_secret:
 
 JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_MINUTES = 15          # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
-JWT_REFRESH_GRACE_HOURS = 2   # 過期後仍允許刷新的寬限時間（2 小時）；搭配 token_version 機制，帳號停用後舊 token 立即失效
+JWT_EXPIRE_MINUTES = 15  # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
+JWT_REFRESH_GRACE_HOURS = 2  # 過期後仍允許刷新的寬限時間（2 小時）；搭配 token_version 機制，帳號停用後舊 token 立即失效
 _PASSWORD_CHANGE_ALLOWED_PATHS = {
     "/api/auth/change-password",
     "/api/auth/logout",
@@ -77,7 +81,9 @@ def validate_password_strength(password: str) -> None:
 def hash_password(password: str) -> str:
     """使用 PBKDF2-HMAC-SHA256 雜湊密碼，格式：{iterations}${salt}${hash}"""
     salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
+    h = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS
+    )
     return f"{PBKDF2_ITERATIONS}${salt}${h.hex()}"
 
 
@@ -85,7 +91,9 @@ def _dummy_hash(plain_password: str) -> None:
     """執行一次與正常驗證等量的 PBKDF2，用於格式無效時維持恆定回應時間。
     防止攻擊者透過回應時間差探測 hash 格式是否合法（Timing Side-Channel）。
     """
-    hashlib.pbkdf2_hmac("sha256", plain_password.encode(), b"__dummy__", PBKDF2_ITERATIONS)
+    hashlib.pbkdf2_hmac(
+        "sha256", plain_password.encode(), b"__dummy__", PBKDF2_ITERATIONS
+    )
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -107,7 +115,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             # 格式不合法：仍執行 dummy hash，避免即時回傳洩漏格式資訊
             _dummy_hash(plain_password)
             return False
-        h = hashlib.pbkdf2_hmac("sha256", plain_password.encode(), salt.encode(), iterations)
+        h = hashlib.pbkdf2_hmac(
+            "sha256", plain_password.encode(), salt.encode(), iterations
+        )
         return hmac.compare_digest(h.hex(), stored_hash)
     except (ValueError, AttributeError):
         # 解析失敗（iterations 非整數、None 等）：同樣執行 dummy hash
@@ -128,7 +138,9 @@ def needs_rehash(hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES)
+    )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
@@ -188,7 +200,9 @@ def verify_ws_token(token: str) -> dict:
         if not user or not user.is_active:
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
         if payload.get("token_version", 0) != (user.token_version or 0):
-            raise HTTPException(status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）")
+            raise HTTPException(
+                status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
+            )
         if user.must_change_password:
             raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
     finally:
@@ -209,7 +223,9 @@ def decode_token_allow_expired(token: str) -> dict:
     except jwt.ExpiredSignatureError:
         # Token 已過期，跳過 exp 驗證取出 payload
         payload = jwt.decode(
-            token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM],
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
             options={"verify_exp": False},
         )
         # 檢查是否在寬限期內
@@ -217,7 +233,9 @@ def decode_token_allow_expired(token: str) -> dict:
         now = datetime.now(timezone.utc).timestamp()
         grace_seconds = JWT_REFRESH_GRACE_HOURS * 3600
         if now - exp > grace_seconds:
-            raise HTTPException(status_code=401, detail="Token 已超過可刷新期限，請重新登入")
+            raise HTTPException(
+                status_code=401, detail="Token 已超過可刷新期限，請重新登入"
+            )
         return payload
     except JWTError:
         raise HTTPException(status_code=401, detail="無效的 Token，請重新登入")
@@ -252,10 +270,18 @@ async def get_current_user(request: Request):
         if not user or not user.is_active:
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
         if payload.get("token_version", 0) != (user.token_version or 0):
-            raise HTTPException(status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）")
-        if user.must_change_password and request.url.path not in _PASSWORD_CHANGE_ALLOWED_PATHS:
+            raise HTTPException(
+                status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
+            )
+        if (
+            user.must_change_password
+            and request.url.path not in _PASSWORD_CHANGE_ALLOWED_PATHS
+        ):
             raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
         payload["must_change_password"] = bool(user.must_change_password)
+        # JWT 原本不含 username；補進 payload，讓全站稽核欄位（operator / reviewed_by 等）
+        # 能真正記錄到是誰操作，而不是長期為空字串
+        payload["username"] = user.username
     finally:
         session.close()
     return payload
@@ -291,9 +317,13 @@ def require_permission(permission):
 def require_staff_permission(permission):
     """限制管理端 API 僅供非 teacher 角色使用，並保留既有 permission 檢查。"""
 
-    async def check_staff_permission(current_user: dict = Depends(require_permission(permission))):
+    async def check_staff_permission(
+        current_user: dict = Depends(require_permission(permission)),
+    ):
         if current_user.get("role") == "teacher":
-            raise HTTPException(status_code=403, detail="教師帳號不可直接存取管理端 API")
+            raise HTTPException(
+                status_code=403, detail="教師帳號不可直接存取管理端 API"
+            )
         return current_user
 
     return check_staff_permission

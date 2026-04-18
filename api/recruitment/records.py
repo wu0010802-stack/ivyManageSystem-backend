@@ -1,21 +1,28 @@
-"""訪視記錄 CRUD、匯入、月份格式正規化。"""
+"""訪視記錄 CRUD、匯入、月份格式正規化、→ 正式學生轉化。"""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import case, func
 
 from models.base import session_scope
+from models.classroom import LIFECYCLE_ACTIVE, LIFECYCLE_ENROLLED
 from models.recruitment import (
     RecruitmentMonth,
     RecruitmentPeriod,
     RecruitmentVisit,
 )
+from services.recruitment_conversion import (
+    RecruitmentConversionError,
+    convert_recruitment_to_student,
+)
 from utils.auth import require_staff_permission
+from utils.errors import raise_safe_500
 from utils.permissions import Permission
 
 from api.recruitment.shared import (
@@ -277,3 +284,66 @@ def import_recruitment_records(
             inserted += 1
         logger.info(f"招生資料匯入：插入 {inserted} 筆，跳過 {skipped} 筆")
         return {"inserted": inserted, "skipped": skipped}
+
+
+# ============ 招生訪視 → 正式學生 轉化 ============
+
+class ConvertRecordRequest(BaseModel):
+    student_id_code: str = Field(..., min_length=1, max_length=20, description="學號")
+    classroom_id: Optional[int] = None
+    enrollment_date: Optional[date] = None
+    gender: Optional[str] = Field(None, max_length=10)
+    initial_lifecycle_status: str = Field(
+        LIFECYCLE_ENROLLED,
+        description="預設 enrolled（已報到未開學）；若直接入學可設 active",
+    )
+
+
+@router.post("/records/{record_id}/convert", status_code=201)
+def convert_recruitment_record_to_student(
+    record_id: int,
+    payload: ConvertRecordRequest,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.RECRUITMENT_CONVERT)
+    ),
+):
+    """將招生訪視記錄轉化為正式學生（原子操作）。"""
+    if payload.initial_lifecycle_status not in (LIFECYCLE_ENROLLED, LIFECYCLE_ACTIVE):
+        raise HTTPException(
+            status_code=400,
+            detail="initial_lifecycle_status 僅允許 enrolled 或 active",
+        )
+
+    try:
+        with session_scope() as session:
+            try:
+                result = convert_recruitment_to_student(
+                    session,
+                    recruitment_visit_id=record_id,
+                    student_id_code=payload.student_id_code,
+                    classroom_id=payload.classroom_id,
+                    enrollment_date=payload.enrollment_date,
+                    initial_lifecycle_status=payload.initial_lifecycle_status,
+                    gender=payload.gender,
+                    recorded_by=current_user.get("user_id"),
+                )
+            except RecruitmentConversionError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        logger.warning(
+            "招生轉化：visit_id=%s → student_id=%s operator=%s",
+            result.recruitment_visit_id,
+            result.student_id,
+            current_user.get("username"),
+        )
+        return {
+            "message": "已成功轉為正式學生",
+            "student_id": result.student_id,
+            "recruitment_visit_id": result.recruitment_visit_id,
+            "primary_guardian_id": result.primary_guardian_id,
+            "change_log_id": result.change_log_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="招生轉化失敗")

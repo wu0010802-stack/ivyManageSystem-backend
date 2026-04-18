@@ -300,11 +300,20 @@ class ActivityPaymentRecord(Base):
     amount = Column(Integer, nullable=False, comment="金額（永遠為正整數）")
     payment_date = Column(Date, nullable=False, comment="繳費/退費日期")
     payment_method = Column(String(20), nullable=True, comment="現金/轉帳/其他")
-    notes = Column(Text, nullable=True, comment="備註")
+    notes = Column(Text, nullable=True, comment="使用者備註（不含系統標記）")
     operator = Column(String(50), nullable=True, comment="操作人員帳號")
+    # POS 冪等鍵：獨立欄位取代過去 LIKE '%[IDK:...]%' 掃 notes 的做法，走 index 快且不受備註污染
+    idempotency_key = Column(
+        String(64), nullable=True, comment="POS 冪等鍵（10 分鐘視窗內同 key 視為重試）"
+    )
     created_at = Column(DateTime, default=datetime.now)
 
-    __table_args__ = (Index("ix_activity_payment_records_reg", "registration_id"),)
+    __table_args__ = (
+        Index("ix_activity_payment_records_reg", "registration_id"),
+        Index(
+            "ix_activity_payment_records_idk_created", "idempotency_key", "created_at"
+        ),
+    )
 
 
 class ActivitySession(Base):
@@ -373,3 +382,38 @@ class ActivityAttendance(Base):
         Index("ix_activity_attendances_session_present", "session_id", "is_present"),
         Index("ix_activity_attendances_student_id", "student_id"),
     )
+
+
+class ActivityPosDailyClose(Base):
+    """才藝課 POS 日結簽核
+
+    老闆對某日的 POS 流水完成核對後，將 payment_total / refund_total / by_method
+    等 snapshot 凍結，供事後稽核。存在即視為已簽核；刪除該列代表解鎖以重簽。
+    """
+
+    __tablename__ = "activity_pos_daily_close"
+
+    close_date = Column(Date, primary_key=True, comment="日結日期（每日一筆）")
+    approver_username = Column(
+        String(50), nullable=False, index=True, comment="簽核者帳號"
+    )
+    approved_at = Column(DateTime, nullable=False, default=datetime.now)
+    note = Column(Text, nullable=True, comment="簽核備註（例：現金差異說明）")
+
+    # snapshot（簽核當下凍結；事後補收/改帳不影響）
+    payment_total = Column(Integer, nullable=False, default=0)
+    refund_total = Column(Integer, nullable=False, default=0)
+    net_total = Column(Integer, nullable=False, default=0)
+    transaction_count = Column(Integer, nullable=False, default=0)
+    by_method_json = Column(
+        Text, nullable=False, default="{}", comment="分付款方式 JSON"
+    )
+
+    # 老闆盤點（可選；未填代表不作現金差異判斷）
+    actual_cash_count = Column(Integer, nullable=True, comment="實際現金盤點金額")
+    cash_variance = Column(
+        Integer, nullable=True, comment="actual_cash_count - by_method['現金']"
+    )
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

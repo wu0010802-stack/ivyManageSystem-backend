@@ -50,12 +50,25 @@ class StudentChangeLog(Base):
 
 # 各 event_type 對應的 reason 下拉選項
 CHANGE_LOG_REASON_OPTIONS = {
-    "入學": ["新生報名", "其他"],
+    "入學": ["新生報名", "招生轉化", "其他"],
     "復學": ["復學", "其他"],
     "退學": ["家庭因素", "健康因素", "搬遷", "轉往他園", "其他"],
     "轉出": ["家庭因素", "健康因素", "搬遷", "轉往他園", "其他"],
     "轉入": ["從他園轉入", "其他"],
     "畢業": ["正常畢業"],
+    "休學": ["家庭因素", "健康因素", "其他"],
 }
 
 EVENT_TYPES = list(CHANGE_LOG_REASON_OPTIONS.keys())
+
+
+# 生命週期狀態 → event_type 對照（給 StudentLifecycleService 用）
+LIFECYCLE_TO_EVENT_TYPE = {
+    "prospect_converted": "入學",   # 招生轉化 → 正式學生
+    "activated": "入學",             # enrolled → active（開學）
+    "on_leave": "休學",
+    "returned": "復學",              # on_leave → active
+    "transferred": "轉出",
+    "withdrawn": "退學",
+    "graduated": "畢業",
+}

@@ -15,6 +15,10 @@ from sqlalchemy import func, or_
 
 from models.database import get_session, Student, Classroom, StudentClassroomTransfer
 from models.dismissal import StudentDismissalCall
+from models.guardian import GUARDIAN_RELATIONS, Guardian
+from models.classroom import LIFECYCLE_STATUSES
+from services.student_lifecycle import LifecycleTransitionError, transition
+from services.student_profile import assemble_profile
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
 from utils.auth import require_staff_permission
 from utils.error_messages import STUDENT_NOT_FOUND
@@ -279,6 +283,67 @@ class StudentGraduate(BaseModel):
 class StudentBulkTransfer(BaseModel):
     student_ids: list[int]
     target_classroom_id: int
+
+
+class LifecycleTransitionRequest(BaseModel):
+    to_status: Literal[
+        "prospect", "enrolled", "active", "on_leave",
+        "transferred", "withdrawn", "graduated",
+    ]
+    effective_date: Optional[date] = None
+    reason: Optional[str] = Field(None, max_length=50)
+    notes: Optional[str] = Field(None, max_length=500)
+
+
+class GuardianCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    phone: Optional[str] = Field(None, max_length=20)
+    email: Optional[str] = Field(None, max_length=100)
+    relation: Optional[str] = Field(None, max_length=20)
+    is_primary: bool = False
+    is_emergency: bool = False
+    can_pickup: bool = False
+    custody_note: Optional[str] = Field(None, max_length=500)
+    sort_order: int = Field(0, ge=0, le=999)
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _validate_phone(cls, v):
+        if v is None or v == "":
+            return None
+        if not re.match(r"^[\d\-\+\(\)\s]{7,20}$", v):
+            raise ValueError("電話格式不正確（僅允許數字、-、+、()、空格，長度 7-20）")
+        return v
+
+    @field_validator("relation")
+    @classmethod
+    def _validate_relation(cls, v):
+        if v in (None, ""):
+            return None
+        if v not in GUARDIAN_RELATIONS:
+            raise ValueError(f"關係需為：{GUARDIAN_RELATIONS}")
+        return v
+
+
+class GuardianUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    phone: Optional[str] = Field(None, max_length=20)
+    email: Optional[str] = Field(None, max_length=100)
+    relation: Optional[str] = Field(None, max_length=20)
+    is_primary: Optional[bool] = None
+    is_emergency: Optional[bool] = None
+    can_pickup: Optional[bool] = None
+    custody_note: Optional[str] = Field(None, max_length=500)
+    sort_order: Optional[int] = Field(None, ge=0, le=999)
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _validate_phone(cls, v):
+        if v is None or v == "":
+            return None
+        if not re.match(r"^[\d\-\+\(\)\s]{7,20}$", v):
+            raise ValueError("電話格式不正確（僅允許數字、-、+、()、空格，長度 7-20）")
+        return v
 
 
 # ============ Routes ============
@@ -721,5 +786,314 @@ async def bulk_transfer_students(
     except Exception as e:
         session.rollback()
         raise_safe_500(e, context="轉班失敗")
+    finally:
+        session.close()
+
+
+# ============ 學生檔案聚合端點 ============
+
+@router.get("/students/{student_id}/profile")
+async def get_student_profile(
+    student_id: int,
+    timeline_limit: int = Query(20, ge=1, le=100),
+    incident_limit: int = Query(5, ge=1, le=50),
+    fee_period: Optional[str] = Query(None, description="None 表示聚合所有歷史費用"),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+):
+    """學生完整檔案聚合（basic + lifecycle + health + guardians + 各種 summary）。"""
+    session = get_session()
+    try:
+        profile = assemble_profile(
+            session,
+            student_id,
+            timeline_limit=timeline_limit,
+            incident_limit=incident_limit,
+            fee_period=fee_period,
+        )
+        if profile is None:
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        return profile
+    finally:
+        session.close()
+
+
+# ============ 學生生命週期端點 ============
+
+@router.post("/students/{student_id}/lifecycle")
+async def transition_student_lifecycle(
+    student_id: int,
+    item: LifecycleTransitionRequest,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.STUDENTS_LIFECYCLE_WRITE)
+    ),
+):
+    """執行學生生命週期狀態轉移（退學/休學/畢業/轉出/復學等）。
+
+    副作用：轉入終態 (withdrawn/transferred/graduated) 時：
+    - 取消該生進行中的接送通知 + WS 廣播
+    - 軟刪該生當學期才藝報名
+    """
+    session = get_session()
+    dismissal_broadcasts: list[dict] = []
+    try:
+        student = session.query(Student).filter(Student.id == student_id).first()
+        if student is None:
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+
+        terminal_like = {"withdrawn", "transferred", "graduated"}
+        if item.to_status in terminal_like:
+            dismissal_broadcasts = _cancel_active_dismissal_calls(session, student)
+
+        try:
+            result = transition(
+                session,
+                student,
+                to_status=item.to_status,
+                effective_date=item.effective_date,
+                reason=item.reason,
+                notes=item.notes,
+                recorded_by=current_user.get("user_id"),
+            )
+        except LifecycleTransitionError as e:
+            session.rollback()
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if item.to_status in terminal_like:
+            from api.activity._shared import sync_registrations_on_student_deactivate
+
+            synced = sync_registrations_on_student_deactivate(session, student.id)
+            if synced:
+                logger.info(
+                    "學生生命週期轉入終態，同步軟刪才藝報名：student_id=%s to=%s 軟刪 %s 筆",
+                    student.id,
+                    item.to_status,
+                    synced,
+                )
+
+        session.commit()
+        logger.warning(
+            "學生生命週期轉移：id=%s name=%s %s→%s operator=%s",
+            student.id,
+            student.name,
+            result.from_status,
+            result.to_status,
+            current_user.get("username"),
+        )
+        response = {
+            "message": f"已轉為 {result.to_status}",
+            "student_id": result.student_id,
+            "from_status": result.from_status,
+            "to_status": result.to_status,
+            "event_type": result.event_type,
+            "change_log_id": result.change_log_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e, context="狀態轉移失敗")
+    finally:
+        session.close()
+
+    if dismissal_broadcasts:
+        from api.dismissal_ws import manager as dismissal_manager
+
+        for broadcast_item in dismissal_broadcasts:
+            await dismissal_manager.broadcast(
+                broadcast_item["classroom_id"], broadcast_item["event"]
+            )
+
+    return response
+
+
+# ============ 監護人（Guardian）端點 ============
+
+def _sync_primary_guardian_to_student(session, student: Student) -> None:
+    """雙寫相容：把 is_primary 監護人資訊同步回寫 students.parent_name/phone。"""
+    primary = (
+        session.query(Guardian)
+        .filter(
+            Guardian.student_id == student.id,
+            Guardian.deleted_at.is_(None),
+            Guardian.is_primary == True,  # noqa: E712
+        )
+        .first()
+    )
+    student.parent_name = primary.name if primary else None
+    student.parent_phone = primary.phone if primary else None
+
+
+def _serialize_guardian(g: Guardian) -> dict:
+    return {
+        "id": g.id,
+        "student_id": g.student_id,
+        "name": g.name,
+        "phone": g.phone,
+        "email": g.email,
+        "relation": g.relation,
+        "is_primary": bool(g.is_primary),
+        "is_emergency": bool(g.is_emergency),
+        "can_pickup": bool(g.can_pickup),
+        "custody_note": g.custody_note,
+        "sort_order": g.sort_order,
+    }
+
+
+@router.get("/students/{student_id}/guardians")
+async def list_guardians(
+    student_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_READ)),
+):
+    session = get_session()
+    try:
+        if not session.query(Student.id).filter(Student.id == student_id).first():
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        rows = (
+            session.query(Guardian)
+            .filter(
+                Guardian.student_id == student_id,
+                Guardian.deleted_at.is_(None),
+            )
+            .order_by(
+                Guardian.is_primary.desc(),
+                Guardian.sort_order.asc(),
+                Guardian.id.asc(),
+            )
+            .all()
+        )
+        return {"items": [_serialize_guardian(g) for g in rows]}
+    finally:
+        session.close()
+
+
+@router.post("/students/{student_id}/guardians", status_code=201)
+async def create_guardian(
+    student_id: int,
+    item: GuardianCreate,
+    current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
+):
+    session = get_session()
+    try:
+        student = session.query(Student).filter(Student.id == student_id).first()
+        if student is None:
+            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+
+        # 若設為主要聯絡人，先將其他主要聯絡人降級
+        if item.is_primary:
+            session.query(Guardian).filter(
+                Guardian.student_id == student_id,
+                Guardian.deleted_at.is_(None),
+                Guardian.is_primary == True,  # noqa: E712
+            ).update({"is_primary": False}, synchronize_session=False)
+
+        guardian = Guardian(student_id=student_id, **item.model_dump())
+        session.add(guardian)
+        session.flush()
+
+        _sync_primary_guardian_to_student(session, student)
+
+        session.commit()
+        logger.info(
+            "新增監護人：student_id=%s guardian_id=%s operator=%s",
+            student_id,
+            guardian.id,
+            current_user.get("username"),
+        )
+        return _serialize_guardian(guardian)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e, context="新增監護人失敗")
+    finally:
+        session.close()
+
+
+@router.patch("/students/guardians/{guardian_id}")
+async def update_guardian(
+    guardian_id: int,
+    item: GuardianUpdate,
+    current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
+):
+    session = get_session()
+    try:
+        guardian = (
+            session.query(Guardian)
+            .filter(Guardian.id == guardian_id, Guardian.deleted_at.is_(None))
+            .first()
+        )
+        if guardian is None:
+            raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
+
+        data = item.model_dump(exclude_unset=True)
+        # 驗證 relation
+        if "relation" in data and data["relation"] is not None:
+            if data["relation"] not in GUARDIAN_RELATIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"關係需為：{GUARDIAN_RELATIONS}",
+                )
+
+        # 若設為主要，先把同學生其他主要降級
+        if data.get("is_primary") is True:
+            session.query(Guardian).filter(
+                Guardian.student_id == guardian.student_id,
+                Guardian.id != guardian.id,
+                Guardian.deleted_at.is_(None),
+                Guardian.is_primary == True,  # noqa: E712
+            ).update({"is_primary": False}, synchronize_session=False)
+
+        for key, value in data.items():
+            setattr(guardian, key, value)
+
+        student = (
+            session.query(Student).filter(Student.id == guardian.student_id).first()
+        )
+        if student is not None:
+            _sync_primary_guardian_to_student(session, student)
+
+        session.commit()
+        return _serialize_guardian(guardian)
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e, context="更新監護人失敗")
+    finally:
+        session.close()
+
+
+@router.delete("/students/guardians/{guardian_id}")
+async def delete_guardian(
+    guardian_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
+):
+    """軟刪除監護人。"""
+    session = get_session()
+    try:
+        guardian = (
+            session.query(Guardian)
+            .filter(Guardian.id == guardian_id, Guardian.deleted_at.is_(None))
+            .first()
+        )
+        if guardian is None:
+            raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
+
+        guardian.deleted_at = datetime.now()
+        guardian.is_primary = False  # 軟刪後不再是主要聯絡人
+
+        student = (
+            session.query(Student).filter(Student.id == guardian.student_id).first()
+        )
+        if student is not None:
+            _sync_primary_guardian_to_student(session, student)
+
+        session.commit()
+        return {"message": "監護人已刪除", "id": guardian_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e, context="刪除監護人失敗")
     finally:
         session.close()

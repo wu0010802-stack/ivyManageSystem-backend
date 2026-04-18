@@ -3,9 +3,12 @@
 所有函式接受 config dict 作為參數，不依賴 SalaryEngine 實例。
 """
 
+import logging
 from datetime import date, datetime
 from typing import Optional
 from dateutil.relativedelta import relativedelta
+
+logger = logging.getLogger(__name__)
 
 
 def get_position_grade(position: str, grade_map: dict) -> Optional[str]:
@@ -29,8 +32,16 @@ def get_festival_bonus_base(position: str, role: str, bonus_base: dict) -> float
     if role not in bonus_base:
         return 0
 
-    # 如果沒有對應的職位等級，預設使用 C 級
+    # 如果沒有對應的職位等級，預設使用 C 級。
+    # 正常分流（office/supervisor 走獨立路徑）下不應觸發；
+    # 觸發代表分流誤判或 position 拼字異常，記 warning 供 ops 排查。
+    # 行為維持 fallback 'C' 以避免突然改變既有薪資金額。
     if not grade:
+        logger.warning(
+            "節慶獎金：未知職位 position=%r 不在 POSITION_GRADE_MAP，fallback 為 C 級。"
+            "若該員工非帶班老師，請確認 _calculate_bonuses 分流邏輯與 office_staff_context。",
+            position,
+        )
         grade = 'C'
 
     # 使用 `or 0` 防禦 DB 欄位為 NULL 的情況：

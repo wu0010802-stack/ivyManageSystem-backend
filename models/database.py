@@ -11,6 +11,7 @@ from models.base import (
 )
 from models.employee import Employee, JobTitle, EmployeeType
 from models.classroom import Classroom, ClassGrade, Student, StudentAttendance, StudentIncident, StudentAssessment
+from models.guardian import Guardian
 from models.attendance import Attendance, AttendanceStatus
 from models.shift import ShiftType, ShiftAssignment, DailyShift, ShiftSwapRequest
 from models.leave import LeaveRecord, LeaveQuota, LeaveType
@@ -39,6 +40,7 @@ from models.activity import (
     RegistrationCourse, RegistrationSupply,
     ParentInquiry, RegistrationChange, ActivityRegistrationSettings,
     ActivityPaymentRecord, ActivitySession, ActivityAttendance,
+    ActivityPosDailyClose,
 )
 from models.dismissal import StudentDismissalCall
 from models.student_transfer import StudentClassroomTransfer
@@ -61,6 +63,8 @@ __all__ = [
     "Employee", "JobTitle", "EmployeeType",
     # classroom
     "Classroom", "ClassGrade", "Student", "StudentIncident", "StudentAssessment",
+    # guardian
+    "Guardian",
     # attendance
     "Attendance", "AttendanceStatus",
     # shift
@@ -95,6 +99,7 @@ __all__ = [
     "RegistrationCourse", "RegistrationSupply",
     "ParentInquiry", "RegistrationChange", "ActivityRegistrationSettings",
     "ActivityPaymentRecord", "ActivitySession", "ActivityAttendance",
+    "ActivityPosDailyClose",
     # dismissal
     "StudentDismissalCall",
     # student transfer history

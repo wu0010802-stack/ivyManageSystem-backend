@@ -69,7 +69,7 @@ schema 異動透過 `_add_column_if_missing()` 在啟動時自動執行 `ALTER T
 - **`gross_salary`（月薪應發）** = `base_salary + allowances + performance/special_bonus + supervisor_dividend + meeting_overtime_pay`
   - **不含** `festival_bonus` / `overtime_bonus`（這兩項獨立轉帳）
 - **`festival_bonus`** 在發放月（2、6、9、12 月）才計入，`meeting_absence_deduction` 只從 `festival_bonus` 扣，**不進入** `total_deduction`
-- **`bonus_separate`** 旗標：當 `festival_bonus + overtime_bonus > 0` 時為 True，表示有另行匯款
+- **`bonus_separate`** 旗標：當 `festival_bonus + overtime_bonus + supervisor_dividend > 0` 時為 True，表示有另行匯款
 - **`total_deduction`** = 勞保 + 健保 + 勞退 + 遲到/早退/請假扣款（無 `meeting_absence_deduction`）
 - 時薪計算基準：`base_salary / 30 / 8`（MONTHLY_BASE_DAYS = 30，依勞基法）
 - 加班費時薪基準：`emp.base_salary`（僅底薪，不含任何加給或獎金）

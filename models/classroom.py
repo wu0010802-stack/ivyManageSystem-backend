@@ -23,6 +23,27 @@ from models.base import Base
 from utils.academic import resolve_current_academic_term
 
 
+# ============ 學生生命週期狀態 ============
+# 狀態機定義（合法轉移見 services/student_lifecycle.py）
+LIFECYCLE_PROSPECT = "prospect"          # 招生訪視中，尚未報到
+LIFECYCLE_ENROLLED = "enrolled"          # 已繳訂金/報到，尚未開學
+LIFECYCLE_ACTIVE = "active"              # 正式在學
+LIFECYCLE_ON_LEAVE = "on_leave"          # 休學
+LIFECYCLE_TRANSFERRED = "transferred"    # 已轉出他園（終態）
+LIFECYCLE_WITHDRAWN = "withdrawn"        # 退學（終態，可復學）
+LIFECYCLE_GRADUATED = "graduated"        # 畢業（終態）
+
+LIFECYCLE_STATUSES = [
+    LIFECYCLE_PROSPECT,
+    LIFECYCLE_ENROLLED,
+    LIFECYCLE_ACTIVE,
+    LIFECYCLE_ON_LEAVE,
+    LIFECYCLE_TRANSFERRED,
+    LIFECYCLE_WITHDRAWN,
+    LIFECYCLE_GRADUATED,
+]
+
+
 def _default_school_year() -> int:
     school_year, _ = resolve_current_academic_term()
     return school_year
@@ -111,10 +132,24 @@ class Student(Base):
     classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=True)
     enrollment_date = Column(Date, nullable=True)
     graduation_date = Column(Date, nullable=True)
+    withdrawal_date = Column(Date, nullable=True, comment="退學/轉出日期")
     status = Column(String(20), nullable=True)
+    lifecycle_status = Column(
+        String(20),
+        nullable=False,
+        default=LIFECYCLE_ACTIVE,
+        server_default=LIFECYCLE_ACTIVE,
+        comment="生命週期狀態：prospect/enrolled/active/on_leave/transferred/withdrawn/graduated",
+    )
+    recruitment_visit_id = Column(
+        Integer,
+        ForeignKey("recruitment_visits.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="對應的招生訪視記錄（若透過 convert 流程建立）",
+    )
 
-    parent_name = Column(String(50), nullable=True)
-    parent_phone = Column(String(20), nullable=True)
+    parent_name = Column(String(50), nullable=True, comment="[deprecated] 用 guardians 表；相容期保留快照")
+    parent_phone = Column(String(20), nullable=True, comment="[deprecated] 用 guardians 表；相容期保留快照")
     address = Column(String(200), nullable=True)
     notes = Column(Text, nullable=True)
 
@@ -136,6 +171,7 @@ class Student(Base):
     __table_args__ = (
         Index("ix_student_classroom", "classroom_id", "is_active"),
         Index("ix_student_enrollment_grad", "enrollment_date", "graduation_date"),
+        Index("ix_student_lifecycle_status", "lifecycle_status"),
     )
 
     created_at = Column(DateTime, default=datetime.now)

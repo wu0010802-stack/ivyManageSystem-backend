@@ -340,4 +340,6 @@ class TestFestivalBonusBreakdownRegressions:
 
         result = engine.calculate_festival_bonus_breakdown(teacher_id, 2026, 6)
 
-        assert result["festivalBonus"] == 1080
+        # 加權平均：base=1200, 甲班 enroll=20(score 1200), 乙班 enroll=16(score 960)
+        # 加權 = (1200*20 + 960*16) / 36 = 39360 / 36 ≈ 1093
+        assert result["festivalBonus"] == round((1200 * 20 + 960 * 16) / (20 + 16))

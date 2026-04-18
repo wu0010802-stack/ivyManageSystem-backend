@@ -227,12 +227,17 @@ def _build_classroom_context(session, emp: Employee, end_date) -> dict | None:
         ).filter(Classroom.assistant_teacher_id == emp.id).all()
         if len(shared_classes) >= 2:
             ctx["is_shared_assistant"] = True
-            second_class = next((c for c in shared_classes if c.id != classroom.id), None)
-            if second_class:
-                ctx["shared_second_class"] = {
-                    "grade_name": second_class.grade.name if second_class.grade else "",
-                    "current_enrollment": count_students_active_on(session, end_date, second_class.id),
+            others = [
+                {
+                    "grade_name": c.grade.name if c.grade else "",
+                    "current_enrollment": count_students_active_on(session, end_date, c.id),
                 }
+                for c in shared_classes if c.id != classroom.id
+            ]
+            if others:
+                ctx["shared_other_classes"] = others
+                # 向下相容：保留 shared_second_class（首個其他班）
+                ctx["shared_second_class"] = others[0]
     return ctx
 
 
@@ -288,16 +293,29 @@ def _calc_festival_detail(
         )
         raw_festival = round(base_amount * ratio) if is_eligible else 0
         raw_overtime = round(overtime_count * overtime_per_person) if is_eligible else 0
-        shared_second = cc.get("shared_second_class")
-        if shared_second and is_eligible:
-            target2 = engine.get_target_enrollment(shared_second["grade_name"], True, True)
-            ratio2 = shared_second["current_enrollment"] / target2 if target2 > 0 else 0
-            raw_festival2 = round(base_amount * ratio2)
-            overtime_target2 = engine.get_overtime_target(shared_second["grade_name"], True, True)
-            overtime_count2 = max(0, shared_second["current_enrollment"] - overtime_target2)
-            raw_overtime2 = round(overtime_count2 * overtime_per_person)
-            raw_festival = round((raw_festival + raw_festival2) / 2)
-            raw_overtime = round((raw_overtime + raw_overtime2) / 2)
+        # 共用副班導：取 shared_other_classes（含 ≥ 3 班）；fallback 到舊的 shared_second_class
+        other_classes = cc.get("shared_other_classes")
+        if not other_classes:
+            shared_second = cc.get("shared_second_class")
+            other_classes = [shared_second] if shared_second else []
+        if other_classes and is_eligible:
+            festival_scores = [raw_festival]
+            overtime_scores = [raw_overtime]
+            for oc in other_classes:
+                target_oc = engine.get_target_enrollment(oc["grade_name"], True, True)
+                ratio_oc = oc["current_enrollment"] / target_oc if target_oc > 0 else 0
+                festival_scores.append(round(base_amount * ratio_oc))
+                overtime_target_oc = engine.get_overtime_target(oc["grade_name"], True, True)
+                overtime_count_oc = max(0, oc["current_enrollment"] - overtime_target_oc)
+                overtime_scores.append(round(overtime_count_oc * overtime_per_person))
+            raw_festival = round(sum(festival_scores) / len(festival_scores))
+            raw_overtime = round(sum(overtime_scores) / len(overtime_scores))
+            # 維持舊欄位（前端可能讀取）：以首個 other class 為代表
+            shared_second_repr = other_classes[0]
+            target2 = engine.get_target_enrollment(shared_second_repr["grade_name"], True, True)
+            ratio2 = (
+                shared_second_repr["current_enrollment"] / target2 if target2 > 0 else 0
+            )
             cc["shared_second_target"] = target2
             cc["shared_second_ratio"] = round(ratio2, 4)
         detail = {
@@ -310,13 +328,16 @@ def _calc_festival_detail(
             "overtime_per_person": overtime_per_person,
             "overtime_result": raw_overtime if is_bonus_month else 0,
         }
-        if shared_second:
+        if other_classes:
+            shared_second_repr = other_classes[0]
             detail["shared_second_class"] = {
-                "grade": shared_second["grade_name"],
-                "enrollment": shared_second["current_enrollment"],
+                "grade": shared_second_repr["grade_name"],
+                "enrollment": shared_second_repr["current_enrollment"],
                 "target": cc.get("shared_second_target"),
                 "ratio": cc.get("shared_second_ratio"),
             }
+            if len(other_classes) >= 2:
+                detail["shared_other_classes"] = other_classes
     return detail
 
 

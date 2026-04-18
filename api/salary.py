@@ -634,6 +634,12 @@ def manual_adjust_salary(
         if not payload:
             raise HTTPException(status_code=400, detail="至少需要提供一個調整欄位")
 
+        # 在套用變更前，記下舊的 festival_bonus / meeting_absence_deduction，
+        # 用於 #2 連動：若管理員只改 meeting_absence_deduction，
+        # 自動回推 raw festival 並重套新的扣減。
+        old_festival_bonus = round(record.festival_bonus or 0)
+        old_meeting_absence = round(record.meeting_absence_deduction or 0)
+
         changed_parts = []
         for field, value in payload.items():
             if field not in EDITABLE_SALARY_FIELDS:
@@ -649,6 +655,20 @@ def manual_adjust_salary(
 
         if not changed_parts:
             raise HTTPException(status_code=400, detail="沒有實際變更")
+
+        # 連動：管理員只改 meeting_absence_deduction（未同時手動覆寫 festival_bonus）時，
+        # festival_bonus 應跟著 raw 重算：raw = old_festival + old_meeting_absence。
+        meeting_absence_in_payload = "meeting_absence_deduction" in payload
+        festival_bonus_in_payload = "festival_bonus" in payload
+        if meeting_absence_in_payload and not festival_bonus_in_payload:
+            new_meeting_absence = round(record.meeting_absence_deduction or 0)
+            inferred_raw = old_festival_bonus + old_meeting_absence
+            recomputed_festival = max(0, inferred_raw - new_meeting_absence)
+            if recomputed_festival != old_festival_bonus:
+                record.festival_bonus = recomputed_festival
+                changed_parts.append(
+                    f"節慶獎金（連動）{old_festival_bonus}→{recomputed_festival}"
+                )
 
         _recalculate_salary_record_totals(record)
 
@@ -1091,8 +1111,10 @@ EDITABLE_SALARY_FIELDS = {
 
 
 def _recalculate_salary_record_totals(record: SalaryRecord):
+    # hourly_total 為時薪制員工的核心收入（base_salary 為 0），漏加會把 gross 歸零
     record.gross_salary = round(
         (record.base_salary or 0)
+        + (record.hourly_total or 0)
         + (record.supervisor_allowance or 0)
         + (record.teacher_allowance or 0)
         + (record.meal_allowance or 0)

@@ -43,6 +43,7 @@ from api.recruitment.shared import (
 )
 
 from api.recruitment.records import (
+    convert_recruitment_record_to_student,
     create_recruitment_record,
     delete_recruitment_record,
     import_recruitment_records,
@@ -118,6 +119,7 @@ __all__ = [
     "_extract_expected_label_from_text",
     "normalize_existing_months",
     # records endpoints
+    "convert_recruitment_record_to_student",
     "create_recruitment_record",
     "delete_recruitment_record",
     "import_recruitment_records",

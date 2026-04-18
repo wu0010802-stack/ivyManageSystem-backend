@@ -197,13 +197,16 @@ class TestAttendanceDeduction:
         assert result['missing_punch_count'] == 3
 
     def test_zero_base_salary(self, engine):
-        """底薪為 0（時薪制）不會除以零"""
+        """底薪為 0（時薪制）：per_minute_rate fallback 為 0，不誤扣 1 元/分"""
         att = self._make_attendance(late_count=1, total_late_minutes=10)
         result = engine.calculate_attendance_deduction(
             att, daily_salary=0, base_salary=0, late_details=[10]
         )
-        # per_minute_rate = 1 (fallback)
-        assert result['late_deduction'] == round(10 * 1)
+        # 時薪制按工時付費，遲到分鐘不應再扣款（修正前為 10 元）
+        assert result['late_deduction'] == 0
+        assert result['early_leave_deduction'] == 0
+        # 計次仍正常記錄
+        assert result['late_count'] == 1
 
 
 # ──────────────────────────────────────────────
@@ -300,10 +303,10 @@ class TestFestivalBonusV2:
 # ──────────────────────────────────────────────
 class TestSharedAssistantAveraging:
     """
-    第九條：兩班共用一位副班導時，該副班導節慶獎金為兩班分數平均。
+    第九條：兩班共用一位副班導時，該副班導節慶獎金為各班**按在籍人數加權平均**。
 
-    calculate_salary() 接收 classroom_context['shared_second_class'] 時，
-    應計算兩班各自的節慶/超額獎金後平均（round 後取平均再 round）。
+    加權公式：sum(各班獎金 × 在籍人數) / sum(在籍人數)
+    人數多的班授課負擔較重，獎金權重應較大。
     """
 
     def _shared_ctx(self, grade1, enroll1, grade2, enroll2):
@@ -321,23 +324,25 @@ class TestSharedAssistantAveraging:
 
     def test_equal_two_classes_same_grade(self, engine, sample_employee):
         """
-        兩班同年級、同在籍人數 → 平均等於單班結果。
+        兩班同年級、同在籍人數 → 加權平均等於單班結果。
         大班 shared_assistant target=20, enrollment=20 → ratio=1.0, base=1200
-        兩班平均 = (1200 + 1200) / 2 = 1200
+        加權平均 = (1200*20 + 1200*20) / 40 = 1200
         """
         ctx = self._shared_ctx('大班', 20, '大班', 20)
         breakdown = engine.calculate_salary(
             employee=sample_employee, year=2026, month=2,
             classroom_context=ctx,
         )
-        expected = round((round(1200 * 1.0) + round(1200 * 1.0)) / 2)
+        scoreA = round(1200 * 1.0)
+        scoreB = round(1200 * 1.0)
+        expected = round((scoreA * 20 + scoreB * 20) / 40)
         assert breakdown.festival_bonus == expected
 
     def test_different_enrollment_two_classes(self, engine, sample_employee):
         """
-        兩班在籍人數不同，取兩班比例後平均。
-        大班 target=20, A班=20(ratio=1.0), B班=16(ratio=0.8), base=1200
-        平均 = (round(1200*1.0) + round(1200*0.8)) / 2 = (1200 + 960) / 2 = 1080
+        兩班在籍人數不同 → 按人數加權。
+        大班 target=20, A班=20(score=1200), B班=16(score=960), base=1200
+        加權 = (1200*20 + 960*16) / (20+16) = (24000 + 15360) / 36 ≈ 1093
         """
         ctx = self._shared_ctx('大班', 20, '大班', 16)
         breakdown = engine.calculate_salary(
@@ -346,13 +351,14 @@ class TestSharedAssistantAveraging:
         )
         scoreA = round(1200 * (20 / 20))
         scoreB = round(1200 * (16 / 20))
-        expected = round((scoreA + scoreB) / 2)
+        expected = round((scoreA * 20 + scoreB * 16) / (20 + 16))
         assert breakdown.festival_bonus == expected
 
     def test_different_grades(self, engine, sample_employee):
         """
-        兩班不同年級（大班+中班），各自使用該年級的 shared_assistant 目標。
-        大班 target=20, 中班 target=18, base=1200
+        兩班不同年級（大班+中班），各自使用該年級的 shared_assistant 目標 → 加權平均。
+        大班 target=20(enroll 20, score 1200), 中班 target=18(enroll 18, score 1200), base=1200
+        加權 = (1200*20 + 1200*18) / 38 = 1200
         """
         ctx = self._shared_ctx('大班', 20, '中班', 18)
         breakdown = engine.calculate_salary(
@@ -361,7 +367,34 @@ class TestSharedAssistantAveraging:
         )
         scoreA = round(1200 * (20 / 20))
         scoreB = round(1200 * (18 / 18))
-        expected = round((scoreA + scoreB) / 2)
+        expected = round((scoreA * 20 + scoreB * 18) / (20 + 18))
+        assert breakdown.festival_bonus == expected
+
+    def test_three_shared_classes_average_all(self, engine, sample_employee):
+        """
+        三班共用副班導 → 三班按在籍人數加權平均。
+        大班 target=20, enroll 分別 20/16/12, scores 1200/960/720
+        加權 = (1200*20 + 960*16 + 720*12) / 48 = 48000 / 48 = 1000
+        """
+        ctx = {
+            'role': 'assistant_teacher',
+            'grade_name': '大班',
+            'current_enrollment': 20,
+            'has_assistant': True,
+            'is_shared_assistant': True,
+            'shared_other_classes': [
+                {'grade_name': '大班', 'current_enrollment': 16},
+                {'grade_name': '大班', 'current_enrollment': 12},
+            ],
+        }
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=2,
+            classroom_context=ctx,
+        )
+        s1 = round(1200 * (20 / 20))
+        s2 = round(1200 * (16 / 20))
+        s3 = round(1200 * (12 / 20))
+        expected = round((s1 * 20 + s2 * 16 + s3 * 12) / (20 + 16 + 12))
         assert breakdown.festival_bonus == expected
 
     def test_no_shared_second_class_unchanged(self, engine, sample_employee):
@@ -436,6 +469,35 @@ class TestCalculateSalary:
         assert breakdown.labor_insurance > 0
         assert breakdown.health_insurance > 0
         assert breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
+
+    def test_allowances_routed_by_code_not_substring(self, engine, sample_employee):
+        """L1：津貼以 AllowanceType.code 路由（非中文 name substring）。
+        即使 name 含「主管」字樣，code='other' 仍進 other_allowance。"""
+        emp = {**sample_employee, 'teacher_allowance': 0, 'meal_allowance': 0}
+        breakdown = engine.calculate_salary(
+            employee=emp, year=2026, month=1,
+            allowances=[
+                {'code': 'supervisor', 'name': '主管加給', 'amount': 5000},
+                {'code': 'other', 'name': '其他主管專案補貼', 'amount': 1000},
+            ],
+        )
+        assert breakdown.supervisor_allowance == 5000
+        # 含「主管」字樣但 code='other' → other，不會誤歸 supervisor
+        assert breakdown.other_allowance == 1000
+
+    def test_allowances_list_skips_employee_dict_fallback(self, engine, sample_employee):
+        """L2：allowances list 非空時，不再讀 employee dict 舊欄位（避免雙倍）。
+        sample_employee dict 本身有 teacher=2000、meal=2400，
+        但傳入 allowances list 應完全取代。"""
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=1,
+            allowances=[
+                {'code': 'teacher', 'name': '導師津貼', 'amount': 3000},
+            ],
+        )
+        # list 提供 teacher=3000，dict 的 teacher=2000 與 meal=2400 都應略過
+        assert breakdown.teacher_allowance == 3000
+        assert breakdown.meal_allowance == 0
 
     def test_hourly_employee(self, engine):
         """時薪制員工"""
@@ -1363,9 +1425,10 @@ class TestPersonalSickLeaveForfeiture:
         assert breakdown.overtime_bonus == 0
         assert breakdown.personal_sick_leave_hours == 40.1
 
-    def test_over_40h_zeroes_supervisor_dividend(self, engine, sample_employee):
+    def test_over_40h_preserves_supervisor_dividend(self, engine, sample_employee):
         """
-        事假+病假累計超過40小時，主管紅利應歸零（即使非節慶發放月）。
+        事假+病假累計超過40小時，主管紅利「不」受影響（與職務掛鉤、與出勤無關）。
+        僅節慶獎金與超額獎金被取消（兩者具全勤性質）。
         """
         emp = {**sample_employee, 'title': '園長', 'position': '園長'}
         breakdown = engine.calculate_salary(
@@ -1373,7 +1436,7 @@ class TestPersonalSickLeaveForfeiture:
             year=2026, month=3,  # 非節慶發放月
             personal_sick_leave_hours=41.0,
         )
-        assert breakdown.supervisor_dividend == 0
+        assert breakdown.supervisor_dividend > 0
 
     def test_under_40h_preserves_supervisor_dividend(self, engine, sample_employee):
         """事假+病假不足40小時，主管紅利照發"""
@@ -1666,6 +1729,37 @@ class TestGradeFromTitle:
         )
         # bonus_grade=None → title='助理教保員'（C 級）→ 班導 C 基數 1500
         assert breakdown.festival_bonus == 1500
+
+    def test_unknown_title_logs_warning(self, engine, sample_classroom_context, caplog):
+        """未知 title fallback 'C' 時應記 warning（L3）。
+        行為不變（仍 fallback C）但留 log 供 ops 排查分流誤判。
+        引擎以 _effective_title 傳給 get_festival_bonus_base，所以變數是 title 不是 position。"""
+        emp = self._make_emp('未知職稱X', '班導')
+        with caplog.at_level('WARNING', logger='services.salary.festival'):
+            engine.calculate_salary(
+                employee=emp,
+                year=2026, month=6,
+                classroom_context=sample_classroom_context,
+            )
+        assert any(
+            '未知職稱X' in r.message and 'fallback 為 C 級' in r.message
+            for r in caplog.records
+        )
+
+    def test_bonus_grade_lowercase_normalized(self, engine):
+        """
+        bonus_grade='b'（小寫）應與 'B' 等價，覆蓋 C 級職稱為 B 級。
+        修正前：grade_to_title 只有大寫 key，'b' 找不到 → fallback 回原 title
+                → 仍按 C 級 1500 計算。
+        修正後：統一 .upper() 正規化 → B 級基數 2000。
+        """
+        emp = self._make_emp('助理教保員', '班導', bonus_grade='b')
+        breakdown = engine.calculate_salary(
+            employee=emp,
+            year=2026, month=6,
+            classroom_context=self._HEAD_TEACHER_CLASSROOM,
+        )
+        assert breakdown.festival_bonus == 2000
 
 
 # ──────────────────────────────────────────────
