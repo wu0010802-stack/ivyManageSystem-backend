@@ -29,6 +29,8 @@ from models.database import (
     ActivityAttendance,
 )
 from services.activity_service import activity_service
+from utils.errors import raise_safe_500
+from utils.excel_utils import SafeWorksheet
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
@@ -71,6 +73,14 @@ _export_limiter = SlidingWindowLimiter(
     error_detail="匯出過於頻繁，請稍後再試",
 ).as_dependency()
 
+# 批次繳費寫入每次影響多筆 registration + 繳費紀錄，放寬但仍需限流
+_batch_payment_limiter = SlidingWindowLimiter(
+    max_calls=10,
+    window_seconds=60,
+    name="activity_batch_payment",
+    error_detail="批次繳費操作過於頻繁，請稍後再試",
+).as_dependency()
+
 # 匯出單次查詢上限，避免大報表造成記憶體爆炸或 timeout
 MAX_EXPORT_ROWS = 5000
 
@@ -81,9 +91,14 @@ MAX_EXPORT_ROWS = 5000
 @router.put("/registrations/batch-payment")
 async def batch_update_payment(
     body: BatchPaymentUpdate,
+    _rl=Depends(_batch_payment_limiter),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """批次標記付款狀態（使用 GROUP BY 避免 N+1 查詢）"""
+    """批次標記付款狀態（使用 GROUP BY 避免 N+1 查詢）
+
+    併發保護：`.with_for_update()` 鎖住目標 registration，避免兩個客戶端同時
+    呼叫造成重複寫 payment_record 或 lost update。
+    """
     session = get_session()
     try:
         regs = (
@@ -92,6 +107,7 @@ async def batch_update_payment(
                 ActivityRegistration.id.in_(body.ids),
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .all()
         )
         if not regs:
@@ -183,7 +199,7 @@ async def batch_update_payment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -223,7 +239,7 @@ async def export_registrations(
         course_name_map = _fetch_reg_course_names(session, reg_ids)
 
         wb = openpyxl.Workbook()
-        ws = wb.active
+        ws = SafeWorksheet(wb.active)
         ws.title = "報名名單"
 
         header_font = Font(bold=True)
@@ -391,7 +407,7 @@ async def export_payment_report(
             ws1.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
 
         # ── 工作表二：繳費明細 ──────────────────────────────────────────
-        ws2 = wb.create_sheet(title="繳費明細")
+        ws2 = SafeWorksheet(wb.create_sheet(title="繳費明細"))
         headers2 = ["學生", "班級", "類型", "金額", "方式", "日期", "操作人員", "備註"]
         for col, h in enumerate(headers2, start=1):
             cell = ws2.cell(row=1, column=col, value=h)
@@ -448,6 +464,10 @@ async def admin_create_registration(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """後台手動新增報名（不受報名開放時間限制，需 ACTIVITY_WRITE 權限）"""
+    # 空報名守衛：至少要選 1 門課程，避免產生 total_amount=0 的殼子後又被 POS 誤收款
+    if not body.courses:
+        raise HTTPException(status_code=400, detail="請至少選擇一門課程再新增報名")
+
     session = get_session()
     try:
         sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
@@ -522,7 +542,7 @@ async def admin_create_registration(
                 )
                 .filter(
                     RegistrationCourse.course_id.in_(_reg_course_ids),
-                    RegistrationCourse.status == "enrolled",
+                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
                     ActivityRegistration.is_active.is_(True),
                 )
                 .group_by(RegistrationCourse.course_id)
@@ -583,7 +603,7 @@ async def admin_create_registration(
     except Exception as e:
         session.rollback()
         logger.error("後台新增報名失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -810,11 +830,16 @@ async def match_registration(
             .filter(
                 ActivityRegistration.id == registration_id,
                 ActivityRegistration.is_active.is_(True),
+                ActivityRegistration.pending_review.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not reg:
-            raise _not_found("報名資料")
+            raise HTTPException(
+                status_code=409,
+                detail="該筆報名已不在待審核佇列（可能已被其他人處理）",
+            )
 
         student = (
             session.query(Student)
@@ -855,7 +880,7 @@ async def match_registration(
     except Exception as e:
         session.rollback()
         logger.error("手動匹配失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -874,11 +899,18 @@ async def reject_registration(
     try:
         reg = (
             session.query(ActivityRegistration)
-            .filter(ActivityRegistration.id == registration_id)
+            .filter(
+                ActivityRegistration.id == registration_id,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .with_for_update()
             .first()
         )
         if not reg:
-            raise _not_found("報名資料")
+            raise HTTPException(
+                status_code=409,
+                detail="該筆報名已不存在或已被處理",
+            )
 
         reg.is_active = False
         reg.match_status = "rejected"
@@ -912,7 +944,7 @@ async def reject_registration(
     except Exception as e:
         session.rollback()
         logger.error("拒絕報名失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -939,6 +971,7 @@ async def rematch_registration(
                 ActivityRegistration.id == registration_id,
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not reg:
@@ -1028,7 +1061,7 @@ async def rematch_registration(
     except Exception as e:
         session.rollback()
         logger.error("重新比對失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1052,6 +1085,7 @@ async def force_accept_registration(
                 ActivityRegistration.id == registration_id,
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not reg:
@@ -1127,7 +1161,7 @@ async def force_accept_registration(
     except Exception as e:
         session.rollback()
         logger.error("強行收件失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1196,7 +1230,7 @@ async def restore_registration(
     except Exception as e:
         session.rollback()
         logger.error("還原報名失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1218,6 +1252,9 @@ async def get_registrations(
         None, pattern="^(matched|pending|manual|rejected|unmatched)$"
     ),
     include_inactive: bool = Query(False),
+    student_id: Optional[int] = Query(
+        None, gt=0, description="指定在校學生 ID，查詢其歷史報名紀錄"
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得報名列表（分頁、搜尋、付款狀態、課程、班級、學期、匹配狀態篩選）。
@@ -1225,13 +1262,19 @@ async def get_registrations(
     school_year 與 semester：可同時給或同時不給（不給則預設當前學期）。
     match_status：篩選自動匹配/手動綁定/待審核/拒絕等狀態。
     include_inactive：列出 rejected（軟刪除）的 registration 時需設 True。
+    student_id：查詢單一學生的歷史報名紀錄（跨學期）；提供時通常搭配
+      school_year=None、semester=None 才能看全部學期。
     """
     from ._shared import _build_registration_filter_query as _q_builder
     from utils.academic import resolve_academic_term_filters
 
     session = get_session()
     try:
-        sy, sem = resolve_academic_term_filters(school_year, semester)
+        # 指定學生查全部學期時，顯式傳 None 避免被預設學期覆蓋
+        if student_id is not None and school_year is None and semester is None:
+            sy, sem = None, None
+        else:
+            sy, sem = resolve_academic_term_filters(school_year, semester)
         q = _q_builder(
             session,
             search=search,
@@ -1242,6 +1285,7 @@ async def get_registrations(
             semester=sem,
             match_status=match_status,
             include_inactive=include_inactive,
+            student_id=student_id,
         )
         total = q.count()
         regs = (
@@ -1381,6 +1425,11 @@ async def get_registration_detail(
                 "name": ac.name,
                 "price": rc.price_snapshot,
                 "status": rc.status,
+                "confirm_deadline": (
+                    rc.confirm_deadline.isoformat()
+                    if rc.status == "promoted_pending" and rc.confirm_deadline
+                    else None
+                ),
             }
             for rc, ac in rc_rows
         ]
@@ -1526,7 +1575,7 @@ async def update_payment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1566,7 +1615,7 @@ async def update_remark(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1648,7 +1697,7 @@ async def update_registration_basic(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1701,6 +1750,7 @@ async def add_registration_course(
         if exists:
             raise HTTPException(status_code=400, detail="此報名已含該課程")
 
+        # 佔容量 = enrolled + promoted_pending
         enrolled_count = (
             session.query(func.count(RegistrationCourse.id))
             .join(
@@ -1709,7 +1759,7 @@ async def add_registration_course(
             )
             .filter(
                 RegistrationCourse.course_id == course.id,
-                RegistrationCourse.status == "enrolled",
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
                 ActivityRegistration.is_active.is_(True),
             )
             .scalar()
@@ -1762,7 +1812,7 @@ async def add_registration_course(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1835,7 +1885,7 @@ async def add_registration_supply(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -1846,7 +1896,10 @@ async def remove_registration_supply(
     supply_record_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """後台移除已報名的單筆用品。"""
+    """後台移除已報名的單筆用品。
+
+    併發保護：鎖住 reg 行，避免與其他端點（結帳、退課）同時改 is_paid。
+    """
     session = get_session()
     try:
         reg = (
@@ -1855,6 +1908,7 @@ async def remove_registration_supply(
                 ActivityRegistration.id == registration_id,
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not reg:
@@ -1905,7 +1959,7 @@ async def remove_registration_supply(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -2075,7 +2129,7 @@ async def add_registration_payment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -2151,7 +2205,7 @@ async def delete_registration_payment(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -2163,7 +2217,7 @@ async def promote_waitlist(
     course_id: int = Query(...),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """將候補升為正式報名"""
+    """管理員手動將候補或 promoted_pending 直接升為正式報名（跳過 24h 確認窗）。"""
     session = get_session()
     try:
         student_name, course_name = activity_service.promote_waitlist(
@@ -2175,15 +2229,19 @@ async def promote_waitlist(
             registration_id,
             student_name,
             "候補升正式",
-            f"課程「{course_name}」候補升為正式",
+            f"課程「{course_name}」由管理員手動升為正式",
             current_user.get("username", ""),
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
         line_svc = get_line_service()
         if line_svc is not None:
+            # 管理員手動升正式：通知不帶 deadline（已確認）
             background_tasks.add_task(
-                line_svc.notify_activity_waitlist_promoted, student_name, course_name
+                line_svc.notify_activity_waitlist_promoted,
+                student_name,
+                course_name,
+                None,
             )
         return {"message": "成功升為正式報名"}
     except ValueError as e:
@@ -2192,7 +2250,32 @@ async def promote_waitlist(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.post("/waitlist/sweep-expired")
+async def sweep_expired_waitlist_promotions(
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
+):
+    """管理員手動觸發候補轉正過期掃描（排程異常時備援）。"""
+    session = get_session()
+    try:
+        result = activity_service.sweep_expired_pending_promotions(session)
+        session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        logger.info(
+            "手動觸發候補過期掃描：operator=%s expired=%s reminded=%s",
+            current_user.get("username", ""),
+            result["expired"],
+            result["reminded"],
+        )
+        return {"message": "候補過期掃描完成", **result}
+    except Exception as e:
+        session.rollback()
+        logger.error("候補過期掃描失敗：%s", e)
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -2207,7 +2290,11 @@ async def withdraw_course(
     ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """退出單一課程（含候補），若為正式報名則自動升位候補"""
+    """退出單一課程（含候補），若為正式報名則自動升位候補
+
+    併發保護：鎖住 reg 行，避免兩個 DELETE 同時扣 paid_amount / 重複沖帳。
+    第二個請求會在鎖釋放後發現 RC 已被刪而拿到 404。
+    """
     session = get_session()
     try:
         reg = (
@@ -2216,6 +2303,7 @@ async def withdraw_course(
                 ActivityRegistration.id == registration_id,
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not reg:
@@ -2239,6 +2327,8 @@ async def withdraw_course(
         course = session.query(AC).filter(AC.id == course_id).first()
         course_name = course.name if course else str(course_id)
         was_enrolled = rc.status == "enrolled"
+        # enrolled 與 promoted_pending 都佔容量，刪除後都應嘗試遞補下一位候補
+        was_occupying = rc.status in ("enrolled", "promoted_pending")
 
         # 先算退課後的 total，決定是否有退費差額
         paid_amount = reg.paid_amount or 0
@@ -2280,7 +2370,7 @@ async def withdraw_course(
             .delete(synchronize_session=False)
         )
 
-        if was_enrolled:
+        if was_occupying:
             activity_service._auto_promote_first_waitlist(session, course_id)
 
         new_total = _calc_total_amount(session, registration_id)
@@ -2331,7 +2421,7 @@ async def withdraw_course(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -2373,6 +2463,6 @@ async def delete_registration(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

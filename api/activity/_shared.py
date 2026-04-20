@@ -270,6 +270,9 @@ class PublicUpdatePayload(BaseModel):
     birthday: str
     class_: str = Field(..., min_length=1, alias="class")
     parent_phone: str = Field(..., min_length=8, max_length=30)
+    # 選填：家長換號碼。提供時以 parent_phone（舊號）做身份驗證，
+    # 通過後 reg.parent_phone 改為 new_parent_phone。
+    new_parent_phone: Optional[str] = Field(None, min_length=8, max_length=30)
     courses: list[PublicCourseItem] = Field(..., max_length=20)
     supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
     remark: str = ""
@@ -291,6 +294,13 @@ class PublicUpdatePayload(BaseModel):
     @field_validator("parent_phone", mode="before")
     @classmethod
     def normalize_parent_phone(cls, v):
+        return _validate_tw_mobile(v)
+
+    @field_validator("new_parent_phone", mode="before")
+    @classmethod
+    def normalize_new_parent_phone(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
         return _validate_tw_mobile(v)
 
 
@@ -418,16 +428,19 @@ def _attach_courses(
     courses_by_name: dict,
     enrolled_count_map: dict,
 ) -> tuple[bool, list]:
-    """建立 RegistrationCourse 記錄，回傳 (has_waitlist, waitlist_course_names)。"""
+    """建立 RegistrationCourse 記錄，回傳 (has_waitlist, waitlist_course_names)。
+
+    enrolled_count_map 的值已包含 enrolled + promoted_pending（佔容量）。
+    """
     has_waitlist = False
     waitlist_course_names: list = []
     for course_item in course_items:
         course = courses_by_name.get(course_item.name)
         if not course:
             raise _item_not_found_in_list("課程", course_item.name)
-        enrolled_count = enrolled_count_map.get(course.id, 0)
+        occupying_count = enrolled_count_map.get(course.id, 0)
         capacity = course.capacity if course.capacity is not None else 30
-        if enrolled_count < capacity:
+        if occupying_count < capacity:
             status = "enrolled"
         elif course.allow_waitlist:
             status = "waitlist"
@@ -640,16 +653,20 @@ def _build_registration_filter_query(
     semester: Optional[int] = None,
     match_status: Optional[str] = None,
     include_inactive: bool = False,
+    student_id: Optional[int] = None,
 ):
     """回傳已套用篩選條件的 SQLAlchemy query，調用方可繼續加 .offset/.limit 或 .all()。
 
     match_status：pending / matched / manual / rejected / unmatched，用於後台審核分頁。
     include_inactive：rejected 狀態的 registration 會被設為 is_active=False；若要列出
       rejected，需設 include_inactive=True。
+    student_id：指定學生 ID 時，僅回傳該學生在校 Student.id 匹配的報名（含跨學期歷史）。
     """
     q = session.query(ActivityRegistration)
     if not include_inactive:
         q = q.filter(ActivityRegistration.is_active.is_(True))
+    if student_id is not None:
+        q = q.filter(ActivityRegistration.student_id == student_id)
     if school_year is not None:
         q = q.filter(ActivityRegistration.school_year == school_year)
     if semester is not None:

@@ -11,8 +11,10 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, Response as PlainResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 
+from utils.errors import raise_safe_500
 from utils.storage import get_storage_path
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -229,6 +231,7 @@ async def get_public_courses_availability(request: Request, response: Response):
             .all()
         )
         course_ids = [c.id for c in courses]
+        # 佔容量 = enrolled + promoted_pending（兩者皆已佔名額，避免超發候補通知）
         enrolled_map = (
             dict(
                 session.query(
@@ -240,7 +243,7 @@ async def get_public_courses_availability(request: Request, response: Response):
                 )
                 .filter(
                     RegistrationCourse.course_id.in_(course_ids),
-                    RegistrationCourse.status == "enrolled",
+                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
                     ActivityRegistration.is_active.is_(True),
                 )
                 .group_by(RegistrationCourse.course_id)
@@ -370,9 +373,16 @@ async def public_query_registration(
             courses.append(
                 {
                     "name": ac.name,
+                    "course_id": ac.id,
                     "price": rc.price_snapshot,
                     "status": rc.status,
                     "waitlist_position": waitlist_position,
+                    # 候補升正式待確認資訊（僅 promoted_pending 有效）
+                    "confirm_deadline": (
+                        rc.confirm_deadline.isoformat()
+                        if rc.status == "promoted_pending" and rc.confirm_deadline
+                        else None
+                    ),
                 }
             )
 
@@ -521,6 +531,7 @@ async def public_register(
         )
 
         _reg_course_ids = [c.id for c in courses_by_name.values()]
+        # 佔容量計算：enrolled + promoted_pending 皆算，避免對已滿的課程誤發 enrolled
         enrolled_count_map = (
             dict(
                 session.query(
@@ -532,7 +543,7 @@ async def public_register(
                 )
                 .filter(
                     RegistrationCourse.course_id.in_(_reg_course_ids),
-                    RegistrationCourse.status == "enrolled",
+                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
                     ActivityRegistration.is_active.is_(True),
                 )
                 .group_by(RegistrationCourse.course_id)
@@ -593,7 +604,7 @@ async def public_register(
     except Exception as e:
         session.rollback()
         logger.error("公開報名失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -651,6 +662,7 @@ async def public_update_registration(
         if len(supply_names) != len(set(supply_names)):
             raise HTTPException(status_code=400, detail="用品清單中有重複項目")
 
+        # 限定本筆報名所屬學期，避免上下學期同名課程/用品被誤選
         courses_by_name = (
             {
                 c.name: c
@@ -658,6 +670,8 @@ async def public_update_registration(
                 .filter(
                     ActivityCourse.name.in_(course_names),
                     ActivityCourse.is_active.is_(True),
+                    ActivityCourse.school_year == reg.school_year,
+                    ActivityCourse.semester == reg.semester,
                 )
                 .with_for_update()
                 .all()
@@ -673,6 +687,8 @@ async def public_update_registration(
                 .filter(
                     ActivitySupply.name.in_(supply_names),
                     ActivitySupply.is_active.is_(True),
+                    ActivitySupply.school_year == reg.school_year,
+                    ActivitySupply.semester == reg.semester,
                 )
                 .all()
             }
@@ -687,6 +703,17 @@ async def public_update_registration(
             if supply_item.name not in supplies_by_name:
                 raise _item_not_found_in_list("用品", supply_item.name)
 
+        # 刪除前快照原本佔容量的 course_id，稍後用來判斷是否需觸發候補遞補
+        old_occupying_course_ids = {
+            cid
+            for (cid,) in session.query(RegistrationCourse.course_id)
+            .filter(
+                RegistrationCourse.registration_id == reg.id,
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+            )
+            .all()
+        }
+
         session.query(RegistrationCourse).filter(
             RegistrationCourse.registration_id == reg.id
         ).delete()
@@ -696,10 +723,18 @@ async def public_update_registration(
         session.flush()
 
         reg.class_name = classroom_name_to_store
-        # pending 狀態下，家長修改 phone 後自動重跑比對，成功則解除 pending
+
+        # 處理家長換手機：body.parent_phone 是舊號（用於驗證），
+        # body.new_parent_phone 若填且不同於舊號，表示家長要求變更聯絡電話。
+        effective_phone = body.parent_phone
+        if body.new_parent_phone and body.new_parent_phone != body.parent_phone:
+            reg.parent_phone = body.new_parent_phone
+            effective_phone = body.new_parent_phone
+
+        # pending 狀態下，以（可能更新後的）電話重跑比對，成功則解除 pending
         if reg.pending_review:
             new_sid, new_cid = _match_student_with_parent_phone(
-                session, reg.student_name, reg.birthday, body.parent_phone
+                session, reg.student_name, reg.birthday, effective_phone
             )
             if new_sid and new_cid:
                 real = session.query(Classroom).filter(Classroom.id == new_cid).first()
@@ -709,9 +744,9 @@ async def public_update_registration(
                     reg.class_name = real.name
                     reg.pending_review = False
                     reg.match_status = "matched"
-            reg.parent_phone = body.parent_phone
 
         _upd_course_ids = [c.id for c in courses_by_name.values()]
+        # 佔容量 = enrolled + promoted_pending（排除當前這筆 reg）
         upd_enrolled_map = (
             dict(
                 session.query(
@@ -723,7 +758,7 @@ async def public_update_registration(
                 )
                 .filter(
                     RegistrationCourse.course_id.in_(_upd_course_ids),
-                    RegistrationCourse.status == "enrolled",
+                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
                     ActivityRegistration.is_active.is_(True),
                     ActivityRegistration.id != reg.id,
                 )
@@ -739,6 +774,21 @@ async def public_update_registration(
         )
         _attach_supplies(session, reg.id, body.supplies, supplies_by_name)
 
+        # 對於原本佔容量、這次修改後此 reg 已不再占的課程，逐一觸發候補遞補
+        session.flush()
+        new_occupying_course_ids = {
+            cid
+            for (cid,) in session.query(RegistrationCourse.course_id)
+            .filter(
+                RegistrationCourse.registration_id == reg.id,
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+            )
+            .all()
+        }
+        vacated_course_ids = old_occupying_course_ids - new_occupying_course_ids
+        for vacated_cid in vacated_course_ids:
+            activity_service._auto_promote_first_waitlist(session, vacated_cid)
+
         reg.remark = body.remark
         session.commit()
         _invalidate_activity_dashboard_caches(session)
@@ -750,7 +800,160 @@ async def public_update_registration(
     except Exception as e:
         session.rollback()
         logger.error("前台更新報名失敗：%s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+_public_confirm_limiter_instance = SlidingWindowLimiter(
+    max_calls=10,
+    window_seconds=60,
+    name="activity_public_confirm",
+    error_detail="操作過於頻繁，請稍後再試",
+)
+_public_confirm_limiter = _public_confirm_limiter_instance.as_dependency()
+
+
+def _verify_parent_identity(
+    session, registration_id: int, name: str, birthday: str, parent_phone: str
+) -> ActivityRegistration:
+    """三欄驗證：name + birthday + parent_phone 與報名一致才回 registration。
+
+    不符一律回 404 且不洩漏是哪一欄錯，維持隱私契約。
+    """
+    reg = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.id == registration_id,
+            ActivityRegistration.is_active.is_(True),
+        )
+        .first()
+    )
+    if not reg:
+        raise HTTPException(status_code=404, detail="查無對應報名資料")
+    normalized = _normalize_phone(parent_phone)
+    if (
+        reg.student_name != name
+        or reg.birthday != birthday
+        or _normalize_phone(reg.parent_phone) != normalized
+    ):
+        raise HTTPException(status_code=404, detail="查無對應報名資料")
+    return reg
+
+
+class _PromotionActionPayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    birthday: str = Field(..., min_length=1, max_length=20)
+    parent_phone: str = Field(..., min_length=1, max_length=30)
+
+
+@router.post(
+    "/public/registrations/{registration_id}/courses/{course_id}/confirm-promotion"
+)
+async def public_confirm_promotion(
+    registration_id: int,
+    course_id: int,
+    body: _PromotionActionPayload,
+    _: None = Depends(_public_confirm_limiter),
+):
+    """家長確認接受候補轉正（三欄驗證）。
+
+    錯誤碼：
+    - 404：查無對應報名（身份驗證失敗）
+    - 409 ALREADY_CONFIRMED：已是正式
+    - 409 NOT_PENDING：非待確認狀態（可能已逾期或已放棄）
+    - 410 EXPIRED：確認期限已過
+    """
+    session = get_session()
+    try:
+        _verify_parent_identity(
+            session, registration_id, body.name, body.birthday, body.parent_phone
+        )
+        try:
+            student_name, course_name = activity_service.confirm_waitlist_promotion(
+                session, registration_id, course_id
+            )
+        except ValueError as e:
+            code = str(e)
+            if code == "NOT_FOUND":
+                raise HTTPException(status_code=404, detail="查無對應課程項目")
+            if code == "ALREADY_CONFIRMED":
+                raise HTTPException(status_code=409, detail="此課程已是正式報名")
+            if code == "NOT_PENDING":
+                raise HTTPException(
+                    status_code=409, detail="此課程非待確認狀態，無法確認"
+                )
+            if code == "EXPIRED":
+                raise HTTPException(
+                    status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
+                )
+            raise
+        activity_service.log_change(
+            session,
+            registration_id,
+            student_name,
+            "候補轉正確認",
+            f"課程「{course_name}」家長確認接受升正式",
+            "parent",
+        )
+        session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        return {"message": f"已確認升為正式：{course_name}"}
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(
+            "候補轉正確認失敗 reg=%s course=%s: %s", registration_id, course_id, e
+        )
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.post(
+    "/public/registrations/{registration_id}/courses/{course_id}/decline-promotion"
+)
+async def public_decline_promotion(
+    registration_id: int,
+    course_id: int,
+    body: _PromotionActionPayload,
+    _: None = Depends(_public_confirm_limiter),
+):
+    """家長放棄候補轉正（三欄驗證）。該課程報名會被刪除，遞補下一位。"""
+    session = get_session()
+    try:
+        _verify_parent_identity(
+            session, registration_id, body.name, body.birthday, body.parent_phone
+        )
+        try:
+            student_name, course_name = activity_service.decline_waitlist_promotion(
+                session, registration_id, course_id, operator="parent"
+            )
+        except ValueError as e:
+            code = str(e)
+            if code == "NOT_FOUND":
+                raise HTTPException(status_code=404, detail="查無對應課程項目")
+            if code == "ALREADY_CONFIRMED":
+                raise HTTPException(status_code=409, detail="此課程已是正式報名")
+            if code == "NOT_PENDING":
+                raise HTTPException(
+                    status_code=409, detail="此課程非待確認狀態，無法放棄"
+                )
+            raise
+        session.commit()
+        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        return {"message": f"已放棄升正式：{course_name}"}
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(
+            "候補轉正放棄失敗 reg=%s course=%s: %s", registration_id, course_id, e
+        )
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -774,6 +977,6 @@ async def public_create_inquiry(
         return {"message": "感謝您的提問，我們會儘快回覆您！"}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
