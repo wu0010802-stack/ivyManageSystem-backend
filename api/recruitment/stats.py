@@ -14,7 +14,7 @@ from sqlalchemy import and_, case, cast, func, String
 from models.base import session_scope
 from models.recruitment import RecruitmentVisit
 from utils.auth import require_staff_permission
-from utils.excel_utils import xlsx_streaming_response
+from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
 from utils.permissions import Permission
 
 from api.recruitment.shared import (
@@ -681,7 +681,7 @@ def export_recruitment_stats(
     wb = Workbook()
 
     # ── Sheet 1：決策摘要 ─────────────────────────────────────────
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = "決策摘要"
     ws.append(["招生決策摘要"])
     ws["A1"].font = _TITLE_FONT
@@ -741,7 +741,7 @@ def export_recruitment_stats(
     ws.column_dimensions["D"].width = 48
 
     # ── Sheet 2：總覽 KPI ─────────────────────────────────────────
-    ws = wb.create_sheet("總覽")
+    ws = SafeWorksheet(wb.create_sheet("總覽"))
     ws.append(["招生統計總覽"])
     ws["A1"].font = _TITLE_FONT
     ws.append([])
@@ -770,7 +770,7 @@ def export_recruitment_stats(
     ws.column_dimensions["B"].width = 14
 
     # ── Sheet 3：月度明細 ─────────────────────────────────────────
-    ws2 = wb.create_sheet("月度明細")
+    ws2 = SafeWorksheet(wb.create_sheet("月度明細"))
     _hrow(
         ws2,
         1,
@@ -816,7 +816,7 @@ def export_recruitment_stats(
         ws2.column_dimensions[col_letter].width = width
 
     # ── Sheet 4：班別分析 ─────────────────────────────────────────
-    ws3 = wb.create_sheet("班別分析")
+    ws3 = SafeWorksheet(wb.create_sheet("班別分析"))
     _hrow(ws3, 1, ["班別", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_grade"]:
         ws3.append(
@@ -826,7 +826,7 @@ def export_recruitment_stats(
         ws3.column_dimensions[col_letter].width = width
 
     # ── Sheet 5：來源分析 ─────────────────────────────────────────
-    ws4 = wb.create_sheet("來源分析")
+    ws4 = SafeWorksheet(wb.create_sheet("來源分析"))
     _hrow(ws4, 1, ["來源", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_source"]:
         ws4.append(
@@ -837,7 +837,7 @@ def export_recruitment_stats(
         ws4.column_dimensions[col_letter].width = width
 
     # ── Sheet 6：接待人員 ─────────────────────────────────────────
-    ws5 = wb.create_sheet("接待人員")
+    ws5 = SafeWorksheet(wb.create_sheet("接待人員"))
     _hrow(ws5, 1, ["接待人員", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_referrer"]:
         ws5.append(
@@ -848,7 +848,7 @@ def export_recruitment_stats(
         ws5.column_dimensions[col_letter].width = width
 
     # ── Sheet 7：行政區 ───────────────────────────────────────────
-    ws6 = wb.create_sheet("行政區")
+    ws6 = SafeWorksheet(wb.create_sheet("行政區"))
     _hrow(ws6, 1, ["行政區", "參觀人數", "預繳人數", "預繳率"])
     for r in s["by_district"]:
         ws6.append(
@@ -859,7 +859,7 @@ def export_recruitment_stats(
         ws6.column_dimensions[col_letter].width = width
 
     # ── Sheet 8：未預繳原因 ───────────────────────────────────────
-    ws7 = wb.create_sheet("未預繳原因")
+    ws7 = SafeWorksheet(wb.create_sheet("未預繳原因"))
     _hrow(ws7, 1, ["原因", "人數"])
     for r in s["no_deposit_reasons"]:
         ws7.append([r["reason"], r["count"]])
@@ -868,7 +868,7 @@ def export_recruitment_stats(
     ws7.column_dimensions["B"].width = 10
 
     # ── Sheet 9：年度統計 ─────────────────────────────────────────
-    ws8 = wb.create_sheet("年度統計")
+    ws8 = SafeWorksheet(wb.create_sheet("年度統計"))
     _hrow(
         ws8,
         1,

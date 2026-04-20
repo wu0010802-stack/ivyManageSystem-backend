@@ -22,7 +22,6 @@ from models.database import (
     GradeTarget,
     InsuranceRate,
     JobTitle,
-    AllowanceType,
     DeductionType,
     BonusType,
     PositionSalaryConfig,
@@ -173,14 +172,6 @@ class InsuranceRateUpdate(BaseModel):
 
 class JobTitleCreate(BaseModel):
     name: str
-
-
-class AllowanceTypeCreate(BaseModel):
-    code: str
-    name: str
-    description: Optional[str] = None
-    is_taxable: bool = True
-    sort_order: int = 0
 
 
 class DeductionTypeCreate(BaseModel):
@@ -953,56 +944,6 @@ def delete_job_title(
 
 
 # ============ Type Management ============
-
-
-@router.get("/allowance-types")
-async def get_allowance_types(
-    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
-):
-    cached = _cache.get("allowance_types")
-    if cached is not None:
-        return cached
-    session = get_session()
-    try:
-        items = (
-            session.query(AllowanceType)
-            .filter(AllowanceType.is_active == True)
-            .order_by(AllowanceType.sort_order)
-            .all()
-        )
-        result = [
-            {
-                "id": i.id,
-                "code": i.code,
-                "name": i.name,
-                "is_taxable": i.is_taxable,
-                "sort_order": i.sort_order,
-            }
-            for i in items
-        ]
-        _cache["allowance_types"] = result
-        return result
-    finally:
-        session.close()
-
-
-@router.post("/allowance-types", status_code=201)
-async def create_allowance_type(
-    item: AllowanceTypeCreate,
-    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
-):
-    session = get_session()
-    try:
-        new_item = AllowanceType(**item.model_dump())
-        session.add(new_item)
-        session.commit()
-        _clear_cache("allowance_types")
-        return {"message": "新增成功", "id": new_item.id}
-    except Exception as e:
-        session.rollback()
-        raise_safe_500(e)
-    finally:
-        session.close()
 
 
 @router.get("/deduction-types")

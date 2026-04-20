@@ -26,7 +26,9 @@ from models.fees import FeeItem, StudentFeeRecord
 @pytest.fixture
 def session():
     """SQLite in-memory session，每個測試獨立。"""
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     s = Session()
@@ -39,6 +41,7 @@ def session():
 # 輔助建立資料
 # ---------------------------------------------------------------------------
 
+
 def _add_classroom(session, name="大班A") -> Classroom:
     cls = Classroom(name=name, school_year=2025, semester=1)
     session.add(cls)
@@ -48,6 +51,7 @@ def _add_classroom(session, name="大班A") -> Classroom:
 
 def _add_student(session, name="王小明", classroom_id=None) -> Student:
     import random
+
     sid = f"S{random.randint(10000, 99999)}"
     s = Student(student_id=sid, name=name, is_active=True, classroom_id=classroom_id)
     session.add(s)
@@ -55,8 +59,16 @@ def _add_student(session, name="王小明", classroom_id=None) -> Student:
     return s
 
 
-def _add_fee_item(session, name="學費", amount=3000, period="2025-1", classroom_id=None) -> FeeItem:
-    item = FeeItem(name=name, amount=amount, period=period, classroom_id=classroom_id, is_active=True)
+def _add_fee_item(
+    session, name="學費", amount=3000, period="2025-1", classroom_id=None
+) -> FeeItem:
+    item = FeeItem(
+        name=name,
+        amount=amount,
+        period=period,
+        classroom_id=classroom_id,
+        is_active=True,
+    )
     session.add(item)
     session.flush()
     return item
@@ -83,6 +95,7 @@ def _add_record(session, student, fee_item) -> StudentFeeRecord:
 # 批次產生邏輯：不重複
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateFeeRecords:
     def test_generate_creates_records_for_active_students(self, session):
         """在校學生應各建立一筆費用記錄"""
@@ -93,18 +106,29 @@ class TestGenerateFeeRecords:
         session.commit()
 
         students = session.query(Student).filter(Student.is_active == True).all()
-        existing = {r.student_id for r in session.query(StudentFeeRecord.student_id).filter(
-            StudentFeeRecord.fee_item_id == item.id
-        ).all()}
+        existing = {
+            r.student_id
+            for r in session.query(StudentFeeRecord.student_id)
+            .filter(StudentFeeRecord.fee_item_id == item.id)
+            .all()
+        }
 
         created = 0
         for s in students:
             if s.id not in existing:
-                session.add(StudentFeeRecord(
-                    student_id=s.id, student_name=s.name, classroom_name="",
-                    fee_item_id=item.id, fee_item_name=item.name,
-                    amount_due=item.amount, amount_paid=0, status="unpaid", period=item.period,
-                ))
+                session.add(
+                    StudentFeeRecord(
+                        student_id=s.id,
+                        student_name=s.name,
+                        classroom_name="",
+                        fee_item_id=item.id,
+                        fee_item_name=item.name,
+                        amount_due=item.amount,
+                        amount_paid=0,
+                        status="unpaid",
+                        period=item.period,
+                    )
+                )
                 created += 1
         session.commit()
 
@@ -119,9 +143,12 @@ class TestGenerateFeeRecords:
         _add_record(session, s1, item)
         session.commit()
 
-        existing = {r.student_id for r in session.query(StudentFeeRecord.student_id).filter(
-            StudentFeeRecord.fee_item_id == item.id
-        ).all()}
+        existing = {
+            r.student_id
+            for r in session.query(StudentFeeRecord.student_id)
+            .filter(StudentFeeRecord.fee_item_id == item.id)
+            .all()
+        }
 
         created = 0
         skipped = 0
@@ -129,11 +156,19 @@ class TestGenerateFeeRecords:
             if s.id in existing:
                 skipped += 1
             else:
-                session.add(StudentFeeRecord(
-                    student_id=s.id, student_name=s.name, classroom_name="",
-                    fee_item_id=item.id, fee_item_name=item.name,
-                    amount_due=item.amount, amount_paid=0, status="unpaid", period=item.period,
-                ))
+                session.add(
+                    StudentFeeRecord(
+                        student_id=s.id,
+                        student_name=s.name,
+                        classroom_name="",
+                        fee_item_id=item.id,
+                        fee_item_name=item.name,
+                        amount_due=item.amount,
+                        amount_paid=0,
+                        status="unpaid",
+                        period=item.period,
+                    )
+                )
                 created += 1
         session.commit()
 
@@ -150,20 +185,31 @@ class TestGenerateFeeRecords:
         _add_record(session, s1, item)
         session.commit()
 
-        existing = {r.student_id for r in session.query(StudentFeeRecord.student_id).filter(
-            StudentFeeRecord.fee_item_id == item.id
-        ).all()}
+        existing = {
+            r.student_id
+            for r in session.query(StudentFeeRecord.student_id)
+            .filter(StudentFeeRecord.fee_item_id == item.id)
+            .all()
+        }
 
         created = skipped = 0
         for s in session.query(Student).filter(Student.is_active == True).all():
             if s.id in existing:
                 skipped += 1
             else:
-                session.add(StudentFeeRecord(
-                    student_id=s.id, student_name=s.name, classroom_name="",
-                    fee_item_id=item.id, fee_item_name=item.name,
-                    amount_due=item.amount, amount_paid=0, status="unpaid", period=item.period,
-                ))
+                session.add(
+                    StudentFeeRecord(
+                        student_id=s.id,
+                        student_name=s.name,
+                        classroom_name="",
+                        fee_item_id=item.id,
+                        fee_item_name=item.name,
+                        amount_due=item.amount,
+                        amount_paid=0,
+                        status="unpaid",
+                        period=item.period,
+                    )
+                )
                 created += 1
         session.commit()
 
@@ -175,6 +221,7 @@ class TestGenerateFeeRecords:
 # ---------------------------------------------------------------------------
 # 繳費狀態更新
 # ---------------------------------------------------------------------------
+
 
 class TestPayFeeRecord:
     def test_pay_updates_status_to_paid(self, session):
@@ -191,7 +238,11 @@ class TestPayFeeRecord:
         record.payment_method = "現金"
         session.commit()
 
-        updated = session.query(StudentFeeRecord).filter(StudentFeeRecord.id == record.id).first()
+        updated = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.id == record.id)
+            .first()
+        )
         assert updated.status == "paid"
         assert updated.amount_paid == 3000
         assert updated.payment_method == "現金"
@@ -210,7 +261,11 @@ class TestPayFeeRecord:
         record.payment_method = "轉帳"
         session.commit()
 
-        updated = session.query(StudentFeeRecord).filter(StudentFeeRecord.id == record.id).first()
+        updated = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.id == record.id)
+            .first()
+        )
         assert updated.status == "paid"
         assert updated.amount_paid == 2500
 
@@ -218,6 +273,7 @@ class TestPayFeeRecord:
 # ---------------------------------------------------------------------------
 # Summary 計算
 # ---------------------------------------------------------------------------
+
 
 class TestFeeSummary:
     def test_summary_with_no_records(self, session):
@@ -241,9 +297,11 @@ class TestFeeSummary:
         session.commit()
 
         r1 = _add_record(session, s1, item)
-        r1.status = "paid"; r1.amount_paid = 3000
+        r1.status = "paid"
+        r1.amount_paid = 3000
         r2 = _add_record(session, s2, item)
-        r2.status = "paid"; r2.amount_paid = 3000
+        r2.status = "paid"
+        r2.amount_paid = 3000
         r3 = _add_record(session, s3, item)  # unpaid
         session.commit()
 
@@ -264,27 +322,40 @@ class TestFeeSummary:
 
     def test_summary_filtered_by_period(self, session):
         """依學期篩選 summary，只計算指定學期的記錄"""
-        item_2025 = _add_fee_item(session, name="2025上學費", period="2025-1", amount=3000)
-        item_2026 = _add_fee_item(session, name="2026上學費", period="2026-1", amount=4000)
+        item_2025 = _add_fee_item(
+            session, name="2025上學費", period="2025-1", amount=3000
+        )
+        item_2026 = _add_fee_item(
+            session, name="2026上學費", period="2026-1", amount=4000
+        )
         cls = _add_classroom(session)
         s = _add_student(session, "學生", cls.id)
         session.commit()
 
         r1 = _add_record(session, s, item_2025)
-        r1.status = "paid"; r1.amount_paid = 3000
+        r1.status = "paid"
+        r1.amount_paid = 3000
 
         # 直接為 s 建立 2026 記錄（不同 fee_item）
         r2 = StudentFeeRecord(
-            student_id=s.id, student_name=s.name, classroom_name="",
-            fee_item_id=item_2026.id, fee_item_name=item_2026.name,
-            amount_due=4000, amount_paid=0, status="unpaid", period="2026-1",
+            student_id=s.id,
+            student_name=s.name,
+            classroom_name="",
+            fee_item_id=item_2026.id,
+            fee_item_name=item_2026.name,
+            amount_due=4000,
+            amount_paid=0,
+            status="unpaid",
+            period="2026-1",
         )
         session.add(r2)
         session.commit()
 
-        records_2025 = session.query(StudentFeeRecord).filter(
-            StudentFeeRecord.period == "2025-1"
-        ).all()
+        records_2025 = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.period == "2025-1")
+            .all()
+        )
         assert len(records_2025) == 1
         assert sum(r.amount_due for r in records_2025) == 3000
 
@@ -292,6 +363,7 @@ class TestFeeSummary:
 # ---------------------------------------------------------------------------
 # NV8 回歸測試：student_id FK 應為 RESTRICT，刪除學生時不可級聯刪除繳費歷史
 # ---------------------------------------------------------------------------
+
 
 class TestStudentFeeRecordFKRestrict:
     def test_fee_record_has_restrict_fk(self):
@@ -314,7 +386,9 @@ class TestStudentFeeRecordFKRestrict:
         from sqlalchemy.orm import sessionmaker
         from sqlalchemy.exc import IntegrityError
 
-        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}
+        )
 
         # SQLite 需手動啟用 FK 強制（PRAGMA foreign_keys = ON）
         # 注意：此處 conn 為原始 DBAPI 連線（sqlite3.Connection），須用字串 API
@@ -346,12 +420,16 @@ class TestStudentFeeRecordFKRestrict:
 # fee_summary SQL 聚合正確性驗證
 # ---------------------------------------------------------------------------
 
+
 class TestFeeSummarySQLAggregation:
     """驗證 fee_summary 改用 SQL 聚合後，結果與逐筆 Python 計算一致。"""
 
-    def _sql_summary(self, session, period=None, classroom_name=None, status=None, fee_item_id=None):
+    def _sql_summary(
+        self, session, period=None, classroom_name=None, status=None, fee_item_id=None
+    ):
         """複製 fees.py fee_summary 的 SQL 聚合邏輯。"""
         from sqlalchemy import func, case
+
         q = _apply_fee_record_filters(
             session.query(StudentFeeRecord),
             period=period,
@@ -369,7 +447,9 @@ class TestFeeSummarySQLAggregation:
                 func.sum(case((StudentFeeRecord.status == "partial", 1), else_=0)), 0
             ).label("partial_count"),
             func.coalesce(func.sum(StudentFeeRecord.amount_due), 0).label("total_due"),
-            func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label("total_paid"),
+            func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label(
+                "total_paid"
+            ),
         )
         row = agg_q.one()
         total_count = row.total_count or 0
@@ -387,7 +467,9 @@ class TestFeeSummarySQLAggregation:
             "total_unpaid": total_due - total_paid,
         }
 
-    def _python_summary(self, session, period=None, classroom_name=None, status=None, fee_item_id=None):
+    def _python_summary(
+        self, session, period=None, classroom_name=None, status=None, fee_item_id=None
+    ):
         """原始 Python 端計算（作為比對基準）。"""
         q = _apply_fee_record_filters(
             session.query(StudentFeeRecord),
@@ -435,9 +517,11 @@ class TestFeeSummarySQLAggregation:
         session.commit()
 
         r1 = _add_record(session, s1, item)
-        r1.status = "paid"; r1.amount_paid = 5000
+        r1.status = "paid"
+        r1.amount_paid = 5000
         r2 = _add_record(session, s2, item)
-        r2.status = "partial"; r2.amount_paid = 2000
+        r2.status = "partial"
+        r2.amount_paid = 2000
         r3 = _add_record(session, s3, item)  # unpaid, amount_paid=0
         session.commit()
 
@@ -455,7 +539,8 @@ class TestFeeSummarySQLAggregation:
         session.commit()
 
         r1 = _add_record(session, s1, item_a)
-        r1.status = "paid"; r1.amount_paid = 3000
+        r1.status = "paid"
+        r1.amount_paid = 3000
         r2 = _add_record(session, s2, item_b)
         session.commit()
 
@@ -545,3 +630,25 @@ class TestFeeRecordFilterHelper:
 
         assert len(rows) == 1
         assert rows[0].student_name == "王小明"
+
+    def test_filter_supports_student_id(self, session):
+        """student_id 精準篩選：供學生紀錄抽屜查單一學生費用"""
+        cls = _add_classroom(session)
+        item_a = _add_fee_item(session, name="學費", amount=3000, period="2025-1")
+        item_b = _add_fee_item(session, name="午餐", amount=500, period="2025-2")
+        target = _add_student(session, "王小明", cls.id)
+        other = _add_student(session, "李小華", cls.id)
+        session.commit()
+
+        _add_record(session, target, item_a)
+        _add_record(session, target, item_b)
+        _add_record(session, other, item_a)
+        session.commit()
+
+        rows = _apply_fee_record_filters(
+            session.query(StudentFeeRecord),
+            student_id=target.id,
+        ).all()
+
+        assert len(rows) == 2
+        assert all(r.student_id == target.id for r in rows)

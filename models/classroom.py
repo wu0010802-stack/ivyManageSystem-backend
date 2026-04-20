@@ -22,16 +22,15 @@ from sqlalchemy.orm import relationship
 from models.base import Base
 from utils.academic import resolve_current_academic_term
 
-
 # ============ 學生生命週期狀態 ============
 # 狀態機定義（合法轉移見 services/student_lifecycle.py）
-LIFECYCLE_PROSPECT = "prospect"          # 招生訪視中，尚未報到
-LIFECYCLE_ENROLLED = "enrolled"          # 已繳訂金/報到，尚未開學
-LIFECYCLE_ACTIVE = "active"              # 正式在學
-LIFECYCLE_ON_LEAVE = "on_leave"          # 休學
-LIFECYCLE_TRANSFERRED = "transferred"    # 已轉出他園（終態）
-LIFECYCLE_WITHDRAWN = "withdrawn"        # 退學（終態，可復學）
-LIFECYCLE_GRADUATED = "graduated"        # 畢業（終態）
+LIFECYCLE_PROSPECT = "prospect"  # 招生訪視中，尚未報到
+LIFECYCLE_ENROLLED = "enrolled"  # 已繳訂金/報到，尚未開學
+LIFECYCLE_ACTIVE = "active"  # 正式在學
+LIFECYCLE_ON_LEAVE = "on_leave"  # 休學
+LIFECYCLE_TRANSFERRED = "transferred"  # 已轉出他園（終態）
+LIFECYCLE_WITHDRAWN = "withdrawn"  # 退學（終態，可復學）
+LIFECYCLE_GRADUATED = "graduated"  # 畢業（終態）
 
 LIFECYCLE_STATUSES = [
     LIFECYCLE_PROSPECT,
@@ -64,6 +63,13 @@ class ClassGrade(Base):
     age_range = Column(String(20), nullable=True)
     sort_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    is_graduation_grade = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="是否為畢業班年級（自動畢業排程依此判斷）",
+    )
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -148,8 +154,16 @@ class Student(Base):
         comment="對應的招生訪視記錄（若透過 convert 流程建立）",
     )
 
-    parent_name = Column(String(50), nullable=True, comment="[deprecated] 用 guardians 表；相容期保留快照")
-    parent_phone = Column(String(20), nullable=True, comment="[deprecated] 用 guardians 表；相容期保留快照")
+    parent_name = Column(
+        String(50),
+        nullable=True,
+        comment="[deprecated] 用 guardians 表；相容期保留快照",
+    )
+    parent_phone = Column(
+        String(20),
+        nullable=True,
+        comment="[deprecated] 用 guardians 表；相容期保留快照",
+    )
     address = Column(String(200), nullable=True)
     notes = Column(Text, nullable=True)
 

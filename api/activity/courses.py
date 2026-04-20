@@ -17,6 +17,7 @@ from sqlalchemy import func
 from services.activity_service import activity_service
 from utils.academic import resolve_academic_term_filters, resolve_current_academic_term
 from utils.auth import require_staff_permission
+from utils.errors import raise_safe_500
 from utils.permissions import Permission
 
 from ._shared import (
@@ -69,22 +70,30 @@ async def get_courses(
                 .filter(
                     RegistrationCourse.course_id.in_(course_ids),
                     ActivityRegistration.is_active.is_(True),
-                    RegistrationCourse.status.in_(["enrolled", "waitlist"]),
+                    RegistrationCourse.status.in_(
+                        ["enrolled", "waitlist", "promoted_pending"]
+                    ),
                 )
                 .group_by(RegistrationCourse.course_id, RegistrationCourse.status)
                 .all()
             )
+            promoted_pending_map: dict = {}
             for course_id, status, cnt in count_rows:
                 if status == "enrolled":
                     enrolled_map[course_id] = cnt
-                else:
+                elif status == "waitlist":
                     waitlist_map[course_id] = cnt
+                else:  # promoted_pending
+                    promoted_pending_map[course_id] = cnt
 
         items = []
         for c in courses:
             enrolled = enrolled_map.get(c.id, 0)
             waitlist = waitlist_map.get(c.id, 0)
+            promoted_pending = promoted_pending_map.get(c.id, 0)
             capacity = c.capacity if c.capacity is not None else 30
+            # remaining 以佔容量（enrolled + promoted_pending）為準
+            occupying = enrolled + promoted_pending
             items.append(
                 {
                     "id": c.id,
@@ -98,8 +107,9 @@ async def get_courses(
                     "school_year": c.school_year,
                     "semester": c.semester,
                     "enrolled": enrolled,
+                    "promoted_pending": promoted_pending,
                     "waitlist_count": waitlist,
-                    "remaining": max(0, capacity - enrolled),
+                    "remaining": max(0, capacity - occupying),
                 }
             )
         return {
@@ -192,7 +202,7 @@ async def create_course(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -283,7 +293,7 @@ async def copy_courses_from_previous(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -331,7 +341,7 @@ async def update_course(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -425,6 +435,6 @@ async def delete_course(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

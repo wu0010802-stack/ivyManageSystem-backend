@@ -169,7 +169,7 @@ class TestOptimisticLock:
         # 第二個客戶端仍持有 v1，嘗試編輯應被拒絕
         res2 = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"meal_allowance": 500},
+            json={"other_deduction": 500},
             headers={"If-Match": '"1"'},
         )
         assert res2.status_code == 409
@@ -191,7 +191,7 @@ class TestOptimisticLock:
         # 重新讀取後取得 v2，再用 v2 送出
         res2 = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"meal_allowance": 500},
+            json={"other_deduction": 500},
             headers={"If-Match": '"2"'},
         )
         assert res2.status_code == 200

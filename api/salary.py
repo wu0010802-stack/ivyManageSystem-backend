@@ -4,12 +4,13 @@ Salary calculation and management router
 
 import io
 import logging
-import time as _time
 import threading
 from datetime import date, datetime, time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from cachetools import TTLCache
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
 from utils.auth import require_permission, require_staff_permission
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
@@ -56,7 +57,7 @@ from services.student_enrollment import (
     classroom_student_count_map,
     count_students_active_on,
 )
-from api.salary_fields import calculate_display_bonus_total, calculate_total_allowances
+from api.salary_fields import calculate_display_bonus_total
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,6 @@ def calculate_salaries_alt(
                 "employee_id": emp.id,
                 "employee_name": emp.name,
                 "base_salary": breakdown.base_salary,
-                "total_allowances": calculate_total_allowances(breakdown),
                 "festival_bonus": breakdown.festival_bonus,
                 "overtime_bonus": breakdown.overtime_bonus,
                 "overtime_pay": breakdown.overtime_work_pay,
@@ -248,7 +248,6 @@ def _breakdown_to_result_dict(emp, breakdown) -> dict:
         "employee_id": emp.id,
         "employee_name": emp.name,
         "base_salary": breakdown.base_salary,
-        "total_allowances": calculate_total_allowances(breakdown),
         "festival_bonus": breakdown.festival_bonus,
         "overtime_bonus": breakdown.overtime_bonus,
         "overtime_pay": breakdown.overtime_work_pay,
@@ -348,6 +347,18 @@ def calculate_salaries_async_start(
 
     前端可透過 GET /api/salaries/calculate-jobs/{job_id} 輪詢進度。
     """
+    # 同 year/month 已有進行中的 job → 拒絕重複觸發（本 worker 內 guard）
+    active = _salary_job_registry.find_active(year, month)
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{year} 年 {month} 月已有計算中的 job（id={active.job_id}，"
+                f"status={active.status}，進度 {active.done}/{active.total}），"
+                "請等待目前工作完成或待其結束後再觸發"
+            ),
+        )
+
     with session_scope() as session:
         finalized = (
             session.query(SalaryRecord.id)
@@ -519,11 +530,6 @@ def get_salary_records(
                     "employee_name": emp.name,
                     "job_title": job_title,
                     "base_salary": record.base_salary,
-                    "supervisor_allowance": record.supervisor_allowance,
-                    "teacher_allowance": record.teacher_allowance,
-                    "meal_allowance": record.meal_allowance,
-                    "transportation_allowance": record.transportation_allowance,
-                    "other_allowance": record.other_allowance,
                     "festival_bonus": record.festival_bonus,
                     "overtime_bonus": record.overtime_bonus,
                     "overtime_pay": record.overtime_pay,
@@ -558,7 +564,6 @@ def get_salary_records(
                         record.updated_at.isoformat() if record.updated_at else None
                     ),
                     # 前端 salaryResults 使用的欄位別名（供頁面重整後重建計算結果列表）
-                    "total_allowances": calculate_total_allowances(record),
                     "pension_self": record.pension_employee or 0,
                     "total_deductions": record.total_deduction or 0,
                     "net_pay": record.net_salary or 0,
@@ -587,6 +592,7 @@ def manual_adjust_salary(
     record_id: int,
     data: SalaryManualAdjustRequest,
     response: Response,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
     if_match: Optional[str] = Header(None, alias="If-Match"),
 ):
@@ -702,6 +708,14 @@ def manual_adjust_salary(
         response.headers["ETag"] = f'"{new_version}"'
         response.headers["X-Record-Version"] = str(new_version)
 
+        # 結構化 audit：供 AuditMiddleware 寫入 AuditLog（取代原通用「修改薪資」摘要）
+        request.state.audit_entity_id = str(record.id)
+        request.state.audit_summary = (
+            f"手動調整薪資 #{record.id} (員工 {record.employee_id}, "
+            f"{record.salary_year}/{record.salary_month:02d}) "
+            f"v{current_version}→v{new_version}：" + "；".join(changed_parts)
+        )
+
         return {
             "message": "薪資金額已更新",
             "record": {
@@ -725,6 +739,47 @@ def manual_adjust_salary(
                 "bonus_separate": bool(record.bonus_separate),
                 "remark": record.remark,
             },
+        }
+
+
+@router.get("/salaries/{record_id}/audit-log")
+def get_salary_audit_log(
+    record_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+):
+    """查詢單筆薪資的操作歷史（來源：通用 AuditLog 表）。"""
+    from models.audit import AuditLog
+    from sqlalchemy import desc
+
+    with session_scope() as session:
+        if not session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first():
+            raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
+
+        logs = (
+            session.query(AuditLog)
+            .filter(
+                AuditLog.entity_type == "salary",
+                AuditLog.entity_id == str(record_id),
+            )
+            .order_by(desc(AuditLog.created_at))
+            .limit(limit)
+            .all()
+        )
+        return {
+            "record_id": record_id,
+            "items": [
+                {
+                    "id": log.id,
+                    "action": log.action,
+                    "username": log.username,
+                    "summary": log.summary,
+                    "created_at": (
+                        log.created_at.isoformat() if log.created_at else None
+                    ),
+                }
+                for log in logs
+            ],
         }
 
 
@@ -763,7 +818,6 @@ def get_salary_breakdown(
             },
             "earnings": {
                 "base_salary": record.base_salary or 0,
-                "total_allowances": calculate_total_allowances(record),
                 "meeting_overtime_pay": record.meeting_overtime_pay or 0,
                 "overtime_pay": record.overtime_pay or 0,
                 "gross_salary": record.gross_salary or 0,
@@ -795,19 +849,22 @@ def get_salary_breakdown(
 
 # ── 薪資 debug snapshot 快取 ─────────────────────────────────────────────
 # 同一筆薪資在 UI 切換不同欄位時，snapshot 內容不變（~13 個 DB 查詢）。
-# 用 (record_id, version) 做 key，版本更動即失效，避免陳舊資料。
+# 用 record_id 為 key、(version, data) 為 value，版本更動即失效避免陳舊資料。
 _SNAPSHOT_CACHE_TTL_SEC = 60
-_snapshot_cache: dict = {}
+_SNAPSHOT_CACHE_MAX_SIZE = 256
+_snapshot_cache: TTLCache = TTLCache(
+    maxsize=_SNAPSHOT_CACHE_MAX_SIZE, ttl=_SNAPSHOT_CACHE_TTL_SEC
+)
 _snapshot_cache_lock = threading.Lock()
 
 
 def _snapshot_cache_get(record_id: int, version: int):
     with _snapshot_cache_lock:
         entry = _snapshot_cache.get(record_id)
-        if not entry:
+        if entry is None:
             return None
-        cached_version, expires_at, data = entry
-        if cached_version != version or expires_at < _time.monotonic():
+        cached_version, data = entry
+        if cached_version != version:
             _snapshot_cache.pop(record_id, None)
             return None
         return data
@@ -815,16 +872,7 @@ def _snapshot_cache_get(record_id: int, version: int):
 
 def _snapshot_cache_put(record_id: int, version: int, data: dict) -> None:
     with _snapshot_cache_lock:
-        _snapshot_cache[record_id] = (
-            version,
-            _time.monotonic() + _SNAPSHOT_CACHE_TTL_SEC,
-            data,
-        )
-        # 簡易容量控制：超過 256 筆時清掉最舊一半
-        if len(_snapshot_cache) > 256:
-            items = sorted(_snapshot_cache.items(), key=lambda kv: kv[1][1])
-            for key, _ in items[:128]:
-                _snapshot_cache.pop(key, None)
+        _snapshot_cache[record_id] = (version, data)
 
 
 @router.get("/salaries/{record_id}/field-breakdown")
@@ -962,7 +1010,6 @@ def get_salary_history(
 
         results = []
         for r in records:
-            total_allowances = calculate_total_allowances(r)
             total_bonus = calculate_display_bonus_total(r)
             results.append(
                 {
@@ -970,7 +1017,6 @@ def get_salary_history(
                     "year": r.salary_year,
                     "month": r.salary_month,
                     "base_salary": r.base_salary,
-                    "total_allowances": total_allowances,
                     "total_bonus": total_bonus,
                     "labor_insurance": r.labor_insurance_employee,
                     "health_insurance": r.health_insurance_employee,
@@ -1057,11 +1103,6 @@ class FinalizeMonthRequest(BaseModel):
 
 class SalaryManualAdjustRequest(BaseModel):
     base_salary: Optional[float] = Field(None, ge=0)
-    supervisor_allowance: Optional[float] = Field(None, ge=0)
-    teacher_allowance: Optional[float] = Field(None, ge=0)
-    meal_allowance: Optional[float] = Field(None, ge=0)
-    transportation_allowance: Optional[float] = Field(None, ge=0)
-    other_allowance: Optional[float] = Field(None, ge=0)
     performance_bonus: Optional[float] = Field(None, ge=0)
     special_bonus: Optional[float] = Field(None, ge=0)
     festival_bonus: Optional[float] = Field(None, ge=0)
@@ -1084,11 +1125,6 @@ class SalaryManualAdjustRequest(BaseModel):
 
 EDITABLE_SALARY_FIELDS = {
     "base_salary": "底薪",
-    "supervisor_allowance": "主管加給",
-    "teacher_allowance": "導師津貼",
-    "meal_allowance": "伙食津貼",
-    "transportation_allowance": "交通津貼",
-    "other_allowance": "其他津貼",
     "performance_bonus": "績效獎金",
     "special_bonus": "特別獎金",
     "festival_bonus": "節慶獎金",
@@ -1115,11 +1151,6 @@ def _recalculate_salary_record_totals(record: SalaryRecord):
     record.gross_salary = round(
         (record.base_salary or 0)
         + (record.hourly_total or 0)
-        + (record.supervisor_allowance or 0)
-        + (record.teacher_allowance or 0)
-        + (record.meal_allowance or 0)
-        + (record.transportation_allowance or 0)
-        + (record.other_allowance or 0)
         + (record.performance_bonus or 0)
         + (record.special_bonus or 0)
         + (record.supervisor_dividend or 0)
@@ -1269,7 +1300,6 @@ def _build_salary_display_dict(**kwargs) -> dict:
     """共用薪資欄位 dict 建構器，確保兩個轉換函式的欄位名稱與順序一致。"""
     keys = [
         "base_salary",
-        "total_allowances",
         "festival_bonus",
         "overtime_bonus",
         "overtime_pay",
@@ -1304,7 +1334,6 @@ def _breakdown_to_simulate_dict(
 ) -> dict:
     return _build_salary_display_dict(
         base_salary=breakdown.base_salary,
-        total_allowances=calculate_total_allowances(breakdown),
         festival_bonus=breakdown.festival_bonus,
         overtime_bonus=breakdown.overtime_bonus,
         overtime_pay=breakdown.overtime_work_pay,
@@ -1332,13 +1361,6 @@ def _breakdown_to_simulate_dict(
 def _record_to_actual_dict(record) -> dict:
     return _build_salary_display_dict(
         base_salary=record.base_salary or 0,
-        total_allowances=(
-            (record.supervisor_allowance or 0)
-            + (record.teacher_allowance or 0)
-            + (record.meal_allowance or 0)
-            + (record.transportation_allowance or 0)
-            + (record.other_allowance or 0)
-        ),
         festival_bonus=record.festival_bonus or 0,
         overtime_bonus=record.overtime_bonus or 0,
         overtime_pay=record.overtime_pay or 0,
@@ -1468,8 +1490,6 @@ def simulate_salary(
             details=[],
         )
 
-        allowances = engine._load_allowances_list(session, emp)
-
         classroom_context, office_staff_context = engine._build_contexts(
             session, emp, end_date
         )
@@ -1511,7 +1531,6 @@ def simulate_salary(
             month=month,
             attendance=attendance_result,
             leave_deduction=leave_deduction,
-            allowances=allowances,
             classroom_context=classroom_context,
             office_staff_context=office_staff_context,
             meeting_context=period_records["meeting_context"],

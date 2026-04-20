@@ -31,7 +31,6 @@ from models.classroom import (
 from models.student_log import LIFECYCLE_TO_EVENT_TYPE, StudentChangeLog
 from utils.academic import resolve_current_academic_term
 
-
 # 合法狀態轉移表：{from_status: {to_status: event_key}}
 # event_key 對應 LIFECYCLE_TO_EVENT_TYPE（中文 event_type）
 ALLOWED_TRANSITIONS: dict[str, dict[str, str]] = {
@@ -97,9 +96,7 @@ def get_event_type_for_transition(from_status: str, to_status: str) -> str:
     """回傳對應的中文 event_type（寫入 StudentChangeLog）。"""
     key = ALLOWED_TRANSITIONS.get(from_status, {}).get(to_status)
     if key is None:
-        raise LifecycleTransitionError(
-            f"不允許的狀態轉移：{from_status} → {to_status}"
-        )
+        raise LifecycleTransitionError(f"不允許的狀態轉移：{from_status} → {to_status}")
     return LIFECYCLE_TO_EVENT_TYPE[key]
 
 
@@ -120,9 +117,7 @@ def transition(
     current = student.lifecycle_status or LIFECYCLE_ACTIVE
 
     if not is_transition_allowed(current, to_status):
-        raise LifecycleTransitionError(
-            f"不允許的狀態轉移：{current} → {to_status}"
-        )
+        raise LifecycleTransitionError(f"不允許的狀態轉移：{current} → {to_status}")
 
     event_type = get_event_type_for_transition(current, to_status)
     event_date = effective_date or date.today()
@@ -164,6 +159,7 @@ def transition(
         reason=reason,
         notes=notes,
         recorded_by=recorded_by,
+        source="lifecycle",
     )
     session.add(change_log)
     session.flush()  # 取得 change_log.id

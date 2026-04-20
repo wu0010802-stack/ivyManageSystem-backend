@@ -278,6 +278,8 @@ class StudentUpdate(BaseModel):
 class StudentGraduate(BaseModel):
     graduation_date: str
     status: Literal["已畢業", "已轉出"]
+    reason: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class StudentBulkTransfer(BaseModel):
@@ -287,8 +289,13 @@ class StudentBulkTransfer(BaseModel):
 
 class LifecycleTransitionRequest(BaseModel):
     to_status: Literal[
-        "prospect", "enrolled", "active", "on_leave",
-        "transferred", "withdrawn", "graduated",
+        "prospect",
+        "enrolled",
+        "active",
+        "on_leave",
+        "transferred",
+        "withdrawn",
+        "graduated",
     ]
     effective_date: Optional[date] = None
     reason: Optional[str] = Field(None, max_length=50)
@@ -689,6 +696,11 @@ async def graduate_student(
             event_type=event_type,
             event_date=graduation_date,
             classroom_id=student.classroom_id,
+            from_classroom_id=(
+                student.classroom_id if item.status == "已轉出" else None
+            ),
+            reason=item.reason,
+            notes=item.notes,
             recorded_by=current_user.get("user_id"),
         )
         session.add(change_log)
@@ -832,6 +844,7 @@ async def bulk_transfer_students(
 
 # ============ 學生檔案聚合端點 ============
 
+
 @router.get("/students/{student_id}/profile")
 async def get_student_profile(
     student_id: int,
@@ -858,6 +871,7 @@ async def get_student_profile(
 
 
 # ============ 學生生命週期端點 ============
+
 
 @router.post("/students/{student_id}/lifecycle")
 async def transition_student_lifecycle(
@@ -947,6 +961,7 @@ async def transition_student_lifecycle(
 
 
 # ============ 監護人（Guardian）端點 ============
+
 
 def _sync_primary_guardian_to_student(session, student: Student) -> None:
     """雙寫相容：把 is_primary 監護人資訊同步回寫 students.parent_name/phone。"""

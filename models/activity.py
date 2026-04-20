@@ -159,9 +159,14 @@ class RegistrationCourse(Base):
         ForeignKey("activity_courses.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # enrolled / waitlist
+    # enrolled / waitlist / promoted_pending（候補升正式但家長未確認）
     status = Column(String(20), nullable=False, default="enrolled", comment="狀態")
     price_snapshot = Column(Integer, default=0, comment="報名時價格快照")
+
+    # 候補升正式時間；confirm_deadline 為家長確認期限；reminder_sent_at 為 T-24h 提醒已發時間。
+    promoted_at = Column(DateTime, nullable=True, comment="候補轉正起始時間")
+    confirm_deadline = Column(DateTime, nullable=True, comment="家長確認截止時間")
+    reminder_sent_at = Column(DateTime, nullable=True, comment="T-24h 提醒發送時間")
 
     created_at = Column(DateTime, default=datetime.now)
 
@@ -172,6 +177,8 @@ class RegistrationCourse(Base):
         Index("ix_reg_courses_course_reg", "course_id", "registration_id", "status"),
         # 候補排位查詢用：按 (course_id, status) 過濾後以 id 排序，找最早候補
         Index("ix_reg_courses_waitlist_order", "course_id", "status", "id"),
+        # 排程掃描待確認過期用
+        Index("ix_reg_courses_pending_deadline", "status", "confirm_deadline"),
     )
 
 

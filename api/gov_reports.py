@@ -24,7 +24,7 @@ from models.database import get_session, Employee, SalaryRecord
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
-from utils.excel_utils import xlsx_streaming_response
+from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +55,10 @@ _TITLE_FONT = Font(bold=True, size=13)
 _BOLD = Font(bold=True)
 _ITALIC_RED = Font(italic=True, color="FF0000")
 _THIN = Border(
-    left=Side(style="thin"), right=Side(style="thin"),
-    top=Side(style="thin"), bottom=Side(style="thin"),
+    left=Side(style="thin"),
+    right=Side(style="thin"),
+    top=Side(style="thin"),
+    bottom=Side(style="thin"),
 )
 _CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 _LEFT = Alignment(horizontal="left", vertical="center")
@@ -103,6 +105,7 @@ def _total_row(ws, row: int, count: int, totals: dict) -> None:
 
 def _auto_width(ws) -> None:
     from openpyxl.cell.cell import MergedCell
+
     for col in ws.columns:
         real_cells = [c for c in col if not isinstance(c, MergedCell)]
         if not real_cells:
@@ -122,6 +125,7 @@ def _title_row(ws, text: str, span_end: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared DB Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _active_employees(session, year: int, month: int) -> list:
     """取當月在職員工（含當月離職者）"""
@@ -174,6 +178,7 @@ def _ins_calc(emp: Employee):
 # 1. 勞保月份投保薪資申報清單
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/labor-insurance")
 def export_labor_insurance(
     year: int = Query(..., ge=2000, le=2100, description="申報年份"),
@@ -210,22 +215,29 @@ def export_labor_insurance(
                 else:
                     labor_emp = labor_er = labor_gov = 0
 
-            rows.append({
-                "name": emp.name,
-                "id_number": emp.id_number or "",
-                "insured": insured,
-                "labor_emp": labor_emp,
-                "labor_er": labor_er,
-                "labor_gov": labor_gov,
-                "hire_date": emp.hire_date.isoformat() if emp.hire_date else "",
-                "resign_date": emp.resign_date.isoformat() if emp.resign_date else "",
-            })
+            rows.append(
+                {
+                    "name": emp.name,
+                    "id_number": emp.id_number or "",
+                    "insured": insured,
+                    "labor_emp": labor_emp,
+                    "labor_er": labor_er,
+                    "labor_gov": labor_gov,
+                    "hire_date": emp.hire_date.isoformat() if emp.hire_date else "",
+                    "resign_date": (
+                        emp.resign_date.isoformat() if emp.resign_date else ""
+                    ),
+                }
+            )
     finally:
         session.close()
 
     logger.warning(
         "勞保申報匯出：%s年%s月，共 %d 人，操作人：%s",
-        year, month, len(rows), current_user.get("username", ""),
+        year,
+        month,
+        len(rows),
+        current_user.get("username", ""),
     )
 
     if fmt == "txt":
@@ -235,7 +247,7 @@ def export_labor_insurance(
 
 def _labor_xlsx(rows, year, month, employer_name, employer_code):
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = f"勞保{year}{month:02d}"
 
     _title_row(ws, f"勞工保險月份投保薪資申報清單　{year}年{month:02d}月", "I")
@@ -248,7 +260,17 @@ def _labor_xlsx(rows, year, month, employer_name, employer_code):
     ws["H2"].font = _BOLD
     ws.row_dimensions[2].height = 18
 
-    headers = ["序號", "姓名", "身分證字號", "月投保薪資", "員工自付\n(20%)", "雇主負擔\n(70%)", "政府補助\n(10%)", "到職日期", "離職日期"]
+    headers = [
+        "序號",
+        "姓名",
+        "身分證字號",
+        "月投保薪資",
+        "員工自付\n(20%)",
+        "雇主負擔\n(70%)",
+        "政府補助\n(10%)",
+        "到職日期",
+        "離職日期",
+    ]
     _hdr(ws, 3, headers)
     ws.row_dimensions[3].height = 30
 
@@ -264,12 +286,17 @@ def _labor_xlsx(rows, year, month, employer_name, employer_code):
         _cell(ws, r, 8, row["hire_date"])
         _cell(ws, r, 9, row["resign_date"])
 
-    _total_row(ws, len(rows) + 4, len(rows), {
-        4: sum(r["insured"] for r in rows),
-        5: sum(r["labor_emp"] for r in rows),
-        6: sum(r["labor_er"] for r in rows),
-        7: sum(r["labor_gov"] for r in rows),
-    })
+    _total_row(
+        ws,
+        len(rows) + 4,
+        len(rows),
+        {
+            4: sum(r["insured"] for r in rows),
+            5: sum(r["labor_emp"] for r in rows),
+            6: sum(r["labor_er"] for r in rows),
+            7: sum(r["labor_gov"] for r in rows),
+        },
+    )
     _auto_width(ws)
     return xlsx_streaming_response(wb, f"勞保申報_{year}{month:02d}.xlsx")
 
@@ -302,13 +329,16 @@ def _labor_txt(rows, year, month, employer_name, employer_code):
     return StreamingResponse(
         BytesIO(content),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+        },
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. 健保被保險人名冊
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @router.get("/health-insurance")
 def export_health_insurance(
@@ -345,27 +375,34 @@ def export_health_insurance(
                     health_emp = health_er = 0
                     insured_amt = insured
 
-            rows.append({
-                "name": emp.name,
-                "id_number": emp.id_number or "",
-                "birthday": emp.birthday.isoformat() if emp.birthday else "",
-                "dependents": emp.dependents or 0,
-                "insured_amt": insured_amt,
-                "health_emp": health_emp,
-                "health_er": health_er,
-                "hire_date": emp.hire_date.isoformat() if emp.hire_date else "",
-                "resign_date": emp.resign_date.isoformat() if emp.resign_date else "",
-            })
+            rows.append(
+                {
+                    "name": emp.name,
+                    "id_number": emp.id_number or "",
+                    "birthday": emp.birthday.isoformat() if emp.birthday else "",
+                    "dependents": emp.dependents or 0,
+                    "insured_amt": insured_amt,
+                    "health_emp": health_emp,
+                    "health_er": health_er,
+                    "hire_date": emp.hire_date.isoformat() if emp.hire_date else "",
+                    "resign_date": (
+                        emp.resign_date.isoformat() if emp.resign_date else ""
+                    ),
+                }
+            )
     finally:
         session.close()
 
     logger.warning(
         "健保名冊匯出：%s年%s月，共 %d 人，操作人：%s",
-        year, month, len(rows), current_user.get("username", ""),
+        year,
+        month,
+        len(rows),
+        current_user.get("username", ""),
     )
 
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = f"健保{year}{month:02d}"
 
     _title_row(ws, f"全民健康保險被保險人名冊　{year}年{month:02d}月", "I")
@@ -376,7 +413,17 @@ def export_health_insurance(
     ws["E2"].font = _BOLD
     ws.row_dimensions[2].height = 18
 
-    headers = ["序號", "姓名", "身分證字號", "出生日期", "月投保金額", "員工自付\n(30%)", "雇主負擔\n(60%)", "眷屬人數", "在職狀況"]
+    headers = [
+        "序號",
+        "姓名",
+        "身分證字號",
+        "出生日期",
+        "月投保金額",
+        "員工自付\n(30%)",
+        "雇主負擔\n(60%)",
+        "眷屬人數",
+        "在職狀況",
+    ]
     _hdr(ws, 3, headers)
     ws.row_dimensions[3].height = 30
 
@@ -393,12 +440,17 @@ def export_health_insurance(
         status = "在職" if not row["resign_date"] else f"離職 {row['resign_date']}"
         _cell(ws, r, 9, status)
 
-    _total_row(ws, len(rows) + 4, len(rows), {
-        5: sum(r["insured_amt"] for r in rows),
-        6: sum(r["health_emp"] for r in rows),
-        7: sum(r["health_er"] for r in rows),
-        8: sum(r["dependents"] for r in rows),
-    })
+    _total_row(
+        ws,
+        len(rows) + 4,
+        len(rows),
+        {
+            5: sum(r["insured_amt"] for r in rows),
+            6: sum(r["health_emp"] for r in rows),
+            7: sum(r["health_er"] for r in rows),
+            8: sum(r["dependents"] for r in rows),
+        },
+    )
     _auto_width(ws)
     return xlsx_streaming_response(wb, f"健保被保險人名冊_{year}{month:02d}.xlsx")
 
@@ -471,28 +523,34 @@ def export_withholding(
         rows = []
         for _emp_id, data in sorted(agg.items(), key=lambda x: x[1]["name"]):
             # 全年所得 = 月薪合計 + 節慶獎金 + 超額獎金（均屬薪資所得）
-            annual_income = round(data["gross"] + data["festival_bonus"] + data["overtime_bonus"])
+            annual_income = round(
+                data["gross"] + data["festival_bonus"] + data["overtime_bonus"]
+            )
             withholding = _estimate_withholding(annual_income)
-            rows.append({
-                "name": data["name"],
-                "id_number": data["id_number"],
-                "annual_income": annual_income,
-                "labor_emp": round(data["labor_emp"]),
-                "health_emp": round(data["health_emp"]),
-                "pension_emp": round(data["pension_emp"]),
-                "withholding": withholding,
-                "note": "估算值" if withholding > 0 else "低於起徵點",
-            })
+            rows.append(
+                {
+                    "name": data["name"],
+                    "id_number": data["id_number"],
+                    "annual_income": annual_income,
+                    "labor_emp": round(data["labor_emp"]),
+                    "health_emp": round(data["health_emp"]),
+                    "pension_emp": round(data["pension_emp"]),
+                    "withholding": withholding,
+                    "note": "估算值" if withholding > 0 else "低於起徵點",
+                }
+            )
     finally:
         session.close()
 
     logger.warning(
         "扣繳憑單匯出：%s年，共 %d 人，操作人：%s",
-        year, len(rows), current_user.get("username", ""),
+        year,
+        len(rows),
+        current_user.get("username", ""),
     )
 
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = f"扣繳憑單{year}"
 
     _title_row(ws, f"薪資所得扣繳憑單（所得類別 50）　{year}年度", "I")
@@ -506,7 +564,17 @@ def export_withholding(
     ws.merge_cells("G2:I2")
     ws.row_dimensions[2].height = 18
 
-    headers = ["序號", "受領人姓名", "身分證字號", "所得\n類別", "全年給付\n總額", "全年\n勞保費", "全年\n健保費", "估計\n扣繳稅額", "備註"]
+    headers = [
+        "序號",
+        "受領人姓名",
+        "身分證字號",
+        "所得\n類別",
+        "全年給付\n總額",
+        "全年\n勞保費",
+        "全年\n健保費",
+        "估計\n扣繳稅額",
+        "備註",
+    ]
     _hdr(ws, 3, headers)
     ws.row_dimensions[3].height = 30
 
@@ -522,12 +590,17 @@ def export_withholding(
         _cell(ws, r, 8, row["withholding"], _RIGHT)
         _cell(ws, r, 9, row["note"])
 
-    _total_row(ws, len(rows) + 4, len(rows), {
-        5: sum(r["annual_income"] for r in rows),
-        6: sum(r["labor_emp"] for r in rows),
-        7: sum(r["health_emp"] for r in rows),
-        8: sum(r["withholding"] for r in rows),
-    })
+    _total_row(
+        ws,
+        len(rows) + 4,
+        len(rows),
+        {
+            5: sum(r["annual_income"] for r in rows),
+            6: sum(r["labor_emp"] for r in rows),
+            7: sum(r["health_emp"] for r in rows),
+            8: sum(r["withholding"] for r in rows),
+        },
+    )
     _auto_width(ws)
     return xlsx_streaming_response(wb, f"扣繳憑單_{year}.xlsx")
 
@@ -535,6 +608,7 @@ def export_withholding(
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. 勞退月提繳明細
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @router.get("/pension")
 def export_pension(
@@ -569,25 +643,30 @@ def export_pension(
                     pension_er = pension_self = 0
 
             self_rate_pct = f"{(emp.pension_self_rate or 0) * 100:.0f}%"
-            rows.append({
-                "name": emp.name,
-                "id_number": emp.id_number or "",
-                "insured": insured,
-                "pension_er": pension_er,
-                "pension_self": pension_self,
-                "total": pension_er + pension_self,
-                "self_rate": self_rate_pct,
-            })
+            rows.append(
+                {
+                    "name": emp.name,
+                    "id_number": emp.id_number or "",
+                    "insured": insured,
+                    "pension_er": pension_er,
+                    "pension_self": pension_self,
+                    "total": pension_er + pension_self,
+                    "self_rate": self_rate_pct,
+                }
+            )
     finally:
         session.close()
 
     logger.warning(
         "勞退提繳匯出：%s年%s月，共 %d 人，操作人：%s",
-        year, month, len(rows), current_user.get("username", ""),
+        year,
+        month,
+        len(rows),
+        current_user.get("username", ""),
     )
 
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = f"勞退{year}{month:02d}"
 
     _title_row(ws, f"勞工退休金月提繳明細　{year}年{month:02d}月", "H")
@@ -600,7 +679,16 @@ def export_pension(
     ws["F2"].font = _BOLD
     ws.row_dimensions[2].height = 18
 
-    headers = ["序號", "姓名", "身分證字號", "月提繳工資", "雇主提繳\n(6%)", "員工自提", "自提比率", "合計提繳"]
+    headers = [
+        "序號",
+        "姓名",
+        "身分證字號",
+        "月提繳工資",
+        "雇主提繳\n(6%)",
+        "員工自提",
+        "自提比率",
+        "合計提繳",
+    ]
     _hdr(ws, 3, headers)
     ws.row_dimensions[3].height = 30
 
@@ -615,11 +703,16 @@ def export_pension(
         _cell(ws, r, 7, row["self_rate"])
         _cell(ws, r, 8, row["total"], _RIGHT)
 
-    _total_row(ws, len(rows) + 4, len(rows), {
-        4: sum(r["insured"] for r in rows),
-        5: sum(r["pension_er"] for r in rows),
-        6: sum(r["pension_self"] for r in rows),
-        8: sum(r["total"] for r in rows),
-    })
+    _total_row(
+        ws,
+        len(rows) + 4,
+        len(rows),
+        {
+            4: sum(r["insured"] for r in rows),
+            5: sum(r["pension_er"] for r in rows),
+            6: sum(r["pension_self"] for r in rows),
+            8: sum(r["total"] for r in rows),
+        },
+    )
     _auto_width(ws)
     return xlsx_streaming_response(wb, f"勞退提繳_{year}{month:02d}.xlsx")

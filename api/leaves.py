@@ -15,6 +15,16 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from utils.errors import raise_safe_500
+from utils.excel_utils import SafeWorksheet
+from utils.rate_limit import SlidingWindowLimiter
+
+# 批次核准為重 DB 操作；每分鐘 10 次緩衝正常工作量，封住批次濫用
+_batch_approve_limiter = SlidingWindowLimiter(
+    max_calls=10,
+    window_seconds=60,
+    name="leave_batch_approve",
+    error_detail="批次審核操作過於頻繁，請稍後再試",
+).as_dependency()
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.leave_validators import validate_leave_hours_value, validate_leave_date_order
@@ -1089,6 +1099,7 @@ def approve_leave(
 @router.post("/leaves/batch-approve")
 def batch_approve_leaves(
     data: LeaveBatchApproveRequest,
+    _rl=Depends(_batch_approve_limiter),
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """批次核准/駁回請假。兩階段原子提交：先全部驗證，再統一 commit。"""
@@ -1336,7 +1347,7 @@ def get_leave_import_template(
 ):
     """下載請假批次匯入 Excel 範本"""
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = "請假匯入範本"
 
     headers = [
@@ -1358,7 +1369,7 @@ def get_leave_import_template(
     ws.cell(row=2, column=6, value=8)
     ws.cell(row=2, column=7, value="年度特休")
 
-    ws2 = wb.create_sheet("假別代碼說明")
+    ws2 = SafeWorksheet(wb.create_sheet("假別代碼說明"))
     ws2.cell(row=1, column=1, value="假別代碼")
     ws2.cell(row=1, column=2, value="中文名稱")
     for idx, (code, label) in enumerate(LEAVE_TYPE_LABELS.items(), 2):

@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -533,6 +533,52 @@ async def get_classroom(
         session.close()
 
 
+@router.get("/classrooms/{classroom_id}/enrollment-composition")
+async def get_classroom_enrollment_composition(
+    classroom_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
+):
+    """
+    取得班級在籍學生的特殊身分比例（當前快照）。
+
+    目前版本只回傳當前快照；未來若需要時間軸（按月點回放），需整合
+    StudentChangeLog 的 enter/leave 事件與 status_tag 的歷史變化。
+    """
+    session = get_session()
+    try:
+        classroom = (
+            session.query(Classroom).filter(Classroom.id == classroom_id).first()
+        )
+        if not classroom:
+            raise HTTPException(status_code=404, detail=CLASSROOM_NOT_FOUND)
+
+        students = (
+            session.query(Student)
+            .filter(Student.classroom_id == classroom_id, Student.is_active.is_(True))
+            .all()
+        )
+
+        counts = {"新生": 0, "不足齡": 0, "特教生": 0, "原住民": 0}
+        for s in students:
+            tag = (s.status_tag or "").strip()
+            if tag in counts:
+                counts[tag] += 1
+
+        total = len(students)
+        return {
+            "classroom_id": classroom_id,
+            "snapshot_date": date.today().isoformat(),
+            "total": total,
+            "counts": counts,
+            "ratios": {
+                k: round(v / total, 4) if total else 0.0 for k, v in counts.items()
+            },
+            "timeline": [],  # 留給 v2
+        }
+    finally:
+        session.close()
+
+
 @router.post("/classrooms", status_code=201)
 async def create_classroom(
     item: ClassroomCreate,
@@ -591,6 +637,7 @@ async def create_classroom(
 async def update_classroom(
     classroom_id: int,
     item: ClassroomUpdate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
 ):
     """更新班級資料"""
@@ -605,6 +652,11 @@ async def update_classroom(
         update_data = item.model_dump(
             exclude_unset=True, exclude={"english_teacher_id"}
         )
+        before_snapshot = {
+            k: getattr(classroom, k, None)
+            for k in update_data.keys()
+            if hasattr(classroom, k)
+        }
         school_year = update_data.get("school_year", classroom.school_year)
         semester = update_data.get("semester", classroom.semester)
         resolve_academic_term_filters(school_year, semester)
@@ -655,6 +707,15 @@ async def update_classroom(
                 setattr(classroom, key, value)
 
         session.commit()
+
+        diff = {}
+        for k, old_val in before_snapshot.items():
+            new_val = getattr(classroom, k, None)
+            if old_val != new_val:
+                diff[k] = {"before": old_val, "after": new_val}
+        if diff:
+            request.state.audit_changes = diff
+
         return {"message": "班級更新成功", "id": classroom.id, "name": classroom.name}
     except HTTPException:
         raise
@@ -1028,8 +1089,46 @@ async def get_grades(
                 "name": g.name,
                 "age_range": g.age_range,
                 "sort_order": g.sort_order,
+                "is_graduation_grade": bool(g.is_graduation_grade),
             }
             for g in grades
         ]
+    finally:
+        session.close()
+
+
+class GradeUpdate(BaseModel):
+    is_graduation_grade: Optional[bool] = None
+
+
+@router.patch("/grades/{grade_id}")
+async def update_grade(
+    grade_id: int,
+    item: GradeUpdate,
+    current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
+):
+    """更新年級設定（目前僅支援切換是否為畢業班年級）"""
+    session = get_session()
+    try:
+        grade = session.query(ClassGrade).filter(ClassGrade.id == grade_id).first()
+        if not grade:
+            raise HTTPException(status_code=404, detail="找不到該年級")
+
+        patch = item.model_dump(exclude_unset=True)
+        if "is_graduation_grade" in patch:
+            grade.is_graduation_grade = bool(patch["is_graduation_grade"])
+
+        session.commit()
+        return {
+            "id": grade.id,
+            "name": grade.name,
+            "is_graduation_grade": bool(grade.is_graduation_grade),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.exception("更新年級失敗 grade_id=%s", grade_id)
+        raise_safe_500(e, context="更新失敗")
     finally:
         session.close()

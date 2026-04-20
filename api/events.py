@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from utils.errors import raise_safe_500
+from utils.excel_utils import SafeWorksheet
 from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent, Holiday
@@ -35,6 +36,7 @@ EVENT_TYPE_LABELS = {
 
 
 # ============ Pydantic Models ============
+
 
 class EventCreate(BaseModel):
     title: str
@@ -61,6 +63,7 @@ class EventUpdate(BaseModel):
 
 
 # ============ Endpoints ============
+
 
 def _event_to_dict(ev: SchoolEvent) -> dict:
     return {
@@ -96,6 +99,7 @@ def get_events(
             start = date(year, month or 1, 1)
             if month:
                 import calendar as cal_module
+
                 _, last_day = cal_module.monthrange(year, month)
                 end = date(year, month, last_day)
             else:
@@ -103,7 +107,8 @@ def get_events(
             # Include events that overlap with the range
             q = q.filter(
                 SchoolEvent.event_date <= end,
-                (SchoolEvent.end_date >= start) | (SchoolEvent.end_date.is_(None) & (SchoolEvent.event_date >= start)),
+                (SchoolEvent.end_date >= start)
+                | (SchoolEvent.end_date.is_(None) & (SchoolEvent.event_date >= start)),
             )
 
         if event_type:
@@ -130,14 +135,21 @@ def get_calendar_feed(
 
 
 @router.get("/events/{event_id}")
-def get_event(event_id: int, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
+def get_event(
+    event_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
+):
     """取得單一事件"""
     session = get_session()
     try:
-        ev = session.query(SchoolEvent).filter(
-            SchoolEvent.id == event_id,
-            SchoolEvent.is_active == True,
-        ).first()
+        ev = (
+            session.query(SchoolEvent)
+            .filter(
+                SchoolEvent.id == event_id,
+                SchoolEvent.is_active == True,
+            )
+            .first()
+        )
         if not ev:
             raise HTTPException(status_code=404, detail=EVENT_NOT_FOUND)
         return _event_to_dict(ev)
@@ -146,12 +158,17 @@ def get_event(event_id: int, current_user: dict = Depends(require_staff_permissi
 
 
 @router.post("/events", status_code=201)
-def create_event(data: EventCreate, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
+def create_event(
+    data: EventCreate,
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
+):
     """新增行事曆事件"""
     session = get_session()
     try:
         if data.event_type not in EVENT_TYPE_LABELS:
-            raise HTTPException(status_code=400, detail=f"無效的事件類型: {data.event_type}")
+            raise HTTPException(
+                status_code=400, detail=f"無效的事件類型: {data.event_type}"
+            )
         if data.end_date and data.end_date < data.event_date:
             raise HTTPException(status_code=400, detail="結束日期不可早於開始日期")
 
@@ -179,20 +196,33 @@ def create_event(data: EventCreate, current_user: dict = Depends(require_staff_p
 
 
 @router.put("/events/{event_id}")
-def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
+def update_event(
+    event_id: int,
+    data: EventUpdate,
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
+):
     """更新行事曆事件"""
     session = get_session()
     try:
-        ev = session.query(SchoolEvent).filter(
-            SchoolEvent.id == event_id,
-            SchoolEvent.is_active == True,
-        ).first()
+        ev = (
+            session.query(SchoolEvent)
+            .filter(
+                SchoolEvent.id == event_id,
+                SchoolEvent.is_active == True,
+            )
+            .first()
+        )
         if not ev:
             raise HTTPException(status_code=404, detail=EVENT_NOT_FOUND)
 
         update_data = data.model_dump(exclude_unset=True)
-        if "event_type" in update_data and update_data["event_type"] not in EVENT_TYPE_LABELS:
-            raise HTTPException(status_code=400, detail=f"無效的事件類型: {update_data['event_type']}")
+        if (
+            "event_type" in update_data
+            and update_data["event_type"] not in EVENT_TYPE_LABELS
+        ):
+            raise HTTPException(
+                status_code=400, detail=f"無效的事件類型: {update_data['event_type']}"
+            )
 
         for key, value in update_data.items():
             setattr(ev, key, value)
@@ -213,14 +243,21 @@ def update_event(event_id: int, data: EventUpdate, current_user: dict = Depends(
 
 
 @router.delete("/events/{event_id}")
-def delete_event(event_id: int, current_user: dict = Depends(require_staff_permission(Permission.CALENDAR))):
+def delete_event(
+    event_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
+):
     """刪除行事曆事件（軟刪除）"""
     session = get_session()
     try:
-        ev = session.query(SchoolEvent).filter(
-            SchoolEvent.id == event_id,
-            SchoolEvent.is_active == True,
-        ).first()
+        ev = (
+            session.query(SchoolEvent)
+            .filter(
+                SchoolEvent.id == event_id,
+                SchoolEvent.is_active == True,
+            )
+            .first()
+        )
         if not ev:
             raise HTTPException(status_code=404, detail=EVENT_NOT_FOUND)
         ev.is_active = False
@@ -236,12 +273,15 @@ def delete_event(event_id: int, current_user: dict = Depends(require_staff_permi
 # ============ 假日批次匯入（Holiday 表） ============
 
 
-
 _EV_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
-_EV_HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+_EV_HEADER_FILL = PatternFill(
+    start_color="4472C4", end_color="4472C4", fill_type="solid"
+)
 _EV_THIN_BORDER = Border(
-    left=Side(style="thin"), right=Side(style="thin"),
-    top=Side(style="thin"), bottom=Side(style="thin"),
+    left=Side(style="thin"),
+    right=Side(style="thin"),
+    top=Side(style="thin"),
+    bottom=Side(style="thin"),
 )
 _EV_CENTER_ALIGN = Alignment(horizontal="center")
 
@@ -261,7 +301,7 @@ def get_holiday_import_template(
 ):
     """下載國定假日批次匯入 Excel 範本"""
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = "假日匯入範本"
 
     headers = ["日期", "假日名稱", "說明(可空)"]
@@ -273,7 +313,7 @@ def get_holiday_import_template(
     ws.cell(row=3, column=1, value="2026-02-17")
     ws.cell(row=3, column=2, value="農曆春節")
 
-    note_ws = wb.create_sheet("說明")
+    note_ws = SafeWorksheet(wb.create_sheet("說明"))
     note_ws.cell(row=1, column=1, value="注意事項")
     note_ws.cell(row=2, column=1, value="1. 日期格式建議使用 YYYY-MM-DD")
     note_ws.cell(row=3, column=1, value="2. 同日期若已存在則更新，否則新增（UPSERT）")
@@ -324,7 +364,9 @@ async def import_holidays(
                     else None
                 )
 
-                existing = session.query(Holiday).filter(Holiday.date == holiday_date).first()
+                existing = (
+                    session.query(Holiday).filter(Holiday.date == holiday_date).first()
+                )
                 if existing:
                     existing.name = name
                     existing.description = description
@@ -334,15 +376,17 @@ async def import_holidays(
                     existing.synced_at = datetime.now()
                     existing.updated_at = datetime.now()
                 else:
-                    session.add(Holiday(
-                        date=holiday_date,
-                        name=name,
-                        description=description,
-                        is_active=True,
-                        source="manual",
-                        source_year=holiday_date.year,
-                        synced_at=datetime.now(),
-                    ))
+                    session.add(
+                        Holiday(
+                            date=holiday_date,
+                            name=name,
+                            description=description,
+                            is_active=True,
+                            source="manual",
+                            source_year=holiday_date.year,
+                            synced_at=datetime.now(),
+                        )
+                    )
 
                 session.flush()
                 results["upserted"] += 1
@@ -361,6 +405,9 @@ async def import_holidays(
 
     logger.info(
         "假日批次匯入：使用者 %s，共 %d 筆，成功 %d 筆，失敗 %d 筆",
-        current_user.get("username"), results["total"], results["upserted"], results["failed"],
+        current_user.get("username"),
+        results["total"],
+        results["upserted"],
+        results["failed"],
     )
     return results

@@ -15,6 +15,7 @@ from models.database import (
     Classroom,
 )
 from utils.auth import require_staff_permission
+from utils.errors import raise_safe_500
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.permissions import Permission
 from utils.storage import get_storage_path
@@ -98,7 +99,7 @@ async def update_registration_time(
         return {"message": "報名時間設定已更新"}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -152,7 +153,7 @@ async def upload_activity_poster(
         return {"message": "海報已更新", "poster_url": poster_url}
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 

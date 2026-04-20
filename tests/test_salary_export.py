@@ -86,7 +86,9 @@ def _create_user(session, username: str, permissions: int) -> User:
 
 
 def _login(client: TestClient, username: str, password: str = "TempPass123"):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 class TestSalaryExcelExport:
@@ -149,7 +151,9 @@ class TestSalaryExcelExport:
 
         wb = load_workbook(BytesIO(response.content))
         ws = wb.active
-        headers = [ws.cell(row=3, column=col).value for col in range(1, ws.max_column + 1)]
+        headers = [
+            ws.cell(row=3, column=col).value for col in range(1, ws.max_column + 1)
+        ]
         assert headers[-1] == "編輯紀錄"
         assert "手動編輯" in str(ws.cell(row=4, column=ws.max_column).value)
 
@@ -177,7 +181,9 @@ class TestSalaryFieldBreakdownApi:
         login_res = _login(client, "salary_breakdown_admin")
         assert login_res.status_code == 200
 
-        response = client.get(f"/api/salaries/{record_id}/field-breakdown?field=festival_bonus")
+        response = client.get(
+            f"/api/salaries/{record_id}/field-breakdown?field=festival_bonus"
+        )
 
         assert response.status_code == 200
         payload = response.json()
@@ -211,7 +217,9 @@ class TestSalaryFieldBreakdownApi:
         login_res = _login(client, "salary_birthday_admin")
         assert login_res.status_code == 200
 
-        response = client.get(f"/api/salaries/{record_id}/field-breakdown?field=birthday_bonus")
+        response = client.get(
+            f"/api/salaries/{record_id}/field-breakdown?field=birthday_bonus"
+        )
 
         assert response.status_code == 200
         payload = response.json()
@@ -224,8 +232,12 @@ class TestSalaryFieldBreakdownApi:
 
         with session_factory() as session:
             employee = _create_employee(session, "E004", "陳老師")
-            _create_user(session, "salary_breakdown_invalid", int(Permission.SALARY_READ))
-            session.add(SalaryRecord(employee_id=employee.id, salary_year=2026, salary_month=3))
+            _create_user(
+                session, "salary_breakdown_invalid", int(Permission.SALARY_READ)
+            )
+            session.add(
+                SalaryRecord(employee_id=employee.id, salary_year=2026, salary_month=3)
+            )
             session.commit()
 
         login_res = _login(client, "salary_breakdown_invalid")
@@ -239,13 +251,17 @@ class TestSalaryFieldBreakdownApi:
         client, session_factory = salary_export_client
 
         with session_factory() as session:
-            _create_user(session, "salary_breakdown_missing", int(Permission.SALARY_READ))
+            _create_user(
+                session, "salary_breakdown_missing", int(Permission.SALARY_READ)
+            )
             session.commit()
 
         login_res = _login(client, "salary_breakdown_missing")
         assert login_res.status_code == 200
 
-        response = client.get("/api/salaries/999999/field-breakdown?field=festival_bonus")
+        response = client.get(
+            "/api/salaries/999999/field-breakdown?field=festival_bonus"
+        )
 
         assert response.status_code == 404
 
@@ -256,13 +272,16 @@ class TestSalaryManualAdjustApi:
 
         with session_factory() as session:
             employee = _create_employee(session, "E012", "可調整老師")
-            _create_user(session, "salary_write_admin", int(Permission.SALARY_WRITE | Permission.SALARY_READ))
+            _create_user(
+                session,
+                "salary_write_admin",
+                int(Permission.SALARY_WRITE | Permission.SALARY_READ),
+            )
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
                 salary_month=3,
                 base_salary=30000,
-                meal_allowance=2400,
                 festival_bonus=2000,
                 overtime_bonus=500,
                 supervisor_dividend=1000,
@@ -271,9 +290,9 @@ class TestSalaryManualAdjustApi:
                 pension_employee=1800,
                 late_deduction=100,
                 leave_deduction=300,
-                gross_salary=33400,
+                gross_salary=31000,
                 total_deduction=3400,
-                net_salary=30000,
+                net_salary=27600,
                 bonus_amount=3500,
                 bonus_separate=True,
             )
@@ -298,7 +317,7 @@ class TestSalaryManualAdjustApi:
         assert payload["record"]["leave_deduction"] == 500
         assert payload["record"]["bonus_amount"] == 3300
         assert payload["record"]["total_deduction"] == 3600
-        assert payload["record"]["net_salary"] == 29800
+        assert payload["record"]["net_salary"] == 27400
         assert "手動編輯" in payload["record"]["remark"]
         assert "節慶獎金 2000→1800" in payload["record"]["remark"]
         assert "請假扣款 300→500" in payload["record"]["remark"]
@@ -308,7 +327,11 @@ class TestSalaryManualAdjustApi:
 
         with session_factory() as session:
             employee = _create_employee(session, "E013", "封存老師")
-            _create_user(session, "salary_write_finalized", int(Permission.SALARY_WRITE | Permission.SALARY_READ))
+            _create_user(
+                session,
+                "salary_write_finalized",
+                int(Permission.SALARY_WRITE | Permission.SALARY_READ),
+            )
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,

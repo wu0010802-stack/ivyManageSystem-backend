@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.database import get_session, ParentInquiry
 from utils.auth import require_staff_permission
+from utils.errors import raise_safe_500
 from utils.permissions import Permission
 
 from ._shared import _not_found, _invalidate_activity_dashboard_caches, InquiryReply
@@ -31,7 +32,9 @@ async def get_inquiries(
         if is_read is not None:
             q = q.filter(ParentInquiry.is_read.is_(is_read))
         total = q.count()
-        rows = q.order_by(ParentInquiry.created_at.desc()).offset(skip).limit(limit).all()
+        rows = (
+            q.order_by(ParentInquiry.created_at.desc()).offset(skip).limit(limit).all()
+        )
         items = [
             {
                 "id": r.id,
@@ -58,7 +61,9 @@ async def mark_inquiry_read(
     """標記提問為已讀"""
     session = get_session()
     try:
-        inquiry = session.query(ParentInquiry).filter(ParentInquiry.id == inquiry_id).first()
+        inquiry = (
+            session.query(ParentInquiry).filter(ParentInquiry.id == inquiry_id).first()
+        )
         if not inquiry:
             raise _not_found("提問")
         inquiry.is_read = True
@@ -69,7 +74,7 @@ async def mark_inquiry_read(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -83,9 +88,9 @@ async def reply_inquiry(
     """回覆家長提問"""
     session = get_session()
     try:
-        inquiry = session.query(ParentInquiry).filter(
-            ParentInquiry.id == inquiry_id
-        ).first()
+        inquiry = (
+            session.query(ParentInquiry).filter(ParentInquiry.id == inquiry_id).first()
+        )
         if not inquiry:
             raise _not_found("提問")
         inquiry.reply = body.reply.strip()
@@ -98,7 +103,7 @@ async def reply_inquiry(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -111,7 +116,9 @@ async def delete_inquiry(
     """刪除提問"""
     session = get_session()
     try:
-        inquiry = session.query(ParentInquiry).filter(ParentInquiry.id == inquiry_id).first()
+        inquiry = (
+            session.query(ParentInquiry).filter(ParentInquiry.id == inquiry_id).first()
+        )
         if not inquiry:
             raise _not_found("提問")
         session.delete(inquiry)
@@ -122,6 +129,6 @@ async def delete_inquiry(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

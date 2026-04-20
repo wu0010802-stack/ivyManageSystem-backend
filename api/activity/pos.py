@@ -27,6 +27,7 @@ from sqlalchemy.exc import CompileError, OperationalError
 
 from models.database import (
     ActivityPaymentRecord,
+    ActivityPosDailyClose,
     ActivityRegistration,
     get_session,
 )
@@ -38,9 +39,11 @@ from utils.rate_limit import SlidingWindowLimiter
 from ._shared import (
     TAIPEI_TZ,
     _batch_calc_total_amounts,
+    _build_registration_filter_query,
     _compute_is_paid,
     _derive_payment_status,
     _fetch_reg_course_details,
+    _fetch_reg_course_names,
     _fetch_reg_supplies,
     _invalidate_activity_dashboard_caches,
     _require_daily_close_unlocked,
@@ -495,11 +498,28 @@ async def pos_checkout(
 
         for item in body.items:
             reg = reg_by_id[item.registration_id]
+            total_amount_pre = total_map.get(reg.id, 0) or 0
             if body.type == "refund" and item.amount > (reg.paid_amount or 0):
                 raise HTTPException(
                     status_code=400,
                     detail=f"報名 {reg.id}（{reg.student_name}）的退費金額超過已繳金額",
                 )
+            if body.type == "payment":
+                # 空報名（無 enrolled 課程/用品）不得收款，避免產生孤兒收款
+                if total_amount_pre <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"報名 {reg.id}（{reg.student_name}）無應繳金額，無法收款",
+                    )
+                # 超收守衛：已繳 + 本次金額不得超過應繳
+                if (reg.paid_amount or 0) + item.amount > total_amount_pre:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"報名 {reg.id}（{reg.student_name}）本次收款 NT${item.amount} "
+                            f"將導致超收（應繳 NT${total_amount_pre}，已繳 NT${reg.paid_amount or 0}）"
+                        ),
+                    )
 
             rec = ActivityPaymentRecord(
                 registration_id=reg.id,
@@ -654,9 +674,17 @@ async def pos_recent_transactions(
         None, alias="date", description="YYYY-MM-DD，預設今日"
     ),
     limit: int = Query(20, ge=1, le=100),
+    include_system: bool = Query(
+        False,
+        description="是否一併列出系統沖帳（notes 無 [POS-...] 標記的 payment_records，例如學生離園自動沖帳）",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """回傳指定日期內以 receipt_no 聚合的交易清單（供前端列表+重印）。"""
+    """回傳指定日期內的交易清單（供前端列表 + 重印）。
+
+    預設只列 POS 交易（依 receipt_no 聚合）。簽核頁傳 include_system=true
+    時，額外列出系統沖帳（每筆獨立，receipt_no 以 `SYS-<record_id>` 合成）。
+    """
     if date_:
         try:
             target_date = date.fromisoformat(date_)
@@ -667,26 +695,28 @@ async def pos_recent_transactions(
 
     session = get_session()
     try:
-        records = (
-            session.query(ActivityPaymentRecord)
-            .filter(
-                ActivityPaymentRecord.payment_date == target_date,
-                ActivityPaymentRecord.notes.like("%[POS-%"),
-            )
-            .order_by(ActivityPaymentRecord.id.desc())
-            .all()
+        query = session.query(ActivityPaymentRecord).filter(
+            ActivityPaymentRecord.payment_date == target_date,
         )
+        if not include_system:
+            query = query.filter(ActivityPaymentRecord.notes.like("%[POS-%"))
+        records = query.order_by(ActivityPaymentRecord.id.desc()).all()
 
-        # 依 receipt_no 聚合
+        # 依 receipt_no 聚合（POS 交易）；無 POS 標記者每筆獨立成 SYS-<id>
         by_receipt: dict = {}
+        receipt_source: dict = {}  # receipt_key -> 'pos' | 'system'
         order: list = []
         for r in records:
             m = _RECEIPT_NO_RE.search(r.notes or "")
-            if not m:
-                continue
-            rno = m.group(1)
+            if m:
+                rno = m.group(1)
+                source = "pos"
+            else:
+                rno = f"SYS-{r.id}"
+                source = "system"
             if rno not in by_receipt:
                 by_receipt[rno] = []
+                receipt_source[rno] = source
                 order.append(rno)
             by_receipt[rno].append(r)
 
@@ -742,6 +772,7 @@ async def pos_recent_transactions(
             transactions.append(
                 {
                     "receipt_no": rno,
+                    "source": receipt_source[rno],
                     "type": tx_type,
                     "total": tx_total,
                     "tendered": None,  # 歷史無紀錄
@@ -765,6 +796,217 @@ async def pos_recent_transactions(
         return {
             "date": target_date.isoformat(),
             "transactions": transactions,
+        }
+    finally:
+        session.close()
+
+
+# ── 端點 5：學期對帳總表 ──────────────────────────────────────────────────
+
+_APPROVAL_STATUS_VALUES = {
+    "fully_approved",
+    "partially_approved",
+    "pending_approval",
+    "no_payment",
+}
+
+
+@router.get("/pos/semester-reconciliation")
+async def pos_semester_reconciliation(
+    school_year: Optional[int] = Query(None, ge=100, le=200),
+    semester: Optional[int] = Query(None, ge=1, le=2),
+    classroom_name: Optional[str] = Query(None, max_length=50),
+    payment_status: Optional[Literal["paid", "partial", "unpaid", "overpaid"]] = Query(
+        None
+    ),
+    approval_status: Optional[str] = Query(
+        None,
+        description="fully_approved / partially_approved / pending_approval / no_payment",
+    ),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
+):
+    """以學期為單位列出所有報名 + 繳費狀態 + 簽核狀態，供老闆定期對帳稽核。
+
+    簽核狀態四態：
+    - fully_approved: 全部繳費記錄都落在已簽核日
+    - partially_approved: 部分繳費記錄落在已簽核日
+    - pending_approval: 有繳費但都在未簽核日
+    - no_payment: 完全尚未繳費（paid_amount == 0）
+    """
+    from utils.academic import resolve_academic_term_filters
+
+    if approval_status is not None and approval_status not in _APPROVAL_STATUS_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"approval_status 必須為 {sorted(_APPROVAL_STATUS_VALUES)} 之一",
+        )
+
+    session = get_session()
+    try:
+        sy, sem = resolve_academic_term_filters(school_year, semester)
+        q = _build_registration_filter_query(
+            session,
+            school_year=sy,
+            semester=sem,
+            classroom_name=classroom_name,
+            payment_status=payment_status,
+        )
+        active_regs = (
+            q.order_by(ActivityRegistration.created_at.desc()).limit(2000).all()
+        )
+
+        # 額外納入 inactive 但本學期仍有 payment_records 的 reg，
+        # 否則這些流水（多為軟刪除後的系統沖帳）會從學期對帳總表消失，
+        # 跟日結 snapshot 對不起來。
+        active_ids = {r.id for r in active_regs}
+        inactive_with_records = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.school_year == sy,
+                ActivityRegistration.semester == sem,
+                ActivityRegistration.is_active.is_(False),
+                ActivityRegistration.id.in_(
+                    session.query(ActivityPaymentRecord.registration_id).distinct()
+                ),
+                ~ActivityRegistration.id.in_(active_ids) if active_ids else True,
+            )
+            .all()
+        )
+
+        regs = list(active_regs) + list(inactive_with_records)
+        reg_ids = [r.id for r in regs]
+        total_map = _batch_calc_total_amounts(session, reg_ids)
+        course_name_map = _fetch_reg_course_names(session, reg_ids)
+
+        # 一次取回所有相關繳費紀錄，避免 N+1
+        payment_records_by_reg: dict = defaultdict(list)
+        if reg_ids:
+            for rec in (
+                session.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.registration_id.in_(reg_ids))
+                .all()
+            ):
+                payment_records_by_reg[rec.registration_id].append(rec)
+
+        # 已簽核日集合（單次 query）
+        closed_dates = {
+            row[0] for row in session.query(ActivityPosDailyClose.close_date).all()
+        }
+
+        # 彙總器
+        agg_total_amount = 0
+        agg_paid_amount = 0
+        agg_approved_paid = 0
+        agg_pending_paid = 0
+        agg_offline_paid = 0
+        by_payment_status: dict = defaultdict(int)
+        by_approval_status: dict = defaultdict(int)
+
+        items = []
+        for reg in regs:
+            total = total_map.get(reg.id, 0) or 0
+            paid = reg.paid_amount or 0
+            owed = max(0, total - paid)
+            ps = _derive_payment_status(paid, total)
+
+            recs = payment_records_by_reg.get(reg.id, [])
+            approved_paid = 0
+            pending_paid = 0
+            approved_refund = 0
+            pending_refund = 0
+            latest_date: Optional[date] = None
+            any_approved = False
+            any_pending = False
+            for rec in recs:
+                pd = rec.payment_date
+                if pd is None:
+                    continue
+                is_closed = pd in closed_dates
+                if rec.type == "refund":
+                    if is_closed:
+                        approved_refund += rec.amount
+                    else:
+                        pending_refund += rec.amount
+                else:
+                    if is_closed:
+                        approved_paid += rec.amount
+                    else:
+                        pending_paid += rec.amount
+                if is_closed:
+                    any_approved = True
+                else:
+                    any_pending = True
+                if latest_date is None or pd > latest_date:
+                    latest_date = pd
+
+            approved_net = max(0, approved_paid - approved_refund)
+            pending_net = max(0, pending_paid - pending_refund)
+            # 非 POS 已繳：reg.paid_amount 未對應到任何 payment_record 的差額
+            # 常見於歷史匯入或直接寫入 paid_amount 的資料，系統無從判斷簽核狀態
+            offline_paid = max(0, paid - approved_net - pending_net)
+
+            if paid <= 0:
+                approval = "no_payment"
+            elif not recs:
+                # 有 paid_amount 但沒任何 payment_record → 全數為非 POS 已繳
+                approval = "pending_approval"
+            elif any_approved and any_pending:
+                approval = "partially_approved"
+            elif any_approved:
+                approval = "fully_approved"
+            else:
+                approval = "pending_approval"
+
+            if approval_status and approval != approval_status:
+                continue
+
+            agg_total_amount += total
+            agg_paid_amount += paid
+            agg_approved_paid += approved_net
+            agg_pending_paid += pending_net
+            agg_offline_paid += offline_paid
+            by_payment_status[ps] += 1
+            by_approval_status[approval] += 1
+
+            items.append(
+                {
+                    "id": reg.id,
+                    "student_name": reg.student_name,
+                    "class_name": reg.class_name or "",
+                    "is_active": bool(reg.is_active),
+                    "course_names": course_name_map.get(reg.id, []),
+                    "total_amount": total,
+                    "paid_amount": paid,
+                    "owed": owed,
+                    "payment_status": ps,
+                    "approval_status": approval,
+                    "approved_paid_amount": approved_net,
+                    "pending_paid_amount": pending_net,
+                    "offline_paid_amount": offline_paid,
+                    "latest_payment_date": (
+                        latest_date.isoformat() if latest_date else None
+                    ),
+                    "created_at": (
+                        reg.created_at.isoformat() if reg.created_at else None
+                    ),
+                }
+            )
+
+        return {
+            "school_year": sy,
+            "semester": sem,
+            "items": items,
+            "totals": {
+                "registration_count": len(items),
+                "total_amount": agg_total_amount,
+                "paid_amount": agg_paid_amount,
+                "outstanding_amount": max(0, agg_total_amount - agg_paid_amount),
+                "approved_paid_amount": agg_approved_paid,
+                "pending_paid_amount": agg_pending_paid,
+                "offline_paid_amount": agg_offline_paid,
+                "by_payment_status": dict(by_payment_status),
+                "by_approval_status": dict(by_approval_status),
+            },
         }
     finally:
         session.close()

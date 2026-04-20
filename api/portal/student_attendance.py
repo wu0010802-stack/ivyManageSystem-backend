@@ -9,6 +9,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from openpyxl import Workbook
+from utils.excel_utils import SafeWorksheet
 from pydantic import BaseModel
 
 from models.database import get_session, Student, StudentAttendance
@@ -31,6 +32,7 @@ VALID_STATUSES = {"出席", "缺席", "病假", "事假", "遲到"}
 
 # ============ Pydantic Models ============
 
+
 class AttendanceEntryPortal(BaseModel):
     student_id: int
     status: str = "出席"
@@ -44,6 +46,7 @@ class BatchSaveRequestPortal(BaseModel):
 
 
 # ============ Routes ============
+
 
 @router.get("/my-class-attendance")
 def get_my_class_attendance(
@@ -85,13 +88,15 @@ def get_my_class_attendance(
         records = []
         for s in students:
             rec = existing.get(s.id)
-            records.append({
-                "student_id": s.id,
-                "student_no": s.student_id,
-                "name": s.name,
-                "status": rec.status if rec else None,
-                "remark": rec.remark if rec else None,
-            })
+            records.append(
+                {
+                    "student_id": s.id,
+                    "student_no": s.student_id,
+                    "name": s.name,
+                    "status": rec.status if rec else None,
+                    "remark": rec.remark if rec else None,
+                }
+            )
 
         return {"date": date, "classroom_id": classroom_id, "records": records}
     finally:
@@ -109,9 +114,13 @@ def batch_save_class_attendance(
     except ValueError:
         raise HTTPException(status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD")
 
-    invalid_statuses = [e.status for e in payload.entries if e.status not in VALID_STATUSES]
+    invalid_statuses = [
+        e.status for e in payload.entries if e.status not in VALID_STATUSES
+    ]
     if invalid_statuses:
-        raise HTTPException(status_code=400, detail=f"無效的出席狀態：{invalid_statuses}")
+        raise HTTPException(
+            status_code=400, detail=f"無效的出席狀態：{invalid_statuses}"
+        )
 
     session = get_session()
     try:
@@ -123,15 +132,21 @@ def batch_save_class_attendance(
 
         # 驗證所有 student_id 皆屬於該班級（防跨班操作）
         entry_student_ids = [e.student_id for e in payload.entries]
-        valid_students = session.query(Student.id).filter(
-            Student.id.in_(entry_student_ids),
-            Student.classroom_id == payload.classroom_id,
-            Student.is_active == True,
-        ).all()
+        valid_students = (
+            session.query(Student.id)
+            .filter(
+                Student.id.in_(entry_student_ids),
+                Student.classroom_id == payload.classroom_id,
+                Student.is_active == True,
+            )
+            .all()
+        )
         valid_ids = {s.id for s in valid_students}
         unauthorized = [sid for sid in entry_student_ids if sid not in valid_ids]
         if unauthorized:
-            raise HTTPException(status_code=403, detail=f"以下學生不屬於該班級：{unauthorized}")
+            raise HTTPException(
+                status_code=403, detail=f"以下學生不屬於該班級：{unauthorized}"
+            )
 
         user_id = current_user.get("id")
         existing = {
@@ -164,7 +179,10 @@ def batch_save_class_attendance(
         invalidate_student_attendance_report_caches(session)
         logger.info(
             "教師學生點名儲存：emp=%s classroom_id=%d date=%s count=%d",
-            emp.name, payload.classroom_id, payload.date, len(payload.entries),
+            emp.name,
+            payload.classroom_id,
+            payload.date,
+            len(payload.entries),
         )
         return {"message": "儲存成功", "saved": len(payload.entries)}
     except HTTPException:
@@ -218,6 +236,7 @@ def export_my_class_attendance(
 
         # 取得班級名稱（供 sheet 標題使用）
         from models.database import Classroom
+
         cr = session.query(Classroom).filter(Classroom.id == classroom_id).first()
         classroom_name = cr.name if cr else str(classroom_id)
 
@@ -226,11 +245,14 @@ def export_my_class_attendance(
         wb = Workbook()
         ws_raw = wb.active
         ws_raw.title = classroom_name[:31]
-        _write_class_sheet(ws_raw, report_data, year, month)
+        _write_class_sheet(SafeWorksheet(ws_raw), report_data, year, month)
 
         logger.info(
             "教師匯出學生出席月報：emp=%s classroom_id=%d year=%d month=%d",
-            emp.name, classroom_id, year, month,
+            emp.name,
+            classroom_id,
+            year,
+            month,
         )
         filename = f"{year}年{month}月_{classroom_name}_出席月報.xlsx"
         return _to_response(wb, filename)

@@ -2,9 +2,9 @@ import os
 import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from api.salary_fields import calculate_display_bonus_total, calculate_total_allowances
+from api.salary_fields import calculate_display_bonus_total
 
 
 class TestCalculateDisplayBonusTotal:
@@ -35,18 +35,3 @@ class TestCalculateDisplayBonusTotal:
         result = calculate_display_bonus_total(record)
 
         assert result == 0
-
-
-class TestCalculateTotalAllowances:
-    def test_sums_all_allowance_fields(self):
-        record = SimpleNamespace(
-            supervisor_allowance=1000,
-            teacher_allowance=2000,
-            meal_allowance=2400,
-            transportation_allowance=600,
-            other_allowance=300,
-        )
-
-        result = calculate_total_allowances(record)
-
-        assert result == 6300

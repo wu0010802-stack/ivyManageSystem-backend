@@ -6,29 +6,62 @@ models/database.py — 向下相容 re-export hub
 """
 
 from models.base import (
-    Base, get_session, session_scope, get_engine,
-    get_session_factory, init_database,
+    Base,
+    get_session,
+    session_scope,
+    get_engine,
+    get_session_factory,
+    init_database,
 )
-from models.employee import Employee, JobTitle, EmployeeType
-from models.classroom import Classroom, ClassGrade, Student, StudentAttendance, StudentIncident, StudentAssessment
+from models.employee import (
+    Employee,
+    JobTitle,
+    EmployeeType,
+    EmployeeEducation,
+    EmployeeCertificate,
+    EmployeeContract,
+)
+from models.classroom import (
+    Classroom,
+    ClassGrade,
+    Student,
+    StudentAttendance,
+    StudentIncident,
+    StudentAssessment,
+)
 from models.guardian import Guardian
 from models.attendance import Attendance, AttendanceStatus
 from models.shift import ShiftType, ShiftAssignment, DailyShift, ShiftSwapRequest
 from models.leave import LeaveRecord, LeaveQuota, LeaveType
 from models.overtime import OvertimeRecord, PunchCorrectionRequest
 from models.salary import (
-    SalaryRecord, SalaryItem, EmployeeAllowance,
-    AllowanceType, DeductionType, BonusType,
-    DeductionRule, InsuranceTable,
-    BonusSetting, ClassBonusSetting,
+    SalaryRecord,
+    SalaryItem,
+    SalaryCalcJobRecord,
+    DeductionType,
+    BonusType,
+    DeductionRule,
+    InsuranceTable,
+    BonusSetting,
+    ClassBonusSetting,
 )
 from models.config import (
-    AttendancePolicy, BonusConfig, GradeTarget, InsuranceRate,
-    SystemConfig, PositionSalaryConfig,
+    AttendancePolicy,
+    BonusConfig,
+    GradeTarget,
+    InsuranceRate,
+    SystemConfig,
+    PositionSalaryConfig,
 )
 from models.event import (
-    Holiday, WorkdayOverride, OfficialCalendarSync,
-    MeetingRecord, SchoolEvent, Announcement, AnnouncementRead, AnnouncementRecipient,
+    Holiday,
+    WorkdayOverride,
+    OfficialCalendarSync,
+    MeetingRecord,
+    SchoolEvent,
+    Announcement,
+    AnnouncementRead,
+    AnnouncementRecipient,
 )
 from models.auth import User
 from models.audit import AuditLog
@@ -36,10 +69,17 @@ from models.approval import ApprovalPolicy, ApprovalLog
 from models.line_config import LineConfig
 from models.report_cache import ReportSnapshot
 from models.activity import (
-    ActivityCourse, ActivitySupply, ActivityRegistration,
-    RegistrationCourse, RegistrationSupply,
-    ParentInquiry, RegistrationChange, ActivityRegistrationSettings,
-    ActivityPaymentRecord, ActivitySession, ActivityAttendance,
+    ActivityCourse,
+    ActivitySupply,
+    ActivityRegistration,
+    RegistrationCourse,
+    RegistrationSupply,
+    ParentInquiry,
+    RegistrationChange,
+    ActivityRegistrationSettings,
+    ActivityPaymentRecord,
+    ActivitySession,
+    ActivityAttendance,
     ActivityPosDailyClose,
 )
 from models.dismissal import StudentDismissalCall
@@ -57,55 +97,102 @@ from models.recruitment import (
 
 __all__ = [
     # base
-    "Base", "get_session", "session_scope", "get_engine",
-    "get_session_factory", "init_database",
+    "Base",
+    "get_session",
+    "session_scope",
+    "get_engine",
+    "get_session_factory",
+    "init_database",
     # employee
-    "Employee", "JobTitle", "EmployeeType",
+    "Employee",
+    "JobTitle",
+    "EmployeeType",
+    "EmployeeEducation",
+    "EmployeeCertificate",
+    "EmployeeContract",
     # classroom
-    "Classroom", "ClassGrade", "Student", "StudentIncident", "StudentAssessment",
+    "Classroom",
+    "ClassGrade",
+    "Student",
+    "StudentIncident",
+    "StudentAssessment",
     # guardian
     "Guardian",
     # attendance
-    "Attendance", "AttendanceStatus",
+    "Attendance",
+    "AttendanceStatus",
     # shift
-    "ShiftType", "ShiftAssignment", "DailyShift", "ShiftSwapRequest",
+    "ShiftType",
+    "ShiftAssignment",
+    "DailyShift",
+    "ShiftSwapRequest",
     # leave
-    "LeaveRecord", "LeaveQuota", "LeaveType",
+    "LeaveRecord",
+    "LeaveQuota",
+    "LeaveType",
     # overtime
-    "OvertimeRecord", "PunchCorrectionRequest",
+    "OvertimeRecord",
+    "PunchCorrectionRequest",
     # salary
-    "SalaryRecord", "SalaryItem", "EmployeeAllowance",
-    "AllowanceType", "DeductionType", "BonusType",
-    "DeductionRule", "InsuranceTable",
-    "BonusSetting", "ClassBonusSetting",
+    "SalaryRecord",
+    "SalaryItem",
+    "DeductionType",
+    "BonusType",
+    "DeductionRule",
+    "InsuranceTable",
+    "BonusSetting",
+    "ClassBonusSetting",
     # config
-    "AttendancePolicy", "BonusConfig", "GradeTarget", "InsuranceRate",
-    "SystemConfig", "PositionSalaryConfig",
+    "AttendancePolicy",
+    "BonusConfig",
+    "GradeTarget",
+    "InsuranceRate",
+    "SystemConfig",
+    "PositionSalaryConfig",
     # event
-    "Holiday", "WorkdayOverride", "OfficialCalendarSync",
-    "MeetingRecord", "SchoolEvent", "Announcement", "AnnouncementRead", "AnnouncementRecipient",
+    "Holiday",
+    "WorkdayOverride",
+    "OfficialCalendarSync",
+    "MeetingRecord",
+    "SchoolEvent",
+    "Announcement",
+    "AnnouncementRead",
+    "AnnouncementRecipient",
     # auth
     "User",
     # audit
     "AuditLog",
     # approval
-    "ApprovalPolicy", "ApprovalLog",
+    "ApprovalPolicy",
+    "ApprovalLog",
     # line
     "LineConfig",
     # report cache
     "ReportSnapshot",
     # activity
-    "ActivityCourse", "ActivitySupply", "ActivityRegistration",
-    "RegistrationCourse", "RegistrationSupply",
-    "ParentInquiry", "RegistrationChange", "ActivityRegistrationSettings",
-    "ActivityPaymentRecord", "ActivitySession", "ActivityAttendance",
+    "ActivityCourse",
+    "ActivitySupply",
+    "ActivityRegistration",
+    "RegistrationCourse",
+    "RegistrationSupply",
+    "ParentInquiry",
+    "RegistrationChange",
+    "ActivityRegistrationSettings",
+    "ActivityPaymentRecord",
+    "ActivitySession",
+    "ActivityAttendance",
     "ActivityPosDailyClose",
     # dismissal
     "StudentDismissalCall",
     # student transfer history
     "StudentClassroomTransfer",
     # recruitment
-    "RecruitmentVisit", "RecruitmentIvykidsRecord", "RecruitmentMonth",
-    "RecruitmentPeriod", "RecruitmentGeocodeCache",
-    "RecruitmentCampusSetting", "RecruitmentAreaInsightCache", "RecruitmentSyncState",
+    "RecruitmentVisit",
+    "RecruitmentIvykidsRecord",
+    "RecruitmentMonth",
+    "RecruitmentPeriod",
+    "RecruitmentGeocodeCache",
+    "RecruitmentCampusSetting",
+    "RecruitmentAreaInsightCache",
+    "RecruitmentSyncState",
 ]

@@ -3,7 +3,7 @@ LINE Messaging API 通知服務
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 import requests
@@ -15,6 +15,7 @@ _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 
 
 # ── 訊息建構（純函式，方便測試）──────────────────────────────────────────────
+
 
 def build_leave_message(
     name: str,
@@ -100,7 +101,9 @@ def build_overtime_result_message(
     )
 
 
-def build_salary_batch_message(year: int, month: int, count: int, total_net: int) -> str:
+def build_salary_batch_message(
+    year: int, month: int, count: int, total_net: int
+) -> str:
     """建構薪資批次計算完成訊息文字"""
     return (
         f"【薪資計算完成】\n"
@@ -111,14 +114,51 @@ def build_salary_batch_message(year: int, month: int, count: int, total_net: int
 
 
 def build_activity_waitlist_promoted_message(
-    student_name: str, course_name: str
+    student_name: str,
+    course_name: str,
+    deadline: Optional[datetime] = None,
 ) -> str:
-    """建構才藝候補升位通知訊息文字"""
+    """建構才藝候補升位通知訊息文字。
+
+    deadline 不為 None 時表示「升為待確認」（家長須於期限前確認接受）。
+    deadline 為 None 時表示「管理員直升」或既有舊行為（立即生效）。
+    """
+    base = f"🎨 才藝候補升位通知\n" f"學生：{student_name}\n" f"課程：{course_name}\n"
+    if deadline is None:
+        return base + "已自動升為正式報名！"
+    deadline_str = deadline.strftime("%Y-%m-%d %H:%M")
     return (
-        f"🎨 才藝候補升位通知\n"
+        base
+        + f"已遞補為正式名額，請於 {deadline_str} 前至報名查詢頁確認接受；\n"
+        + "逾期未確認將自動放棄，由下一位候補遞補。"
+    )
+
+
+def build_activity_waitlist_promotion_reminder_message(
+    student_name: str,
+    course_name: str,
+    deadline: datetime,
+) -> str:
+    """建構候補升正式「剩餘時間」提醒訊息文字。"""
+    deadline_str = deadline.strftime("%Y-%m-%d %H:%M")
+    return (
+        f"⏰ 才藝候補轉正提醒\n"
         f"學生：{student_name}\n"
         f"課程：{course_name}\n"
-        f"已自動升為正式報名！"
+        f"請於 {deadline_str} 前完成確認，以免逾期放棄名額。"
+    )
+
+
+def build_activity_waitlist_promotion_expired_message(
+    student_name: str, course_name: str
+) -> str:
+    """建構候補升正式「逾期自動放棄」訊息文字。"""
+    return (
+        f"⚠️ 才藝候補名額已釋出\n"
+        f"學生：{student_name}\n"
+        f"課程：{course_name}\n"
+        f"因未於期限內確認，名額已自動釋出給下一位候補。"
+        f"若需重新報名，請聯繫校方或於公開頁面重新送件。"
     )
 
 
@@ -128,17 +168,14 @@ def build_dismissal_message(
     note: Optional[str] = None,
 ) -> str:
     """建構接送通知訊息文字"""
-    msg = (
-        f"【接送通知】\n"
-        f"學生：{student_name}\n"
-        f"班級：{classroom_name}"
-    )
+    msg = f"【接送通知】\n" f"學生：{student_name}\n" f"班級：{classroom_name}"
     if note:
         msg += f"\n備註：{note}"
     return msg
 
 
 # ── Service ──────────────────────────────────────────────────────────────────
+
 
 class LineService:
     """LINE 通知 Singleton 服務，支援熱更新設定"""
@@ -178,7 +215,9 @@ class LineService:
                 timeout=5,
             )
             if resp.status_code != 200:
-                logger.warning("LINE API 回傳非 200: %s %s", resp.status_code, resp.text)
+                logger.warning(
+                    "LINE API 回傳非 200: %s %s", resp.status_code, resp.text
+                )
                 return False
             return True
         except Exception as exc:
@@ -222,7 +261,9 @@ class LineService:
                 timeout=5,
             )
             if resp.status_code != 200:
-                logger.warning("LINE Reply API 失敗: %s %s", resp.status_code, resp.text)
+                logger.warning(
+                    "LINE Reply API 失敗: %s %s", resp.status_code, resp.text
+                )
                 return False
             return True
         except Exception as exc:
@@ -266,7 +307,9 @@ class LineService:
         reason: Optional[str] = None,
     ) -> None:
         """請假審核結果個人推播（失敗時 log warning，不拋出）"""
-        text = build_leave_result_message(name, leave_type, start, end, approved, reason)
+        text = build_leave_result_message(
+            name, leave_type, start, end, approved, reason
+        )
         self._push_to_user(line_user_id, text)
 
     def notify_overtime_result(
@@ -296,9 +339,39 @@ class LineService:
         self,
         student_name: str,
         course_name: str,
+        deadline: Optional[datetime] = None,
     ) -> None:
-        """才藝候補升位後群組推播（失敗時 log warning，不拋出）"""
-        text = build_activity_waitlist_promoted_message(student_name, course_name)
+        """才藝候補升位後群組推播（失敗時 log warning，不拋出）。
+
+        deadline 為 None：升為正式且立即生效（管理員直升）。
+        deadline 有值：升為 promoted_pending，家長須於期限前確認。
+        """
+        text = build_activity_waitlist_promoted_message(
+            student_name, course_name, deadline
+        )
+        self._push(text)
+
+    def notify_activity_waitlist_promotion_reminder(
+        self,
+        student_name: str,
+        course_name: str,
+        deadline: datetime,
+    ) -> None:
+        """候補轉正剩餘時間提醒（failsafe log warning）。"""
+        text = build_activity_waitlist_promotion_reminder_message(
+            student_name, course_name, deadline
+        )
+        self._push(text)
+
+    def notify_activity_waitlist_promotion_expired(
+        self,
+        student_name: str,
+        course_name: str,
+    ) -> None:
+        """候補轉正逾期自動放棄通知（failsafe log warning）。"""
+        text = build_activity_waitlist_promotion_expired_message(
+            student_name, course_name
+        )
         self._push(text)
 
     def notify_dismissal_created(
@@ -334,7 +407,9 @@ class LineService:
             record = (
                 session.query(SalaryRecord)
                 .filter(SalaryRecord.employee_id == emp_id)
-                .order_by(SalaryRecord.salary_year.desc(), SalaryRecord.salary_month.desc())
+                .order_by(
+                    SalaryRecord.salary_year.desc(), SalaryRecord.salary_month.desc()
+                )
                 .first()
             )
             if not record:
@@ -361,13 +436,18 @@ class LineService:
                 return
             lines = ["【最近假單】"]
             for r in records:
-                status = "✅ 核准" if r.is_approved is True else ("❌ 駁回" if r.is_approved is False else "⏳ 待審")
+                status = (
+                    "✅ 核准"
+                    if r.is_approved is True
+                    else ("❌ 駁回" if r.is_approved is False else "⏳ 待審")
+                )
                 lines.append(f"• {r.leave_type} {r.start_date} {status}")
             self._reply(reply_token, "\n".join(lines))
 
         elif cmd == "我的打卡":
             from datetime import date as _date
             import calendar
+
             today = _date.today()
             records = (
                 session.query(Attendance)
@@ -380,11 +460,7 @@ class LineService:
             )
             late = sum(1 for r in records if r.is_late)
             missing = sum(1 for r in records if r.is_missing_punch)
-            reply = (
-                f"【本月打卡統計】\n"
-                f"遲到：{late} 次\n"
-                f"缺打：{missing} 次"
-            )
+            reply = f"【本月打卡統計】\n" f"遲到：{late} 次\n" f"缺打：{missing} 次"
             self._reply(reply_token, reply)
 
         else:

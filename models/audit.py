@@ -11,6 +11,7 @@ from models.base import Base
 
 class AuditLog(Base):
     """操作審計紀錄表"""
+
     __tablename__ = "audit_logs"
     __table_args__ = (
         Index("ix_audit_created", "created_at"),
@@ -25,5 +26,10 @@ class AuditLog(Base):
     entity_type = Column(String(50), nullable=False, comment="資源類型")
     entity_id = Column(String(50), nullable=True, comment="資源 ID")
     summary = Column(Text, nullable=True, comment="操作摘要")
+    changes = Column(
+        Text,
+        nullable=True,
+        comment="變更內容 JSON（{before, after} 或 {created, deleted}）",
+    )
     ip_address = Column(String(45), nullable=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)

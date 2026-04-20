@@ -3,6 +3,7 @@ Audit logging middleware - automatically records all data-modifying API requests
 """
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime
@@ -33,7 +34,6 @@ ENTITY_PATTERNS = [
     (r"/api/auth/end-impersonate", "user"),
     (r"/api/auth/change-password", "user"),
     (r"/api/attendance", "attendance"),
-    (r"/api/employees/\d+/allowances", "employee_allowance"),
     (r"/api/employees", "employee"),
     (r"/api/students", "student"),
     (r"/api/classrooms", "classroom"),
@@ -42,7 +42,6 @@ ENTITY_PATTERNS = [
     (r"/api/salaries", "salary"),
     (r"/api/salary", "salary"),
     (r"/api/config/titles", "job_title"),
-    (r"/api/config/allowance-types", "allowance_type"),
     (r"/api/config/deduction-types", "deduction_type"),
     (r"/api/config/bonus-types", "bonus_type"),
     (r"/api/config", "config"),
@@ -55,6 +54,30 @@ ENTITY_PATTERNS = [
 
 # Skip these paths (login should not be audited as sensitive)
 SKIP_PATHS = {"/api/auth/login"}
+
+# entity_type → 中文 label。同時作為 /audit-logs/meta 的 source of truth
+# 與前端下拉選項同步。新增 entity_type 請只在此處增補一次。
+ENTITY_LABELS = {
+    "employee": "員工",
+    "student": "學生",
+    "attendance": "考勤",
+    "leave": "請假",
+    "overtime": "加班",
+    "classroom": "班級",
+    "salary": "薪資",
+    "config": "系統設定",
+    "user": "使用者帳號",
+    "job_title": "職稱",
+    "meeting": "會議",
+    "announcement": "公告",
+    "calendar": "行事曆",
+    "schedule": "班表",
+    "shift_swap": "換班",
+    "deduction_type": "扣款類型",
+    "bonus_type": "獎金類型",
+}
+
+ACTION_LABELS = {"CREATE": "新增", "UPDATE": "修改", "DELETE": "刪除"}
 
 
 def _parse_entity_type(path):
@@ -90,17 +113,8 @@ def _build_summary(method, path, entity_type):
     if "/calculate" in path:
         return "計算薪資"
 
-    action_zh = {"CREATE": "新增", "UPDATE": "修改", "DELETE": "刪除"}.get(action, action)
-    entity_zh = {
-        "employee": "員工", "student": "學生", "attendance": "考勤",
-        "leave": "請假", "overtime": "加班", "classroom": "班級",
-        "salary": "薪資", "config": "系統設定", "user": "使用者帳號",
-        "job_title": "職稱", "meeting": "會議", "announcement": "公告",
-        "calendar": "行事曆", "schedule": "班表", "shift_swap": "換班",
-        "employee_allowance": "員工津貼",
-        "allowance_type": "津貼類型", "deduction_type": "扣款類型",
-        "bonus_type": "獎金類型",
-    }.get(entity_type, entity_type)
+    action_zh = ACTION_LABELS.get(action, action)
+    entity_zh = ENTITY_LABELS.get(entity_type, entity_type)
 
     return f"{action_zh}{entity_zh}"
 
@@ -119,6 +133,7 @@ def _extract_user_from_header(request: Request):
     try:
         from jose import jwt
         from utils.auth import JWT_SECRET_KEY, JWT_ALGORITHM
+
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         return payload.get("user_id"), payload.get("name")
     except Exception:
@@ -184,15 +199,28 @@ class AuditMiddleware(BaseHTTPMiddleware):
         try:
             user_id, username = _extract_user_from_header(request)
             # endpoint 可透過 request.state 覆寫摘要與 entity_id
-            entity_id = (
-                getattr(request.state, "audit_entity_id", None)
-                or _parse_entity_id(path)
-            )
-            summary = (
-                getattr(request.state, "audit_summary", None)
-                or _build_summary(method, path, entity_type)
+            entity_id = getattr(
+                request.state, "audit_entity_id", None
+            ) or _parse_entity_id(path)
+            summary = getattr(request.state, "audit_summary", None) or _build_summary(
+                method, path, entity_type
             )
             ip = request.client.host if request.client else None
+
+            changes_raw = getattr(request.state, "audit_changes", None)
+            changes_json = None
+            if changes_raw is not None:
+                try:
+                    changes_json = json.dumps(
+                        changes_raw, ensure_ascii=False, default=str
+                    )
+                    # 單筆 diff 上限 64KB，避免撐爆 DB
+                    if len(changes_json) > 64 * 1024:
+                        changes_json = json.dumps(
+                            {"_truncated": True, "size": len(changes_json)}
+                        )
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Audit changes serialize failed: {e}")
 
             payload = dict(
                 user_id=user_id,
@@ -201,6 +229,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 entity_type=entity_type,
                 entity_id=entity_id,
                 summary=summary,
+                changes=changes_json,
                 ip_address=ip,
                 created_at=datetime.now(),
             )

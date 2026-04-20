@@ -20,7 +20,6 @@ from services.report_cache_service import report_cache_service
 from services.student_attendance_report import build_attendance_summary
 from utils.permissions import Permission, has_permission
 
-
 EVENT_TYPE_LABELS = {
     "meeting": "會議",
     "activity": "活動",
@@ -55,7 +54,9 @@ class DashboardQueryService:
             return "medium"
         return "low"
 
-    def build_upcoming_events(self, session, *, days: int = 7, today: date | None = None) -> list[dict]:
+    def build_upcoming_events(
+        self, session, *, days: int = 7, today: date | None = None
+    ) -> list[dict]:
         today = today or date.today()
         cache_key = (today.isoformat(), days)
         cached = self._events_cache.get(cache_key)
@@ -63,11 +64,16 @@ class DashboardQueryService:
             return cached
 
         end_date = today + timedelta(days=days)
-        events = session.query(SchoolEvent).filter(
-            SchoolEvent.is_active == True,
-            SchoolEvent.event_date >= today,
-            SchoolEvent.event_date <= end_date,
-        ).order_by(SchoolEvent.event_date).all()
+        events = (
+            session.query(SchoolEvent)
+            .filter(
+                SchoolEvent.is_active == True,
+                SchoolEvent.event_date >= today,
+                SchoolEvent.event_date <= end_date,
+            )
+            .order_by(SchoolEvent.event_date)
+            .all()
+        )
 
         result = [
             {
@@ -99,29 +105,57 @@ class DashboardQueryService:
         last_day = date(today.year, today.month, last)
 
         # 單次條件聚合，同時取得全部待審 + 本月待審（4 次 → 2 次）
-        leave_row = session.query(
-            func.count().label("total"),
-            func.count(case(
-                (and_(LeaveRecord.start_date >= first_day, LeaveRecord.start_date <= last_day), LeaveRecord.id),
-                else_=None,
-            )).label("this_month"),
-        ).filter(LeaveRecord.is_approved.is_(None)).first()
+        leave_row = (
+            session.query(
+                func.count().label("total"),
+                func.count(
+                    case(
+                        (
+                            and_(
+                                LeaveRecord.start_date >= first_day,
+                                LeaveRecord.start_date <= last_day,
+                            ),
+                            LeaveRecord.id,
+                        ),
+                        else_=None,
+                    )
+                ).label("this_month"),
+            )
+            .filter(LeaveRecord.is_approved.is_(None))
+            .first()
+        )
         pending_leaves = leave_row.total if leave_row else 0
         this_month_leaves = leave_row.this_month if leave_row else 0
 
-        ot_row = session.query(
-            func.count().label("total"),
-            func.count(case(
-                (and_(OvertimeRecord.overtime_date >= first_day, OvertimeRecord.overtime_date <= last_day), OvertimeRecord.id),
-                else_=None,
-            )).label("this_month"),
-        ).filter(OvertimeRecord.is_approved.is_(None)).first()
+        ot_row = (
+            session.query(
+                func.count().label("total"),
+                func.count(
+                    case(
+                        (
+                            and_(
+                                OvertimeRecord.overtime_date >= first_day,
+                                OvertimeRecord.overtime_date <= last_day,
+                            ),
+                            OvertimeRecord.id,
+                        ),
+                        else_=None,
+                    )
+                ).label("this_month"),
+            )
+            .filter(OvertimeRecord.is_approved.is_(None))
+            .first()
+        )
         pending_overtimes = ot_row.total if ot_row else 0
         this_month_overtimes = ot_row.this_month if ot_row else 0
 
-        pending_corrections = session.query(PunchCorrectionRequest).filter(
-            PunchCorrectionRequest.is_approved.is_(None),
-        ).count()
+        pending_corrections = (
+            session.query(PunchCorrectionRequest)
+            .filter(
+                PunchCorrectionRequest.is_approved.is_(None),
+            )
+            .count()
+        )
 
         result = {
             "pending_leaves": pending_leaves,
@@ -134,7 +168,9 @@ class DashboardQueryService:
         self._approval_cache[cache_key] = result
         return result
 
-    def build_student_attendance_summary(self, session, *, today: date | None = None) -> dict:
+    def build_student_attendance_summary(
+        self, session, *, today: date | None = None
+    ) -> dict:
         today = today or date.today()
 
         return report_cache_service.get_or_build(
@@ -142,11 +178,15 @@ class DashboardQueryService:
             category="home_student_attendance_summary",
             ttl_seconds=HOME_STUDENT_ATTENDANCE_CACHE_TTL_SECONDS,
             params={"date": today.isoformat()},
-            builder=lambda: self._compute_student_attendance_summary(session, today=today),
+            builder=lambda: self._compute_student_attendance_summary(
+                session, today=today
+            ),
         )
 
     def _compute_student_attendance_summary(self, session, *, today: date) -> dict:
-        total_students = session.query(Student).filter(Student.is_active == True).count()
+        total_students = (
+            session.query(Student).filter(Student.is_active == True).count()
+        )
         rows = (
             session.query(StudentAttendance.status, func.count(StudentAttendance.id))
             .join(Student, StudentAttendance.student_id == Student.id)
@@ -167,17 +207,67 @@ class DashboardQueryService:
     def build_activity_stats(self, session) -> dict:
         return activity_service.get_stats(session)
 
-    def build_home_sections(self, session, *, user_permissions: int, event_days: int = 7) -> dict:
+    def build_graduation_preview(self, session) -> dict | None:
+        """畢業日前 N 天顯示「即將自動畢業」提醒；超出視窗回 None。"""
+        try:
+            from services.graduation_scheduler import (
+                graduation_date_for_year,
+                is_within_preview_window,
+                list_upcoming_graduates,
+            )
+        except Exception:
+            return None
+
+        if not is_within_preview_window():
+            return None
+
+        candidates = list_upcoming_graduates(session)
+        if not candidates:
+            return None
+
+        today = date.today()
+        target = graduation_date_for_year(today.year)
+        days_left = (target - today).days
+        count = len(candidates)
+        priority = "high" if days_left <= 2 else "medium"
+        return {
+            "type": "graduation_preview",
+            "title": "即將自動畢業",
+            "route": "/classrooms",
+            "priority": priority,
+            "meta": {
+                "target_date": target.isoformat(),
+                "days_left": days_left,
+                "count": count,
+            },
+            "items": [
+                {
+                    "id": s.id,
+                    "label": s.name,
+                    "date": target.isoformat(),
+                    "meta": f"將於 {target.isoformat()} 自動轉為已畢業",
+                }
+                for s in candidates
+            ],
+        }
+
+    def build_home_sections(
+        self, session, *, user_permissions: int, event_days: int = 7
+    ) -> dict:
         sections = {}
 
         if has_permission(user_permissions, Permission.APPROVALS):
             sections["approval_summary"] = self.build_approval_summary(session)
 
         if has_permission(user_permissions, Permission.CALENDAR):
-            sections["upcoming_events"] = self.build_upcoming_events(session, days=event_days)
+            sections["upcoming_events"] = self.build_upcoming_events(
+                session, days=event_days
+            )
 
         if has_permission(user_permissions, Permission.STUDENTS_READ):
-            sections["student_attendance_summary"] = self.build_student_attendance_summary(session)
+            sections["student_attendance_summary"] = (
+                self.build_student_attendance_summary(session)
+            )
 
         if has_permission(user_permissions, Permission.ACTIVITY_READ):
             sections["activity_stats"] = self.build_activity_stats(session)
@@ -194,50 +284,67 @@ class DashboardQueryService:
         if has_permission(user_permissions, Permission.APPROVALS):
             approval_summary = self.build_approval_summary(session)
             if approval_summary["total"] > 0:
-                action_items.append({
-                    "type": "approval",
-                    "title": "待審核項目",
-                    "count": approval_summary["total"],
-                    "route": "/approvals",
-                    "priority": self._priority_for_count(approval_summary["total"]),
-                    "breakdown": {
-                        "leaves": approval_summary["pending_leaves"],
-                        "overtimes": approval_summary["pending_overtimes"],
-                        "punch_corrections": approval_summary["pending_punch_corrections"],
-                        "this_month_pending_leaves": approval_summary["this_month_pending_leaves"],
-                        "this_month_pending_overtimes": approval_summary["this_month_pending_overtimes"],
-                    },
-                })
+                action_items.append(
+                    {
+                        "type": "approval",
+                        "title": "待審核項目",
+                        "count": approval_summary["total"],
+                        "route": "/approvals",
+                        "priority": self._priority_for_count(approval_summary["total"]),
+                        "breakdown": {
+                            "leaves": approval_summary["pending_leaves"],
+                            "overtimes": approval_summary["pending_overtimes"],
+                            "punch_corrections": approval_summary[
+                                "pending_punch_corrections"
+                            ],
+                            "this_month_pending_leaves": approval_summary[
+                                "this_month_pending_leaves"
+                            ],
+                            "this_month_pending_overtimes": approval_summary[
+                                "this_month_pending_overtimes"
+                            ],
+                        },
+                    }
+                )
 
         if has_permission(user_permissions, Permission.ACTIVITY_READ):
             unread_inquiries = activity_service.get_unread_inquiries_count(session)
             if unread_inquiries > 0:
-                action_items.append({
-                    "type": "activity_inquiry",
-                    "title": "家長未讀提問",
-                    "count": unread_inquiries,
-                    "route": "/activity/inquiries",
-                    "priority": self._priority_for_count(unread_inquiries),
-                })
+                action_items.append(
+                    {
+                        "type": "activity_inquiry",
+                        "title": "家長未讀提問",
+                        "count": unread_inquiries,
+                        "route": "/activity/inquiries",
+                        "priority": self._priority_for_count(unread_inquiries),
+                    }
+                )
 
         if has_permission(user_permissions, Permission.CALENDAR):
             events = self.build_upcoming_events(session, days=7)
             if events:
-                reminders.append({
-                    "type": "calendar",
-                    "title": "近期行事曆",
-                    "route": "/calendar",
-                    "priority": "low",
-                    "items": [
-                        {
-                            "id": item["id"],
-                            "label": item["title"],
-                            "date": item["event_date"],
-                            "meta": item["event_type_label"],
-                        }
-                        for item in events
-                    ],
-                })
+                reminders.append(
+                    {
+                        "type": "calendar",
+                        "title": "近期行事曆",
+                        "route": "/calendar",
+                        "priority": "low",
+                        "items": [
+                            {
+                                "id": item["id"],
+                                "label": item["title"],
+                                "date": item["event_date"],
+                                "meta": item["event_type_label"],
+                            }
+                            for item in events
+                        ],
+                    }
+                )
+
+        if has_permission(user_permissions, Permission.STUDENTS_READ):
+            graduation_preview = self.build_graduation_preview(session)
+            if graduation_preview:
+                reminders.append(graduation_preview)
 
         result = {
             "total_badge": sum(item["count"] for item in action_items),

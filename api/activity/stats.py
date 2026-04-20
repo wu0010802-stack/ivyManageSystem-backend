@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from models.database import get_session
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_staff_permission
+from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
 from services.activity_service import activity_service
 
@@ -96,7 +97,7 @@ async def export_dashboard_table(
         wb = openpyxl.Workbook()
 
         # --- Sheet 1: 總覽 ---
-        ws_overview = wb.active
+        ws_overview = SafeWorksheet(wb.active)
         ws_overview.title = "總覽"
         header_font = Font(bold=True)
         header_fill = PatternFill(
@@ -124,7 +125,7 @@ async def export_dashboard_table(
             ws_overview.column_dimensions[col[0].column_letter].width = 30
 
         # --- Sheet 2: 班級統計 ---
-        ws_detail = wb.create_sheet("班級統計")
+        ws_detail = SafeWorksheet(wb.create_sheet("班級統計"))
         course_list = data.get("courses", [])
         detail_headers = (
             ["年級", "班級", "班導師", "在籍人數"]

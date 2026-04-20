@@ -369,6 +369,30 @@ class TestRegistrationList:
         )
         assert total == 5
 
+    def test_student_id_filter(self, session):
+        """student_id 篩選：僅回傳指定學生的報名紀錄（跨學期）"""
+        from api.activity._shared import _build_registration_filter_query
+
+        reg_a = _add_reg(session, "學生A")
+        reg_a.student_id = 101
+        reg_a.school_year = 114
+        reg_a.semester = 1
+        reg_b = _add_reg(session, "學生A_下學期")
+        reg_b.student_id = 101
+        reg_b.school_year = 114
+        reg_b.semester = 2
+        reg_c = _add_reg(session, "學生B")
+        reg_c.student_id = 202
+        session.commit()
+
+        q = _build_registration_filter_query(session, student_id=101)
+        names = sorted([r.student_name for r in q.all()])
+        assert names == ["學生A", "學生A_下學期"]
+
+        q2 = _build_registration_filter_query(session, student_id=202)
+        assert q2.count() == 1
+        assert q2.first().student_name == "學生B"
+
 
 # ────────────────────────────────────────────────────────────────── #
 # P7-5：TestCourseAPI（課程 CRUD 邏輯）
@@ -797,8 +821,8 @@ class TestDeleteRegistration:
         session.refresh(reg)
         assert reg.is_active is False
 
-    def test_delete_auto_promotes_waitlist(self, session):
-        """刪除 enrolled 報名後，候補第一位自動升正式"""
+    def test_delete_auto_promotes_waitlist_to_pending(self, session):
+        """刪除 enrolled 報名後，候補第一位自動升 promoted_pending（24h 確認窗）"""
         from services.activity_service import ActivityService
 
         svc = ActivityService()
@@ -821,7 +845,8 @@ class TestDeleteRegistration:
             )
             .first()
         )
-        assert rc.status == "enrolled"
+        assert rc.status == "promoted_pending"
+        assert rc.confirm_deadline is not None
 
     def test_delete_no_waitlist_no_error(self, session):
         """課程無候補時刪除不拋錯"""

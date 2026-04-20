@@ -31,14 +31,16 @@ from models.activity import (
 from services.activity_service import ActivityService
 from api.activity import RegistrationTimeSettings
 
-
 # ------------------------------------------------------------------ #
 # Fixtures
 # ------------------------------------------------------------------ #
 
+
 @pytest.fixture
 def session():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     s = Session()
@@ -72,7 +74,9 @@ def _add_reg(session, student_name="王小明", class_name="大班") -> Activity
     return r
 
 
-def _enroll(session, reg_id: int, course_id: int, status: str = "enrolled") -> RegistrationCourse:
+def _enroll(
+    session, reg_id: int, course_id: int, status: str = "enrolled"
+) -> RegistrationCourse:
     rc = RegistrationCourse(
         registration_id=reg_id,
         course_id=course_id,
@@ -88,6 +92,7 @@ def _enroll(session, reg_id: int, course_id: int, status: str = "enrolled") -> R
 # B9 - delete_registration 自動候補升位
 # ------------------------------------------------------------------ #
 
+
 class TestDeleteRegistrationAutoPromote:
     def test_delete_soft_deletes_is_active(self, session, svc):
         """刪除後 is_active=False"""
@@ -100,8 +105,8 @@ class TestDeleteRegistrationAutoPromote:
 
         assert reg.is_active is False
 
-    def test_delete_auto_promotes_first_waitlist(self, session, svc):
-        """刪除正式報名後，候補第一位自動升為 enrolled"""
+    def test_delete_auto_promotes_first_waitlist_to_pending(self, session, svc):
+        """刪除正式報名後，候補第一位自動升為 promoted_pending（24h 確認窗）"""
         course = _add_course(session, capacity=1)
 
         # 第一筆：正式報名（占滿名額）
@@ -112,11 +117,14 @@ class TestDeleteRegistrationAutoPromote:
         reg2 = _add_reg(session, student_name="乙")
         rc2 = _enroll(session, reg2.id, course.id, status="waitlist")
 
-        # 刪除正式報名 → 候補應自動升正式
+        # 刪除正式報名 → 候補應自動升 promoted_pending 並帶 deadline
         svc.delete_registration(session, reg1.id, "admin")
         session.flush()
 
-        assert rc2.status == "enrolled"
+        assert rc2.status == "promoted_pending"
+        assert rc2.promoted_at is not None
+        assert rc2.confirm_deadline is not None
+        assert rc2.confirm_deadline > rc2.promoted_at
 
     def test_delete_no_waitlist_no_error(self, session, svc):
         """無候補時刪除不拋例外"""
@@ -152,10 +160,10 @@ class TestDeleteRegistrationAutoPromote:
         svc.delete_registration(session, reg1.id, "admin")
         session.flush()
 
-        # 乙應升正式（兩門課）
-        assert rc_a2.status == "enrolled"
-        assert rc_b2.status == "enrolled"
-        # 丙在乙後，A課已滿，不升位
+        # 乙應升 promoted_pending（兩門課）
+        assert rc_a2.status == "promoted_pending"
+        assert rc_b2.status == "promoted_pending"
+        # 丙在乙後，A課已被乙的 promoted_pending 佔位，不升
         assert rc_a3.status == "waitlist"
 
     def test_delete_logs_change(self, session, svc):
@@ -167,9 +175,11 @@ class TestDeleteRegistrationAutoPromote:
         svc.delete_registration(session, reg.id, "admin-user")
         session.flush()
 
-        change = session.query(RegistrationChange).filter(
-            RegistrationChange.registration_id == reg.id
-        ).first()
+        change = (
+            session.query(RegistrationChange)
+            .filter(RegistrationChange.registration_id == reg.id)
+            .first()
+        )
         assert change is not None
         assert change.changed_by == "admin-user"
         assert change.change_type == "刪除報名"
@@ -185,11 +195,15 @@ class TestDeleteRegistrationAutoPromote:
         svc.delete_registration(session, reg1.id, "admin")
         session.flush()
 
-        # 應有一筆「候補升正式」記錄，屬於乙的報名
-        promote_log = session.query(RegistrationChange).filter(
-            RegistrationChange.registration_id == reg2.id,
-            RegistrationChange.change_type == "候補升正式",
-        ).first()
+        # 應有一筆「候補升正式（待確認）」記錄，屬於乙的報名
+        promote_log = (
+            session.query(RegistrationChange)
+            .filter(
+                RegistrationChange.registration_id == reg2.id,
+                RegistrationChange.change_type == "候補升正式（待確認）",
+            )
+            .first()
+        )
         assert promote_log is not None
         assert promote_log.changed_by == "system"
 
@@ -198,13 +212,16 @@ class TestDeleteRegistrationAutoPromote:
 # B7 - public_update_registration 時間窗口（Pydantic 層面驗證）
 # ------------------------------------------------------------------ #
 
+
 class TestPublicUpdateTimeCheck:
     """測試 ActivityRegistrationSettings 在 Service 層的時間窗口邏輯。
 
     注意：B7 的實際 HTTP 檢查在 FastAPI 路由層，這裡測試設定值的邏輯。
     """
 
-    def _check_time_window(self, settings: ActivityRegistrationSettings, now_str: str) -> str | None:
+    def _check_time_window(
+        self, settings: ActivityRegistrationSettings, now_str: str
+    ) -> str | None:
         """仿照 public_update_registration 的時間窗口判斷邏輯，回傳錯誤訊息或 None。"""
         if not settings.is_open:
             return "報名尚未開放"
@@ -253,6 +270,7 @@ class TestPublicUpdateTimeCheck:
 # ------------------------------------------------------------------ #
 # B8 - RegistrationTimeSettings Pydantic 驗證
 # ------------------------------------------------------------------ #
+
 
 class TestRegistrationTimeSettingsValidation:
     def test_invalid_format_raises(self):

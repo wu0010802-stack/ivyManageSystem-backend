@@ -86,14 +86,18 @@ def _login_admin(client, session_factory):
 
 
 class TestJobRegistry:
-    def test_create_and_get(self):
+    """Registry 單元測試（DB-backed，需要 client fixture 提供 in-memory DB）。"""
+
+    def test_create_and_get(self, client):
+        salary_job_registry.clear_all()
         job = salary_job_registry.create(year=2026, month=4, total=10)
         got = salary_job_registry.get(job.job_id)
         assert got is not None
         assert got.total == 10
         assert got.status == "pending"
 
-    def test_progress_update(self):
+    def test_progress_update(self, client):
+        salary_job_registry.clear_all()
         job = salary_job_registry.create(year=2026, month=4, total=3)
         salary_job_registry.mark_running(job.job_id)
         salary_job_registry.update_progress(job.job_id, 2, 3, "Alice")
@@ -102,18 +106,17 @@ class TestJobRegistry:
         assert got.current_employee == "Alice"
         assert got.status == "running"
 
-    def test_complete(self):
+    def test_complete(self, client):
+        salary_job_registry.clear_all()
         job = salary_job_registry.create(year=2026, month=4, total=2)
         salary_job_registry.complete(job.job_id, [{"name": "A"}], [{"error": "x"}])
         got = salary_job_registry.get(job.job_id)
         assert got.status == "completed"
-        assert (
-            got.result_count if hasattr(got, "result_count") else len(got.results) == 1
-        )
         assert len(got.results) == 1
         assert len(got.errors) == 1
 
-    def test_fail(self):
+    def test_fail(self, client):
+        salary_job_registry.clear_all()
         job = salary_job_registry.create(year=2026, month=4, total=2)
         salary_job_registry.fail(job.job_id, "boom")
         got = salary_job_registry.get(job.job_id)
@@ -189,3 +192,104 @@ class TestAsyncEndpoint:
         assert status.status_code == 200
         status_body = status.json()
         assert status_body["status"] in ("pending", "running", "completed")
+
+
+class TestCrossInstanceVisibility:
+    """DB-backed registry：不同 registry instance 應看到同一 DB 狀態（模擬跨 worker）"""
+
+    def test_second_registry_instance_sees_job(self, client):
+        from services.salary_job_registry import _SalaryJobRegistry
+
+        salary_job_registry.clear_all()
+        job = salary_job_registry.create(year=2098, month=6, total=5)
+
+        worker_b_registry = _SalaryJobRegistry()
+        got = worker_b_registry.get(job.job_id)
+        assert got is not None
+        assert got.job_id == job.job_id
+        assert got.year == 2098
+
+        active = worker_b_registry.find_active(2098, 6)
+        assert active is not None
+        assert active.job_id == job.job_id
+        salary_job_registry.clear_all()
+
+    def test_worker_b_update_visible_to_worker_a(self, client):
+        from services.salary_job_registry import _SalaryJobRegistry
+
+        salary_job_registry.clear_all()
+        job = salary_job_registry.create(year=2098, month=7, total=3)
+
+        worker_b_registry = _SalaryJobRegistry()
+        worker_b_registry.mark_running(job.job_id)
+        worker_b_registry.update_progress(job.job_id, 2, 3, "Bob")
+
+        got = salary_job_registry.get(job.job_id)
+        assert got.done == 2
+        assert got.current_employee == "Bob"
+        assert got.status == "running"
+        salary_job_registry.clear_all()
+
+
+class TestActiveJobGuard:
+    """同 year/month 已有 active job 時應拒絕重複觸發"""
+
+    def test_find_active_returns_pending_job(self):
+        salary_job_registry.clear_all()
+        job = salary_job_registry.create(year=2099, month=7, total=5)
+        found = salary_job_registry.find_active(2099, 7)
+        assert found is not None
+        assert found.job_id == job.job_id
+        salary_job_registry.clear_all()
+
+    def test_find_active_skips_completed(self):
+        salary_job_registry.clear_all()
+        job = salary_job_registry.create(year=2099, month=8, total=1)
+        salary_job_registry.complete(job.job_id, [], [])
+        assert salary_job_registry.find_active(2099, 8) is None
+        salary_job_registry.clear_all()
+
+    def test_find_active_skips_failed(self):
+        salary_job_registry.clear_all()
+        job = salary_job_registry.create(year=2099, month=9, total=1)
+        salary_job_registry.fail(job.job_id, "boom")
+        assert salary_job_registry.find_active(2099, 9) is None
+        salary_job_registry.clear_all()
+
+    def test_find_active_different_month_not_matched(self):
+        salary_job_registry.clear_all()
+        salary_job_registry.create(year=2099, month=10, total=1)
+        assert salary_job_registry.find_active(2099, 11) is None
+        salary_job_registry.clear_all()
+
+    def test_duplicate_calculate_async_returns_409(self, client, monkeypatch):
+        """第二次 POST /calculate-async 應回 409（同 year/month 已有 active job）"""
+        c, sf = client
+        _login_admin(c, sf)
+        salary_job_registry.clear_all()
+        with sf() as session:
+            session.add(
+                Employee(
+                    employee_id="D1",
+                    name="員工D",
+                    base_salary=30000,
+                    is_active=True,
+                )
+            )
+            session.commit()
+
+        # 讓 run 永遠停留在 pending/running，模擬尚未完成
+        def _never_run(job_id, year, month):
+            salary_job_registry.mark_running(job_id)
+
+        monkeypatch.setattr(salary_module, "_run_salary_calc_job", _never_run)
+
+        first = c.post("/api/salaries/calculate-async?year=2099&month=12")
+        assert first.status_code == 202
+
+        second = c.post("/api/salaries/calculate-async?year=2099&month=12")
+        assert second.status_code == 409
+        assert "計算中" in second.json()["detail"]
+        assert first.json()["job_id"] in second.json()["detail"]
+
+        salary_job_registry.clear_all()

@@ -58,11 +58,6 @@ def _fill_salary_record(salary_record, breakdown, engine):
     salary_record.attendance_policy_id = engine._attendance_policy_id
 
     salary_record.base_salary = breakdown.base_salary
-    salary_record.supervisor_allowance = breakdown.supervisor_allowance
-    salary_record.teacher_allowance = breakdown.teacher_allowance
-    salary_record.meal_allowance = breakdown.meal_allowance
-    salary_record.transportation_allowance = breakdown.transportation_allowance
-    salary_record.other_allowance = breakdown.other_allowance
     salary_record.festival_bonus = breakdown.festival_bonus
     salary_record.overtime_bonus = breakdown.overtime_bonus
     salary_record.bonus_separate = breakdown.bonus_separate
@@ -831,9 +826,9 @@ class SalaryEngine:
     # ─── 主要計算方法 ────────────────────────────────────────────────────────
 
     def _calculate_base_gross(
-        self, breakdown, employee: dict, year: int, month: int, allowances
+        self, breakdown, employee: dict, year: int, month: int
     ) -> float:
-        """計算底薪折算與各類津貼，回傳 contracted_base（用於後續保險計算）。"""
+        """計算底薪折算，回傳 contracted_base（用於後續保險計算）。"""
         contracted_base = employee.get("base_salary", 0) or 0
         breakdown.base_salary = _prorate_for_period(
             contracted_base,
@@ -842,29 +837,6 @@ class SalaryEngine:
             year,
             month,
         )
-
-        # 處理津貼：以 AllowanceType.code 為準（穩定識別碼），不再依賴中文 name substring。
-        # code 對應：見 scripts/migrate_allowances.py 預設 5 種；未知 code 一律進 other。
-        _CODE_TO_FIELD = {
-            "supervisor": "supervisor_allowance",
-            "teacher": "teacher_allowance",
-            "meal": "meal_allowance",
-            "transportation": "transportation_allowance",
-        }
-        if allowances:
-            for allowance in allowances:
-                amount = allowance.get("amount", 0) or 0
-                code = allowance.get("code", "")
-                field = _CODE_TO_FIELD.get(code, "other_allowance")
-                setattr(breakdown, field, getattr(breakdown, field) + amount)
-        else:
-            # 向下相容：尚未跑 scripts/migrate_allowances.py 的舊資料，
-            # 仍從 Employee 直接欄位讀取。已遷移者 list 必非空，不會雙倍計。
-            breakdown.supervisor_allowance += employee.get("supervisor_allowance", 0) or 0
-            breakdown.teacher_allowance += employee.get("teacher_allowance", 0) or 0
-            breakdown.meal_allowance += employee.get("meal_allowance", 0) or 0
-            breakdown.transportation_allowance += employee.get("transportation_allowance", 0) or 0
-            breakdown.other_allowance += employee.get("other_allowance", 0) or 0
 
         breakdown.performance_bonus = employee.get("performance_bonus", 0)
         breakdown.special_bonus = employee.get("special_bonus", 0)
@@ -1086,71 +1058,18 @@ class SalaryEngine:
         base_salary: float = 0,
         late_details: list = None,
     ) -> dict:
-        """
-        計算考勤扣款
+        """委派至 `services.salary.deduction.calculate_attendance_deduction`。"""
+        from .deduction import calculate_attendance_deduction as _impl
 
-        規則：
-        - 遲到/早退：一律按實際分鐘比例扣款（每分鐘 = 月薪 ÷ 30 ÷ 8 ÷ 60，依勞基法固定基準）
-          並設「單筆遲到/早退不超過當日日薪」上限，避免打卡資料異常造成超額扣款
-        - 未打卡：不扣款，僅記錄次數（供考核用）
-        """
-        # 每分鐘薪資 = 月薪 ÷ 30 ÷ 8 ÷ 60（依勞基法時薪基準，固定 30 天）
-        # base_salary 為 0（時薪制或未設定）時：扣款為 0。時薪制按工時付費，
-        # 不應再以「每分鐘 1 元」的硬寫死值扣款（原 fallback 會造成 60 元/小時誤扣）。
-        per_minute_rate = (
-            base_salary / (MONTHLY_BASE_DAYS * 8 * 60) if base_salary > 0 else 0
-        )
-
-        # 遲到扣款 — 逐筆套用「不超過當日日薪」上限
-        if late_details:
-            late_minutes_per_day = late_details
-        else:
-            late_minutes_per_day = (
-                [attendance.total_late_minutes] if attendance.total_late_minutes else []
-            )
-        late_deduction = sum(
-            min(m * per_minute_rate, daily_salary) if daily_salary > 0
-            else m * per_minute_rate
-            for m in late_minutes_per_day
-        )
-
-        # 早退扣款 — 無逐筆 details，整月加總時一律以「日數 × 日薪」為上限
-        total_early_minutes = attendance.total_early_minutes
-        early_count = attendance.early_leave_count or 0
-        raw_early_deduction = total_early_minutes * per_minute_rate
-        if daily_salary > 0 and early_count > 0:
-            early_deduction = min(raw_early_deduction, early_count * daily_salary)
-        else:
-            early_deduction = raw_early_deduction
-
-        # 未打卡：不扣款，僅記錄
-        missing_count = (
-            attendance.missing_punch_in_count + attendance.missing_punch_out_count
-        )
-
-        return {
-            "late_deduction": late_deduction,
-            "missing_punch_deduction": 0,  # 不扣款
-            "early_leave_deduction": early_deduction,
-            "late_count": attendance.late_count,
-            "early_leave_count": attendance.early_leave_count,
-            "missing_punch_count": missing_count,
-            "total_late_minutes": attendance.total_late_minutes,
-            "total_early_minutes": total_early_minutes,
-        }
+        return _impl(attendance, daily_salary, base_salary, late_details)
 
     def calculate_bonus(
         self, target: int, current: int, base_amount: float, overtime_per: float = 500
     ) -> dict:
-        """計算獎金 (舊版，保留相容性)"""
-        ratio = current / target if target > 0 else 0
-        festival_bonus = base_amount * ratio
-        overtime_bonus = max(0, current - target) * overtime_per
-        return {
-            "festival_bonus": round(festival_bonus),
-            "overtime_bonus": round(overtime_bonus),
-            "ratio": ratio,
-        }
+        """委派至 `services.salary.deduction.calculate_bonus`（舊版相容）。"""
+        from .deduction import calculate_bonus as _impl
+
+        return _impl(target, current, base_amount, overtime_per)
 
     def calculate_overtime_bonus(
         self,
@@ -1202,7 +1121,6 @@ class SalaryEngine:
         attendance: AttendanceResult = None,
         bonus_settings: dict = None,
         leave_deduction: float = 0,
-        allowances: List[dict] = None,
         classroom_context: dict = None,
         office_staff_context: dict = None,
         meeting_context: dict = None,
@@ -1220,7 +1138,6 @@ class SalaryEngine:
             attendance:         考勤資料
             bonus_settings:     舊版獎金設定 (target, current, festival_base...)
             leave_deduction:    請假扣款
-            allowances:         津貼列表
             classroom_context:  班級上下文 (新版節慶獎金用)
             office_staff_context: 辦公室人員上下文
             meeting_context:    園務會議上下文
@@ -1249,7 +1166,7 @@ class SalaryEngine:
             breakdown.gross_salary = breakdown.hourly_total
         else:
             # 正職員工
-            self._calculate_base_gross(breakdown, employee, year, month, allowances)
+            self._calculate_base_gross(breakdown, employee, year, month)
             self._calculate_bonuses(
                 breakdown,
                 employee,
@@ -1262,11 +1179,6 @@ class SalaryEngine:
             )
             breakdown.gross_salary = (
                 breakdown.base_salary
-                + breakdown.supervisor_allowance
-                + breakdown.teacher_allowance
-                + breakdown.meal_allowance
-                + breakdown.transportation_allowance
-                + breakdown.other_allowance
                 + breakdown.performance_bonus
                 + breakdown.special_bonus
                 + breakdown.supervisor_dividend
@@ -1415,9 +1327,9 @@ class SalaryEngine:
                 if is_eligible:
                     remark = "全校比例(主管)"
 
-            elif (office_base := self.get_office_festival_bonus_base(
-                position, title_name
-            )) is not None:
+            elif (
+                office_base := self.get_office_festival_bonus_base(position, title_name)
+            ) is not None:
                 category = "辦公室"
                 current_enrollment = school_active_students
                 bonus_base = office_base
@@ -1456,8 +1368,11 @@ class SalaryEngine:
                 if is_eligible:
                     other_count = len(
                         classroom_context.get("shared_other_classes")
-                        or ([classroom_context["shared_second_class"]]
-                            if classroom_context.get("shared_second_class") else [])
+                        or (
+                            [classroom_context["shared_second_class"]]
+                            if classroom_context.get("shared_second_class")
+                            else []
+                        )
                     )
                     if other_count == 1:
                         remark = "兩班平均"
@@ -1553,11 +1468,6 @@ class SalaryEngine:
             "base_salary": base_salary,
             "hourly_rate": emp.hourly_rate,
             "work_hours": 0,
-            "supervisor_allowance": emp.supervisor_allowance,
-            "teacher_allowance": emp.teacher_allowance,
-            "meal_allowance": emp.meal_allowance,
-            "transportation_allowance": emp.transportation_allowance,
-            "other_allowance": emp.other_allowance,
             # 投保薪資 raw 值（不在此處做 bracket 正規化，由 _calculate_deductions 統一處理）
             "insurance_salary": (
                 emp.insurance_salary_level
@@ -1637,26 +1547,6 @@ class SalaryEngine:
             ),
             attendances,
         )
-
-    def _load_allowances_list(self, session, emp) -> List[dict]:
-        """查詢員工有效津貼，回傳 [{'name': ..., 'amount': ...}, ...]。"""
-        from models.database import EmployeeAllowance, AllowanceType
-
-        rows = (
-            session.query(EmployeeAllowance, AllowanceType)
-            .join(
-                AllowanceType, EmployeeAllowance.allowance_type_id == AllowanceType.id
-            )
-            .filter(
-                EmployeeAllowance.employee_id == emp.id,
-                EmployeeAllowance.is_active == True,
-            )
-            .all()
-        )
-        return [
-            {"code": at.code, "name": at.name, "amount": ea.amount}
-            for ea, at in rows
-        ]
 
     def _build_contexts(self, session, emp, end_date: date) -> tuple:
         """建構 (classroom_context, office_staff_context)。"""
@@ -1908,21 +1798,18 @@ class SalaryEngine:
                 session, emp, start_date, end_date, emp_dict
             )
 
-            # 5. 取得津貼
-            allowances = self._load_allowances_list(session, emp)
-
-            # 6. 建構 Classroom Context 與 Office Context
+            # 5. 建構 Classroom Context 與 Office Context
             classroom_context, office_staff_context = self._build_contexts(
                 session, emp, end_date
             )
 
-            # 7. 查詢請假、加班、園務會議記錄
+            # 6. 查詢請假、加班、園務會議記錄
             daily_salary = calc_daily_salary(emp.base_salary)
             period_records = self._load_period_records(
                 session, emp, start_date, end_date, year, month, daily_salary
             )
 
-            # 8. 曠職偵測
+            # 7. 曠職偵測
             absent_count, absence_deduction_amount = self._detect_absences(
                 session,
                 emp,
@@ -1934,14 +1821,13 @@ class SalaryEngine:
                 month,
             )
 
-            # 9. 計算薪資
+            # 8. 計算薪資
             breakdown = self.calculate_salary(
                 employee=emp_dict,
                 year=year,
                 month=month,
                 attendance=attendance_result,
                 leave_deduction=period_records["leave_deduction"],
-                allowances=allowances,
                 classroom_context=classroom_context,
                 office_staff_context=office_staff_context,
                 meeting_context=period_records["meeting_context"],
@@ -2037,8 +1923,6 @@ class SalaryEngine:
             Employee,
             SalaryRecord,
             Attendance,
-            EmployeeAllowance,
-            AllowanceType,
             LeaveRecord,
             OvertimeRecord as DBOvertimeRecord,
             MeetingRecord,
@@ -2090,25 +1974,6 @@ class SalaryEngine:
             att_by_emp = defaultdict(list)
             for a in all_attendances:
                 att_by_emp[a.employee_id].append(a)
-
-            # 3. 津貼（JOIN AllowanceType）
-            all_ea = (
-                session.query(EmployeeAllowance, AllowanceType)
-                .join(
-                    AllowanceType,
-                    EmployeeAllowance.allowance_type_id == AllowanceType.id,
-                )
-                .filter(
-                    EmployeeAllowance.employee_id.in_(employee_ids),
-                    EmployeeAllowance.is_active == True,
-                )
-                .all()
-            )
-            allowance_by_emp = defaultdict(list)
-            for ea, at in all_ea:
-                allowance_by_emp[ea.employee_id].append(
-                    {"code": at.code, "name": at.name, "amount": ea.amount}
-                )
 
             # 4. 班級與年級（預載 grade 避免 lazy load）
             all_classrooms = (
@@ -2317,9 +2182,6 @@ class SalaryEngine:
                         details=[],
                     )
 
-                    # ── 津貼（使用預載）
-                    allowances = allowance_by_emp[emp.id]
-
                     # ── classroom_context / office_staff_context（使用預載 + 共用方法）
                     classroom_context = None
                     if emp.classroom_id and emp.classroom_id in classroom_map:
@@ -2394,7 +2256,6 @@ class SalaryEngine:
                         month=month,
                         attendance=attendance_result,
                         leave_deduction=leave_deduction_total,
-                        allowances=allowances,
                         classroom_context=classroom_context,
                         office_staff_context=office_staff_context,
                         meeting_context=meeting_context,

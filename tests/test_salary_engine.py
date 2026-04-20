@@ -1,8 +1,14 @@
 """薪資引擎核心邏輯單元測試"""
+
 import pytest
 from datetime import date, datetime, time
 from unittest.mock import MagicMock
-from services.salary_engine import SalaryEngine, SalaryBreakdown, _compute_hourly_daily_hours, get_working_days
+from services.salary_engine import (
+    SalaryEngine,
+    SalaryBreakdown,
+    _compute_hourly_daily_hours,
+    get_working_days,
+)
 from services.attendance_parser import AttendanceResult
 
 
@@ -12,84 +18,95 @@ from services.attendance_parser import AttendanceResult
 class TestPositionGrade:
 
     def test_teacher_grade_a(self, engine):
-        assert engine.get_position_grade('幼兒園教師') == 'A'
+        assert engine.get_position_grade("幼兒園教師") == "A"
 
     def test_childcare_grade_b(self, engine):
-        assert engine.get_position_grade('教保員') == 'B'
+        assert engine.get_position_grade("教保員") == "B"
 
     def test_assistant_grade_c(self, engine):
-        assert engine.get_position_grade('助理教保員') == 'C'
+        assert engine.get_position_grade("助理教保員") == "C"
 
     def test_unknown_position(self, engine):
-        assert engine.get_position_grade('司機') is None
+        assert engine.get_position_grade("司機") is None
 
 
 class TestFestivalBonusBase:
 
     def test_head_teacher_a(self, engine):
-        assert engine.get_festival_bonus_base('幼兒園教師', 'head_teacher') == 2000
+        assert engine.get_festival_bonus_base("幼兒園教師", "head_teacher") == 2000
 
     def test_head_teacher_c(self, engine):
-        assert engine.get_festival_bonus_base('助理教保員', 'head_teacher') == 1500
+        assert engine.get_festival_bonus_base("助理教保員", "head_teacher") == 1500
 
     def test_assistant_teacher(self, engine):
-        assert engine.get_festival_bonus_base('幼兒園教師', 'assistant_teacher') == 1200
+        assert engine.get_festival_bonus_base("幼兒園教師", "assistant_teacher") == 1200
 
     def test_unknown_position_defaults_to_c(self, engine):
         """未知職位預設使用 C 級"""
-        result = engine.get_festival_bonus_base('其他', 'head_teacher')
+        result = engine.get_festival_bonus_base("其他", "head_teacher")
         assert result == 1500  # C 級
 
     def test_unknown_role(self, engine):
-        assert engine.get_festival_bonus_base('幼兒園教師', 'unknown_role') == 0
+        assert engine.get_festival_bonus_base("幼兒園教師", "unknown_role") == 0
 
 
 class TestTargetEnrollment:
 
     def test_big_class_two_teachers(self, engine):
-        assert engine.get_target_enrollment('大班', has_assistant=True) == 24
+        assert engine.get_target_enrollment("大班", has_assistant=True) == 24
 
     def test_big_class_one_teacher(self, engine):
-        assert engine.get_target_enrollment('大班', has_assistant=False) == 12
+        assert engine.get_target_enrollment("大班", has_assistant=False) == 12
 
     def test_baby_class_shared(self, engine):
-        assert engine.get_target_enrollment('幼幼班', has_assistant=True, is_shared_assistant=True) == 12
+        assert (
+            engine.get_target_enrollment(
+                "幼幼班", has_assistant=True, is_shared_assistant=True
+            )
+            == 12
+        )
 
     def test_unknown_grade(self, engine):
-        assert engine.get_target_enrollment('未知班', has_assistant=True) == 0
+        assert engine.get_target_enrollment("未知班", has_assistant=True) == 0
 
 
 class TestSupervisorDividend:
 
     def test_principal(self, engine):
-        assert engine.get_supervisor_dividend('園長') == 5000
+        assert engine.get_supervisor_dividend("園長") == 5000
 
     def test_director(self, engine):
-        assert engine.get_supervisor_dividend('主任') == 4000
+        assert engine.get_supervisor_dividend("主任") == 4000
 
     def test_vice_leader(self, engine):
-        assert engine.get_supervisor_dividend('副組長') == 1500
+        assert engine.get_supervisor_dividend("副組長") == 1500
 
     def test_non_supervisor(self, engine):
-        assert engine.get_supervisor_dividend('幼兒園教師') == 0
+        assert engine.get_supervisor_dividend("幼兒園教師") == 0
 
     def test_position_priority(self, engine):
         """position 參數優先於 title"""
-        assert engine.get_supervisor_dividend('幼兒園教師', position='園長') == 5000
+        assert engine.get_supervisor_dividend("幼兒園教師", position="園長") == 5000
 
     def test_supervisor_role_priority(self, engine):
         """supervisor_role 應優先於教育局系統職稱與職位"""
-        assert engine.get_supervisor_dividend(
-            '幼兒園教師', position='班導', supervisor_role='主任'
-        ) == 4000
+        assert (
+            engine.get_supervisor_dividend(
+                "幼兒園教師", position="班導", supervisor_role="主任"
+            )
+            == 4000
+        )
 
 
 class TestSupervisorFestivalBonus:
 
     def test_supervisor_role_resolves_bonus_base(self, engine):
-        assert engine.get_supervisor_festival_bonus(
-            '教保員', position='班導', supervisor_role='組長'
-        ) == 2000
+        assert (
+            engine.get_supervisor_festival_bonus(
+                "教保員", position="班導", supervisor_role="組長"
+            )
+            == 2000
+        )
 
 
 # ──────────────────────────────────────────────
@@ -98,28 +115,34 @@ class TestSupervisorFestivalBonus:
 class TestFestivalBonusEligibility:
 
     def test_eligible_after_3_months(self, engine):
-        assert engine.is_eligible_for_festival_bonus(
-            hire_date='2025-01-01',
-            reference_date='2025-04-01'
-        ) is True
+        assert (
+            engine.is_eligible_for_festival_bonus(
+                hire_date="2025-01-01", reference_date="2025-04-01"
+            )
+            is True
+        )
 
     def test_not_eligible_before_3_months(self, engine):
-        assert engine.is_eligible_for_festival_bonus(
-            hire_date='2025-01-15',
-            reference_date='2025-04-01'
-        ) is False
+        assert (
+            engine.is_eligible_for_festival_bonus(
+                hire_date="2025-01-15", reference_date="2025-04-01"
+            )
+            is False
+        )
 
     def test_none_hire_date_defaults_eligible(self, engine):
         assert engine.is_eligible_for_festival_bonus(None) is True
 
     def test_invalid_date_string_defaults_eligible(self, engine):
-        assert engine.is_eligible_for_festival_bonus('not-a-date') is True
+        assert engine.is_eligible_for_festival_bonus("not-a-date") is True
 
     def test_date_object(self, engine):
-        assert engine.is_eligible_for_festival_bonus(
-            hire_date=date(2025, 1, 1),
-            reference_date=date(2025, 6, 1)
-        ) is True
+        assert (
+            engine.is_eligible_for_festival_bonus(
+                hire_date=date(2025, 1, 1), reference_date=date(2025, 6, 1)
+            )
+            is True
+        )
 
 
 # ──────────────────────────────────────────────
@@ -129,12 +152,16 @@ class TestAttendanceDeduction:
 
     def _make_attendance(self, **kwargs):
         defaults = dict(
-            employee_name='測試',
-            total_days=22, normal_days=20,
-            late_count=0, early_leave_count=0,
-            missing_punch_in_count=0, missing_punch_out_count=0,
-            total_late_minutes=0, total_early_minutes=0,
-            details=[]
+            employee_name="測試",
+            total_days=22,
+            normal_days=20,
+            late_count=0,
+            early_leave_count=0,
+            missing_punch_in_count=0,
+            missing_punch_out_count=0,
+            total_late_minutes=0,
+            total_early_minutes=0,
+            details=[],
         )
         defaults.update(kwargs)
         return AttendanceResult(**defaults)
@@ -142,10 +169,12 @@ class TestAttendanceDeduction:
     def test_no_deduction_perfect_attendance(self, engine):
         """全勤無扣款"""
         att = self._make_attendance()
-        result = engine.calculate_attendance_deduction(att, daily_salary=1000, base_salary=30000)
-        assert result['late_deduction'] == 0
-        assert result['early_leave_deduction'] == 0
-        assert result['missing_punch_deduction'] == 0
+        result = engine.calculate_attendance_deduction(
+            att, daily_salary=1000, base_salary=30000
+        )
+        assert result["late_deduction"] == 0
+        assert result["early_leave_deduction"] == 0
+        assert result["missing_punch_deduction"] == 0
 
     def test_late_per_minute(self, engine):
         """遲到按分鐘比例扣款（中間值保留浮點，不提前 round）"""
@@ -154,7 +183,7 @@ class TestAttendanceDeduction:
             att, daily_salary=1000, base_salary=30000, late_details=[30]
         )
         per_minute = 30000 / 14400
-        assert result['late_deduction'] == 30 * per_minute  # 62.5，不提前舍入
+        assert result["late_deduction"] == 30 * per_minute  # 62.5，不提前舍入
 
     def test_late_over_120_min_per_minute(self, engine):
         """遲到超過 120 分鐘仍按實際分鐘比例扣款（依勞基法，不得溢扣）"""
@@ -163,9 +192,9 @@ class TestAttendanceDeduction:
             att, daily_salary=1000, base_salary=30000, late_details=[150]
         )
         per_minute = 30000 / 14400
-        assert result['late_deduction'] == 150 * per_minute  # 312.5，不提前舍入
-        assert 'auto_leave_count' not in result
-        assert 'auto_leave_deduction' not in result
+        assert result["late_deduction"] == 150 * per_minute  # 312.5，不提前舍入
+        assert "auto_leave_count" not in result
+        assert "auto_leave_deduction" not in result
 
     def test_mixed_late_details(self, engine):
         """混合：一次正常遲到 + 一次超過 120 分鐘，全部按分鐘比例合計"""
@@ -174,9 +203,9 @@ class TestAttendanceDeduction:
             att, daily_salary=1000, base_salary=30000, late_details=[30, 150]
         )
         per_minute = 30000 / 14400
-        assert result['late_deduction'] == round(180 * per_minute)
-        assert 'auto_leave_count' not in result
-        assert 'auto_leave_deduction' not in result
+        assert result["late_deduction"] == round(180 * per_minute)
+        assert "auto_leave_count" not in result
+        assert "auto_leave_deduction" not in result
 
     def test_early_leave(self, engine):
         """早退扣款"""
@@ -185,7 +214,9 @@ class TestAttendanceDeduction:
             att, daily_salary=1000, base_salary=30000
         )
         per_minute = 30000 / 14400
-        assert result['early_leave_deduction'] == 20 * per_minute  # 41.666...，不提前舍入
+        assert (
+            result["early_leave_deduction"] == 20 * per_minute
+        )  # 41.666...，不提前舍入
 
     def test_missing_punch_no_deduction(self, engine):
         """缺卡不扣款，僅記錄"""
@@ -193,8 +224,8 @@ class TestAttendanceDeduction:
         result = engine.calculate_attendance_deduction(
             att, daily_salary=1000, base_salary=30000
         )
-        assert result['missing_punch_deduction'] == 0
-        assert result['missing_punch_count'] == 3
+        assert result["missing_punch_deduction"] == 0
+        assert result["missing_punch_count"] == 3
 
     def test_zero_base_salary(self, engine):
         """底薪為 0（時薪制）：per_minute_rate fallback 為 0，不誤扣 1 元/分"""
@@ -203,10 +234,10 @@ class TestAttendanceDeduction:
             att, daily_salary=0, base_salary=0, late_details=[10]
         )
         # 時薪制按工時付費，遲到分鐘不應再扣款（修正前為 10 元）
-        assert result['late_deduction'] == 0
-        assert result['early_leave_deduction'] == 0
+        assert result["late_deduction"] == 0
+        assert result["early_leave_deduction"] == 0
         # 計次仍正常記錄
-        assert result['late_count'] == 1
+        assert result["late_count"] == 1
 
 
 # ──────────────────────────────────────────────
@@ -217,45 +248,53 @@ class TestFestivalBonusV2:
     def test_head_teacher_exact_target(self, engine):
         """班導剛好達到節慶目標人數（第十條：大班2_teachers=24）→ ratio=1.0"""
         result = engine.calculate_festival_bonus_v2(
-            position='幼兒園教師', role='head_teacher',
-            grade_name='大班', current_enrollment=24,
-            has_assistant=True
+            position="幼兒園教師",
+            role="head_teacher",
+            grade_name="大班",
+            current_enrollment=24,
+            has_assistant=True,
         )
-        assert result['festival_bonus'] == 2000
-        assert result['ratio'] == 1.0
-        assert result['target'] == 24  # 第十條：大班2_teachers=24
-        assert result['overtime_target'] == 25  # 超額目標較高，未達超額
-        assert result['overtime_bonus'] == 0
+        assert result["festival_bonus"] == 2000
+        assert result["ratio"] == 1.0
+        assert result["target"] == 24  # 第十條：大班2_teachers=24
+        assert result["overtime_target"] == 25  # 超額目標較高，未達超額
+        assert result["overtime_bonus"] == 0
 
     def test_head_teacher_over_target(self, engine):
         """班導超過目標人數 → 有超額獎金（第十條：大班2_teachers=24）"""
         result = engine.calculate_festival_bonus_v2(
-            position='幼兒園教師', role='head_teacher',
-            grade_name='大班', current_enrollment=30,
-            has_assistant=True
+            position="幼兒園教師",
+            role="head_teacher",
+            grade_name="大班",
+            current_enrollment=30,
+            has_assistant=True,
         )
-        assert result['festival_bonus'] == round(2000 * (30 / 24))
+        assert result["festival_bonus"] == round(2000 * (30 / 24))
         # 超額目標: 25, 超額人數: 30-25=5, 每人 400
-        assert result['overtime_bonus'] == 5 * 400
+        assert result["overtime_bonus"] == 5 * 400
 
     def test_assistant_teacher(self, engine):
         """副班導計算（第十條：中班2_teachers=24）"""
         result = engine.calculate_festival_bonus_v2(
-            position='教保員', role='assistant_teacher',
-            grade_name='中班', current_enrollment=24,
-            has_assistant=True
+            position="教保員",
+            role="assistant_teacher",
+            grade_name="中班",
+            current_enrollment=24,
+            has_assistant=True,
         )
-        assert result['base_amount'] == 1200
-        assert result['target'] == 24
+        assert result["base_amount"] == 1200
+        assert result["target"] == 24
 
     def test_art_teacher_uses_shared(self, engine):
         """美師使用 shared_assistant 目標"""
         result = engine.calculate_festival_bonus_v2(
-            position='教保員', role='art_teacher',
-            grade_name='大班', current_enrollment=20,
-            has_assistant=True
+            position="教保員",
+            role="art_teacher",
+            grade_name="大班",
+            current_enrollment=20,
+            has_assistant=True,
         )
-        assert result['target'] == 20  # shared_assistant 目標
+        assert result["target"] == 20  # shared_assistant 目標
 
     def test_art_teacher_festival_bonus_is_2000_not_1200(self, engine):
         """
@@ -268,34 +307,40 @@ class TestFestivalBonusV2:
         """
         # shared_assistant target for 大班 = 20, current_enrollment=20 → ratio=1.0
         result = engine.calculate_festival_bonus_v2(
-            position='幼兒園教師', role='art_teacher',
-            grade_name='大班', current_enrollment=20,
-            has_assistant=True
+            position="幼兒園教師",
+            role="art_teacher",
+            grade_name="大班",
+            current_enrollment=20,
+            has_assistant=True,
         )
-        assert result['target'] == 20           # shared_assistant 目標
-        assert result['festival_bonus'] == 2000  # 依第十二條一律 2000，非 1200
+        assert result["target"] == 20  # shared_assistant 目標
+        assert result["festival_bonus"] == 2000  # 依第十二條一律 2000，非 1200
 
     def test_zero_target(self, engine):
         """目標為 0 不會除以零"""
         result = engine.calculate_festival_bonus_v2(
-            position='幼兒園教師', role='head_teacher',
-            grade_name='未知班', current_enrollment=10,
-            has_assistant=True
+            position="幼兒園教師",
+            role="head_teacher",
+            grade_name="未知班",
+            current_enrollment=10,
+            has_assistant=True,
         )
-        assert result['festival_bonus'] == 0
-        assert result['ratio'] == 0
+        assert result["festival_bonus"] == 0
+        assert result["ratio"] == 0
 
     def test_below_target(self, engine):
         """未達標，節慶獎金按比例減少（第十條：小班2_teachers=24）"""
         result = engine.calculate_festival_bonus_v2(
-            position='幼兒園教師', role='head_teacher',
-            grade_name='小班', current_enrollment=10,
-            has_assistant=True
+            position="幼兒園教師",
+            role="head_teacher",
+            grade_name="小班",
+            current_enrollment=10,
+            has_assistant=True,
         )
         # target=24 (第十條修正), ratio=10/24
         expected = round(2000 * (10 / 24))
-        assert result['festival_bonus'] == expected
-        assert result['overtime_bonus'] == 0  # 未達超額目標
+        assert result["festival_bonus"] == expected
+        assert result["overtime_bonus"] == 0  # 未達超額目標
 
 
 # ──────────────────────────────────────────────
@@ -311,14 +356,14 @@ class TestSharedAssistantAveraging:
 
     def _shared_ctx(self, grade1, enroll1, grade2, enroll2):
         return {
-            'role': 'assistant_teacher',
-            'grade_name': grade1,
-            'current_enrollment': enroll1,
-            'has_assistant': True,
-            'is_shared_assistant': True,
-            'shared_second_class': {
-                'grade_name': grade2,
-                'current_enrollment': enroll2,
+            "role": "assistant_teacher",
+            "grade_name": grade1,
+            "current_enrollment": enroll1,
+            "has_assistant": True,
+            "is_shared_assistant": True,
+            "shared_second_class": {
+                "grade_name": grade2,
+                "current_enrollment": enroll2,
             },
         }
 
@@ -328,9 +373,11 @@ class TestSharedAssistantAveraging:
         大班 shared_assistant target=20, enrollment=20 → ratio=1.0, base=1200
         加權平均 = (1200*20 + 1200*20) / 40 = 1200
         """
-        ctx = self._shared_ctx('大班', 20, '大班', 20)
+        ctx = self._shared_ctx("大班", 20, "大班", 20)
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=2,
+            employee=sample_employee,
+            year=2026,
+            month=2,
             classroom_context=ctx,
         )
         scoreA = round(1200 * 1.0)
@@ -344,9 +391,11 @@ class TestSharedAssistantAveraging:
         大班 target=20, A班=20(score=1200), B班=16(score=960), base=1200
         加權 = (1200*20 + 960*16) / (20+16) = (24000 + 15360) / 36 ≈ 1093
         """
-        ctx = self._shared_ctx('大班', 20, '大班', 16)
+        ctx = self._shared_ctx("大班", 20, "大班", 16)
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=2,
+            employee=sample_employee,
+            year=2026,
+            month=2,
             classroom_context=ctx,
         )
         scoreA = round(1200 * (20 / 20))
@@ -360,9 +409,11 @@ class TestSharedAssistantAveraging:
         大班 target=20(enroll 20, score 1200), 中班 target=18(enroll 18, score 1200), base=1200
         加權 = (1200*20 + 1200*18) / 38 = 1200
         """
-        ctx = self._shared_ctx('大班', 20, '中班', 18)
+        ctx = self._shared_ctx("大班", 20, "中班", 18)
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=2,
+            employee=sample_employee,
+            year=2026,
+            month=2,
             classroom_context=ctx,
         )
         scoreA = round(1200 * (20 / 20))
@@ -377,18 +428,20 @@ class TestSharedAssistantAveraging:
         加權 = (1200*20 + 960*16 + 720*12) / 48 = 48000 / 48 = 1000
         """
         ctx = {
-            'role': 'assistant_teacher',
-            'grade_name': '大班',
-            'current_enrollment': 20,
-            'has_assistant': True,
-            'is_shared_assistant': True,
-            'shared_other_classes': [
-                {'grade_name': '大班', 'current_enrollment': 16},
-                {'grade_name': '大班', 'current_enrollment': 12},
+            "role": "assistant_teacher",
+            "grade_name": "大班",
+            "current_enrollment": 20,
+            "has_assistant": True,
+            "is_shared_assistant": True,
+            "shared_other_classes": [
+                {"grade_name": "大班", "current_enrollment": 16},
+                {"grade_name": "大班", "current_enrollment": 12},
             ],
         }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=2,
+            employee=sample_employee,
+            year=2026,
+            month=2,
             classroom_context=ctx,
         )
         s1 = round(1200 * (20 / 20))
@@ -400,14 +453,16 @@ class TestSharedAssistantAveraging:
     def test_no_shared_second_class_unchanged(self, engine, sample_employee):
         """未提供 shared_second_class 時，行為與原本相同（不平均）"""
         ctx = {
-            'role': 'assistant_teacher',
-            'grade_name': '大班',
-            'current_enrollment': 20,
-            'has_assistant': True,
-            'is_shared_assistant': True,
+            "role": "assistant_teacher",
+            "grade_name": "大班",
+            "current_enrollment": 20,
+            "has_assistant": True,
+            "is_shared_assistant": True,
         }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=2,
+            employee=sample_employee,
+            year=2026,
+            month=2,
             classroom_context=ctx,
         )
         expected = round(1200 * (20 / 20))
@@ -422,31 +477,37 @@ class TestOvertimeBonus:
     def test_no_excess(self, engine):
         """未超額，獎金為 0"""
         result = engine.calculate_overtime_bonus(
-            role='head_teacher', grade_name='大班',
-            current_enrollment=20, has_assistant=True
+            role="head_teacher",
+            grade_name="大班",
+            current_enrollment=20,
+            has_assistant=True,
         )
-        assert result['overtime_bonus'] == 0
-        assert result['overtime_count'] == 0
+        assert result["overtime_bonus"] == 0
+        assert result["overtime_count"] == 0
 
     def test_with_excess(self, engine):
         """超額計算"""
         result = engine.calculate_overtime_bonus(
-            role='head_teacher', grade_name='大班',
-            current_enrollment=30, has_assistant=True
+            role="head_teacher",
+            grade_name="大班",
+            current_enrollment=30,
+            has_assistant=True,
         )
         # overtime_target=25, excess=5, per_person=400
-        assert result['overtime_count'] == 5
-        assert result['overtime_bonus'] == 2000
+        assert result["overtime_count"] == 5
+        assert result["overtime_bonus"] == 2000
 
     def test_baby_class_higher_rate(self, engine):
         """幼幼班超額金額較高"""
         result = engine.calculate_overtime_bonus(
-            role='head_teacher', grade_name='幼幼班',
-            current_enrollment=20, has_assistant=True
+            role="head_teacher",
+            grade_name="幼幼班",
+            current_enrollment=20,
+            has_assistant=True,
         )
         # overtime_target=14, excess=6, per_person=450
-        assert result['per_person'] == 450
-        assert result['overtime_bonus'] == 6 * 450
+        assert result["per_person"] == 450
+        assert result["overtime_bonus"] == 6 * 450
 
 
 # ──────────────────────────────────────────────
@@ -457,70 +518,39 @@ class TestCalculateSalary:
     def test_regular_employee_basic(self, engine, sample_employee):
         """正職員工基本薪資計算"""
         breakdown = engine.calculate_salary(
-            employee=sample_employee,
-            year=2026, month=1
+            employee=sample_employee, year=2026, month=1
         )
         assert breakdown.base_salary == 30000
-        assert breakdown.teacher_allowance == 2000
-        assert breakdown.meal_allowance == 2400
-        # gross = base + teacher + meal = 34400 (無獎金無加班費)
-        assert breakdown.gross_salary == 34400
+        # gross = base = 30000 (無獎金無加班費)
+        assert breakdown.gross_salary == 30000
         # 有保險扣款
         assert breakdown.labor_insurance > 0
         assert breakdown.health_insurance > 0
-        assert breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
-
-    def test_allowances_routed_by_code_not_substring(self, engine, sample_employee):
-        """L1：津貼以 AllowanceType.code 路由（非中文 name substring）。
-        即使 name 含「主管」字樣，code='other' 仍進 other_allowance。"""
-        emp = {**sample_employee, 'teacher_allowance': 0, 'meal_allowance': 0}
-        breakdown = engine.calculate_salary(
-            employee=emp, year=2026, month=1,
-            allowances=[
-                {'code': 'supervisor', 'name': '主管加給', 'amount': 5000},
-                {'code': 'other', 'name': '其他主管專案補貼', 'amount': 1000},
-            ],
+        assert (
+            breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
         )
-        assert breakdown.supervisor_allowance == 5000
-        # 含「主管」字樣但 code='other' → other，不會誤歸 supervisor
-        assert breakdown.other_allowance == 1000
-
-    def test_allowances_list_skips_employee_dict_fallback(self, engine, sample_employee):
-        """L2：allowances list 非空時，不再讀 employee dict 舊欄位（避免雙倍）。
-        sample_employee dict 本身有 teacher=2000、meal=2400，
-        但傳入 allowances list 應完全取代。"""
-        breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=1,
-            allowances=[
-                {'code': 'teacher', 'name': '導師津貼', 'amount': 3000},
-            ],
-        )
-        # list 提供 teacher=3000，dict 的 teacher=2000 與 meal=2400 都應略過
-        assert breakdown.teacher_allowance == 3000
-        assert breakdown.meal_allowance == 0
 
     def test_hourly_employee(self, engine):
         """時薪制員工"""
         emp = {
-            'employee_id': 'H001', 'name': '時薪員工',
-            'employee_type': 'hourly',
-            'hourly_rate': 200, 'work_hours': 80,
-            'base_salary': 0,
-            'supervisor_allowance': 0, 'teacher_allowance': 0,
-            'meal_allowance': 0, 'transportation_allowance': 0,
-            'other_allowance': 0,
+            "employee_id": "H001",
+            "name": "時薪員工",
+            "employee_type": "hourly",
+            "hourly_rate": 200,
+            "work_hours": 80,
+            "base_salary": 0,
         }
         breakdown = engine.calculate_salary(emp, 2026, 1)
         assert breakdown.hourly_total == 200 * 80
         assert breakdown.gross_salary == 16000
 
-    def test_with_attendance_deduction(self, engine, sample_employee, sample_attendance):
+    def test_with_attendance_deduction(
+        self, engine, sample_employee, sample_attendance
+    ):
         """含考勤扣款"""
-        sample_employee['_late_details'] = [20, 25]
+        sample_employee["_late_details"] = [20, 25]
         breakdown = engine.calculate_salary(
-            employee=sample_employee,
-            year=2026, month=1,
-            attendance=sample_attendance
+            employee=sample_employee, year=2026, month=1, attendance=sample_attendance
         )
         assert breakdown.late_deduction > 0
         assert breakdown.early_leave_deduction > 0
@@ -528,32 +558,31 @@ class TestCalculateSalary:
         assert breakdown.early_leave_count == 1
         assert breakdown.total_deduction > 0
 
-    def test_with_classroom_context(self, engine, sample_employee, sample_classroom_context):
+    def test_with_classroom_context(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """含節慶獎金（班級上下文）"""
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=6,  # 6月為發放月
-            classroom_context=sample_classroom_context
+            year=2026,
+            month=6,  # 6月為發放月
+            classroom_context=sample_classroom_context,
         )
         assert breakdown.festival_bonus > 0
 
     def test_with_leave_deduction(self, engine, sample_employee):
         """含請假扣款"""
         breakdown = engine.calculate_salary(
-            employee=sample_employee,
-            year=2026, month=1,
-            leave_deduction=1000
+            employee=sample_employee, year=2026, month=1, leave_deduction=1000
         )
         assert breakdown.leave_deduction == 1000
         assert breakdown.total_deduction >= 1000
 
     def test_meeting_overtime_pay(self, engine, sample_employee):
         """園務會議加班費"""
-        meeting = {'attended': 2, 'absent': 1, 'work_end_time': '17:00'}
+        meeting = {"attended": 2, "absent": 1, "work_end_time": "17:00"}
         breakdown = engine.calculate_salary(
-            employee=sample_employee,
-            year=2026, month=1,
-            meeting_context=meeting
+            employee=sample_employee, year=2026, month=1, meeting_context=meeting
         )
         assert breakdown.meeting_overtime_pay == 2 * 200  # 17:00 下班 → 200/次
         assert breakdown.meeting_attended == 2
@@ -561,32 +590,36 @@ class TestCalculateSalary:
 
     def test_meeting_6pm_rate(self, engine, sample_employee):
         """6 點下班者園務會議加班費較低"""
-        meeting = {'attended': 1, 'absent': 0, 'work_end_time': '18:00'}
+        meeting = {"attended": 1, "absent": 0, "work_end_time": "18:00"}
         breakdown = engine.calculate_salary(
-            employee=sample_employee,
-            year=2026, month=1,
-            meeting_context=meeting
+            employee=sample_employee, year=2026, month=1, meeting_context=meeting
         )
         assert breakdown.meeting_overtime_pay == 100  # 18:00 下班 → 100/次
 
     def test_net_salary_formula(self, engine, sample_employee, sample_attendance):
         """net_salary = gross_salary - total_deduction"""
-        sample_employee['_late_details'] = [10]
+        sample_employee["_late_details"] = [10]
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=1,
+            year=2026,
+            month=1,
             attendance=sample_attendance,
-            leave_deduction=500
+            leave_deduction=500,
         )
-        assert breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
+        assert (
+            breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
+        )
 
-    def test_no_position_no_festival_bonus(self, engine, sample_employee, sample_classroom_context):
+    def test_no_position_no_festival_bonus(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """沒有 position 的員工不發節慶獎金"""
-        sample_employee['position'] = ''
+        sample_employee["position"] = ""
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=1,
-            classroom_context=sample_classroom_context
+            year=2026,
+            month=1,
+            classroom_context=sample_classroom_context,
         )
         assert breakdown.festival_bonus == 0
 
@@ -615,44 +648,47 @@ class TestEmptyPositionFestivalBonus:
                 回傳 None → festival_bonus = None * ratio → TypeError
         """
         # 模擬從 DB 載入了 NULL 的 C 級基數
-        engine._bonus_base['head_teacher']['C'] = None
+        engine._bonus_base["head_teacher"]["C"] = None
 
         result = engine.calculate_festival_bonus_v2(
-            position='',          # 空職稱 → grade 預設 C
-            role='head_teacher',
-            grade_name='大班',
+            position="",  # 空職稱 → grade 預設 C
+            role="head_teacher",
+            grade_name="大班",
             current_enrollment=20,
             has_assistant=True,
         )
-        assert result['festival_bonus'] == 0
+        assert result["festival_bonus"] == 0
 
     def test_null_bonus_base_with_c_grade_position(self, engine):
         """
         DB C 級基數為 NULL + C 級職稱（助理教保員）
         → festival_bonus 應為 0，不拋 TypeError。
         """
-        engine._bonus_base['head_teacher']['C'] = None
-        engine._bonus_base['assistant_teacher']['C'] = None
+        engine._bonus_base["head_teacher"]["C"] = None
+        engine._bonus_base["assistant_teacher"]["C"] = None
 
         result = engine.calculate_festival_bonus_v2(
-            position='助理教保員',   # grade C
-            role='head_teacher',
-            grade_name='大班',
+            position="助理教保員",  # grade C
+            role="head_teacher",
+            grade_name="大班",
             current_enrollment=20,
             has_assistant=True,
         )
-        assert result['festival_bonus'] == 0
+        assert result["festival_bonus"] == 0
 
-    def test_empty_position_in_distribution_month_no_crash(self, engine, sample_employee, sample_classroom_context):
+    def test_empty_position_in_distribution_month_no_crash(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """
         節慶發放月（6月）空職稱員工薪資計算不應 crash，festival_bonus 應為 0。
         與 test_no_position_no_festival_bonus 的差異：使用發放月，
         確保保護不是靠「非發放月歸零」掩蓋。
         """
-        sample_employee['position'] = ''
+        sample_employee["position"] = ""
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=6,   # 發放月
+            year=2026,
+            month=6,  # 發放月
             classroom_context=sample_classroom_context,
         )
         assert breakdown.festival_bonus == 0
@@ -673,19 +709,27 @@ class TestBonusDistributionMonth:
         for m in [1, 3, 4, 5, 7, 8, 10, 11]:
             assert engine.get_bonus_distribution_month(m) is False
 
-    def test_salary_no_bonus_in_non_distribution_month(self, engine, sample_employee, sample_classroom_context):
+    def test_salary_no_bonus_in_non_distribution_month(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """非發放月份，節慶獎金應為 0"""
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=3,
-            classroom_context=sample_classroom_context
+            employee=sample_employee,
+            year=2026,
+            month=3,
+            classroom_context=sample_classroom_context,
         )
         assert breakdown.festival_bonus == 0
 
-    def test_salary_has_bonus_in_distribution_month(self, engine, sample_employee, sample_classroom_context):
+    def test_salary_has_bonus_in_distribution_month(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """發放月份，節慶獎金應 > 0"""
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=6,
-            classroom_context=sample_classroom_context
+            employee=sample_employee,
+            year=2026,
+            month=6,
+            classroom_context=sample_classroom_context,
         )
         assert breakdown.festival_bonus > 0
 
@@ -726,10 +770,14 @@ class TestMeetingAbsencePeriod:
 
     def test_no_deduction_in_non_bonus_month(self, engine, sample_employee):
         """非發放月（3月）：即使缺席，meeting_absence_deduction 為 0"""
-        meeting = {'attended': 0, 'absent': 2, 'absent_period': 2, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 0,
+            "absent": 2,
+            "absent_period": 2,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=3,
-            meeting_context=meeting
+            employee=sample_employee, year=2026, month=3, meeting_context=meeting
         )
         assert breakdown.meeting_absence_deduction == 0
 
@@ -738,10 +786,14 @@ class TestMeetingAbsencePeriod:
         發放月（6月）：3月缺席1次 + 4月缺席1次，
         6月本月未缺席 → absent_period=2 → 扣 200 元
         """
-        meeting = {'attended': 1, 'absent': 0, 'absent_period': 2, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 1,
+            "absent": 0,
+            "absent_period": 2,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=6,
-            meeting_context=meeting
+            employee=sample_employee, year=2026, month=6, meeting_context=meeting
         )
         assert breakdown.meeting_absence_deduction == 2 * 100
 
@@ -749,10 +801,14 @@ class TestMeetingAbsencePeriod:
         """
         發放月（6月）：當月（6月）缺席1次 + 前幾月累計缺席2次 = 3次 → 扣 300 元
         """
-        meeting = {'attended': 0, 'absent': 1, 'absent_period': 3, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 0,
+            "absent": 1,
+            "absent_period": 3,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=6,
-            meeting_context=meeting
+            employee=sample_employee, year=2026, month=6, meeting_context=meeting
         )
         assert breakdown.meeting_absence_deduction == 3 * 100
 
@@ -760,10 +816,9 @@ class TestMeetingAbsencePeriod:
         """
         absent_period 未提供時退回使用當月 absent（向下相容）
         """
-        meeting = {'attended': 0, 'absent': 3, 'work_end_time': '17:00'}
+        meeting = {"attended": 0, "absent": 3, "work_end_time": "17:00"}
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=6,
-            meeting_context=meeting
+            employee=sample_employee, year=2026, month=6, meeting_context=meeting
         )
         assert breakdown.meeting_absence_deduction == 3 * 100
 
@@ -776,23 +831,31 @@ class TestMeetingAbsencePeriod:
         - Oct(1次) + Nov(1次) → 由 Dec 補扣（共2次）
         """
         # 驗證 Feb 補扣 Jan（1次，本月 Feb 自己出席）
-        meeting_feb = {'attended': 1, 'absent': 0, 'absent_period': 1}
-        bd_feb = engine.calculate_salary(sample_employee, 2026, 2, meeting_context=meeting_feb)
+        meeting_feb = {"attended": 1, "absent": 0, "absent_period": 1}
+        bd_feb = engine.calculate_salary(
+            sample_employee, 2026, 2, meeting_context=meeting_feb
+        )
         assert bd_feb.meeting_absence_deduction == 1 * 100
 
         # 驗證 Jun 補扣 Mar+Apr+May（共3次，Jun 本月自己也缺1次）
-        meeting_jun = {'attended': 0, 'absent': 1, 'absent_period': 4}
-        bd_jun = engine.calculate_salary(sample_employee, 2026, 6, meeting_context=meeting_jun)
+        meeting_jun = {"attended": 0, "absent": 1, "absent_period": 4}
+        bd_jun = engine.calculate_salary(
+            sample_employee, 2026, 6, meeting_context=meeting_jun
+        )
         assert bd_jun.meeting_absence_deduction == 4 * 100
 
         # 驗證 Sep 補扣 Jul+Aug（共2次，Sep 本月全勤）
-        meeting_sep = {'attended': 1, 'absent': 0, 'absent_period': 2}
-        bd_sep = engine.calculate_salary(sample_employee, 2026, 9, meeting_context=meeting_sep)
+        meeting_sep = {"attended": 1, "absent": 0, "absent_period": 2}
+        bd_sep = engine.calculate_salary(
+            sample_employee, 2026, 9, meeting_context=meeting_sep
+        )
         assert bd_sep.meeting_absence_deduction == 2 * 100
 
         # 驗證 Dec 補扣 Oct+Nov（共2次，Dec 本月也缺1次）
-        meeting_dec = {'attended': 0, 'absent': 1, 'absent_period': 3}
-        bd_dec = engine.calculate_salary(sample_employee, 2026, 12, meeting_context=meeting_dec)
+        meeting_dec = {"attended": 0, "absent": 1, "absent_period": 3}
+        bd_dec = engine.calculate_salary(
+            sample_employee, 2026, 12, meeting_context=meeting_dec
+        )
         assert bd_dec.meeting_absence_deduction == 3 * 100
 
 
@@ -822,27 +885,27 @@ class TestMidMonthHireSalaryProration:
 
     def test_mid_month_hire_31_day_month(self, engine):
         """1月(31天)16日入職 → 在職16天 → 30000×16/31 ≈ 15483.87（保留浮點，不提前舍入）"""
-        result = engine._prorate_base_salary(30000, '2026-01-16', 2026, 1)
+        result = engine._prorate_base_salary(30000, "2026-01-16", 2026, 1)
         assert result == 30000 * 16 / 31
 
     def test_mid_month_hire_30_day_month(self, engine):
         """6月(30天)16日入職 → 在職15天 → 30000×15/30 = 15000"""
-        result = engine._prorate_base_salary(30000, '2026-06-16', 2026, 6)
+        result = engine._prorate_base_salary(30000, "2026-06-16", 2026, 6)
         assert result == 15000
 
     def test_first_day_hire_no_proration(self, engine):
         """月初（1日）入職 → 全額，不折算"""
-        result = engine._prorate_base_salary(30000, '2026-01-01', 2026, 1)
+        result = engine._prorate_base_salary(30000, "2026-01-01", 2026, 1)
         assert result == 30000
 
     def test_prior_month_hire_no_proration(self, engine):
         """上月入職 → 本月全月在職，不折算"""
-        result = engine._prorate_base_salary(30000, '2025-12-15', 2026, 1)
+        result = engine._prorate_base_salary(30000, "2025-12-15", 2026, 1)
         assert result == 30000
 
     def test_last_day_hire_one_day(self, engine):
         """最後一天（31日）入職 → 在職1天 → 30000×1/31 ≈ 967.74（保留浮點，不提前舍入）"""
-        result = engine._prorate_base_salary(30000, '2026-01-31', 2026, 1)
+        result = engine._prorate_base_salary(30000, "2026-01-31", 2026, 1)
         assert result == 30000 * 1 / 31
 
     def test_no_hire_date_no_proration(self, engine):
@@ -860,23 +923,27 @@ class TestMidMonthHireSalaryProration:
     def test_calculate_salary_prorates_base_for_mid_month_hire(self, engine):
         """calculate_salary 應對月中入職者折算 breakdown.base_salary"""
         employee = {
-            'employee_id': 'E999', 'name': '月中新人',
-            'title': '', 'position': '', 'employee_type': 'regular',
-            'base_salary': 30000, 'hourly_rate': 0,
-            'supervisor_allowance': 0, 'teacher_allowance': 0,
-            'meal_allowance': 0, 'transportation_allowance': 0,
-            'other_allowance': 0,
-            'insurance_salary': 30000, 'dependents': 0,
-            'hire_date': '2026-01-16',   # 1月16日入職，當月31天
+            "employee_id": "E999",
+            "name": "月中新人",
+            "title": "",
+            "position": "",
+            "employee_type": "regular",
+            "base_salary": 30000,
+            "hourly_rate": 0,
+            "insurance_salary": 30000,
+            "dependents": 0,
+            "hire_date": "2026-01-16",  # 1月16日入職，當月31天
         }
         breakdown = engine.calculate_salary(employee=employee, year=2026, month=1)
-        expected_base = 30000 * 16 / 31   # 在職16天/共31天，保留浮點
+        expected_base = 30000 * 16 / 31  # 在職16天/共31天，保留浮點
         assert breakdown.base_salary == expected_base
 
     def test_full_month_employee_no_proration(self, engine, sample_employee):
         """上月已入職的員工，本月 breakdown.base_salary 不折算（全額）"""
         # sample_employee hire_date = '2025-01-01'（早於計算月份 2026/1）
-        breakdown = engine.calculate_salary(employee=sample_employee, year=2026, month=1)
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=1
+        )
         assert breakdown.base_salary == 30000
 
     # ── 雙重縮水防護（加班費時薪保護）─────────────────
@@ -895,10 +962,14 @@ class TestMidMonthHireSalaryProration:
         from api.overtimes import calculate_overtime_pay
 
         contracted = 30000
-        prorated = 15000   # 月中入職後本月折算後底薪（15天/30天月份）
+        prorated = 15000  # 月中入職後本月折算後底薪（15天/30天月份）
 
-        correct_pay = calculate_overtime_pay(contracted, 2, 'weekday')   # 契約月薪（正確）
-        wrong_pay = calculate_overtime_pay(prorated, 2, 'weekday')       # 折算底薪（雙重縮水）
+        correct_pay = calculate_overtime_pay(
+            contracted, 2, "weekday"
+        )  # 契約月薪（正確）
+        wrong_pay = calculate_overtime_pay(
+            prorated, 2, "weekday"
+        )  # 折算底薪（雙重縮水）
 
         # 契約月薪是折算底薪的 2 倍，加班費應大幅高於錯誤值
         assert correct_pay > wrong_pay
@@ -970,7 +1041,9 @@ class TestComputeHourlyDailyHoursOvernight:
         """18:00 上班，隔日 02:00 下班，雙打卡 → 8h（不跨午休）"""
         punch_in = datetime(2026, 1, 14, 18, 0)
         punch_out = datetime(2026, 1, 15, 2, 0)
-        assert _compute_hourly_daily_hours(punch_in, punch_out, self.OVERNIGHT_END) == 8.0
+        assert (
+            _compute_hourly_daily_hours(punch_in, punch_out, self.OVERNIGHT_END) == 8.0
+        )
 
     def test_overnight_missing_punch_out_fills_next_day(self):
         """18:00 上班，缺下班打卡，work_end_t=02:00（隔日）→ 補填隔日 02:00 → 8h"""
@@ -986,7 +1059,9 @@ class TestComputeHourlyDailyHoursOvernight:
         """18:00 上班，隔日 01:00 提早下班（排班 02:00）→ 7h"""
         punch_in = datetime(2026, 1, 14, 18, 0)
         punch_out = datetime(2026, 1, 15, 1, 0)
-        assert _compute_hourly_daily_hours(punch_in, punch_out, self.OVERNIGHT_END) == 7.0
+        assert (
+            _compute_hourly_daily_hours(punch_in, punch_out, self.OVERNIGHT_END) == 7.0
+        )
 
 
 # ──────────────────────────────────────────────
@@ -1023,12 +1098,10 @@ class TestOvernightLunchDeduction:
         punch_in = datetime(2026, 1, 5, 22, 0)
         punch_out = datetime(2026, 1, 6, 13, 30)
 
-        with patch.object(se, 'MAX_DAILY_WORK_HOURS', 20.0):
+        with patch.object(se, "MAX_DAILY_WORK_HOURS", 20.0):
             result = _compute_hourly_daily_hours(punch_in, punch_out, time(14, 0))
 
-        assert result == 14.5, (
-            f"跨夜班次日午休應被扣除 1h：期望 14.5h，實際 {result}h"
-        )
+        assert result == 14.5, f"跨夜班次日午休應被扣除 1h：期望 14.5h，實際 {result}h"
 
     def test_overnight_not_spanning_next_day_noon_no_extra_deduction(self):
         """標準跨夜班 22:00–次日 06:00（8h）不跨任何午休 → 8h 不變"""
@@ -1070,14 +1143,21 @@ class TestMeetingAbsenceDeductFromFestivalBonus:
         """發放月缺席 2 次：festival_bonus 應減少 200，total_deduction 不受影響"""
         baseline = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=sample_classroom_context,
         )
 
-        meeting = {'attended': 1, 'absent': 2, 'absent_period': 2, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 1,
+            "absent": 2,
+            "absent_period": 2,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=sample_classroom_context,
             meeting_context=meeting,
         )
@@ -1094,14 +1174,21 @@ class TestMeetingAbsenceDeductFromFestivalBonus:
         """會議缺席扣款不應影響月薪 net_salary，只影響節慶獎金轉帳金額"""
         baseline = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=sample_classroom_context,
         )
 
-        meeting = {'attended': 0, 'absent': 3, 'absent_period': 3, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 0,
+            "absent": 3,
+            "absent_period": 3,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=sample_classroom_context,
             meeting_context=meeting,
         )
@@ -1111,16 +1198,22 @@ class TestMeetingAbsenceDeductFromFestivalBonus:
     def test_festival_bonus_floor_at_zero(self, engine, sample_employee):
         """缺席扣款超過 festival_bonus 時，festival_bonus 應為 0，不為負值"""
         low_context = {
-            'role': 'head_teacher',
-            'grade_name': '大班',
-            'current_enrollment': 1,  # 在籍極低 → festival_bonus 極小
-            'has_assistant': True,
-            'is_shared_assistant': False,
+            "role": "head_teacher",
+            "grade_name": "大班",
+            "current_enrollment": 1,  # 在籍極低 → festival_bonus 極小
+            "has_assistant": True,
+            "is_shared_assistant": False,
         }
-        meeting = {'attended': 0, 'absent': 50, 'absent_period': 50, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 0,
+            "absent": 50,
+            "absent_period": 50,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=low_context,
             meeting_context=meeting,
         )
@@ -1137,16 +1230,12 @@ class TestOvertimeWorkPayInCalculateSalary:
         """overtime_work_pay 傳入 calculate_salary 後應計入 gross_salary"""
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=1,
+            year=2026,
+            month=1,
             overtime_work_pay=1200,
         )
         assert breakdown.overtime_work_pay == 1200
-        assert breakdown.gross_salary == (
-            sample_employee['base_salary'] +
-            sample_employee['teacher_allowance'] +
-            sample_employee['meal_allowance'] +
-            1200
-        )
+        assert breakdown.gross_salary == (sample_employee["base_salary"] + 1200)
 
     def test_overtime_work_pay_included_in_net_salary(self, engine, sample_employee):
         """overtime_work_pay 加入後 net_salary 應比不加時多出同等金額"""
@@ -1156,7 +1245,9 @@ class TestOvertimeWorkPayInCalculateSalary:
         )
         assert with_ot.net_salary == base.net_salary + 1200
 
-    def test_zero_overtime_work_pay_is_backward_compatible(self, engine, sample_employee):
+    def test_zero_overtime_work_pay_is_backward_compatible(
+        self, engine, sample_employee
+    ):
         """overtime_work_pay=0（預設）不影響原有計算結果"""
         base = engine.calculate_salary(employee=sample_employee, year=2026, month=1)
         explicit_zero = engine.calculate_salary(
@@ -1178,7 +1269,8 @@ class TestBuildExpectedWorkdays:
     def _workdays(self, **kwargs):
         """呼叫 _build_expected_workdays，固定 today=2026-01-31 排除未來過濾干擾"""
         return SalaryEngine._build_expected_workdays(
-            year=2026, month=1,
+            year=2026,
+            month=1,
             holiday_set=set(),
             daily_shift_map={},
             today=date(2026, 1, 31),
@@ -1220,7 +1312,7 @@ class TestBuildExpectedWorkdays:
             hire_date_raw=date(2026, 1, 5),
             resign_date_raw=date(2026, 1, 16),
         )
-        assert date(2026, 1, 2) not in result   # 入職前
+        assert date(2026, 1, 2) not in result  # 入職前
         assert date(2026, 1, 19) not in result  # 離職後
         assert date(2026, 1, 5) in result
         assert date(2026, 1, 16) in result
@@ -1228,35 +1320,43 @@ class TestBuildExpectedWorkdays:
 
     def test_resign_string_date_accepted(self, engine):
         """resign_date_raw 為字串格式時應能正確解析"""
-        result = self._workdays(resign_date_raw='2026-01-02')
+        result = self._workdays(resign_date_raw="2026-01-02")
         assert len(result) == 2
 
     def test_invalid_month_raises_value_error(self, engine):
         """month=13 應拋出含明確中文說明的 ValueError（由我們的 guard 產生，非 calendar 內部訊息）"""
         with pytest.raises(ValueError, match="month 必須介於"):
             SalaryEngine._build_expected_workdays(
-                year=2026, month=13,
-                holiday_set=set(), daily_shift_map={},
+                year=2026,
+                month=13,
+                holiday_set=set(),
+                daily_shift_map={},
             )
 
     def test_month_zero_raises_value_error(self, engine):
         """month=0 同樣應拋出明確 ValueError"""
         with pytest.raises(ValueError, match="month 必須介於"):
             SalaryEngine._build_expected_workdays(
-                year=2026, month=0,
-                holiday_set=set(), daily_shift_map={},
+                year=2026,
+                month=0,
+                holiday_set=set(),
+                daily_shift_map={},
             )
 
     def test_valid_boundary_months_do_not_raise(self, engine):
         """month=1 與 month=12 為合法邊界，不應拋出例外"""
         SalaryEngine._build_expected_workdays(
-            year=2026, month=1,
-            holiday_set=set(), daily_shift_map={},
+            year=2026,
+            month=1,
+            holiday_set=set(),
+            daily_shift_map={},
             today=date(2026, 1, 31),
         )
         SalaryEngine._build_expected_workdays(
-            year=2026, month=12,
-            holiday_set=set(), daily_shift_map={},
+            year=2026,
+            month=12,
+            holiday_set=set(),
+            daily_shift_map={},
             today=date(2026, 12, 31),
         )
 
@@ -1310,30 +1410,37 @@ class TestDeferredRounding:
 
     def _make_att(self, late_minutes=3):
         return AttendanceResult(
-            employee_name='舍入測試',
-            total_days=22, normal_days=21,
-            late_count=1, early_leave_count=0,
-            missing_punch_in_count=0, missing_punch_out_count=0,
+            employee_name="舍入測試",
+            total_days=22,
+            normal_days=21,
+            late_count=1,
+            early_leave_count=0,
+            missing_punch_in_count=0,
+            missing_punch_out_count=0,
             total_late_minutes=late_minutes,
             total_early_minutes=0,
             details=[],
         )
 
     def test_net_salary_deferred_rounding(self, engine, sample_employee):
-        """延遲舍入應得 31230，個別舍入誤計 31231"""
-        emp = {**sample_employee, 'hire_date': '2026-01-03'}
+        """延遲舍入驗證：gross/deduction 各自先加總再舍入"""
+        emp = {**sample_employee, "hire_date": "2026-01-03"}
         breakdown = engine.calculate_salary(
-            employee=emp, year=2026, month=1,
+            employee=emp,
+            year=2026,
+            month=1,
             attendance=self._make_att(late_minutes=3),
         )
-        # round(28064.516... + 2000 + 2400 − 758 − 470 − 6.25) = round(31230.266) = 31230
-        assert breakdown.net_salary == 31230
+        # round(28064.516... − 758 − 470 − 6.25) = round(26830.266) = 26830
+        assert breakdown.net_salary == 26830
 
     def test_gross_and_total_deduction_are_integers(self, engine, sample_employee):
         """gross_salary 與 total_deduction 最終應為整數（前端顯示不出現小數）"""
-        emp = {**sample_employee, 'hire_date': '2026-01-03'}
+        emp = {**sample_employee, "hire_date": "2026-01-03"}
         breakdown = engine.calculate_salary(
-            employee=emp, year=2026, month=1,
+            employee=emp,
+            year=2026,
+            month=1,
             attendance=self._make_att(late_minutes=3),
         )
         assert breakdown.gross_salary == int(breakdown.gross_salary)
@@ -1342,7 +1449,9 @@ class TestDeferredRounding:
     def test_no_rounding_sources_net_exact(self, engine, sample_employee):
         """無月中入職、無遲到時，net_salary 應為精確整數（無舍入差異）"""
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=3,
+            employee=sample_employee,
+            year=2026,
+            month=3,
         )
         assert breakdown.net_salary == int(breakdown.net_salary)
 
@@ -1352,28 +1461,34 @@ class TestDeferredRounding:
 # ──────────────────────────────────────────────
 class TestBonusAmount:
 
-    def test_bonus_amount_is_festival_plus_overtime_plus_dividend(self, engine, sample_employee):
+    def test_bonus_amount_is_festival_plus_overtime_plus_dividend(
+        self, engine, sample_employee
+    ):
         """bonus_amount 應為三項之和：festival_bonus + overtime_bonus + supervisor_dividend"""
-        emp = {**sample_employee, 'title': '園長', 'position': '園長'}
+        emp = {**sample_employee, "title": "園長", "position": "園長"}
         classroom_ctx = {
-            'role': 'head_teacher',
-            'grade_name': '大班',
-            'current_enrollment': 27,
-            'has_assistant': True,
-            'is_shared_assistant': False,
+            "role": "head_teacher",
+            "grade_name": "大班",
+            "current_enrollment": 27,
+            "has_assistant": True,
+            "is_shared_assistant": False,
         }
         breakdown = engine.calculate_salary(
             employee=emp, year=2026, month=2, classroom_context=classroom_ctx
         )
         assert breakdown.bonus_amount == (
-            breakdown.festival_bonus + breakdown.overtime_bonus + breakdown.supervisor_dividend
+            breakdown.festival_bonus
+            + breakdown.overtime_bonus
+            + breakdown.supervisor_dividend
         )
 
     def test_bonus_separate_includes_supervisor_dividend(self, engine, sample_employee):
         """主管紅利 > 0 時，即使無節慶獎金 bonus_separate 也應為 True"""
-        emp = {**sample_employee, 'title': '園長', 'position': '園長'}
+        emp = {**sample_employee, "title": "園長", "position": "園長"}
         breakdown = engine.calculate_salary(
-            employee=emp, year=2026, month=3,  # 3月非節慶發放月
+            employee=emp,
+            year=2026,
+            month=3,  # 3月非節慶發放月
         )
         assert breakdown.supervisor_dividend > 0
         assert breakdown.bonus_separate is True
@@ -1381,11 +1496,15 @@ class TestBonusAmount:
     def test_bonus_amount_zero_for_no_separate_items(self, engine, sample_employee):
         """一般員工在非發放月：三項皆 0，bonus_amount = 0，bonus_separate = False"""
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=3,
+            employee=sample_employee,
+            year=2026,
+            month=3,
         )
         assert breakdown.bonus_amount == 0
         assert breakdown.bonus_separate is False
-        assert breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
+        assert (
+            breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
+        )
 
 
 # ──────────────────────────────────────────────
@@ -1397,18 +1516,23 @@ class TestPersonalSickLeaveForfeiture:
     受影響項目：festival_bonus、overtime_bonus、supervisor_dividend。
     """
 
-    def test_exactly_40h_not_forfeited(self, engine, sample_employee, sample_classroom_context):
+    def test_exactly_40h_not_forfeited(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """恰好40小時不觸發取消（>40 才觸發）"""
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=2,
+            year=2026,
+            month=2,
             classroom_context=sample_classroom_context,
             personal_sick_leave_hours=40.0,
         )
         assert breakdown.festival_bonus > 0, "40小時不應觸發取消"
         assert breakdown.personal_sick_leave_hours == 40.0
 
-    def test_over_40h_zeroes_festival_and_overtime(self, engine, sample_employee, sample_classroom_context):
+    def test_over_40h_zeroes_festival_and_overtime(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """
         事假+病假累計超過40小時，發放月的 festival_bonus 與 overtime_bonus 應歸零。
 
@@ -1417,7 +1541,8 @@ class TestPersonalSickLeaveForfeiture:
         """
         breakdown = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=2,
+            year=2026,
+            month=2,
             classroom_context=sample_classroom_context,
             personal_sick_leave_hours=40.1,
         )
@@ -1430,38 +1555,44 @@ class TestPersonalSickLeaveForfeiture:
         事假+病假累計超過40小時，主管紅利「不」受影響（與職務掛鉤、與出勤無關）。
         僅節慶獎金與超額獎金被取消（兩者具全勤性質）。
         """
-        emp = {**sample_employee, 'title': '園長', 'position': '園長'}
+        emp = {**sample_employee, "title": "園長", "position": "園長"}
         breakdown = engine.calculate_salary(
             employee=emp,
-            year=2026, month=3,  # 非節慶發放月
+            year=2026,
+            month=3,  # 非節慶發放月
             personal_sick_leave_hours=41.0,
         )
         assert breakdown.supervisor_dividend > 0
 
     def test_under_40h_preserves_supervisor_dividend(self, engine, sample_employee):
         """事假+病假不足40小時，主管紅利照發"""
-        emp = {**sample_employee, 'title': '園長', 'position': '園長'}
+        emp = {**sample_employee, "title": "園長", "position": "園長"}
         breakdown = engine.calculate_salary(
             employee=emp,
-            year=2026, month=3,
+            year=2026,
+            month=3,
             personal_sick_leave_hours=39.9,
         )
         assert breakdown.supervisor_dividend > 0
 
-    def test_forfeiture_does_not_affect_gross_salary_base(self, engine, sample_employee, sample_classroom_context):
+    def test_forfeiture_does_not_affect_gross_salary_base(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """
         節慶獎金取消不影響月薪 gross_salary
         （festival_bonus/overtime_bonus 本就獨立轉帳，不計入 gross_salary）
         """
         baseline = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=2,
+            year=2026,
+            month=2,
             classroom_context=sample_classroom_context,
             personal_sick_leave_hours=0,
         )
         forfeited = engine.calculate_salary(
             employee=sample_employee,
-            year=2026, month=2,
+            year=2026,
+            month=2,
             classroom_context=sample_classroom_context,
             personal_sick_leave_hours=41.0,
         )
@@ -1491,7 +1622,8 @@ class TestAttendanceDateNormalization:
     def test_build_expected_workdays_returns_date_type(self, engine):
         """_build_expected_workdays 回傳集合元素必須是 date 型別"""
         result = SalaryEngine._build_expected_workdays(
-            year=2026, month=1,
+            year=2026,
+            month=1,
             holiday_set=set(),
             daily_shift_map={},
             today=date(2026, 1, 31),
@@ -1502,6 +1634,7 @@ class TestAttendanceDateNormalization:
 
     def test_datetime_attendance_date_normalized_prevents_false_absent(self):
         """regression: generate_payroll 第 1743 行 normalize attendance_date 後，差集正確"""
+
         # 模擬 SQLAlchemy 部分驅動回傳 datetime 物件
         class FakeAtt:
             def __init__(self, dt):
@@ -1512,7 +1645,11 @@ class TestAttendanceDateNormalization:
 
         # 修正後行為：normalize to date
         attendance_dates = {
-            (a.attendance_date.date() if isinstance(a.attendance_date, datetime) else a.attendance_date)
+            (
+                a.attendance_date.date()
+                if isinstance(a.attendance_date, datetime)
+                else a.attendance_date
+            )
             for a in fakes
         }
         absent = expected_workdays - attendance_dates
@@ -1530,9 +1667,14 @@ class TestAttendanceDateNormalization:
             end_date = datetime(2026, 1, 7, 0, 0, 0)
 
         from datetime import timedelta
+
         leave_covered: set = set()
         lv = FakeLeave()
-        d = lv.start_date.date() if isinstance(lv.start_date, datetime) else lv.start_date
+        d = (
+            lv.start_date.date()
+            if isinstance(lv.start_date, datetime)
+            else lv.start_date
+        )
         end = lv.end_date.date() if isinstance(lv.end_date, datetime) else lv.end_date
         while d <= end:
             leave_covered.add(d)
@@ -1558,22 +1700,22 @@ class TestResignProration:
 
     def test_resign_last_day_no_proration(self, engine):
         """月末最後一天（1月31日）離職 → 全額，不折算"""
-        result = engine._prorate_for_period(30000, None, '2026-01-31', 2026, 1)
+        result = engine._prorate_for_period(30000, None, "2026-01-31", 2026, 1)
         assert result == 30000
 
     def test_resign_mid_month_prorated(self, engine):
         """15日離職（1月共31天）→ 在職15天 → 30000×15/31"""
-        result = engine._prorate_for_period(30000, None, '2026-01-15', 2026, 1)
+        result = engine._prorate_for_period(30000, None, "2026-01-15", 2026, 1)
         assert result == 30000 * 15 / 31
 
     def test_resign_different_month_no_proration(self, engine):
         """上月（12月）離職 → 本月全額（不折算）"""
-        result = engine._prorate_for_period(30000, None, '2025-12-15', 2026, 1)
+        result = engine._prorate_for_period(30000, None, "2025-12-15", 2026, 1)
         assert result == 30000
 
     def test_hire_and_resign_same_month(self, engine):
         """同月（1月）10日入職、20日離職 → 在職11天 → 30000×11/31"""
-        result = engine._prorate_for_period(30000, '2026-01-10', '2026-01-20', 2026, 1)
+        result = engine._prorate_for_period(30000, "2026-01-10", "2026-01-20", 2026, 1)
         assert result == 30000 * 11 / 31
 
     def test_no_resign_no_hire_full_salary(self, engine):
@@ -1583,21 +1725,23 @@ class TestResignProration:
 
     def test_zero_base_returns_zero(self, engine):
         """底薪為 0 → 回傳 0"""
-        result = engine._prorate_for_period(0, None, '2026-01-15', 2026, 1)
+        result = engine._prorate_for_period(0, None, "2026-01-15", 2026, 1)
         assert result == 0.0
 
     def test_calculate_salary_prorates_for_resign_mid_month(self, engine):
         """calculate_salary 應對月中離職員工折算 breakdown.base_salary"""
         employee = {
-            'employee_id': 'E998', 'name': '月中離職',
-            'title': '', 'position': '', 'employee_type': 'regular',
-            'base_salary': 30000, 'hourly_rate': 0,
-            'supervisor_allowance': 0, 'teacher_allowance': 0,
-            'meal_allowance': 0, 'transportation_allowance': 0,
-            'other_allowance': 0,
-            'insurance_salary': 30000, 'dependents': 0,
-            'hire_date': '2025-01-01',
-            'resign_date': '2026-01-15',  # 1月15日離職，共31天
+            "employee_id": "E998",
+            "name": "月中離職",
+            "title": "",
+            "position": "",
+            "employee_type": "regular",
+            "base_salary": 30000,
+            "hourly_rate": 0,
+            "insurance_salary": 30000,
+            "dependents": 0,
+            "hire_date": "2025-01-01",
+            "resign_date": "2026-01-15",  # 1月15日離職，共31天
         }
         breakdown = engine.calculate_salary(employee=employee, year=2026, month=1)
         expected_base = 30000 * 15 / 31
@@ -1615,15 +1759,15 @@ class TestPensionSelfRate:
         修復前：process_salary_calculation 建立的 emp_dict 缺少 pension_self_rate，
         導致 calculate_salary 永遠讀到預設值 0.0，所有員工自提費為 0。
         """
-        emp = {**sample_employee, 'insurance_salary': 30300, 'pension_self_rate': 0.06}
+        emp = {**sample_employee, "insurance_salary": 30300, "pension_self_rate": 0.06}
         breakdown = engine.calculate_salary(emp, year=2026, month=3)
         # 投保級距 30300，自提 6% → round(30300 * 0.06) = 1818
         assert breakdown.pension_self == 1818
 
     def test_pension_self_rate_zero_when_absent(self, engine, sample_employee):
         """emp_dict 未含 pension_self_rate 時，勞退自提應為 0"""
-        emp = {**sample_employee, 'insurance_salary': 30300}
-        emp.pop('pension_self_rate', None)
+        emp = {**sample_employee, "insurance_salary": 30300}
+        emp.pop("pension_self_rate", None)
         breakdown = engine.calculate_salary(emp, year=2026, month=3)
         assert breakdown.pension_self == 0
 
@@ -1633,15 +1777,19 @@ class TestPensionSelfRate:
 # ──────────────────────────────────────────────
 class TestBirthdayBonus:
 
-    def test_awards_birthday_bonus_when_salary_month_matches_birthday(self, engine, sample_employee):
-        emp = {**sample_employee, 'birthday': '1990-03-15'}
+    def test_awards_birthday_bonus_when_salary_month_matches_birthday(
+        self, engine, sample_employee
+    ):
+        emp = {**sample_employee, "birthday": "1990-03-15"}
 
         breakdown = engine.calculate_salary(emp, year=2026, month=3)
 
         assert breakdown.birthday_bonus == 500
 
-    def test_birthday_bonus_is_zero_when_salary_month_does_not_match(self, engine, sample_employee):
-        emp = {**sample_employee, 'birthday': '1990-04-15'}
+    def test_birthday_bonus_is_zero_when_salary_month_does_not_match(
+        self, engine, sample_employee
+    ):
+        emp = {**sample_employee, "birthday": "1990-04-15"}
 
         breakdown = engine.calculate_salary(emp, year=2026, month=3)
 
@@ -1664,27 +1812,26 @@ class TestGradeFromTitle:
     """
 
     _HEAD_TEACHER_CLASSROOM = {
-        'role': 'head_teacher',
-        'grade_name': '大班',
-        'current_enrollment': 24,
-        'has_assistant': True,
-        'is_shared_assistant': False,
+        "role": "head_teacher",
+        "grade_name": "大班",
+        "current_enrollment": 24,
+        "has_assistant": True,
+        "is_shared_assistant": False,
     }
 
-    def _make_emp(self, title: str, position: str = '班導', bonus_grade=None):
+    def _make_emp(self, title: str, position: str = "班導", bonus_grade=None):
         return {
-            'employee_id': 'E_TEST', 'name': '測試',
-            'title': title,
-            'position': position,
-            'bonus_grade': bonus_grade,
-            'employee_type': 'regular',
-            'base_salary': 33000,
-            'hourly_rate': 0,
-            'supervisor_allowance': 0, 'teacher_allowance': 0,
-            'meal_allowance': 0, 'transportation_allowance': 0, 'other_allowance': 0,
-            'insurance_salary': 33000,
-            'dependents': 0,
-            'hire_date': '2020-01-01',
+            "employee_id": "E_TEST",
+            "name": "測試",
+            "title": title,
+            "position": position,
+            "bonus_grade": bonus_grade,
+            "employee_type": "regular",
+            "base_salary": 33000,
+            "hourly_rate": 0,
+            "insurance_salary": 33000,
+            "dependents": 0,
+            "hire_date": "2020-01-01",
         }
 
     def test_a_grade_from_title_幼兒園教師(self, engine):
@@ -1692,10 +1839,11 @@ class TestGradeFromTitle:
         Bug 修復回歸：title='幼兒園教師', position='班導' → A 級 → festival_bonus = 2000。
         修復前：position='班導' 不在 POSITION_GRADE_MAP → fallback C 級 → 1500（錯誤）。
         """
-        emp = self._make_emp('幼兒園教師', '班導')
+        emp = self._make_emp("幼兒園教師", "班導")
         breakdown = engine.calculate_salary(
             employee=emp,
-            year=2026, month=6,   # 6月為發放月
+            year=2026,
+            month=6,  # 6月為發放月
             classroom_context=self._HEAD_TEACHER_CLASSROOM,
         )
         # 大班 2_teachers 目標 24，在籍 24 → ratio=1.0，A 級基數 2000 → 2000
@@ -1706,10 +1854,11 @@ class TestGradeFromTitle:
         bonus_grade='B' 覆蓋 C 級職稱：title='助理教保員'（C 級）+ bonus_grade='B' → B 級。
         班導師 B 級基數 = 2000，C 級基數 = 1500，驗證覆蓋機制讓結果由 1500 變 2000。
         """
-        emp = self._make_emp('助理教保員', '班導', bonus_grade='B')
+        emp = self._make_emp("助理教保員", "班導", bonus_grade="B")
         breakdown = engine.calculate_salary(
             employee=emp,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=self._HEAD_TEACHER_CLASSROOM,
         )
         # bonus_grade='B' → effective_title='教保員'（B 級）→ 班導 B 基數 2000
@@ -1721,10 +1870,11 @@ class TestGradeFromTitle:
         bonus_grade=None → 不覆蓋，依 title 判斷等級。
         title='助理教保員'（C 級）→ 班導師 C 基數 = 1500。
         """
-        emp = self._make_emp('助理教保員', '班導', bonus_grade=None)
+        emp = self._make_emp("助理教保員", "班導", bonus_grade=None)
         breakdown = engine.calculate_salary(
             employee=emp,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=self._HEAD_TEACHER_CLASSROOM,
         )
         # bonus_grade=None → title='助理教保員'（C 級）→ 班導 C 基數 1500
@@ -1734,15 +1884,16 @@ class TestGradeFromTitle:
         """未知 title fallback 'C' 時應記 warning（L3）。
         行為不變（仍 fallback C）但留 log 供 ops 排查分流誤判。
         引擎以 _effective_title 傳給 get_festival_bonus_base，所以變數是 title 不是 position。"""
-        emp = self._make_emp('未知職稱X', '班導')
-        with caplog.at_level('WARNING', logger='services.salary.festival'):
+        emp = self._make_emp("未知職稱X", "班導")
+        with caplog.at_level("WARNING", logger="services.salary.festival"):
             engine.calculate_salary(
                 employee=emp,
-                year=2026, month=6,
+                year=2026,
+                month=6,
                 classroom_context=sample_classroom_context,
             )
         assert any(
-            '未知職稱X' in r.message and 'fallback 為 C 級' in r.message
+            "未知職稱X" in r.message and "fallback 為 C 級" in r.message
             for r in caplog.records
         )
 
@@ -1753,10 +1904,11 @@ class TestGradeFromTitle:
                 → 仍按 C 級 1500 計算。
         修正後：統一 .upper() 正規化 → B 級基數 2000。
         """
-        emp = self._make_emp('助理教保員', '班導', bonus_grade='b')
+        emp = self._make_emp("助理教保員", "班導", bonus_grade="b")
         breakdown = engine.calculate_salary(
             employee=emp,
-            year=2026, month=6,
+            year=2026,
+            month=6,
             classroom_context=self._HEAD_TEACHER_CLASSROOM,
         )
         assert breakdown.festival_bonus == 2000
@@ -1771,54 +1923,57 @@ class TestCalculateOvertimePay:
     def test_weekday_first_2h(self):
         """平日2小時：× 1.34"""
         from api.overtimes import calculate_overtime_pay
+
         hourly = 30000 / 30 / 8
-        assert calculate_overtime_pay(30000, 2, 'weekday') == round(hourly * 2 * 1.34)
+        assert calculate_overtime_pay(30000, 2, "weekday") == round(hourly * 2 * 1.34)
 
     def test_weekday_beyond_2h(self):
         """平日4小時：前2h ×1.34 + 後2h ×1.67"""
         from api.overtimes import calculate_overtime_pay
+
         hourly = 30000 / 30 / 8
         expected = round(hourly * 2 * 1.34 + hourly * 2 * 1.67)
-        assert calculate_overtime_pay(30000, 4, 'weekday') == expected
+        assert calculate_overtime_pay(30000, 4, "weekday") == expected
 
     def test_weekend_min_billing(self):
         """休息日工作0.5h，最低計2h費用"""
         from api.overtimes import calculate_overtime_pay
+
         hourly = 30000 / 30 / 8
         expected = round(hourly * 2 * 1.33)
-        assert calculate_overtime_pay(30000, 0.5, 'weekend') == expected
+        assert calculate_overtime_pay(30000, 0.5, "weekend") == expected
 
     def test_weekend_within_2h(self):
         """休息日2小時：× 1.33"""
         from api.overtimes import calculate_overtime_pay
+
         hourly = 30000 / 30 / 8
         expected = round(hourly * 2 * 1.33)
-        assert calculate_overtime_pay(30000, 2, 'weekend') == expected
+        assert calculate_overtime_pay(30000, 2, "weekend") == expected
 
     def test_weekend_mid_range(self):
         """休息日4小時：前2h ×1.33 + 後2h ×1.67"""
         from api.overtimes import calculate_overtime_pay
+
         hourly = 30000 / 30 / 8
         expected = round(hourly * 2 * 1.33 + hourly * 2 * 1.67)
-        assert calculate_overtime_pay(30000, 4, 'weekend') == expected
+        assert calculate_overtime_pay(30000, 4, "weekend") == expected
 
     def test_weekend_beyond_8h(self):
         """休息日10小時：前2h ×1.33 + 6h ×1.67 + 2h ×2.67"""
         from api.overtimes import calculate_overtime_pay
+
         hourly = 30000 / 30 / 8
-        expected = round(
-            hourly * 2 * 1.33
-            + hourly * 6 * 1.67
-            + hourly * 2 * 2.67
-        )
-        assert calculate_overtime_pay(30000, 10, 'weekend') == expected
+        expected = round(hourly * 2 * 1.33 + hourly * 6 * 1.67 + hourly * 2 * 2.67)
+        assert calculate_overtime_pay(30000, 10, "weekend") == expected
 
     def test_holiday_flat_rate(self):
         """例假日4小時：全部 ×2.0"""
         from api.overtimes import calculate_overtime_pay
+
         hourly = 30000 / 30 / 8
         expected = round(hourly * 4 * 2.0)
-        assert calculate_overtime_pay(30000, 4, 'holiday') == expected
+        assert calculate_overtime_pay(30000, 4, "holiday") == expected
 
 
 # ──────────────────────────────────────────────
@@ -1830,21 +1985,25 @@ class TestCalcDailySalary:
     def test_normal_base_salary(self):
         """標準底薪 30000 → 日薪 1000.0"""
         from services.salary.utils import calc_daily_salary
+
         assert calc_daily_salary(30000) == 1000.0
 
     def test_zero_base_salary(self):
         """底薪 0 → 日薪 0.0"""
         from services.salary.utils import calc_daily_salary
+
         assert calc_daily_salary(0) == 0.0
 
     def test_none_base_salary(self):
         """底薪 None → 日薪 0.0（防護 None）"""
         from services.salary.utils import calc_daily_salary
+
         assert calc_daily_salary(None) == 0.0
 
     def test_fractional_result(self):
         """底薪 31000 → 日薪 1033.333...（不截斷）"""
         from services.salary.utils import calc_daily_salary
+
         result = calc_daily_salary(31000)
         assert abs(result - 31000 / 30) < 1e-9
 
@@ -1858,34 +2017,46 @@ class TestCombinedDeductions:
     def test_late_plus_half_day_leave(self, engine, sample_employee):
         """遲到30分 → late_deduction = base_salary / (30 * 8 * 60) * 30（不截斷）"""
         from services.attendance_parser import AttendanceResult
+
         base = 30000
         daily = base / 30
         # 引擎的 per_minute_rate = base / (30 * 8 * 60)
         expected_late = base / (30 * 8 * 60) * 30
         att = AttendanceResult(
-            employee_name='王小明',
-            total_days=22, normal_days=21,
-            late_count=1, early_leave_count=0,
-            missing_punch_in_count=0, missing_punch_out_count=0,
-            total_late_minutes=30, total_early_minutes=0,
-            details=[]
+            employee_name="王小明",
+            total_days=22,
+            normal_days=21,
+            late_count=1,
+            early_leave_count=0,
+            missing_punch_in_count=0,
+            missing_punch_out_count=0,
+            total_late_minutes=30,
+            total_early_minutes=0,
+            details=[],
         )
         # 直接測試 calculate_attendance_deduction
-        result = engine.calculate_attendance_deduction(att, daily_salary=daily, base_salary=base)
-        assert abs(result['late_deduction'] - expected_late) < 1e-9
+        result = engine.calculate_attendance_deduction(
+            att, daily_salary=daily, base_salary=base
+        )
+        assert abs(result["late_deduction"] - expected_late) < 1e-9
 
     def test_net_salary_not_negative(self, engine, sample_employee):
         """極端扣款情境下 net_salary 不應為負數（引擎應拋出 ValueError）"""
         from services.attendance_parser import AttendanceResult
+
         # 讓底薪極低，而遲到極多
-        sample_employee['base_salary'] = 100
+        sample_employee["base_salary"] = 100
         att = AttendanceResult(
-            employee_name='王小明',
-            total_days=22, normal_days=0,
-            late_count=100, early_leave_count=0,
-            missing_punch_in_count=0, missing_punch_out_count=0,
-            total_late_minutes=999999, total_early_minutes=0,
-            details=[]
+            employee_name="王小明",
+            total_days=22,
+            normal_days=0,
+            late_count=100,
+            early_leave_count=0,
+            missing_punch_in_count=0,
+            missing_punch_out_count=0,
+            total_late_minutes=999999,
+            total_early_minutes=0,
+            details=[],
         )
         # 超過底薪的扣款應觸發 ValueError
         try:
@@ -1895,7 +2066,7 @@ class TestCombinedDeductions:
             # 若未拋出，net_salary 不得為負數
             assert breakdown.net_salary >= 0
         except ValueError as e:
-            assert 'net_salary' in str(e) or '異常負值' in str(e)
+            assert "net_salary" in str(e) or "異常負值" in str(e)
 
 
 # ──────────────────────────────────────────────
@@ -1906,36 +2077,50 @@ class TestProrateEdgeCases:
 
     def test_hire_first_day_of_month(self, engine, sample_employee):
         """月1日到職 → 全月薪資（無折算），base_salary 應為原值"""
-        sample_employee['hire_date'] = '2026-03-01'
+        sample_employee["hire_date"] = "2026-03-01"
         breakdown = engine.calculate_salary(
             employee=sample_employee, year=2026, month=3
         )
         # 月1日到職不折算
-        assert breakdown.base_salary == sample_employee['base_salary']
+        assert breakdown.base_salary == sample_employee["base_salary"]
 
     def test_hire_last_day_of_month(self, engine, sample_employee):
         """3月30日到職 → 折算2天（3/30~3/31），使用實際月天數31天"""
         import calendar
-        sample_employee['hire_date'] = '2026-03-30'
+
+        sample_employee["hire_date"] = "2026-03-30"
         breakdown = engine.calculate_salary(
             employee=sample_employee, year=2026, month=3
         )
         # 3/30 ~ 3/31 = 2天；折算基準 = 31（3月實際天數）
         days_in_month = calendar.monthrange(2026, 3)[1]  # 31
-        worked_days = days_in_month - 30 + 1             # 2
-        assert abs(breakdown.base_salary - sample_employee['base_salary'] * worked_days / days_in_month) < 1
+        worked_days = days_in_month - 30 + 1  # 2
+        assert (
+            abs(
+                breakdown.base_salary
+                - sample_employee["base_salary"] * worked_days / days_in_month
+            )
+            < 1
+        )
 
     def test_cross_year_proration(self, engine, sample_employee):
         """12月15日入職，計算當月 → 折算 17/31（使用12月實際天數）"""
         import calendar
-        sample_employee['hire_date'] = '2026-12-15'
+
+        sample_employee["hire_date"] = "2026-12-15"
         breakdown = engine.calculate_salary(
             employee=sample_employee, year=2026, month=12
         )
         # 12/15 ~ 12/31 = 17天；折算基準 = 31
         days_in_month = calendar.monthrange(2026, 12)[1]  # 31
-        worked_days = days_in_month - 15 + 1              # 17
-        assert abs(breakdown.base_salary - sample_employee['base_salary'] * worked_days / days_in_month) < 1
+        worked_days = days_in_month - 15 + 1  # 17
+        assert (
+            abs(
+                breakdown.base_salary
+                - sample_employee["base_salary"] * worked_days / days_in_month
+            )
+            < 1
+        )
 
 
 # ──────────────────────────────────────────────
@@ -1944,21 +2129,39 @@ class TestProrateEdgeCases:
 class TestMeetingAbsenceEdgeCases:
     """多次缺席、跨期累積、非發放月行為"""
 
-    def test_multiple_absences_in_bonus_month(self, engine, sample_employee, sample_classroom_context):
+    def test_multiple_absences_in_bonus_month(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """發放月（6月）當月缺席3次 → 3 × 100 = 300 元扣款"""
-        meeting = {'attended': 0, 'absent': 3, 'absent_period': 3, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 0,
+            "absent": 3,
+            "absent_period": 3,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=6,
+            employee=sample_employee,
+            year=2026,
+            month=6,
             classroom_context=sample_classroom_context,
             meeting_context=meeting,
         )
         assert breakdown.meeting_absence_deduction == 300
 
-    def test_prior_plus_current_absence_adds_up(self, engine, sample_employee, sample_classroom_context):
+    def test_prior_plus_current_absence_adds_up(
+        self, engine, sample_employee, sample_classroom_context
+    ):
         """前期1次 + 當月2次 → absent_period=3 → 300 元扣款"""
-        meeting = {'attended': 1, 'absent': 2, 'absent_period': 3, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 1,
+            "absent": 2,
+            "absent_period": 3,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=6,
+            employee=sample_employee,
+            year=2026,
+            month=6,
             classroom_context=sample_classroom_context,
             meeting_context=meeting,
         )
@@ -1966,9 +2169,16 @@ class TestMeetingAbsenceEdgeCases:
 
     def test_non_bonus_month_no_prior_lookup(self, engine, sample_employee):
         """非發放月（5月），無論缺席幾次，meeting_absence_deduction 為 0"""
-        meeting = {'attended': 0, 'absent': 5, 'absent_period': 5, 'work_end_time': '17:00'}
+        meeting = {
+            "attended": 0,
+            "absent": 5,
+            "absent_period": 5,
+            "work_end_time": "17:00",
+        }
         breakdown = engine.calculate_salary(
-            employee=sample_employee, year=2026, month=5,
+            employee=sample_employee,
+            year=2026,
+            month=5,
             meeting_context=meeting,
         )
         assert breakdown.meeting_absence_deduction == 0

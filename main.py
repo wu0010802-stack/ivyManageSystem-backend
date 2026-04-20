@@ -15,6 +15,7 @@ from services.line_service import LineService
 
 # Routers
 from api.employees import router as employees_router, init_employee_services
+from api.employees_docs import router as employees_docs_router
 from api.students import router as students_router
 from api.student_attendance import router as student_attendance_router
 from api.student_incidents import router as student_incidents_router
@@ -34,7 +35,6 @@ from api.overtimes import (
     init_overtimes_line_service,
 )
 from api.insurance import router as insurance_router, init_insurance_services
-from api.employee_allowances import router as employee_allowances_router
 from api.auth import router as auth_router
 from api.portal import router as portal_router, init_portal_notify_services
 from api.shifts import router as shifts_router
@@ -64,6 +64,7 @@ from api.recruitment_gov_kindergartens import (
 )
 from api.student_enrollment import router as student_enrollment_router
 from api.student_change_logs import router as student_change_logs_router
+from api.student_communications import router as student_communications_router
 from api.bonus_preview import (
     router as bonus_preview_router,
     init_bonus_preview_services,
@@ -133,12 +134,113 @@ def on_startup():
     logger.info("Application started successfully.")
 
 
+async def _activity_waitlist_sweeper():
+    """每 10 分鐘掃描候補轉正過期，發放逾期放棄與即將到期提醒。
+
+    多 worker 部署時以 env ACTIVITY_WAITLIST_SWEEPER_ENABLED=1 在「其中一個」
+    worker 上啟用即可，其他 worker 預設不跑避免 Line 通知重發。
+    """
+    import asyncio
+    from services.activity_service import activity_service
+    from models.database import get_session
+
+    interval = int(os.getenv("ACTIVITY_WAITLIST_SWEEP_INTERVAL_SECONDS", "600"))
+    logger.info("候補過期掃描器啟動，間隔 %s 秒", interval)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            session = get_session()
+            try:
+                result = activity_service.sweep_expired_pending_promotions(session)
+                session.commit()
+                if result["expired"] or result["reminded"]:
+                    logger.info(
+                        "候補過期掃描：expired=%s reminded=%s",
+                        result["expired"],
+                        result["reminded"],
+                    )
+            finally:
+                session.close()
+        except asyncio.CancelledError:
+            logger.info("候補過期掃描器收到取消訊號，退出")
+            raise
+        except Exception:
+            logger.exception("候補過期掃描失敗（忽略本次）")
+
+
 @asynccontextmanager
 async def app_lifespan(app_instance: FastAPI):
+    import asyncio
+
     on_startup()
+    # 只有 env 啟用時才跑 sweeper（避免多 worker 重複發送通知）
+    sweeper_task = None
+    if os.getenv("ACTIVITY_WAITLIST_SWEEPER_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        sweeper_task = asyncio.create_task(_activity_waitlist_sweeper())
+
+    # 自動畢業排程：需要 AUTO_GRADUATION_ENABLED=1；建議僅在單一 worker 上啟用
+    graduation_task = None
+    graduation_stop_event: asyncio.Event | None = None
+    try:
+        from services import graduation_scheduler as _grad
+
+        if _grad.scheduler_enabled():
+            graduation_stop_event = asyncio.Event()
+            graduation_task = asyncio.create_task(
+                _grad.run_auto_graduation_scheduler(graduation_stop_event)
+            )
+    except Exception as e:
+        logger.warning("自動畢業排程啟動失敗: %s", e)
+
+    # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
+    ivykids_sync_task = None
+    ivykids_sync_stop_event: asyncio.Event | None = None
+    try:
+        from services import recruitment_ivykids_sync as _ivykids_sync
+
+        if _ivykids_sync.scheduler_configured():
+            ivykids_sync_stop_event = asyncio.Event()
+            ivykids_sync_task = asyncio.create_task(
+                _ivykids_sync.run_sync_scheduler(ivykids_sync_stop_event)
+            )
+    except Exception as e:
+        logger.warning("義華校官網自動同步啟動失敗: %s", e)
+
     try:
         yield
     finally:
+        if sweeper_task is not None:
+            sweeper_task.cancel()
+            try:
+                await sweeper_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if graduation_task is not None:
+            if graduation_stop_event is not None:
+                graduation_stop_event.set()
+            try:
+                await asyncio.wait_for(graduation_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                graduation_task.cancel()
+                try:
+                    await graduation_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if ivykids_sync_task is not None:
+            if ivykids_sync_stop_event is not None:
+                ivykids_sync_stop_event.set()
+            try:
+                await asyncio.wait_for(ivykids_sync_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                ivykids_sync_task.cancel()
+                try:
+                    await ivykids_sync_task
+                except (asyncio.CancelledError, Exception):
+                    pass
         # Graceful Shutdown：釋放資源
         logger.info("Application shutting down — releasing resources…")
         # 關閉所有 WebSocket 連線
@@ -192,16 +294,20 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 _cors_env = os.environ.get("CORS_ORIGINS", "")
-CORS_ORIGINS = (
-    [o.strip() for o in _cors_env.split(",") if o.strip()]
-    if _cors_env
-    else [
+_env_name = os.environ.get("ENV", "development").lower()
+_is_prod_env = _env_name in ("production", "prod")
+
+if _cors_env:
+    CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
+elif _is_prod_env:
+    raise RuntimeError("CORS_ORIGINS 環境變數未設定，正式環境不允許使用開發預設來源。")
+else:
+    CORS_ORIGINS = [
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
     ]
-)
 
 app.add_middleware(
     CORSMiddleware,
@@ -245,6 +351,7 @@ get_storage_path("attendance_imports")
 # ---------------------------------------------------------------------------
 
 app.include_router(employees_router)
+app.include_router(employees_docs_router)
 app.include_router(students_router)
 app.include_router(student_attendance_router)
 app.include_router(student_incidents_router)
@@ -256,7 +363,6 @@ app.include_router(config_router)
 app.include_router(leaves_router)
 app.include_router(overtimes_router)
 app.include_router(insurance_router)
-app.include_router(employee_allowances_router)
 app.include_router(auth_router)
 app.include_router(portal_router)
 app.include_router(shifts_router)
@@ -287,6 +393,7 @@ app.include_router(recruitment_ivykids_router)
 app.include_router(recruitment_gov_kindergartens_router)
 app.include_router(student_enrollment_router)
 app.include_router(student_change_logs_router)
+app.include_router(student_communications_router)
 app.include_router(bonus_preview_router)
 app.include_router(health_router)
 

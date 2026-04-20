@@ -16,6 +16,7 @@ from models.recruitment import CompetitorSchool
 from services import moe_kindergarten_scraper as moe_scraper
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,12 @@ def list_gov_kindergartens(
         if pre_public:
             q = q.filter(CompetitorSchool.pre_public_type == pre_public)
         if search:
-            q = q.filter(CompetitorSchool.school_name.ilike(f"%{search}%"))
+            safe_search = escape_like_pattern(search)
+            q = q.filter(
+                CompetitorSchool.school_name.ilike(
+                    f"%{safe_search}%", escape=LIKE_ESCAPE_CHAR
+                )
+            )
 
         total = q.count()
         records = (

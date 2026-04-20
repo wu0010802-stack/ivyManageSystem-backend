@@ -9,11 +9,9 @@ from sqlalchemy.orm import joinedload
 
 from models.database import (
     Attendance,
-    AllowanceType,
     Classroom,
     DailyShift,
     Employee,
-    EmployeeAllowance,
     LeaveRecord,
     MeetingRecord,
     OvertimeRecord,
@@ -21,9 +19,11 @@ from models.database import (
 )
 from services.salary.constants import LEAVE_DEDUCTION_RULES, MONTHLY_BASE_DAYS
 from services.salary.proration import _build_expected_workdays, _prorate_for_period
-from services.salary.utils import get_bonus_distribution_month, get_meeting_deduction_period_start
+from services.salary.utils import (
+    get_bonus_distribution_month,
+    get_meeting_deduction_period_start,
+)
 from services.student_enrollment import count_students_active_on
-
 
 FIELD_LABELS = {
     "festival_bonus": "節慶獎金",
@@ -51,8 +51,14 @@ def _calc_attendance_stats(attendances: list) -> dict:
     missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
     missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
     total_late_min = sum(a.late_minutes or 0 for a in attendances if a.is_late)
-    total_early_min = sum(a.early_leave_minutes or 0 for a in attendances if a.is_early_leave)
-    late_details = [a.late_minutes or 0 for a in attendances if a.is_late and (a.late_minutes or 0) > 0]
+    total_early_min = sum(
+        a.early_leave_minutes or 0 for a in attendances if a.is_early_leave
+    )
+    late_details = [
+        a.late_minutes or 0
+        for a in attendances
+        if a.is_late and (a.late_minutes or 0) > 0
+    ]
     early_rows = [
         {"date": _to_iso(a.attendance_date), "minutes": a.early_leave_minutes or 0}
         for a in attendances
@@ -88,16 +94,20 @@ def _calc_leave_deductions(approved_leaves: list, daily_salary: float) -> dict:
         )
         deduction = round((lv.leave_hours / 8) * daily_salary * ratio)
         leave_deduction_total += deduction
-        leave_breakdown.append({
-            "type": lv.leave_type,
-            "start": _to_iso(lv.start_date),
-            "end": _to_iso(lv.end_date),
-            "hours": lv.leave_hours or 0,
-            "ratio": ratio,
-            "deduction": deduction,
-        })
+        leave_breakdown.append(
+            {
+                "type": lv.leave_type,
+                "start": _to_iso(lv.start_date),
+                "end": _to_iso(lv.end_date),
+                "hours": lv.leave_hours or 0,
+                "ratio": ratio,
+                "deduction": deduction,
+            }
+        )
     personal_sick_leave_hours = sum(
-        lv.leave_hours or 0 for lv in approved_leaves if lv.leave_type in ("personal", "sick")
+        lv.leave_hours or 0
+        for lv in approved_leaves
+        if lv.leave_type in ("personal", "sick")
     )
     return {
         "leave_deduction_total": leave_deduction_total,
@@ -126,9 +136,15 @@ def _calc_overtime_details(approved_ot: list) -> dict:
 def _calc_insurance_details(emp: Employee, ins_service) -> dict:
     """保險計算：查詢投保級距並計算員工自付保費。"""
     insured_salary_raw = (
-        emp.insurance_salary_level if getattr(emp, "insurance_salary_level", None) else emp.base_salary
+        emp.insurance_salary_level
+        if getattr(emp, "insurance_salary_level", None)
+        else emp.base_salary
     ) or 0
-    insured_salary = ins_service.get_bracket(insured_salary_raw)["amount"] if insured_salary_raw else 0
+    insured_salary = (
+        ins_service.get_bracket(insured_salary_raw)["amount"]
+        if insured_salary_raw
+        else 0
+    )
     ins = ins_service.calculate(
         insured_salary,
         emp.dependents or 0,
@@ -137,24 +153,36 @@ def _calc_insurance_details(emp: Employee, ins_service) -> dict:
     return {"insured_salary_raw": insured_salary_raw, "ins": ins}
 
 
-def _build_meeting_stats(session, engine, emp: Employee, start_date, end_date, is_bonus_month: bool) -> dict:
+def _build_meeting_stats(
+    session, engine, emp: Employee, start_date, end_date, is_bonus_month: bool
+) -> dict:
     """查詢並計算會議出席/缺席統計、扣款與每次薪資。"""
-    meetings = session.query(MeetingRecord).filter(
-        MeetingRecord.employee_id == emp.id,
-        MeetingRecord.meeting_date >= start_date,
-        MeetingRecord.meeting_date <= end_date,
-    ).all()
+    meetings = (
+        session.query(MeetingRecord)
+        .filter(
+            MeetingRecord.employee_id == emp.id,
+            MeetingRecord.meeting_date >= start_date,
+            MeetingRecord.meeting_date <= end_date,
+        )
+        .all()
+    )
     meeting_attended = sum(1 for m in meetings if m.attended)
     meeting_absent_current = sum(1 for m in meetings if not m.attended)
     absent_period = meeting_absent_current
     if is_bonus_month:
-        period_start = get_meeting_deduction_period_start(start_date.year, start_date.month)
+        period_start = get_meeting_deduction_period_start(
+            start_date.year, start_date.month
+        )
         if period_start is not None and period_start < start_date:
-            prior_records = session.query(MeetingRecord).filter(
-                MeetingRecord.employee_id == emp.id,
-                MeetingRecord.meeting_date >= period_start,
-                MeetingRecord.meeting_date < start_date,
-            ).all()
+            prior_records = (
+                session.query(MeetingRecord)
+                .filter(
+                    MeetingRecord.employee_id == emp.id,
+                    MeetingRecord.meeting_date >= period_start,
+                    MeetingRecord.meeting_date < start_date,
+                )
+                .all()
+            )
             absent_period += sum(1 for m in prior_records if not m.attended)
     meeting_penalty = getattr(engine, "_meeting_absence_penalty", 100)
     meeting_absence_deduction = absent_period * meeting_penalty if is_bonus_month else 0
@@ -183,30 +211,16 @@ def _build_meeting_stats(session, engine, emp: Employee, start_date, end_date, i
     }
 
 
-def _load_allowances(session, emp_id: int) -> list:
-    """載入員工自訂津貼列表。"""
-    emp_allowances = session.query(EmployeeAllowance).filter(
-        EmployeeAllowance.employee_id == emp_id,
-        EmployeeAllowance.is_active == True,
-    ).all()
-    at_ids = [a.allowance_type_id for a in emp_allowances]
-    at_map = {at.id: at for at in session.query(AllowanceType).filter(
-        AllowanceType.id.in_(at_ids)
-    ).all()} if at_ids else {}
-    return [
-        {"name": at_map[a.allowance_type_id].name, "amount": a.amount or 0}
-        for a in emp_allowances
-        if a.allowance_type_id in at_map
-    ]
-
-
 def _build_classroom_context(session, emp: Employee, end_date) -> dict | None:
     """建立班級脈絡資訊（角色、人數、是否共同助理）。"""
     if not emp.classroom_id:
         return None
-    classroom = session.query(Classroom).options(
-        joinedload(Classroom.grade)
-    ).filter(Classroom.id == emp.classroom_id).first()
+    classroom = (
+        session.query(Classroom)
+        .options(joinedload(Classroom.grade))
+        .filter(Classroom.id == emp.classroom_id)
+        .first()
+    )
     if not classroom:
         return None
     role = "assistant_teacher"
@@ -222,17 +236,23 @@ def _build_classroom_context(session, emp: Employee, end_date) -> dict | None:
         "is_shared_assistant": False,
     }
     if role == "assistant_teacher":
-        shared_classes = session.query(Classroom).options(
-            joinedload(Classroom.grade)
-        ).filter(Classroom.assistant_teacher_id == emp.id).all()
+        shared_classes = (
+            session.query(Classroom)
+            .options(joinedload(Classroom.grade))
+            .filter(Classroom.assistant_teacher_id == emp.id)
+            .all()
+        )
         if len(shared_classes) >= 2:
             ctx["is_shared_assistant"] = True
             others = [
                 {
                     "grade_name": c.grade.name if c.grade else "",
-                    "current_enrollment": count_students_active_on(session, end_date, c.id),
+                    "current_enrollment": count_students_active_on(
+                        session, end_date, c.id
+                    ),
                 }
-                for c in shared_classes if c.id != classroom.id
+                for c in shared_classes
+                if c.id != classroom.id
             ]
             if others:
                 ctx["shared_other_classes"] = others
@@ -258,16 +278,24 @@ def _calc_festival_detail(
     detail: dict = {}
 
     if supervisor_base is not None:
-        school_enrollment = office_staff_context["school_enrollment"] if office_staff_context else 0
+        school_enrollment = (
+            office_staff_context["school_enrollment"] if office_staff_context else 0
+        )
         school_target = getattr(engine, "_school_wide_target", 160) or 160
         ratio = school_enrollment / school_target if school_target > 0 else 0
         raw_result = round(supervisor_base * ratio) if is_eligible else 0
         detail = {
-            "category": "主管", "base": supervisor_base,
-            "enrollment": school_enrollment, "target": school_target,
-            "ratio": round(ratio, 4), "eligible": is_eligible, "is_bonus_month": is_bonus_month,
+            "category": "主管",
+            "base": supervisor_base,
+            "enrollment": school_enrollment,
+            "target": school_target,
+            "ratio": round(ratio, 4),
+            "eligible": is_eligible,
+            "is_bonus_month": is_bonus_month,
             "result": raw_result,
-            "result_after_penalty": max(0, raw_result - meeting_absence_deduction) if is_bonus_month else 0,
+            "result_after_penalty": (
+                max(0, raw_result - meeting_absence_deduction) if is_bonus_month else 0
+            ),
         }
     elif office_staff_context and emp.position and office_bonus_base:
         school_enrollment = office_staff_context["school_enrollment"]
@@ -275,21 +303,32 @@ def _calc_festival_detail(
         ratio = school_enrollment / school_target if school_target > 0 else 0
         raw_result = round(office_bonus_base * ratio) if is_eligible else 0
         detail = {
-            "category": "辦公室", "base": office_bonus_base,
-            "enrollment": school_enrollment, "target": school_target,
-            "ratio": round(ratio, 4), "eligible": is_eligible, "is_bonus_month": is_bonus_month,
+            "category": "辦公室",
+            "base": office_bonus_base,
+            "enrollment": school_enrollment,
+            "target": school_target,
+            "ratio": round(ratio, 4),
+            "eligible": is_eligible,
+            "is_bonus_month": is_bonus_month,
             "result": raw_result,
-            "result_after_penalty": max(0, raw_result - meeting_absence_deduction) if is_bonus_month else 0,
+            "result_after_penalty": (
+                max(0, raw_result - meeting_absence_deduction) if is_bonus_month else 0
+            ),
         }
     elif classroom_context:
         cc = classroom_context
         base_amount = engine.get_festival_bonus_base(effective_title, cc["role"])
-        target = engine.get_target_enrollment(cc["grade_name"], cc["has_assistant"], cc["is_shared_assistant"])
+        target = engine.get_target_enrollment(
+            cc["grade_name"], cc["has_assistant"], cc["is_shared_assistant"]
+        )
         ratio = cc["current_enrollment"] / target if target > 0 else 0
-        overtime_target = engine.get_overtime_target(cc["grade_name"], cc["has_assistant"], cc["is_shared_assistant"])
+        overtime_target = engine.get_overtime_target(
+            cc["grade_name"], cc["has_assistant"], cc["is_shared_assistant"]
+        )
         overtime_count = max(0, cc["current_enrollment"] - overtime_target)
         overtime_per_person = engine.get_overtime_per_person(
-            cc["role"] if cc["role"] != "art_teacher" else "assistant_teacher", cc["grade_name"]
+            cc["role"] if cc["role"] != "art_teacher" else "assistant_teacher",
+            cc["grade_name"],
         )
         raw_festival = round(base_amount * ratio) if is_eligible else 0
         raw_overtime = round(overtime_count * overtime_per_person) if is_eligible else 0
@@ -305,26 +344,43 @@ def _calc_festival_detail(
                 target_oc = engine.get_target_enrollment(oc["grade_name"], True, True)
                 ratio_oc = oc["current_enrollment"] / target_oc if target_oc > 0 else 0
                 festival_scores.append(round(base_amount * ratio_oc))
-                overtime_target_oc = engine.get_overtime_target(oc["grade_name"], True, True)
-                overtime_count_oc = max(0, oc["current_enrollment"] - overtime_target_oc)
+                overtime_target_oc = engine.get_overtime_target(
+                    oc["grade_name"], True, True
+                )
+                overtime_count_oc = max(
+                    0, oc["current_enrollment"] - overtime_target_oc
+                )
                 overtime_scores.append(round(overtime_count_oc * overtime_per_person))
             raw_festival = round(sum(festival_scores) / len(festival_scores))
             raw_overtime = round(sum(overtime_scores) / len(overtime_scores))
             # 維持舊欄位（前端可能讀取）：以首個 other class 為代表
             shared_second_repr = other_classes[0]
-            target2 = engine.get_target_enrollment(shared_second_repr["grade_name"], True, True)
+            target2 = engine.get_target_enrollment(
+                shared_second_repr["grade_name"], True, True
+            )
             ratio2 = (
                 shared_second_repr["current_enrollment"] / target2 if target2 > 0 else 0
             )
             cc["shared_second_target"] = target2
             cc["shared_second_ratio"] = round(ratio2, 4)
         detail = {
-            "category": "帶班老師", "role": cc["role"], "grade": cc["grade_name"],
-            "base": base_amount, "enrollment": cc["current_enrollment"], "target": target,
-            "ratio": round(ratio, 4), "eligible": is_eligible, "is_bonus_month": is_bonus_month,
+            "category": "帶班老師",
+            "role": cc["role"],
+            "grade": cc["grade_name"],
+            "base": base_amount,
+            "enrollment": cc["current_enrollment"],
+            "target": target,
+            "ratio": round(ratio, 4),
+            "eligible": is_eligible,
+            "is_bonus_month": is_bonus_month,
             "festival_result": raw_festival,
-            "festival_result_after_penalty": max(0, raw_festival - meeting_absence_deduction) if is_bonus_month else 0,
-            "overtime_target": overtime_target, "overtime_count": overtime_count,
+            "festival_result_after_penalty": (
+                max(0, raw_festival - meeting_absence_deduction)
+                if is_bonus_month
+                else 0
+            ),
+            "overtime_target": overtime_target,
+            "overtime_count": overtime_count,
             "overtime_per_person": overtime_per_person,
             "overtime_result": raw_overtime if is_bonus_month else 0,
         }
@@ -354,13 +410,18 @@ def _calc_absence_days(
 ) -> dict:
     """計算曠職天數與扣款金額。"""
     from models.database import Holiday
+
     # 遺留的無效查詢（相容舊邏輯，確保 Holiday 被延遲載入）
-    holidays_in_month = session.query(DailyShift.date).filter(DailyShift.employee_id == -1).all()
+    holidays_in_month = (
+        session.query(DailyShift.date).filter(DailyShift.employee_id == -1).all()
+    )
     del holidays_in_month
     holiday_set = {
         h.date
         for h in session.query(Holiday.date).filter(
-            Holiday.date >= start_date, Holiday.date <= end_date, Holiday.is_active == True
+            Holiday.date >= start_date,
+            Holiday.date <= end_date,
+            Holiday.is_active == True,
         )
     }
     daily_shift_map = {
@@ -372,8 +433,12 @@ def _calc_absence_days(
         )
     }
     expected_workdays = _build_expected_workdays(
-        year=year, month=month, holiday_set=holiday_set, daily_shift_map=daily_shift_map,
-        hire_date_raw=emp.hire_date, resign_date_raw=resign_date,
+        year=year,
+        month=month,
+        holiday_set=holiday_set,
+        daily_shift_map=daily_shift_map,
+        hire_date_raw=emp.hire_date,
+        resign_date_raw=resign_date,
     )
     attendance_dates = {a.attendance_date for a in attendances}
     leave_covered: set = set()
@@ -392,13 +457,17 @@ def _calc_absence_days(
     }
 
 
-def build_salary_debug_snapshot(session, engine, emp: Employee, year: int, month: int) -> dict:
+def build_salary_debug_snapshot(
+    session, engine, emp: Employee, year: int, month: int
+) -> dict:
     """建立單一員工當月薪資 debug snapshot。"""
     title_name = emp.job_title_rel.name if emp.job_title_rel else (emp.title or "")
     grade_to_title = {"A": "幼兒園教師", "B": "教保員", "C": "助理教保員"}
     bonus_grade_override = getattr(emp, "bonus_grade", None)
     effective_title = (
-        grade_to_title.get(bonus_grade_override, title_name) if bonus_grade_override else title_name
+        grade_to_title.get(bonus_grade_override, title_name)
+        if bonus_grade_override
+        else title_name
     )
 
     _, last_day = cal_module.monthrange(year, month)
@@ -409,65 +478,108 @@ def build_salary_debug_snapshot(session, engine, emp: Employee, year: int, month
     resign_date = getattr(emp, "resign_date", None)
 
     # ── 考勤 ──
-    attendances = session.query(Attendance).filter(
-        Attendance.employee_id == emp.id,
-        Attendance.attendance_date >= start_date,
-        Attendance.attendance_date <= end_date,
-    ).all()
+    attendances = (
+        session.query(Attendance)
+        .filter(
+            Attendance.employee_id == emp.id,
+            Attendance.attendance_date >= start_date,
+            Attendance.attendance_date <= end_date,
+        )
+        .all()
+    )
     att = _calc_attendance_stats(attendances)
 
     # ── 請假 ──
-    approved_leaves = session.query(LeaveRecord).filter(
-        LeaveRecord.employee_id == emp.id,
-        LeaveRecord.is_approved == True,
-        LeaveRecord.start_date <= end_date,
-        LeaveRecord.end_date >= start_date,
-    ).all()
+    approved_leaves = (
+        session.query(LeaveRecord)
+        .filter(
+            LeaveRecord.employee_id == emp.id,
+            LeaveRecord.is_approved == True,
+            LeaveRecord.start_date <= end_date,
+            LeaveRecord.end_date >= start_date,
+        )
+        .all()
+    )
     daily_salary = base_salary / MONTHLY_BASE_DAYS if base_salary else 0
     lv_result = _calc_leave_deductions(approved_leaves, daily_salary)
 
     # ── 加班 ──
-    approved_ot = session.query(OvertimeRecord).filter(
-        OvertimeRecord.employee_id == emp.id,
-        OvertimeRecord.is_approved == True,
-        OvertimeRecord.overtime_date >= start_date,
-        OvertimeRecord.overtime_date <= end_date,
-    ).all()
+    approved_ot = (
+        session.query(OvertimeRecord)
+        .filter(
+            OvertimeRecord.employee_id == emp.id,
+            OvertimeRecord.is_approved == True,
+            OvertimeRecord.overtime_date >= start_date,
+            OvertimeRecord.overtime_date <= end_date,
+        )
+        .all()
+    )
     ot_result = _calc_overtime_details(approved_ot)
 
     # ── 會議 ──
-    mtg = _build_meeting_stats(session, engine, emp, start_date, end_date, is_bonus_month)
+    mtg = _build_meeting_stats(
+        session, engine, emp, start_date, end_date, is_bonus_month
+    )
 
-    # ── 津貼、班級脈絡 ──
-    allowances = _load_allowances(session, emp.id)
+    # ── 班級脈絡 ──
     classroom_context = _build_classroom_context(session, emp, end_date)
 
     # ── 節慶獎金 ──
     supervisor_role = emp.supervisor_role or ""
-    supervisor_base = engine.get_supervisor_festival_bonus(title_name, emp.position or "", supervisor_role)
-    office_bonus_base = engine.get_office_festival_bonus_base(emp.position or "", title_name)
+    supervisor_base = engine.get_supervisor_festival_bonus(
+        title_name, emp.position or "", supervisor_role
+    )
+    office_bonus_base = engine.get_office_festival_bonus_base(
+        emp.position or "", title_name
+    )
     office_staff_context = None
-    if supervisor_base is not None or (office_bonus_base is not None and not classroom_context):
-        office_staff_context = {"school_enrollment": count_students_active_on(session, end_date)}
+    if supervisor_base is not None or (
+        office_bonus_base is not None and not classroom_context
+    ):
+        office_staff_context = {
+            "school_enrollment": count_students_active_on(session, end_date)
+        }
 
     festival_detail = _calc_festival_detail(
-        engine, emp, effective_title, title_name, classroom_context, office_staff_context,
-        supervisor_base, office_bonus_base, mtg["meeting_absence_deduction"], is_bonus_month,
+        engine,
+        emp,
+        effective_title,
+        title_name,
+        classroom_context,
+        office_staff_context,
+        supervisor_base,
+        office_bonus_base,
+        mtg["meeting_absence_deduction"],
+        is_bonus_month,
     )
     bonus_forfeited_by_leave = lv_result["bonus_forfeited_by_leave"]
     if bonus_forfeited_by_leave and festival_detail:
         festival_detail["forfeited_by_leave"] = True
-        for key in ("result_after_penalty", "festival_result_after_penalty", "overtime_result"):
+        for key in (
+            "result_after_penalty",
+            "festival_result_after_penalty",
+            "overtime_result",
+        ):
             if key in festival_detail:
                 festival_detail[key] = 0
 
-    supervisor_dividend = engine.get_supervisor_dividend(title_name, emp.position or "", supervisor_role)
+    supervisor_dividend = engine.get_supervisor_dividend(
+        title_name, emp.position or "", supervisor_role
+    )
     if bonus_forfeited_by_leave:
         supervisor_dividend = 0
 
     # ── 曠職 ──
     absence = _calc_absence_days(
-        session, emp, year, month, start_date, end_date, attendances, approved_leaves, resign_date
+        session,
+        emp,
+        year,
+        month,
+        start_date,
+        end_date,
+        attendances,
+        approved_leaves,
+        resign_date,
     )
 
     # ── 保險 ──
@@ -475,77 +587,101 @@ def build_salary_debug_snapshot(session, engine, emp: Employee, year: int, month
     ins = ins_result["ins"]
 
     # ── 遲到扣款明細 ──
-    prorated_base = _prorate_for_period(base_salary, emp.hire_date, resign_date, year, month)
+    prorated_base = _prorate_for_period(
+        base_salary, emp.hire_date, resign_date, year, month
+    )
     birthday_bonus = 500 if (emp.birthday and emp.birthday.month == month) else 0
-    per_minute_rate = base_salary / (MONTHLY_BASE_DAYS * 8 * 60) if base_salary > 0 else 0
+    per_minute_rate = (
+        base_salary / (MONTHLY_BASE_DAYS * 8 * 60) if base_salary > 0 else 0
+    )
     att_deduction_detail = []
     normal_late_deduction = 0
     for minutes in att["late_details"]:
         deduction = round(minutes * per_minute_rate)
-        att_deduction_detail.append({"minutes": minutes, "type": "per_minute", "deduction": deduction})
+        att_deduction_detail.append(
+            {"minutes": minutes, "type": "per_minute", "deduction": deduction}
+        )
         normal_late_deduction += deduction
     early_deduction = round(att["total_early_min"] * per_minute_rate)
 
-    fixed_allowances_total = sum([
-        emp.supervisor_allowance or 0, emp.teacher_allowance or 0, emp.meal_allowance or 0,
-        emp.transportation_allowance or 0, emp.other_allowance or 0,
-    ])
-    extra_allowances_total = sum(item["amount"] for item in allowances)
     gross_salary = round(
-        prorated_base + fixed_allowances_total + extra_allowances_total
-        + supervisor_dividend + birthday_bonus
-        + mtg["attended"] * mtg["per_meeting_pay"] + ot_result["ot_pay"]
+        prorated_base
+        + supervisor_dividend
+        + birthday_bonus
+        + mtg["attended"] * mtg["per_meeting_pay"]
+        + ot_result["ot_pay"]
     )
     total_deduction = round(
-        ins.labor_employee + ins.health_employee + ins.pension_employee
-        + normal_late_deduction + early_deduction
-        + lv_result["leave_deduction_total"] + absence["absence_deduction_amount"]
+        ins.labor_employee
+        + ins.health_employee
+        + ins.pension_employee
+        + normal_late_deduction
+        + early_deduction
+        + lv_result["leave_deduction_total"]
+        + absence["absence_deduction_amount"]
     )
 
     return {
         "employee": {
-            "id": emp.id, "employee_id": emp.employee_id, "name": emp.name,
-            "title": title_name, "position": emp.position, "supervisor_role": supervisor_role,
-            "employee_type": emp.employee_type, "base_salary": base_salary,
-            "hire_date": _to_iso(emp.hire_date), "birthday": _to_iso(emp.birthday),
+            "id": emp.id,
+            "employee_id": emp.employee_id,
+            "name": emp.name,
+            "title": title_name,
+            "position": emp.position,
+            "supervisor_role": supervisor_role,
+            "employee_type": emp.employee_type,
+            "base_salary": base_salary,
+            "hire_date": _to_iso(emp.hire_date),
+            "birthday": _to_iso(emp.birthday),
             "classroom_id": emp.classroom_id,
             "insurance_salary_level": getattr(emp, "insurance_salary_level", None),
-            "dependents": emp.dependents, "work_start_time": emp.work_start_time,
+            "dependents": emp.dependents,
+            "work_start_time": emp.work_start_time,
             "work_end_time": emp.work_end_time,
         },
         "period": {"year": year, "month": month, "is_bonus_month": is_bonus_month},
         "attendance_summary": {
             "total_records": len(attendances),
-            "late_count": att["late_count"], "early_leave_count": att["early_count"],
-            "missing_punch_in": att["missing_in"], "missing_punch_out": att["missing_out"],
-            "total_late_minutes": att["total_late_min"], "total_early_minutes": att["total_early_min"],
-            "late_details": att["late_details"], "late_rows": att["late_rows"], "early_rows": att["early_rows"],
+            "late_count": att["late_count"],
+            "early_leave_count": att["early_count"],
+            "missing_punch_in": att["missing_in"],
+            "missing_punch_out": att["missing_out"],
+            "total_late_minutes": att["total_late_min"],
+            "total_early_minutes": att["total_early_min"],
+            "late_details": att["late_details"],
+            "late_rows": att["late_rows"],
+            "early_rows": att["early_rows"],
         },
         "deduction_calc": {
-            "daily_salary": round(daily_salary), "per_minute_rate": round(per_minute_rate, 4),
-            "late_deduction_detail": att_deduction_detail, "late_deduction": normal_late_deduction,
-            "early_leave_deduction": early_deduction, "missing_punch_deduction": 0,
+            "daily_salary": round(daily_salary),
+            "per_minute_rate": round(per_minute_rate, 4),
+            "late_deduction_detail": att_deduction_detail,
+            "late_deduction": normal_late_deduction,
+            "early_leave_deduction": early_deduction,
+            "missing_punch_deduction": 0,
         },
         "leave_breakdown": lv_result["leave_breakdown"],
         "leave_deduction_total": lv_result["leave_deduction_total"],
         "overtime_pay": round(ot_result["ot_pay"]),
         "overtime_rows": ot_result["overtime_rows"],
         "meeting": {
-            "attended": mtg["attended"], "absent_this_month": mtg["absent_current"],
+            "attended": mtg["attended"],
+            "absent_this_month": mtg["absent_current"],
             "absent_period": mtg["absent_period"],
             "meeting_absence_deduction": mtg["meeting_absence_deduction"],
             "overtime_pay_per_session": mtg["per_meeting_pay"],
             "absence_penalty_per_session": mtg["meeting_penalty"],
             "rows": mtg["rows"],
         },
-        "allowances": allowances,
         "classroom_context": classroom_context,
         "festival_bonus_detail": festival_detail,
         "supervisor_dividend": round(supervisor_dividend),
         "insurance": {
             "insured_amount_raw": ins_result["insured_salary_raw"],
-            "insured_amount": ins.insured_amount, "labor_employee": ins.labor_employee,
-            "health_employee": ins.health_employee, "pension_employee": ins.pension_employee,
+            "insured_amount": ins.insured_amount,
+            "labor_employee": ins.labor_employee,
+            "health_employee": ins.health_employee,
+            "pension_employee": ins.pension_employee,
             "total_employee_deduction": ins.total_employee,
         },
         "salary_summary": {
@@ -553,14 +689,13 @@ def build_salary_debug_snapshot(session, engine, emp: Employee, year: int, month
             "proration_applied": round(prorated_base) != base_salary,
             "birthday_bonus": birthday_bonus,
             "meeting_overtime_pay": mtg["attended"] * mtg["per_meeting_pay"],
-            "fixed_allowances": round(fixed_allowances_total),
-            "extra_allowances": round(extra_allowances_total),
             "absent_count": absence["absent_count"],
             "absent_days": [_to_iso(day) for day in absence["absent_days"]],
             "absence_deduction": absence["absence_deduction_amount"],
             "personal_sick_leave_hours": lv_result["personal_sick_leave_hours"],
             "bonus_forfeited_by_leave": bonus_forfeited_by_leave,
-            "gross_salary": gross_salary, "total_deduction": total_deduction,
+            "gross_salary": gross_salary,
+            "total_deduction": total_deduction,
             "net_salary": gross_salary - total_deduction,
         },
     }
@@ -654,7 +789,13 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
             {"key": "remark", "label": "備註"},
         ]
         data["rows"] = snapshot["overtime_rows"] or [
-            {"date": "-", "hours": 0, "overtime_type": "-", "pay": 0, "remark": "當月無核准加班紀錄"}
+            {
+                "date": "-",
+                "hours": 0,
+                "overtime_type": "-",
+                "pay": 0,
+                "remark": "當月無核准加班紀錄",
+            }
         ]
     elif field == "supervisor_dividend":
         forfeited = snapshot["salary_summary"]["bonus_forfeited_by_leave"]
@@ -671,7 +812,9 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
                 "leaveHours": snapshot["salary_summary"]["personal_sick_leave_hours"],
                 "forfeited": "是" if forfeited else "否",
                 "result": amount,
-                "remark": "事假/病假 > 40 小時取消" if forfeited else "依主管紅利設定發放",
+                "remark": (
+                    "事假/病假 > 40 小時取消" if forfeited else "依主管紅利設定發放"
+                ),
             }
         ]
     elif field == "meeting_overtime_pay":
@@ -697,7 +840,7 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
         data["rows"] = [
             {
                 "birthday": birthday or "未設定",
-                "salaryMonth": f'{record.salary_year}-{record.salary_month:02d}',
+                "salaryMonth": f"{record.salary_year}-{record.salary_month:02d}",
                 "matched": "是" if matched else "否",
                 "ruleAmount": 500,
                 "result": amount,
@@ -714,7 +857,16 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
             {"key": "deduction", "label": "扣款"},
         ]
         rows = snapshot["leave_breakdown"] or []
-        data["rows"] = rows or [{"type": "-", "start": "-", "end": "-", "hours": 0, "ratio": 0, "deduction": 0}]
+        data["rows"] = rows or [
+            {
+                "type": "-",
+                "start": "-",
+                "end": "-",
+                "hours": 0,
+                "ratio": 0,
+                "deduction": 0,
+            }
+        ]
         data["note"] = "請假扣款依請假時數、日薪與假別扣薪比例計算。"
     elif field == "late_deduction":
         data["columns"] = [
@@ -726,7 +878,9 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
             {
                 "date": row["date"],
                 "minutes": row["minutes"],
-                "deduction": round(row["minutes"] * snapshot["deduction_calc"]["per_minute_rate"]),
+                "deduction": round(
+                    row["minutes"] * snapshot["deduction_calc"]["per_minute_rate"]
+                ),
             }
             for row in snapshot["attendance_summary"]["late_rows"]
         ]
@@ -742,7 +896,9 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
             {
                 "date": row["date"],
                 "minutes": row["minutes"],
-                "deduction": round(row["minutes"] * snapshot["deduction_calc"]["per_minute_rate"]),
+                "deduction": round(
+                    row["minutes"] * snapshot["deduction_calc"]["per_minute_rate"]
+                ),
             }
             for row in snapshot["attendance_summary"]["early_rows"]
         ]

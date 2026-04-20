@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session
 from models.classroom import Classroom, Student, StudentAssessment, StudentIncident
 from models.student_log import StudentChangeLog
 
-
 RECORD_TYPES = ("incident", "assessment", "change_log")
 
 
@@ -82,7 +81,9 @@ def _fetch_incidents(
             Student.classroom_id == classroom_id
         )
     if date_from:
-        q = q.filter(StudentIncident.occurred_at >= datetime.combine(date_from, time.min))
+        q = q.filter(
+            StudentIncident.occurred_at >= datetime.combine(date_from, time.min)
+        )
     if date_to:
         q = q.filter(StudentIncident.occurred_at <= datetime.combine(date_to, time.max))
     return q.all()
@@ -153,9 +154,7 @@ def _build_incident_item(inc: StudentIncident) -> dict[str, Any]:
             "action_taken": inc.action_taken,
             "parent_notified": bool(inc.parent_notified),
             "parent_notified_at": (
-                inc.parent_notified_at.isoformat()
-                if inc.parent_notified_at
-                else None
+                inc.parent_notified_at.isoformat() if inc.parent_notified_at else None
             ),
         },
     }
@@ -178,9 +177,9 @@ def _build_assessment_item(asm: StudentAssessment) -> dict[str, Any]:
             "rating": asm.rating,
             "content": asm.content,
             "suggestions": asm.suggestions,
-            "assessment_date": asm.assessment_date.isoformat()
-            if asm.assessment_date
-            else None,
+            "assessment_date": (
+                asm.assessment_date.isoformat() if asm.assessment_date else None
+            ),
         },
     }
 
@@ -206,6 +205,7 @@ def _build_change_log_item(log: StudentChangeLog) -> dict[str, Any]:
             "to_classroom_id": log.to_classroom_id,
             "reason": log.reason,
             "notes": log.notes,
+            "source": log.source or "manual",
         },
     }
 

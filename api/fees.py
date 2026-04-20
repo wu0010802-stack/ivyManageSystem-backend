@@ -83,6 +83,7 @@ def _apply_fee_record_filters(
     status: Optional[str] = None,
     fee_item_id: Optional[int] = None,
     student_name: Optional[str] = None,
+    student_id: Optional[int] = None,
 ):
     if period:
         query = query.filter(StudentFeeRecord.period == period)
@@ -92,9 +93,16 @@ def _apply_fee_record_filters(
         query = query.filter(StudentFeeRecord.status == status)
     if fee_item_id:
         query = query.filter(StudentFeeRecord.fee_item_id == fee_item_id)
+    if student_id:
+        query = query.filter(StudentFeeRecord.student_id == student_id)
     keyword = (student_name or "").strip()
     if keyword:
-        query = query.filter(StudentFeeRecord.student_name.ilike(f"%{keyword}%"))
+        from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
+
+        safe_kw = escape_like_pattern(keyword)
+        query = query.filter(
+            StudentFeeRecord.student_name.ilike(f"%{safe_kw}%", escape=LIKE_ESCAPE_CHAR)
+        )
     return query
 
 
@@ -347,11 +355,15 @@ def list_fee_records(
     status: Optional[str] = Query(None, pattern="^(unpaid|partial|paid)$"),
     fee_item_id: Optional[int] = Query(None),
     student_name: Optional[str] = Query(None),
+    student_id: Optional[int] = Query(None, gt=0),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     _: None = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
-    """查詢費用記錄（支援分頁）"""
+    """查詢費用記錄（支援分頁）。
+
+    student_id：指定學生 ID 時，僅回傳該學生的費用紀錄（跨學期）。
+    """
     with session_scope() as session:
         q = _apply_fee_record_filters(
             session.query(StudentFeeRecord),
@@ -360,6 +372,7 @@ def list_fee_records(
             status=status,
             fee_item_id=fee_item_id,
             student_name=student_name,
+            student_id=student_id,
         )
 
         total = q.count()

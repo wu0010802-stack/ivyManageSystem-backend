@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 
 from models.database import get_session, Attendance, LeaveRecord, SalaryRecord
 from utils.auth import get_current_user
-from api.salary_fields import calculate_display_bonus_total, calculate_total_allowances
+from api.salary_fields import calculate_display_bonus_total
 from ._shared import _get_employee
 
 router = APIRouter()
@@ -30,29 +30,43 @@ def get_salary_preview(
         start = date(year, month, 1)
         end = date(year, month, last_day)
 
-        attendances = session.query(Attendance).filter(
-            Attendance.employee_id == emp.id,
-            Attendance.attendance_date >= start,
-            Attendance.attendance_date <= end,
-        ).all()
+        attendances = (
+            session.query(Attendance)
+            .filter(
+                Attendance.employee_id == emp.id,
+                Attendance.attendance_date >= start,
+                Attendance.attendance_date <= end,
+            )
+            .all()
+        )
 
         late_count = sum(1 for a in attendances if a.is_late)
         early_leave_count = sum(1 for a in attendances if a.is_early_leave)
-        missing_count = sum(1 for a in attendances if a.is_missing_punch_in or a.is_missing_punch_out)
+        missing_count = sum(
+            1 for a in attendances if a.is_missing_punch_in or a.is_missing_punch_out
+        )
 
-        leaves = session.query(LeaveRecord).filter(
-            LeaveRecord.employee_id == emp.id,
-            LeaveRecord.start_date <= end,
-            LeaveRecord.end_date >= start,
-            LeaveRecord.is_approved == True,
-        ).all()
+        leaves = (
+            session.query(LeaveRecord)
+            .filter(
+                LeaveRecord.employee_id == emp.id,
+                LeaveRecord.start_date <= end,
+                LeaveRecord.end_date >= start,
+                LeaveRecord.is_approved == True,
+            )
+            .all()
+        )
         total_leave_hours = sum(lv.leave_hours for lv in leaves)
 
-        salary = session.query(SalaryRecord).filter(
-            SalaryRecord.employee_id == emp.id,
-            SalaryRecord.salary_year == year,
-            SalaryRecord.salary_month == month,
-        ).first()
+        salary = (
+            session.query(SalaryRecord)
+            .filter(
+                SalaryRecord.employee_id == emp.id,
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+            )
+            .first()
+        )
 
         result = {
             "year": year,
@@ -69,16 +83,9 @@ def get_salary_preview(
         }
 
         if salary:
-            total_allowances = calculate_total_allowances(salary)
             total_bonus = calculate_display_bonus_total(salary)
             result["salary"] = {
                 "base_salary": salary.base_salary,
-                "supervisor_allowance": salary.supervisor_allowance or 0,
-                "teacher_allowance": salary.teacher_allowance or 0,
-                "meal_allowance": salary.meal_allowance or 0,
-                "transportation_allowance": salary.transportation_allowance or 0,
-                "other_allowance": salary.other_allowance or 0,
-                "total_allowances": total_allowances,
                 "festival_bonus": salary.festival_bonus or 0,
                 "overtime_bonus": salary.overtime_bonus or 0,
                 "performance_bonus": salary.performance_bonus or 0,
@@ -89,9 +96,12 @@ def get_salary_preview(
                 "meeting_overtime_pay": salary.meeting_overtime_pay or 0,
                 "labor_insurance": salary.labor_insurance_employee or 0,
                 "health_insurance": salary.health_insurance_employee or 0,
+                "pension_employee": salary.pension_employee or 0,
                 "late_deduction": salary.late_deduction or 0,
                 "early_leave_deduction": salary.early_leave_deduction or 0,
-                "attendance_deduction": (salary.late_deduction or 0) + (salary.early_leave_deduction or 0) + (salary.missing_punch_deduction or 0),
+                "attendance_deduction": (salary.late_deduction or 0)
+                + (salary.early_leave_deduction or 0)
+                + (salary.missing_punch_deduction or 0),
                 "leave_deduction": salary.leave_deduction or 0,
                 "meeting_absence_deduction": salary.meeting_absence_deduction or 0,
                 "other_deduction": salary.other_deduction or 0,
@@ -99,6 +109,7 @@ def get_salary_preview(
                 "total_deduction": salary.total_deduction,
                 "net_salary": salary.net_salary,
                 "is_finalized": salary.is_finalized,
+                "version": int(salary.version or 1),
             }
 
         return result

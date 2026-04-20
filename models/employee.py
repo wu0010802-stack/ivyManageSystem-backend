@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from models.base import Base
+from models.types import Money
 
 
 class EmployeeType(enum.Enum):
@@ -69,20 +70,14 @@ class Employee(Base):
         """統一的職稱名稱：優先使用 job_title_rel，fallback 到 legacy title 欄位"""
         return (self.job_title_rel.name if self.job_title_rel else self.title) or ""
 
-    base_salary = Column(Float, default=0, comment="底薪")
-    hourly_rate = Column(Float, default=0, comment="時薪（才藝老師用）")
-
-    supervisor_allowance = Column(Float, default=0, comment="主管加給")
-    teacher_allowance = Column(Float, default=0, comment="導師津貼")
-    meal_allowance = Column(Float, default=0, comment="伙食津貼")
-    transportation_allowance = Column(Float, default=0, comment="交通津貼")
-    other_allowance = Column(Float, default=0, comment="其他津貼")
+    base_salary = Column(Money, default=0, comment="底薪")
+    hourly_rate = Column(Money, default=0, comment="時薪（才藝老師用）")
 
     bank_code = Column(String(10), comment="銀行代碼")
     bank_account = Column(String(30), comment="銀行帳號")
     bank_account_name = Column(String(50), comment="帳戶戶名")
 
-    insurance_salary_level = Column(Float, default=0, comment="投保薪資級距")
+    insurance_salary_level = Column(Money, default=0, comment="投保薪資級距")
     pension_self_rate = Column(Float, default=0, comment="勞退自提比例 (0~0.06)")
 
     work_start_time = Column(String(5), default="08:00", comment="上班時間 HH:MM")
@@ -132,3 +127,80 @@ class Employee(Base):
     salaries = relationship(
         "SalaryRecord", back_populates="employee", cascade="all, delete-orphan"
     )
+
+
+class EmployeeEducation(Base):
+    """員工學歷"""
+
+    __tablename__ = "employee_educations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(
+        Integer,
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    school_name = Column(String(100), nullable=False, comment="學校名稱")
+    major = Column(String(100), nullable=True, comment="科系")
+    degree = Column(
+        String(20), nullable=False, comment="學位：高中職/學士/碩士/博士/其他"
+    )
+    graduation_date = Column(Date, nullable=True, comment="畢業日期")
+    is_highest = Column(
+        Boolean, default=False, nullable=False, comment="是否為最高學歷"
+    )
+    remark = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="educations")
+
+
+class EmployeeCertificate(Base):
+    """員工證照"""
+
+    __tablename__ = "employee_certificates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(
+        Integer,
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    certificate_name = Column(String(100), nullable=False, comment="證照名稱")
+    issuer = Column(String(100), nullable=True, comment="頒發機構")
+    certificate_number = Column(String(100), nullable=True, comment="證照編號")
+    issued_date = Column(Date, nullable=True, comment="取得日期")
+    expiry_date = Column(Date, nullable=True, comment="到期日（空值代表永久有效）")
+    remark = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="certificates")
+
+
+class EmployeeContract(Base):
+    """員工合約"""
+
+    __tablename__ = "employee_contracts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(
+        Integer,
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    contract_type = Column(
+        String(20), nullable=False, comment="合約類型：正式/兼職/試用/臨時/續約"
+    )
+    start_date = Column(Date, nullable=False, comment="合約起始日")
+    end_date = Column(Date, nullable=True, comment="合約結束日（可空）")
+    salary_at_contract = Column(Money, nullable=True, comment="簽約時薪資")
+    remark = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    employee = relationship("Employee", backref="contracts")

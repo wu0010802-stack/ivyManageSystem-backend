@@ -23,6 +23,7 @@ from models.activity import (
     RegistrationCourse,
 )
 from utils.auth import get_current_user, require_staff_permission
+from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
 from api.activity._shared import _build_session_detail_response
 
@@ -257,7 +258,7 @@ def export_session_attendance(
         data = _build_session_detail_response(session, sess)
 
         wb = openpyxl.Workbook()
-        ws = wb.active
+        ws = SafeWorksheet(wb.active)
         ws.title = "點名記錄"
         ws.append(["姓名", "班級", "出席狀態", "備註"])
 

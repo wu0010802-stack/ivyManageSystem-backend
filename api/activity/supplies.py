@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from models.database import get_session, ActivitySupply
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_staff_permission
+from utils.errors import raise_safe_500
 from utils.permissions import Permission
 
 from ._shared import (
@@ -105,7 +106,7 @@ async def create_supply(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -153,7 +154,7 @@ async def update_supply(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()
 
@@ -185,6 +186,6 @@ async def delete_supply(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_safe_500(e)
     finally:
         session.close()

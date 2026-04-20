@@ -8,18 +8,37 @@ from fastapi import APIRouter, Depends, Query
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from services.insurance_service import (
-    LABOR_INSURANCE_RATE, LABOR_EMPLOYEE_RATIO, LABOR_EMPLOYER_RATIO,
-    LABOR_GOVERNMENT_RATIO, HEALTH_INSURANCE_RATE, HEALTH_EMPLOYEE_RATIO,
-    HEALTH_EMPLOYER_RATIO, PENSION_EMPLOYER_RATE, AVERAGE_DEPENDENTS,
+    LABOR_INSURANCE_RATE,
+    LABOR_EMPLOYEE_RATIO,
+    LABOR_EMPLOYER_RATIO,
+    LABOR_GOVERNMENT_RATIO,
+    HEALTH_INSURANCE_RATE,
+    HEALTH_EMPLOYEE_RATIO,
+    HEALTH_EMPLOYER_RATIO,
+    PENSION_EMPLOYER_RATE,
+    AVERAGE_DEPENDENTS,
     INSURANCE_TABLE_2026,
 )
 from services.salary_engine import MONTHLY_BASE_DAYS
 
 from models.database import (
-    get_session, Employee, Attendance, LeaveRecord, OvertimeRecord,
-    Classroom, ClassGrade, Student, ShiftType, ShiftAssignment, DailyShift,
-    AttendancePolicy, BonusConfig, GradeTarget, InsuranceRate,
-    MeetingRecord, EmployeeAllowance, AllowanceType, JobTitle,
+    get_session,
+    Employee,
+    Attendance,
+    LeaveRecord,
+    OvertimeRecord,
+    Classroom,
+    ClassGrade,
+    Student,
+    ShiftType,
+    ShiftAssignment,
+    DailyShift,
+    AttendancePolicy,
+    BonusConfig,
+    GradeTarget,
+    InsuranceRate,
+    MeetingRecord,
+    JobTitle,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,13 +211,17 @@ def _build_db_insurance_checks(insurance_rate_db: dict | None) -> list:
             "item": "DB 勞保+就保合計費率",
             "system_value": _pct(insurance_rate_db["labor_rate"]),
             "official_value": "12.50%",
-            "match": abs((insurance_rate_db["labor_rate"] or 0) - LABOR_INSURANCE_RATE) < 1e-9,
+            "match": abs((insurance_rate_db["labor_rate"] or 0) - LABOR_INSURANCE_RATE)
+            < 1e-9,
         },
         {
             "item": "DB 平均眷口數",
             "system_value": f'{insurance_rate_db["average_dependents"]:.2f}',
             "official_value": f"{AVERAGE_DEPENDENTS:.2f}",
-            "match": abs((insurance_rate_db["average_dependents"] or 0) - AVERAGE_DEPENDENTS) < 1e-9,
+            "match": abs(
+                (insurance_rate_db["average_dependents"] or 0) - AVERAGE_DEPENDENTS
+            )
+            < 1e-9,
         },
     ]
 
@@ -216,7 +239,11 @@ def _build_formula_verification(insurance_rate_db: dict | None):
 
 
 def _query_attendance_policy(session) -> dict | None:
-    policy = session.query(AttendancePolicy).filter(AttendancePolicy.is_active == True).first()
+    policy = (
+        session.query(AttendancePolicy)
+        .filter(AttendancePolicy.is_active == True)
+        .first()
+    )
     if not policy:
         return None
     return {
@@ -259,15 +286,18 @@ def _query_bonus_config(session) -> dict | None:
 
 def _query_grade_targets(session) -> list:
     targets = session.query(GradeTarget).order_by(GradeTarget.grade_name).all()
-    return [{
-        "grade_name": t.grade_name,
-        "festival_two_teachers": t.festival_two_teachers,
-        "festival_one_teacher": t.festival_one_teacher,
-        "festival_shared": t.festival_shared,
-        "overtime_two_teachers": t.overtime_two_teachers,
-        "overtime_one_teacher": t.overtime_one_teacher,
-        "overtime_shared": t.overtime_shared,
-    } for t in targets]
+    return [
+        {
+            "grade_name": t.grade_name,
+            "festival_two_teachers": t.festival_two_teachers,
+            "festival_one_teacher": t.festival_one_teacher,
+            "festival_shared": t.festival_shared,
+            "overtime_two_teachers": t.overtime_two_teachers,
+            "overtime_one_teacher": t.overtime_one_teacher,
+            "overtime_shared": t.overtime_shared,
+        }
+        for t in targets
+    ]
 
 
 def _query_insurance_rate(session) -> dict | None:
@@ -325,13 +355,16 @@ def _build_engine_config(engine) -> dict:
 
 def _query_shift_types(session) -> list:
     shift_types = session.query(ShiftType).order_by(ShiftType.sort_order).all()
-    return [{
-        "id": s.id,
-        "name": s.name,
-        "work_start": s.work_start,
-        "work_end": s.work_end,
-        "is_active": s.is_active,
-    } for s in shift_types]
+    return [
+        {
+            "id": s.id,
+            "name": s.name,
+            "work_start": s.work_start,
+            "work_end": s.work_end,
+            "is_active": s.is_active,
+        }
+        for s in shift_types
+    ]
 
 
 def _build_leave_deduction_rules() -> dict:
@@ -346,40 +379,56 @@ def _build_leave_deduction_rules() -> dict:
         "marriage": {"label": "婚假", "ratio": 0.0, "note": "不扣薪，共8日"},
         "bereavement": {"label": "喪假", "ratio": 0.0, "note": "不扣薪，依親疏3/6/8日"},
         "prenatal": {"label": "產檢假", "ratio": 0.0, "note": "不扣薪，共7日"},
-        "paternity_new": {"label": "陪產檢及陪產假", "ratio": 0.0, "note": "不扣薪，共7日"},
-        "miscarriage": {"label": "流產假", "ratio": 0.0, "note": "不扣薪，依週數5日/1週/4週"},
-        "family_care": {"label": "家庭照顧假", "ratio": 1.0, "note": "不給薪，併入事假計算，年7日"},
-        "parental_unpaid": {"label": "育嬰留職停薪", "ratio": 0.0, "note": "留停無薪，最長2年"},
+        "paternity_new": {
+            "label": "陪產檢及陪產假",
+            "ratio": 0.0,
+            "note": "不扣薪，共7日",
+        },
+        "miscarriage": {
+            "label": "流產假",
+            "ratio": 0.0,
+            "note": "不扣薪，依週數5日/1週/4週",
+        },
+        "family_care": {
+            "label": "家庭照顧假",
+            "ratio": 1.0,
+            "note": "不給薪，併入事假計算，年7日",
+        },
+        "parental_unpaid": {
+            "label": "育嬰留職停薪",
+            "ratio": 0.0,
+            "note": "留停無薪，最長2年",
+        },
         "compensatory": {"label": "補休", "ratio": 0.0, "note": "加班換休，不扣薪"},
     }
 
 
 def _build_salary_formula() -> dict:
     return {
-        "gross_salary": "底薪 + 津貼(主管/導師/伙食/交通/其他) + 績效獎金 + 特別獎金 + 主管紅利 + 加班費(核准加班記錄) + 園務會議加班費 + 生日禮金(當月壽星 $500)",
-        "gross_salary_note": "節慶獎金 / 超額獎金 獨立轉帳，不計入 gross_salary",
-        "festival_bonus": "節慶獎金（2/6/9/12月發放）— 獨立匯款，不進 gross_salary",
-        "overtime_bonus": "超額獎金 — 與節慶獎金同月獨立匯款，不進 gross_salary",
-        "bonus_separate": "festival_bonus + overtime_bonus + supervisor_dividend > 0 時為 True，表示當月有另行匯款",
-        "total_deduction": "勞保(員工) + 健保(員工) + 勞退自提 + 遲到扣款 + 早退扣款 + 請假扣款 + 曠職扣款 + 其他扣款（不含 meeting_absence_deduction）",
-        "net_salary": "gross_salary - total_deduction",
-        "late_deduction_formula": "遲到分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
-        "early_leave_deduction_formula": "早退分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
-        "late_deduction_rule": "遲到一律按實際分鐘數比例扣款（月薪 ÷ 30 ÷ 8 ÷ 60），依勞基法第26條工資核實發給原則",
-        "daily_salary": "月薪 ÷ 30  ← 依勞基法固定30天（遲到轉事假、請假扣款均適用）",
-        "per_minute_rate": "月薪 ÷ 30 ÷ 8 ÷ 60  ← 依勞基法固定30天",
-        "leave_deduction": "請假天數 × 日薪 × 扣薪比例 (事假1.0 / 病假0.5 / 特休0.0)",
-        "missing_punch": "不扣款，僅記錄次數",
-        "festival_bonus_teacher": "獎金基數 × (班級在籍人數 ÷ 目標人數)，入職滿3個月才計算",
-        "festival_bonus_supervisor": "主管基數 × (全校在籍 ÷ 全校目標)，入職滿3個月才計算",
-        "festival_bonus_office": "辦公室基數 × (全校在籍 ÷ 全校目標)，入職滿3個月才計算",
-        "festival_bonus_eligibility": "入職滿 3 個月",
-        "festival_bonus_months": "發放月份：2、6、9、12 月（依 AttendancePolicy.festival_bonus_months 設定）",
-        "overtime_bonus_formula": "(在籍人數 - 超額目標) × 每人金額，超額才有；與節慶獎金同月發放",
-        "meeting_overtime_pay": "出席次數 × 每次金額（下班時間 17:00 → $200；18:00 → $100）",
-        "meeting_absence_deduction": "缺席次數 × $100，從節慶獎金直接扣減，不進入 total_deduction；僅在節慶獎金發放月才計算",
-        "insurance_lookup": "依投保薪資級距表查表，非按比例計算",
-        "health_insurance_dependents": "健保員工自付 × (1 + min(眷屬人數, 3))",
+        "應發總額": "底薪 + 津貼(主管/導師/伙食/交通/其他) + 績效獎金 + 特別獎金 + 主管紅利 + 加班費(核准加班記錄) + 園務會議加班費 + 生日禮金(當月壽星 $500)",
+        "應發總額備註": "節慶獎金 / 超額獎金 獨立轉帳，不計入應發總額",
+        "節慶獎金": "節慶獎金（2/6/9/12月發放）— 獨立匯款，不進應發總額",
+        "超額獎金": "超額獎金 — 與節慶獎金同月獨立匯款，不進應發總額",
+        "獎金另行匯款": "節慶獎金 + 超額獎金 + 主管紅利 > 0 時為「是」，表示當月有另行匯款",
+        "扣款總額": "勞保(員工) + 健保(員工) + 勞退自提 + 遲到扣款 + 早退扣款 + 請假扣款 + 曠職扣款 + 其他扣款（不含園務會議缺席扣款）",
+        "實領薪資": "應發總額 − 扣款總額",
+        "遲到扣款公式": "遲到分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
+        "早退扣款公式": "早退分鐘 × (月薪 ÷ 30 ÷ 8 ÷ 60)  ← 依勞基法固定30天",
+        "遲到扣款規則": "遲到一律按實際分鐘數比例扣款（月薪 ÷ 30 ÷ 8 ÷ 60），依勞基法第26條工資核實發給原則",
+        "日薪": "月薪 ÷ 30  ← 依勞基法固定30天（遲到轉事假、請假扣款均適用）",
+        "每分鐘費率": "月薪 ÷ 30 ÷ 8 ÷ 60  ← 依勞基法固定30天",
+        "請假扣款": "請假天數 × 日薪 × 扣薪比例 (事假1.0 / 病假0.5 / 特休0.0)",
+        "未打卡": "不扣款，僅記錄次數",
+        "節慶獎金（導師／教師）": "獎金基數 × (班級在籍人數 ÷ 目標人數)，入職滿3個月才計算",
+        "節慶獎金（主管）": "主管基數 × (全校在籍 ÷ 全校目標)，入職滿3個月才計算",
+        "節慶獎金（辦公室）": "辦公室基數 × (全校在籍 ÷ 全校目標)，入職滿3個月才計算",
+        "節慶獎金資格": "入職滿 3 個月",
+        "節慶獎金發放月份": "發放月份：2、6、9、12 月（依考勤政策的節慶獎金發放月份設定）",
+        "超額獎金公式": "(在籍人數 − 超額目標) × 每人金額，超額才有；與節慶獎金同月發放",
+        "園務會議加班費": "出席次數 × 每次金額（下班時間 17:00 → $200；18:00 → $100）",
+        "園務會議缺席扣款": "缺席次數 × $100，從節慶獎金直接扣減，不進入扣款總額；僅在節慶獎金發放月才計算",
+        "勞健保查表": "依投保薪資級距表查表，非按比例計算",
+        "健保眷屬計算": "健保員工自付 × (1 + min(眷屬人數, 3))",
     }
 
 
@@ -389,7 +438,9 @@ def init_dev_services(salary_engine):
 
 
 @router.get("/salary-logic")
-def get_salary_logic(current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ))):
+def get_salary_logic(
+    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
+):
     """傾印目前的薪資計算邏輯與所有參數設定"""
     session = get_session()
     try:
@@ -441,8 +492,10 @@ def debug_employee_salary(
         if not emp:
             return {"error": f"Employee {employee_id} not found"}
 
-        if emp.employee_type == 'hourly':
-            return {"error": "時薪制員工請使用正式薪資計算流程，debug 端點僅支援月薪正職員工"}
+        if emp.employee_type == "hourly":
+            return {
+                "error": "時薪制員工請使用正式薪資計算流程，debug 端點僅支援月薪正職員工"
+            }
         return build_salary_debug_snapshot(session, engine, emp, year, month)
     finally:
         session.close()

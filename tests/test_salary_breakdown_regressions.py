@@ -97,11 +97,6 @@ class TestFestivalEligibilityReferenceDate:
             "employee_type": "regular",
             "base_salary": 30000,
             "hourly_rate": 0,
-            "supervisor_allowance": 0,
-            "teacher_allowance": 0,
-            "meal_allowance": 0,
-            "transportation_allowance": 0,
-            "other_allowance": 0,
             "insurance_salary": 30000,
             "dependents": 0,
             "hire_date": "2026-03-01",
@@ -125,7 +120,9 @@ class TestFestivalEligibilityReferenceDate:
 
 
 class TestFestivalBonusBreakdownRegressions:
-    def test_uses_month_end_enrollment_for_festival_and_overtime_bonus(self, salary_engine_db):
+    def test_uses_month_end_enrollment_for_festival_and_overtime_bonus(
+        self, salary_engine_db
+    ):
         engine, session_factory = salary_engine_db
 
         with session_factory() as session:
@@ -279,11 +276,6 @@ class TestFestivalBonusBreakdownRegressions:
                 "employee_type": "regular",
                 "base_salary": 30000,
                 "hourly_rate": 0,
-                "supervisor_allowance": 0,
-                "teacher_allowance": 0,
-                "meal_allowance": 0,
-                "transportation_allowance": 0,
-                "other_allowance": 0,
                 "insurance_salary": 30000,
                 "dependents": 0,
                 "hire_date": "2025-01-01",

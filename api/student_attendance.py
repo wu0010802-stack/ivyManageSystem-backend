@@ -339,6 +339,65 @@ async def batch_save_attendance(
         session.close()
 
 
+@router.get("/student-attendance/by-student")
+async def get_attendance_by_student(
+    student_id: int = Query(..., gt=0),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    limit: int = Query(200, ge=1, le=1000),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+):
+    """查詢單一學生的每日出席紀錄（含統計），供學生紀錄抽屜使用。"""
+    df = None
+    dt = None
+    try:
+        if date_from:
+            df = datetime.strptime(date_from, "%Y-%m-%d").date()
+        if date_to:
+            dt = datetime.strptime(date_to, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD")
+
+    session = get_session()
+    try:
+        student = session.query(Student).filter(Student.id == student_id).first()
+        if not student:
+            raise HTTPException(status_code=404, detail="找不到學生")
+
+        q = session.query(StudentAttendance).filter(
+            StudentAttendance.student_id == student_id
+        )
+        if df:
+            q = q.filter(StudentAttendance.date >= df)
+        if dt:
+            q = q.filter(StudentAttendance.date <= dt)
+        rows = q.order_by(StudentAttendance.date.desc()).limit(limit).all()
+
+        counts = {key: 0 for key in VALID_STATUSES}
+        items = []
+        for r in rows:
+            items.append(
+                {
+                    "id": r.id,
+                    "date": r.date.isoformat() if r.date else None,
+                    "status": r.status,
+                    "remark": r.remark,
+                }
+            )
+            if r.status in counts:
+                counts[r.status] += 1
+
+        return {
+            "student_id": student_id,
+            "student_name": student.name,
+            "items": items,
+            "total": len(items),
+            "counts": counts,
+        }
+    finally:
+        session.close()
+
+
 @router.get("/student-attendance/monthly")
 async def get_monthly_summary(
     classroom_id: int = Query(...),
@@ -392,16 +451,16 @@ def export_student_attendance(
             report_data = _fetch_class_data(session, cr.id, year, month)
             ws_raw = wb.active
             ws_raw.title = cr.name[:31]
-            _write_class_sheet(ws_raw, report_data, year, month)
+            _write_class_sheet(SafeWorksheet(ws_raw), report_data, year, month)
             filename = f"{year}年{month}月_{cr.name}_出席月報.xlsx"
         else:
-            summary_ws = wb.active
+            summary_ws = SafeWorksheet(wb.active)
             summary_ws.title = "全園摘要"
             summary_rows = []
 
             for cr in classrooms:
                 report_data = _fetch_class_data(session, cr.id, year, month)
-                sheet = wb.create_sheet(title=cr.name[:31])
+                sheet = SafeWorksheet(wb.create_sheet(title=cr.name[:31]))
                 class_summary, workdays, total_students = _write_class_sheet(
                     sheet, report_data, year, month
                 )

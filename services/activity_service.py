@@ -3,6 +3,7 @@ services/activity_service.py — 課後才藝報名業務邏輯
 """
 
 import logging
+import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,6 +11,29 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select, case
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+# 候補升正式的「佔位」狀態集合：enrolled + promoted_pending 皆佔容量，
+# 決定「還有無名額」時務必 IN 兩者；統計/出席/收入等語意只算 enrolled。
+OCCUPYING_STATUSES = ("enrolled", "promoted_pending")
+
+
+def _get_confirm_window_hours() -> int:
+    """確認窗口長度（小時）。預設 48h，透過 env 覆寫。"""
+    try:
+        val = int(os.getenv("ACTIVITY_WAITLIST_CONFIRM_WINDOW_HOURS", "48"))
+        return val if val > 0 else 48
+    except (TypeError, ValueError):
+        return 48
+
+
+def _get_reminder_offset_hours() -> int:
+    """發送「剩餘 X 小時」提醒的 deadline 前置時數。預設 24h。"""
+    try:
+        val = int(os.getenv("ACTIVITY_WAITLIST_REMINDER_OFFSET_HOURS", "24"))
+        return val if val > 0 else 24
+    except (TypeError, ValueError):
+        return 24
+
 
 from models.activity import (
     ActivityCourse,
@@ -74,12 +98,25 @@ class ActivityService:
         course_id: int,
         *,
         status: str | None = None,
+        statuses: tuple | list | None = None,
     ) -> int:
-        """計算指定課程的有效報名數。"""
+        """計算指定課程的有效報名數。
+
+        status（單值）與 statuses（多值）擇一使用；兩者都給時以 statuses 為準。
+        決定容量佔用時請傳 statuses=OCCUPYING_STATUSES。
+        """
         query = self._active_course_query(session, course_id)
-        if status is not None:
+        if statuses is not None:
+            query = query.filter(RegistrationCourse.status.in_(list(statuses)))
+        elif status is not None:
             query = query.filter(RegistrationCourse.status == status)
         return query.count()
+
+    def count_occupying_registrations(self, session, course_id: int) -> int:
+        """計算佔用容量的報名數（enrolled + promoted_pending）。"""
+        return self.count_active_course_registrations(
+            session, course_id, statuses=OCCUPYING_STATUSES
+        )
 
     def invalidate_summary_cache(self, session) -> int:
         return report_cache_service.invalidate_categories(
@@ -585,7 +622,7 @@ class ActivityService:
         self, session, registration_id: int, course_id: int
     ) -> tuple[str, str]:
         """
-        將指定報名的指定課程從候補升為正式。
+        管理員手動升正式：從 waitlist 或 promoted_pending 直接升為 enrolled。
         使用 with_for_update() 防止並發超額。
         回傳 (student_name, course_name)，失敗時拋 ValueError。
         """
@@ -598,14 +635,14 @@ class ActivityService:
             .filter(
                 RegistrationCourse.registration_id == registration_id,
                 RegistrationCourse.course_id == course_id,
-                RegistrationCourse.status == "waitlist",
+                RegistrationCourse.status.in_(["waitlist", "promoted_pending"]),
                 ActivityRegistration.is_active.is_(True),
             )
             .with_for_update()
             .first()
         )
         if not row:
-            raise ValueError("報名課程項目不存在或非候補狀態")
+            raise ValueError("報名課程項目不存在或非候補/待確認狀態")
         rc, student_name = row
 
         course = (
@@ -617,16 +654,221 @@ class ActivityService:
         if not course:
             raise ValueError("課程不存在")
 
-        enrolled_count = self.count_active_course_registrations(
-            session,
-            course_id,
-            status="enrolled",
+        # 升 enrolled 的容量閘：需看「非此列」的佔位數（否則 promoted_pending→enrolled 會自我阻擋）
+        occupying_others = (
+            self._active_course_query(session, course_id)
+            .filter(RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)))
+            .filter(RegistrationCourse.id != rc.id)
+            .count()
         )
-        if course.capacity is not None and enrolled_count >= course.capacity:
+        if course.capacity is not None and occupying_others >= course.capacity:
             raise ValueError("課程容量已滿，無法升為正式")
 
         rc.status = "enrolled"
+        # 管理員直升視同已確認，清掉待確認計時欄位
+        rc.confirm_deadline = None
+        rc.reminder_sent_at = None
         return (student_name or str(registration_id), course.name)
+
+    # ------------------------------------------------------------------ #
+    # 候補轉正 24h 確認窗狀態機
+    # ------------------------------------------------------------------ #
+
+    def confirm_waitlist_promotion(
+        self, session, registration_id: int, course_id: int
+    ) -> tuple[str, str]:
+        """家長確認升正式。狀態必須為 promoted_pending 且未逾期。"""
+        now = datetime.now()
+        row = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.registration_id == registration_id,
+                RegistrationCourse.course_id == course_id,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .with_for_update()
+            .first()
+        )
+        if not row:
+            raise ValueError("NOT_FOUND")
+        rc, student_name = row
+
+        if rc.status == "enrolled":
+            raise ValueError("ALREADY_CONFIRMED")
+        if rc.status != "promoted_pending":
+            raise ValueError("NOT_PENDING")
+        if rc.confirm_deadline and rc.confirm_deadline < now:
+            raise ValueError("EXPIRED")
+
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id)
+            .with_for_update()
+            .first()
+        )
+        if not course:
+            raise ValueError("NOT_FOUND")
+
+        rc.status = "enrolled"
+        rc.confirm_deadline = None
+        rc.reminder_sent_at = None
+        return (student_name or str(registration_id), course.name)
+
+    def decline_waitlist_promotion(
+        self, session, registration_id: int, course_id: int, operator: str = "parent"
+    ) -> tuple[str, str]:
+        """家長放棄升正式。刪除該 RegistrationCourse 並自動遞補下一位。"""
+        row = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.registration_id == registration_id,
+                RegistrationCourse.course_id == course_id,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .with_for_update()
+            .first()
+        )
+        if not row:
+            raise ValueError("NOT_FOUND")
+        rc, student_name = row
+
+        if rc.status == "enrolled":
+            raise ValueError("ALREADY_CONFIRMED")
+        if rc.status != "promoted_pending":
+            raise ValueError("NOT_PENDING")
+
+        course = (
+            session.query(ActivityCourse).filter(ActivityCourse.id == course_id).first()
+        )
+        course_name = course.name if course else f"course_{course_id}"
+
+        session.delete(rc)
+        self.log_change(
+            session,
+            registration_id,
+            student_name or str(registration_id),
+            "放棄候補轉正",
+            f"課程「{course_name}」：{operator} 放棄升正式",
+            operator,
+        )
+        session.flush()
+        # 釋出名額，自動遞補下一位候補
+        self._auto_promote_first_waitlist(session, course_id)
+        return (student_name or str(registration_id), course_name)
+
+    def sweep_expired_pending_promotions(self, session) -> dict:
+        """掃描過期未確認的 promoted_pending，逾期者刪除並遞補下一位；
+        同時發送 T-X 小時剩餘提醒（只發一次，以 reminder_sent_at 標註）。
+
+        回傳 {"expired": N, "reminded": M}，由背景排程呼叫。
+        """
+        now = datetime.now()
+        reminder_offset = timedelta(hours=_get_reminder_offset_hours())
+        reminder_threshold = now + reminder_offset
+
+        # 1. 過期者：刪除 + 遞補
+        expired_rows = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.status == "promoted_pending",
+                RegistrationCourse.confirm_deadline.isnot(None),
+                RegistrationCourse.confirm_deadline < now,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+        expired_count = 0
+        # 計數而非 set：同課多筆同時過期需呼叫 N 次遞補，否則會少補位
+        expired_per_course: dict[int, int] = {}
+        for rc, student_name in expired_rows:
+            course = (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id == rc.course_id)
+                .first()
+            )
+            course_name = course.name if course else f"course_{rc.course_id}"
+            reg_id = rc.registration_id
+            course_id = rc.course_id
+            session.delete(rc)
+            self.log_change(
+                session,
+                reg_id,
+                student_name or str(reg_id),
+                "候補轉正逾期放棄",
+                f"課程「{course_name}」逾期未確認，系統自動放棄",
+                "system",
+            )
+            session.flush()
+            expired_per_course[course_id] = expired_per_course.get(course_id, 0) + 1
+            if self._line_svc is not None:
+                try:
+                    self._line_svc.notify_activity_waitlist_promotion_expired(
+                        student_name or str(reg_id), course_name
+                    )
+                except Exception:
+                    logger.exception("發送候補轉正逾期通知失敗 reg=%s", reg_id)
+            expired_count += 1
+
+        # 釋出 N 個位子 → 嘗試遞補 N 次（超過候補數時內層容量閘讓多餘呼叫變 no-op）
+        for course_id, count in expired_per_course.items():
+            for _ in range(count):
+                self._auto_promote_first_waitlist(session, course_id)
+
+        # 2. 即將到期者：發剩餘時間提醒（只發一次）
+        reminder_rows = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.status == "promoted_pending",
+                RegistrationCourse.confirm_deadline.isnot(None),
+                RegistrationCourse.confirm_deadline >= now,
+                RegistrationCourse.confirm_deadline <= reminder_threshold,
+                RegistrationCourse.reminder_sent_at.is_(None),
+                ActivityRegistration.is_active.is_(True),
+            )
+            .all()
+        )
+        reminded_count = 0
+        for rc, student_name in reminder_rows:
+            course = (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id == rc.course_id)
+                .first()
+            )
+            course_name = course.name if course else f"course_{rc.course_id}"
+            if self._line_svc is not None:
+                try:
+                    self._line_svc.notify_activity_waitlist_promotion_reminder(
+                        student_name or str(rc.registration_id),
+                        course_name,
+                        rc.confirm_deadline,
+                    )
+                except Exception:
+                    logger.exception(
+                        "發送候補轉正提醒失敗 reg=%s course=%s",
+                        rc.registration_id,
+                        rc.course_id,
+                    )
+            rc.reminder_sent_at = now
+            reminded_count += 1
+
+        return {"expired": expired_count, "reminded": reminded_count}
 
     # ------------------------------------------------------------------ #
     # 軟刪除報名（含自動候補升位）
@@ -666,16 +908,16 @@ class ActivityService:
                 f"或於刪除時指定 force_refund=true 自動沖帳"
             )
 
-        # 先取出此報名的所有正式課程
-        enrolled_courses = (
+        # 取出佔位課程（enrolled + promoted_pending 皆佔容量，刪除後都需要遞補）
+        occupying_courses = (
             session.query(RegistrationCourse)
             .filter(
                 RegistrationCourse.registration_id == registration_id,
-                RegistrationCourse.status == "enrolled",
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
             )
             .all()
         )
-        enrolled_course_ids = [rc.course_id for rc in enrolled_courses]
+        enrolled_course_ids = [rc.course_id for rc in occupying_courses]
 
         # 若有已繳金額，寫退費沖帳紀錄（不 DELETE 舊 payment 歷史）
         if current_paid > 0:
@@ -727,9 +969,30 @@ class ActivityService:
             self._auto_promote_first_waitlist(session, course_id)
 
     def _auto_promote_first_waitlist(self, session, course_id: int):
-        """找出該課程候補排序最前的一筆，嘗試升正式。無候補則靜默跳過。"""
-        first_waitlist = (
-            session.query(RegistrationCourse)
+        """找出該課程候補排序最前的一筆，升為 promoted_pending 並設確認期限。
+
+        - 若課程仍有名額（enrolled + promoted_pending < capacity）才升位
+        - 升位後發 Line「已升正式待確認」通知，期限預設 48h
+        - 無候補則靜默跳過
+        """
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id)
+            .with_for_update()
+            .first()
+        )
+        if not course:
+            return
+        occupying = (
+            self._active_course_query(session, course_id)
+            .filter(RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)))
+            .count()
+        )
+        if course.capacity is not None and occupying >= course.capacity:
+            return  # 仍滿（有其他 promoted_pending 佔位），不升
+
+        row = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
             .join(
                 ActivityRegistration,
                 RegistrationCourse.registration_id == ActivityRegistration.id,
@@ -743,27 +1006,44 @@ class ActivityService:
             .with_for_update()
             .first()
         )
-        if not first_waitlist:
+        if not row:
             return
-        try:
-            student_name, course_name = self.promote_waitlist(
-                session, first_waitlist.registration_id, course_id
-            )
-            self.log_change(
-                session,
-                first_waitlist.registration_id,
-                student_name,
-                "候補升正式",
-                f"課程「{course_name}」因報名刪除自動升為正式",
-                "system",
-            )
-            logger.info("自動候補升位：student=%s course=%s", student_name, course_name)
-            if self._line_svc is not None:
+        rc, student_name = row
+        now = datetime.now()
+        deadline = now + timedelta(hours=_get_confirm_window_hours())
+        rc.status = "promoted_pending"
+        rc.promoted_at = now
+        rc.confirm_deadline = deadline
+        rc.reminder_sent_at = None
+
+        self.log_change(
+            session,
+            rc.registration_id,
+            student_name or str(rc.registration_id),
+            "候補升正式（待確認）",
+            f"課程「{course.name}」自動升為正式，家長須於 "
+            f"{deadline.strftime('%Y-%m-%d %H:%M')} 前確認",
+            "system",
+        )
+        logger.info(
+            "候補自動升待確認：student=%s course=%s deadline=%s",
+            student_name,
+            course.name,
+            deadline.isoformat(),
+        )
+        if self._line_svc is not None:
+            try:
                 self._line_svc.notify_activity_waitlist_promoted(
-                    student_name, course_name
+                    student_name or str(rc.registration_id),
+                    course.name,
+                    deadline,
                 )
-        except ValueError:
-            pass  # 課程已滿或資料異常，靜默跳過
+            except Exception:
+                logger.exception(
+                    "發送候補升正式通知失敗 reg=%s course=%s",
+                    rc.registration_id,
+                    course_id,
+                )
 
     # ------------------------------------------------------------------ #
     # 記錄修改紀錄
@@ -792,21 +1072,21 @@ class ActivityService:
     # ------------------------------------------------------------------ #
 
     def check_course_capacity(self, session, course_id: int) -> tuple:
-        """回傳 (capacity, enrolled_count, has_vacancy)"""
+        """回傳 (capacity, occupying_count, has_vacancy)。
+
+        occupying_count = enrolled + promoted_pending（兩者皆佔容量）。
+        名稱保留 enrolled_count 以維持既有呼叫端 tuple 解包相容性，但語意已含待確認佔位。
+        """
         course = (
             session.query(ActivityCourse).filter(ActivityCourse.id == course_id).first()
         )
         if not course:
             raise ValueError("課程不存在")
 
-        enrolled_count = self.count_active_course_registrations(
-            session,
-            course_id,
-            status="enrolled",
-        )
+        occupying_count = self.count_occupying_registrations(session, course_id)
         capacity = course.capacity if course.capacity is not None else 999
-        has_vacancy = enrolled_count < capacity
-        return capacity, enrolled_count, has_vacancy
+        has_vacancy = occupying_count < capacity
+        return capacity, occupying_count, has_vacancy
 
 
 # Module-level singleton

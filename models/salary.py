@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from models.base import Base
+from models.types import Money
 
 
 class InsuranceTable(Base):
@@ -109,22 +110,6 @@ class ClassBonusSetting(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
-class AllowanceType(Base):
-    """津貼類型表"""
-
-    __tablename__ = "allowance_types"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(30), unique=True, nullable=False)
-    name = Column(String(50), nullable=False)
-    description = Column(String(200))
-    is_taxable = Column(Boolean, default=True)
-    sort_order = Column(Integer, default=0)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
 class DeductionType(Base):
     """扣款類型表"""
 
@@ -158,30 +143,6 @@ class BonusType(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
-class EmployeeAllowance(Base):
-    """員工津貼設定表"""
-
-    __tablename__ = "employee_allowances"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    employee_id = Column(
-        Integer,
-        ForeignKey("employees.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    allowance_type_id = Column(
-        Integer, ForeignKey("allowance_types.id"), nullable=False
-    )
-    amount = Column(Float, default=0)
-    effective_date = Column(Date)
-    end_date = Column(Date)
-    remark = Column(Text)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
 class SalaryItem(Base):
     """薪資明細項目表"""
 
@@ -195,9 +156,9 @@ class SalaryItem(Base):
     item_type_id = Column(Integer, nullable=False)
     item_code = Column(String(30), nullable=False)
     item_name = Column(String(50), nullable=False)
-    amount = Column(Float, default=0)
+    amount = Column(Money, default=0)
     quantity = Column(Integer, default=1)
-    unit_amount = Column(Float)
+    unit_amount = Column(Money)
     is_employer_paid = Column(Boolean, default=False)
     remark = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
@@ -228,60 +189,54 @@ class SalaryRecord(Base):
     salary_year = Column(Integer, nullable=False, comment="年")
     salary_month = Column(Integer, nullable=False, comment="月")
 
-    base_salary = Column(Float, default=0, comment="底薪")
+    base_salary = Column(Money, default=0, comment="底薪")
 
-    supervisor_allowance = Column(Float, default=0, comment="主管加給")
-    teacher_allowance = Column(Float, default=0, comment="導師津貼")
-    meal_allowance = Column(Float, default=0, comment="伙食津貼")
-    transportation_allowance = Column(Float, default=0, comment="交通津貼")
-    other_allowance = Column(Float, default=0, comment="其他津貼")
+    festival_bonus = Column(Money, default=0, comment="節慶獎金")
+    overtime_bonus = Column(Money, default=0, comment="超額獎金")
+    performance_bonus = Column(Money, default=0, comment="績效獎金")
+    special_bonus = Column(Money, default=0, comment="特別獎金/紅利")
 
-    festival_bonus = Column(Float, default=0, comment="節慶獎金")
-    overtime_bonus = Column(Float, default=0, comment="超額獎金")
-    performance_bonus = Column(Float, default=0, comment="績效獎金")
-    special_bonus = Column(Float, default=0, comment="特別獎金/紅利")
-
-    overtime_pay = Column(Float, default=0, comment="加班費")
-    meeting_overtime_pay = Column(Float, default=0, comment="園務會議加班費")
+    overtime_pay = Column(Money, default=0, comment="加班費")
+    meeting_overtime_pay = Column(Money, default=0, comment="園務會議加班費")
     meeting_absence_deduction = Column(
-        Float, default=0, comment="園務會議缺席扣節慶獎金"
+        Money, default=0, comment="園務會議缺席扣節慶獎金"
     )
-    birthday_bonus = Column(Float, default=0, comment="生日禮金")
+    birthday_bonus = Column(Money, default=0, comment="生日禮金")
 
     work_hours = Column(Float, default=0, comment="工作時數（時薪制用）")
-    hourly_rate = Column(Float, default=0, comment="時薪")
-    hourly_total = Column(Float, default=0, comment="時薪總計")
+    hourly_rate = Column(Money, default=0, comment="時薪")
+    hourly_total = Column(Money, default=0, comment="時薪總計")
 
-    labor_insurance_employee = Column(Float, default=0, comment="勞保費（員工自付）")
-    labor_insurance_employer = Column(Float, default=0, comment="勞保費（雇主負擔）")
-    health_insurance_employee = Column(Float, default=0, comment="健保費（員工自付）")
-    health_insurance_employer = Column(Float, default=0, comment="健保費（雇主負擔）")
-    pension_employee = Column(Float, default=0, comment="勞退自提")
-    pension_employer = Column(Float, default=0, comment="勞退雇提")
+    labor_insurance_employee = Column(Money, default=0, comment="勞保費（員工自付）")
+    labor_insurance_employer = Column(Money, default=0, comment="勞保費（雇主負擔）")
+    health_insurance_employee = Column(Money, default=0, comment="健保費（員工自付）")
+    health_insurance_employer = Column(Money, default=0, comment="健保費（雇主負擔）")
+    pension_employee = Column(Money, default=0, comment="勞退自提")
+    pension_employer = Column(Money, default=0, comment="勞退雇提")
 
-    late_deduction = Column(Float, default=0, comment="遲到扣款")
-    early_leave_deduction = Column(Float, default=0, comment="早退扣款")
-    missing_punch_deduction = Column(Float, default=0, comment="未打卡扣款")
-    leave_deduction = Column(Float, default=0, comment="請假扣款")
-    absence_deduction = Column(Float, default=0, comment="曠職扣款")
-    other_deduction = Column(Float, default=0, comment="其他扣款")
+    late_deduction = Column(Money, default=0, comment="遲到扣款")
+    early_leave_deduction = Column(Money, default=0, comment="早退扣款")
+    missing_punch_deduction = Column(Money, default=0, comment="未打卡扣款")
+    leave_deduction = Column(Money, default=0, comment="請假扣款")
+    absence_deduction = Column(Money, default=0, comment="曠職扣款")
+    other_deduction = Column(Money, default=0, comment="其他扣款")
 
     late_count = Column(Integer, default=0, comment="遲到次數")
     early_leave_count = Column(Integer, default=0, comment="早退次數")
     missing_punch_count = Column(Integer, default=0, comment="未打卡次數")
     absent_count = Column(Integer, default=0, comment="曠職天數")
 
-    gross_salary = Column(Float, default=0, comment="應發總額")
-    total_deduction = Column(Float, default=0, comment="扣款總額")
-    net_salary = Column(Float, default=0, comment="實發金額")
+    gross_salary = Column(Money, default=0, comment="應發總額")
+    total_deduction = Column(Money, default=0, comment="扣款總額")
+    net_salary = Column(Money, default=0, comment="實發金額")
 
     bonus_separate = Column(Boolean, default=False, comment="獎金是否獨立轉帳")
     bonus_amount = Column(
-        Float,
+        Money,
         default=0,
         comment="獨立轉帳獎金金額（festival+overtime+supervisor_dividend）",
     )
-    supervisor_dividend = Column(Float, default=0, comment="主管紅利（獨立轉帳）")
+    supervisor_dividend = Column(Money, default=0, comment="主管紅利（獨立轉帳）")
 
     remark = Column(Text, comment="備註")
 
@@ -313,3 +268,39 @@ class SalaryRecord(Base):
     )
 
     employee = relationship("Employee", back_populates="salaries")
+
+
+class SalaryCalcJobRecord(Base):
+    """薪資批次計算 async job 狀態表（DB-backed registry）。
+
+    取代原 in-process dict 的 registry，讓多 worker 部署下：
+    - find_active() 能跨 worker 看到同 year/month 的 active job，真正防止重複觸發
+    - 任一 worker 查詢 /calculate-jobs/{id} 皆能讀到另一 worker 建立的 job 狀態
+    """
+
+    __tablename__ = "salary_calc_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(String(32), unique=True, nullable=False, comment="UUID hex")
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False)
+    status = Column(
+        String(16),
+        nullable=False,
+        default="pending",
+        comment="pending / running / completed / failed",
+    )
+    total = Column(Integer, nullable=False, default=0)
+    done = Column(Integer, nullable=False, default=0)
+    current_employee = Column(String(100), default="")
+    results_json = Column(Text, nullable=True, comment="完成時 serialize 的結果列表")
+    errors_json = Column(Text, nullable=True, comment="完成時 serialize 的錯誤列表")
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_salary_calc_jobs_ym_status", "year", "month", "status"),
+        Index("ix_salary_calc_jobs_job_id", "job_id"),
+    )
