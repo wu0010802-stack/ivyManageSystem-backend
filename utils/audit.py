@@ -50,6 +50,16 @@ ENTITY_PATTERNS = [
     (r"/api/calendar", "calendar"),
     (r"/api/schedule", "schedule"),
     (r"/api/portal/swap", "shift_swap"),
+    # 才藝系統：細粒度分類，POS 日結必須排在 /api/activity/pos 之前（first match wins）
+    (r"/api/activity/pos/daily-close", "activity_daily_close"),
+    (r"/api/activity/pos", "activity_pos"),
+    (r"/api/activity/registrations", "activity_registration"),
+    (r"/api/activity/waitlist", "activity_registration"),
+    (r"/api/activity/courses", "activity_course"),
+    (r"/api/activity/supplies", "activity_supply"),
+    (r"/api/activity/inquiries", "activity_inquiry"),
+    (r"/api/activity/sessions", "activity_session"),
+    (r"/api/activity/settings", "activity_settings"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -75,6 +85,14 @@ ENTITY_LABELS = {
     "shift_swap": "換班",
     "deduction_type": "扣款類型",
     "bonus_type": "獎金類型",
+    "activity_registration": "才藝報名",
+    "activity_course": "才藝課程",
+    "activity_supply": "才藝教具",
+    "activity_inquiry": "才藝詢問",
+    "activity_session": "才藝點名",
+    "activity_pos": "才藝 POS",
+    "activity_daily_close": "POS 日結",
+    "activity_settings": "才藝設定",
 }
 
 ACTION_LABELS = {"CREATE": "新增", "UPDATE": "修改", "DELETE": "刪除"}

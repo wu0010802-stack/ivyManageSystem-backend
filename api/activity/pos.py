@@ -20,7 +20,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_
 from sqlalchemy.exc import CompileError, OperationalError
@@ -424,6 +424,7 @@ def _lock_regs(session, reg_ids: list):
 @router.post("/pos/checkout", status_code=201)
 async def pos_checkout(
     body: POSCheckoutRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
     _rl: None = Depends(_pos_checkout_limiter),
 ):
@@ -600,6 +601,21 @@ async def pos_checkout(
             body.type,
             body.idempotency_key or "-",
         )
+
+        request.state.audit_entity_id = receipt_no
+        request.state.audit_summary = (
+            f"POS {type_label}：{receipt_no} NT${total_charged}"
+            f"（{body.payment_method}，{len(body.items)} 筆）"
+        )
+        request.state.audit_changes = {
+            "receipt_no": receipt_no,
+            "type": body.type,
+            "total": total_charged,
+            "item_count": len(body.items),
+            "payment_method": body.payment_method,
+            "payment_date": body.payment_date.isoformat(),
+            "registration_ids": reg_ids,
+        }
 
         return {
             "receipt_no": receipt_no,

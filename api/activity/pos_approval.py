@@ -16,7 +16,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 
@@ -76,9 +76,9 @@ def _serialize_close(row: ActivityPosDailyClose) -> dict:
         "date": row.close_date.isoformat(),
         "is_approved": True,
         "approver_username": row.approver_username,
-        "approved_at": row.approved_at.isoformat(timespec="seconds")
-        if row.approved_at
-        else None,
+        "approved_at": (
+            row.approved_at.isoformat(timespec="seconds") if row.approved_at else None
+        ),
         "note": row.note,
         "payment_total": row.payment_total,
         "refund_total": row.refund_total,
@@ -223,6 +223,7 @@ async def get_daily_close(
 async def approve_daily_close(
     date_str: str,
     body: DailyCloseCreate,
+    request: Request,
     current_user: dict = Depends(
         require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
     ),
@@ -289,6 +290,20 @@ async def approve_daily_close(
             snap["net"],
             cash_variance,
         )
+        request.state.audit_entity_id = target.isoformat()
+        request.state.audit_summary = (
+            f"POS 日結簽核：{target.isoformat()} 淨額 NT${snap['net']}"
+        )
+        request.state.audit_changes = {
+            "close_date": target.isoformat(),
+            "net_total": snap["net"],
+            "payment_total": snap["payment_total"],
+            "refund_total": snap["refund_total"],
+            "transaction_count": snap["transaction_count"],
+            "actual_cash_count": body.actual_cash_count,
+            "cash_variance": cash_variance,
+            "note": body.note,
+        }
         return _serialize_close(row)
     except HTTPException:
         session.rollback()
@@ -307,6 +322,7 @@ async def approve_daily_close(
 @router.delete("/pos/daily-close/{date_str}", status_code=status.HTTP_204_NO_CONTENT)
 async def unlock_daily_close(
     date_str: str,
+    request: Request,
     current_user: dict = Depends(
         require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
     ),
@@ -324,7 +340,9 @@ async def unlock_daily_close(
             raise HTTPException(status_code=404, detail="該日尚未簽核，無需解鎖")
 
         original_approver = row.approver_username
-        original_at = row.approved_at.isoformat(timespec="seconds") if row.approved_at else "?"
+        original_at = (
+            row.approved_at.isoformat(timespec="seconds") if row.approved_at else "?"
+        )
 
         session.delete(row)
         session.add(
@@ -345,6 +363,13 @@ async def unlock_daily_close(
             original_approver,
             original_at,
         )
+        request.state.audit_entity_id = target.isoformat()
+        request.state.audit_summary = f"POS 日結解鎖：{target.isoformat()}"
+        request.state.audit_changes = {
+            "close_date": target.isoformat(),
+            "original_approver": original_approver,
+            "original_approved_at": original_at,
+        }
         return None
     except HTTPException:
         session.rollback()
@@ -396,9 +421,7 @@ async def pos_reconciliation(
         # 有交易的日期（僅這些日會出現在結果中）
         tx_dates = {
             pd
-            for (pd,) in session.query(
-                ActivityPaymentRecord.payment_date.distinct()
-            )
+            for (pd,) in session.query(ActivityPaymentRecord.payment_date.distinct())
             .filter(
                 ActivityPaymentRecord.payment_date >= start,
                 ActivityPaymentRecord.payment_date <= end,

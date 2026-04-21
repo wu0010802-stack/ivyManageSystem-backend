@@ -20,7 +20,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import models.base as base_module
 from models.database import AuditLog, Base
 from utils.audit import (
+    ENTITY_LABELS,
     _background_tasks,
+    _parse_entity_type,
     _schedule_audit_write,
     _write_audit_sync,
 )
@@ -92,9 +94,7 @@ class TestWriteAuditSync:
 
         _write_audit_sync(_sample_payload())  # 不應拋錯
 
-        assert any(
-            "Audit log write failed" in r.message for r in caplog.records
-        )
+        assert any("Audit log write failed" in r.message for r in caplog.records)
 
 
 class TestScheduleAuditWrite:
@@ -143,3 +143,49 @@ class TestScheduleAuditWrite:
 
         assert len(logs) == 1
         assert logs[0].summary == "無 loop 回退"
+
+
+class TestActivityEntityTypeMapping:
+    """確保才藝系統各路徑都被 AuditMiddleware 覆蓋，且 POS 日結優先於 POS。"""
+
+    @pytest.mark.parametrize(
+        "path,expected_entity",
+        [
+            # 才藝報名（含 waitlist 合併進同一類）
+            ("/api/activity/registrations", "activity_registration"),
+            ("/api/activity/registrations/42", "activity_registration"),
+            ("/api/activity/registrations/42/payment", "activity_registration"),
+            ("/api/activity/registrations/42/payments/7", "activity_registration"),
+            ("/api/activity/registrations/42/courses/3", "activity_registration"),
+            ("/api/activity/waitlist/sweep-expired", "activity_registration"),
+            # 其他 activity 子模組
+            ("/api/activity/courses/1", "activity_course"),
+            ("/api/activity/supplies/9", "activity_supply"),
+            ("/api/activity/inquiries/5/reply", "activity_inquiry"),
+            ("/api/activity/sessions/1/records", "activity_session"),
+            ("/api/activity/settings/registration-time", "activity_settings"),
+            # POS：daily-close 必須先於 pos 被匹配到（first match wins）
+            ("/api/activity/pos/daily-close/2026-04-21", "activity_daily_close"),
+            ("/api/activity/pos/checkout", "activity_pos"),
+            # public 路徑目前刻意不進 audit
+            ("/api/activity/public/register", None),
+            ("/api/activity/public/update", None),
+        ],
+    )
+    def test_entity_type_for_path(self, path, expected_entity):
+        assert _parse_entity_type(path) == expected_entity
+
+    def test_all_activity_entities_have_chinese_label(self):
+        """新增的 entity_type 必須在 ENTITY_LABELS 有對應中文，否則前端下拉會顯示英文 key。"""
+        required = {
+            "activity_registration",
+            "activity_course",
+            "activity_supply",
+            "activity_inquiry",
+            "activity_session",
+            "activity_pos",
+            "activity_daily_close",
+            "activity_settings",
+        }
+        missing = required - ENTITY_LABELS.keys()
+        assert not missing, f"缺少中文 label 的 entity_type：{missing}"

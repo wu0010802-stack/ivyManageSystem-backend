@@ -688,3 +688,109 @@ class TestDailyCloseGuard:
             json={"is_paid": False},
         )
         assert res.status_code == 400
+
+
+# ── Audit state overrides（覆寫 middleware 預設推斷的 entity_id）─────────
+
+
+class TestActivityAuditStateOverride:
+    """敏感端點需把 request.state.audit_entity_id 鎖回 registration_id，
+    否則 middleware 的 _parse_entity_id 會抓到 URL 尾段的 payment_id / course_id，
+    導致「某筆報名的所有稽核事件」查詢漏掉退課與刪繳費。"""
+
+    def _make_capture_app(self, captured):
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        class StateCaptureMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                response = await call_next(request)
+                captured["audit_entity_id"] = getattr(
+                    request.state, "audit_entity_id", None
+                )
+                captured["audit_summary"] = getattr(
+                    request.state, "audit_summary", None
+                )
+                return response
+
+        app = FastAPI()
+        app.add_middleware(StateCaptureMiddleware)
+        app.include_router(auth_router)
+        app.include_router(activity_router)
+        return app
+
+    def test_delete_payment_sets_registration_as_entity(self, fee_client):
+        _, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, course_price=1000, paid_amount=500)
+            rec = ActivityPaymentRecord(
+                registration_id=reg.id,
+                type="payment",
+                amount=500,
+                payment_date=date.today(),
+                payment_method="現金",
+                operator="fee_admin",
+            )
+            s.add(rec)
+            s.flush()
+            s.commit()
+            reg_id = reg.id
+            rec_id = rec.id
+
+        captured = {}
+        app = self._make_capture_app(captured)
+        with TestClient(app) as mw_client:
+            assert _login(mw_client).status_code == 200
+            res = mw_client.delete(
+                f"/api/activity/registrations/{reg_id}/payments/{rec_id}"
+            )
+            assert res.status_code == 200, res.text
+
+        assert captured["audit_entity_id"] == str(reg_id), (
+            f"預期 entity_id 鎖回 registration_id={reg_id}，"
+            f"但拿到 {captured['audit_entity_id']}（可能被 URL 尾段 payment_id 搶走）"
+        )
+        assert captured["audit_summary"] and "刪除繳費記錄" in captured["audit_summary"]
+
+    def test_withdraw_course_sets_registration_as_entity(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            # 加第二門課以避免退課後 reg.paid_amount > total 觸發 409
+            reg = _setup_reg(s, course_price=1000, paid_amount=0)
+            extra_course = ActivityCourse(
+                name="額外課程",
+                price=500,
+                capacity=30,
+                allow_waitlist=True,
+                school_year=reg.school_year,
+                semester=reg.semester,
+            )
+            s.add(extra_course)
+            s.flush()
+            s.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=extra_course.id,
+                    status="enrolled",
+                    price_snapshot=500,
+                )
+            )
+            s.commit()
+            reg_id = reg.id
+            course_id = extra_course.id
+
+        captured = {}
+        app = self._make_capture_app(captured)
+        with TestClient(app) as mw_client:
+            assert _login(mw_client).status_code == 200
+            res = mw_client.delete(
+                f"/api/activity/registrations/{reg_id}/courses/{course_id}"
+            )
+            assert res.status_code == 200, res.text
+
+        assert captured["audit_entity_id"] == str(reg_id), (
+            f"預期 entity_id 鎖回 registration_id={reg_id}，"
+            f"但拿到 {captured['audit_entity_id']}（可能被 URL 尾段 course_id 搶走）"
+        )
+        assert captured["audit_summary"] and "退課" in captured["audit_summary"]

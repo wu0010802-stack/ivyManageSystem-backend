@@ -10,7 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func
@@ -1023,7 +1023,14 @@ async def rematch_registration(
         )
         matched = False
         if sid and cid:
-            classroom = session.query(Classroom).filter(Classroom.id == cid).first()
+            classroom = (
+                session.query(Classroom)
+                .filter(
+                    Classroom.id == cid,
+                    Classroom.is_active.is_(True),
+                )
+                .first()
+            )
             if classroom:
                 reg.student_id = sid
                 reg.classroom_id = cid
@@ -1504,6 +1511,7 @@ async def get_registration_detail(
 async def update_payment(
     registration_id: int,
     body: PaymentUpdate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新付款狀態"""
@@ -1570,6 +1578,13 @@ async def update_payment(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        request.state.audit_summary = f"更新繳費狀態：{reg.student_name} → {status_str}"
+        request.state.audit_changes = {
+            "student_name": reg.student_name,
+            "new_is_paid": bool(body.is_paid),
+            "paid_amount_after": reg.paid_amount,
+            "total_amount": total_amount,
+        }
         return {"message": f"更新成功，狀態為：{status_str}"}
     except HTTPException:
         raise
@@ -2034,6 +2049,7 @@ def _lock_registration(session, registration_id: int):
 async def add_registration_payment(
     registration_id: int,
     body: AddPaymentRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """新增繳費或退費記錄"""
@@ -2120,6 +2136,17 @@ async def add_registration_payment(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        request.state.audit_summary = (
+            f"新增{type_label}記錄：{reg.student_name} NT${body.amount}"
+        )
+        request.state.audit_changes = {
+            "student_name": reg.student_name,
+            "type": body.type,
+            "amount": body.amount,
+            "payment_method": body.payment_method,
+            "payment_date": body.payment_date.isoformat(),
+            "paid_amount_after": reg.paid_amount,
+        }
         return {
             "message": f"{type_label}記錄新增成功",
             "paid_amount": reg.paid_amount,
@@ -2138,6 +2165,7 @@ async def add_registration_payment(
 async def delete_registration_payment(
     registration_id: int,
     payment_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """刪除繳費記錄（更正用），自動重新計算已繳金額"""
@@ -2168,6 +2196,14 @@ async def delete_registration_payment(
         # 若被刪除的付款日期已被日結簽核，拒絕刪除以免 snapshot 與 DB 失準
         _require_daily_close_unlocked(session, payment.payment_date)
 
+        deleted_snapshot = {
+            "type": payment.type,
+            "amount": payment.amount,
+            "payment_date": (
+                payment.payment_date.isoformat() if payment.payment_date else None
+            ),
+        }
+
         session.delete(payment)
         session.flush()
 
@@ -2196,6 +2232,21 @@ async def delete_registration_payment(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        # URL 尾段為 payment_id，middleware 預設會抓成 entity_id；覆寫為 registration_id
+        # 才能讓「該筆報名的所有稽核事件」查詢命中此筆。
+        request.state.audit_entity_id = str(registration_id)
+        request.state.audit_summary = (
+            f"刪除繳費記錄：{reg.student_name} payment_id={payment_id} "
+            f"NT${deleted_snapshot['amount']}（{deleted_snapshot['type']}）"
+        )
+        request.state.audit_changes = {
+            "student_name": reg.student_name,
+            "deleted_payment_id": payment_id,
+            "deleted_type": deleted_snapshot["type"],
+            "deleted_amount": deleted_snapshot["amount"],
+            "deleted_payment_date": deleted_snapshot["payment_date"],
+            "paid_amount_after": reg.paid_amount,
+        }
         return {
             "message": "記錄已刪除",
             "paid_amount": reg.paid_amount,
@@ -2284,6 +2335,7 @@ async def sweep_expired_waitlist_promotions(
 async def withdraw_course(
     registration_id: int,
     course_id: int,
+    request: Request,
     force_refund: bool = Query(
         False,
         description="退課後若出現超繳，需顯式帶 true 才允許退課並自動寫退費沖帳紀錄",
@@ -2410,6 +2462,20 @@ async def withdraw_course(
         session.commit()
         _invalidate_activity_dashboard_caches(session)
         final_paid = reg.paid_amount or 0
+        # URL 尾段為 course_id，覆寫為 registration_id 以便依報名 ID 彙整稽核事件
+        request.state.audit_entity_id = str(registration_id)
+        request.state.audit_summary = f"退課：{reg.student_name} 退出「{course_name}」"
+        request.state.audit_changes = {
+            "student_name": reg.student_name,
+            "course_id": course_id,
+            "course_name": course_name,
+            "was_enrolled": was_enrolled,
+            "refund_needed": refund_needed,
+            "force_refund": force_refund,
+            "paid_amount_after": final_paid,
+            "total_amount_after": new_total,
+            "removed_attendance_count": removed_attendance,
+        }
         return {
             "message": f"已退出課程「{course_name}」",
             "total_amount": new_total,
@@ -2429,6 +2495,7 @@ async def withdraw_course(
 @router.delete("/registrations/{registration_id}")
 async def delete_registration(
     registration_id: int,
+    request: Request,
     force_refund: bool = Query(
         False,
         description="若報名已有繳費金額，需顯式帶 true 才允許刪除並自動寫退費沖帳紀錄",
@@ -2438,6 +2505,14 @@ async def delete_registration(
     """軟刪除報名"""
     session = get_session()
     try:
+        reg_preview = (
+            session.query(ActivityRegistration)
+            .filter(ActivityRegistration.id == registration_id)
+            .first()
+        )
+        student_name = reg_preview.student_name if reg_preview else None
+        paid_before = (reg_preview.paid_amount or 0) if reg_preview else 0
+
         activity_service.delete_registration(
             session,
             registration_id,
@@ -2452,6 +2527,14 @@ async def delete_registration(
             current_user.get("username"),
             force_refund,
         )
+        request.state.audit_summary = (
+            f"刪除才藝報名：{student_name}" if student_name else "刪除才藝報名"
+        )
+        request.state.audit_changes = {
+            "student_name": student_name,
+            "paid_amount_before": paid_before,
+            "force_refund": force_refund,
+        }
         return {"message": "報名已刪除"}
     except ValueError as e:
         msg = str(e)
