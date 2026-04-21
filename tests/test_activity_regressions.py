@@ -707,3 +707,121 @@ class TestPublicUpdateRegressions:
                 session.query(ActivityRegistration).filter_by(id=registration_id).one()
             )
             assert reg.class_name == "向日葵班"
+
+
+class TestCourseEnrolledRoster:
+    """GET /api/activity/courses/{id}/enrolled 課程報名名單端點。"""
+
+    def test_returns_only_enrolled_not_waitlist(self, activity_client):
+        """status=enrolled 的才會回，waitlist 不出現。"""
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            course = _create_course(session, "美術", 1000, capacity=1)
+            reg_e = _create_registration(
+                session,
+                student_name="正式生",
+                class_name="大班",
+                parent_phone="0911111111",
+            )
+            reg_w = _create_registration(
+                session,
+                student_name="候補生",
+                class_name="大班",
+                parent_phone="0922222222",
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg_e.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1000,
+                )
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg_w.id,
+                    course_id=course.id,
+                    status="waitlist",
+                    price_snapshot=1000,
+                )
+            )
+            session.commit()
+            course_id = course.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.get(f"/api/activity/courses/{course_id}/enrolled")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["course_id"] == course_id
+        assert body["course_name"] == "美術"
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert item["position"] == 1
+        assert item["student_name"] == "正式生"
+        assert item["class_name"] == "大班"
+        assert "registration_id" in item
+        assert "course_record_id" in item
+
+    def test_returns_404_when_course_missing(self, activity_client):
+        """課程不存在回 404。"""
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            session.commit()
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+        res = client.get("/api/activity/courses/999999/enrolled")
+        assert res.status_code == 404
+
+    def test_excludes_inactive_registrations(self, activity_client):
+        """is_active=False（軟刪）的 registration 不出現。"""
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            course = _create_course(session, "書法", 1200, capacity=2)
+            reg_active = _create_registration(
+                session,
+                student_name="在籍生",
+                class_name="大班",
+                parent_phone="0911111111",
+            )
+            reg_deleted = _create_registration(
+                session,
+                student_name="已退",
+                class_name="大班",
+                is_active=False,
+                parent_phone="0922222222",
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg_active.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg_deleted.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            session.commit()
+            course_id = course.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+        res = client.get(f"/api/activity/courses/{course_id}/enrolled")
+        assert res.status_code == 200
+        body = res.json()
+        assert len(body["items"]) == 1
+        assert body["items"][0]["student_name"] == "在籍生"

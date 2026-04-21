@@ -401,6 +401,61 @@ async def get_course_waitlist(
         session.close()
 
 
+@router.get("/courses/{course_id}/enrolled")
+async def get_course_enrolled(
+    course_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
+):
+    """取得課程正式報名名單（按報名序排列）"""
+    session = get_session()
+    try:
+        course = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.id == course_id,
+                ActivityCourse.is_active.is_(True),
+            )
+            .first()
+        )
+        if not course:
+            raise _not_found("課程")
+        rows = (
+            session.query(
+                RegistrationCourse.id.label("course_record_id"),
+                RegistrationCourse.registration_id,
+                ActivityRegistration.student_name,
+                ActivityRegistration.class_name,
+            )
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.course_id == course_id,
+                RegistrationCourse.status == "enrolled",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .order_by(RegistrationCourse.id.asc())
+            .all()
+        )
+        return {
+            "course_id": course_id,
+            "course_name": course.name,
+            "items": [
+                {
+                    "position": idx + 1,
+                    "course_record_id": r.course_record_id,
+                    "registration_id": r.registration_id,
+                    "student_name": r.student_name,
+                    "class_name": r.class_name,
+                }
+                for idx, r in enumerate(rows)
+            ],
+        }
+    finally:
+        session.close()
+
+
 @router.delete("/courses/{course_id}")
 async def delete_course(
     course_id: int,
