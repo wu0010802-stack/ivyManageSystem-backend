@@ -332,6 +332,21 @@ async def create_employee(
         else:  # If neither is provided, set title to None
             emp_data["title"] = None
 
+        from services.salary.minimum_wage import validate_minimum_wage
+        from services.salary.insurance_salary import validate_insurance_salary
+
+        validate_minimum_wage(
+            emp_data.get("employee_type") or "regular",
+            emp_data.get("base_salary") or 0,
+            emp_data.get("hourly_rate") or 0,
+        )
+        validate_insurance_salary(
+            emp_data.get("employee_type") or "regular",
+            emp_data.get("base_salary") or 0,
+            emp_data.get("insurance_salary_level") or 0,
+            emp_data.get("hourly_rate") or 0,
+        )
+
         employee = Employee(**emp_data)
         session.add(employee)
         session.commit()
@@ -417,6 +432,21 @@ async def update_employee(
                 setattr(db_employee, key, None)
             elif key == "supervisor_role" and value is None:
                 setattr(db_employee, key, None)
+
+        from services.salary.minimum_wage import validate_minimum_wage
+        from services.salary.insurance_salary import validate_insurance_salary
+
+        validate_minimum_wage(
+            db_employee.employee_type or "regular",
+            db_employee.base_salary or 0,
+            db_employee.hourly_rate or 0,
+        )
+        validate_insurance_salary(
+            db_employee.employee_type or "regular",
+            db_employee.base_salary or 0,
+            db_employee.insurance_salary_level or 0,
+            db_employee.hourly_rate or 0,
+        )
 
         session.commit()
 
@@ -543,6 +573,8 @@ async def final_salary_preview(
             raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
         resign_d = emp.resign_date
         contracted_base = emp.base_salary or 0
+        employee_type = emp.employee_type
+        hourly_rate = emp.hourly_rate or 0
 
     _, month_days = _cal.monthrange(year, month)
     proration_note = None
@@ -557,6 +589,33 @@ async def final_salary_preview(
             f"在職 {resign_d.day} 天，折算後 NT${breakdown.base_salary:,.0f}"
         )
 
+    # 勞基法第 38 條第 4 項：契約終止時應發給未休特休之工資
+    unused_annual_hours = 0.0
+    unused_annual_compensation = 0.0
+    if resign_d is not None and resign_d.year == year and resign_d.month == month:
+        from api.leaves_quota import _calc_annual_leave_hours, _get_used_hours
+        from services.salary.unused_leave_pay import (
+            calculate_unused_annual_leave_hours,
+            calculate_unused_leave_compensation,
+        )
+
+        with session_scope() as session:
+            emp = session.query(Employee).filter(Employee.id == employee_id).first()
+            entitled = _calc_annual_leave_hours(emp.hire_date, year) if emp else 0.0
+            used = _get_used_hours(session, employee_id, year, "annual")
+
+        # 時薪：月薪制 = 月薪 / 30 / 8；時薪制直接用 hourly_rate（避免 base_salary=0 算出 0 補償）
+        if employee_type == "hourly":
+            hourly_wage = hourly_rate
+        else:
+            hourly_wage = (contracted_base or 0) / 30 / 8
+        unused_annual_hours = calculate_unused_annual_leave_hours(entitled, used)
+        unused_annual_compensation = calculate_unused_leave_compensation(
+            unused_annual_hours, hourly_wage
+        )
+
+    net_salary_with_unused_annual = breakdown.net_salary + unused_annual_compensation
+
     return {
         "year": year,
         "month": month,
@@ -570,6 +629,9 @@ async def final_salary_preview(
         "health_insurance": breakdown.health_insurance,
         "pension": breakdown.pension,
         "net_salary": breakdown.net_salary,
+        "unused_annual_leave_hours": unused_annual_hours,
+        "unused_annual_leave_compensation": round(unused_annual_compensation),
+        "net_salary_with_unused_annual": round(net_salary_with_unused_annual),
     }
 
 

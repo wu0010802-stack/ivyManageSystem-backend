@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from models.database import get_session, Employee, LeaveRecord, LeaveQuota
 from utils.auth import require_staff_permission
@@ -28,24 +28,24 @@ logger = logging.getLogger(__name__)
 
 # 請假扣薪規則（依勞基法）
 LEAVE_DEDUCTION_RULES: dict[str, float] = {
-    "personal": 1.0,          # 事假: 全扣
-    "sick": 0.5,               # 病假: 扣半薪
-    "menstrual": 0.5,          # 生理假: 扣半薪
-    "annual": 0.0,             # 特休: 不扣
-    "maternity": 0.0,          # 產假: 不扣
-    "paternity": 0.0,          # 陪產假: 不扣（舊）
-    "official": 0.0,           # 公假: 不扣
-    "marriage": 0.0,           # 婚假: 不扣
-    "bereavement": 0.0,        # 喪假: 不扣
-    "prenatal": 0.0,           # 產檢假: 不扣
-    "paternity_new": 0.0,      # 陪產檢及陪產假: 不扣
-    "miscarriage": 0.0,        # 流產假: 不扣
-    "family_care": 1.0,        # 家庭照顧假: 不給薪（併入事假）
-    "parental_unpaid": 0.0,    # 育嬰留職停薪: 不扣（留停期間無薪）
-    "compensatory": 0.0,       # 補休：不扣薪
-    "occupational_injury": 0.0, # 公傷病假：不扣薪
-    "pregnancy_rest": 0.5,     # 安胎休養：依病假規定辦理
-    "typhoon": 1.0,            # 颱風假：依勞基法可不給薪
+    "personal": 1.0,  # 事假: 全扣
+    "sick": 0.5,  # 病假: 扣半薪
+    "menstrual": 0.5,  # 生理假: 扣半薪
+    "annual": 0.0,  # 特休: 不扣
+    "maternity": 0.0,  # 產假: 不扣
+    "paternity": 0.0,  # 陪產假: 不扣（舊）
+    "official": 0.0,  # 公假: 不扣
+    "marriage": 0.0,  # 婚假: 不扣
+    "bereavement": 0.0,  # 喪假: 不扣
+    "prenatal": 0.0,  # 產檢假: 不扣
+    "paternity_new": 0.0,  # 陪產檢及陪產假: 不扣
+    "miscarriage": 0.0,  # 流產假: 不扣
+    "family_care": 1.0,  # 家庭照顧假: 不給薪（併入事假）
+    "parental_unpaid": 0.0,  # 育嬰留職停薪: 不扣（留停期間無薪）
+    "compensatory": 0.0,  # 補休：不扣薪
+    "occupational_injury": 0.0,  # 公傷病假：不扣薪
+    "pregnancy_rest": 0.5,  # 安胎休養：依病假規定辦理
+    "typhoon": 1.0,  # 颱風假：依勞基法可不給薪
 }
 
 # 有年度上限的假別（其餘為事件型，不追蹤）
@@ -53,10 +53,10 @@ QUOTA_LEAVE_TYPES: set[str] = {"annual", "sick", "menstrual", "personal", "famil
 
 # 法定年度配額（小時），不含特休（特休依年資動態計算）
 STATUTORY_QUOTA_HOURS: dict[str, float] = {
-    "sick":        240.0,   # 病假 30天
-    "menstrual":    96.0,   # 生理假 12天
-    "personal":    112.0,   # 事假 14天
-    "family_care":  56.0,   # 家庭照顧假 7天（勞基法第20條）
+    "sick": 240.0,  # 病假 30天
+    "menstrual": 24.0,  # 生理假 3天（性工法第14-1條，超過併入病假）
+    "personal": 112.0,  # 事假 14天
+    "family_care": 56.0,  # 家庭照顧假 7天（勞基法第20條）
 }
 
 # 法定年度累計上限（小時）— 事件型假別（不在 QUOTA_LEAVE_TYPES 中）
@@ -74,8 +74,82 @@ MONTHLY_MAX_HOURS: dict[str, float] = {
     "menstrual": 8.0,  # 生理假每月 1天（勞基法第14-1條）
 }
 
+# 病假雙配額（勞工請假規則第 4 條）
+SICK_OUTPATIENT_CAP_HOURS = 240.0  # 未住院年度上限 30 天
+SICK_HOSPITALIZED_CAP_HOURS = 2080.0  # 住院年度上限 1 年
+SICK_TOTAL_CAP_HOURS = 2080.0  # 兩者合計年度上限 1 年
+
+
+def _get_sick_committed_hours(
+    session, employee_id: int, year: int, is_hospitalized: bool, exclude_id: int = None
+) -> float:
+    """查詢該年度同一住院旗標下，已核准 + 待審的病假時數合計。"""
+    q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
+        LeaveRecord.employee_id == employee_id,
+        LeaveRecord.leave_type == "sick",
+        LeaveRecord.is_hospitalized == is_hospitalized,
+        or_(LeaveRecord.is_approved == True, LeaveRecord.is_approved.is_(None)),
+        LeaveRecord.start_date >= date(year, 1, 1),
+        LeaveRecord.start_date < date(year + 1, 1, 1),
+    )
+    if exclude_id:
+        q = q.filter(LeaveRecord.id != exclude_id)
+    return float(q.scalar())
+
+
+def assert_sick_leave_within_statutory_caps(
+    outpatient_used_hours: float,
+    hospitalized_used_hours: float,
+    new_hours: float,
+    is_hospitalized: bool,
+) -> None:
+    """純函式：依勞工請假規則第 4 條驗證病假時數三項上限。
+
+    - 未住院年度 ≤ 240h（30 天）
+    - 住院年度 ≤ 2080h（1 年）
+    - 合計年度 ≤ 2080h（1 年）
+    """
+    out_used = float(outpatient_used_hours or 0)
+    hosp_used = float(hospitalized_used_hours or 0)
+    new = float(new_hours or 0)
+
+    if not is_hospitalized:
+        new_out = out_used + new
+        if new_out > SICK_OUTPATIENT_CAP_HOURS + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"未住院病假年度上限 30 天（{SICK_OUTPATIENT_CAP_HOURS:.0f} 小時），"
+                    f"已用 {out_used:.0f} 小時，本次申請 {new:.1f} 小時超過上限"
+                    f"（勞工請假規則第 4 條）；如為住院病假請勾選「住院」"
+                ),
+            )
+    else:
+        new_hosp = hosp_used + new
+        if new_hosp > SICK_HOSPITALIZED_CAP_HOURS + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"住院病假年度上限 1 年（{SICK_HOSPITALIZED_CAP_HOURS:.0f} 小時），"
+                    f"已用 {hosp_used:.0f} 小時，本次申請 {new:.1f} 小時超過上限"
+                    f"（勞工請假規則第 4 條）"
+                ),
+            )
+
+    new_total = out_used + hosp_used + new
+    if new_total > SICK_TOTAL_CAP_HOURS + 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"住院 + 未住院病假合計年度上限 1 年（{SICK_TOTAL_CAP_HOURS:.0f} 小時），"
+                f"已用 {out_used + hosp_used:.0f} 小時，"
+                f"本次申請 {new:.1f} 小時超過合計上限（勞工請假規則第 4 條）"
+            ),
+        )
+
 
 # ============ Helpers ============
+
 
 def _calc_annual_leave_hours(hire_date: "date | None", year: int) -> float:
     """依勞基法第38條計算特休配額時數，以 year 年 12/31 為基準日計算年資"""
@@ -93,16 +167,16 @@ def _calc_annual_leave_hours(hire_date: "date | None", year: int) -> float:
     if months < 6:
         return 0.0
     elif months < 12:
-        return 24.0    # 3天
+        return 24.0  # 3天
     complete_years = months // 12
     if complete_years < 2:
-        return 56.0    # 7天
+        return 56.0  # 7天
     elif complete_years < 3:
-        return 80.0    # 10天
+        return 80.0  # 10天
     elif complete_years < 5:
-        return 112.0   # 14天
+        return 112.0  # 14天
     elif complete_years < 10:
-        return 120.0   # 15天
+        return 120.0  # 15天
     else:
         days = min(15 + complete_years - 10, 30)
         return float(days * 8)
@@ -110,25 +184,33 @@ def _calc_annual_leave_hours(hire_date: "date | None", year: int) -> float:
 
 def _get_used_hours(session, employee_id: int, year: int, leave_type: str) -> float:
     """查詢該年度已核准的請假時數"""
-    result = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
-        LeaveRecord.employee_id == employee_id,
-        LeaveRecord.leave_type == leave_type,
-        LeaveRecord.is_approved == True,
-        LeaveRecord.start_date >= date(year, 1, 1),
-        LeaveRecord.start_date < date(year + 1, 1, 1),
-    ).scalar()
+    result = (
+        session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0))
+        .filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.leave_type == leave_type,
+            LeaveRecord.is_approved == True,
+            LeaveRecord.start_date >= date(year, 1, 1),
+            LeaveRecord.start_date < date(year + 1, 1, 1),
+        )
+        .scalar()
+    )
     return float(result)
 
 
 def _get_pending_hours(session, employee_id: int, year: int, leave_type: str) -> float:
     """查詢該年度待審核的請假時數"""
-    result = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
-        LeaveRecord.employee_id == employee_id,
-        LeaveRecord.leave_type == leave_type,
-        LeaveRecord.is_approved.is_(None),
-        LeaveRecord.start_date >= date(year, 1, 1),
-        LeaveRecord.start_date < date(year + 1, 1, 1),
-    ).scalar()
+    result = (
+        session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0))
+        .filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.leave_type == leave_type,
+            LeaveRecord.is_approved.is_(None),
+            LeaveRecord.start_date >= date(year, 1, 1),
+            LeaveRecord.start_date < date(year + 1, 1, 1),
+        )
+        .scalar()
+    )
     return float(result)
 
 
@@ -165,8 +247,12 @@ def _get_pending_hours_in_year(
 
 
 def _get_approved_hours_in_month(
-    session, employee_id: int, year: int, month: int,
-    leave_type: str, exclude_id: int = None
+    session,
+    employee_id: int,
+    year: int,
+    month: int,
+    leave_type: str,
+    exclude_id: int = None,
 ) -> float:
     """查詢指定月份已核准時數（可排除指定記錄）"""
     last_day = calendar.monthrange(year, month)[1]
@@ -183,8 +269,12 @@ def _get_approved_hours_in_month(
 
 
 def _get_pending_hours_in_month(
-    session, employee_id: int, year: int, month: int,
-    leave_type: str, exclude_id: int = None
+    session,
+    employee_id: int,
+    year: int,
+    month: int,
+    leave_type: str,
+    exclude_id: int = None,
 ) -> float:
     """查詢指定月份待審核時數（可排除指定記錄）"""
     last_day = calendar.monthrange(year, month)[1]
@@ -219,8 +309,12 @@ def _quota_row(session, quota: "LeaveQuota", year: int) -> dict:
 
 
 def _check_leave_limits(
-    session, employee_id: int, leave_type: str,
-    start_date: date, leave_hours: float, exclude_id: int = None,
+    session,
+    employee_id: int,
+    leave_type: str,
+    start_date: date,
+    leave_hours: float,
+    exclude_id: int = None,
     include_pending: bool = True,
 ) -> None:
     """
@@ -249,7 +343,11 @@ def _check_leave_limits(
             committed = approved
         if committed + leave_hours > max_h:
             remaining = max(0.0, max_h - committed)
-            pending_note = f"、待審 {pending / 8:.1f} 天" if include_pending and pending > 0 else ""
+            pending_note = (
+                f"、待審 {pending / 8:.1f} 天"
+                if include_pending and pending > 0
+                else ""
+            )
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -288,7 +386,11 @@ def _check_leave_limits(
             committed = approved
         if committed + leave_hours > max_h:
             remaining = max(0.0, max_h - committed)
-            pending_note = f"、待審 {pending_m:.0f} 小時" if include_pending and pending_m > 0 else ""
+            pending_note = (
+                f"、待審 {pending_m:.0f} 小時"
+                if include_pending and pending_m > 0
+                else ""
+            )
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -300,8 +402,12 @@ def _check_leave_limits(
 
 
 def _check_quota(
-    session, employee_id: int, leave_type: str,
-    year: int, leave_hours: float, exclude_id: int = None,
+    session,
+    employee_id: int,
+    leave_type: str,
+    year: int,
+    leave_hours: float,
+    exclude_id: int = None,
     include_pending: bool = True,
 ) -> None:
     """
@@ -318,11 +424,15 @@ def _check_quota(
     if leave_type not in QUOTA_LEAVE_TYPES:
         return
 
-    quota = session.query(LeaveQuota).filter(
-        LeaveQuota.employee_id == employee_id,
-        LeaveQuota.year == year,
-        LeaveQuota.leave_type == leave_type,
-    ).first()
+    quota = (
+        session.query(LeaveQuota)
+        .filter(
+            LeaveQuota.employee_id == employee_id,
+            LeaveQuota.year == year,
+            LeaveQuota.leave_type == leave_type,
+        )
+        .first()
+    )
 
     if quota is None:
         return  # 配額未初始化，略過檢查
@@ -343,7 +453,14 @@ def _check_quota(
 
     if leave_hours > remaining:
         label = LEAVE_TYPE_LABELS.get(leave_type, leave_type)
-        pending_note = f"、待審 {pending:.0f} 小時" if include_pending and pending > 0 else ""
+        pending_note = (
+            f"、待審 {pending:.0f} 小時" if include_pending and pending > 0 else ""
+        )
+        extra_hint = (
+            "；依性工法第 14-1 條，超過 3 天部分請改填病假"
+            if leave_type == "menstrual"
+            else ""
+        )
         raise HTTPException(
             status_code=400,
             detail=(
@@ -352,11 +469,13 @@ def _check_quota(
                 f"已核准 {approved:.0f} 小時{pending_note}，"
                 f"剩餘可用 {remaining:.0f} 小時（{remaining / 8:.1f} 天），"
                 f"本次申請 {leave_hours:.1f} 小時超過剩餘配額"
+                f"{extra_hint}"
             ),
         )
 
 
 # ============ Pydantic Models ============
+
 
 class QuotaUpdate(BaseModel):
     total_hours: float = Field(..., ge=0)
@@ -395,48 +514,64 @@ def get_leave_quotas(
         emp_ids = list({qt.employee_id for qt in quotas})
 
         # 批次查詢所有員工的已核准時數（GROUP BY employee_id, leave_type，避免 N+1）
-        used_rows = session.query(
-            LeaveRecord.employee_id,
-            LeaveRecord.leave_type,
-            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
-        ).filter(
-            LeaveRecord.employee_id.in_(emp_ids),
-            LeaveRecord.is_approved == True,
-            LeaveRecord.start_date >= year_start,
-            LeaveRecord.start_date < year_end,
-        ).group_by(LeaveRecord.employee_id, LeaveRecord.leave_type).all()
+        used_rows = (
+            session.query(
+                LeaveRecord.employee_id,
+                LeaveRecord.leave_type,
+                func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+            )
+            .filter(
+                LeaveRecord.employee_id.in_(emp_ids),
+                LeaveRecord.is_approved == True,
+                LeaveRecord.start_date >= year_start,
+                LeaveRecord.start_date < year_end,
+            )
+            .group_by(LeaveRecord.employee_id, LeaveRecord.leave_type)
+            .all()
+        )
         used_map = {(r.employee_id, r.leave_type): float(r.hours) for r in used_rows}
 
         # 批次查詢所有員工的待審核時數
-        pending_rows = session.query(
-            LeaveRecord.employee_id,
-            LeaveRecord.leave_type,
-            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
-        ).filter(
-            LeaveRecord.employee_id.in_(emp_ids),
-            LeaveRecord.is_approved.is_(None),
-            LeaveRecord.start_date >= year_start,
-            LeaveRecord.start_date < year_end,
-        ).group_by(LeaveRecord.employee_id, LeaveRecord.leave_type).all()
-        pending_map = {(r.employee_id, r.leave_type): float(r.hours) for r in pending_rows}
+        pending_rows = (
+            session.query(
+                LeaveRecord.employee_id,
+                LeaveRecord.leave_type,
+                func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+            )
+            .filter(
+                LeaveRecord.employee_id.in_(emp_ids),
+                LeaveRecord.is_approved.is_(None),
+                LeaveRecord.start_date >= year_start,
+                LeaveRecord.start_date < year_end,
+            )
+            .group_by(LeaveRecord.employee_id, LeaveRecord.leave_type)
+            .all()
+        )
+        pending_map = {
+            (r.employee_id, r.leave_type): float(r.hours) for r in pending_rows
+        }
 
         result = []
         for quota in quotas:
             key = (quota.employee_id, quota.leave_type)
             used = used_map.get(key, 0.0)
             pending = pending_map.get(key, 0.0)
-            result.append({
-                "id": quota.id,
-                "employee_id": quota.employee_id,
-                "year": quota.year,
-                "leave_type": quota.leave_type,
-                "leave_type_label": LEAVE_TYPE_LABELS.get(quota.leave_type, quota.leave_type),
-                "total_hours": quota.total_hours,
-                "used_hours": used,
-                "pending_hours": pending,
-                "remaining_hours": max(0.0, quota.total_hours - used - pending),
-                "note": quota.note,
-            })
+            result.append(
+                {
+                    "id": quota.id,
+                    "employee_id": quota.employee_id,
+                    "year": quota.year,
+                    "leave_type": quota.leave_type,
+                    "leave_type_label": LEAVE_TYPE_LABELS.get(
+                        quota.leave_type, quota.leave_type
+                    ),
+                    "total_hours": quota.total_hours,
+                    "used_hours": used,
+                    "pending_hours": pending,
+                    "remaining_hours": max(0.0, quota.total_hours - used - pending),
+                    "note": quota.note,
+                }
+            )
         return result
     finally:
         session.close()
@@ -458,18 +593,24 @@ def init_leave_quotas(
         year = date.today().year
     current_year = date.today().year
     if year < current_year:
-        raise HTTPException(status_code=400, detail="禁止重新初始化過去年份的配額，以維護稽核紀錄完整性")
+        raise HTTPException(
+            status_code=400, detail="禁止重新初始化過去年份的配額，以維護稽核紀錄完整性"
+        )
     session = get_session()
     try:
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
         if not emp:
             raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
 
-        existing_quotas = session.query(LeaveQuota).filter(
-            LeaveQuota.employee_id == employee_id,
-            LeaveQuota.year == year,
-            LeaveQuota.leave_type.in_(QUOTA_LEAVE_TYPES),
-        ).all()
+        existing_quotas = (
+            session.query(LeaveQuota)
+            .filter(
+                LeaveQuota.employee_id == employee_id,
+                LeaveQuota.year == year,
+                LeaveQuota.leave_type.in_(QUOTA_LEAVE_TYPES),
+            )
+            .all()
+        )
         quota_map = {q.leave_type: q for q in existing_quotas}
 
         upserted = []
@@ -478,10 +619,14 @@ def init_leave_quotas(
                 hours = _calc_annual_leave_hours(emp.hire_date, year)
                 if emp.hire_date:
                     ref = date(year, 12, 31)
-                    months = (ref.year - emp.hire_date.year) * 12 + (ref.month - emp.hire_date.month)
+                    months = (ref.year - emp.hire_date.year) * 12 + (
+                        ref.month - emp.hire_date.month
+                    )
                     if ref.day < emp.hire_date.day:
                         months -= 1
-                    note = f"年資 {months // 12} 年 {months % 12} 個月（依勞基法第38條）"
+                    note = (
+                        f"年資 {months // 12} 年 {months % 12} 個月（依勞基法第38條）"
+                    )
                 else:
                     note = "到職日未設定，配額為 0"
             else:
@@ -504,34 +649,54 @@ def init_leave_quotas(
             upserted.append(lt)
 
         session.commit()
-        logger.info("初始化員工 %s（ID:%d）%d 年度假別配額：%s", emp.name, employee_id, year, upserted)
+        logger.info(
+            "初始化員工 %s（ID:%d）%d 年度假別配額：%s",
+            emp.name,
+            employee_id,
+            year,
+            upserted,
+        )
 
         # 重新查詢後回傳（批次查詢 used/pending，避免 N+1）
-        quotas = session.query(LeaveQuota).filter(
-            LeaveQuota.employee_id == employee_id,
-            LeaveQuota.year == year,
-        ).all()
+        quotas = (
+            session.query(LeaveQuota)
+            .filter(
+                LeaveQuota.employee_id == employee_id,
+                LeaveQuota.year == year,
+            )
+            .all()
+        )
         year_start = date(year, 1, 1)
         year_end = date(year + 1, 1, 1)
-        used_rows = session.query(
-            LeaveRecord.leave_type,
-            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
-        ).filter(
-            LeaveRecord.employee_id == employee_id,
-            LeaveRecord.is_approved == True,
-            LeaveRecord.start_date >= year_start,
-            LeaveRecord.start_date < year_end,
-        ).group_by(LeaveRecord.leave_type).all()
+        used_rows = (
+            session.query(
+                LeaveRecord.leave_type,
+                func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+            )
+            .filter(
+                LeaveRecord.employee_id == employee_id,
+                LeaveRecord.is_approved == True,
+                LeaveRecord.start_date >= year_start,
+                LeaveRecord.start_date < year_end,
+            )
+            .group_by(LeaveRecord.leave_type)
+            .all()
+        )
         used_map = {r.leave_type: float(r.hours) for r in used_rows}
-        pending_rows = session.query(
-            LeaveRecord.leave_type,
-            func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
-        ).filter(
-            LeaveRecord.employee_id == employee_id,
-            LeaveRecord.is_approved.is_(None),
-            LeaveRecord.start_date >= year_start,
-            LeaveRecord.start_date < year_end,
-        ).group_by(LeaveRecord.leave_type).all()
+        pending_rows = (
+            session.query(
+                LeaveRecord.leave_type,
+                func.coalesce(func.sum(LeaveRecord.leave_hours), 0).label("hours"),
+            )
+            .filter(
+                LeaveRecord.employee_id == employee_id,
+                LeaveRecord.is_approved.is_(None),
+                LeaveRecord.start_date >= year_start,
+                LeaveRecord.start_date < year_end,
+            )
+            .group_by(LeaveRecord.leave_type)
+            .all()
+        )
         pending_map = {r.leave_type: float(r.hours) for r in pending_rows}
         return [
             {
@@ -543,7 +708,12 @@ def init_leave_quotas(
                 "total_hours": q.total_hours,
                 "used_hours": used_map.get(q.leave_type, 0.0),
                 "pending_hours": pending_map.get(q.leave_type, 0.0),
-                "remaining_hours": max(0.0, q.total_hours - used_map.get(q.leave_type, 0.0) - pending_map.get(q.leave_type, 0.0)),
+                "remaining_hours": max(
+                    0.0,
+                    q.total_hours
+                    - used_map.get(q.leave_type, 0.0)
+                    - pending_map.get(q.leave_type, 0.0),
+                ),
                 "note": q.note,
             }
             for q in quotas

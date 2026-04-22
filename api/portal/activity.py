@@ -338,18 +338,19 @@ def portal_batch_update_attendance(
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
 
-        # 驗證所有 registration_id 都屬於自班（classroom_id FK 比對）
+        # 驗證所有 registration_id 都屬於自班（classroom_id FK 比對），
+        # 並排除已軟刪/被拒絕的報名，避免對離園或 rejected 學生寫入 attendance。
         if body.records:
             req_reg_ids = [item.registration_id for item in body.records]
+            if not classroom_ids:
+                raise HTTPException(status_code=403, detail="包含無權操作的學生記錄")
             allowed_regs = (
                 session.query(ActivityRegistration.id)
                 .filter(
                     ActivityRegistration.id.in_(req_reg_ids),
-                    (
-                        ActivityRegistration.classroom_id.in_(classroom_ids)
-                        if classroom_ids
-                        else False
-                    ),
+                    ActivityRegistration.classroom_id.in_(classroom_ids),
+                    ActivityRegistration.is_active.is_(True),
+                    ActivityRegistration.match_status != "rejected",
                 )
                 .all()
             )

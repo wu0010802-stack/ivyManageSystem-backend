@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
-from models.database import Base, ClassGrade, Classroom, Employee, Student
+from models.database import Base, ClassGrade, Classroom, Employee, LeaveRecord, Student
 from services.salary_engine import SalaryEngine
 
 
@@ -335,3 +335,100 @@ class TestFestivalBonusBreakdownRegressions:
         # 加權平均：base=1200, 甲班 enroll=20(score 1200), 乙班 enroll=16(score 960)
         # 加權 = (1200*20 + 960*16) / 36 = 39360 / 36 ≈ 1093
         assert result["festivalBonus"] == round((1200 * 20 + 960 * 16) / (20 + 16))
+
+
+class TestDailySalaryBaseConsistency:
+    """`emp.base_salary` 與 `_resolve_standard_base(emp)` 不同時，
+    請假扣款 / 曠職扣款 / 遲到早退扣款必須一致使用同一個底薪基準。
+
+    Bug context (2026-04-22):
+    `_resolve_standard_base` 於 2026-04-16 加入後，`_load_emp_dict` 將
+    `emp_dict["base_salary"]` 設為標準化底薪。但 `process_salary_calculation`
+    於 1807 行（leave_deduction）與 `_detect_absences` 於 1762 行
+    （absence_deduction）仍直接讀 `emp.base_salary`，導致同一筆薪資
+    內的扣款基準不一致。
+    """
+
+    def test_leave_deduction_uses_standardized_base_when_raw_diverges(
+        self, salary_engine_db
+    ):
+        """raw=42000、standard(head_teacher_a)=39240 時，
+        請假扣款應以 standard 39240/30=1308 計算，而非 raw 42000/30≈1400。"""
+        engine, session_factory = salary_engine_db
+        engine._position_salary_standards = {"head_teacher_a": 39240}
+
+        with session_factory() as session:
+            teacher = Employee(
+                employee_id="DIV_LEAVE",
+                name="非標班導",
+                title="幼兒園教師",
+                position="班導",
+                employee_type="regular",
+                base_salary=42000,
+                insurance_salary_level=42000,
+                hire_date=date(2026, 4, 1),
+                is_active=True,
+            )
+            session.add(teacher)
+            session.flush()
+            session.add(
+                LeaveRecord(
+                    employee_id=teacher.id,
+                    leave_type="personal",
+                    leave_hours=8,
+                    start_date=date(2026, 3, 5),
+                    end_date=date(2026, 3, 5),
+                    is_approved=True,
+                    deduction_ratio=1.0,
+                )
+            )
+            session.commit()
+            tid = teacher.id
+
+        salary = engine.process_salary_calculation(tid, 2026, 3)
+
+        assert salary.leave_deduction == 1308
+
+    def test_absence_deduction_uses_standardized_base_when_raw_diverges(
+        self, salary_engine_db
+    ):
+        """`_detect_absences` 內部的曠職日薪基準同樣應採標準化底薪。
+        2026-03-31 (週二) 入職，無打卡無請假 → 1 天曠職。
+        應扣 39240/30=1308，而非 42000/30≈1400。
+        直接呼叫 `_detect_absences` 以避開 `process_salary_calculation`
+        的 net_salary < 0 防護（折算後底薪僅 1 天 < 曠職扣款 + 保費）。
+        """
+        engine, session_factory = salary_engine_db
+        engine._position_salary_standards = {"head_teacher_a": 39240}
+
+        with session_factory() as session:
+            teacher = Employee(
+                employee_id="DIV_ABSENCE",
+                name="非標曠職",
+                title="幼兒園教師",
+                position="班導",
+                employee_type="regular",
+                base_salary=42000,
+                insurance_salary_level=42000,
+                hire_date=date(2026, 3, 31),
+                is_active=True,
+            )
+            session.add(teacher)
+            session.commit()
+            tid = teacher.id
+
+        with session_factory() as session:
+            emp = session.query(Employee).get(tid)
+            absent_count, absence_amount = engine._detect_absences(
+                session,
+                emp,
+                attendances=[],
+                approved_leaves=[],
+                start_date=date(2026, 3, 1),
+                end_date=date(2026, 3, 31),
+                year=2026,
+                month=3,
+            )
+
+        assert absent_count == 1
+        assert round(absence_amount) == 1308

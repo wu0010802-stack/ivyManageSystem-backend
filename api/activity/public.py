@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, Response as PlainResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from utils.errors import raise_safe_500
 from utils.storage import get_storage_path
@@ -41,6 +42,7 @@ from models.database import (
     ActivityRegistration,
     RegistrationCourse,
     RegistrationSupply,
+    ActivityPaymentRecord,
     ParentInquiry,
     ActivityRegistrationSettings,
 )
@@ -53,6 +55,7 @@ from ._shared import (
     PublicRegistrationPayload,
     PublicUpdatePayload,
     PublicInquiryPayload,
+    SYSTEM_RECONCILE_METHOD,
     _not_found,
     _item_not_found_in_list,
     _invalid_class,
@@ -62,9 +65,13 @@ from ._shared import (
     _check_registration_open,
     _attach_courses,
     _attach_supplies,
+    _calc_total_amount,
+    _compute_is_paid,
+    _is_daily_closed,
     _match_student_with_parent_phone,
     _normalize_phone,
     TAIPEI_TZ,
+    today_taipei,
 )
 from utils.academic import resolve_academic_term_filters
 
@@ -309,17 +316,23 @@ async def public_query_registration(
     session = get_session()
     try:
         normalized_phone = _normalize_phone(parent_phone)
-        reg = (
+        # 先抓 (name, birthday) 候選（同姓同生日通常極少），再統一在 Python 端
+        # 比對 normalize 後的 phone；無論是否匹配都走相同程式路徑，壓低時序差。
+        candidates = (
             session.query(ActivityRegistration)
             .filter(
                 ActivityRegistration.student_name == name,
                 ActivityRegistration.birthday == birthday,
                 ActivityRegistration.is_active.is_(True),
             )
-            .first()
+            .all()
         )
-        # 通用錯誤：找不到 / phone 不符 → 同一個錯誤，避免透露哪一欄錯
-        if not reg or _normalize_phone(reg.parent_phone) != normalized_phone:
+        reg = None
+        for candidate in candidates:
+            if _normalize_phone(candidate.parent_phone) == normalized_phone:
+                reg = candidate
+                break
+        if reg is None:
             raise HTTPException(
                 status_code=404,
                 detail="查無對應報名，請確認三項資料是否與報名時一致",
@@ -479,7 +492,10 @@ async def public_register(
         if matched_student_id and matched_classroom_id:
             real_classroom = (
                 session.query(Classroom)
-                .filter(Classroom.id == matched_classroom_id)
+                .filter(
+                    Classroom.id == matched_classroom_id,
+                    Classroom.is_active.is_(True),
+                )
                 .first()
             )
             if real_classroom:
@@ -576,7 +592,19 @@ async def public_register(
         )
         _attach_supplies(session, reg.id, body.supplies, supplies_by_name)
 
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError as ie:
+            # partial unique index `uq_activity_regs_student_term_active` 攔到並發雙寫：
+            # 應用層 `existing` SELECT 與 INSERT 之間若有第二個請求穿插，DB 層才能擋下。
+            session.rollback()
+            msg_lower = str(getattr(ie, "orig", ie)).lower()
+            if "uq_activity_regs_student_term_active" in msg_lower:
+                raise HTTPException(
+                    status_code=400,
+                    detail="此學生本學期已有有效報名，請使用修改功能",
+                )
+            raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         logger.info(
             "新報名提交：id=%s student=%s matched=%s",
@@ -614,7 +642,13 @@ async def public_update_registration(
     body: PublicUpdatePayload,
     _: None = Depends(_public_register_limiter),
 ):
-    """前台：依 id 更新報名資料（班級/課程/用品）"""
+    """前台：依 id 更新報名資料（班級/課程/用品）
+
+    帳務對帳守則：
+    - 若更新後產生超繳（paid_amount > new_total）→ 自動寫「系統補齊」退費紀錄並扣 paid_amount
+    - 若更新使 is_paid 狀態變更（例如從已繳清 → 欠費）→ 同步更新 is_paid 旗標
+    - 若需要寫退費但今日已完成日結簽核 → 拒絕更新，請家長聯繫管理員
+    """
     session = get_session()
     try:
         _check_registration_open(session)
@@ -625,6 +659,7 @@ async def public_update_registration(
                 ActivityRegistration.id == body.id,
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         # 通用錯誤：查不到 / 三欄不符一律回相同訊息
@@ -644,10 +679,13 @@ async def public_update_registration(
         if reg.classroom_id:
             real_classroom = (
                 session.query(Classroom)
-                .filter(Classroom.id == reg.classroom_id)
+                .filter(
+                    Classroom.id == reg.classroom_id,
+                    Classroom.is_active.is_(True),
+                )
                 .first()
             )
-            # 若班級仍存在，覆蓋為真實班級；否則 fallback 到家長輸入
+            # 若班級仍存在且啟用，覆蓋為真實班級；否則 fallback 到家長輸入
             classroom_name_to_store = (
                 real_classroom.name if real_classroom else body.class_
             )
@@ -728,6 +766,24 @@ async def public_update_registration(
         # body.new_parent_phone 若填且不同於舊號，表示家長要求變更聯絡電話。
         effective_phone = body.parent_phone
         if body.new_parent_phone and body.new_parent_phone != body.parent_phone:
+            # 擋住改成「其他家長」正在使用的手機號：否則會讓三欄查詢 /public/query 候選
+            # 變多，甚至讓不同家長的報名互相可見（name 同姓時）。
+            conflict = (
+                session.query(ActivityRegistration.id)
+                .filter(
+                    ActivityRegistration.id != reg.id,
+                    ActivityRegistration.parent_phone == body.new_parent_phone,
+                    ActivityRegistration.is_active.is_(True),
+                    ActivityRegistration.school_year == reg.school_year,
+                    ActivityRegistration.semester == reg.semester,
+                )
+                .first()
+            )
+            if conflict is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="此手機號碼已被其他報名使用，請聯繫校方協助處理",
+                )
             reg.parent_phone = body.new_parent_phone
             effective_phone = body.new_parent_phone
 
@@ -737,7 +793,14 @@ async def public_update_registration(
                 session, reg.student_name, reg.birthday, effective_phone
             )
             if new_sid and new_cid:
-                real = session.query(Classroom).filter(Classroom.id == new_cid).first()
+                real = (
+                    session.query(Classroom)
+                    .filter(
+                        Classroom.id == new_cid,
+                        Classroom.is_active.is_(True),
+                    )
+                    .first()
+                )
                 if real:
                     reg.student_id = new_sid
                     reg.classroom_id = new_cid
@@ -790,10 +853,67 @@ async def public_update_registration(
             activity_service._auto_promote_first_waitlist(session, vacated_cid)
 
         reg.remark = body.remark
+
+        # ── 帳務對帳 ─────────────────────────────────────────────────────
+        # 之前家長自助更新只改課程/用品，完全不碰 paid_amount / is_paid，會讓已繳
+        # 家長在改課後產生幽靈金額與錯誤的 is_paid 顯示。此處重算：
+        #   1) 若 paid > new_total → 自動寫系統沖帳退費（並需通過今日日結守衛）
+        #   2) 同步 is_paid 旗標（total=0 時一律視為未結清，與後台共用 _compute_is_paid）
+        paid_amount = reg.paid_amount or 0
+        new_total = _calc_total_amount(session, reg.id)
+        refunded_amount = 0
+        if paid_amount > new_total:
+            refund_needed = paid_amount - new_total
+            today = today_taipei()
+            # 若今日已簽核則拒絕，避免偷偷動到已凍結 snapshot。家長看到訊息後需請管理員處理
+            if _is_daily_closed(session, today):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "此次更新會產生退費，但今日帳務已結算簽核，無法即時處理。"
+                        "請改聯繫管理員協助更新資料。"
+                    ),
+                )
+            session.add(
+                ActivityPaymentRecord(
+                    registration_id=reg.id,
+                    type="refund",
+                    amount=refund_needed,
+                    payment_date=today,
+                    payment_method=SYSTEM_RECONCILE_METHOD,
+                    notes="（家長前台更新課程/用品後自動沖帳）",
+                    operator="system",
+                )
+            )
+            reg.paid_amount = max(0, paid_amount - refund_needed)
+            refunded_amount = refund_needed
+            logger.warning(
+                "家長前台更新產生超繳自動沖帳：reg_id=%s student=%s refunded=NT$%d，"
+                "請管理員跟進實體退款",
+                reg.id,
+                reg.student_name,
+                refund_needed,
+            )
+            activity_service.log_change(
+                session,
+                reg.id,
+                reg.student_name,
+                "家長更新自動沖帳",
+                f"因課程/用品調整產生超繳 NT${refund_needed}，已寫系統退費紀錄",
+                "system",
+            )
+        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, new_total)
+
         session.commit()
         _invalidate_activity_dashboard_caches(session)
         logger.info("前台更新報名：id=%s student=%s", reg.id, reg.student_name)
-        return {"message": "資料更新成功！"}
+        return {
+            "message": "資料更新成功！",
+            "total_amount": new_total,
+            "paid_amount": reg.paid_amount or 0,
+            "refunded_amount": refunded_amount,
+            "payment_status": _derive_payment_status(reg.paid_amount or 0, new_total),
+        }
     except HTTPException:
         session.rollback()
         raise

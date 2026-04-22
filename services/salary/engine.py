@@ -27,12 +27,16 @@ from .constants import (
     DEFAULT_LATE_PER_MINUTE,
     DEFAULT_EARLY_PER_MINUTE,
     DEFAULT_MISSING_PUNCH,
-    DEFAULT_MEETING_PAY,
-    DEFAULT_MEETING_PAY_6PM,
     DEFAULT_MEETING_ABSENCE_PENALTY,
+    DEFAULT_MEETING_HOURS,
 )
 from .breakdown import SalaryBreakdown
-from .hourly import _compute_hourly_daily_hours, _calc_daily_hourly_pay
+from .hourly import (
+    _compute_hourly_daily_hours,
+    _calc_daily_hourly_pay,
+    _calc_daily_hourly_pay_with_cap,
+)
+from utils.constants import MAX_MONTHLY_OVERTIME_HOURS
 from .proration import _prorate_for_period, _build_expected_workdays
 from .utils import (
     get_bonus_distribution_month,
@@ -50,6 +54,70 @@ def _get_db_session():
     from models.database import get_session
 
     return get_session()
+
+
+def _get_ytd_sick_hours_before(
+    session, employee_id: int, year: int, month: int
+) -> float:
+    """查詢 year 年 1/1 起至 year/month/1 前一日為止，指定員工已核准病假時數。
+
+    用於勞基法第 43 條 30 日（240h）半薪上限判斷。跨月假單只要 end_date < 本月 1 日
+    就全數納入；若跨入本月，該筆會由當月主查詢一併取到，不重複計算。
+    """
+    from models.database import LeaveRecord
+
+    year_start = date(year, 1, 1)
+    month_start = date(year, month, 1)
+    if month_start <= year_start:
+        return 0.0
+
+    # 以 end_date 作為落年度判斷：跨年假單（如 2025-12-28 → 2026-01-03）
+    # 只要 end_date 落在本年度即納入，避免跨年請假時漏計上限。
+    leaves = (
+        session.query(LeaveRecord)
+        .filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.is_approved == True,
+            LeaveRecord.leave_type == "sick",
+            LeaveRecord.end_date >= year_start,
+            LeaveRecord.end_date < month_start,
+        )
+        .all()
+    )
+    return float(sum(lv.leave_hours or 0 for lv in leaves))
+
+
+def _get_ytd_sick_hours_bulk(
+    session, employee_ids: list, year: int, month: int
+) -> dict:
+    """批次版本：一次查詢多員工的年度累計病假時數。回傳 {employee_id: hours}。"""
+    from models.database import LeaveRecord
+    from sqlalchemy import func
+
+    year_start = date(year, 1, 1)
+    month_start = date(year, month, 1)
+    result = {emp_id: 0.0 for emp_id in employee_ids}
+    if month_start <= year_start or not employee_ids:
+        return result
+
+    rows = (
+        session.query(
+            LeaveRecord.employee_id,
+            func.coalesce(func.sum(LeaveRecord.leave_hours), 0.0),
+        )
+        .filter(
+            LeaveRecord.employee_id.in_(employee_ids),
+            LeaveRecord.is_approved == True,
+            LeaveRecord.leave_type == "sick",
+            LeaveRecord.end_date >= year_start,
+            LeaveRecord.end_date < month_start,
+        )
+        .group_by(LeaveRecord.employee_id)
+        .all()
+    )
+    for emp_id, total in rows:
+        result[emp_id] = float(total or 0)
+    return result
 
 
 def _fill_salary_record(salary_record, breakdown, engine):
@@ -101,9 +169,8 @@ class SalaryEngine:
     DEFAULT_LATE_PER_MINUTE = DEFAULT_LATE_PER_MINUTE
     DEFAULT_EARLY_PER_MINUTE = DEFAULT_EARLY_PER_MINUTE
     DEFAULT_MISSING_PUNCH = DEFAULT_MISSING_PUNCH
-    DEFAULT_MEETING_PAY = DEFAULT_MEETING_PAY
-    DEFAULT_MEETING_PAY_6PM = DEFAULT_MEETING_PAY_6PM
     DEFAULT_MEETING_ABSENCE_PENALTY = DEFAULT_MEETING_ABSENCE_PENALTY
+    DEFAULT_MEETING_HOURS = DEFAULT_MEETING_HOURS
 
     # 節慶獎金職位等級對應
     POSITION_GRADE_MAP = POSITION_GRADE_MAP
@@ -167,9 +234,8 @@ class SalaryEngine:
         # 職位標準底薪（key: 'driver'/'head_teacher_b'/… → float）
         self._position_salary_standards: dict = {}
         # 園務會議設定
-        self._meeting_pay = DEFAULT_MEETING_PAY
-        self._meeting_pay_6pm = DEFAULT_MEETING_PAY_6PM
         self._meeting_absence_penalty = DEFAULT_MEETING_ABSENCE_PENALTY
+        self._meeting_hours = DEFAULT_MEETING_HOURS
         # 考勤政策設定
         self._attendance_policy = {
             "late_per_minute": 1,
@@ -967,11 +1033,18 @@ class SalaryEngine:
     ) -> None:
         """計算保險、考勤扣款、請假扣款、園務會議費用，彙總 total_deduction。"""
         # 勞健保：時薪制與正職皆計算（依勞基法時薪工亦須投保）
-        # 投保薪資來源優先序：employee['insurance_salary'] → contracted_base
-        # 兩者皆為 raw 值，由本函式統一以 get_bracket 正規化至官方級距
+        # 投保薪資來源：insurance_salary_level → base_salary（月薪制）→ hourly_rate × 176（時薪制）
+        # 時薪制 fallback 防止 insurance=0 時 silent skip 保費計算（違反勞保條例）
+        from .insurance_salary import resolve_insurance_salary_raw
+
         contracted_base = employee.get("base_salary", 0) or 0
         pension_rate = employee.get("pension_self_rate", 0.0)
-        _ins_raw = employee.get("insurance_salary") or contracted_base or 0
+        _ins_raw = resolve_insurance_salary_raw(
+            employee_type=employee.get("employee_type") or "regular",
+            base_salary=contracted_base,
+            insurance_salary_level=employee.get("insurance_salary"),
+            hourly_rate=employee.get("hourly_rate", 0),
+        )
         if _ins_raw > 0:
             _ins_salary = self.insurance_service.get_bracket(_ins_raw)["amount"]
             insurance = self.insurance_service.calculate(
@@ -1015,14 +1088,10 @@ class SalaryEngine:
         if meeting_context:
             attended = meeting_context.get("attended", 0)
             absent = meeting_context.get("absent", 0)
-            work_end = meeting_context.get("work_end_time", "17:00")
 
-            if work_end == "18:00":
-                per_meeting_pay = self._meeting_pay_6pm
-            else:
-                per_meeting_pay = self._meeting_pay
-
-            breakdown.meeting_overtime_pay = attended * per_meeting_pay
+            breakdown.meeting_overtime_pay = meeting_context.get(
+                "overtime_pay_total", 0
+            )
             breakdown.meeting_attended = attended
             breakdown.meeting_absent = absent
 
@@ -1519,15 +1588,30 @@ class SalaryEngine:
             ).time()
             total_hours = 0.0
             total_hourly_pay = 0.0
-            for a in attendances:
+            monthly_ot_used = 0.0
+            # 按 punch_in 時間排序，確保先發生的日期先消耗加班 quota
+            sorted_attendances = sorted(
+                attendances,
+                key=lambda a: a.punch_in_time or datetime.max,
+            )
+            for a in sorted_attendances:
                 if not a.punch_in_time:
                     continue
                 day_hours = _compute_hourly_daily_hours(
                     a.punch_in_time, a.punch_out_time, _work_end_t
                 )
                 total_hours += day_hours
-                total_hourly_pay += _calc_daily_hourly_pay(
-                    day_hours, emp.hourly_rate or 0
+                remaining = max(0.0, MAX_MONTHLY_OVERTIME_HOURS - monthly_ot_used)
+                day_pay, ot_used = _calc_daily_hourly_pay_with_cap(
+                    day_hours, emp.hourly_rate or 0, remaining_ot_quota=remaining
+                )
+                monthly_ot_used += ot_used
+                total_hourly_pay += day_pay
+            if monthly_ot_used >= MAX_MONTHLY_OVERTIME_HOURS - 1e-9:
+                logger.warning(
+                    "時薪員工 emp_id=%d 當月加班時數觸及 %.0fh 上限，後續加班以 1.0 倍率計薪",
+                    emp.id,
+                    MAX_MONTHLY_OVERTIME_HOURS,
                 )
             emp_dict["work_hours"] = round(total_hours, 2)
             emp_dict["hourly_calculated_pay"] = round(total_hourly_pay, 2)
@@ -1594,7 +1678,10 @@ class SalaryEngine:
             )
             .all()
         )
-        leave_deduction_total = _sum_leave_deduction(approved_leaves, daily_salary)
+        ytd_sick_before = _get_ytd_sick_hours_before(session, emp.id, year, month)
+        leave_deduction_total = _sum_leave_deduction(
+            approved_leaves, daily_salary, ytd_sick_hours_before_month=ytd_sick_before
+        )
         personal_sick_leave_hours = sum(
             lv.leave_hours or 0
             for lv in approved_leaves
@@ -1627,6 +1714,9 @@ class SalaryEngine:
 
         meeting_attended = sum(1 for m in meeting_records if m.attended)
         meeting_absent_current = sum(1 for m in meeting_records if not m.attended)
+        meeting_overtime_pay_total = sum(
+            m.overtime_pay or 0 for m in meeting_records if m.attended
+        )
 
         absent_period = meeting_absent_current
         period_start = get_meeting_deduction_period_start(year, month)
@@ -1648,7 +1738,7 @@ class SalaryEngine:
                 "attended": meeting_attended,
                 "absent": meeting_absent_current,
                 "absent_period": absent_period,
-                "work_end_time": emp.work_end_time or "17:00",
+                "overtime_pay_total": meeting_overtime_pay_total,
             }
 
         return {
@@ -1759,7 +1849,7 @@ class SalaryEngine:
             resign_date_raw=getattr(emp, "resign_date", None),
         )
 
-        daily_salary_full = calc_daily_salary(emp.base_salary)
+        daily_salary_full = calc_daily_salary(self._resolve_standard_base(emp))
         return self._compute_absence(
             emp.id,
             attendances,
@@ -1804,7 +1894,7 @@ class SalaryEngine:
             )
 
             # 6. 查詢請假、加班、園務會議記錄
-            daily_salary = calc_daily_salary(emp.base_salary)
+            daily_salary = calc_daily_salary(emp_dict["base_salary"])
             period_records = self._load_period_records(
                 session, emp, start_date, end_date, year, month, daily_salary
             )
@@ -2008,6 +2098,11 @@ class SalaryEngine:
             for lv in all_leaves:
                 leaves_by_emp[lv.employee_id].append(lv)
 
+            # 6b. 年度累計病假時數（用於 30 日半薪上限判斷）
+            ytd_sick_by_emp = _get_ytd_sick_hours_bulk(
+                session, employee_ids, year, month
+            )
+
             # 7. 加班
             all_ot = (
                 session.query(DBOvertimeRecord)
@@ -2081,18 +2176,6 @@ class SalaryEngine:
                 for ds in all_shifts:
                     shifts_by_emp[ds.employee_id][ds.date] = ds.shift_type_id
 
-            # 12. 現有薪資記錄（upsert check）
-            existing_records = (
-                session.query(SalaryRecord)
-                .filter(
-                    SalaryRecord.employee_id.in_(employee_ids),
-                    SalaryRecord.salary_year == year,
-                    SalaryRecord.salary_month == month,
-                )
-                .all()
-            )
-            salary_record_by_emp = {r.employee_id: r for r in existing_records}
-
             # ── 批次預載結束，開始計算 ──────────────────────────────────────────
 
             results = []
@@ -2107,6 +2190,48 @@ class SalaryEngine:
             for locked_emp_id in sorted(employee_ids):
                 acquire_salary_lock(
                     session, employee_id=locked_emp_id, year=year, month=month
+                )
+
+            # 12. 現有薪資記錄（upsert check）
+            #
+            # 重要：此查詢必須在 advisory lock 全部取得之後才進行，否則會有 TOCTOU：
+            # 若在取鎖前載入 salary_record_by_emp，另一個 worker 可能在取鎖前
+            # finalize 某筆記錄；待本 worker 取得鎖後還使用陳舊快取，
+            # 就會以 is_finalized=False 覆蓋實際已封存的記錄。
+            session.expire_all()
+            existing_records = (
+                session.query(SalaryRecord)
+                .filter(
+                    SalaryRecord.employee_id.in_(employee_ids),
+                    SalaryRecord.salary_year == year,
+                    SalaryRecord.salary_month == month,
+                )
+                .all()
+            )
+            salary_record_by_emp = {r.employee_id: r for r in existing_records}
+            # 取鎖後再做一次整月封存檢查：若有人在 API 前置檢查後搶先封存單筆，
+            # 這裡能在開始寫入前攔下來，避免覆蓋封存資料。
+            finalized_after_lock = [
+                r for r in existing_records if getattr(r, "is_finalized", False)
+            ]
+            if finalized_after_lock:
+                from fastapi import HTTPException as _HTTPException
+
+                finalized_names = [
+                    emp_map[r.employee_id].name
+                    for r in finalized_after_lock
+                    if r.employee_id in emp_map
+                ]
+                # 使用 HTTPException(409) 讓 API 層回傳 conflict，而非被
+                # raise_safe_500 吞為 500。前置 API 檢查 + 此二次檢查共同
+                # 覆蓋 TOCTOU：介於兩次檢查的封存會在此攔下。
+                raise _HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{year}/{month} 有 {len(finalized_after_lock)} 筆薪資在取得鎖後被封存"
+                        f"（{'、'.join(finalized_names)}），無法繼續批次計算；"
+                        "請重新整理後再試。"
+                    ),
                 )
 
             for emp_id in employee_ids:
@@ -2156,15 +2281,33 @@ class SalaryEngine:
                         ).time()
                         total_hours = 0.0
                         total_hourly_pay = 0.0
-                        for a in attendances:
+                        monthly_ot_used = 0.0
+                        sorted_attendances = sorted(
+                            attendances,
+                            key=lambda a: a.punch_in_time or datetime.max,
+                        )
+                        for a in sorted_attendances:
                             if not a.punch_in_time:
                                 continue
                             day_hours = _compute_hourly_daily_hours(
                                 a.punch_in_time, a.punch_out_time, _work_end_t
                             )
                             total_hours += day_hours
-                            total_hourly_pay += _calc_daily_hourly_pay(
-                                day_hours, emp.hourly_rate or 0
+                            remaining = max(
+                                0.0, MAX_MONTHLY_OVERTIME_HOURS - monthly_ot_used
+                            )
+                            day_pay, ot_used = _calc_daily_hourly_pay_with_cap(
+                                day_hours,
+                                emp.hourly_rate or 0,
+                                remaining_ot_quota=remaining,
+                            )
+                            monthly_ot_used += ot_used
+                            total_hourly_pay += day_pay
+                        if monthly_ot_used >= MAX_MONTHLY_OVERTIME_HOURS - 1e-9:
+                            logger.warning(
+                                "時薪員工 emp_id=%d 當月加班時數觸及 %.0fh 上限，後續加班以 1.0 倍率計薪",
+                                emp.id,
+                                MAX_MONTHLY_OVERTIME_HOURS,
                             )
                         emp_dict["work_hours"] = round(total_hours, 2)
                         emp_dict["hourly_calculated_pay"] = round(total_hourly_pay, 2)
@@ -2197,9 +2340,11 @@ class SalaryEngine:
 
                     # ── 請假、加班、會議（使用預載）
                     approved_leaves = leaves_by_emp[emp.id]
-                    daily_salary = calc_daily_salary(emp.base_salary)
+                    daily_salary = calc_daily_salary(emp_dict["base_salary"])
                     leave_deduction_total = _sum_leave_deduction(
-                        approved_leaves, daily_salary
+                        approved_leaves,
+                        daily_salary,
+                        ytd_sick_hours_before_month=ytd_sick_by_emp.get(emp.id, 0.0),
                     )
                     personal_sick_leave_hours = sum(
                         lv.leave_hours or 0
@@ -2215,6 +2360,9 @@ class SalaryEngine:
                     meeting_absent_current = sum(
                         1 for m in meeting_records if not m.attended
                     )
+                    meeting_overtime_pay_total = sum(
+                        m.overtime_pay or 0 for m in meeting_records if m.attended
+                    )
                     absent_period = meeting_absent_current + prior_absent_by_emp[emp.id]
                     meeting_context = None
                     if meeting_records or absent_period > 0:
@@ -2222,7 +2370,7 @@ class SalaryEngine:
                             "attended": meeting_attended,
                             "absent": meeting_absent_current,
                             "absent_period": absent_period,
-                            "work_end_time": emp.work_end_time or "17:00",
+                            "overtime_pay_total": meeting_overtime_pay_total,
                         }
 
                     # ── 曠職偵測（使用預載 + 共用方法）

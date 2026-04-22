@@ -17,7 +17,11 @@ from models.database import (
     OvertimeRecord,
     Student,
 )
-from services.salary.constants import LEAVE_DEDUCTION_RULES, MONTHLY_BASE_DAYS
+from services.salary.constants import (
+    LEAVE_DEDUCTION_RULES,
+    MONTHLY_BASE_DAYS,
+    SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS,
+)
 from services.salary.proration import _build_expected_workdays, _prorate_for_period
 from services.salary.utils import (
     get_bonus_distribution_month,
@@ -82,11 +86,64 @@ def _calc_attendance_stats(attendances: list) -> dict:
     }
 
 
-def _calc_leave_deductions(approved_leaves: list, daily_salary: float) -> dict:
-    """請假扣款計算：逐筆計算扣款金額、統計事病假時數。"""
+def _calc_leave_deductions(
+    approved_leaves: list,
+    daily_salary: float,
+    ytd_sick_hours_before_month: float = 0.0,
+) -> dict:
+    """請假扣款計算：逐筆計算扣款金額、統計事病假時數。
+
+    病假套用勞基法第 43 條 30 日（240h）年度半薪上限；超過部分顯示為 ratio=1.0。
+    """
     leave_deduction_total = 0
     leave_breakdown = []
-    for lv in approved_leaves:
+    sick_used = float(ytd_sick_hours_before_month or 0.0)
+
+    sick_leaves = sorted(
+        [lv for lv in approved_leaves if lv.leave_type == "sick"],
+        key=lambda lv: getattr(lv, "start_date", None) or date.min,
+    )
+    other_leaves = [lv for lv in approved_leaves if lv.leave_type != "sick"]
+    standard_sick_ratio = LEAVE_DEDUCTION_RULES.get("sick", 0.5)
+
+    for lv in sick_leaves:
+        hours = lv.leave_hours or 0
+        # 僅「明確偏離標準」才視為 HR 覆寫；核准流程會把 ratio 寫成標準值 0.5，
+        # 這種情況仍要套用 240h 年度上限。
+        is_genuine_override = (
+            lv.deduction_ratio is not None and lv.deduction_ratio != standard_sick_ratio
+        )
+        if is_genuine_override:
+            effective_ratio = lv.deduction_ratio
+            deduction = round((hours / 8) * daily_salary * effective_ratio)
+            display_ratio = effective_ratio
+        else:
+            half_paid = max(
+                0.0, min(SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS - sick_used, hours)
+            )
+            unpaid = hours - half_paid
+            deduction = round(
+                (half_paid / 8) * daily_salary * 0.5 + (unpaid / 8) * daily_salary * 1.0
+            )
+            # 顯示用綜合 ratio：若全在上限內則 0.5、全超過則 1.0、混合時取加權平均
+            if hours > 0:
+                display_ratio = (half_paid * 0.5 + unpaid * 1.0) / hours
+            else:
+                display_ratio = 0.5
+        sick_used += hours
+        leave_deduction_total += deduction
+        leave_breakdown.append(
+            {
+                "type": lv.leave_type,
+                "start": _to_iso(lv.start_date),
+                "end": _to_iso(lv.end_date),
+                "hours": hours,
+                "ratio": display_ratio,
+                "deduction": deduction,
+            }
+        )
+
+    for lv in other_leaves:
         ratio = (
             lv.deduction_ratio
             if lv.deduction_ratio is not None
@@ -186,16 +243,14 @@ def _build_meeting_stats(
             absent_period += sum(1 for m in prior_records if not m.attended)
     meeting_penalty = getattr(engine, "_meeting_absence_penalty", 100)
     meeting_absence_deduction = absent_period * meeting_penalty if is_bonus_month else 0
-    per_meeting_pay = (
-        getattr(engine, "_meeting_pay_6pm", 100)
-        if (emp.work_end_time or "17:00") == "18:00"
-        else getattr(engine, "_meeting_pay", 200)
+    meeting_overtime_pay_total = sum(
+        m.overtime_pay or 0 for m in meetings if m.attended
     )
     meeting_rows = [
         {
             "date": _to_iso(m.meeting_date),
             "attended": "出席" if m.attended else "缺席",
-            "pay": round(m.overtime_pay or (per_meeting_pay if m.attended else 0)),
+            "pay": round(m.overtime_pay or 0) if m.attended else 0,
             "remark": m.remark or "",
         }
         for m in meetings
@@ -206,7 +261,7 @@ def _build_meeting_stats(
         "absent_period": absent_period,
         "meeting_penalty": meeting_penalty,
         "meeting_absence_deduction": meeting_absence_deduction,
-        "per_meeting_pay": per_meeting_pay,
+        "meeting_overtime_pay_total": meeting_overtime_pay_total,
         "rows": meeting_rows,
     }
 
@@ -501,7 +556,27 @@ def build_salary_debug_snapshot(
         .all()
     )
     daily_salary = base_salary / MONTHLY_BASE_DAYS if base_salary else 0
-    lv_result = _calc_leave_deductions(approved_leaves, daily_salary)
+    # 年度累計病假時數（用於 30 日半薪上限判斷）
+    year_start = date(year, 1, 1)
+    prior_sick_hours = 0.0
+    if start_date > year_start:
+        prior_sick_hours = float(
+            sum(
+                lv.leave_hours or 0
+                for lv in session.query(LeaveRecord)
+                .filter(
+                    LeaveRecord.employee_id == emp.id,
+                    LeaveRecord.is_approved == True,
+                    LeaveRecord.leave_type == "sick",
+                    LeaveRecord.start_date >= year_start,
+                    LeaveRecord.end_date < start_date,
+                )
+                .all()
+            )
+        )
+    lv_result = _calc_leave_deductions(
+        approved_leaves, daily_salary, ytd_sick_hours_before_month=prior_sick_hours
+    )
 
     # ── 加班 ──
     approved_ot = (
@@ -608,7 +683,7 @@ def build_salary_debug_snapshot(
         prorated_base
         + supervisor_dividend
         + birthday_bonus
-        + mtg["attended"] * mtg["per_meeting_pay"]
+        + mtg["meeting_overtime_pay_total"]
         + ot_result["ot_pay"]
     )
     total_deduction = round(
@@ -669,7 +744,7 @@ def build_salary_debug_snapshot(
             "absent_this_month": mtg["absent_current"],
             "absent_period": mtg["absent_period"],
             "meeting_absence_deduction": mtg["meeting_absence_deduction"],
-            "overtime_pay_per_session": mtg["per_meeting_pay"],
+            "overtime_pay_total": mtg["meeting_overtime_pay_total"],
             "absence_penalty_per_session": mtg["meeting_penalty"],
             "rows": mtg["rows"],
         },
@@ -688,7 +763,7 @@ def build_salary_debug_snapshot(
             "prorated_base_salary": round(prorated_base),
             "proration_applied": round(prorated_base) != base_salary,
             "birthday_bonus": birthday_bonus,
-            "meeting_overtime_pay": mtg["attended"] * mtg["per_meeting_pay"],
+            "meeting_overtime_pay": mtg["meeting_overtime_pay_total"],
             "absent_count": absence["absent_count"],
             "absent_days": [_to_iso(day) for day in absence["absent_days"]],
             "absence_deduction": absence["absence_deduction_amount"],

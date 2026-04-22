@@ -7,15 +7,23 @@ Bug：_check_overtime_overlap 在 line 106 直接比較 start_time < record.end_
 修復：抽出 _to_time() 正規化 + _times_overlap() 純函式，
      統一轉為 datetime.time 後再比較。
 """
+
 import types
 import pytest
 from datetime import date, time, datetime
 
-from api.overtimes import _to_time, _times_overlap, _check_overtime_overlap, _revoke_comp_leave_grant
+from api.overtimes import (
+    _to_time,
+    _times_overlap,
+    _check_overtime_overlap,
+    _revoke_comp_leave_grant,
+    _assert_within_monthly_cap,
+    _validate_overtime_type_matches_calendar,
+)
 from fastapi import HTTPException
 
-
 # ── 測試用 helpers ────────────────────────────────────────────────────────────
+
 
 def _mock_session(records):
     """回傳指定記錄的假 session（支援 .query().filter().all()/.first() 鏈式呼叫）。
@@ -23,6 +31,7 @@ def _mock_session(records):
     注意：mock 的 filter() 為 no-op，不實際執行 SQL 條件。
     傳入 records 應代表「SQL 過濾後會回傳的結果集」。
     """
+
     class _Q:
         def filter(self, *a, **kw):
             return self
@@ -56,11 +65,11 @@ class TestToTime:
 
     def test_parses_hhmm_string(self):
         """'18:00' → time(18, 0)"""
-        assert _to_time('18:00') == time(18, 0)
+        assert _to_time("18:00") == time(18, 0)
 
     def test_parses_string_with_minutes(self):
         """'09:30' → time(9, 30)"""
-        assert _to_time('09:30') == time(9, 30)
+        assert _to_time("09:30") == time(9, 30)
 
     def test_accepts_time_object(self):
         """time(18, 0) → time(18, 0)（原樣回傳）"""
@@ -80,19 +89,19 @@ class TestTimesOverlap:
 
     def test_overlapping_ranges(self):
         """17:00-20:00 與 18:00-21:00 重疊"""
-        assert _times_overlap('17:00', '20:00', '18:00', '21:00') is True
+        assert _times_overlap("17:00", "20:00", "18:00", "21:00") is True
 
     def test_non_overlapping_before(self):
         """16:00-17:00 在 18:00-20:00 之前，不重疊"""
-        assert _times_overlap('16:00', '17:00', '18:00', '20:00') is False
+        assert _times_overlap("16:00", "17:00", "18:00", "20:00") is False
 
     def test_non_overlapping_after(self):
         """20:00-21:00 在 17:00-19:00 之後，不重疊"""
-        assert _times_overlap('20:00', '21:00', '17:00', '19:00') is False
+        assert _times_overlap("20:00", "21:00", "17:00", "19:00") is False
 
     def test_adjacent_endpoints_not_overlapping(self):
         """17:00-18:00 與 18:00-19:00 相接（開放端點），不算重疊"""
-        assert _times_overlap('17:00', '18:00', '18:00', '19:00') is False
+        assert _times_overlap("17:00", "18:00", "18:00", "19:00") is False
 
     def test_string_vs_time_object_no_type_error(self):
         """
@@ -100,13 +109,13 @@ class TestTimesOverlap:
         修復前：直接比較 '18:00' < time(20, 0) → TypeError
         修復後：_times_overlap 統一轉為 time 物件後比較，不拋例外。
         """
-        assert _times_overlap('18:00', '21:00', time(17, 0), time(20, 0)) is True
+        assert _times_overlap("18:00", "21:00", time(17, 0), time(20, 0)) is True
 
     def test_string_vs_datetime_object_no_type_error(self):
         """字串 '18:00' 與 datetime 物件混型輸入，不應 TypeError"""
         dt_start = datetime(2026, 1, 15, 17, 0)
         dt_end = datetime(2026, 1, 15, 20, 0)
-        assert _times_overlap('18:00', '21:00', dt_start, dt_end) is True
+        assert _times_overlap("18:00", "21:00", dt_start, dt_end) is True
 
     def test_datetime_vs_time_object_no_type_error(self):
         """datetime 物件與 datetime.time 物件混型輸入，不應 TypeError"""
@@ -116,7 +125,7 @@ class TestTimesOverlap:
 
     def test_contained_range(self):
         """17:00-21:00 完全包含 18:00-19:00，重疊"""
-        assert _times_overlap('17:00', '21:00', '18:00', '19:00') is True
+        assert _times_overlap("17:00", "21:00", "18:00", "19:00") is True
 
 
 # ──────────────────────────────────────────────
@@ -128,7 +137,9 @@ class TestCheckOvertimeOverlap:
         """無任何既有記錄 → 不重疊，回傳 None"""
         session = _mock_session([])
         result = _check_overtime_overlap(
-            session, 1, date(2026, 1, 15),
+            session,
+            1,
+            date(2026, 1, 15),
             datetime(2026, 1, 15, 17, 0),
             datetime(2026, 1, 15, 20, 0),
         )
@@ -142,7 +153,9 @@ class TestCheckOvertimeOverlap:
         )
         session = _mock_session([existing])
         result = _check_overtime_overlap(
-            session, 1, date(2026, 1, 15),
+            session,
+            1,
+            date(2026, 1, 15),
             datetime(2026, 1, 15, 17, 0),
             datetime(2026, 1, 15, 20, 0),
         )
@@ -156,8 +169,11 @@ class TestCheckOvertimeOverlap:
         existing = _make_record(time(17, 0), time(20, 0))
         session = _mock_session([existing])
         result = _check_overtime_overlap(
-            session, 1, date(2026, 1, 15),
-            '18:00', '21:00',
+            session,
+            1,
+            date(2026, 1, 15),
+            "18:00",
+            "21:00",
         )
         assert result is existing
 
@@ -169,8 +185,11 @@ class TestCheckOvertimeOverlap:
         """
         session = _mock_session([])
         result = _check_overtime_overlap(
-            session, 1, date(2026, 1, 15),
-            '17:00', '20:00',
+            session,
+            1,
+            date(2026, 1, 15),
+            "17:00",
+            "20:00",
         )
         assert result is None
 
@@ -179,8 +198,11 @@ class TestCheckOvertimeOverlap:
         existing = _make_record(time(17, 0), time(20, 0))
         session = _mock_session([existing])
         result = _check_overtime_overlap(
-            session, 1, date(2026, 1, 15),
-            None, None,
+            session,
+            1,
+            date(2026, 1, 15),
+            None,
+            None,
         )
         assert result is existing
 
@@ -192,8 +214,11 @@ class TestCheckOvertimeOverlap:
         """
         session = _mock_session([])
         result = _check_overtime_overlap(
-            session, 1, date(2026, 1, 15),
-            '18:00', '20:00',
+            session,
+            1,
+            date(2026, 1, 15),
+            "18:00",
+            "20:00",
         )
         assert result is None
 
@@ -201,6 +226,7 @@ class TestCheckOvertimeOverlap:
 # ──────────────────────────────────────────────
 # _revoke_comp_leave_grant 補休撤銷邏輯
 # ──────────────────────────────────────────────
+
 
 def _make_ot(ot_id, employee_id, ot_date, hours, use_comp=True, comp_granted=True):
     ot = types.SimpleNamespace()
@@ -344,6 +370,7 @@ class TestOvertimeTimeOrderValidation:
         from pydantic import ValidationError
         from api.overtimes import OvertimeCreate
         from datetime import date as _date
+
         with pytest.raises(ValidationError) as exc_info:
             OvertimeCreate(
                 employee_id=1,
@@ -361,6 +388,7 @@ class TestOvertimeTimeOrderValidation:
         from pydantic import ValidationError
         from api.overtimes import OvertimeCreate
         from datetime import date as _date
+
         with pytest.raises(ValidationError):
             OvertimeCreate(
                 employee_id=1,
@@ -375,6 +403,7 @@ class TestOvertimeTimeOrderValidation:
         """start_time < end_time → 建立成功，不拋例外"""
         from api.overtimes import OvertimeCreate
         from datetime import date as _date
+
         obj = OvertimeCreate(
             employee_id=1,
             overtime_date=_date(2026, 3, 20),
@@ -390,6 +419,7 @@ class TestOvertimeTimeOrderValidation:
         """start_time / end_time 皆為 None 時，不觸發時間順序驗證"""
         from api.overtimes import OvertimeCreate
         from datetime import date as _date
+
         obj = OvertimeCreate(
             employee_id=1,
             overtime_date=_date(2026, 3, 20),
@@ -403,11 +433,116 @@ class TestOvertimeTimeOrderValidation:
         import pytest
         from pydantic import ValidationError
         from api.overtimes import OvertimeUpdate
+
         with pytest.raises(ValidationError):
             OvertimeUpdate(start_time="22:00", end_time="09:00")
 
     def test_update_correct_order_passes(self):
         """OvertimeUpdate: start_time < end_time → 建立成功"""
         from api.overtimes import OvertimeUpdate
+
         obj = OvertimeUpdate(start_time="09:00", end_time="11:00")
         assert obj.start_time == "09:00"
+
+
+# ──────────────────────────────────────────────
+# 法定加班倍率下限（勞基法第 24 條）
+# ──────────────────────────────────────────────
+class TestStatutoryOvertimeRates:
+    """倍率常數不得低於勞基法法定下限。
+
+    勞基法第 24 條第 2 項：休息日工作前 2 小時「加給 1/3 以上」，
+    即至少 1 + 1/3 ≈ 1.3333...，實務與勞動部範例四捨五入後以 1.34 為下限。
+    """
+
+    def test_restday_first_2h_rate_not_below_statutory_minimum(self):
+        from utils.constants import RESTDAY_FIRST_2H_RATE
+
+        assert (
+            RESTDAY_FIRST_2H_RATE >= 1.34
+        ), f"休息日前 2 小時倍率 {RESTDAY_FIRST_2H_RATE} 低於法定下限 1.34"
+
+    def test_restday_mid_rate_not_below_statutory_minimum(self):
+        from utils.constants import RESTDAY_MID_RATE
+
+        assert RESTDAY_MID_RATE >= 1.67
+
+    def test_weekday_rates_not_below_statutory_minimum(self):
+        from utils.constants import WEEKDAY_FIRST_2H_RATE, WEEKDAY_AFTER_2H_RATE
+
+        assert WEEKDAY_FIRST_2H_RATE >= 1.34
+        assert WEEKDAY_AFTER_2H_RATE >= 1.67
+
+
+# ──────────────────────────────────────────────
+# 每月延長工時上限（勞基法第 32 條第 2 項）
+# ──────────────────────────────────────────────
+class TestMonthlyOvertimeCap:
+    """每月延長工時不得超過 46 小時（勞基法第 32 條第 2 項）。
+
+    _assert_within_monthly_cap 為純函式：接收既有累計時數 + 新增時數，
+    超過法定上限時拋 HTTPException 400。
+    """
+
+    def test_exactly_at_cap_passes(self):
+        """既有 40h + 新 6h = 46h（等於上限），允許"""
+        _assert_within_monthly_cap(40.0, 6.0, 2026, 3)
+
+    def test_zero_existing_full_cap_passes(self):
+        """單筆填滿 46h 上限，允許"""
+        _assert_within_monthly_cap(0.0, 46.0, 2026, 3)
+
+    def test_just_over_cap_raises(self):
+        """既有 40h + 新 7h = 47h，超過 46h 上限 → 400"""
+        with pytest.raises(HTTPException) as exc:
+            _assert_within_monthly_cap(40.0, 7.0, 2026, 3)
+        assert exc.value.status_code == 400
+        assert "46" in exc.value.detail
+
+    def test_zero_existing_over_cap_raises(self):
+        """單筆 46.5h 直接超過上限 → 400"""
+        with pytest.raises(HTTPException) as exc:
+            _assert_within_monthly_cap(0.0, 46.5, 2026, 3)
+        assert exc.value.status_code == 400
+
+    def test_none_hours_treated_as_zero(self):
+        """None 視為 0，不應拋例外"""
+        _assert_within_monthly_cap(None, 10.0, 2026, 3)
+        _assert_within_monthly_cap(10.0, None, 2026, 3)
+
+
+# ──────────────────────────────────────────────
+# 國定假日加班類型驗證（勞基法第 37 條）
+# ──────────────────────────────────────────────
+class TestOvertimeTypeCalendarValidation:
+    """overtime_type 需與該日是否為國定假日一致，避免短付加班費。
+
+    - overtime_type="holiday" 但該日非國定假日 → 400（防止溢付）
+    - overtime_type="weekday"/"weekend" 但該日為國定假日 → 400（防止短付，違反第 37 條）
+    """
+
+    def test_holiday_type_on_actual_holiday_passes(self):
+        _validate_overtime_type_matches_calendar("holiday", True)
+
+    def test_holiday_type_on_non_holiday_raises(self):
+        with pytest.raises(HTTPException) as exc:
+            _validate_overtime_type_matches_calendar("holiday", False)
+        assert exc.value.status_code == 400
+
+    def test_weekday_type_on_holiday_raises(self):
+        """國定假日誤標為平日 → 會短付（× 1.34 而非 × 2.0）"""
+        with pytest.raises(HTTPException) as exc:
+            _validate_overtime_type_matches_calendar("weekday", True)
+        assert exc.value.status_code == 400
+        assert "holiday" in exc.value.detail
+
+    def test_weekend_type_on_holiday_raises(self):
+        with pytest.raises(HTTPException) as exc:
+            _validate_overtime_type_matches_calendar("weekend", True)
+        assert exc.value.status_code == 400
+
+    def test_weekday_type_on_non_holiday_passes(self):
+        _validate_overtime_type_matches_calendar("weekday", False)
+
+    def test_weekend_type_on_non_holiday_passes(self):
+        _validate_overtime_type_matches_calendar("weekend", False)

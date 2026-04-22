@@ -3,12 +3,13 @@ api/fees.py — 學費/費用管理 API endpoints
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import outerjoin, func, case
+from sqlalchemy.exc import IntegrityError
 
 from models.base import session_scope
 from models.classroom import Classroom, Student
@@ -73,6 +74,13 @@ class RefundRequest(BaseModel):
     )
     reason: str = Field(..., min_length=1, max_length=100)
     notes: Optional[str] = Field("", max_length=200)
+    idempotency_key: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="冪等鍵（10 分鐘視窗內同 key 視為重試，避免重複退款）",
+    )
 
 
 def _apply_fee_record_filters(
@@ -559,6 +567,30 @@ def fee_summary(
 # 退款流程
 # ---------------------------------------------------------------------------
 
+# 冪等視窗：同 idempotency_key 於視窗內視為重試（避免網路重送導致重複退款）
+_REFUND_IDEMPOTENCY_WINDOW_SECONDS = 10 * 60
+
+
+def _find_refund_idempotent_hit(
+    session, record_id: int, idempotency_key: str
+) -> Optional[StudentFeeRefund]:
+    """查詢視窗內是否已有相同 idempotency_key 的退款紀錄。
+
+    threshold 與 StudentFeeRefund.refunded_at 皆用 naive `datetime.now()`
+    （與 ORM default 保持同一時間基準，避免時區差錯造成視窗失效）。
+    """
+    threshold = datetime.now() - timedelta(seconds=_REFUND_IDEMPOTENCY_WINDOW_SECONDS)
+    return (
+        session.query(StudentFeeRefund)
+        .filter(
+            StudentFeeRefund.record_id == record_id,
+            StudentFeeRefund.idempotency_key == idempotency_key,
+            StudentFeeRefund.refunded_at >= threshold,
+        )
+        .order_by(StudentFeeRefund.id.asc())
+        .first()
+    )
+
 
 @router.post("/records/{record_id}/refund", status_code=201)
 def refund_fee_record(
@@ -572,8 +604,30 @@ def refund_fee_record(
     - 退款金額必須 ≤ 當下已繳
     - 一次退款一筆，需填退款原因（稽核要求）
     - 鎖住該筆 fee record，避免與 pay_fee_record 併發衝突
+    - 若帶 idempotency_key，10 分鐘視窗內同 key 視為重試，回傳原退款結果
+      （避免網路重送造成重複扣款；DB UniqueConstraint 於並發時攔下第二筆）
     """
+    idempotent_replay = False
     with session_scope() as session:
+        # 先檢冪等：若已有紀錄，直接回放原結果，不鎖 record 也不動 amount_paid
+        if payload.idempotency_key:
+            existing = _find_refund_idempotent_hit(
+                session, record_id, payload.idempotency_key
+            )
+            if existing is not None:
+                rec = (
+                    session.query(StudentFeeRecord)
+                    .filter(StudentFeeRecord.id == record_id)
+                    .first()
+                )
+                return {
+                    "ok": True,
+                    "refund_amount": existing.amount,
+                    "new_amount_paid": rec.amount_paid if rec else None,
+                    "status": rec.status if rec else None,
+                    "idempotent_replay": True,
+                }
+
         record = (
             session.query(StudentFeeRecord)
             .filter(StudentFeeRecord.id == record_id)
@@ -600,6 +654,7 @@ def refund_fee_record(
             reason=payload.reason,
             notes=payload.notes or "",
             refunded_by=operator,
+            idempotency_key=payload.idempotency_key,
         )
         session.add(refund)
 
@@ -622,6 +677,35 @@ def refund_fee_record(
         new_status = record.status
         student_name_snapshot = record.student_name
 
+        # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：把它轉成 replay
+        try:
+            session.flush()
+        except IntegrityError as e:
+            session.rollback()
+            if (
+                payload.idempotency_key
+                and "idempotency_key" in str(getattr(e, "orig", e)).lower()
+            ):
+                # 另一個並發請求剛建完；重新查出來以 replay 方式回
+                with session_scope() as replay_session:
+                    existing = _find_refund_idempotent_hit(
+                        replay_session, record_id, payload.idempotency_key
+                    )
+                    rec = (
+                        replay_session.query(StudentFeeRecord)
+                        .filter(StudentFeeRecord.id == record_id)
+                        .first()
+                    )
+                    if existing is not None:
+                        return {
+                            "ok": True,
+                            "refund_amount": existing.amount,
+                            "new_amount_paid": rec.amount_paid if rec else None,
+                            "status": rec.status if rec else None,
+                            "idempotent_replay": True,
+                        }
+            raise
+
     logger.warning(
         "FEE_REFUND record_id=%s student=%s operator=%s amount=%s reason=%s new_paid=%s",
         record_id,
@@ -636,6 +720,7 @@ def refund_fee_record(
         "refund_amount": payload.amount,
         "new_amount_paid": new_paid,
         "status": new_status,
+        "idempotent_replay": idempotent_replay,
     }
 
 

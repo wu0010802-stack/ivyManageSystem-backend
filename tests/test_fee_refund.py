@@ -246,3 +246,126 @@ class TestRefundInputValidation:
             json={"amount": 100, "reason": ""},
         )
         assert res.status_code == 422
+
+
+class TestRefundIdempotency:
+    """網路重送時同 idempotency_key 必須視為重試，不可重複扣 amount_paid。
+
+    Why: 過去 refund 無冪等保護，前端重試會建兩筆 StudentFeeRefund 並雙扣。
+    """
+
+    def test_same_key_replays_without_double_deduction(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            rec = _seed(s, amount_due=1000, amount_paid=1000, status="paid")
+            s.commit()
+            rec_id = rec.id
+
+        assert _login(c).status_code == 200
+        body = {
+            "amount": 300,
+            "reason": "家長申請退費",
+            "idempotency_key": "refund-abc-001",
+        }
+        res1 = c.post(f"/api/fees/records/{rec_id}/refund", json=body)
+        assert res1.status_code == 201, res1.text
+        data1 = res1.json()
+        assert data1["refund_amount"] == 300
+        assert data1["new_amount_paid"] == 700
+        assert data1.get("idempotent_replay") is False
+
+        # 同 key 重送：應 replay，不再扣 amount_paid
+        res2 = c.post(f"/api/fees/records/{rec_id}/refund", json=body)
+        assert res2.status_code == 201, res2.text
+        data2 = res2.json()
+        assert data2["refund_amount"] == 300
+        assert data2["new_amount_paid"] == 700  # 仍然 700，未被雙扣
+        assert data2["idempotent_replay"] is True
+
+        with sf() as s:
+            rec = s.query(StudentFeeRecord).filter_by(id=rec_id).one()
+            assert rec.amount_paid == 700
+            refunds = s.query(StudentFeeRefund).filter_by(record_id=rec_id).all()
+            assert len(refunds) == 1
+            assert refunds[0].idempotency_key == "refund-abc-001"
+
+    def test_different_keys_create_separate_refunds(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            rec = _seed(s, amount_due=1000, amount_paid=1000, status="paid")
+            s.commit()
+            rec_id = rec.id
+
+        assert _login(c).status_code == 200
+        res1 = c.post(
+            f"/api/fees/records/{rec_id}/refund",
+            json={
+                "amount": 300,
+                "reason": "第一次退",
+                "idempotency_key": "refund-k-001",
+            },
+        )
+        assert res1.status_code == 201, res1.text
+        res2 = c.post(
+            f"/api/fees/records/{rec_id}/refund",
+            json={
+                "amount": 200,
+                "reason": "第二次退",
+                "idempotency_key": "refund-k-002",
+            },
+        )
+        assert res2.status_code == 201, res2.text
+        assert res2.json()["new_amount_paid"] == 500
+        assert res2.json()["idempotent_replay"] is False
+
+        with sf() as s:
+            refunds = s.query(StudentFeeRefund).filter_by(record_id=rec_id).all()
+            assert len(refunds) == 2
+
+    def test_without_key_preserves_legacy_behavior(self, client):
+        """無 idempotency_key：維持原行為，每次都建立新 refund 記錄。"""
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            rec = _seed(s, amount_due=1000, amount_paid=1000, status="paid")
+            s.commit()
+            rec_id = rec.id
+
+        assert _login(c).status_code == 200
+        for _ in range(2):
+            res = c.post(
+                f"/api/fees/records/{rec_id}/refund",
+                json={"amount": 200, "reason": "legacy"},
+            )
+            assert res.status_code == 201, res.text
+
+        with sf() as s:
+            refunds = s.query(StudentFeeRefund).filter_by(record_id=rec_id).all()
+            assert len(refunds) == 2
+            # 無 key 的歷史紀錄都為 NULL，不互相衝突
+            assert all(r.idempotency_key is None for r in refunds)
+            rec = s.query(StudentFeeRecord).filter_by(id=rec_id).one()
+            assert rec.amount_paid == 600  # 1000 - 200*2
+
+    def test_invalid_key_format_rejected(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            rec = _seed(s, amount_paid=500)
+            s.commit()
+            rec_id = rec.id
+
+        assert _login(c).status_code == 200
+        # 含空白/中文/特殊字元：422
+        for bad_key in ["with space", "中文key12", "key@with#sym"]:
+            res = c.post(
+                f"/api/fees/records/{rec_id}/refund",
+                json={
+                    "amount": 100,
+                    "reason": "test",
+                    "idempotency_key": bad_key,
+                },
+            )
+            assert res.status_code == 422, (bad_key, res.text)

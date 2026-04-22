@@ -6,7 +6,15 @@
 勞退提撥: 雇主6%
 """
 
+import logging
 from dataclasses import dataclass
+from datetime import date
+
+logger = logging.getLogger(__name__)
+
+# 本表對應之公告年度。每年 1/1 政府公告新級距 / 費率時，
+# 更新 INSURANCE_TABLE_20XX 後同步調整此常數。
+CURRENT_INSURANCE_YEAR = 2026
 
 
 @dataclass
@@ -36,6 +44,11 @@ HEALTH_EMPLOYEE_RATIO = 0.30  # 員工負擔 30%
 HEALTH_EMPLOYER_RATIO = 0.60  # 雇主負擔 60%
 PENSION_EMPLOYER_RATE = 0.06  # 勞退雇主提撥率 6%
 AVERAGE_DEPENDENTS = 0.56  # 平均眷屬人數
+
+# 2026 年三制度最高投保/提繳薪資（互不相同，須分別 clamp）
+LABOR_MAX_INSURED_SALARY = 45800  # 勞保（含就保）最高月投保薪資
+HEALTH_MAX_INSURED_SALARY = 219500  # 健保最高月投保金額
+PENSION_MAX_INSURED_SALARY = 150000  # 勞退最高月提繳工資
 
 # 2026年(115年1月1日起適用) 勞保/健保/勞退 三合一級距對照表
 # 資料來源: 勞動部勞工保險局、衛生福利部中央健康保險署
@@ -703,6 +716,14 @@ INSURANCE_TABLE_2026 = [
 class InsuranceService:
     def __init__(self):
         self.table = INSURANCE_TABLE_2026
+        current = date.today().year
+        if current > CURRENT_INSURANCE_YEAR:
+            logger.warning(
+                "勞健保級距表已過期：表年度 %d、系統年度 %d。"
+                "請至 services/insurance_service.py 更新 INSURANCE_TABLE_2026 與 CURRENT_INSURANCE_YEAR 並檢視費率",
+                CURRENT_INSURANCE_YEAR,
+                current,
+            )
 
     def get_bracket(self, salary: float) -> dict:
         """根據薪資查找對應的級距（薪資介於兩個級距之間取較高級數）"""
@@ -722,18 +743,25 @@ class InsuranceService:
         bracket = self.get_bracket(salary)
         amount = bracket["amount"]
 
-        labor_emp = bracket["labor_employee"]
-        labor_er = bracket["labor_employer"]
-        labor_gov = round(amount * LABOR_INSURANCE_RATE * LABOR_GOVERNMENT_RATIO)
+        # 三制度各自以其上限 clamp 後查級距（2026：勞保 45,800 / 健保 219,500 / 勞退 150,000）
+        labor_bracket = self.get_bracket(min(amount, LABOR_MAX_INSURED_SALARY))
+        health_bracket = self.get_bracket(min(amount, HEALTH_MAX_INSURED_SALARY))
+        pension_bracket = self.get_bracket(min(amount, PENSION_MAX_INSURED_SALARY))
+
+        labor_emp = labor_bracket["labor_employee"]
+        labor_er = labor_bracket["labor_employer"]
+        labor_gov = round(
+            labor_bracket["amount"] * LABOR_INSURANCE_RATE * LABOR_GOVERNMENT_RATIO
+        )
 
         # 健保員工自付額依眷屬人數倍增（最多3人；負值以0計，防止DB舊資料或直接寫入產生負健保費）
-        health_emp_base = bracket["health_employee"]
+        health_emp_base = health_bracket["health_employee"]
         health_emp = health_emp_base * (1 + min(max(0, dependents), 3))
-        health_er = bracket["health_employer"]
+        health_er = health_bracket["health_employer"]
 
-        pension_er = bracket["pension"]
+        pension_er = pension_bracket["pension"]
         pension_emp = round(
-            bracket["amount"] * pension_self_rate
+            pension_bracket["amount"] * pension_self_rate
         )  # 依勞基法以月提繳工資級距計算
 
         return InsuranceCalculation(

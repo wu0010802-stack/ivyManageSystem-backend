@@ -23,7 +23,7 @@ from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_
-from sqlalchemy.exc import CompileError, OperationalError
+from sqlalchemy.exc import CompileError, IntegrityError, OperationalError
 
 from models.database import (
     ActivityPaymentRecord,
@@ -48,6 +48,7 @@ from ._shared import (
     _invalidate_activity_dashboard_caches,
     _require_daily_close_unlocked,
     compute_daily_snapshot,
+    validate_payment_date,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,9 +59,6 @@ _MAX_ITEM_AMOUNT = 999_999
 _MAX_TENDERED = 9_999_999
 # 單次結帳總額上限 NT$1,000,000 — 避免前端繞過大額確認造成誤輸入巨額
 _MAX_CHECKOUT_TOTAL = 1_000_000
-
-# payment_date 合理範圍：最多回補 30 天、不得指定未來
-_PAYMENT_DATE_BACK_LIMIT_DAYS = 30
 
 # 冪等 key 有效視窗（秒）：此期間內同 key 視為重試
 _IDEMPOTENCY_WINDOW_SECONDS = 600
@@ -113,15 +111,7 @@ class POSCheckoutRequest(BaseModel):
     @field_validator("payment_date")
     @classmethod
     def _validate_payment_date(cls, v: date) -> date:
-        today = datetime.now(TAIPEI_TZ).date()
-        if v > today:
-            raise ValueError("繳費日期不可指定未來日期")
-        earliest = today - timedelta(days=_PAYMENT_DATE_BACK_LIMIT_DAYS)
-        if v < earliest:
-            raise ValueError(
-                f"繳費日期超出範圍，最多回補 {_PAYMENT_DATE_BACK_LIMIT_DAYS} 天"
-            )
-        return v
+        return validate_payment_date(v)
 
     @field_validator("idempotency_key")
     @classmethod
@@ -588,7 +578,23 @@ async def pos_checkout(
                 raise HTTPException(status_code=400, detail="實收金額少於應收金額")
             change = body.tendered - total_charged
 
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError as e:
+            # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：把它轉成 idempotent replay
+            session.rollback()
+            if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
+                existing = _find_idempotent_hit(session, body.idempotency_key)
+                if existing is not None:
+                    replay = _parse_receipt_response_from_record(session, existing)
+                    if replay is not None:
+                        logger.info(
+                            "POS checkout idempotent replay via UNIQUE: key=%s operator=%s",
+                            body.idempotency_key,
+                            operator,
+                        )
+                        return replay
+            raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
 
         logger.warning(

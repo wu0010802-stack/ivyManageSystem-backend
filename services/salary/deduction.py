@@ -8,9 +8,13 @@ SalaryEngine.calculate_bonus 仍可透過 delegation 呼叫。
 
 from __future__ import annotations
 
+import logging
+
 from services.attendance_parser import AttendanceResult
 
 from .constants import MONTHLY_BASE_DAYS
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_attendance_deduction(
@@ -81,7 +85,14 @@ def calculate_bonus(
     festival_bonus = base_amount × (current / target)
     overtime_bonus = max(0, current - target) × overtime_per
     """
-    ratio = current / target if target > 0 else 0
+    if target <= 0:
+        logger.warning(
+            "calculate_bonus 收到 target=%s（<=0），獎金將歸零；請確認招生目標是否設定",
+            target,
+        )
+        ratio = 0
+    else:
+        ratio = current / target
     festival_bonus = base_amount * ratio
     overtime_bonus = max(0, current - target) * overtime_per
     return {

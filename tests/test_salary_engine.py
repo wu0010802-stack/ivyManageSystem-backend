@@ -579,22 +579,26 @@ class TestCalculateSalary:
         assert breakdown.total_deduction >= 1000
 
     def test_meeting_overtime_pay(self, engine, sample_employee):
-        """園務會議加班費"""
-        meeting = {"attended": 2, "absent": 1, "work_end_time": "17:00"}
+        """園務會議加班費 — 以紀錄上的 overtime_pay_total 直接帶入"""
+        meeting = {
+            "attended": 2,
+            "absent": 1,
+            "overtime_pay_total": 400,
+        }
         breakdown = engine.calculate_salary(
             employee=sample_employee, year=2026, month=1, meeting_context=meeting
         )
-        assert breakdown.meeting_overtime_pay == 2 * 200  # 17:00 下班 → 200/次
+        assert breakdown.meeting_overtime_pay == 400
         assert breakdown.meeting_attended == 2
         assert breakdown.meeting_absent == 1
 
-    def test_meeting_6pm_rate(self, engine, sample_employee):
-        """6 點下班者園務會議加班費較低"""
-        meeting = {"attended": 1, "absent": 0, "work_end_time": "18:00"}
+    def test_meeting_overtime_pay_uses_record_total(self, engine, sample_employee):
+        """不同員工的會議加班費由紀錄上 overtime_pay 彙總，不再用下班時間重算"""
+        meeting = {"attended": 1, "absent": 0, "overtime_pay_total": 134}
         breakdown = engine.calculate_salary(
             employee=sample_employee, year=2026, month=1, meeting_context=meeting
         )
-        assert breakdown.meeting_overtime_pay == 100  # 18:00 下班 → 100/次
+        assert breakdown.meeting_overtime_pay == 134
 
     def test_net_salary_formula(self, engine, sample_employee, sample_attendance):
         """net_salary = gross_salary - total_deduction"""
@@ -1940,31 +1944,31 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.33)
+        expected = round(hourly * 2 * 1.34)
         assert calculate_overtime_pay(30000, 0.5, "weekend") == expected
 
     def test_weekend_within_2h(self):
-        """休息日2小時：× 1.33"""
+        """休息日2小時：× 1.34"""
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.33)
+        expected = round(hourly * 2 * 1.34)
         assert calculate_overtime_pay(30000, 2, "weekend") == expected
 
     def test_weekend_mid_range(self):
-        """休息日4小時：前2h ×1.33 + 後2h ×1.67"""
+        """休息日4小時：前2h ×1.34 + 後2h ×1.67"""
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.33 + hourly * 2 * 1.67)
+        expected = round(hourly * 2 * 1.34 + hourly * 2 * 1.67)
         assert calculate_overtime_pay(30000, 4, "weekend") == expected
 
     def test_weekend_beyond_8h(self):
-        """休息日10小時：前2h ×1.33 + 6h ×1.67 + 2h ×2.67"""
+        """休息日10小時：前2h ×1.34 + 6h ×1.67 + 2h ×2.67"""
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.33 + hourly * 6 * 1.67 + hourly * 2 * 2.67)
+        expected = round(hourly * 2 * 1.34 + hourly * 6 * 1.67 + hourly * 2 * 2.67)
         assert calculate_overtime_pay(30000, 10, "weekend") == expected
 
     def test_holiday_flat_rate(self):

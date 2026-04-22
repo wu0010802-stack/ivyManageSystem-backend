@@ -456,6 +456,15 @@ class TestPublicRegisterAutoLinksStudent:
             s.add(
                 Classroom(name="海豚班", is_active=True, school_year=sy, semester=sem)
             )
+            s.add(
+                ActivityCourse(
+                    name="圍棋",
+                    price=1200,
+                    school_year=sy,
+                    semester=sem,
+                    is_active=True,
+                )
+            )
             s.commit()
         assert _login(client).status_code == 200
 
@@ -463,7 +472,7 @@ class TestPublicRegisterAutoLinksStudent:
             "name": "王小明",
             "birthday": "2020-01-01",
             "class": "海豚班",
-            "courses": [],
+            "courses": [{"name": "圍棋", "price": ""}],
             "supplies": [],
         }
         r1 = client.post("/api/activity/registrations", json=payload)
@@ -669,7 +678,7 @@ class TestAdminEditRegistration:
                 "name": "李小美",
                 "birthday": "2020-05-05",
                 "class": "海豚班",
-                "courses": [],
+                "courses": [{"name": "圍棋", "price": ""}],
                 "supplies": [],
             },
         )
@@ -726,7 +735,7 @@ class TestAdminEditRegistration:
                 "name": "李小美",
                 "birthday": "2020-05-05",
                 "class": "海豚班",
-                "courses": [],
+                "courses": [{"name": "圍棋", "price": ""}],
                 "supplies": [],
             },
         )

@@ -5,7 +5,13 @@
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
-from .constants import MAX_DAILY_WORK_HOURS, HOURLY_OT1_RATE, HOURLY_OT2_RATE, HOURLY_REGULAR_HOURS, HOURLY_OT1_CAP_HOURS
+from .constants import (
+    MAX_DAILY_WORK_HOURS,
+    HOURLY_OT1_RATE,
+    HOURLY_OT2_RATE,
+    HOURLY_REGULAR_HOURS,
+    HOURLY_OT1_CAP_HOURS,
+)
 
 
 def _calc_lunch_overlap_hours(start: datetime, end: datetime, ref_date: date) -> float:
@@ -72,22 +78,50 @@ def _compute_hourly_daily_hours(
     return max(0.0, min(diff, max_hours))
 
 
-def _calc_daily_hourly_pay(hours: float, rate: float) -> float:
-    """依勞基法第 24 條計算時薪制員工單日薪資。
+def _calc_daily_hourly_pay_with_cap(
+    hours: float, rate: float, remaining_ot_quota: float = float("inf")
+) -> tuple[float, float]:
+    """時薪單日薪資計算（支援月度 46h 加班上限）。
 
-    分段計費：
+    勞基法第 24 條分段計費：
     - 0–8 小時：正常倍率（×1.0）
     - 第 9–10 小時：×HOURLY_OT1_RATE（1.34）
     - 第 11 小時起：×HOURLY_OT2_RATE（1.67）
 
+    勞基法第 32 條第 2 項：每月延長工時 46h 上限。超過 quota 的加班時數仍須
+    付薪，但倍率退回 1.0（不加成），呼叫端需累計 ot_used 並遞減 quota。
+
     Args:
-        hours: 當日實際工時（已扣午休、已套用上限）
-        rate:  時薪
+        hours:                當日實際工時（已扣午休、已套用每日上限）
+        rate:                 時薪
+        remaining_ot_quota:   本月尚可加成倍率的加班時數（預設 inf = 不設月上限，
+                              供舊呼叫端向後相容）
     Returns:
-        當日應付薪資（未四捨五入）
+        (pay, ot_used)：當日應付薪資（四捨五入至 2 位）與消耗的 quota 加班時數。
     """
     regular = min(hours, HOURLY_REGULAR_HOURS)
-    ot1 = max(0.0, min(hours - HOURLY_REGULAR_HOURS,
-                       HOURLY_OT1_CAP_HOURS - HOURLY_REGULAR_HOURS))
-    ot2 = max(0.0, hours - HOURLY_OT1_CAP_HOURS)
-    return rate * (regular + ot1 * HOURLY_OT1_RATE + ot2 * HOURLY_OT2_RATE)
+    ot1_raw = max(
+        0.0,
+        min(hours - HOURLY_REGULAR_HOURS, HOURLY_OT1_CAP_HOURS - HOURLY_REGULAR_HOURS),
+    )
+    ot2_raw = max(0.0, hours - HOURLY_OT1_CAP_HOURS)
+
+    available = max(0.0, remaining_ot_quota)
+    ot1 = min(ot1_raw, available)
+    available -= ot1
+    ot2 = min(ot2_raw, available)
+    excess = (ot1_raw - ot1) + (ot2_raw - ot2)
+
+    pay = rate * (
+        regular + ot1 * HOURLY_OT1_RATE + ot2 * HOURLY_OT2_RATE + excess * 1.0
+    )
+    return round(pay, 2), ot1 + ot2
+
+
+def _calc_daily_hourly_pay(hours: float, rate: float) -> float:
+    """向後相容版：不套用月度上限（等同 remaining_ot_quota=inf）。
+
+    新呼叫端請改用 `_calc_daily_hourly_pay_with_cap` 並累計 ot_used。
+    """
+    pay, _ot = _calc_daily_hourly_pay_with_cap(hours, rate, float("inf"))
+    return pay

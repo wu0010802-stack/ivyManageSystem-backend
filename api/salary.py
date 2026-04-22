@@ -1101,26 +1101,45 @@ class FinalizeMonthRequest(BaseModel):
     month: int = Field(..., ge=1, le=12)
 
 
+# 單筆欄位合理上限：避免管理員誤輸入多零造成異常金額（如 30000 打成 3000000）。
+# 最大值 10,000,000 可涵蓋所有合法情境（最高薪資 / 一次性獎金），超過必屬誤植。
+_MANUAL_ADJUST_FIELD_MAX = 10_000_000.0
+
+
 class SalaryManualAdjustRequest(BaseModel):
-    base_salary: Optional[float] = Field(None, ge=0)
-    performance_bonus: Optional[float] = Field(None, ge=0)
-    special_bonus: Optional[float] = Field(None, ge=0)
-    festival_bonus: Optional[float] = Field(None, ge=0)
-    overtime_bonus: Optional[float] = Field(None, ge=0)
-    overtime_pay: Optional[float] = Field(None, ge=0)
-    supervisor_dividend: Optional[float] = Field(None, ge=0)
-    meeting_overtime_pay: Optional[float] = Field(None, ge=0)
-    birthday_bonus: Optional[float] = Field(None, ge=0)
-    labor_insurance_employee: Optional[float] = Field(None, ge=0)
-    health_insurance_employee: Optional[float] = Field(None, ge=0)
-    pension_employee: Optional[float] = Field(None, ge=0)
-    leave_deduction: Optional[float] = Field(None, ge=0)
-    late_deduction: Optional[float] = Field(None, ge=0)
-    early_leave_deduction: Optional[float] = Field(None, ge=0)
-    missing_punch_deduction: Optional[float] = Field(None, ge=0)
-    meeting_absence_deduction: Optional[float] = Field(None, ge=0)
-    absence_deduction: Optional[float] = Field(None, ge=0)
-    other_deduction: Optional[float] = Field(None, ge=0)
+    base_salary: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    performance_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    special_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    festival_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    overtime_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    overtime_pay: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    supervisor_dividend: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    meeting_overtime_pay: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    birthday_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    labor_insurance_employee: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    health_insurance_employee: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    pension_employee: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    leave_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    late_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    early_leave_deduction: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    missing_punch_deduction: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    meeting_absence_deduction: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    absence_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    other_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
 
 
 EDITABLE_SALARY_FIELDS = {
@@ -1499,13 +1518,13 @@ def simulate_salary(
             if office_staff_context:
                 office_staff_context["school_enrollment"] = ov.enrollment_override
 
-        daily_salary = calc_daily_salary(emp.base_salary)
+        daily_salary = calc_daily_salary(emp_dict["base_salary"])
         period_records = engine._load_period_records(
             session, emp, start_date, end_date, year, month, daily_salary
         )
 
         extra_leave_hours = ov.extra_personal_leave_hours + ov.extra_sick_leave_hours
-        hourly_rate = calc_daily_salary(emp.base_salary) / 8
+        hourly_rate = calc_daily_salary(emp_dict["base_salary"]) / 8
         leave_deduction = (
             period_records["leave_deduction"] + extra_leave_hours * hourly_rate
         )

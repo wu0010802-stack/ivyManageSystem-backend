@@ -5,7 +5,7 @@ api/activity/_shared.py — 才藝系統共用 schemas、helpers、常數
 import re
 import logging
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List, Literal
 from zoneinfo import ZoneInfo
 
@@ -41,6 +41,34 @@ MAX_PAYMENT_AMOUNT = 999_999
 # 系統補齊標記：用於 batch/update_payment 與退課自動沖帳。
 # 目的：避免把「系統自動生成的繳/退費紀錄」誤算入 POS 日結的「現金」欄。
 SYSTEM_RECONCILE_METHOD = "系統補齊"
+
+# payment_date 合理範圍：最多回補 30 天、不得指定未來。
+# POS checkout 與後台 /registrations/{id}/payments 共用，避免管理員透過後者繞過 POS 管制。
+PAYMENT_DATE_BACK_LIMIT_DAYS = 30
+
+
+def validate_payment_date(value: date) -> date:
+    """驗證 payment_date 必須在今日回補窗（預設 30 天）內，不得指定未來。"""
+    today = datetime.now(TAIPEI_TZ).date()
+    if value > today:
+        raise ValueError("繳費日期不可指定未來日期")
+    earliest = today - timedelta(days=PAYMENT_DATE_BACK_LIMIT_DAYS)
+    if value < earliest:
+        raise ValueError(
+            f"繳費日期超出範圍，最多回補 {PAYMENT_DATE_BACK_LIMIT_DAYS} 天"
+        )
+    return value
+
+
+def today_taipei() -> date:
+    """統一取「今日」的工具函式（Asia/Taipei）。
+
+    Why: 部分端點寫入 refund/payment 時使用 naive datetime.now().date()；
+    server 若部署在 UTC，近午夜台灣時間會落帳到昨天，與日結 snapshot 錯位。
+    本函式確保所有 activity 相關寫入都以台灣時間為準。
+    """
+    return datetime.now(TAIPEI_TZ).date()
+
 
 # ── 服務注入 ──────────────────────────────────────────────────────────────
 
@@ -184,6 +212,11 @@ class AddPaymentRequest(BaseModel):
         description="冪等 key（8-64 英數/底線/連字號）；同 key 在 10 分鐘內視為重試並回傳先前結果",
     )
 
+    @field_validator("payment_date")
+    @classmethod
+    def _validate_payment_date(cls, v: date) -> date:
+        return validate_payment_date(v)
+
     @field_validator("idempotency_key")
     @classmethod
     def _validate_idk(cls, v: Optional[str]) -> Optional[str]:
@@ -195,13 +228,16 @@ class AddPaymentRequest(BaseModel):
 
 
 class PublicCourseItem(BaseModel):
+    # 只收 name：價格一律以後端 ActivityCourse.price 為準。
+    # 前端若仍送 price 欄位，Pydantic 預設 extra='ignore' 會自動丟棄，
+    # 避免維護者誤把 client 傳入金額當作實價使用（過去此處曾保留 price
+    # 欄位，後端忽略它，但留下 code smell）。
     name: str
-    price: str  # 相容保留，後端實際以 DB 價格為準
 
 
 class PublicSupplyItem(BaseModel):
+    # 同 PublicCourseItem：只收 name，價格一律以 DB 為準
     name: str
-    price: str  # 相容保留，後端實際以 DB 價格為準
 
 
 class PublicInquiryPayload(BaseModel):
@@ -211,6 +247,26 @@ class PublicInquiryPayload(BaseModel):
 
 
 _TW_MOBILE_RE = re.compile(r"^09\d{8}$")
+
+
+def _validate_birthday_str(v: str) -> str:
+    """共用：生日格式 + 合理範圍檢查。
+
+    - 格式必須為 YYYY-MM-DD
+    - 不得為未來日期
+    - 不得早於 20 年前（幼稚園/才藝學生涵蓋 0-18 歲，留 2 年緩衝）
+    Why: 原本僅檢格式，家長可誤填 2099-01-01 或 1900 年之類資料，後續年齡/報表計算會錯亂。
+    """
+    try:
+        bday = date.fromisoformat(v)
+    except ValueError:
+        raise ValueError("生日格式必須為 YYYY-MM-DD")
+    today = datetime.now(TAIPEI_TZ).date()
+    if bday > today:
+        raise ValueError("生日不可為未來日期")
+    if (today - bday).days > 20 * 366:
+        raise ValueError("生日超出合理範圍")
+    return v
 
 
 def _normalize_phone(raw: Optional[str]) -> Optional[str]:
@@ -245,11 +301,7 @@ class PublicRegistrationPayload(BaseModel):
     @field_validator("birthday")
     @classmethod
     def validate_birthday(cls, v: str) -> str:
-        try:
-            date.fromisoformat(v)
-        except ValueError:
-            raise ValueError("生日格式必須為 YYYY-MM-DD")
-        return v
+        return _validate_birthday_str(v)
 
     @field_validator("name", "class_", mode="before")
     @classmethod
@@ -280,11 +332,7 @@ class PublicUpdatePayload(BaseModel):
     @field_validator("birthday")
     @classmethod
     def validate_birthday(cls, v: str) -> str:
-        try:
-            date.fromisoformat(v)
-        except ValueError:
-            raise ValueError("生日格式必須為 YYYY-MM-DD")
-        return v
+        return _validate_birthday_str(v)
 
     @field_validator("name", "class_", mode="before")
     @classmethod
@@ -317,11 +365,7 @@ class AdminRegistrationBasicUpdate(BaseModel):
     @field_validator("birthday")
     @classmethod
     def validate_birthday(cls, v: str) -> str:
-        try:
-            date.fromisoformat(v)
-        except ValueError:
-            raise ValueError("生日格式必須為 YYYY-MM-DD")
-        return v
+        return _validate_birthday_str(v)
 
     @field_validator("name", "class_", mode="before")
     @classmethod
@@ -364,11 +408,7 @@ class AdminRegistrationPayload(BaseModel):
     @field_validator("birthday")
     @classmethod
     def validate_birthday(cls, v: str) -> str:
-        try:
-            date.fromisoformat(v)
-        except ValueError:
-            raise ValueError("生日格式必須為 YYYY-MM-DD")
-        return v
+        return _validate_birthday_str(v)
 
     @field_validator("name", "class_", mode="before")
     @classmethod
@@ -408,17 +448,47 @@ def _invalidate_activity_dashboard_caches(
     activity_service.invalidate_dashboard_caches(session)
 
 
+def _parse_settings_iso(value: Optional[str]) -> Optional[datetime]:
+    """把 settings 存的 ISO 字串解析成 naive datetime（台灣時間語意）。
+
+    相容三種歷史格式：`YYYY-MM-DDTHH:MM`、`YYYY-MM-DDTHH:MM:SS`、
+    以及帶 `Z` 或 `+08:00` 的舊匯入資料；全部轉為 naive 台灣時間以便與 now 比較。
+    無法解析時回 None（讓守衛視同未設定）。
+    """
+    if not value:
+        return None
+    v = value.strip()
+    if not v:
+        return None
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(TAIPEI_TZ).replace(tzinfo=None)
+    return dt
+
+
 def _check_registration_open(session) -> None:
-    """驗證報名時間是否開放，不符合時拋出 HTTPException。"""
+    """驗證報名時間是否開放，不符合時拋出 HTTPException。
+
+    open_at / close_at 以 naive datetime 物件比對，避免字串格式差異（`Z` 尾綴、
+    秒數有無等）造成比對錯判。
+    """
     settings = session.query(ActivityRegistrationSettings).first()
-    if settings:
-        if not settings.is_open:
-            raise HTTPException(status_code=400, detail="報名尚未開放")
-        now_str = datetime.now(TAIPEI_TZ).replace(tzinfo=None).isoformat()
-        if settings.open_at and now_str < settings.open_at:
-            raise HTTPException(status_code=400, detail="報名尚未開始")
-        if settings.close_at and now_str > settings.close_at:
-            raise HTTPException(status_code=400, detail="報名已截止")
+    if not settings:
+        return
+    if not settings.is_open:
+        raise HTTPException(status_code=400, detail="報名尚未開放")
+    now = datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+    open_at = _parse_settings_iso(settings.open_at)
+    close_at = _parse_settings_iso(settings.close_at)
+    if open_at and now < open_at:
+        raise HTTPException(status_code=400, detail="報名尚未開始")
+    if close_at and now > close_at:
+        raise HTTPException(status_code=400, detail="報名已截止")
 
 
 def _attach_courses(
@@ -891,6 +961,15 @@ def sync_registrations_on_student_deactivate(session, student_id: int) -> int:
                 r.id,
                 student_id,
                 current_paid,
+            )
+            # 補 RegistrationChange 軌跡：前台 Dashboard「異動紀錄」才能看到這類被動退費事件
+            activity_service.log_change(
+                session,
+                r.id,
+                r.student_name,
+                "學生離園自動沖帳",
+                f"學生離園同步軟刪，系統寫退費紀錄 NT${current_paid}，請跟進實體退款",
+                "system",
             )
         r.is_active = False
     return len(regs)

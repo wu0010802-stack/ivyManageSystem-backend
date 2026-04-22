@@ -30,20 +30,21 @@ LEAVE_TYPE_LABELS: dict[str, str] = {
 }
 
 # ── 加班計算（勞基法） ──────────────────────────────────────
-MAX_OVERTIME_HOURS    = 12.0   # 單筆加班上限（正常 8H + 延長最多 4H）
-DAILY_WORK_HOURS      = 8      # 每日法定工時
-WEEKDAY_FIRST_2H_RATE = 1.34   # 平日前 2 小時
-WEEKDAY_AFTER_2H_RATE = 1.67   # 平日第 3-4 小時
-WEEKDAY_THRESHOLD_HOURS = 2    # 平日倍率分界時數
-HOLIDAY_RATE          = 2.0    # 例假日 / 國定假日
+MAX_OVERTIME_HOURS = 12.0  # 單筆加班上限（正常 8H + 延長最多 4H）
+MAX_MONTHLY_OVERTIME_HOURS = 46.0  # 勞基法第 32 條第 2 項：每月延長工時上限
+DAILY_WORK_HOURS = 8  # 每日法定工時
+WEEKDAY_FIRST_2H_RATE = 1.34  # 平日前 2 小時
+WEEKDAY_AFTER_2H_RATE = 1.67  # 平日第 3-4 小時
+WEEKDAY_THRESHOLD_HOURS = 2  # 平日倍率分界時數
+HOLIDAY_RATE = 2.0  # 例假日 / 國定假日
 
 # 休息日（週休二日第一天）倍率常數（勞基法第 24 條第 2 項）
-RESTDAY_FIRST_2H_RATE  = 1.33  # 前 2 小時
-RESTDAY_MID_RATE       = 1.67  # 第 3-8 小時
-RESTDAY_AFTER_8H_RATE  = 2.67  # 超過 8 小時
-RESTDAY_FIRST_SEGMENT  = 2     # 第一分段上限
-RESTDAY_SECOND_SEGMENT = 8     # 第二分段上限
-RESTDAY_MIN_HOURS      = 2     # 最低計費時數（工作不足 2h 仍算 2h）
+RESTDAY_FIRST_2H_RATE = 1.34  # 前 2 小時（勞基法第 24 條第 2 項，法定下限）
+RESTDAY_MID_RATE = 1.67  # 第 3-8 小時
+RESTDAY_AFTER_8H_RATE = 2.67  # 超過 8 小時
+RESTDAY_FIRST_SEGMENT = 2  # 第一分段上限
+RESTDAY_SECOND_SEGMENT = 8  # 第二分段上限
+RESTDAY_MIN_HOURS = 2  # 最低計費時數（工作不足 2h 仍算 2h）
 
 # ── 加班類型 ──────────────────────────────────────────────
 OVERTIME_TYPE_LABELS = {

@@ -56,9 +56,9 @@ async def get_inquiries(
 @router.put("/inquiries/{inquiry_id}/read")
 async def mark_inquiry_read(
     inquiry_id: int,
-    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """標記提問為已讀"""
+    """標記提問為已讀（僅需讀權限：看到就能標）"""
     session = get_session()
     try:
         inquiry = (

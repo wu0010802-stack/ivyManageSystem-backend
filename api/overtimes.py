@@ -36,10 +36,12 @@ from models.database import (
     LeaveRecord,
     SalaryRecord,
 )
+from models.event import Holiday
 from utils.auth import require_staff_permission
 from utils.constants import (
     OVERTIME_TYPE_LABELS,
     MAX_OVERTIME_HOURS,
+    MAX_MONTHLY_OVERTIME_HOURS,
     DAILY_WORK_HOURS,
     WEEKDAY_FIRST_2H_RATE,
     WEEKDAY_AFTER_2H_RATE,
@@ -445,6 +447,90 @@ def _check_overtime_overlap(
     return q.first()
 
 
+def _assert_within_monthly_cap(
+    existing_hours: float, new_hours: float, year: int, month: int
+) -> None:
+    """純函式：驗證既存 + 新加班時數不超過勞基法第 32 條第 2 項 46h/月上限。"""
+    existing = float(existing_hours or 0)
+    new = float(new_hours or 0)
+    total = existing + new
+    if total > MAX_MONTHLY_OVERTIME_HOURS + 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"該員工 {year}/{month} 已申請加班 {existing:.1f} 小時，"
+                f"加上此筆 {new:.1f} 小時合計 {total:.1f} 小時，"
+                f"超過勞基法第 32 條每月延長工時上限 {MAX_MONTHLY_OVERTIME_HOURS:.0f} 小時。"
+            ),
+        )
+
+
+def _validate_overtime_type_matches_calendar(
+    overtime_type: str, is_statutory_holiday: bool
+) -> None:
+    """純函式：overtime_type 與該日是否為國定假日需一致（勞基法第 37 條）。
+
+    - "holiday" 但日期非國定假日 → 400（防止溢付）
+    - "weekday"/"weekend" 但日期為國定假日 → 400（防止短付違反第 37 條）
+    """
+    if overtime_type == "holiday" and not is_statutory_holiday:
+        raise HTTPException(
+            status_code=400,
+            detail="該日期不在國定假日清單，請改用 weekday 或 weekend",
+        )
+    if overtime_type in ("weekday", "weekend") and is_statutory_holiday:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "該日期為國定假日，加班類型須為 holiday 以加倍發給工資"
+                "（勞基法第 37 條）"
+            ),
+        )
+
+
+def _check_overtime_type_calendar(
+    session, target_date: date, overtime_type: str
+) -> None:
+    """查詢 Holiday 表後呼叫純函式驗證。"""
+    is_holiday = (
+        session.query(Holiday)
+        .filter(Holiday.date == target_date, Holiday.is_active == True)
+        .first()
+        is not None
+    )
+    _validate_overtime_type_matches_calendar(overtime_type, is_holiday)
+
+
+def _check_monthly_overtime_cap(
+    session,
+    employee_id: int,
+    target_date: date,
+    new_hours: float,
+    exclude_id: int = None,
+) -> None:
+    """查詢員工指定月份已申請（待審+已核准）加班時數，加上新時數後驗證不超過月上限。
+
+    已駁回的申請不計入（釋放時數額度）。
+    """
+    year, month = target_date.year, target_date.month
+    _, last_day = cal_module.monthrange(year, month)
+    start = date(year, month, 1)
+    end = date(year, month, last_day)
+    q = session.query(func.coalesce(func.sum(OvertimeRecord.hours), 0)).filter(
+        OvertimeRecord.employee_id == employee_id,
+        OvertimeRecord.overtime_date >= start,
+        OvertimeRecord.overtime_date <= end,
+        or_(
+            OvertimeRecord.is_approved.is_(None),
+            OvertimeRecord.is_approved == True,
+        ),
+    )
+    if exclude_id is not None:
+        q = q.filter(OvertimeRecord.id != exclude_id)
+    existing = float(q.scalar() or 0)
+    _assert_within_monthly_cap(existing, new_hours, year, month)
+
+
 # ============ Pydantic Models ============
 
 
@@ -697,6 +783,12 @@ def create_overtime(
                 ),
             )
 
+        _check_monthly_overtime_cap(
+            session, data.employee_id, data.overtime_date, data.hours
+        )
+
+        _check_overtime_type_calendar(session, data.overtime_date, data.overtime_type)
+
         ot = OvertimeRecord(
             employee_id=data.employee_id,
             overtime_date=data.overtime_date,
@@ -779,6 +871,21 @@ def update_overtime(
                     f"（ID: {overlap.id}，{overlap.overtime_date} {st}～{et}），請調整時段"
                 ),
             )
+
+        # 修改後的時數驗證月上限（排除自己）
+        new_hours_val = data.hours if data.hours is not None else ot.hours
+        _check_monthly_overtime_cap(
+            session,
+            ot.employee_id,
+            check_date,
+            new_hours_val,
+            exclude_id=overtime_id,
+        )
+
+        new_type = (
+            data.overtime_type if data.overtime_type is not None else ot.overtime_type
+        )
+        _check_overtime_type_calendar(session, check_date, new_type)
 
         recalculation_months = {original_month, (check_date.year, check_date.month)}
         if was_approved:
@@ -1242,6 +1349,9 @@ async def import_overtimes(
                     if use_comp_leave
                     else calculate_overtime_pay(emp.base_salary, hours, ot_type_raw)
                 )
+
+                _check_monthly_overtime_cap(session, emp.id, overtime_date, hours)
+                _check_overtime_type_calendar(session, overtime_date, ot_type_raw)
 
                 reason_raw = row.get("原因(可空)")
                 reason = (

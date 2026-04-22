@@ -5,26 +5,73 @@
 from datetime import date
 from typing import Optional
 
-from .constants import LEAVE_DEDUCTION_RULES, MONTHLY_BASE_DAYS
+from .constants import (
+    LEAVE_DEDUCTION_RULES,
+    MONTHLY_BASE_DAYS,
+    SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS,
+)
 from services.workday_rules import classify_day, load_day_rule_maps
 
 
-def _sum_leave_deduction(leaves, daily_salary: float) -> float:
+def _sum_leave_deduction(
+    leaves,
+    daily_salary: float,
+    ytd_sick_hours_before_month: float = 0.0,
+) -> float:
     """計算請假扣款總額。
 
     優先使用 LeaveRecord.deduction_ratio 欄位；
     若為 None，fallback 至 LEAVE_DEDUCTION_RULES[leave_type]（向後相容舊資料）。
 
+    勞基法第 43 條 + 勞工請假規則第 4 條：
+    普通傷病假一年內累計未逾 30 日（240h）部分折半薪，超過之部分不給薪。
+    `ytd_sick_hours_before_month` 提供本月之前、同一年度內已核准的病假時數，
+    讓本月超過年度上限的病假改以 ratio=1.0（全扣）計算。人工覆寫的
+    `deduction_ratio` 仍優先採用（尊重 HR 判斷），但該筆時數仍計入年度累計。
+
     Args:
-        leaves:       LeaveRecord 列表（需有 leave_type, leave_hours, deduction_ratio 屬性）
-        daily_salary: 日薪（base_salary / MONTHLY_BASE_DAYS）
+        leaves:                      LeaveRecord 列表（需有 leave_type, leave_hours,
+                                      deduction_ratio, start_date 屬性）
+        daily_salary:                日薪（base_salary / MONTHLY_BASE_DAYS）
+        ytd_sick_hours_before_month: 本月之前、同年度已核准病假時數（預設 0）
     Returns:
-        四捨五入後的扣款金額（整數）
+        扣款金額（浮點數，由呼叫端決定是否 round）
     """
     total = 0.0
-    for lv in leaves:
-        ratio = lv.deduction_ratio if lv.deduction_ratio is not None \
+    sick_used = float(ytd_sick_hours_before_month or 0.0)
+
+    # 病假按 start_date 由早到晚處理（先請的先享半薪額度）
+    sick_leaves = sorted(
+        [lv for lv in leaves if lv.leave_type == "sick"],
+        key=lambda lv: getattr(lv, "start_date", None) or date.min,
+    )
+    other_leaves = [lv for lv in leaves if lv.leave_type != "sick"]
+    standard_sick_ratio = LEAVE_DEDUCTION_RULES.get("sick", 0.5)
+
+    for lv in sick_leaves:
+        hours = lv.leave_hours or 0
+        # 僅「明確偏離標準 0.5」的 ratio 視為 HR 人工覆寫；
+        # 核准流程會把 ratio 寫成標準值 0.5，此時應照常套用年度上限。
+        is_genuine_override = (
+            lv.deduction_ratio is not None and lv.deduction_ratio != standard_sick_ratio
+        )
+        if is_genuine_override:
+            total += (hours / 8) * daily_salary * lv.deduction_ratio
+        else:
+            half_paid = max(
+                0.0, min(SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS - sick_used, hours)
+            )
+            unpaid = hours - half_paid
+            total += (half_paid / 8) * daily_salary * 0.5
+            total += (unpaid / 8) * daily_salary * 1.0
+        sick_used += hours
+
+    for lv in other_leaves:
+        ratio = (
+            lv.deduction_ratio
+            if lv.deduction_ratio is not None
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
+        )
         total += (lv.leave_hours / 8) * daily_salary * ratio
     return total
 

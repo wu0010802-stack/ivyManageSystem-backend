@@ -12,7 +12,7 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.leaves_quota import (
     _calc_annual_leave_hours,
@@ -26,10 +26,10 @@ from api.leaves_quota import (
     MONTHLY_MAX_HOURS,
 )
 
-
 # ============================================================
 # _calc_annual_leave_hours
 # ============================================================
+
 
 class TestCalcAnnualLeaveHours:
     def test_none_hire_date_returns_0(self):
@@ -89,6 +89,7 @@ class TestCalcAnnualLeaveHours:
 # _check_leave_limits （mock DB calls）
 # ============================================================
 
+
 class TestCheckLeaveLimits:
     """mock _get_approved_hours_in_year / _get_pending_hours_in_year 等輔助函式"""
 
@@ -145,8 +146,7 @@ class TestCheckLeaveLimits:
         ):
             # pending=8 被忽略，approved=0，0+8=8 不超過 8 → 不拋出
             _check_leave_limits(
-                session, 1, "menstrual", date(2025, 3, 1), 8.0,
-                include_pending=False
+                session, 1, "menstrual", date(2025, 3, 1), 8.0, include_pending=False
             )
 
     def test_non_limited_leave_type_always_passes(self):
@@ -159,6 +159,7 @@ class TestCheckLeaveLimits:
 # ============================================================
 # _check_quota （mock DB calls）
 # ============================================================
+
 
 class TestCheckQuota:
     def _mock_session(self):
@@ -220,12 +221,15 @@ class TestCheckQuota:
 # 常數完整性驗證
 # ============================================================
 
+
 class TestConstants:
     def test_quota_leave_types_subset_of_statutory(self):
         """QUOTA_LEAVE_TYPES 中除了 annual，其餘都應有 STATUTORY_QUOTA_HOURS"""
         for lt in QUOTA_LEAVE_TYPES:
             if lt != "annual":
-                assert lt in STATUTORY_QUOTA_HOURS, f"{lt} 缺少 STATUTORY_QUOTA_HOURS 定義"
+                assert (
+                    lt in STATUTORY_QUOTA_HOURS
+                ), f"{lt} 缺少 STATUTORY_QUOTA_HOURS 定義"
 
     def test_annual_max_hours_marriage(self):
         assert ANNUAL_MAX_HOURS["marriage"] == 64.0
@@ -236,10 +240,15 @@ class TestConstants:
     def test_monthly_max_hours_menstrual(self):
         assert MONTHLY_MAX_HOURS["menstrual"] == 8.0
 
+    def test_menstrual_annual_quota_is_3_days(self):
+        """性工法第 14-1 條：生理假全年 3 天（24h）不併入病假；超過併入病假計算"""
+        assert STATUTORY_QUOTA_HOURS["menstrual"] == 24.0
+
 
 # ============================================================
 # Bug 回歸：remaining_hours 必須扣除 pending 時數
 # ============================================================
+
 
 class TestQuotaRowRemainingIncludesPending:
     """
@@ -251,6 +260,7 @@ class TestQuotaRowRemainingIncludesPending:
 
     def _make_quota(self, total, leave_type="annual"):
         import types
+
         q = types.SimpleNamespace()
         q.id = 1
         q.employee_id = 1
@@ -271,9 +281,9 @@ class TestQuotaRowRemainingIncludesPending:
 
         assert row["used_hours"] == 24.0
         assert row["pending_hours"] == 24.0
-        assert row["remaining_hours"] == 8.0, (
-            f"修復前顯示 32h，修復後應為 8h，實際：{row['remaining_hours']}"
-        )
+        assert (
+            row["remaining_hours"] == 8.0
+        ), f"修復前顯示 32h，修復後應為 8h，實際：{row['remaining_hours']}"
 
     def test_remaining_never_negative(self):
         """used + pending > total 時，remaining 應為 0（不為負數）"""

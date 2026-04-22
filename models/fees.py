@@ -121,8 +121,14 @@ class StudentFeeRefund(Base):
     notes = Column(Text, nullable=True, default="", comment="備註")
     refunded_by = Column(String(50), nullable=False, comment="操作人員 username")
     refunded_at = Column(DateTime, default=datetime.now, nullable=False)
+    # 冪等鍵：網路重送時同 key 視為重試，避免重複退款（NULL 允許重複，相容舊資料）
+    idempotency_key = Column(
+        String(64), nullable=True, comment="退款冪等鍵（10 分鐘視窗內同 key 視為重試）"
+    )
 
     __table_args__ = (
         Index("ix_fee_refunds_record", "record_id"),
         Index("ix_fee_refunds_refunded_at", "refunded_at"),
+        Index("ix_fee_refunds_idk_refunded", "idempotency_key", "refunded_at"),
+        UniqueConstraint("idempotency_key", name="uq_student_fee_refunds_idk"),
     )

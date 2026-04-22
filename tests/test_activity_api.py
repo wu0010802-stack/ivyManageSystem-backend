@@ -454,11 +454,11 @@ def _add_settings(session, is_open=True, open_at=None, close_at=None):
 
 
 def _make_course_item(name: str) -> PublicCourseItem:
-    return PublicCourseItem(name=name, price="0")
+    return PublicCourseItem(name=name)
 
 
 def _make_supply_item(name: str) -> PublicSupplyItem:
-    return PublicSupplyItem(name=name, price="0")
+    return PublicSupplyItem(name=name)
 
 
 # ────────────────────────────────────────────────────────────────── #
@@ -1135,7 +1135,7 @@ class TestBatchInputLimits:
         from pydantic import ValidationError
         from api.activity._shared import PublicRegistrationPayload, PublicCourseItem
 
-        courses = [PublicCourseItem(name=f"課程{i}", price="1000") for i in range(21)]
+        courses = [PublicCourseItem(name=f"課程{i}") for i in range(21)]
         with pytest.raises(ValidationError):
             PublicRegistrationPayload(
                 name="王小明",
@@ -1154,7 +1154,7 @@ class TestBatchInputLimits:
             PublicSupplyItem,
         )
 
-        supplies = [PublicSupplyItem(name=f"用品{i}", price="100") for i in range(21)]
+        supplies = [PublicSupplyItem(name=f"用品{i}") for i in range(21)]
         with pytest.raises(ValidationError):
             PublicRegistrationPayload(
                 name="王小明",

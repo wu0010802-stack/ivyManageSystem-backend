@@ -57,6 +57,8 @@ from api.leaves_quota import (
     LEAVE_DEDUCTION_RULES,
     _check_leave_limits,
     _check_quota,
+    _get_sick_committed_hours,
+    assert_sick_leave_within_statutory_caps,
 )
 from api.leaves_workday import workday_router, validate_leave_hours_against_schedule
 from services.leave_policy import requires_supporting_document
@@ -145,6 +147,41 @@ def _collect_leave_months(start_date, end_date) -> set:
     return months
 
 
+def _guard_leave_quota(
+    session,
+    employee_id: int,
+    leave_type: str,
+    year: int,
+    leave_hours: float,
+    is_hospitalized: bool,
+    exclude_id: int = None,
+    include_pending: bool = True,
+) -> None:
+    """sick 走勞工請假規則第 4 條雙配額；其他假別走 _check_quota 單一配額。"""
+    if leave_type == "sick":
+        from datetime import date as _date  # local re-import safe
+
+        out_used = _get_sick_committed_hours(
+            session, employee_id, year, is_hospitalized=False, exclude_id=exclude_id
+        )
+        hosp_used = _get_sick_committed_hours(
+            session, employee_id, year, is_hospitalized=True, exclude_id=exclude_id
+        )
+        assert_sick_leave_within_statutory_caps(
+            out_used, hosp_used, leave_hours, bool(is_hospitalized)
+        )
+    else:
+        _check_quota(
+            session,
+            employee_id,
+            leave_type,
+            year,
+            leave_hours,
+            include_pending=include_pending,
+            exclude_id=exclude_id,
+        )
+
+
 def _apply_leave_update_and_revoke(leave, data, current_user, leave_id: int) -> None:
     """將 update 欄位套用到 leave，並在已核准時執行退審邏輯。
 
@@ -220,6 +257,7 @@ class LeaveCreate(BaseModel):
     end_time: Optional[str] = None
     leave_hours: float = 8
     reason: Optional[str] = None
+    is_hospitalized: bool = False  # 病假住院旗標（勞工請假規則第 4 條）
     deduction_ratio: Optional[float] = Field(
         None,
         ge=0.0,
@@ -253,6 +291,7 @@ class LeaveUpdate(BaseModel):
     end_time: Optional[str] = None
     leave_hours: Optional[float] = None
     reason: Optional[str] = None
+    is_hospitalized: Optional[bool] = None
     deduction_ratio: Optional[float] = Field(
         None,
         ge=0.0,
@@ -646,12 +685,13 @@ def create_leave(
             data.start_date,
             data.leave_hours,
         )
-        _check_quota(
+        _guard_leave_quota(
             session,
             data.employee_id,
             data.leave_type,
             data.start_date.year,
             data.leave_hours,
+            bool(data.is_hospitalized),
         )
 
         # 優先使用 API 傳入的覆蓋值；未提供則依假別預設規則
@@ -682,6 +722,9 @@ def create_leave(
             is_deductible=effective_ratio > 0,
             deduction_ratio=effective_ratio,
             reason=data.reason,
+            is_hospitalized=(
+                bool(data.is_hospitalized) if data.leave_type == "sick" else False
+            ),
         )
         session.add(leave)
         session.commit()
@@ -768,12 +811,18 @@ def update_leave(
             new_hours,
             exclude_id=leave_id,
         )
-        _check_quota(
+        new_is_hosp = (
+            data.is_hospitalized
+            if data.is_hospitalized is not None
+            else leave.is_hospitalized
+        )
+        _guard_leave_quota(
             session,
             leave.employee_id,
             new_type,
             new_start.year,
             new_hours,
+            new_is_hosp,
             exclude_id=leave_id,
         )
 
@@ -964,14 +1013,15 @@ def approve_leave(
                 include_pending=True,
                 exclude_id=leave_id,
             )
-            _check_quota(
+            _guard_leave_quota(
                 session,
                 leave.employee_id,
                 leave.leave_type,
                 leave.start_date.year,
                 leave.leave_hours,
-                include_pending=True,
+                bool(leave.is_hospitalized),
                 exclude_id=leave_id,
+                include_pending=True,
             )
 
             # ── 封存月薪保護（commit 前）────────────────────────────────────────
@@ -984,14 +1034,14 @@ def approve_leave(
             )
 
         # ── V8：防禦性扣款比例同步 ───────────────────────────────────────────
-        # 核准時確保 deduction_ratio 與 is_deductible 已正確設定。
-        # 場景：假單經多次編輯後，deduction_ratio 可能為 None 或與假別不符。
-        # 只補全 None；若已有明確值（含自訂覆蓋）則保留，僅記錄警告。
+        # 核准時強制確保 deduction_ratio 與假別標準一致，避免「假別變更後
+        # ratio 未重設」造成薪資漏扣/誤扣。若 HR 需要自訂比例，應在核准前
+        # 以假單編輯入口明確傳入 deduction_ratio（該路徑會設置 is_deductible
+        # 並記錄來源）。
         if data.approved and leave.leave_type in LEAVE_DEDUCTION_RULES:
             standard_ratio = LEAVE_DEDUCTION_RULES[leave.leave_type]
             if leave.deduction_ratio is None:
                 leave.deduction_ratio = standard_ratio
-                leave.is_deductible = standard_ratio > 0
                 logger.info(
                     "核准假單 #%d 時補全缺失的 deduction_ratio：%s → %.2f",
                     leave_id,
@@ -1000,12 +1050,13 @@ def approve_leave(
                 )
             elif leave.deduction_ratio != standard_ratio:
                 logger.warning(
-                    "核准假單 #%d 發現自訂扣款比例：%s 標準值=%.2f，實際值=%.2f（admin 自訂）",
+                    "核准假單 #%d deduction_ratio 與假別標準不符：%s 標準=%.2f 實際=%.2f，強制改回標準值",
                     leave_id,
                     leave.leave_type,
                     standard_ratio,
                     leave.deduction_ratio,
                 )
+                leave.deduction_ratio = standard_ratio
             leave.is_deductible = (leave.deduction_ratio or 0) > 0
 
         leave.is_approved = data.approved
@@ -1191,14 +1242,15 @@ def batch_approve_leaves(
                             include_pending=True,
                             exclude_id=leave_id,
                         )
-                        _check_quota(
+                        _guard_leave_quota(
                             session,
                             leave.employee_id,
                             leave.leave_type,
                             leave.start_date.year,
                             leave.leave_hours,
-                            include_pending=True,
+                            bool(leave.is_hospitalized),
                             exclude_id=leave_id,
+                            include_pending=True,
                         )
                         _check_salary_months_not_finalized(
                             session,
@@ -1209,12 +1261,20 @@ def batch_approve_leaves(
                         failed.append({"id": leave_id, "reason": e.detail})
                         continue
 
-                # V8：批次核准時同步補全 deduction_ratio
+                # V8：批次核准時強制同步 deduction_ratio 到假別標準值
                 if data.approved and leave.leave_type in LEAVE_DEDUCTION_RULES:
                     standard_ratio = LEAVE_DEDUCTION_RULES[leave.leave_type]
                     if leave.deduction_ratio is None:
                         leave.deduction_ratio = standard_ratio
-                        leave.is_deductible = standard_ratio > 0
+                    elif leave.deduction_ratio != standard_ratio:
+                        logger.warning(
+                            "批次核准假單 #%d deduction_ratio 與假別標準不符：%s 標準=%.2f 實際=%.2f，強制改回標準值",
+                            leave_id,
+                            leave.leave_type,
+                            standard_ratio,
+                            leave.deduction_ratio,
+                        )
+                        leave.deduction_ratio = standard_ratio
                     leave.is_deductible = (leave.deduction_ratio or 0) > 0
 
                 leave.is_approved = data.approved

@@ -14,7 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func
-from sqlalchemy.exc import CompileError, OperationalError
+from sqlalchemy.exc import CompileError, IntegrityError, OperationalError
 
 from models.database import (
     get_session,
@@ -60,6 +60,7 @@ from ._shared import (
     _match_student_id,
     TAIPEI_TZ,
     get_line_service,
+    today_taipei,
 )
 from utils.academic import resolve_academic_term_filters
 
@@ -115,7 +116,7 @@ async def batch_update_payment(
 
         status_str = "已繳費" if body.is_paid else "未繳費"
         operator = current_user.get("username", "")
-        today = datetime.now().date()
+        today = today_taipei()
 
         # 批次補齊/沖帳皆寫 today；若今日已簽核則拒絕，避免日結 snapshot 失準
         _require_daily_close_unlocked(session, today)
@@ -1514,24 +1515,21 @@ async def update_payment(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """更新付款狀態"""
+    """更新付款狀態
+
+    併發保護：鎖 reg 行，避免與 POS checkout / add_registration_payment 並發
+    造成 lost update（POS 寫入的 paid_amount 可能被此處 set 覆寫）。
+    """
     session = get_session()
     try:
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active.is_(True),
-            )
-            .first()
-        )
+        reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
 
         total_amount = _calc_total_amount(session, registration_id)
         operator = current_user.get("username", "")
 
-        today = datetime.now().date()
+        today = today_taipei()
         # 今日若已簽核，任何補齊/沖帳都會讓 snapshot 失準，先擋
         _require_daily_close_unlocked(session, today)
         if body.is_paid:
@@ -1723,17 +1721,14 @@ async def add_registration_course(
     body: AddCourseRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """後台為既有報名追加一筆課程（額滿時自動候補）。"""
+    """後台為既有報名追加一筆課程（額滿時自動候補）。
+
+    併發保護：鎖 reg 行，與 remove_registration_supply 對稱，避免與
+    POS checkout / update_payment 並發時 is_paid 旗標短暫錯誤。
+    """
     session = get_session()
     try:
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active.is_(True),
-            )
-            .first()
-        )
+        reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
 
@@ -1838,17 +1833,13 @@ async def add_registration_supply(
     body: AddSupplyRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """後台為既有報名追加一筆用品。"""
+    """後台為既有報名追加一筆用品。
+
+    併發保護：鎖 reg 行，與 remove_registration_supply 對稱。
+    """
     session = get_session()
     try:
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active.is_(True),
-            )
-            .first()
-        )
+        reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
 
@@ -2104,6 +2095,19 @@ async def add_registration_payment(
                 detail=f"退費金額 NT${body.amount} 超過已繳金額 NT${reg.paid_amount or 0}",
             )
 
+        # 空報名守衛：與 POS checkout 對齊，避免對無應繳的殼報名寫入付款，產生孤兒金額。
+        # 僅擋「空報名收款」，不擋超收（overpaid 是系統支援的四態之一，admin 可能需要手動處理）
+        if body.type == "payment":
+            current_total = _calc_total_amount(session, registration_id)
+            if current_total <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"報名 {registration_id}（{reg.student_name}）無應繳金額，"
+                        f"無法新增繳費記錄"
+                    ),
+                )
+
         rec = ActivityPaymentRecord(
             registration_id=registration_id,
             type=body.type,
@@ -2134,7 +2138,40 @@ async def add_registration_payment(
             f"{type_label} NT${body.amount}，繳費方式：{body.payment_method}",
             operator,
         )
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError as e:
+            # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：轉為 idempotent replay
+            session.rollback()
+            if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
+                hit = (
+                    session.query(ActivityPaymentRecord)
+                    .filter(
+                        ActivityPaymentRecord.idempotency_key == body.idempotency_key
+                    )
+                    .order_by(ActivityPaymentRecord.id.asc())
+                    .first()
+                )
+                if hit is not None:
+                    reg_hit = (
+                        session.query(ActivityRegistration)
+                        .filter(ActivityRegistration.id == hit.registration_id)
+                        .first()
+                    )
+                    total_hit = _calc_total_amount(session, hit.registration_id)
+                    paid_hit = (reg_hit.paid_amount if reg_hit else 0) or 0
+                    type_label_hit = "繳費" if hit.type == "payment" else "退費"
+                    logger.info(
+                        "add_registration_payment idempotent replay via UNIQUE: key=%s reg=%s",
+                        body.idempotency_key,
+                        hit.registration_id,
+                    )
+                    return {
+                        "message": f"{type_label_hit}記錄新增成功",
+                        "paid_amount": paid_hit,
+                        "payment_status": _derive_payment_status(paid_hit, total_hit),
+                    }
+            raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         request.state.audit_summary = (
             f"新增{type_label}記錄：{reg.student_name} NT${body.amount}"
@@ -2168,17 +2205,14 @@ async def delete_registration_payment(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """刪除繳費記錄（更正用），自動重新計算已繳金額"""
+    """刪除繳費記錄（更正用），自動重新計算已繳金額
+
+    併發保護：鎖 reg 行，避免 GROUP BY 重算與 POS checkout 並發時，
+    POS 的新付款在本端 commit 時被 paid_amount = 舊 sum 的 UPDATE 覆蓋（lost update）。
+    """
     session = get_session()
     try:
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active.is_(True),
-            )
-            .first()
-        )
+        reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
 
@@ -2429,7 +2463,7 @@ async def withdraw_course(
 
         # 若需要自動沖帳，寫 refund 紀錄並扣 paid_amount
         if refund_needed > 0 and force_refund:
-            today = datetime.now().date()
+            today = today_taipei()
             _require_daily_close_unlocked(session, today)
             session.add(
                 ActivityPaymentRecord(
