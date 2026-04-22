@@ -37,6 +37,7 @@ from models.overtime import OvertimeRecord, PunchCorrectionRequest
 from models.salary import (
     SalaryRecord,
     SalaryItem,
+    SalarySnapshot,
     SalaryCalcJobRecord,
     DeductionType,
     BonusType,
@@ -136,6 +137,7 @@ __all__ = [
     # salary
     "SalaryRecord",
     "SalaryItem",
+    "SalarySnapshot",
     "DeductionType",
     "BonusType",
     "DeductionRule",

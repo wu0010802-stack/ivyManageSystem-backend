@@ -161,19 +161,31 @@ def _parse_receipt_response_from_record(
     僅依賴 DB 資料，不讀 request body — 確保重試時 response 穩定，
     與第一次呼叫時的狀態一致。tendered/change 不儲存，故回 None。
     """
+    # 優先用 receipt_no 欄位；空值時回退抽取 notes 標記（舊紀錄相容）
+    receipt_no = record.receipt_no
     notes = record.notes or ""
-    m = re.search(r"\[(POS-\d{8}-[A-Fa-f0-9]+)\]", notes)
-    if not m:
-        return None
-    receipt_no = m.group(1)
+    if not receipt_no:
+        m = re.search(r"\[(POS-\d{8}-[A-Fa-f0-9]+)\]", notes)
+        if not m:
+            return None
+        receipt_no = m.group(1)
 
     # 該收據對應的所有付款記錄（同 receipt_no 代表一張收據）
+    # 用欄位 + index 查詢；不再依賴 notes LIKE 以免受使用者備註污染
     same_recs = (
         session.query(ActivityPaymentRecord)
-        .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+        .filter(ActivityPaymentRecord.receipt_no == receipt_no)
         .order_by(ActivityPaymentRecord.id.asc())
         .all()
     )
+    # Fallback：舊資料尚未 backfill receipt_no 時，回退到 notes 比對
+    if not same_recs:
+        same_recs = (
+            session.query(ActivityPaymentRecord)
+            .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+            .order_by(ActivityPaymentRecord.id.asc())
+            .all()
+        )
     if not same_recs:
         return None
 
@@ -238,11 +250,12 @@ def _find_idempotent_hit(
     """查詢視窗內是否已有相同 idempotency_key 的記錄。
 
     threshold 與 ActivityPaymentRecord.created_at 必須用同一種時間基準：
-    ORM default 為 `datetime.now()`（naive, 伺服器本地），因此 threshold
-    也用 `datetime.now()`；若以 TAIPEI 時區計算，部署在 UTC 伺服器會差 8
-    小時，讓冪等視窗失效、導致網路重送時重複扣款。
+    model 層 created_at default 已統一用 TAIPEI naive，threshold 同步；
+    這樣即使部署在 UTC 伺服器，冪等視窗仍精確對應 10 分鐘實時間。
     """
-    threshold = datetime.now() - timedelta(seconds=_IDEMPOTENCY_WINDOW_SECONDS)
+    threshold = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(
+        seconds=_IDEMPOTENCY_WINDOW_SECONDS
+    )
     return (
         session.query(ActivityPaymentRecord)
         .filter(
@@ -471,11 +484,12 @@ async def pos_checkout(
         supply_map = _fetch_reg_supplies(session, reg_ids)
 
         # 產生不碰撞的 receipt_no（極低機率下重試）
+        # 碰撞檢測改用 receipt_no 欄位（有 index、不受 notes 污染）
         receipt_no = _make_receipt_no()
         for _ in range(_RECEIPT_NO_RETRIES):
             exists = (
                 session.query(ActivityPaymentRecord.id)
-                .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+                .filter(ActivityPaymentRecord.receipt_no == receipt_no)
                 .first()
             )
             if exists is None:
@@ -521,6 +535,7 @@ async def pos_checkout(
                 notes=stored_notes,
                 operator=operator,
                 idempotency_key=body.idempotency_key,
+                receipt_no=receipt_no,
             )
             session.add(rec)
 
@@ -721,7 +736,11 @@ async def pos_recent_transactions(
             ActivityPaymentRecord.payment_date == target_date,
         )
         if not include_system:
-            query = query.filter(ActivityPaymentRecord.notes.like("%[POS-%"))
+            # 優先用 receipt_no 欄位過濾 POS 交易；舊資料尚未 backfill 時回退到 notes 標記
+            query = query.filter(
+                (ActivityPaymentRecord.receipt_no.isnot(None))
+                | (ActivityPaymentRecord.notes.like("%[POS-%"))
+            )
         records = query.order_by(ActivityPaymentRecord.id.desc()).all()
 
         # 依 receipt_no 聚合（POS 交易）；無 POS 標記者每筆獨立成 SYS-<id>
@@ -729,9 +748,11 @@ async def pos_recent_transactions(
         receipt_source: dict = {}  # receipt_key -> 'pos' | 'system'
         order: list = []
         for r in records:
-            m = _RECEIPT_NO_RE.search(r.notes or "")
-            if m:
-                rno = m.group(1)
+            rno = r.receipt_no
+            if not rno:
+                m = _RECEIPT_NO_RE.search(r.notes or "")
+                rno = m.group(1) if m else None
+            if rno:
                 source = "pos"
             else:
                 rno = f"SYS-{r.id}"

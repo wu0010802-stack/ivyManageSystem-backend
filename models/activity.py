@@ -3,6 +3,7 @@ models/activity.py — 課後才藝報名系統資料模型
 """
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     Column,
@@ -19,6 +20,19 @@ from sqlalchemy import (
 )
 
 from models.base import Base
+
+_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _now_taipei_naive() -> datetime:
+    """才藝相關記錄一律以台灣時間為準（與 today_taipei / payment_date 對齊）。
+
+    Why: 若 server 部署在 UTC，預設 datetime.now() 會寫入 UTC 時刻，而 payment_date /
+    冪等 key 視窗 / 候補 deadline 等都已改用 TAIPEI_TZ，這會讓 created_at 與其他時間
+    欄位錯開 8 小時。此 helper 產生 timezone-aware 的台灣當下再 strip tzinfo，
+    保持欄位型別不變（DateTime 為 naive）。
+    """
+    return datetime.now(_TAIPEI_TZ).replace(tzinfo=None)
 
 
 class ActivityCourse(Base):
@@ -331,7 +345,14 @@ class ActivityPaymentRecord(Base):
     idempotency_key = Column(
         String(64), nullable=True, comment="POS 冪等鍵（10 分鐘視窗內同 key 視為重試）"
     )
-    created_at = Column(DateTime, default=datetime.now)
+    # 收據編號（POS-YYYYMMDD-XXXXXXXXXXXX）：獨立欄位取代「LIKE notes」模糊比對，
+    # 走索引查詢同收據所有 items；notes 僅保留標記供舊版 UI 相容。
+    receipt_no = Column(
+        String(40), nullable=True, comment="POS 收據編號（整張收據的 items 共用）"
+    )
+    # created_at 用台灣時間；與 payment_date / 冪等視窗 threshold 對齊，
+    # 部署在 UTC 伺服器時不會讓 snapshot / idempotency 判定差 8 小時。
+    created_at = Column(DateTime, default=_now_taipei_naive)
 
     __table_args__ = (
         Index("ix_activity_payment_records_reg", "registration_id"),
@@ -339,6 +360,7 @@ class ActivityPaymentRecord(Base):
         Index(
             "ix_activity_payment_records_idk_created", "idempotency_key", "created_at"
         ),
+        Index("ix_activity_payment_records_receipt_no", "receipt_no"),
         # 唯一約束：避免並發重送造成雙扣。NULL 可重複（標準 SQL），故未帶 key 的紀錄不受影響。
         UniqueConstraint("idempotency_key", name="uq_activity_payment_records_idk"),
     )

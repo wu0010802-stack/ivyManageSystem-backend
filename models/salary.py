@@ -270,6 +270,106 @@ class SalaryRecord(Base):
     employee = relationship("Employee", back_populates="salaries")
 
 
+class SalarySnapshot(Base):
+    """薪資快照表 — 不可變歷史
+
+    與 SalaryRecord 分層：
+    - SalaryRecord 為「可變工作副本」，每次重算會 UPDATE 覆蓋
+    - SalarySnapshot 為「不可變歷史」，捕捉特定時間點的薪資狀態
+
+    快照類型（snapshot_type）：
+    - month_end：月底自動快照（Lazy + 排程雙保險觸發）
+    - finalize：封存整月時同步寫入（即使後續解封仍保留）
+    - manual：管理員手動補拍（可填 snapshot_remark）
+
+    金額欄位結構與 SalaryRecord 保持一致，方便反射複製；
+    新增欄位至 SalaryRecord 時須同步於此補上對應欄位（PR checklist 提醒）。
+    """
+
+    __tablename__ = "salary_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    salary_record_id = Column(
+        Integer,
+        ForeignKey("salary_records.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="來源 SalaryRecord；record 被刪仍保留快照",
+    )
+    employee_id = Column(
+        Integer,
+        nullable=False,
+        comment="冗餘，用於個人歷史查詢；不設 FK 避免員工刪除連動",
+    )
+    salary_year = Column(Integer, nullable=False)
+    salary_month = Column(Integer, nullable=False)
+
+    # ── 以下為 SalaryRecord 金額/計數/布林/備註欄位完整複製 ───────────────────
+    base_salary = Column(Money, default=0)
+    festival_bonus = Column(Money, default=0)
+    overtime_bonus = Column(Money, default=0)
+    performance_bonus = Column(Money, default=0)
+    special_bonus = Column(Money, default=0)
+    overtime_pay = Column(Money, default=0)
+    meeting_overtime_pay = Column(Money, default=0)
+    meeting_absence_deduction = Column(Money, default=0)
+    birthday_bonus = Column(Money, default=0)
+    work_hours = Column(Float, default=0)
+    hourly_rate = Column(Money, default=0)
+    hourly_total = Column(Money, default=0)
+    labor_insurance_employee = Column(Money, default=0)
+    labor_insurance_employer = Column(Money, default=0)
+    health_insurance_employee = Column(Money, default=0)
+    health_insurance_employer = Column(Money, default=0)
+    pension_employee = Column(Money, default=0)
+    pension_employer = Column(Money, default=0)
+    late_deduction = Column(Money, default=0)
+    early_leave_deduction = Column(Money, default=0)
+    missing_punch_deduction = Column(Money, default=0)
+    leave_deduction = Column(Money, default=0)
+    absence_deduction = Column(Money, default=0)
+    other_deduction = Column(Money, default=0)
+    late_count = Column(Integer, default=0)
+    early_leave_count = Column(Integer, default=0)
+    missing_punch_count = Column(Integer, default=0)
+    absent_count = Column(Integer, default=0)
+    gross_salary = Column(Money, default=0)
+    total_deduction = Column(Money, default=0)
+    net_salary = Column(Money, default=0)
+    bonus_separate = Column(Boolean, default=False)
+    bonus_amount = Column(Money, default=0)
+    supervisor_dividend = Column(Money, default=0)
+    remark = Column(Text, comment="複製自 SalaryRecord.remark")
+
+    # ── 快照專屬 metadata ─────────────────────────────────────────────
+    snapshot_type = Column(
+        String(20),
+        nullable=False,
+        comment="month_end / finalize / manual",
+    )
+    captured_at = Column(
+        DateTime, default=datetime.now, nullable=False, comment="快照捕捉時間"
+    )
+    captured_by = Column(String(50), comment="觸發者 username；系統自動觸發為 system")
+    source_version = Column(Integer, comment="拍攝當下 SalaryRecord.version，便於追溯")
+    snapshot_remark = Column(Text, comment="快照備註，手動類型常填")
+
+    __table_args__ = (
+        Index("ix_salary_snapshot_ym", "salary_year", "salary_month"),
+        Index(
+            "ix_salary_snapshot_emp_ym",
+            "employee_id",
+            "salary_year",
+            "salary_month",
+        ),
+        Index(
+            "ix_salary_snapshot_ym_type",
+            "salary_year",
+            "salary_month",
+            "snapshot_type",
+        ),
+    )
+
+
 class SalaryCalcJobRecord(Base):
     """薪資批次計算 async job 狀態表（DB-backed registry）。
 

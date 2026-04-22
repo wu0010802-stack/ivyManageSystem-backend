@@ -53,6 +53,7 @@ from services.salary_field_breakdown import (
     build_salary_debug_snapshot,
 )
 from services.salary_job_registry import registry as _salary_job_registry
+from services import salary_snapshot_service as _snapshot_svc
 from services.student_enrollment import (
     classroom_student_count_map,
     count_students_active_on,
@@ -104,11 +105,90 @@ class SalarySimulateRequest(BaseModel):
     overrides: SalarySimulateOverride = SalarySimulateOverride()
 
 
+# ============ Lazy snapshot trigger ============
+
+# 記憶體去重：同一 day + (year, month) 每個 worker 只觸發一次背景補拍，
+# DB 仍會 idempotent 保護；此處只是避免重複排隊 background task 浪費。
+_snapshot_lazy_guard: set[str] = set()
+_snapshot_lazy_lock = threading.Lock()
+
+
+def _previous_month(today: date) -> tuple[int, int]:
+    if today.month == 1:
+        return today.year - 1, 12
+    return today.year, today.month - 1
+
+
+def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> None:
+    """若上個月有 SalaryRecord 但缺任何一筆 month_end 快照，排背景補拍。
+
+    呼叫端：`/salaries/calculate` 與 `/salaries/records`。
+    不阻塞主請求，錯誤僅 log。
+    """
+    if bg is None:
+        return
+    today = date.today()
+    year, month = _previous_month(today)
+    key = f"{today.isoformat()}:{year}-{month:02d}"
+    with _snapshot_lazy_lock:
+        if key in _snapshot_lazy_guard:
+            return
+        _snapshot_lazy_guard.add(key)
+    try:
+        from services.salary_snapshot_service import (
+            run_month_end_snapshots_job,
+        )
+        from models.database import SalarySnapshot as _SnapModel
+
+        with session_scope() as session:
+            has_record = (
+                session.query(SalaryRecord.id)
+                .filter(
+                    SalaryRecord.salary_year == year,
+                    SalaryRecord.salary_month == month,
+                )
+                .first()
+                is not None
+            )
+            if not has_record:
+                return
+            record_count = (
+                session.query(SalaryRecord.employee_id)
+                .filter(
+                    SalaryRecord.salary_year == year,
+                    SalaryRecord.salary_month == month,
+                )
+                .count()
+            )
+            snapshot_count = (
+                session.query(_SnapModel.id)
+                .filter(
+                    _SnapModel.salary_year == year,
+                    _SnapModel.salary_month == month,
+                    _SnapModel.snapshot_type == "month_end",
+                )
+                .count()
+            )
+            if snapshot_count >= record_count:
+                return
+        bg.add_task(run_month_end_snapshots_job, year, month, "system")
+        logger.info(
+            "lazy snapshot trigger queued for %d/%d (records=%d, existing=%d)",
+            year,
+            month,
+            record_count,
+            snapshot_count,
+        )
+    except Exception as e:
+        logger.warning("lazy snapshot trigger skipped: %s", e)
+
+
 # ============ Routes ============
 
 
 @router.post("/salaries/calculate")
 def calculate_salaries_alt(
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
     year: int = Query(..., ge=2000, le=2100, description="Calculate for which year"),
     month: int = Query(..., ge=1, le=12, description="Calculate for which month"),
@@ -117,6 +197,7 @@ def calculate_salaries_alt(
     """
     Calculate or Recalculate salaries for all employees for a given month.
     """
+    _trigger_past_month_snapshot_if_missing(background_tasks)
     session = get_session()
     try:
         # ── 封存前置檢查：只要該月有任何已封存薪資，整批拒絕 ──────────────────
@@ -483,6 +564,7 @@ def get_festival_bonus(
 
 @router.get("/salaries/records")
 def get_salary_records(
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
@@ -490,6 +572,7 @@ def get_salary_records(
     limit: int = Query(500, ge=1, le=1000),
 ):
     """查詢某月薪資記錄（支援分頁，預設一次最多 500 筆）"""
+    _trigger_past_month_snapshot_if_missing(background_tasks)
     with session_scope() as session:
         role = current_user.get("role", "")
         FULL_SALARY_ROLES = {"admin", "hr"}
@@ -1241,6 +1324,7 @@ def finalize_salary_month(
             r.is_finalized = True
             r.finalized_at = now
             r.finalized_by = operator
+            _snapshot_svc.create_finalize_snapshot(session, r, operator)
         logger.info(
             "整月薪資封存：%d/%d，共 %d 筆，操作者=%s",
             data.year,
@@ -1296,6 +1380,84 @@ def unfinalize_salary(
         audit_note = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 封存解除，操作者：{operator}"
         record.remark = (record.remark or "") + audit_note
         return {"message": "已解除封存，操作記錄已寫入備註欄位"}
+
+
+# ============ Salary Snapshots ============
+
+
+class ManualSnapshotRequest(BaseModel):
+    remark: Optional[str] = Field(None, max_length=500)
+    employee_id: Optional[int] = Field(None, ge=1, description="空值表示整月快照")
+
+
+@router.get("/salaries/snapshots")
+def list_salary_snapshots(
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    employee_id: Optional[int] = Query(None, ge=1),
+):
+    """列出某月薪資快照（精簡 metadata）。"""
+    with session_scope() as session:
+        return {
+            "snapshots": _snapshot_svc.list_snapshots(session, year, month, employee_id)
+        }
+
+
+@router.get("/salaries/snapshots/{snapshot_id}")
+def get_salary_snapshot(
+    snapshot_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+):
+    """取得單筆快照完整欄位。"""
+    with session_scope() as session:
+        data = _snapshot_svc.get_snapshot_detail(session, snapshot_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="找不到該薪資快照")
+        return data
+
+
+@router.post("/salaries/snapshots")
+def create_manual_salary_snapshot(
+    data: ManualSnapshotRequest,
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+):
+    """手動補拍快照（type='manual'）。"""
+    operator = current_user.get("username") or current_user.get("name") or "管理員"
+    with session_scope() as session:
+        count = _snapshot_svc.create_manual_snapshot(
+            session,
+            year=year,
+            month=month,
+            captured_by=operator,
+            remark=data.remark,
+            employee_id=data.employee_id,
+        )
+        if count == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{year} 年 {month} 月無對應薪資記錄可建立快照",
+            )
+        return {
+            "message": f"已建立 {count} 筆手動快照",
+            "count": count,
+            "captured_by": operator,
+        }
+
+
+@router.get("/salaries/snapshots/{snapshot_id}/diff")
+def get_salary_snapshot_diff(
+    snapshot_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+):
+    """比對快照與當前 SalaryRecord 的欄位差異。"""
+    with session_scope() as session:
+        data = _snapshot_svc.diff_with_current(session, snapshot_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="找不到該薪資快照")
+        return data
 
 
 # ============ Salary Simulation ============

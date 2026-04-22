@@ -794,3 +794,220 @@ class TestActivityAuditStateOverride:
             f"但拿到 {captured['audit_entity_id']}（可能被 URL 尾段 course_id 搶走）"
         )
         assert captured["audit_summary"] and "退課" in captured["audit_summary"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# #5 — remove_registration_supply 超繳守衛（與 withdraw_course 對稱）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestRemoveSupplyGuards:
+    def test_remove_supply_overpay_requires_force(self, fee_client):
+        """移除用品後已繳 > 新應繳，應 409 要求 force_refund。"""
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(
+                s,
+                course_price=500,
+                supply_price=500,
+                paid_amount=1000,
+                is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            supply_record_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{supply_record_id}"
+        )
+        assert res.status_code == 409, res.text
+
+        with sf() as s:
+            # 守衛未通過，用品不應被刪
+            rs = (
+                s.query(RegistrationSupply)
+                .filter(RegistrationSupply.id == supply_record_id)
+                .first()
+            )
+            assert rs is not None, "守衛未通過，用品紀錄不應被刪除"
+
+    def test_remove_supply_force_refund_writes_refund(self, fee_client):
+        """force_refund=true 時移除用品並寫退費沖帳。"""
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(
+                s,
+                course_price=500,
+                supply_price=500,
+                paid_amount=1000,
+                is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            supply_record_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{supply_record_id}"
+            "?force_refund=true"
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["refunded_amount"] == 500
+        assert data["paid_amount"] == 500
+        assert data["total_amount"] == 500
+
+        with sf() as s:
+            # 用品已刪、reg.paid_amount 扣回
+            rs = (
+                s.query(RegistrationSupply)
+                .filter(RegistrationSupply.id == supply_record_id)
+                .first()
+            )
+            assert rs is None
+            reg = s.query(ActivityRegistration).get(reg_id)
+            assert reg.paid_amount == 500
+
+            refunds = (
+                s.query(ActivityPaymentRecord)
+                .filter(
+                    ActivityPaymentRecord.registration_id == reg_id,
+                    ActivityPaymentRecord.type == "refund",
+                )
+                .all()
+            )
+            assert len(refunds) == 1
+            assert refunds[0].amount == 500
+            assert refunds[0].payment_method == "系統補齊"
+
+    def test_remove_supply_no_overpay_does_not_require_force(self, fee_client):
+        """移除用品後 paid 仍在 new_total 以內，不需 force。"""
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            # course=500、supply=500、只繳 400 → 移除用品後 new_total=500，paid=400 → 不超繳
+            reg = _setup_reg(
+                s,
+                course_price=500,
+                supply_price=500,
+                paid_amount=400,
+                is_paid=False,
+            )
+            s.commit()
+            reg_id = reg.id
+            supply_record_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{supply_record_id}"
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["refunded_amount"] == 0
+        assert data["total_amount"] == 500
+        assert data["paid_amount"] == 400
+
+        with sf() as s:
+            # 不應留下任何 refund 紀錄
+            refunds = (
+                s.query(ActivityPaymentRecord)
+                .filter(
+                    ActivityPaymentRecord.registration_id == reg_id,
+                    ActivityPaymentRecord.type == "refund",
+                )
+                .count()
+            )
+            assert refunds == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# #6 — add_registration_course / supply 產生欠款時回 outstanding_amount
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestAddOutstandingAmount:
+    def test_add_course_to_paid_reg_returns_outstanding(self, fee_client):
+        """對已繳清的報名加新課程，response 應回 outstanding_amount。"""
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, course_price=500, paid_amount=500, is_paid=True)
+            from utils.academic import resolve_current_academic_term
+
+            sy, sem = resolve_current_academic_term()
+            extra = ActivityCourse(
+                name="陶藝",
+                price=800,
+                capacity=30,
+                allow_waitlist=True,
+                school_year=sy,
+                semester=sem,
+            )
+            s.add(extra)
+            s.commit()
+            reg_id = reg.id
+            extra_course_id = extra.id
+
+        assert _login(client).status_code == 200
+
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/courses",
+            json={"course_id": extra_course_id},
+        )
+        assert res.status_code == 201, res.text
+        data = res.json()
+        assert data["total_amount"] == 1300  # 500 + 800
+        assert data["paid_amount"] == 500
+        assert data["outstanding_amount"] == 800
+        assert data["payment_status"] == "partial"
+
+    def test_add_supply_to_paid_reg_returns_outstanding(self, fee_client):
+        """對已繳清的報名加用品，response 應回 outstanding_amount + 扣款差額。"""
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, course_price=500, paid_amount=500, is_paid=True)
+            from utils.academic import resolve_current_academic_term
+
+            sy, sem = resolve_current_academic_term()
+            supply = ActivitySupply(
+                name="額外材料",
+                price=300,
+                school_year=sy,
+                semester=sem,
+            )
+            s.add(supply)
+            s.commit()
+            reg_id = reg.id
+            supply_id = supply.id
+
+        assert _login(client).status_code == 200
+
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/supplies",
+            json={"supply_id": supply_id},
+        )
+        assert res.status_code == 201, res.text
+        data = res.json()
+        assert data["total_amount"] == 800  # 500 + 300
+        assert data["paid_amount"] == 500
+        assert data["outstanding_amount"] == 300
+        assert data["payment_status"] == "partial"

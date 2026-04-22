@@ -1785,6 +1785,9 @@ async def add_registration_course(
                 status_code=400, detail=f"課程「{course.name}」已額滿且不開放候補"
             )
 
+        paid_amount = reg.paid_amount or 0
+        before_total = _calc_total_amount(session, registration_id)
+
         rc = RegistrationCourse(
             registration_id=registration_id,
             course_id=course.id,
@@ -1792,22 +1795,28 @@ async def add_registration_course(
             price_snapshot=course.price,
         )
         session.add(rc)
+        session.flush()
+
+        # 新增課程後可能把原本已繳清改為部分繳費；算出欠款供管理員即時追繳
+        total_amount = _calc_total_amount(session, registration_id)
+        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
+        outstanding_amount = max(0, total_amount - paid_amount)
+        debt_delta = max(0, (total_amount - paid_amount) - (before_total - paid_amount))
 
         label = "候補" if status == "waitlist" else "正式"
+        log_detail = f"課程「{course.name}」（{label}，價 ${course.price}）"
+        if debt_delta > 0:
+            log_detail += (
+                f"，產生欠款 NT${debt_delta}（累計欠款 NT${outstanding_amount}）"
+            )
         activity_service.log_change(
             session,
             registration_id,
             reg.student_name,
             "新增課程",
-            f"課程「{course.name}」（{label}，價 ${course.price}）",
+            log_detail,
             current_user.get("username", ""),
         )
-
-        # 若報名原本狀態為已繳清，新增課程後可能變為部分繳費
-        # （autoflush 已把新 RegistrationCourse 寫入 session，_calc_total_amount 會涵蓋）
-        total_amount = _calc_total_amount(session, registration_id)
-        paid_amount = reg.paid_amount or 0
-        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
 
         session.commit()
         _invalidate_activity_dashboard_caches(session)
@@ -1815,6 +1824,8 @@ async def add_registration_course(
             "message": "課程新增成功" + ("（候補）" if status == "waitlist" else ""),
             "status": status,
             "total_amount": total_amount,
+            "paid_amount": paid_amount,
+            "outstanding_amount": outstanding_amount,
             "payment_status": _derive_payment_status(paid_amount, total_amount),
         }
     except HTTPException:
@@ -1857,26 +1868,35 @@ async def add_registration_supply(
         if supply.school_year != reg.school_year or supply.semester != reg.semester:
             raise HTTPException(status_code=400, detail="用品學期與報名學期不一致")
 
+        paid_amount = reg.paid_amount or 0
+        before_total = _calc_total_amount(session, registration_id)
+
         rs = RegistrationSupply(
             registration_id=registration_id,
             supply_id=supply.id,
             price_snapshot=supply.price,
         )
         session.add(rs)
+        session.flush()
 
+        total_amount = _calc_total_amount(session, registration_id)
+        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
+        outstanding_amount = max(0, total_amount - paid_amount)
+        debt_delta = max(0, (total_amount - paid_amount) - (before_total - paid_amount))
+
+        log_detail = f"用品「{supply.name}」（價 ${supply.price}）"
+        if debt_delta > 0:
+            log_detail += (
+                f"，產生欠款 NT${debt_delta}（累計欠款 NT${outstanding_amount}）"
+            )
         activity_service.log_change(
             session,
             registration_id,
             reg.student_name,
             "新增用品",
-            f"用品「{supply.name}」（價 ${supply.price}）",
+            log_detail,
             current_user.get("username", ""),
         )
-
-        session.flush()
-        total_amount = _calc_total_amount(session, registration_id)
-        paid_amount = reg.paid_amount or 0
-        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
 
         session.commit()
         _invalidate_activity_dashboard_caches(session)
@@ -1884,6 +1904,8 @@ async def add_registration_supply(
             "message": "用品新增成功",
             "id": rs.id,
             "total_amount": total_amount,
+            "paid_amount": paid_amount,
+            "outstanding_amount": outstanding_amount,
             "payment_status": _derive_payment_status(paid_amount, total_amount),
         }
     except HTTPException:
@@ -1900,11 +1922,16 @@ async def add_registration_supply(
 async def remove_registration_supply(
     registration_id: int,
     supply_record_id: int,
+    force_refund: bool = Query(
+        False,
+        description="移除用品後若出現超繳，需顯式帶 true 才允許移除並自動寫退費沖帳紀錄",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """後台移除已報名的單筆用品。
 
     併發保護：鎖住 reg 行，避免與其他端點（結帳、退課）同時改 is_paid。
+    與 withdraw_course 對稱：若移除後 paid_amount > new_total，須顯式 force_refund。
     """
     session = get_session()
     try:
@@ -1938,27 +1965,66 @@ async def remove_registration_supply(
         )
         supply_name = supply.name if supply else str(rs.supply_id)
 
+        paid_amount = reg.paid_amount or 0
+        before_total = _calc_total_amount(session, registration_id)
+        # 估算移除後的應繳；真正的 refund_needed 在 flush 後用 new_total 重算
+        estimated_after_total = before_total - int(rs.price_snapshot or 0)
+        preview_refund = max(0, paid_amount - estimated_after_total)
+
+        if preview_refund > 0 and not force_refund:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"移除用品後將產生超繳 NT${preview_refund}（已繳 NT${paid_amount}、"
+                    f"移除後應繳 NT${estimated_after_total}），請先處理退費或於移除時"
+                    f"指定 force_refund=true 自動沖帳"
+                ),
+            )
+
         session.delete(rs)
         session.flush()
 
-        total_amount = _calc_total_amount(session, registration_id)
-        paid_amount = reg.paid_amount or 0
-        reg.is_paid = _compute_is_paid(paid_amount, total_amount)
+        new_total = _calc_total_amount(session, registration_id)
+        refund_needed = max(0, paid_amount - new_total)
 
+        if refund_needed > 0 and force_refund:
+            today = today_taipei()
+            _require_daily_close_unlocked(session, today)
+            session.add(
+                ActivityPaymentRecord(
+                    registration_id=registration_id,
+                    type="refund",
+                    amount=refund_needed,
+                    payment_date=today,
+                    payment_method=SYSTEM_RECONCILE_METHOD,
+                    notes=f"（移除用品「{supply_name}」自動沖帳）",
+                    operator=current_user.get("username", ""),
+                )
+            )
+            reg.paid_amount = max(0, paid_amount - refund_needed)
+
+        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, new_total)
+
+        log_detail = f"用品「{supply_name}」已移除"
+        if refund_needed > 0 and force_refund:
+            log_detail += f"（自動沖帳退費 NT${refund_needed}）"
         activity_service.log_change(
             session,
             registration_id,
             reg.student_name,
             "移除用品",
-            f"用品「{supply_name}」已移除",
+            log_detail,
             current_user.get("username", ""),
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
+        final_paid = reg.paid_amount or 0
         return {
             "message": f"已移除用品「{supply_name}」",
-            "total_amount": total_amount,
-            "payment_status": _derive_payment_status(paid_amount, total_amount),
+            "total_amount": new_total,
+            "paid_amount": final_paid,
+            "refunded_amount": refund_needed if force_refund else 0,
+            "payment_status": _derive_payment_status(final_paid, new_total),
         }
     except HTTPException:
         session.rollback()
@@ -2048,7 +2114,11 @@ async def add_registration_payment(
     try:
         # ── 冪等性重送檢查（先於任何寫入） ────────────────────────
         if body.idempotency_key:
-            threshold = datetime.now() - timedelta(seconds=_IDEMPOTENCY_WINDOW_SECONDS)
+            # threshold 與 ActivityPaymentRecord.created_at 都用 TAIPEI naive；
+            # UTC 部署時才不會讓視窗判定差 8 小時
+            threshold = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(
+                seconds=_IDEMPOTENCY_WINDOW_SECONDS
+            )
             hit = (
                 session.query(ActivityPaymentRecord)
                 .filter(
@@ -2416,7 +2486,7 @@ async def withdraw_course(
         # enrolled 與 promoted_pending 都佔容量，刪除後都應嘗試遞補下一位候補
         was_occupying = rc.status in ("enrolled", "promoted_pending")
 
-        # 先算退課後的 total，決定是否有退費差額
+        # 先估算退課後的 total 用於 409 預檢；實際退費金額在 flush 後以 new_total 重算
         paid_amount = reg.paid_amount or 0
         # 估算退課後的 new_total：從目前 total 扣掉該 enrolled 項目的 price_snapshot
         # （candidate 列在 RegistrationCourse，候補 status 非 enrolled 不計入 total）
@@ -2425,13 +2495,13 @@ async def withdraw_course(
             estimated_after_total = before_total - int(rc.price_snapshot or 0)
         else:
             estimated_after_total = before_total
-        refund_needed = max(0, paid_amount - estimated_after_total)
+        preview_refund = max(0, paid_amount - estimated_after_total)
 
-        if refund_needed > 0 and not force_refund:
+        if preview_refund > 0 and not force_refund:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"退課後將產生超繳 NT${refund_needed}（已繳 NT${paid_amount}、"
+                    f"退課後將產生超繳 NT${preview_refund}（已繳 NT${paid_amount}、"
                     f"退課後應繳 NT${estimated_after_total}），請先處理退費或於退課時"
                     f"指定 force_refund=true 自動沖帳"
                 ),
@@ -2460,6 +2530,9 @@ async def withdraw_course(
             activity_service._auto_promote_first_waitlist(session, course_id)
 
         new_total = _calc_total_amount(session, registration_id)
+        # 以 new_total 重算 refund_needed：避免 estimated_after_total 與實際 DB 狀態漂移
+        # （例如 auto_promote 連動、或未來在 delete/flush 之間插入其他邏輯時自我校驗）
+        refund_needed = max(0, paid_amount - new_total)
 
         # 若需要自動沖帳，寫 refund 紀錄並扣 paid_amount
         if refund_needed > 0 and force_refund:

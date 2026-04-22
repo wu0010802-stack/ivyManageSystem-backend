@@ -210,6 +210,20 @@ async def app_lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("義華校官網自動同步啟動失敗: %s", e)
 
+    # 薪資月底快照排程：需要 SALARY_AUTO_SNAPSHOT_ENABLED=1；建議僅在單一 worker 啟用
+    salary_snapshot_task = None
+    salary_snapshot_stop_event: asyncio.Event | None = None
+    try:
+        from services import salary_snapshot_scheduler as _snap_sched
+
+        if _snap_sched.scheduler_enabled():
+            salary_snapshot_stop_event = asyncio.Event()
+            salary_snapshot_task = asyncio.create_task(
+                _snap_sched.run_salary_snapshot_scheduler(salary_snapshot_stop_event)
+            )
+    except Exception as e:
+        logger.warning("薪資月底快照排程啟動失敗: %s", e)
+
     try:
         yield
     finally:
@@ -239,6 +253,17 @@ async def app_lifespan(app_instance: FastAPI):
                 ivykids_sync_task.cancel()
                 try:
                     await ivykids_sync_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if salary_snapshot_task is not None:
+            if salary_snapshot_stop_event is not None:
+                salary_snapshot_stop_event.set()
+            try:
+                await asyncio.wait_for(salary_snapshot_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                salary_snapshot_task.cancel()
+                try:
+                    await salary_snapshot_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源
