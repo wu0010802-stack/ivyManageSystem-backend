@@ -12,6 +12,17 @@ from sqlalchemy import func, select, case
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
+
+def _now_taipei_naive() -> datetime:
+    """候補狀態機與 confirm_deadline 用的「當下」。
+
+    Why: 原本多處 datetime.now() 在 UTC 部署下會與家長端顯示的台灣時間差 8h，
+    造成 LINE 通知 deadline 錯亂、逾期判定也差一個 timezone。RegistrationCourse
+    相關欄位都是 naive DateTime，統一用台灣時間的 naive 表示。
+    """
+    return datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+
+
 # 候補升正式的「佔位」狀態集合：enrolled + promoted_pending 皆佔容量，
 # 決定「還有無名額」時務必 IN 兩者；統計/出席/收入等語意只算 enrolled。
 OCCUPYING_STATUSES = ("enrolled", "promoted_pending")
@@ -678,7 +689,7 @@ class ActivityService:
         self, session, registration_id: int, course_id: int
     ) -> tuple[str, str]:
         """家長確認升正式。狀態必須為 promoted_pending 且未逾期。"""
-        now = datetime.now()
+        now = _now_taipei_naive()
         row = (
             session.query(RegistrationCourse, ActivityRegistration.student_name)
             .join(
@@ -770,7 +781,7 @@ class ActivityService:
 
         回傳 {"expired": N, "reminded": M}，由背景排程呼叫。
         """
-        now = datetime.now()
+        now = _now_taipei_naive()
         reminder_offset = timedelta(hours=_get_reminder_offset_hours())
         reminder_threshold = now + reminder_offset
 
@@ -921,7 +932,8 @@ class ActivityService:
 
         # 若有已繳金額，寫退費沖帳紀錄（不 DELETE 舊 payment 歷史）
         if current_paid > 0:
-            today = datetime.now().date()
+            # 以台灣時區取今日，避免 UTC 伺服器在近午夜台灣時間寫到錯的一天
+            today = datetime.now(TAIPEI_TZ).date()
             # 已簽核日守衛：避免 snapshot 與 DB 失準。service 層改拋 ValueError
             # 由 router 轉為 HTTPException（避免 service 依賴 fastapi）。
             is_closed = (
@@ -1009,7 +1021,7 @@ class ActivityService:
         if not row:
             return
         rc, student_name = row
-        now = datetime.now()
+        now = _now_taipei_naive()
         deadline = now + timedelta(hours=_get_confirm_window_hours())
         rc.status = "promoted_pending"
         rc.promoted_at = now

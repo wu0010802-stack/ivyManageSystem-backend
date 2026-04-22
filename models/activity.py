@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
     Index,
+    text,
 )
 
 from models.base import Base
@@ -140,6 +141,23 @@ class ActivityRegistration(Base):
         Index("ix_activity_regs_pending_review", "pending_review", "is_active"),
         Index("ix_activity_regs_classroom_id", "classroom_id"),
         Index("ix_activity_regs_match_status", "match_status"),
+        # 防併發重複報名：同家長同學生同學期只允許一筆 is_active=TRUE 的報名。
+        # 應用層 /public/register 有先 SELECT 再 INSERT 的檢查，但無鎖、無 unique，
+        # 兩筆同時進來會雙寫。partial unique index 讓 DB 層攔下第二筆。
+        # 包含 parent_phone 是為了不過度擋住「不同家庭同姓同生日」的極端案例；
+        # 同一家長連按兩次 submit 的 race 仍能被擋。
+        # SQLite 的 bool 以 0/1 存；Postgres 用 TRUE，分方言指定條件。
+        Index(
+            "uq_activity_regs_student_term_active",
+            "student_name",
+            "birthday",
+            "school_year",
+            "semester",
+            "parent_phone",
+            unique=True,
+            postgresql_where=text("is_active = TRUE"),
+            sqlite_where=text("is_active = 1"),
+        ),
     )
 
 
@@ -317,9 +335,12 @@ class ActivityPaymentRecord(Base):
 
     __table_args__ = (
         Index("ix_activity_payment_records_reg", "registration_id"),
+        # 冪等 key 範圍查詢（SELECT ... WHERE idempotency_key=X AND created_at>=threshold）
         Index(
             "ix_activity_payment_records_idk_created", "idempotency_key", "created_at"
         ),
+        # 唯一約束：避免並發重送造成雙扣。NULL 可重複（標準 SQL），故未帶 key 的紀錄不受影響。
+        UniqueConstraint("idempotency_key", name="uq_activity_payment_records_idk"),
     )
 
 
