@@ -26,6 +26,9 @@ FUNNEL_TTL = 1800  # 30 min
 AT_RISK_TTL = 300  # 5 min
 CHURN_HISTORY_TTL = 3600  # 1 hr
 
+# NOTE: 目前僅靠 TTL 失效。學生 lifecycle 轉移與學費繳清等變動點未主動 invalidate，
+# 因此 dashboard 在 TTL 內可能仍顯示已處理的預警。可接受 MVP 折衷。
+
 
 @router.get("/funnel")
 def get_funnel(
@@ -50,6 +53,7 @@ def get_funnel(
                 "end": end.isoformat(),
                 "grade": grade,
                 "source": source,
+                "today": today.isoformat(),
             },
             builder=lambda: build_funnel(
                 session,

@@ -426,3 +426,38 @@ def test_build_funnel_empty_returns_zero(session):
     for stage in result["stages"]:
         assert stage["count"] == 0
     # 防 0 除：rate 應為 0 或 None，不可拋例外
+
+
+def test_build_funnel_with_grade_filter_applies_to_student_side(session):
+    """Regression: grade filter must reach student-side or rate_from_prev breaks."""
+    from services.analytics.funnel_service import build_funnel
+
+    # Student in 小班 classroom
+    cls = _add_classroom(session, name="小班A", grade_name="小班")
+    _add_student(
+        session,
+        name="X",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 3, 10),
+        classroom=cls,
+    )
+    # Student in 中班 classroom — should be excluded by grade=小班 filter
+    cls2 = _add_classroom(session, name="中班A", grade_name="中班")
+    _add_student(
+        session,
+        name="Y",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 3, 10),
+        classroom=cls2,
+    )
+
+    result = build_funnel(
+        session,
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 31),
+        today=date(2026, 4, 23),
+        grade_filter="小班",
+    )
+    by_key = {s["key"]: s for s in result["stages"]}
+    # active should be 1, not 2 (only 小班 student counted)
+    assert by_key["active"]["count"] == 1

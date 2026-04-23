@@ -47,6 +47,10 @@ def count_visit_side_stages(
 
     lead = visit 數 + ParentInquiry 數（兩源不去重）。
     deposit/enrolled 只計 visit 端。
+
+    NOTE: lead 中的 ParentInquiry 計數不支援 grade/source filter
+    （ParentInquiry 無對應欄位），因此 lead count 永遠包含全量 inquiry，
+    即使設定了 grade_filter 或 source_filter。此為已知且接受的 MVP 折衷。
     """
     q = session.query(RecruitmentVisit)
     if grade_filter:
@@ -118,13 +122,24 @@ def count_student_side_stages(
     start_date: date,
     end_date: date,
     today: date,
+    grade_filter: Optional[str] = None,
+    source_filter: Optional[str] = None,
 ) -> dict:
     """回傳 {'active': int, 'retained_1m': int, 'retained_6m': int}
 
     active：enrollment_date 落入區間且曾入學（lifecycle 已過 enrolled）
     retained_1m：active 子集 + 距 today ≥ 30 天 + 未在 30 天內退/轉
     retained_6m：active 子集 + 距 today ≥ 180 天 + 未在 180 天內退/轉
+
+    NOTE: Student 模型沒有 source 欄位。當 source_filter 設定時，
+    回傳全 0（誠實標示：student-side 無法依來源篩選，而非回傳全量）。
+    NOTE: lead count（ParentInquiry）缺乏 grade/source filter 欄位，
+    因此 count_visit_side_stages 中的 inquiry 數永遠是全量加總。
     """
+    # source_filter：Student 無此欄位，誠實回傳 0
+    if source_filter:
+        return {"active": 0, "retained_1m": 0, "retained_6m": 0}
+
     # enrolled state 表示「已報到但尚未開學」(prospect 也排除) — 此處只計實際入學者
     enrolled_states = (
         "active",
@@ -133,15 +148,18 @@ def count_student_side_stages(
         "transferred",
         "withdrawn",
     )
-    students = (
-        session.query(Student)
-        .filter(
-            Student.lifecycle_status.in_(enrolled_states),
-            Student.enrollment_date >= start_date,
-            Student.enrollment_date <= end_date,
-        )
-        .all()
+    q = session.query(Student).filter(
+        Student.lifecycle_status.in_(enrolled_states),
+        Student.enrollment_date >= start_date,
+        Student.enrollment_date <= end_date,
     )
+    if grade_filter:
+        q = (
+            q.join(Classroom, Student.classroom_id == Classroom.id)
+            .join(ClassGrade, Classroom.grade_id == ClassGrade.id)
+            .filter(ClassGrade.name == grade_filter)
+        )
+    students = q.all()
 
     active_count = len(students)
     retained_1m = sum(
@@ -305,6 +323,8 @@ def build_funnel(
         start_date=start_date,
         end_date=end_date,
         today=today,
+        grade_filter=grade_filter,
+        source_filter=source_filter,
     )
 
     raw_counts = {
