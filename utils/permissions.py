@@ -9,55 +9,59 @@ from typing import List, Dict
 
 class Permission(IntFlag):
     """功能模組權限位元定義"""
+
     # --- 不拆分的模組 (原位保留) ---
-    DASHBOARD = 1 << 0          # 儀表板
-    APPROVALS = 1 << 1          # 審核工作台
-    CALENDAR = 1 << 2           # 行事曆
-    SCHEDULE = 1 << 3           # 排班管理
-    MEETINGS = 1 << 7           # 園務會議
-    REPORTS = 1 << 13           # 報表統計
-    AUDIT_LOGS = 1 << 14        # 操作紀錄
+    DASHBOARD = 1 << 0  # 儀表板
+    APPROVALS = 1 << 1  # 審核工作台
+    CALENDAR = 1 << 2  # 行事曆
+    SCHEDULE = 1 << 3  # 排班管理
+    MEETINGS = 1 << 7  # 園務會議
+    REPORTS = 1 << 13  # 報表統計
+    AUDIT_LOGS = 1 << 14  # 操作紀錄
 
     # --- 讀寫分離模組：READ 保留原位，WRITE 使用高位 ---
-    ATTENDANCE_READ = 1 << 4          # 出勤管理 (檢視)
-    ATTENDANCE_WRITE = 1 << 17        # 出勤管理 (編輯)
-    LEAVES_READ = 1 << 5             # 請假管理 (檢視)
-    LEAVES_WRITE = 1 << 18           # 請假管理 (編輯)
-    OVERTIME_READ = 1 << 6           # 加班管理 (檢視)
-    OVERTIME_WRITE = 1 << 19         # 加班管理 (編輯)
-    EMPLOYEES_READ = 1 << 8         # 員工管理 (檢視)
-    EMPLOYEES_WRITE = 1 << 20       # 員工管理 (編輯)
-    STUDENTS_READ = 1 << 9          # 學生管理 (檢視)
-    STUDENTS_WRITE = 1 << 21        # 學生管理 (編輯)
-    CLASSROOMS_READ = 1 << 10       # 班級管理 (檢視)
-    CLASSROOMS_WRITE = 1 << 22      # 班級管理 (編輯)
-    SALARY_READ = 1 << 11           # 薪資管理 (檢視)
-    SALARY_WRITE = 1 << 23          # 薪資管理 (編輯)
-    ANNOUNCEMENTS_READ = 1 << 12    # 公告管理 (檢視)
-    ANNOUNCEMENTS_WRITE = 1 << 24   # 公告管理 (編輯)
-    SETTINGS_READ = 1 << 15         # 系統設定 (檢視)
-    SETTINGS_WRITE = 1 << 25        # 系統設定 (編輯)
+    ATTENDANCE_READ = 1 << 4  # 出勤管理 (檢視)
+    ATTENDANCE_WRITE = 1 << 17  # 出勤管理 (編輯)
+    LEAVES_READ = 1 << 5  # 請假管理 (檢視)
+    LEAVES_WRITE = 1 << 18  # 請假管理 (編輯)
+    OVERTIME_READ = 1 << 6  # 加班管理 (檢視)
+    OVERTIME_WRITE = 1 << 19  # 加班管理 (編輯)
+    EMPLOYEES_READ = 1 << 8  # 員工管理 (檢視)
+    EMPLOYEES_WRITE = 1 << 20  # 員工管理 (編輯)
+    STUDENTS_READ = 1 << 9  # 學生管理 (檢視)
+    STUDENTS_WRITE = 1 << 21  # 學生管理 (編輯)
+    CLASSROOMS_READ = 1 << 10  # 班級管理 (檢視)
+    CLASSROOMS_WRITE = 1 << 22  # 班級管理 (編輯)
+    SALARY_READ = 1 << 11  # 薪資管理 (檢視)
+    SALARY_WRITE = 1 << 23  # 薪資管理 (編輯)
+    ANNOUNCEMENTS_READ = 1 << 12  # 公告管理 (檢視)
+    ANNOUNCEMENTS_WRITE = 1 << 24  # 公告管理 (編輯)
+    SETTINGS_READ = 1 << 15  # 系統設定 (檢視)
+    SETTINGS_WRITE = 1 << 25  # 系統設定 (編輯)
     USER_MANAGEMENT_READ = 1 << 16  # 帳號管理 (檢視)
-    USER_MANAGEMENT_WRITE = 1 << 26 # 帳號管理 (編輯)
-    ACTIVITY_READ  = 1 << 27        # 課後才藝 (檢視)
-    ACTIVITY_WRITE = 1 << 28        # 課後才藝 (編輯)
-    DISMISSAL_CALLS_READ  = 1 << 29 # 接送通知 portal (檢視)
-    DISMISSAL_CALLS_WRITE = 1 << 30 # 接送通知 portal (操作：acknowledge/complete)
-    FEES_READ  = 1 << 31            # 學費管理 (檢視)
+    USER_MANAGEMENT_WRITE = 1 << 26  # 帳號管理 (編輯)
+    ACTIVITY_READ = 1 << 27  # 課後才藝 (檢視)
+    ACTIVITY_WRITE = 1 << 28  # 課後才藝 (編輯)
+    DISMISSAL_CALLS_READ = 1 << 29  # 接送通知 portal (檢視)
+    DISMISSAL_CALLS_WRITE = 1 << 30  # 接送通知 portal (操作：acknowledge/complete)
+    FEES_READ = 1 << 31  # 學費管理 (檢視)
     # ⚠️  注意：1 << 32 超出 JavaScript 32 位元 bitwise 安全範圍（最大 1 << 30）。
     # 前端進行權限位元運算時必須使用 BigInt（如 BigInt(permissions) & BigInt(1) << 32n）
     # 以避免整數溢出。後端 Python IntFlag 不受此限制影響。
-    FEES_WRITE = 1 << 32            # 學費管理 (編輯)
-    RECRUITMENT_READ  = 1 << 33    # 招生統計 (檢視)
-    RECRUITMENT_WRITE = 1 << 34    # 招生統計 (編輯)
+    FEES_WRITE = 1 << 32  # 學費管理 (編輯)
+    RECRUITMENT_READ = 1 << 33  # 招生統計 (檢視)
+    RECRUITMENT_WRITE = 1 << 34  # 招生統計 (編輯)
     # ⚠️  同 1<<32 ~ 1<<34：前端 bitwise 必須使用 BigInt
     ACTIVITY_PAYMENT_APPROVE = 1 << 35  # 才藝課收款簽核（老闆專屬）
 
     # --- 學生生命週期追蹤（Phase A） ---
-    STUDENTS_LIFECYCLE_WRITE = 1 << 36   # 學生生命週期狀態轉移（退學/休學/畢業等高權操作）
-    GUARDIANS_READ = 1 << 37             # 監護人資料 (檢視) — 家長資料屬敏感
-    GUARDIANS_WRITE = 1 << 38            # 監護人資料 (編輯)
-    RECRUITMENT_CONVERT = 1 << 39        # 招生訪視 → 正式學生 轉化
+    STUDENTS_LIFECYCLE_WRITE = (
+        1 << 36
+    )  # 學生生命週期狀態轉移（退學/休學/畢業等高權操作）
+    GUARDIANS_READ = 1 << 37  # 監護人資料 (檢視) — 家長資料屬敏感
+    GUARDIANS_WRITE = 1 << 38  # 監護人資料 (編輯)
+    RECRUITMENT_CONVERT = 1 << 39  # 招生訪視 → 正式學生 轉化
+    BUSINESS_ANALYTICS = 1 << 40  # 經營分析（招生漏斗、流失預警等）
 
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
@@ -77,9 +81,15 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "SALARY": {"read": "SALARY_READ", "write": "SALARY_WRITE"},
     "ANNOUNCEMENTS": {"read": "ANNOUNCEMENTS_READ", "write": "ANNOUNCEMENTS_WRITE"},
     "SETTINGS": {"read": "SETTINGS_READ", "write": "SETTINGS_WRITE"},
-    "USER_MANAGEMENT": {"read": "USER_MANAGEMENT_READ", "write": "USER_MANAGEMENT_WRITE"},
+    "USER_MANAGEMENT": {
+        "read": "USER_MANAGEMENT_READ",
+        "write": "USER_MANAGEMENT_WRITE",
+    },
     "ACTIVITY": {"read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
-    "DISMISSAL_CALLS": {"read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
+    "DISMISSAL_CALLS": {
+        "read": "DISMISSAL_CALLS_READ",
+        "write": "DISMISSAL_CALLS_WRITE",
+    },
     "FEES": {"read": "FEES_READ", "write": "FEES_WRITE"},
     "RECRUITMENT": {"read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
     "GUARDIANS": {"read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
@@ -112,38 +122,52 @@ _RW_PAIRS: List[tuple] = [
 ROLE_TEMPLATES: Dict[str, int] = {
     "admin": -1,  # 全部權限
     "hr": (
-        Permission.DASHBOARD |
-        Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE |
-        Permission.SALARY_READ | Permission.SALARY_WRITE |
-        Permission.ATTENDANCE_READ | Permission.ATTENDANCE_WRITE |
-        Permission.LEAVES_READ | Permission.LEAVES_WRITE |
-        Permission.OVERTIME_READ | Permission.OVERTIME_WRITE |
-        Permission.REPORTS
+        Permission.DASHBOARD
+        | Permission.EMPLOYEES_READ
+        | Permission.EMPLOYEES_WRITE
+        | Permission.SALARY_READ
+        | Permission.SALARY_WRITE
+        | Permission.ATTENDANCE_READ
+        | Permission.ATTENDANCE_WRITE
+        | Permission.LEAVES_READ
+        | Permission.LEAVES_WRITE
+        | Permission.OVERTIME_READ
+        | Permission.OVERTIME_WRITE
+        | Permission.REPORTS
     ),
     "supervisor": (
-        Permission.DASHBOARD |
-        Permission.APPROVALS |
-        Permission.CALENDAR |
-        Permission.SCHEDULE |
-        Permission.ATTENDANCE_READ | Permission.ATTENDANCE_WRITE |
-        Permission.LEAVES_READ | Permission.LEAVES_WRITE |
-        Permission.OVERTIME_READ | Permission.OVERTIME_WRITE |
-        Permission.MEETINGS |
-        Permission.STUDENTS_READ | Permission.STUDENTS_WRITE |
-        Permission.STUDENTS_LIFECYCLE_WRITE |
-        Permission.GUARDIANS_READ | Permission.GUARDIANS_WRITE |
-        Permission.CLASSROOMS_READ | Permission.CLASSROOMS_WRITE |
-        Permission.FEES_READ | Permission.FEES_WRITE |
-        Permission.RECRUITMENT_READ | Permission.RECRUITMENT_WRITE |
-        Permission.RECRUITMENT_CONVERT |
-        Permission.REPORTS
+        Permission.DASHBOARD
+        | Permission.APPROVALS
+        | Permission.CALENDAR
+        | Permission.SCHEDULE
+        | Permission.ATTENDANCE_READ
+        | Permission.ATTENDANCE_WRITE
+        | Permission.LEAVES_READ
+        | Permission.LEAVES_WRITE
+        | Permission.OVERTIME_READ
+        | Permission.OVERTIME_WRITE
+        | Permission.MEETINGS
+        | Permission.STUDENTS_READ
+        | Permission.STUDENTS_WRITE
+        | Permission.STUDENTS_LIFECYCLE_WRITE
+        | Permission.GUARDIANS_READ
+        | Permission.GUARDIANS_WRITE
+        | Permission.CLASSROOMS_READ
+        | Permission.CLASSROOMS_WRITE
+        | Permission.FEES_READ
+        | Permission.FEES_WRITE
+        | Permission.RECRUITMENT_READ
+        | Permission.RECRUITMENT_WRITE
+        | Permission.RECRUITMENT_CONVERT
+        | Permission.BUSINESS_ANALYTICS
+        | Permission.REPORTS
     ),
     "teacher": (
-        Permission.DASHBOARD |
-        Permission.CALENDAR |
-        Permission.ANNOUNCEMENTS_READ |          # 教師僅可檢視公告
-        Permission.DISMISSAL_CALLS_READ |        # 教師 portal：查看接送通知
-        Permission.DISMISSAL_CALLS_WRITE         # 教師 portal：操作接送通知（acknowledge/complete）
+        Permission.DASHBOARD
+        | Permission.CALENDAR
+        | Permission.ANNOUNCEMENTS_READ  # 教師僅可檢視公告
+        | Permission.DISMISSAL_CALLS_READ  # 教師 portal：查看接送通知
+        | Permission.DISMISSAL_CALLS_WRITE  # 教師 portal：操作接送通知（acknowledge/complete）
     ),
 }
 
@@ -205,6 +229,7 @@ PERMISSION_LABELS: Dict[str, str] = {
     "GUARDIANS_READ": "監護人資料 (檢視)",
     "GUARDIANS_WRITE": "監護人資料 (編輯)",
     "RECRUITMENT_CONVERT": "招生轉化為學生",
+    "BUSINESS_ANALYTICS": "經營分析",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -219,7 +244,11 @@ PERMISSION_GROUPS: List[Dict] = [
         "name": "考勤管理",
         "permissions": ["CALENDAR", "SCHEDULE", "MEETINGS"],
         "split_permissions": [
-            {"module": "出勤管理", "read": "ATTENDANCE_READ", "write": "ATTENDANCE_WRITE"},
+            {
+                "module": "出勤管理",
+                "read": "ATTENDANCE_READ",
+                "write": "ATTENDANCE_WRITE",
+            },
             {"module": "請假管理", "read": "LEAVES_READ", "write": "LEAVES_WRITE"},
             {"module": "加班管理", "read": "OVERTIME_READ", "write": "OVERTIME_WRITE"},
         ],
@@ -232,22 +261,46 @@ PERMISSION_GROUPS: List[Dict] = [
             "RECRUITMENT_CONVERT",
         ],
         "split_permissions": [
-            {"module": "員工管理", "read": "EMPLOYEES_READ", "write": "EMPLOYEES_WRITE"},
+            {
+                "module": "員工管理",
+                "read": "EMPLOYEES_READ",
+                "write": "EMPLOYEES_WRITE",
+            },
             {"module": "學生管理", "read": "STUDENTS_READ", "write": "STUDENTS_WRITE"},
-            {"module": "監護人資料", "read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
-            {"module": "班級管理", "read": "CLASSROOMS_READ", "write": "CLASSROOMS_WRITE"},
+            {
+                "module": "監護人資料",
+                "read": "GUARDIANS_READ",
+                "write": "GUARDIANS_WRITE",
+            },
+            {
+                "module": "班級管理",
+                "read": "CLASSROOMS_READ",
+                "write": "CLASSROOMS_WRITE",
+            },
             {"module": "薪資管理", "read": "SALARY_READ", "write": "SALARY_WRITE"},
             {"module": "課後才藝", "read": "ACTIVITY_READ", "write": "ACTIVITY_WRITE"},
-            {"module": "接送通知", "read": "DISMISSAL_CALLS_READ", "write": "DISMISSAL_CALLS_WRITE"},
+            {
+                "module": "接送通知",
+                "read": "DISMISSAL_CALLS_READ",
+                "write": "DISMISSAL_CALLS_WRITE",
+            },
             {"module": "學費管理", "read": "FEES_READ", "write": "FEES_WRITE"},
-            {"module": "招生統計", "read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
+            {
+                "module": "招生統計",
+                "read": "RECRUITMENT_READ",
+                "write": "RECRUITMENT_WRITE",
+            },
         ],
     },
     {
         "name": "園務行政",
-        "permissions": ["REPORTS", "AUDIT_LOGS"],
+        "permissions": ["REPORTS", "AUDIT_LOGS", "BUSINESS_ANALYTICS"],
         "split_permissions": [
-            {"module": "公告管理", "read": "ANNOUNCEMENTS_READ", "write": "ANNOUNCEMENTS_WRITE"},
+            {
+                "module": "公告管理",
+                "read": "ANNOUNCEMENTS_READ",
+                "write": "ANNOUNCEMENTS_WRITE",
+            },
         ],
     },
     {
@@ -255,7 +308,11 @@ PERMISSION_GROUPS: List[Dict] = [
         "permissions": [],
         "split_permissions": [
             {"module": "系統設定", "read": "SETTINGS_READ", "write": "SETTINGS_WRITE"},
-            {"module": "帳號管理", "read": "USER_MANAGEMENT_READ", "write": "USER_MANAGEMENT_WRITE"},
+            {
+                "module": "帳號管理",
+                "read": "USER_MANAGEMENT_READ",
+                "write": "USER_MANAGEMENT_WRITE",
+            },
         ],
     },
 ]
