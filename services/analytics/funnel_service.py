@@ -9,8 +9,9 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from models.activity import ParentInquiry
+from models.classroom import Student
 from models.recruitment import RecruitmentVisit
-from services.analytics.constants import parse_roc_month
+from services.analytics.constants import RETENTION_WINDOWS_DAYS, parse_roc_month
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +107,6 @@ def _exclusive_end(d: date) -> date:
     return d + timedelta(days=1)
 
 
-from models.classroom import Student
-from services.analytics.constants import RETENTION_WINDOWS_DAYS
-
-
 def count_student_side_stages(
     session: Session,
     *,
@@ -123,6 +120,7 @@ def count_student_side_stages(
     retained_1m：active 子集 + 距 today ≥ 30 天 + 未在 30 天內退/轉
     retained_6m：active 子集 + 距 today ≥ 180 天 + 未在 180 天內退/轉
     """
+    # enrolled state 表示「已報到但尚未開學」(prospect 也排除) — 此處只計實際入學者
     enrolled_states = (
         "active",
         "on_leave",
@@ -154,8 +152,12 @@ def count_student_side_stages(
     }
 
 
-def _is_retained(student, today: date, window_days: int) -> bool:
-    """是否在入學後仍留存 window_days 天。"""
+def _is_retained(student: Student, today: date, window_days: int) -> bool:
+    """是否在入學後仍留存 window_days 天。
+
+    Note: graduated 學生視為「成功完成」而非「流失」，因此 graduated_date
+    不影響此判斷 — 只看 withdrawal_date（退學/轉出）。
+    """
     if student.enrollment_date is None:
         return False
     # 條件 1：入學日 + window 必須 ≤ today（窗口已成熟）

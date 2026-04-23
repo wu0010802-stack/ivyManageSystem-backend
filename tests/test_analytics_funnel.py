@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from models.base import Base
+from models.classroom import Student, Classroom
 from models.recruitment import RecruitmentVisit
 from models.activity import ParentInquiry
 from services.analytics.funnel_service import (
@@ -149,9 +150,6 @@ def test_no_deposit_reasons(session):
     )
     by_reason = {r["reason"]: r["count"] for r in reasons}
     assert by_reason == {"考慮中": 2, "選擇他校": 1}
-
-
-from models.classroom import Student, Classroom
 
 
 def _add_student(
