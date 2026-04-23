@@ -283,6 +283,28 @@ backend/tests/
 
 ---
 
+## 服務模組
+
+### services/analytics/
+
+經營分析模組（招生漏斗 + 流失預警 — MVP）。
+- `constants.py` — 閾值（A=3 連續缺勤 / C=30 on_leave / D=14 學費逾期）、漏斗 6 階段、學期起始日 proxy、`parse_roc_month` / `term_start_date` helpers
+- `funnel_service.py` — 招生漏斗（雙源拼接 RecruitmentVisit + Student lifecycle）；`build_funnel`、`count_visit_side_stages`、`count_student_side_stages`、`slice_by_source`、`slice_by_grade`、`summarize_no_deposit_reasons`
+- `churn_service.py` — A/C/D 三訊號 at-risk 偵測 + 12 月歷史趨勢；`detect_at_risk_students`、`build_churn_history`、`detect_signal_consecutive_absence`、`detect_signal_long_on_leave`、`detect_signal_fee_overdue`
+
+對應 router：`api/analytics.py`，權限 `Permission.BUSINESS_ANALYTICS = 1 << 40`，預設只給 admin / supervisor 角色。
+快取走 `report_cache_service`，三類別 + TTL：
+- `analytics_funnel` — 30 min
+- `analytics_churn_at_risk` — 5 min
+- `analytics_churn_history` — 1 hr
+
+實作說明：
+- `RecruitmentVisit` 無 `student_id` FK，故 visit 端與 student 端用「招生年月 + 班別 + 來源」當共用維度（不直接 join）
+- 學費逾期 D 訊號用「學期起始日 + 14 天」當 due_date proxy（`FeeItem` 無 `due_date` 欄位）
+- 整班漏點名假缺勤過濾：若某天某班所有 active 學生皆無紀錄或皆「缺席」，視為老師當日漏點名
+
+---
+
 ### 安全規範
 
 - 檔案路徑操作必須做路徑穿越防護（參考 `_safe_attach_path()`）
