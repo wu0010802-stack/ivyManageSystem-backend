@@ -149,3 +149,145 @@ def test_no_deposit_reasons(session):
     )
     by_reason = {r["reason"]: r["count"] for r in reasons}
     assert by_reason == {"考慮中": 2, "選擇他校": 1}
+
+
+from models.classroom import Student, Classroom
+
+
+def _add_student(
+    session,
+    *,
+    name,
+    lifecycle_status,
+    enrollment_date=None,
+    withdrawal_date=None,
+    classroom=None,
+):
+    # Student.classroom_id 是 FK；classroom 參數接受 Classroom 物件或 None
+    s = Student(
+        student_id=f"S-{name}",  # student_id 是 non-nullable unique 欄位
+        name=name,
+        lifecycle_status=lifecycle_status,
+        enrollment_date=enrollment_date,
+        withdrawal_date=withdrawal_date,
+        classroom_id=classroom.id if classroom is not None else None,
+        is_active=lifecycle_status in ("active", "on_leave", "enrolled"),
+    )
+    session.add(s)
+    session.commit()
+    return s
+
+
+def _add_classroom(session, *, name):
+    import uuid
+
+    # Classroom 有 UniqueConstraint(school_year, semester, name)；用 uuid 確保唯一
+    c = Classroom(name=f"{name}-{uuid.uuid4().hex[:6]}", is_active=True)
+    session.add(c)
+    session.commit()
+    return c
+
+
+def test_student_active_counts_in_range(session):
+    from services.analytics.funnel_service import count_student_side_stages
+
+    cls = _add_classroom(session, name="小班A")
+
+    # 2026-03 入學、active
+    _add_student(
+        session,
+        name="A",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 3, 5),
+        classroom=cls,
+    )
+    # 2026-03 入學但已退學
+    _add_student(
+        session,
+        name="B",
+        lifecycle_status="withdrawn",
+        enrollment_date=date(2026, 3, 6),
+        withdrawal_date=date(2026, 3, 20),
+        classroom=cls,
+    )
+    # 2026-02 入學（範圍外）
+    _add_student(
+        session,
+        name="C",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 2, 28),
+        classroom=cls,
+    )
+
+    r = count_student_side_stages(
+        session,
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 31),
+        today=date(2026, 4, 23),
+    )
+    # active = 入學日落在區間 = A + B = 2
+    assert r["active"] == 2
+
+
+def test_retention_windows_boundaries(session):
+    from services.analytics.funnel_service import count_student_side_stages
+
+    cls = _add_classroom(session, name="小班A")
+
+    # 入學日 2026-03-01；today 2026-04-01 → 剛滿 31 天 ≥ 30，1m 留存 ✓
+    _add_student(
+        session,
+        name="滿月",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 3, 1),
+        classroom=cls,
+    )
+    # 入學日 2026-03-15；today 2026-04-01 → 17 天，1m 留存 ✗
+    _add_student(
+        session,
+        name="未滿月",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 3, 15),
+        classroom=cls,
+    )
+    # 入學日 2026-03-01 + 退學日 2026-03-20（< 30 天就退）→ 1m 留存 ✗
+    _add_student(
+        session,
+        name="未滿月退",
+        lifecycle_status="withdrawn",
+        enrollment_date=date(2026, 3, 1),
+        withdrawal_date=date(2026, 3, 20),
+        classroom=cls,
+    )
+
+    r = count_student_side_stages(
+        session,
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 31),
+        today=date(2026, 4, 1),
+    )
+    assert r["active"] == 3
+    assert r["retained_1m"] == 1
+    assert r["retained_6m"] == 0
+
+
+def test_retained_6m(session):
+    from services.analytics.funnel_service import count_student_side_stages
+
+    cls = _add_classroom(session, name="小班A")
+    # 2025-09-01 入學；today 2026-04-23 → 超過 180 天 ✓
+    _add_student(
+        session,
+        name="老學生",
+        lifecycle_status="active",
+        enrollment_date=date(2025, 9, 1),
+        classroom=cls,
+    )
+
+    r = count_student_side_stages(
+        session,
+        start_date=date(2025, 9, 1),
+        end_date=date(2025, 9, 30),
+        today=date(2026, 4, 23),
+    )
+    assert r["retained_6m"] == 1

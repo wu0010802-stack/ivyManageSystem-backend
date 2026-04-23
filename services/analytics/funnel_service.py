@@ -104,3 +104,65 @@ def summarize_no_deposit_reasons(
 def _exclusive_end(d: date) -> date:
     """end_date 是 inclusive，回傳 exclusive 的下一天用於 < 比較。"""
     return d + timedelta(days=1)
+
+
+from models.classroom import Student
+from services.analytics.constants import RETENTION_WINDOWS_DAYS
+
+
+def count_student_side_stages(
+    session: Session,
+    *,
+    start_date: date,
+    end_date: date,
+    today: date,
+) -> dict:
+    """回傳 {'active': int, 'retained_1m': int, 'retained_6m': int}
+
+    active：enrollment_date 落入區間且曾入學（lifecycle 已過 enrolled）
+    retained_1m：active 子集 + 距 today ≥ 30 天 + 未在 30 天內退/轉
+    retained_6m：active 子集 + 距 today ≥ 180 天 + 未在 180 天內退/轉
+    """
+    enrolled_states = (
+        "active",
+        "on_leave",
+        "graduated",
+        "transferred",
+        "withdrawn",
+    )
+    students = (
+        session.query(Student)
+        .filter(
+            Student.lifecycle_status.in_(enrolled_states),
+            Student.enrollment_date >= start_date,
+            Student.enrollment_date <= end_date,
+        )
+        .all()
+    )
+
+    active_count = len(students)
+    retained_1m = sum(
+        1 for s in students if _is_retained(s, today, RETENTION_WINDOWS_DAYS["1m"])
+    )
+    retained_6m = sum(
+        1 for s in students if _is_retained(s, today, RETENTION_WINDOWS_DAYS["6m"])
+    )
+    return {
+        "active": active_count,
+        "retained_1m": retained_1m,
+        "retained_6m": retained_6m,
+    }
+
+
+def _is_retained(student, today: date, window_days: int) -> bool:
+    """是否在入學後仍留存 window_days 天。"""
+    if student.enrollment_date is None:
+        return False
+    # 條件 1：入學日 + window 必須 ≤ today（窗口已成熟）
+    threshold = student.enrollment_date + timedelta(days=window_days)
+    if threshold > today:
+        return False
+    # 條件 2：未在窗口內退/轉
+    if student.withdrawal_date is not None and student.withdrawal_date < threshold:
+        return False
+    return True
