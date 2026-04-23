@@ -358,3 +358,71 @@ def test_by_grade_includes_student_side(session):
     assert by_grade["小班"]["lead"] == 1
     assert by_grade["小班"]["enrolled"] == 1
     assert by_grade["小班"]["active"] == 1
+
+
+def test_build_funnel_full_structure(session):
+    from services.analytics.funnel_service import build_funnel
+
+    cls = _add_classroom(session, name="小班A", grade_name="小班")
+    _add_visit(
+        session,
+        month="115.03",
+        grade="小班",
+        source="walk_in",
+        has_deposit=True,
+        enrolled=True,
+    )
+    _add_visit(
+        session,
+        month="115.03",
+        grade="小班",
+        source="walk_in",
+        has_deposit=False,
+        enrolled=False,
+        no_deposit_reason="考慮中",
+    )
+    _add_student(
+        session,
+        name="X",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 3, 10),
+        classroom=cls,
+    )
+
+    result = build_funnel(
+        session,
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 31),
+        today=date(2026, 4, 23),
+    )
+    keys = {s["key"] for s in result["stages"]}
+    assert keys == {
+        "lead",
+        "deposit",
+        "enrolled",
+        "active",
+        "retained_1m",
+        "retained_6m",
+    }
+    # rate_from_prev 在第一階段（lead）為 None
+    assert result["stages"][0]["rate_from_prev"] is None
+    # 後續階段都有 rate
+    for stage in result["stages"][1:]:
+        assert "rate_from_prev" in stage
+    assert result["no_deposit_reasons"][0]["reason"] == "考慮中"
+    assert "by_source" in result and "by_grade" in result
+    assert result["filters"]["start"] == "2026-03-01"
+
+
+def test_build_funnel_empty_returns_zero(session):
+    from services.analytics.funnel_service import build_funnel
+
+    result = build_funnel(
+        session,
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 31),
+        today=date(2026, 4, 23),
+    )
+    for stage in result["stages"]:
+        assert stage["count"] == 0
+    # 防 0 除：rate 應為 0 或 None，不可拋例外

@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 from models.activity import ParentInquiry
 from models.classroom import ClassGrade, Classroom, Student
 from models.recruitment import RecruitmentVisit
-from services.analytics.constants import RETENTION_WINDOWS_DAYS, parse_roc_month
+from services.analytics.constants import (
+    FUNNEL_STAGE_LABELS,
+    RETENTION_WINDOWS_DAYS,
+    parse_roc_month,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -277,3 +281,85 @@ def slice_by_grade(
             }
         )
     return sorted(rows, key=lambda r: -r["lead"])
+
+
+def build_funnel(
+    session: Session,
+    *,
+    start_date: date,
+    end_date: date,
+    today: date,
+    grade_filter: Optional[str] = None,
+    source_filter: Optional[str] = None,
+) -> dict:
+    """完整漏斗結果，給 API 端直接回傳。"""
+    visit_counts = count_visit_side_stages(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        grade_filter=grade_filter,
+        source_filter=source_filter,
+    )
+    student_counts = count_student_side_stages(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        today=today,
+    )
+
+    raw_counts = {
+        "lead": visit_counts["lead"],
+        "deposit": visit_counts["deposit"],
+        "enrolled": visit_counts["enrolled"],
+        "active": student_counts["active"],
+        "retained_1m": student_counts["retained_1m"],
+        "retained_6m": student_counts["retained_6m"],
+    }
+
+    stages = []
+    prev_count: Optional[int] = None
+    for key in ("lead", "deposit", "enrolled", "active", "retained_1m", "retained_6m"):
+        count = raw_counts[key]
+        if prev_count is None:
+            rate = None
+        elif prev_count == 0:
+            rate = 0.0
+        else:
+            rate = round(count / prev_count, 3)
+        stages.append(
+            {
+                "key": key,
+                "label": FUNNEL_STAGE_LABELS[key],
+                "count": count,
+                "rate_from_prev": rate,
+            }
+        )
+        prev_count = count
+
+    return {
+        "stages": stages,
+        "no_deposit_reasons": summarize_no_deposit_reasons(
+            session,
+            start_date=start_date,
+            end_date=end_date,
+            grade_filter=grade_filter,
+            source_filter=source_filter,
+        ),
+        "by_source": slice_by_source(
+            session,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+        "by_grade": slice_by_grade(
+            session,
+            start_date=start_date,
+            end_date=end_date,
+            today=today,
+        ),
+        "filters": {
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+            "grade": grade_filter,
+            "source": source_filter,
+        },
+    }
