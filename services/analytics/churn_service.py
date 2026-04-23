@@ -11,11 +11,12 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
-from models.classroom import Student, StudentAttendance
+from models.classroom import Classroom, Student, StudentAttendance
 from models.fees import FeeItem, StudentFeeRecord
 from models.student_log import StudentChangeLog
 from services.analytics.constants import (
@@ -236,3 +237,133 @@ def detect_signal_fee_overdue(
 
 def _severity_rank(s: str) -> int:
     return {"low": 1, "medium": 2, "high": 3}.get(s, 0)
+
+
+def detect_at_risk_students(
+    session: Session,
+    *,
+    today: date,
+    can_read_students: bool = True,
+) -> list[dict]:
+    """彙總 A/C/D 訊號，去重學生並計算 primary_severity。
+
+    can_read_students=False 時 student_name 顯示 '***'（個資遮罩）。
+    """
+    signals = []
+    signals.extend(detect_signal_consecutive_absence(session, today=today))
+    signals.extend(detect_signal_long_on_leave(session, today=today))
+    signals.extend(detect_signal_fee_overdue(session, today=today))
+
+    by_student: dict[int, list[dict]] = defaultdict(list)
+    for sig in signals:
+        by_student[sig["student_id"]].append(sig)
+
+    if not by_student:
+        return []
+
+    students = session.query(Student).filter(Student.id.in_(by_student.keys())).all()
+    student_map = {s.id: s for s in students}
+
+    # 取對應 classroom 名稱（避免依賴 ORM relationship）
+    classroom_ids = {s.classroom_id for s in students if s.classroom_id is not None}
+    classroom_map: dict[int, str] = {}
+    if classroom_ids:
+        classrooms = (
+            session.query(Classroom).filter(Classroom.id.in_(classroom_ids)).all()
+        )
+        classroom_map = {c.id: c.name for c in classrooms}
+
+    result = []
+    for sid, sigs in by_student.items():
+        s = student_map.get(sid)
+        if s is None:
+            continue
+        cls_name = classroom_map.get(s.classroom_id) if s.classroom_id else None
+        primary = max(sigs, key=lambda x: _severity_rank(x["severity"]))["severity"]
+        result.append(
+            {
+                "student_id": sid,
+                "student_name": s.name if can_read_students else "***",
+                "classroom_name": cls_name,
+                "lifecycle_status": s.lifecycle_status,
+                "signals": [
+                    {
+                        "type": x["type"],
+                        "severity": x["severity"],
+                        "detail": x["detail"],
+                    }
+                    for x in sigs
+                ],
+                "primary_severity": primary,
+            }
+        )
+    # 排序：嚴重度 desc → 訊號數 desc
+    result.sort(
+        key=lambda r: (-_severity_rank(r["primary_severity"]), -len(r["signals"]))
+    )
+    return result
+
+
+def build_churn_history(
+    session: Session,
+    *,
+    months: int = 12,
+    today: date,
+) -> dict:
+    """過去 N 月 withdrawn / transferred 趨勢 + 流失原因分布。"""
+    earliest = date(today.year, today.month, 1)
+    for _ in range(months - 1):
+        earliest = _prev_month_first(earliest)
+
+    logs = (
+        session.query(StudentChangeLog)
+        .filter(
+            StudentChangeLog.event_type.in_(("退學", "轉出")),
+            StudentChangeLog.event_date >= earliest,
+            StudentChangeLog.event_date <= today,
+        )
+        .all()
+    )
+
+    monthly: dict[tuple[int, int], dict] = {}
+    cursor = earliest
+    while cursor <= today:
+        monthly[(cursor.year, cursor.month)] = {
+            "year": cursor.year,
+            "month": cursor.month,
+            "withdrawn": 0,
+            "transferred": 0,
+        }
+        cursor = _next_month_first(cursor)
+
+    by_reason: dict[str, int] = defaultdict(int)
+    for log in logs:
+        key = (log.event_date.year, log.event_date.month)
+        if key not in monthly:
+            continue
+        if log.event_type == "退學":
+            monthly[key]["withdrawn"] += 1
+        elif log.event_type == "轉出":
+            monthly[key]["transferred"] += 1
+        if log.reason:
+            by_reason[log.reason] += 1
+
+    return {
+        "monthly": sorted(monthly.values(), key=lambda r: (r["year"], r["month"])),
+        "by_reason": [
+            {"reason": k, "count": v}
+            for k, v in sorted(by_reason.items(), key=lambda x: -x[1])
+        ],
+    }
+
+
+def _prev_month_first(d: date) -> date:
+    if d.month == 1:
+        return date(d.year - 1, 12, 1)
+    return date(d.year, d.month - 1, 1)
+
+
+def _next_month_first(d: date) -> date:
+    if d.month == 12:
+        return date(d.year + 1, 1, 1)
+    return date(d.year, d.month + 1, 1)

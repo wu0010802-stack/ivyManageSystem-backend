@@ -236,3 +236,86 @@ def test_fee_paid_no_trigger(session):
 
     triggered = detect_signal_fee_overdue(session, today=date(2026, 4, 23))
     assert s.id not in {t["student_id"] for t in triggered}
+
+
+def test_at_risk_merges_signals_and_takes_max_severity(session):
+    from services.analytics.churn_service import detect_at_risk_students
+
+    cls = _classroom(session)
+    s = _student(session, name="多訊號", classroom=cls)
+    other = _student(session, name="同班路人", classroom=cls)
+
+    # A 訊號：連續 absent
+    for d in (date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)):
+        _attendance(session, student=s, day=d, status="缺席")
+        _attendance(session, student=other, day=d, status="出席")
+
+    # D 訊號：欠費
+    fi = FeeItem(name="月費", amount=5000, period="2025-2", is_active=True)
+    session.add(fi)
+    session.commit()
+    rec = StudentFeeRecord(
+        student_id=s.id,
+        student_name=s.name,
+        classroom_name="小班A",
+        fee_item_id=fi.id,
+        fee_item_name=fi.name,
+        amount_due=5000,
+        period="2025-2",
+        payment_date=None,
+    )
+    session.add(rec)
+    session.commit()
+
+    result = detect_at_risk_students(session, today=date(2026, 4, 23))
+    by_id = {r["student_id"]: r for r in result}
+    assert s.id in by_id
+    entry = by_id[s.id]
+    assert len(entry["signals"]) >= 2
+    assert entry["primary_severity"] == "high"  # A 為 high
+    assert entry["student_name"] == s.name
+    # classroom_name should be the student's classroom
+    assert entry["classroom_name"] is not None
+
+
+def test_at_risk_masks_name_when_no_students_read(session):
+    from services.analytics.churn_service import detect_at_risk_students
+
+    cls = _classroom(session)
+    s = _student(session, name="A", classroom=cls)
+    for d in (date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)):
+        _attendance(session, student=s, day=d, status="缺席")
+
+    result = detect_at_risk_students(
+        session,
+        today=date(2026, 4, 23),
+        can_read_students=False,
+    )
+    if result:
+        assert result[0]["student_name"] == "***"
+
+
+def test_churn_history_12_months(session):
+    from services.analytics.churn_service import build_churn_history
+
+    cls = _classroom(session)
+    s = _student(session, name="退學生", classroom=cls, status="withdrawn")
+    log = StudentChangeLog(
+        student_id=s.id,
+        school_year=114,
+        semester=2,
+        event_type="退學",
+        event_date=date(2026, 1, 15),
+        reason="搬家",
+    )
+    session.add(log)
+    session.commit()
+
+    result = build_churn_history(session, months=12, today=date(2026, 4, 23))
+    assert len(result["monthly"]) == 12
+    # 2026-01 應該有 1 筆 withdrawn
+    jan = next(r for r in result["monthly"] if r["year"] == 2026 and r["month"] == 1)
+    assert jan["withdrawn"] == 1
+    # 流失原因
+    by_reason = {r["reason"]: r["count"] for r in result["by_reason"]}
+    assert by_reason.get("搬家") == 1
