@@ -289,3 +289,55 @@ def test_retained_6m(session):
         today=date(2026, 4, 23),
     )
     assert r["retained_6m"] == 1
+
+
+def test_by_source_visit_side_only(session):
+    from services.analytics.funnel_service import slice_by_source
+
+    _add_visit(
+        session, month="115.03", source="walk_in", has_deposit=True, enrolled=True
+    )
+    _add_visit(
+        session, month="115.03", source="walk_in", has_deposit=False, enrolled=False
+    )
+    _add_visit(
+        session, month="115.03", source="referral", has_deposit=True, enrolled=True
+    )
+
+    rows = slice_by_source(
+        session, start_date=date(2026, 3, 1), end_date=date(2026, 3, 31)
+    )
+    by_source = {r["source"]: r for r in rows}
+    assert by_source["walk_in"]["lead"] == 2
+    assert by_source["walk_in"]["enrolled"] == 1
+    assert by_source["referral"]["lead"] == 1
+    assert by_source["referral"]["enrolled"] == 1
+    # 轉換率
+    assert by_source["walk_in"]["conversion"] == pytest.approx(0.5)
+    assert by_source["referral"]["conversion"] == pytest.approx(1.0)
+
+
+def test_by_grade_includes_student_side(session):
+    from services.analytics.funnel_service import slice_by_grade
+
+    cls = _add_classroom(session, name="小班A")
+
+    _add_visit(session, month="115.03", grade="小班", has_deposit=True, enrolled=True)
+    _add_student(
+        session,
+        name="X",
+        lifecycle_status="active",
+        enrollment_date=date(2026, 3, 10),
+        classroom=cls,
+    )
+
+    rows = slice_by_grade(
+        session,
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 31),
+        today=date(2026, 4, 23),
+    )
+    by_grade = {r["grade"]: r for r in rows}
+    # 小班：visit 端 lead=1 enrolled=1
+    assert by_grade["小班"]["lead"] == 1
+    assert by_grade["小班"]["enrolled"] == 1

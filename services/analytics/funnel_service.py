@@ -6,10 +6,11 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
+from sqlalchemy import distinct
 from sqlalchemy.orm import Session
 
 from models.activity import ParentInquiry
-from models.classroom import Student
+from models.classroom import Classroom, Student
 from models.recruitment import RecruitmentVisit
 from services.analytics.constants import RETENTION_WINDOWS_DAYS, parse_roc_month
 
@@ -168,3 +169,111 @@ def _is_retained(student: Student, today: date, window_days: int) -> bool:
     if student.withdrawal_date is not None and student.withdrawal_date < threshold:
         return False
     return True
+
+
+def slice_by_source(
+    session: Session,
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[dict]:
+    """依 RecruitmentVisit.source 切片；student 端因無 source 欄位不參與。
+
+    回傳 [{source, lead, deposit, enrolled, conversion}, ...]
+    conversion = enrolled / lead（防 0 除）
+    """
+    sources = (
+        session.query(distinct(RecruitmentVisit.source))
+        .filter(RecruitmentVisit.source.isnot(None))
+        .all()
+    )
+    rows = []
+    for (src,) in sources:
+        if not src:
+            continue
+        visits = (
+            session.query(RecruitmentVisit).filter(RecruitmentVisit.source == src).all()
+        )
+        in_range = [v for v in visits if _visit_in_range(v, start_date, end_date)]
+        lead_n = len(in_range)
+        deposit_n = sum(1 for v in in_range if v.has_deposit)
+        enrolled_n = sum(1 for v in in_range if v.enrolled)
+        conversion = (enrolled_n / lead_n) if lead_n > 0 else 0.0
+        rows.append(
+            {
+                "source": src,
+                "lead": lead_n,
+                "deposit": deposit_n,
+                "enrolled": enrolled_n,
+                "conversion": round(conversion, 3),
+            }
+        )
+    return sorted(rows, key=lambda r: -r["lead"])
+
+
+def slice_by_grade(
+    session: Session,
+    *,
+    start_date: date,
+    end_date: date,
+    today: date,
+) -> list[dict]:
+    """依 grade 切片，含 visit 端與 student 端 active count。
+
+    回傳 [{grade, lead, deposit, enrolled, active, conversion}, ...]
+    grade 集合 = visit.grade ∪ classroom.name（student 端用班級名當 grade label）
+    """
+    visit_grades = {
+        g for (g,) in session.query(distinct(RecruitmentVisit.grade)).all() if g
+    }
+    classroom_grades = {
+        c.name
+        for c in session.query(Classroom).filter(Classroom.is_active == True).all()
+        if c is not None
+    }
+    grades = sorted(visit_grades | classroom_grades)
+
+    enrolled_states = (
+        "active",
+        "on_leave",
+        "graduated",
+        "transferred",
+        "withdrawn",
+    )
+
+    rows = []
+    for g in grades:
+        v_in_range = [
+            v
+            for v in session.query(RecruitmentVisit)
+            .filter(RecruitmentVisit.grade == g)
+            .all()
+            if _visit_in_range(v, start_date, end_date)
+        ]
+        lead_n = len(v_in_range)
+        deposit_n = sum(1 for v in v_in_range if v.has_deposit)
+        enrolled_n = sum(1 for v in v_in_range if v.enrolled)
+
+        active_n = (
+            session.query(Student)
+            .join(Classroom, Student.classroom_id == Classroom.id)
+            .filter(
+                Classroom.name == g,
+                Student.lifecycle_status.in_(enrolled_states),
+                Student.enrollment_date >= start_date,
+                Student.enrollment_date <= end_date,
+            )
+            .count()
+        )
+        conversion = (enrolled_n / lead_n) if lead_n > 0 else 0.0
+        rows.append(
+            {
+                "grade": g,
+                "lead": lead_n,
+                "deposit": deposit_n,
+                "enrolled": enrolled_n,
+                "active": active_n,
+                "conversion": round(conversion, 3),
+            }
+        )
+    return sorted(rows, key=lambda r: -r["lead"])
