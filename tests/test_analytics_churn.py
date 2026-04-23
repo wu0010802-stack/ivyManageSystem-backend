@@ -143,3 +143,98 @@ def test_class_unrecorded_day_skipped(session):
     )
     assert a.id not in {t["student_id"] for t in triggered}
     assert b.id not in {t["student_id"] for t in triggered}
+
+
+from models.student_log import StudentChangeLog
+from models.fees import FeeItem, StudentFeeRecord
+
+
+def test_on_leave_30_days_triggers(session):
+    from services.analytics.churn_service import detect_signal_long_on_leave
+
+    cls = _classroom(session)
+    s = _student(session, name="長假學生", classroom=cls, status="on_leave")
+    log = StudentChangeLog(
+        student_id=s.id,
+        school_year=114,  # 民國 114 = 西元 2025
+        semester=2,
+        event_type="休學",
+        event_date=date(2026, 3, 20),  # today=4/23 → 34 天
+    )
+    session.add(log)
+    session.commit()
+
+    triggered = detect_signal_long_on_leave(session, today=date(2026, 4, 23))
+    assert s.id in {t["student_id"] for t in triggered}
+
+
+def test_on_leave_29_days_no_trigger(session):
+    from services.analytics.churn_service import detect_signal_long_on_leave
+
+    cls = _classroom(session)
+    s = _student(session, name="短假學生", classroom=cls, status="on_leave")
+    log = StudentChangeLog(
+        student_id=s.id,
+        school_year=114,
+        semester=2,
+        event_type="休學",
+        event_date=date(2026, 3, 26),  # 28 天
+    )
+    session.add(log)
+    session.commit()
+
+    triggered = detect_signal_long_on_leave(session, today=date(2026, 4, 23))
+    assert s.id not in {t["student_id"] for t in triggered}
+
+
+def test_fee_overdue_triggers(session):
+    from services.analytics.churn_service import detect_signal_fee_overdue
+
+    cls = _classroom(session)
+    s = _student(session, name="欠費學生", classroom=cls)
+
+    fi = FeeItem(name="月費", amount=5000, period="2025-2", is_active=True)
+    session.add(fi)
+    session.commit()
+    rec = StudentFeeRecord(
+        student_id=s.id,
+        student_name=s.name,
+        classroom_name="小班A",
+        fee_item_id=fi.id,
+        fee_item_name=fi.name,
+        amount_due=5000,
+        payment_date=None,  # 未繳
+        period="2025-2",
+    )
+    session.add(rec)
+    session.commit()
+
+    # 學期始 2026-02-01 + 14 天 = 2/15；today=2026-04-23 → 已逾期
+    # 當期：today=2026-04-23 → 4 月 in [2,7] → semester=2, year_roc=114 → period="2025-2" ✓
+    triggered = detect_signal_fee_overdue(session, today=date(2026, 4, 23))
+    assert s.id in {t["student_id"] for t in triggered}
+
+
+def test_fee_paid_no_trigger(session):
+    from services.analytics.churn_service import detect_signal_fee_overdue
+
+    cls = _classroom(session)
+    s = _student(session, name="已繳學生", classroom=cls)
+    fi = FeeItem(name="月費", amount=5000, period="2025-2", is_active=True)
+    session.add(fi)
+    session.commit()
+    rec = StudentFeeRecord(
+        student_id=s.id,
+        student_name=s.name,
+        classroom_name="小班A",
+        fee_item_id=fi.id,
+        fee_item_name=fi.name,
+        amount_due=5000,
+        payment_date=date(2026, 2, 10),  # 已繳
+        period="2025-2",
+    )
+    session.add(rec)
+    session.commit()
+
+    triggered = detect_signal_fee_overdue(session, today=date(2026, 4, 23))
+    assert s.id not in {t["student_id"] for t in triggered}

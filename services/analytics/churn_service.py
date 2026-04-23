@@ -16,9 +16,15 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from models.classroom import Student, StudentAttendance
+from models.fees import FeeItem, StudentFeeRecord
+from models.student_log import StudentChangeLog
 from services.analytics.constants import (
     CHURN_CONSECUTIVE_ABSENCE_DAYS,
+    CHURN_FEE_OVERDUE_DAYS,
+    CHURN_ON_LEAVE_DAYS,
+    term_start_date,
 )
+from utils.academic import resolve_current_academic_term
 
 logger = logging.getLogger(__name__)
 
@@ -142,3 +148,91 @@ def detect_signal_consecutive_absence(
                 }
             )
     return triggered
+
+
+def detect_signal_long_on_leave(
+    session: Session,
+    *,
+    today: date,
+) -> list[dict]:
+    """C 訊號：on_leave 學生最近一筆「休學」事件距今 ≥ N 天。"""
+    students = (
+        session.query(Student).filter(Student.lifecycle_status == "on_leave").all()
+    )
+    triggered = []
+    for s in students:
+        last_log = (
+            session.query(StudentChangeLog)
+            .filter(
+                StudentChangeLog.student_id == s.id,
+                StudentChangeLog.event_type == "休學",
+            )
+            .order_by(StudentChangeLog.event_date.desc())
+            .first()
+        )
+        if last_log is None:
+            continue
+        days = (today - last_log.event_date).days
+        if days >= CHURN_ON_LEAVE_DAYS:
+            triggered.append(
+                {
+                    "student_id": s.id,
+                    "type": "long_on_leave",
+                    "severity": "medium",
+                    "detail": f"休學已 {days} 天未復學（自 {last_log.event_date}）",
+                }
+            )
+    return triggered
+
+
+def detect_signal_fee_overdue(
+    session: Session,
+    *,
+    today: date,
+) -> list[dict]:
+    """D 訊號：當期未繳費 ≥ 14 天。
+
+    當期：utils.academic.resolve_current_academic_term(today) 回傳 (year_民國, semester)
+    轉成 FeeItem.period 西元字串 "{year+1911}-{semester}" 進行比對。
+    """
+    year_roc, semester = resolve_current_academic_term(today)
+    current_period = f"{year_roc + 1911}-{semester}"
+
+    overdue_records = (
+        session.query(StudentFeeRecord, FeeItem)
+        .join(FeeItem, StudentFeeRecord.fee_item_id == FeeItem.id)
+        .join(Student, StudentFeeRecord.student_id == Student.id)
+        .filter(
+            StudentFeeRecord.payment_date.is_(None),
+            FeeItem.period == current_period,
+            Student.lifecycle_status.in_(("active", "on_leave")),
+        )
+        .all()
+    )
+
+    triggered_by_student: dict[int, dict] = {}
+    for rec, item in overdue_records:
+        start = term_start_date(item.period)
+        if start is None:
+            continue
+        # 已逾期天數需 ≥ 14（threshold = start + 14；today >= threshold 即觸發）
+        threshold = start + timedelta(days=CHURN_FEE_OVERDUE_DAYS)
+        if today < threshold:
+            continue
+        actual_overdue_days = (today - start).days
+        severity = "high" if actual_overdue_days >= 30 else "medium"
+        existing = triggered_by_student.get(rec.student_id)
+        if existing is None or _severity_rank(severity) > _severity_rank(
+            existing["severity"]
+        ):
+            triggered_by_student[rec.student_id] = {
+                "student_id": rec.student_id,
+                "type": "fee_overdue",
+                "severity": severity,
+                "detail": f"學費逾期 {actual_overdue_days} 天，項目：{item.name}",
+            }
+    return list(triggered_by_student.values())
+
+
+def _severity_rank(s: str) -> int:
+    return {"low": 1, "medium": 2, "high": 3}.get(s, 0)
