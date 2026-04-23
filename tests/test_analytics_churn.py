@@ -14,6 +14,8 @@ from sqlalchemy.orm import sessionmaker
 
 from models.base import Base
 from models.classroom import Classroom, Student, StudentAttendance
+from models.fees import FeeItem, StudentFeeRecord
+from models.student_log import StudentChangeLog
 
 
 @pytest.fixture
@@ -143,10 +145,6 @@ def test_class_unrecorded_day_skipped(session):
     )
     assert a.id not in {t["student_id"] for t in triggered}
     assert b.id not in {t["student_id"] for t in triggered}
-
-
-from models.student_log import StudentChangeLog
-from models.fees import FeeItem, StudentFeeRecord
 
 
 def test_on_leave_30_days_triggers(session):
