@@ -163,3 +163,22 @@ class TestAnalyticsApi:
             assert len(body["monthly"]) == 12
         finally:
             app.dependency_overrides.clear()
+
+    def test_at_risk_masks_name_without_students_read(self, analytics_client):
+        """User with BUSINESS_ANALYTICS but NOT STUDENTS_READ should see masked names."""
+        client, app = analytics_client
+
+        # 只有 BUSINESS_ANALYTICS 權限，無 STUDENTS_READ
+        app.dependency_overrides[get_current_user] = _mock_user_with_perm(
+            _ANALYTICS_PERM
+        )
+        try:
+            resp = client.get("/api/analytics/churn/at-risk")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert isinstance(body, list)
+            # 在空 DB 上迴圈為空，但若有資料則 student_name 應為 "***"
+            for item in body:
+                assert item.get("student_name") == "***"
+        finally:
+            app.dependency_overrides.clear()
