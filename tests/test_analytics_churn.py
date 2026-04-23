@@ -283,16 +283,20 @@ def test_at_risk_masks_name_when_no_students_read(session):
 
     cls = _classroom(session)
     s = _student(session, name="A", classroom=cls)
+    other = _student(session, name="B", classroom=cls)
     for d in (date(2026, 4, 20), date(2026, 4, 21), date(2026, 4, 22)):
         _attendance(session, student=s, day=d, status="缺席")
+        _attendance(session, student=other, day=d, status="出席")  # 防止整班漏點名
 
     result = detect_at_risk_students(
         session,
         today=date(2026, 4, 23),
         can_read_students=False,
     )
-    if result:
-        assert result[0]["student_name"] == "***"
+    # 現在 result 必有 s（單一訊號 consecutive_absence）
+    masked = [r for r in result if r["student_id"] == s.id]
+    assert len(masked) == 1
+    assert masked[0]["student_name"] == "***"
 
 
 def test_churn_history_12_months(session):
