@@ -10,7 +10,7 @@ from sqlalchemy import distinct
 from sqlalchemy.orm import Session
 
 from models.activity import ParentInquiry
-from models.classroom import Classroom, Student
+from models.classroom import ClassGrade, Classroom, Student
 from models.recruitment import RecruitmentVisit
 from services.analytics.constants import RETENTION_WINDOWS_DAYS, parse_roc_month
 
@@ -227,9 +227,8 @@ def slice_by_grade(
         g for (g,) in session.query(distinct(RecruitmentVisit.grade)).all() if g
     }
     classroom_grades = {
-        c.name
-        for c in session.query(Classroom).filter(Classroom.is_active == True).all()
-        if c is not None
+        cg.name
+        for cg in session.query(ClassGrade).filter(ClassGrade.is_active == True).all()
     }
     grades = sorted(visit_grades | classroom_grades)
 
@@ -257,8 +256,9 @@ def slice_by_grade(
         active_n = (
             session.query(Student)
             .join(Classroom, Student.classroom_id == Classroom.id)
+            .join(ClassGrade, Classroom.grade_id == ClassGrade.id)
             .filter(
-                Classroom.name == g,
+                ClassGrade.name == g,
                 Student.lifecycle_status.in_(enrolled_states),
                 Student.enrollment_date >= start_date,
                 Student.enrollment_date <= end_date,

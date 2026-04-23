@@ -176,11 +176,27 @@ def _add_student(
     return s
 
 
-def _add_classroom(session, *, name):
+def _add_classroom(session, *, name, grade_name=None):
+    """Create a Classroom and (optionally) wire to a ClassGrade.
+
+    grade_name: if provided, ensures a ClassGrade with this exact name exists
+    and links the new Classroom to it.
+    """
     import uuid
+    from models.classroom import ClassGrade
+
+    grade_id = None
+    if grade_name:
+        cg = session.query(ClassGrade).filter(ClassGrade.name == grade_name).first()
+        if cg is None:
+            cg = ClassGrade(name=grade_name, is_active=True)
+            session.add(cg)
+            session.commit()
+        grade_id = cg.id
 
     # Classroom 有 UniqueConstraint(school_year, semester, name)；用 uuid 確保唯一
-    c = Classroom(name=f"{name}-{uuid.uuid4().hex[:6]}", is_active=True)
+    suffix = uuid.uuid4().hex[:6]
+    c = Classroom(name=f"{name}-{suffix}", is_active=True, grade_id=grade_id)
     session.add(c)
     session.commit()
     return c
@@ -320,7 +336,7 @@ def test_by_source_visit_side_only(session):
 def test_by_grade_includes_student_side(session):
     from services.analytics.funnel_service import slice_by_grade
 
-    cls = _add_classroom(session, name="小班A")
+    cls = _add_classroom(session, name="小班A", grade_name="小班")
 
     _add_visit(session, month="115.03", grade="小班", has_deposit=True, enrolled=True)
     _add_student(
@@ -338,6 +354,7 @@ def test_by_grade_includes_student_side(session):
         today=date(2026, 4, 23),
     )
     by_grade = {r["grade"]: r for r in rows}
-    # 小班：visit 端 lead=1 enrolled=1
+    # 小班：visit 端 lead=1 enrolled=1；student 端 active=1
     assert by_grade["小班"]["lead"] == 1
     assert by_grade["小班"]["enrolled"] == 1
+    assert by_grade["小班"]["active"] == 1
