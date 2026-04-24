@@ -241,3 +241,36 @@ class TestCalculatePeriodAccrualRow:
             )
 
         assert result["overtime_bonus"] == 0
+
+    def test_engine_returns_raw_deduction_without_capping(
+        self, db_session, salary_engine_no_db
+    ):
+        """engine 層回傳 raw 扣款值（不做 max(0, ...) 夾逼），夾逼於端點層 totals。
+
+        此測試證明單月 row 不對 meeting_absence_deduction 套用上限，因此端點層
+        net_estimate = max(0, fb+ot-ded) 的夾逼確實有意義。
+        """
+        with db_session() as session:
+            emp, classroom = _make_classroom_teacher(session)
+            for d, attended in [
+                (date(2026, 4, 5), False),
+                (date(2026, 4, 12), False),
+            ]:
+                session.add(
+                    MeetingRecord(
+                        employee_id=emp.id,
+                        meeting_date=d,
+                        attended=attended,
+                        overtime_pay=0,
+                    )
+                )
+            session.commit()
+
+            ctx = {"session": session, "employee": emp, "classroom": classroom}
+            result = salary_engine_no_db.calculate_period_accrual_row(
+                emp.id, 2026, 4, _ctx=ctx
+            )
+
+        penalty = salary_engine_no_db._meeting_absence_penalty
+        # 不論 festival/overtime 為何，單月扣款值固定為 absent_count × penalty
+        assert result["meeting_absence_deduction"] == 2 * penalty

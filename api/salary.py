@@ -601,20 +601,29 @@ def get_festival_bonus_period_accrual(
     if not passed_months:
         return {
             "is_distribution_month": get_bonus_distribution_month(month),
+            "period_start_year": None,
             "period_start_month": None,
+            "current_year": year,
             "current_month": month,
+            "distribution_year": None,
             "distribution_month": None,
             "rows": [],
         }
 
     # 發放月：本期之後最近的 2/6/9/12（12 月 → 次年 2）
     distribution_month = next((c for c in (2, 6, 9, 12) if c > month), 2)
+    # distribution_year：查詢月 12 已於上方 is_distribution_month 分支提早返回，
+    # 主路徑下 distribution_month 必定 > month 且落於同一年；保留變數以對前端語意清晰。
+    distribution_year = year + 1 if month == 12 else year
 
     with session_scope() as session:
         engine = (
             _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
         )
 
+        # 員工過濾：與 get_festival_bonus 一致，只包含當前查詢月在職的員工。
+        # 商業語意：節慶獎金以發放月當日在職為條件，期中離職者即使已累積部分獎金
+        # 亦不會於發放月領取，預覽功能維持此規則，避免管理者對實發金額產生誤判。
         employees = (
             session.query(Employee)
             .options(joinedload(Employee.job_title_rel))
@@ -698,8 +707,11 @@ def get_festival_bonus_period_accrual(
 
         return {
             "is_distribution_month": False,
+            "period_start_year": passed_months[0][0],
             "period_start_month": passed_months[0][1],
+            "current_year": year,
             "current_month": month,
+            "distribution_year": distribution_year,
             "distribution_month": distribution_month,
             "rows": rows,
         }

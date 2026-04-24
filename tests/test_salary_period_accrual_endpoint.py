@@ -141,6 +141,9 @@ class TestPeriodAccrualEndpoint:
         data = r.json()
         assert data["is_distribution_month"] is True
         assert data["rows"] == []
+        assert data["period_start_year"] is None
+        assert data["distribution_year"] is None
+        assert data["current_year"] == 2026
 
     def test_april_returns_three_months(self, client):
         c, sf = client
@@ -155,8 +158,11 @@ class TestPeriodAccrualEndpoint:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["is_distribution_month"] is False
+        assert data["period_start_year"] == 2026
         assert data["period_start_month"] == 2
+        assert data["current_year"] == 2026
         assert data["current_month"] == 4
+        assert data["distribution_year"] == 2026
         assert data["distribution_month"] == 6
         assert len(data["rows"]) == 1
         row = data["rows"][0]
@@ -201,9 +207,133 @@ class TestPeriodAccrualEndpoint:
         )
         assert r.status_code == 200
         data = r.json()
+        assert data["period_start_year"] == 2025
         assert data["period_start_month"] == 12
+        assert data["current_year"] == 2026
+        assert data["distribution_year"] == 2026
         row = data["rows"][0]
         assert [(m["year"], m["month"]) for m in row["monthly"]] == [
             (2025, 12),
             (2026, 1),
         ]
+
+    def test_net_estimate_caps_at_zero_when_deductions_exceed_bonuses(self, client):
+        """totals.net_estimate 被 max(0, ...) 限制在 >= 0。
+
+        以非帶班、未滿 3 個月新進員工 + 大量會議缺席營造扣款大於獎金的情境。
+        非帶班 → overtime_bonus=0；未滿 3 個月 → festival_bonus=0；
+        會議缺席扣款 × 多次 → 顯著大於 0；最終 net_estimate 被夾在 0。
+        """
+        from models.database import MeetingRecord
+
+        c, sf = client
+        with sf() as s:
+            _create_admin(s)
+            # 非帶班、未滿 3 個月的新進辦公室職員 + 多次會議缺席
+            emp = Employee(
+                employee_id="E_NEW_OFF",
+                name="新進職員",
+                title="職員",
+                position="職員",
+                base_salary=32000,
+                hire_date=date(2026, 3, 1),  # 未滿 3 個月
+                is_active=True,
+            )
+            s.add(emp)
+            s.flush()
+            # 3 月與 4 月各 3 次全部缺席 → 6 × penalty
+            for d in [
+                date(2026, 3, 5),
+                date(2026, 3, 12),
+                date(2026, 3, 19),
+                date(2026, 4, 5),
+                date(2026, 4, 12),
+                date(2026, 4, 19),
+            ]:
+                s.add(
+                    MeetingRecord(
+                        employee_id=emp.id,
+                        meeting_date=d,
+                        attended=False,
+                        overtime_pay=0,
+                    )
+                )
+            s.commit()
+        _login(c)
+
+        r = c.get(
+            "/api/salaries/festival-bonus/period-accrual?year=2026&month=4",
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        row = next((r for r in data["rows"] if r["name"] == "新進職員"), None)
+        assert row is not None
+        totals = row["totals"]
+        # 結構性斷言：扣款 > 獎金 → net_estimate 必被夾在 0
+        assert totals["meeting_absence_deduction"] > 0
+        assert (
+            totals["meeting_absence_deduction"]
+            > totals["festival_bonus"] + totals["overtime_bonus"]
+        )
+        assert totals["net_estimate"] == 0
+
+    def test_authenticated_without_salary_read_returns_403(self, client):
+        """已登入但無 SALARY_READ 權限 → 403。"""
+        c, sf = client
+        with sf() as s:
+            # 建立一位有帳號但無 SALARY_READ 的使用者（隨便給個不含 SALARY_READ 的權限位元）
+            user = User(
+                username="noperm",
+                password_hash=hash_password("pw"),
+                role="teacher",
+                permissions=0,  # 無任何權限
+                is_active=True,
+                must_change_password=False,
+            )
+            s.add(user)
+            s.commit()
+
+        # 以 noperm 登入（cookie 模式）
+        login_r = c.post(
+            "/api/auth/login",
+            json={"username": "noperm", "password": "pw"},
+        )
+        assert login_r.status_code == 200
+
+        r = c.get("/api/salaries/festival-bonus/period-accrual?year=2026&month=4")
+        assert r.status_code == 403
+
+    def test_resigned_employee_not_in_rows(self, client):
+        """期中離職者不出現在 rows（與 get_festival_bonus 語意一致）。
+
+        此行為為商業邏輯：節慶獎金以發放月在職為條件，離職者不發，
+        預覽端點同樣不列入，避免管理者誤判。
+        """
+        c, sf = client
+        with sf() as s:
+            _create_admin(s)
+            grade = ClassGrade(name="大班")
+            s.add(grade)
+            s.flush()
+            # 3/15 離職 → 查詢 4 月時不應出現
+            resigned = Employee(
+                employee_id="E_RESIGN",
+                name="離職老師",
+                title="幼兒園教師",
+                position="幼兒園教師",
+                base_salary=35000,
+                hire_date=date(2024, 1, 1),
+                resign_date=date(2026, 3, 15),
+                is_active=False,
+            )
+            s.add(resigned)
+            s.commit()
+        _login(c)
+
+        r = c.get(
+            "/api/salaries/festival-bonus/period-accrual?year=2026&month=4",
+        )
+        assert r.status_code == 200
+        data = r.json()
+        names = [row["name"] for row in data["rows"]]
+        assert "離職老師" not in names
