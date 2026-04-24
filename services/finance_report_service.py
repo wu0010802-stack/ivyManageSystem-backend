@@ -19,7 +19,11 @@ from sqlalchemy.orm import Session
 
 from models.activity import ActivityPaymentRecord, ActivityRegistration
 from models.employee import Employee
-from models.fees import StudentFeeRecord, StudentFeeRefund
+from models.fees import (
+    StudentFeePayment,
+    StudentFeeRecord,
+    StudentFeeRefund,
+)
 from models.salary import SalaryRecord
 
 
@@ -33,16 +37,20 @@ def _month_totals_from(rows) -> dict[int, int]:
 
 
 def get_tuition_revenue_by_month(session: Session, year: int) -> dict[int, int]:
-    """學費已繳金額（status='paid'），按 payment_date 月份聚合。"""
+    """學費已繳金額，按 StudentFeePayment.payment_date 月份聚合（append-only 流水）。
+
+    Why: 舊版用 StudentFeeRecord.status='paid' + payment_date 聚合會有三個問題：
+    1) 分期收款第一筆的日期被後續覆寫 → 收入搬到最後月份
+    2) 退款後 status 變 partial/unpaid → 整筆收入從月報消失
+    3) partial 狀態的現金不計入（條件是 status='paid'）
+    改讀 StudentFeePayment 每筆 append-only 流水即可正確歸月。
+    """
     rows = (
         session.query(
-            extract("month", StudentFeeRecord.payment_date).label("m"),
-            func.sum(StudentFeeRecord.amount_paid),
+            extract("month", StudentFeePayment.payment_date).label("m"),
+            func.sum(StudentFeePayment.amount),
         )
-        .filter(
-            StudentFeeRecord.status == "paid",
-            extract("year", StudentFeeRecord.payment_date) == year,
-        )
+        .filter(extract("year", StudentFeePayment.payment_date) == year)
         .group_by("m")
         .all()
     )
@@ -229,28 +237,30 @@ def _iso(d) -> Optional[str]:
 def get_tuition_detail(session: Session, year: int, month: int) -> list[dict]:
     """回傳該月學費繳費 + 退款的明細列。
 
-    每筆來源以 kind 區分：'payment'（已繳學費）或 'refund'（退款）。
+    每筆來源以 kind 區分：'payment'（已繳學費流水）或 'refund'（退款）。
+    繳費從 StudentFeePayment 逐筆取（保留原收款日），JOIN record 拿學生/項目 snapshot。
     """
     out: list[dict] = []
-    paid = (
-        session.query(StudentFeeRecord)
+    paid_rows = (
+        session.query(StudentFeePayment, StudentFeeRecord)
+        .join(StudentFeeRecord, StudentFeePayment.record_id == StudentFeeRecord.id)
         .filter(
-            StudentFeeRecord.status == "paid",
-            extract("year", StudentFeeRecord.payment_date) == year,
-            extract("month", StudentFeeRecord.payment_date) == month,
+            extract("year", StudentFeePayment.payment_date) == year,
+            extract("month", StudentFeePayment.payment_date) == month,
         )
+        .order_by(StudentFeePayment.payment_date)
         .all()
     )
-    for r in paid:
+    for payment, record in paid_rows:
         out.append(
             {
                 "kind": "payment",
-                "date": _iso(r.payment_date),
-                "student_name": r.student_name,
-                "classroom_name": r.classroom_name,
-                "fee_item_name": r.fee_item_name,
-                "amount": int(r.amount_paid or 0),
-                "payment_method": r.payment_method,
+                "date": _iso(payment.payment_date),
+                "student_name": record.student_name,
+                "classroom_name": record.classroom_name,
+                "fee_item_name": record.fee_item_name,
+                "amount": int(payment.amount or 0),
+                "payment_method": payment.payment_method,
             }
         )
     refunds = (

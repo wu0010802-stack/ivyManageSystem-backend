@@ -100,6 +100,48 @@ class StudentFeeRecord(Base):
     )
 
 
+class StudentFeePayment(Base):
+    """學費繳費流水：每次收款 append 一筆，不再覆寫 StudentFeeRecord。
+
+    Why: 舊設計 StudentFeeRecord 只保留單一 amount_paid/payment_date/status，
+    分期收款會覆寫；月報過濾 `status='paid' + payment_date in month` 會把
+    多期收款全部搬到最後一次付款的月份、退款後 partial 狀態整筆消失、
+    partial 現金不入帳。改走 append-only 流水即可正確聚合月度收入。
+
+    與 StudentFeeRefund 對稱：退款仍走獨立表，兩者分別計算淨額。
+    """
+
+    __tablename__ = "student_fee_payments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    record_id = Column(
+        Integer,
+        ForeignKey("student_fee_records.id", ondelete="RESTRICT"),
+        nullable=False,
+        comment="對應的學生費用記錄",
+    )
+    amount = Column(Integer, nullable=False, comment="本次收款金額（正整數）")
+    payment_date = Column(Date, nullable=False, comment="本次收款日期")
+    payment_method = Column(
+        String(20), nullable=True, comment="繳費方式：現金/轉帳/其他"
+    )
+    notes = Column(Text, nullable=True, default="", comment="備註")
+    operator = Column(String(50), nullable=True, comment="操作人員 username")
+    # 冪等鍵：網路重送時同 key 視為重試，避免雙扣（NULL 允許重複，相容舊資料）
+    idempotency_key = Column(
+        String(64), nullable=True, comment="繳費冪等鍵（全域唯一）"
+    )
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+    __table_args__ = (
+        Index("ix_fee_payments_record", "record_id"),
+        Index("ix_fee_payments_date", "payment_date"),
+        Index("ix_fee_payments_record_date", "record_id", "payment_date"),
+        Index("ix_fee_payments_idk", "idempotency_key"),
+        UniqueConstraint("idempotency_key", name="uq_student_fee_payments_idk"),
+    )
+
+
 class StudentFeeRefund(Base):
     """學費退款紀錄：附加於 StudentFeeRecord 的歷史明細，不直接改動原記錄的 amount_paid。
 

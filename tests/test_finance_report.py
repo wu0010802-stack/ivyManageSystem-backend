@@ -23,9 +23,45 @@ from models.database import (
     ActivityPaymentRecord,
     SalaryRecord,
 )
-from models.fees import StudentFeeRecord, StudentFeeRefund
+from models.fees import StudentFeePayment, StudentFeeRecord, StudentFeeRefund
 from services import finance_report_service as svc
+from sqlalchemy import event as sa_event
 from utils.auth import hash_password
+
+
+def _register_auto_mirror_payment(session_factory):
+    """測試 fixture 輔助：StudentFeeRecord.amount_paid > 0 時自動 mirror
+    一筆 StudentFeePayment，讓舊測試資料配合新的 append-only 流水邏輯。
+
+    Why: 實作 P1-B 後，財務月報改讀 StudentFeePayment。既有測試直接建
+    StudentFeeRecord(amount_paid=X, status='paid', payment_date=D) 的 fixture
+    若不同步補 payment 流水，聚合結果會變 0 並失去覆蓋意義。
+    """
+
+    @sa_event.listens_for(session_factory, "after_flush")
+    def _mirror(session, flush_context):
+        for obj in list(session.new):
+            if not isinstance(obj, StudentFeeRecord):
+                continue
+            if (obj.amount_paid or 0) <= 0 or not obj.payment_date:
+                continue
+            # 避免同次 flush 已手動建 payment 時重複寫入
+            has_existing = any(
+                isinstance(o, StudentFeePayment) and o.record_id == obj.id
+                for o in list(session.new)
+            )
+            if has_existing:
+                continue
+            session.add(
+                StudentFeePayment(
+                    record_id=obj.id,
+                    amount=obj.amount_paid,
+                    payment_date=obj.payment_date,
+                    payment_method=obj.payment_method or "現金",
+                    notes="（測試 auto-mirror）",
+                    operator="test",
+                )
+            )
 
 
 @pytest.fixture
@@ -35,6 +71,7 @@ def fin_client(tmp_path):
         f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
     )
     session_factory = sessionmaker(bind=engine)
+    _register_auto_mirror_payment(session_factory)
     old_e, old_sf = base_module._engine, base_module._SessionFactory
     base_module._engine = engine
     base_module._SessionFactory = session_factory

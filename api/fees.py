@@ -13,7 +13,12 @@ from sqlalchemy.exc import IntegrityError
 
 from models.base import session_scope
 from models.classroom import Classroom, Student
-from models.fees import FeeItem, StudentFeeRecord, StudentFeeRefund
+from models.fees import (
+    FeeItem,
+    StudentFeePayment,
+    StudentFeeRecord,
+    StudentFeeRefund,
+)
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_adjustment_reason, require_finance_approve
 from utils.permissions import Permission
@@ -62,6 +67,13 @@ class PayRequest(BaseModel):
     )
     payment_method: str = Field(..., pattern="^(現金|轉帳|其他)$")
     notes: Optional[str] = Field("", max_length=200)
+    idempotency_key: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="繳費冪等鍵（全域唯一；同 key 重送視為重試並回放先前結果）",
+    )
 
 
 class RefundRequest(BaseModel):
@@ -438,12 +450,50 @@ def pay_fee_record(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
-    """登記繳費（累計已繳金額，覆蓋式）
+    """登記繳費 — API 契約保留「累計已繳」語意，底層改為 append-only 流水。
 
-    稽核：覆蓋前值會記錄 logger.warning 供事後追查；
-    若 new < old 視為調降（疑似退款/誤改）預設拒絕，除非 allow_decrease=True。
+    Why: 財務月報過去用 StudentFeeRecord.payment_date / status 聚合，分期收款
+    會把前期收入搬到最後一次付款月份，退款後月份可能整筆消失。現在每次 pay
+    都會 INSERT 一筆 StudentFeePayment（delta 金額 + 本次付款日），財報改
+    SUM 流水表即可正確歸月。
+
+    - payload.amount_paid 仍代表「累計到此值」，後端自動算 delta 插入
+    - delta < 0 拒絕（走退款流程）；delta = 0 視為只更新 method/notes 快照
+    - record 上的 amount_paid / payment_date / payment_method 保持「最後一次」
+      快照供清單顯示；真正的月度聚合看 StudentFeePayment
+    - idempotency_key：全域唯一，同 key 重送回放（DB UNIQUE 兜底）
     """
     with session_scope() as session:
+        # ── 冪等性重送檢查：先於任何寫入 ─────────────────────────────
+        if payload.idempotency_key:
+            hit = (
+                session.query(StudentFeePayment)
+                .filter(StudentFeePayment.idempotency_key == payload.idempotency_key)
+                .first()
+            )
+            if hit is not None:
+                # 同 key 必須對應同一 record 與同 payload；上下文不同視為 key 誤用
+                if hit.record_id != record_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"idempotency_key 已用於 record {hit.record_id}，"
+                            f"不可重複用於 record {record_id}"
+                        ),
+                    )
+                rec = (
+                    session.query(StudentFeeRecord)
+                    .filter(StudentFeeRecord.id == record_id)
+                    .first()
+                )
+                return {
+                    "ok": True,
+                    "amount_paid": rec.amount_paid if rec else None,
+                    "previous_amount_paid": (rec.amount_paid if rec else 0)
+                    - hit.amount,
+                    "idempotent_replay": True,
+                }
+
         record = (
             session.query(StudentFeeRecord)
             .filter(StudentFeeRecord.id == record_id)
@@ -476,6 +526,22 @@ def pay_fee_record(
                 ),
             )
 
+        delta = amount_paid - previous_paid
+        operator = current_user.get("username", "") or "unknown"
+
+        # Append-only 流水：delta > 0 時才寫一筆（delta=0 只更新快照）
+        if delta > 0:
+            payment = StudentFeePayment(
+                record_id=record.id,
+                amount=delta,
+                payment_date=payload.payment_date,
+                payment_method=payload.payment_method,
+                notes=payload.notes or "",
+                operator=operator,
+                idempotency_key=payload.idempotency_key,
+            )
+            session.add(payment)
+
         record.amount_paid = amount_paid
         record.payment_date = payload.payment_date
         record.payment_method = payload.payment_method
@@ -484,31 +550,73 @@ def pay_fee_record(
         record.updated_at = datetime.now()
 
         student_name = record.student_name
-        operator = current_user.get("username", "") or "unknown"
 
         # 把金額變動塞進 AuditMiddleware 的 summary（含前後值，不會被 body mask 掉）
         request.state.audit_summary = (
             f"繳費登記 {record.period or ''} {student_name}: "
-            f"NT${previous_paid} → NT${amount_paid}"
+            f"NT${previous_paid} → NT${amount_paid}（本次 +NT${delta}）"
             f"（{payload.payment_method}，by {operator}）"
         )
         request.state.audit_entity_id = record_id
 
+        # DB 層 UNIQUE 攔下並發同 key 的第二筆：轉為 replay
+        try:
+            session.flush()
+        except IntegrityError as e:
+            session.rollback()
+            if (
+                payload.idempotency_key
+                and "idempotency_key" in str(getattr(e, "orig", e)).lower()
+            ):
+                with session_scope() as replay_session:
+                    hit = (
+                        replay_session.query(StudentFeePayment)
+                        .filter(
+                            StudentFeePayment.idempotency_key == payload.idempotency_key
+                        )
+                        .first()
+                    )
+                    if hit and hit.record_id == record_id:
+                        rec = (
+                            replay_session.query(StudentFeeRecord)
+                            .filter(StudentFeeRecord.id == record_id)
+                            .first()
+                        )
+                        return {
+                            "ok": True,
+                            "amount_paid": rec.amount_paid if rec else None,
+                            "previous_amount_paid": (
+                                (rec.amount_paid if rec else 0) - hit.amount
+                            ),
+                            "idempotent_replay": True,
+                        }
+                    if hit:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"idempotency_key 已用於 record {hit.record_id}，"
+                                f"不可重複用於 record {record_id}"
+                            ),
+                        )
+            raise
+
     # 金額變動 warning 保留一份（AuditLog 寫失敗時仍有日誌可查）
-    if amount_paid != previous_paid:
+    if delta != 0:
         logger.warning(
-            "FEE_PAY_CHANGE record_id=%s student=%s operator=%s prev=%s new=%s method=%s",
+            "FEE_PAY_CHANGE record_id=%s student=%s operator=%s prev=%s new=%s delta=%s method=%s",
             record_id,
             student_name,
             operator,
             previous_paid,
             amount_paid,
+            delta,
             payload.payment_method,
         )
     return {
         "ok": True,
         "amount_paid": amount_paid,
         "previous_amount_paid": previous_paid,
+        "delta": delta,
     }
 
 
@@ -577,21 +685,18 @@ _REFUND_IDEMPOTENCY_WINDOW_SECONDS = 10 * 60
 
 
 def _find_refund_idempotent_hit(
-    session, record_id: int, idempotency_key: str
+    session, idempotency_key: str
 ) -> Optional[StudentFeeRefund]:
-    """查詢視窗內是否已有相同 idempotency_key 的退款紀錄。
+    """查詢相同 idempotency_key 的退款紀錄（全域，不限時間視窗）。
 
-    threshold 與 StudentFeeRefund.refunded_at 皆用 naive `datetime.now()`
-    （與 ORM default 保持同一時間基準，避免時區差錯造成視窗失效）。
+    Why: DB 層 UniqueConstraint 已保證 idempotency_key 永久唯一。
+    過去用 10 分鐘 window 過濾會造成：key 在 window 外重送 → 查不到 →
+    繼續 INSERT → UNIQUE 拒絕 → 客戶端收 500（原本第一次可能已成功）。
+    改為全域查詢，上下文驗證由呼叫端負責（record_id / amount 必須一致）。
     """
-    threshold = datetime.now() - timedelta(seconds=_REFUND_IDEMPOTENCY_WINDOW_SECONDS)
     return (
         session.query(StudentFeeRefund)
-        .filter(
-            StudentFeeRefund.record_id == record_id,
-            StudentFeeRefund.idempotency_key == idempotency_key,
-            StudentFeeRefund.refunded_at >= threshold,
-        )
+        .filter(StudentFeeRefund.idempotency_key == idempotency_key)
         .order_by(StudentFeeRefund.id.asc())
         .first()
     )
@@ -615,11 +720,18 @@ def refund_fee_record(
     idempotent_replay = False
     with session_scope() as session:
         # 先檢冪等：若已有紀錄，直接回放原結果，不鎖 record 也不動 amount_paid
+        # 上下文必須一致（record_id / amount 相符），否則視為 key 誤用 → 409
         if payload.idempotency_key:
-            existing = _find_refund_idempotent_hit(
-                session, record_id, payload.idempotency_key
-            )
+            existing = _find_refund_idempotent_hit(session, payload.idempotency_key)
             if existing is not None:
+                if existing.record_id != record_id or existing.amount != payload.amount:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"idempotency_key 已用於 record {existing.record_id} "
+                            f"（NT${existing.amount}），不可重複用於本請求"
+                        ),
+                    )
                 rec = (
                     session.query(StudentFeeRecord)
                     .filter(StudentFeeRecord.id == record_id)
@@ -689,6 +801,7 @@ def refund_fee_record(
         student_name_snapshot = record.student_name
 
         # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：把它轉成 replay
+        # 上下文必須一致，否則回 409 而非誤 replay
         try:
             session.flush()
         except IntegrityError as e:
@@ -700,8 +813,19 @@ def refund_fee_record(
                 # 另一個並發請求剛建完；重新查出來以 replay 方式回
                 with session_scope() as replay_session:
                     existing = _find_refund_idempotent_hit(
-                        replay_session, record_id, payload.idempotency_key
+                        replay_session, payload.idempotency_key
                     )
+                    if existing is not None and (
+                        existing.record_id != record_id
+                        or existing.amount != payload.amount
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"idempotency_key 已用於 record {existing.record_id} "
+                                f"（NT${existing.amount}），不可重複用於本請求"
+                            ),
+                        )
                     rec = (
                         replay_session.query(StudentFeeRecord)
                         .filter(StudentFeeRecord.id == record_id)
