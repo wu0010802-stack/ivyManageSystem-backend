@@ -11,7 +11,16 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
-from models.database import Base, ClassGrade, Classroom, Employee, LeaveRecord, Student
+from models.database import (
+    Base,
+    ClassGrade,
+    Classroom,
+    Employee,
+    LeaveRecord,
+    SalaryRecord,
+    Student,
+    WorkdayOverride,
+)
 from services.salary_engine import SalaryEngine
 
 
@@ -117,6 +126,38 @@ class TestFestivalEligibilityReferenceDate:
         )
 
         assert breakdown.festival_bonus == 2000
+
+    def test_reference_date_is_month_end_not_month_start(self, engine):
+        """2025-11-15 到職的員工，2026-02 月薪結算時年資：
+        - 月初基準日 2026-02-01：滿 2 個月 18 天 → 不足 3 個月（舊 bug：發不到獎金）
+        - 月底基準日 2026-02-28：滿 3 個月 13 天 → 符合資格
+        """
+        employee = {
+            "employee_id": "E901",
+            "name": "臨界到職",
+            "title": "幼兒園教師",
+            "position": "幼兒園教師",
+            "employee_type": "regular",
+            "base_salary": 30000,
+            "hourly_rate": 0,
+            "insurance_salary": 30000,
+            "dependents": 0,
+            "hire_date": "2025-11-15",
+        }
+        classroom_context = {
+            "role": "head_teacher",
+            "grade_name": "大班",
+            "current_enrollment": 24,
+            "has_assistant": True,
+            "is_shared_assistant": False,
+        }
+        breakdown = engine.calculate_salary(
+            employee=employee,
+            year=2026,
+            month=2,
+            classroom_context=classroom_context,
+        )
+        assert breakdown.festival_bonus > 0, "月底基準日應視為符合資格，應發獎金"
 
 
 class TestFestivalBonusBreakdownRegressions:
@@ -434,3 +475,172 @@ class TestDailySalaryBaseConsistency:
 
         assert absent_count == 1
         assert round(absence_amount) == 1308
+
+
+class TestMakeupWorkdayAbsenceDetection:
+    """P2-1 回歸：補班日（WorkdayOverride）未出勤應被視為曠職。
+
+    Bug context (2026-04-24): `_detect_absences` 過去只查 Holiday 與
+    DailyShift，沒查 WorkdayOverride。官方補班週六員工無打卡且無請假
+    時不會扣曠職，與請假/工作日判定邏輯不一致。
+    """
+
+    def test_absent_on_makeup_saturday_counts_as_absence(self, salary_engine_db):
+        """2026-02-07 (Sat) 為官方補班日，員工無打卡且無請假 → 應算 1 天曠職。"""
+        engine, session_factory = salary_engine_db
+
+        with session_factory() as session:
+            teacher = Employee(
+                employee_id="MAKEUP_ABS",
+                name="補班曠職",
+                title="幼兒園教師",
+                position="幼兒園教師",
+                employee_type="regular",
+                base_salary=30000,
+                insurance_salary_level=30000,
+                hire_date=date(2025, 1, 1),
+                is_active=True,
+            )
+            session.add(teacher)
+            session.add(
+                WorkdayOverride(
+                    date=date(2026, 2, 7),
+                    name="補班日",
+                    is_active=True,
+                )
+            )
+            session.commit()
+            tid = teacher.id
+
+        with session_factory() as session:
+            emp = session.query(Employee).get(tid)
+            absent_count, _ = engine._detect_absences(
+                session,
+                emp,
+                attendances=[],
+                approved_leaves=[],
+                start_date=date(2026, 2, 1),
+                end_date=date(2026, 2, 28),
+                year=2026,
+                month=2,
+            )
+
+        # 2026/2 有 20 個平日（2/2-2/6, 2/9-2/13, 2/16-2/20, 2/23-2/27）+ 補班 2/7 = 21
+        assert absent_count == 21
+
+    def test_no_makeup_entry_only_counts_weekdays(self, salary_engine_db):
+        """未登錄 WorkdayOverride 時，週六不應被視為工作日。"""
+        engine, session_factory = salary_engine_db
+
+        with session_factory() as session:
+            teacher = Employee(
+                employee_id="NO_MAKEUP",
+                name="無補班",
+                title="幼兒園教師",
+                position="幼兒園教師",
+                employee_type="regular",
+                base_salary=30000,
+                insurance_salary_level=30000,
+                hire_date=date(2025, 1, 1),
+                is_active=True,
+            )
+            session.add(teacher)
+            session.commit()
+            tid = teacher.id
+
+        with session_factory() as session:
+            emp = session.query(Employee).get(tid)
+            absent_count, _ = engine._detect_absences(
+                session,
+                emp,
+                attendances=[],
+                approved_leaves=[],
+                start_date=date(2026, 2, 1),
+                end_date=date(2026, 2, 28),
+                year=2026,
+                month=2,
+            )
+
+        # 僅 20 個平日
+        assert absent_count == 20
+
+
+class TestPreviewSalaryCalculationNoSideEffect:
+    """P1-2 回歸：preview 端點（GET）不應寫入 SalaryRecord。
+
+    Bug context (2026-04-24): final-salary-preview 直接呼叫會寫入 DB 的
+    process_salary_calculation，且讀取不存在的 breakdown.pension 屬性會拋
+    AttributeError 回 500，但 commit 已落地造成 DB 污染。
+    """
+
+    def test_preview_does_not_write_salary_record(self, salary_engine_db):
+        engine, session_factory = salary_engine_db
+
+        with session_factory() as session:
+            teacher = Employee(
+                employee_id="PREVIEW",
+                name="預覽員工",
+                title="幼兒園教師",
+                position="幼兒園教師",
+                employee_type="regular",
+                base_salary=30000,
+                insurance_salary_level=30000,
+                hire_date=date(2025, 1, 1),
+                is_active=True,
+            )
+            session.add(teacher)
+            session.commit()
+            tid = teacher.id
+
+        breakdown = engine.preview_salary_calculation(tid, 2026, 3)
+
+        # 計算成功且必備欄位存在
+        assert breakdown.base_salary == 30000
+        assert hasattr(breakdown, "pension_self")
+
+        # 關鍵：DB 不應有任何 SalaryRecord 被寫入
+        with session_factory() as session:
+            count = (
+                session.query(SalaryRecord)
+                .filter(
+                    SalaryRecord.employee_id == tid,
+                    SalaryRecord.salary_year == 2026,
+                    SalaryRecord.salary_month == 3,
+                )
+                .count()
+            )
+        assert count == 0
+
+    def test_process_calculation_still_writes_salary_record(self, salary_engine_db):
+        """對照組：process_salary_calculation 仍應寫入 SalaryRecord（未被誤傷）。"""
+        engine, session_factory = salary_engine_db
+
+        with session_factory() as session:
+            teacher = Employee(
+                employee_id="PROCESS",
+                name="正式員工",
+                title="幼兒園教師",
+                position="幼兒園教師",
+                employee_type="regular",
+                base_salary=30000,
+                insurance_salary_level=30000,
+                hire_date=date(2025, 1, 1),
+                is_active=True,
+            )
+            session.add(teacher)
+            session.commit()
+            tid = teacher.id
+
+        engine.process_salary_calculation(tid, 2026, 3)
+
+        with session_factory() as session:
+            count = (
+                session.query(SalaryRecord)
+                .filter(
+                    SalaryRecord.employee_id == tid,
+                    SalaryRecord.salary_year == 2026,
+                    SalaryRecord.salary_month == 3,
+                )
+                .count()
+            )
+        assert count == 1

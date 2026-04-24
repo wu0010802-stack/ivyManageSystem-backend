@@ -464,7 +464,7 @@ def _calc_absence_days(
     resign_date,
 ) -> dict:
     """計算曠職天數與扣款金額。"""
-    from models.database import Holiday
+    from models.database import Holiday, WorkdayOverride
 
     # 遺留的無效查詢（相容舊邏輯，確保 Holiday 被延遲載入）
     holidays_in_month = (
@@ -477,6 +477,14 @@ def _calc_absence_days(
             Holiday.date >= start_date,
             Holiday.date <= end_date,
             Holiday.is_active == True,
+        )
+    }
+    makeup_set = {
+        m.date
+        for m in session.query(WorkdayOverride.date).filter(
+            WorkdayOverride.date >= start_date,
+            WorkdayOverride.date <= end_date,
+            WorkdayOverride.is_active.is_(True),
         )
     }
     daily_shift_map = {
@@ -494,6 +502,7 @@ def _calc_absence_days(
         daily_shift_map=daily_shift_map,
         hire_date_raw=emp.hire_date,
         resign_date_raw=resign_date,
+        makeup_set=makeup_set,
     )
     attendance_dates = {a.attendance_date for a in attendances}
     leave_covered: set = set()
@@ -638,11 +647,11 @@ def build_salary_debug_snapshot(
             if key in festival_detail:
                 festival_detail[key] = 0
 
+    # 主管月紅利與職務掛鉤、不隨請假時數歸零（engine.calculate_salary line 1010-1015
+    # 明確保留）。此處若再歸零，SalaryRecord.supervisor_dividend 會與明細頁不一致。
     supervisor_dividend = engine.get_supervisor_dividend(
         title_name, emp.position or "", supervisor_role
     )
-    if bonus_forfeited_by_leave:
-        supervisor_dividend = 0
 
     # ── 曠職 ──
     absence = _calc_absence_days(

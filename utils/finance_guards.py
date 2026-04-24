@@ -27,8 +27,16 @@ FINANCE_APPROVAL_THRESHOLD = 1000
 
 # 員工自身資料中「屬於金流敏感面」的欄位：不允許員工自己修改
 # employees.py PUT 的 update_data 如果含這些 key 且 target_id==自己 → 403
+#
+# 除了直接的金額欄位外，還包含「間接影響薪資計算」的欄位：
+# - hire_date：節慶獎金資格三個月門檻、prorate 底薪
+# - job_title_id / title / position：底薪標準、主管紅利、節慶獎金基數
+# - supervisor_role：主管紅利等級
+# - bonus_grade：節慶獎金職稱等級覆寫
+# - classroom_id：帶班身份 → 班級節慶獎金 / 學生數獎金
 EMPLOYEE_SALARY_SENSITIVE_FIELDS = frozenset(
     {
+        # 直接金額
         "base_salary",
         "hourly_rate",
         "performance_bonus_rate",
@@ -38,6 +46,14 @@ EMPLOYEE_SALARY_SENSITIVE_FIELDS = frozenset(
         "labor_insurance_salary",
         "health_insurance_salary",
         "employee_type",  # 影響時薪/月薪身份切換
+        # 間接影響薪資計算
+        "hire_date",
+        "job_title_id",
+        "title",
+        "position",
+        "supervisor_role",
+        "bonus_grade",
+        "classroom_id",
     }
 )
 

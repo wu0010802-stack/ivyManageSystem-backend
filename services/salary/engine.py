@@ -164,6 +164,10 @@ def _fill_salary_record(salary_record, breakdown, engine):
     salary_record.early_leave_count = breakdown.early_leave_count
     salary_record.missing_punch_count = breakdown.missing_punch_count
     salary_record.absent_count = breakdown.absent_count
+    # 重算也視為 SalaryRecord 有效異動，推進樂觀鎖版本：
+    # - 讓 ETag/If-Match 能偵測「前端拿到的是重算前版本」→ 409，避免覆蓋
+    # - 讓 snapshot cache（key=(record_id, version)）自動失效，不再沿用舊 snapshot
+    salary_record.version = (salary_record.version or 0) + 1
 
 
 class SalaryEngine:
@@ -605,6 +609,7 @@ class SalaryEngine:
         hire_date_raw=None,
         resign_date_raw=None,
         today=None,
+        makeup_set=None,
     ):
         """建立指定月份的預期上班日集合"""
         return _build_expected_workdays(
@@ -615,6 +620,7 @@ class SalaryEngine:
             hire_date_raw,
             resign_date_raw,
             today,
+            makeup_set,
         )
 
     @staticmethod
@@ -629,8 +635,14 @@ class SalaryEngine:
 
     @staticmethod
     def _get_bonus_reference_date(year: int, month: int) -> date:
-        """節慶獎金資格判斷固定以薪資月份首日為準。"""
-        return date(year, month, 1)
+        """節慶獎金資格基準日：薪資月份的月底。
+
+        Why: 舊版用月份首日判斷年資門檻，導致在發放月當月才滿三個月的員工被排除。
+        例如 2025-11-15 到職員工在 2026-02-28 已滿 3 個月，但以 2026-02-01 為準
+        尚不足門檻 → 應發卻未發。以月底為準可對齊「薪資結算時是否已達資格」的語意。
+        """
+        _, last_day = calendar.monthrange(year, month)
+        return date(year, month, last_day)
 
     @staticmethod
     def _get_effective_bonus_title(
@@ -1285,10 +1297,9 @@ class SalaryEngine:
         )
 
         # 最終一次舍入
-        _net_raw = breakdown.gross_salary - breakdown.total_deduction
         breakdown.gross_salary = round(breakdown.gross_salary)
         breakdown.total_deduction = round(breakdown.total_deduction)
-        breakdown.net_salary = round(_net_raw)
+        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
 
         if breakdown.gross_salary < 0:
             raise ValueError(f"gross_salary 異常負值: {breakdown.gross_salary}")
@@ -1779,7 +1790,14 @@ class SalaryEngine:
             for a in attendances
         }
 
-        leave_covered: set = set()
+        # 累計每日請假時數（支援同日多筆假單，例如上午 4h 事假 + 下午 4h 病假）。
+        # Why: 舊版無條件把假單每一天加入 leave_covered，0.5h 事假 + 整日未打卡
+        # 也會被判為「已請假 → 非曠職」，導致員工可用短工時假單規避整日曠職扣款。
+        # 改為只有「當日累計請假時數 ≥ 整日工時」才視為整日覆蓋；半日假仍留在
+        # expected_workdays 中，搭配原有 leave_deduction 扣該段請假工資，未打卡部分
+        # 若實際未到班則由請假當日未覆蓋的期望工時保留可曠職判定（整日未打卡才觸發）。
+        FULL_DAY_HOURS = 8.0
+        per_day_leave_hours: dict[date, float] = {}
         for lv in approved_leaves:
             d = (
                 lv.start_date.date()
@@ -1789,10 +1807,24 @@ class SalaryEngine:
             lv_end = (
                 lv.end_date.date() if isinstance(lv.end_date, datetime) else lv.end_date
             )
+            span_days = (lv_end - d).days + 1
+            if span_days <= 0:
+                continue
+            lv_hours = lv.leave_hours
+            # leave_hours 未填或 0：視為整段皆為整日假（舊資料相容）
+            if not lv_hours or lv_hours <= 0:
+                lv_hours = span_days * FULL_DAY_HOURS
+            per_day = lv_hours / span_days
             while d <= lv_end:
                 if start_date <= d <= end_date:
-                    leave_covered.add(d)
+                    per_day_leave_hours[d] = per_day_leave_hours.get(d, 0.0) + per_day
                 d += timedelta(days=1)
+
+        leave_covered: set = {
+            d
+            for d, hours in per_day_leave_hours.items()
+            if hours >= FULL_DAY_HOURS - 0.01
+        }
 
         absent_days = expected_workdays - attendance_dates - leave_covered
         absent_count = len(absent_days)
@@ -1824,7 +1856,7 @@ class SalaryEngine:
         if emp.employee_type == "hourly":
             return 0, 0
 
-        from models.database import Holiday, DailyShift as _DailyShift
+        from models.database import Holiday, DailyShift as _DailyShift, WorkdayOverride
 
         holidays_in_month = (
             session.query(Holiday.date)
@@ -1836,6 +1868,18 @@ class SalaryEngine:
             .all()
         )
         holiday_set = {h.date for h in holidays_in_month}
+
+        # 補班日（WorkdayOverride）：官方補班的週末須視為應上班
+        makeup_in_month = (
+            session.query(WorkdayOverride.date)
+            .filter(
+                WorkdayOverride.date >= start_date,
+                WorkdayOverride.date <= end_date,
+                WorkdayOverride.is_active.is_(True),
+            )
+            .all()
+        )
+        makeup_set = {m.date for m in makeup_in_month}
 
         daily_shifts_in_month = (
             session.query(_DailyShift)
@@ -1855,6 +1899,7 @@ class SalaryEngine:
             daily_shift_map=daily_shift_map,
             hire_date_raw=emp.hire_date,
             resign_date_raw=getattr(emp, "resign_date", None),
+            makeup_set=makeup_set,
         )
 
         daily_salary_full = calc_daily_salary(self._resolve_standard_base(emp))
@@ -1870,87 +1915,106 @@ class SalaryEngine:
             month,
         )
 
+    def _build_breakdown_for_month(self, session, emp, year: int, month: int):
+        """純計算：依員工、年月產出 SalaryBreakdown，不寫入任何 DB 記錄。
+
+        Why: preview 端點（GET）必須「只算不寫」，避免副作用；同時讓
+        process_salary_calculation 與 preview_salary_calculation 共用計算流程。
+        """
+        import calendar
+
+        emp_dict = self._load_emp_dict(emp)
+
+        _, last_day = calendar.monthrange(year, month)
+        start_date = date(year, month, 1)
+        end_date = date(year, month, last_day)
+
+        attendance_result, attendances = self._load_attendance_result(
+            session, emp, start_date, end_date, emp_dict
+        )
+
+        classroom_context, office_staff_context = self._build_contexts(
+            session, emp, end_date
+        )
+
+        daily_salary = calc_daily_salary(emp_dict["base_salary"])
+        period_records = self._load_period_records(
+            session, emp, start_date, end_date, year, month, daily_salary
+        )
+
+        absent_count, absence_deduction_amount = self._detect_absences(
+            session,
+            emp,
+            attendances,
+            period_records["approved_leaves"],
+            start_date,
+            end_date,
+            year,
+            month,
+        )
+
+        breakdown = self.calculate_salary(
+            employee=emp_dict,
+            year=year,
+            month=month,
+            attendance=attendance_result,
+            leave_deduction=period_records["leave_deduction"],
+            classroom_context=classroom_context,
+            office_staff_context=office_staff_context,
+            meeting_context=period_records["meeting_context"],
+            overtime_work_pay=period_records["overtime_work_pay"],
+            personal_sick_leave_hours=period_records["personal_sick_leave_hours"],
+        )
+
+        breakdown.absent_count = absent_count
+        breakdown.absence_deduction = round(absence_deduction_amount)
+        breakdown.total_deduction = round(
+            breakdown.total_deduction + absence_deduction_amount
+        )
+        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
+        if breakdown.total_deduction < 0:
+            raise ValueError(
+                f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
+            )
+        if breakdown.net_salary < 0:
+            raise ValueError(f"net_salary 異常負值（含曠職）: {breakdown.net_salary}")
+
+        return breakdown
+
+    def preview_salary_calculation(self, employee_id: int, year: int, month: int):
+        """只算不存：GET preview 專用，保證不留下任何 SalaryRecord 副作用。
+
+        Why: final-salary-preview 是 GET 端點，過去直接呼叫會寫入 SalaryRecord 的
+        process_salary_calculation，一旦後續流程拋例外（例如屬性存取錯誤），
+        使用者看到 500 但 DB 已落地。改用此方法避免副作用。
+        """
+        session = _get_db_session()
+        try:
+            from models.database import Employee
+
+            emp = session.query(Employee).get(employee_id)
+            if not emp:
+                raise ValueError(f"Employee {employee_id} not found")
+
+            return self._build_breakdown_for_month(session, emp, year, month)
+        finally:
+            session.rollback()
+            session.close()
+
     def process_salary_calculation(self, employee_id: int, year: int, month: int):
         """處理單一員工薪資計算並儲存結果"""
         session = _get_db_session()
         try:
             from models.database import Employee, SalaryRecord
 
-            # 1. 取得員工資料
             emp = session.query(Employee).get(employee_id)
             if not emp:
                 raise ValueError(f"Employee {employee_id} not found")
 
-            # 2. 轉換為 dict
-            emp_dict = self._load_emp_dict(emp)
+            breakdown = self._build_breakdown_for_month(session, emp, year, month)
 
-            # 3. 計算日期範圍
-            import calendar
-
-            _, last_day = calendar.monthrange(year, month)
-            start_date = date(year, month, 1)
-            end_date = date(year, month, last_day)
-
-            # 4. 取得考勤並計算統計
-            attendance_result, attendances = self._load_attendance_result(
-                session, emp, start_date, end_date, emp_dict
-            )
-
-            # 5. 建構 Classroom Context 與 Office Context
-            classroom_context, office_staff_context = self._build_contexts(
-                session, emp, end_date
-            )
-
-            # 6. 查詢請假、加班、園務會議記錄
-            daily_salary = calc_daily_salary(emp_dict["base_salary"])
-            period_records = self._load_period_records(
-                session, emp, start_date, end_date, year, month, daily_salary
-            )
-
-            # 7. 曠職偵測
-            absent_count, absence_deduction_amount = self._detect_absences(
-                session,
-                emp,
-                attendances,
-                period_records["approved_leaves"],
-                start_date,
-                end_date,
-                year,
-                month,
-            )
-
-            # 8. 計算薪資
-            breakdown = self.calculate_salary(
-                employee=emp_dict,
-                year=year,
-                month=month,
-                attendance=attendance_result,
-                leave_deduction=period_records["leave_deduction"],
-                classroom_context=classroom_context,
-                office_staff_context=office_staff_context,
-                meeting_context=period_records["meeting_context"],
-                overtime_work_pay=period_records["overtime_work_pay"],
-                personal_sick_leave_hours=period_records["personal_sick_leave_hours"],
-            )
-
-            # 加入曠職扣款
-            breakdown.absent_count = absent_count
-            breakdown.absence_deduction = round(absence_deduction_amount)
-            breakdown.total_deduction = round(
-                breakdown.total_deduction + absence_deduction_amount
-            )
-            breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
-
-            if breakdown.total_deduction < 0:
-                raise ValueError(
-                    f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
-                )
-            if breakdown.net_salary < 0:
-                raise ValueError(
-                    f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
-                )
-
-            # 10. 儲存 SalaryRecord（advisory lock 保護：多 worker 不會同時寫同筆）
+            # 儲存 SalaryRecord（advisory lock 保護：多 worker 不會同時寫同筆）
             from utils.advisory_lock import acquire_salary_lock
 
             acquire_salary_lock(session, employee_id=emp.id, year=year, month=month)
@@ -2168,6 +2232,20 @@ class SalaryEngine:
                 .all()
             )
             holiday_set = {h.date for h in holidays_raw}
+
+            # 10.5 補班日（WorkdayOverride，全月共用）
+            from models.database import WorkdayOverride as _WorkdayOverride
+
+            makeup_raw = (
+                session.query(_WorkdayOverride.date)
+                .filter(
+                    _WorkdayOverride.date >= start_date,
+                    _WorkdayOverride.date <= end_date,
+                    _WorkdayOverride.is_active.is_(True),
+                )
+                .all()
+            )
+            makeup_set = {m.date for m in makeup_raw}
 
             # 11. 班別（DailyShift）
             shifts_by_emp = defaultdict(dict)
@@ -2392,6 +2470,7 @@ class SalaryEngine:
                             daily_shift_map=shifts_by_emp[emp.id],
                             hire_date_raw=emp.hire_date,
                             resign_date_raw=getattr(emp, "resign_date", None),
+                            makeup_set=makeup_set,
                         )
                         absent_count, absence_deduction_amount = self._compute_absence(
                             emp.id,

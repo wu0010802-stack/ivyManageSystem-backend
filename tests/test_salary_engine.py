@@ -1381,6 +1381,50 @@ class TestBuildExpectedWorkdays:
             today=date(2026, 12, 31),
         )
 
+    def test_makeup_workday_on_saturday_is_expected(self, engine):
+        """補班週六應被納入預期上班日。
+
+        Why: 官方補班日（WorkdayOverride）若不納入，員工於該日未打卡且無請假
+        時薪資不會扣曠職，與請假/工作日判定邏輯不一致（P2-1 回歸）。
+        """
+        # 2026-02-07 是週六，假設被政府公告為補班日
+        result = SalaryEngine._build_expected_workdays(
+            year=2026,
+            month=2,
+            holiday_set=set(),
+            daily_shift_map={},
+            today=date(2026, 2, 28),
+            makeup_set={date(2026, 2, 7)},
+        )
+        assert date(2026, 2, 7) in result
+        # 其他週六（2/14, 2/21, 2/28）不在 makeup_set 中，仍不算工作日
+        assert date(2026, 2, 14) not in result
+        assert date(2026, 2, 21) not in result
+
+    def test_makeup_does_not_override_holiday(self, engine):
+        """同一天若同時在 holiday_set 與 makeup_set，holiday 優先（仍不算工作日）。"""
+        result = SalaryEngine._build_expected_workdays(
+            year=2026,
+            month=2,
+            holiday_set={date(2026, 2, 7)},
+            daily_shift_map={},
+            today=date(2026, 2, 28),
+            makeup_set={date(2026, 2, 7)},
+        )
+        assert date(2026, 2, 7) not in result
+
+    def test_makeup_none_defaults_to_empty(self, engine):
+        """未傳 makeup_set 時行為等同空集合，不影響既有 caller。"""
+        result = SalaryEngine._build_expected_workdays(
+            year=2026,
+            month=2,
+            holiday_set=set(),
+            daily_shift_map={},
+            today=date(2026, 2, 28),
+        )
+        # 2/7 週六仍不算（沒有補班資訊）
+        assert date(2026, 2, 7) not in result
+
 
 # ──────────────────────────────────────────────
 # get_working_days 月份驗證
@@ -1417,16 +1461,14 @@ class TestGetWorkingDaysValidation:
 
 
 # ──────────────────────────────────────────────
-# 浮點舍入：中間值保留精度，最終一次舍入
+# 浮點舍入：gross 與 total_deduction 各自舍入後，net = gross - total（一致性優先）
 # ──────────────────────────────────────────────
 class TestDeferredRounding:
     """
     場景：2026年1月，員工 1/3 入職（29/31 天），遲到 3 分鐘
-      月中折算 raw : 30000 × 29/31 = 28064.516...  → 個別 round → 28065（誤差 +0.484）
-      遲到扣款 raw : 3 × (30000/30/8/60) = 6.25    → 個別 round → 6   （誤差 −0.25）
-      個別舍入 net  = (28065 + 2000 + 2400) − (758 + 470 + 6) = 31231
-      延遲舍入 net  = round(28064.516... + 2000 + 2400 − 758 − 470 − 6.25)
-                    = round(31230.266...) = 31230
+      月中折算 raw : 30000 × 29/31 = 28064.516...  → round → 28065
+      遲到扣款 raw : 3 × (30000/30/8/60) = 6.25    → round → 6（含其他扣款累加後再 round）
+      net = gross_rounded − total_rounded（保證三條路徑 net == gross − total）
     """
 
     def _make_att(self, late_minutes=3):
@@ -1444,7 +1486,12 @@ class TestDeferredRounding:
         )
 
     def test_net_salary_deferred_rounding(self, engine, sample_employee):
-        """延遲舍入驗證：gross/deduction 各自先加總再舍入"""
+        """一致性驗證：net_salary == gross_salary - total_deduction（整數運算）。
+
+        Why: 舊版用 round(gross_raw - total_raw) 計算 net，但後續又把 gross/total
+        各自 round，導致 net != gross - total，偶爾差 1 元；批次 DB 路徑會
+        再 recompute 修正，但純 calculate_salary 的呼叫者會踩到。
+        """
         emp = {**sample_employee, "hire_date": "2026-01-03"}
         breakdown = engine.calculate_salary(
             employee=emp,
@@ -1452,8 +1499,9 @@ class TestDeferredRounding:
             month=1,
             attendance=self._make_att(late_minutes=3),
         )
-        # round(28064.516... − 758 − 470 − 6.25) = round(26830.266) = 26830
-        assert breakdown.net_salary == 26830
+        assert (
+            breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
+        )
 
     def test_gross_and_total_deduction_are_integers(self, engine, sample_employee):
         """gross_salary 與 total_deduction 最終應為整數（前端顯示不出現小數）"""
@@ -1703,6 +1751,110 @@ class TestAttendanceDateNormalization:
 
         absent = expected_workdays - set() - leave_covered
         assert date(2026, 1, 7) not in absent, "請假日 2026-01-07 不應誤判為曠職"
+
+
+class TestPartialDayLeaveAbsence:
+    """_compute_absence：部分日請假 + 未打卡不應吃掉整日曠職。
+
+    舊版無條件把假單日期加入 leave_covered，0.5h 事假 + 整日未打卡即
+    absent_count=0，員工用短工時假單規避整日曠職扣款。
+    """
+
+    class _FakeLeave:
+        def __init__(self, start, end, hours):
+            self.start_date = start
+            self.end_date = end
+            self.leave_hours = hours
+
+    def test_half_day_leave_without_punch_still_absent(self):
+        """0.5h 事假 + 整日未打卡 → 當日應列為曠職。"""
+        from services.salary.engine import SalaryEngine
+
+        absent_count, amount = SalaryEngine._compute_absence(
+            emp_id=1,
+            attendances=[],
+            approved_leaves=[self._FakeLeave(date(2026, 1, 5), date(2026, 1, 5), 0.5)],
+            expected_workdays={date(2026, 1, 5), date(2026, 1, 6)},
+            daily_salary=1000,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            year=2026,
+            month=1,
+        )
+        assert absent_count == 2
+        assert amount == 2000
+
+    def test_full_day_leave_covers_absence(self):
+        """8h 整日請假 + 未打卡 → 不列為曠職。"""
+        from services.salary.engine import SalaryEngine
+
+        absent_count, amount = SalaryEngine._compute_absence(
+            emp_id=1,
+            attendances=[],
+            approved_leaves=[self._FakeLeave(date(2026, 1, 5), date(2026, 1, 5), 8)],
+            expected_workdays={date(2026, 1, 5)},
+            daily_salary=1000,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            year=2026,
+            month=1,
+        )
+        assert absent_count == 0
+        assert amount == 0
+
+    def test_multi_day_leave_divided_per_day(self):
+        """3 日請假但總時數 12h（每日 4h）→ 仍不算整日覆蓋，三天皆曠職。"""
+        from services.salary.engine import SalaryEngine
+
+        absent_count, _ = SalaryEngine._compute_absence(
+            emp_id=1,
+            attendances=[],
+            approved_leaves=[self._FakeLeave(date(2026, 1, 5), date(2026, 1, 7), 12)],
+            expected_workdays={date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)},
+            daily_salary=1000,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            year=2026,
+            month=1,
+        )
+        assert absent_count == 3
+
+    def test_two_half_day_leaves_same_day_cover(self):
+        """同日上午 4h + 下午 4h 兩筆假單合計 8h → 整日覆蓋，不曠職。"""
+        from services.salary.engine import SalaryEngine
+
+        absent_count, _ = SalaryEngine._compute_absence(
+            emp_id=1,
+            attendances=[],
+            approved_leaves=[
+                self._FakeLeave(date(2026, 1, 5), date(2026, 1, 5), 4),
+                self._FakeLeave(date(2026, 1, 5), date(2026, 1, 5), 4),
+            ],
+            expected_workdays={date(2026, 1, 5)},
+            daily_salary=1000,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            year=2026,
+            month=1,
+        )
+        assert absent_count == 0
+
+    def test_missing_leave_hours_treated_as_full_day(self):
+        """leave_hours 為 None（舊資料）→ 視為整段整日，保留舊行為以避免歷史資料大量改判。"""
+        from services.salary.engine import SalaryEngine
+
+        absent_count, _ = SalaryEngine._compute_absence(
+            emp_id=1,
+            attendances=[],
+            approved_leaves=[self._FakeLeave(date(2026, 1, 5), date(2026, 1, 5), None)],
+            expected_workdays={date(2026, 1, 5)},
+            daily_salary=1000,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            year=2026,
+            month=1,
+        )
+        assert absent_count == 0
 
 
 # ──────────────────────────────────────────────

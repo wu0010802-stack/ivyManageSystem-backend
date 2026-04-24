@@ -180,6 +180,39 @@ class TestEmployeeSelfEdit:
         )
         assert res.status_code == 200
 
+    def test_employee_cannot_edit_own_indirect_salary_fields(self, antitheft_client):
+        """員工改自己 bonus_grade / position / hire_date 等間接影響薪資的欄位 → 403。
+
+        這些欄位雖非直接金額，但會影響節慶獎金資格、主管紅利、底薪標準、班級獎金。
+        """
+        client, sf = antitheft_client
+        for field, value in [
+            ("bonus_grade", "A"),
+            ("position", "園長"),
+            ("supervisor_role", "園長"),
+            ("hire_date", "2020-01-01"),
+        ]:
+            with sf() as s:
+                emp = _make_employee(s, name=f"間接_{field}", base_salary=30000)
+                _make_user(
+                    s,
+                    username=f"indirect_{field}",
+                    permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+                    employee_id=emp.id,
+                )
+                s.commit()
+                emp_id = emp.id
+
+            assert _login(client, f"indirect_{field}").status_code == 200
+            res = client.put(
+                f"/api/employees/{emp_id}",
+                json={field: value},
+            )
+            assert (
+                res.status_code == 403
+            ), f"field={field} 應被守衛攔下，實際 {res.status_code}"
+            assert "金流敏感" in res.json()["detail"]
+
 
 # ══════════════════════════════════════════════════════════════════════
 # #2 薪資 manual-adjust 守衛

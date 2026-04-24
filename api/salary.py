@@ -81,6 +81,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["salary"])
 
 
+def _active_employees_in_month_filter(year: int, month: int):
+    """產生 SQLAlchemy filter：在指定月份任何一天實際在職的員工。
+
+    Why: 舊版各處獨立寫「目前 is_active 或當月離職」，導致補算歷史月份時：
+    已於後月離職的員工（現在 is_active=False）被排除；未來才到職但目前
+    is_active=True 的員工被誤納入。async worker 已改為以「hire_date ≤ 月底
+    AND (resign_date IS NULL OR ≥ 月初)」判定；sync、async pre-scan、
+    festival-bonus 三處也應用同一條件，避免 finalize 時路徑結果分叉。
+    """
+    _, _last = _cal.monthrange(year, month)
+    _start = date(year, month, 1)
+    _end = date(year, month, _last)
+    return and_(
+        or_(Employee.hire_date.is_(None), Employee.hire_date <= _end),
+        or_(Employee.resign_date.is_(None), Employee.resign_date >= _start),
+    )
+
+
 # ============ Service Init ============
 
 _salary_engine = None
@@ -199,6 +217,36 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
         logger.warning("lazy snapshot trigger skipped: %s", e)
 
 
+# ============ Access control helpers ============
+
+# admin / hr 可看全員薪資；其他角色僅可查自己
+FULL_SALARY_ROLES = frozenset({"admin", "hr"})
+
+
+def _resolve_salary_viewer_employee_id(current_user: dict) -> Optional[int]:
+    """回傳 None 表示可看全員（admin/hr）；否則回傳鎖定的 employee_id。
+
+    即便擁有 SALARY_READ 權限，非 admin/hr 角色只能查詢自己的薪資；
+    若無法識別身份（缺 employee_id）則 403。
+    """
+    role = current_user.get("role", "")
+    if role in FULL_SALARY_ROLES:
+        return None
+    viewer_employee_id = current_user.get("employee_id")
+    if viewer_employee_id is None:
+        raise HTTPException(status_code=403, detail="無法識別員工身分，禁止查詢薪資")
+    return viewer_employee_id
+
+
+def _enforce_self_or_full_salary(current_user: dict, target_employee_id: int) -> None:
+    """非 admin/hr 查其他員工薪資 → 403。"""
+    viewer_employee_id = _resolve_salary_viewer_employee_id(current_user)
+    if viewer_employee_id is None:
+        return
+    if viewer_employee_id != target_employee_id:
+        raise HTTPException(status_code=403, detail="僅可查詢本人薪資")
+
+
 # ============ Routes ============
 
 
@@ -245,22 +293,10 @@ def calculate_salaries_alt(
 
         engine = Engine(load_from_db=True)
 
-        # 1. 包含在職員工，以及當月才離職的員工（保留最後一個月薪資結算）
-        _, _alt_last = _cal.monthrange(year, month)
-        _alt_start = date(year, month, 1)
-        _alt_end = date(year, month, _alt_last)
+        # 1. 當月實際在職的員工（補算歷史月份時也正確）
         employees = (
             session.query(Employee)
-            .filter(
-                or_(
-                    Employee.is_active == True,
-                    and_(
-                        Employee.is_active == False,
-                        Employee.resign_date >= _alt_start,
-                        Employee.resign_date <= _alt_end,
-                    ),
-                )
-            )
+            .filter(_active_employees_in_month_filter(year, month))
             .all()
         )
         employee_ids = [emp.id for emp in employees]
@@ -389,21 +425,9 @@ def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
                 )
                 return
 
-            _, _last_day = _cal.monthrange(year, month)
-            _start = date(year, month, 1)
-            _end = date(year, month, _last_day)
-            # 當月在職：hire_date <= month_end 且 resign_date IS NULL 或 >= month_start
-            # Why: 舊版用 current is_active 判定，補算歷史月份會把當月尚未到職的人
-            # 算進去，proration 又會回全額 → 幫還沒到職的員工發整月薪。
             employees = (
                 session.query(Employee)
-                .filter(
-                    or_(Employee.hire_date.is_(None), Employee.hire_date <= _end),
-                    or_(
-                        Employee.resign_date.is_(None),
-                        Employee.resign_date >= _start,
-                    ),
-                )
+                .filter(_active_employees_in_month_filter(year, month))
                 .all()
             )
             employee_ids = [e.id for e in employees]
@@ -477,21 +501,9 @@ def calculate_salaries_async_start(
                 ),
             )
 
-        _, _last_day = _cal.monthrange(year, month)
-        _start = date(year, month, 1)
-        _end = date(year, month, _last_day)
         total = (
             session.query(Employee.id)
-            .filter(
-                or_(
-                    Employee.is_active == True,
-                    and_(
-                        Employee.is_active == False,
-                        Employee.resign_date >= _start,
-                        Employee.resign_date <= _end,
-                    ),
-                )
-            )
+            .filter(_active_employees_in_month_filter(year, month))
             .count()
         )
 
@@ -532,9 +544,7 @@ def get_festival_bonus(
         )
 
         _, _fb_last = _cal.monthrange(year, month)
-        _fb_start = date(year, month, 1)
-        _fb_end = date(year, month, _fb_last)
-        month_end = _fb_end
+        month_end = date(year, month, _fb_last)
 
         # 批次預先查詢共用資料，避免 N+1
         school_active = count_students_active_on(session, month_end)
@@ -544,20 +554,11 @@ def get_festival_bonus(
             for c in session.query(Classroom).options(joinedload(Classroom.grade)).all()
         }
 
-        # 包含在職員工，以及當月才離職的員工（保留節慶獎金結算）
+        # 當月實際在職的員工（與薪資計算同一條件，避免 festival-bonus 預覽與實發分叉）
         employees = (
             session.query(Employee)
             .options(joinedload(Employee.job_title_rel))
-            .filter(
-                or_(
-                    Employee.is_active == True,
-                    and_(
-                        Employee.is_active == False,
-                        Employee.resign_date >= _fb_start,
-                        Employee.resign_date <= _fb_end,
-                    ),
-                )
-            )
+            .filter(_active_employees_in_month_filter(year, month))
             .all()
         )
 
@@ -592,15 +593,7 @@ def get_salary_records(
     """查詢某月薪資記錄（支援分頁，預設一次最多 500 筆）"""
     _trigger_past_month_snapshot_if_missing(background_tasks)
     with session_scope() as session:
-        role = current_user.get("role", "")
-        FULL_SALARY_ROLES = {"admin", "hr"}
-        viewer_employee_id = (
-            None if role in FULL_SALARY_ROLES else current_user.get("employee_id")
-        )
-        if viewer_employee_id is None and role not in FULL_SALARY_ROLES:
-            raise HTTPException(
-                status_code=403, detail="無法識別員工身分，禁止查詢薪資"
-            )
+        viewer_employee_id = _resolve_salary_viewer_employee_id(current_user)
 
         query = (
             session.query(SalaryRecord, Employee)
@@ -926,6 +919,8 @@ def get_salary_breakdown(
         if not record or not emp:
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
 
+        _enforce_self_or_full_salary(current_user, record.employee_id)
+
         job_title = ""
         if emp.job_title_rel:
             job_title = emp.job_title_rel.name
@@ -1022,6 +1017,8 @@ def get_salary_field_breakdown(
         if not record or not emp:
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
 
+        _enforce_self_or_full_salary(current_user, record.employee_id)
+
         engine = (
             _salary_engine
             if _salary_engine
@@ -1057,6 +1054,8 @@ def export_salary_slip(
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
         record, emp = result
 
+        _enforce_self_or_full_salary(current_user, record.employee_id)
+
         pdf_bytes = generate_salary_pdf(
             record, emp, record.salary_year, record.salary_month
         )
@@ -1078,7 +1077,11 @@ def export_all_salaries(
     month: int = Query(..., ge=1, le=12),
     format: str = Query("xlsx", pattern="^(xlsx|pdf)$"),
 ):
-    """匯出全部員工薪資（xlsx 或 pdf）"""
+    """匯出全部員工薪資（xlsx 或 pdf）僅限 admin/hr。"""
+    if current_user.get("role") not in FULL_SALARY_ROLES:
+        raise HTTPException(
+            status_code=403, detail="僅限系統管理員或人事主管匯出全員薪資"
+        )
     with session_scope() as session:
         records = (
             session.query(SalaryRecord, Employee)
@@ -1124,6 +1127,7 @@ def get_salary_history(
     months: int = Query(12, ge=1, le=60),
 ):
     """查詢員工歷史薪資"""
+    _enforce_self_or_full_salary(current_user, employee_id)
     with session_scope() as session:
         records = (
             session.query(SalaryRecord)
@@ -1170,6 +1174,7 @@ def get_salary_history_all(
     limit: int = Query(100, ge=1, le=500),
 ):
     """查詢全部員工年度薪資概覽（支援分頁，依員工分組）"""
+    viewer_employee_id = _resolve_salary_viewer_employee_id(current_user)
     with session_scope() as session:
         # 先取得符合條件的員工 id 清單（分頁依員工為單位）
         emp_subq = (
@@ -1179,6 +1184,8 @@ def get_salary_history_all(
             .group_by(Employee.id, Employee.name)
             .order_by(Employee.name)
         )
+        if viewer_employee_id is not None:
+            emp_subq = emp_subq.filter(Employee.id == viewer_employee_id)
         total = emp_subq.count()
         emp_page = emp_subq.offset(skip).limit(limit).all()
         emp_ids = [e.id for e in emp_page]
@@ -1224,6 +1231,13 @@ def get_salary_history_all(
 class FinalizeMonthRequest(BaseModel):
     year: int = Field(..., ge=2000, le=2100)
     month: int = Field(..., ge=1, le=12)
+    force: bool = Field(
+        False,
+        description=(
+            "True 時略過「當月在職員工對齊」完整性檢查，仍會封存現有記錄。"
+            "若有員工當月在職但無薪資記錄，預設會拒絕封存以避免漏發。"
+        ),
+    )
 
 
 # 單筆欄位合理上限：從舊版 10,000,000 降為 500,000 — 涵蓋幼稚園業界合法月薪/一次性
@@ -1333,6 +1347,43 @@ def _recalculate_salary_record_totals(record: SalaryRecord):
     )
 
 
+def _find_missing_salary_employees(session, year: int, month: int) -> list[dict]:
+    """回傳當月在職但無任何 SalaryRecord 的員工清單（用於 finalize 前完整性檢查）。
+
+    在職定義對齊 gov_reports._active_employees / salary proration 守衛：
+    hire_date <= 月末 且 (resign_date 為 None 或 >= 月初)。
+    """
+    last_day = _cal.monthrange(year, month)[1]
+    month_start = date(year, month, 1)
+    month_end = date(year, month, last_day)
+    active_rows = (
+        session.query(Employee.id, Employee.name)
+        .filter(
+            or_(Employee.hire_date.is_(None), Employee.hire_date <= month_end),
+            or_(
+                Employee.resign_date.is_(None),
+                Employee.resign_date >= month_start,
+            ),
+        )
+        .order_by(Employee.name)
+        .all()
+    )
+    if not active_rows:
+        return []
+    existing_ids = {
+        row[0]
+        for row in session.query(SalaryRecord.employee_id)
+        .filter(
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month,
+        )
+        .all()
+    }
+    return [
+        {"id": e.id, "name": e.name} for e in active_rows if e.id not in existing_ids
+    ]
+
+
 @router.post("/salaries/finalize-month")
 def finalize_salary_month(
     data: FinalizeMonthRequest,
@@ -1359,6 +1410,20 @@ def finalize_salary_month(
                 status_code=404,
                 detail=f"{data.year} 年 {data.month} 月無可封存的薪資記錄（可能尚未計算，或全部已封存）",
             )
+
+        # 完整性檢查：當月在職員工是否都有薪資記錄（含已封存者）
+        if not data.force:
+            missing = _find_missing_salary_employees(session, data.year, data.month)
+            if missing:
+                names = "、".join(f"{m['name']}(#{m['id']})" for m in missing[:20])
+                more = f"…等 {len(missing)} 人" if len(missing) > 20 else ""
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{data.year} 年 {data.month} 月有 {len(missing)} 位在職員工尚無薪資記錄："
+                        f"{names}{more}。請先完成薪資計算，或於請求帶 force=true 強制封存（漏發風險自負）。"
+                    ),
+                )
 
         # 對每位員工取鎖，與 bulk/manual 重算路徑互斥
         for r in records:
