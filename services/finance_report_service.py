@@ -116,13 +116,18 @@ def get_salary_expense_by_month(
     """薪資支出按月聚合。
 
     拆兩層方便前端分類顯示：
-    - employee_gross：員工應發（gross_salary）
-    - employer_benefit：雇主勞健保 + 雇主勞退（園方實質支出）
+    - employee_gross：員工應發（gross_salary + festival_bonus + overtime_bonus）
+      Why: SalaryEngine 的 gross_salary 不包含另行轉帳的節慶與超額獎金
+      （bonus_separate=True 的部分），但那仍是園方實際現金流出。若不加
+      進來，財務總表在獎金發放月會低估 total_expense 與 net_cashflow。
+    - employer_benefit：雇主勞健保 + 雇主勞退（園方實質保費支出）
     """
     rows = (
         session.query(
             SalaryRecord.salary_month,
             func.sum(SalaryRecord.gross_salary),
+            func.sum(SalaryRecord.festival_bonus),
+            func.sum(SalaryRecord.overtime_bonus),
             func.sum(SalaryRecord.labor_insurance_employer),
             func.sum(SalaryRecord.health_insurance_employer),
             func.sum(SalaryRecord.pension_employer),
@@ -132,9 +137,9 @@ def get_salary_expense_by_month(
         .all()
     )
     out: dict[int, dict[str, int]] = {}
-    for m, gross, li, hi, pen in rows:
+    for m, gross, fest, ot_bonus, li, hi, pen in rows:
         out[int(m)] = {
-            "employee_gross": int(gross or 0),
+            "employee_gross": int((gross or 0) + (fest or 0) + (ot_bonus or 0)),
             "employer_benefit": int((li or 0) + (hi or 0) + (pen or 0)),
         }
     return out
