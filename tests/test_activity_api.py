@@ -1124,11 +1124,19 @@ class TestBatchInputLimits:
             BatchPaymentUpdate(ids=[], is_paid=True)
 
     def test_batch_payment_update_valid(self):
-        """BatchPaymentUpdate.ids 正常 500 筆不應拋例外"""
+        """BatchPaymentUpdate.ids 正常 500 筆不應拋例外（只允許 is_paid=True）。"""
         from api.activity._shared import BatchPaymentUpdate
 
-        obj = BatchPaymentUpdate(ids=list(range(500)), is_paid=False)
+        obj = BatchPaymentUpdate(ids=list(range(500)), is_paid=True)
         assert len(obj.ids) == 500
+
+    def test_batch_payment_update_rejects_unpaid(self):
+        """BatchPaymentUpdate 不再允許 is_paid=False（誤操作全額沖帳風險收緊）。"""
+        from pydantic import ValidationError
+        from api.activity._shared import BatchPaymentUpdate
+
+        with pytest.raises(ValidationError):
+            BatchPaymentUpdate(ids=[1], is_paid=False)
 
     def test_public_registration_courses_max_length(self):
         """PublicRegistrationPayload.courses 超過 20 筆應拋 ValidationError"""

@@ -38,6 +38,7 @@ from utils.rate_limit import SlidingWindowLimiter
 
 from ._shared import (
     TAIPEI_TZ,
+    MIN_REFUND_REASON_LENGTH,
     _batch_calc_total_amounts,
     _build_registration_filter_query,
     _compute_is_paid,
@@ -48,6 +49,8 @@ from ._shared import (
     _invalidate_activity_dashboard_caches,
     _require_daily_close_unlocked,
     compute_daily_snapshot,
+    require_refund_reason,
+    require_approve_for_large_refund,
     validate_payment_date,
 )
 
@@ -121,6 +124,11 @@ class POSCheckoutRequest(BaseModel):
         if not _IDK_PATTERN.match(v):
             raise ValueError("idempotency_key 格式不合（需 8-64 英數/底線/連字號）")
         return v
+
+    def refund_notes_cleaned(self) -> str:
+        """回傳 cleaned notes（僅 type=refund 時使用；handler 額外呼叫
+        require_refund_reason 做最終閘門）。"""
+        return (self.notes or "").strip()
 
 
 # ── 常數 ─────────────────────────────────────────────────────────────────
@@ -465,6 +473,14 @@ async def pos_checkout(
         # Why: snapshot 已凍結，補寫會讓 reconciliation 與實際 DB 永久失準。
         _require_daily_close_unlocked(session, body.payment_date)
 
+        # ── 退費專屬守衛：notes 必填原因 + 大額閾值審批 ────────────
+        if body.type == "refund":
+            cleaned_reason = require_refund_reason(body.notes)
+            body.notes = cleaned_reason
+            # 審批閾值以「單筆交易總額」為準（item 合計），避免故意拆單規避
+            total_refund_amount = sum(it.amount for it in body.items)
+            require_approve_for_large_refund(total_refund_amount, current_user)
+
         reg_ids = [item.registration_id for item in body.items]
         if len(set(reg_ids)) != len(reg_ids):
             raise HTTPException(status_code=400, detail="結帳項目含重複的報名 ID")
@@ -732,8 +748,10 @@ async def pos_recent_transactions(
 
     session = get_session()
     try:
+        # 軟刪（voided）紀錄不出現在交易列表：避免誤以為某張收據還在、且 tx_total 會錯算
         query = session.query(ActivityPaymentRecord).filter(
             ActivityPaymentRecord.payment_date == target_date,
+            ActivityPaymentRecord.voided_at.is_(None),
         )
         if not include_system:
             # 優先用 receipt_no 欄位過濾 POS 交易；舊資料尚未 backfill 時回退到 notes 標記

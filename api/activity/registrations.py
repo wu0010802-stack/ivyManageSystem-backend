@@ -44,7 +44,9 @@ from ._shared import (
     AdminRegistrationBasicUpdate,
     AddCourseRequest,
     AddSupplyRequest,
+    VoidPaymentRequest,
     SYSTEM_RECONCILE_METHOD,
+    MIN_REFUND_REASON_LENGTH,
     _not_found,
     _derive_payment_status,
     _compute_is_paid,
@@ -58,6 +60,9 @@ from ._shared import (
     _attach_courses,
     _attach_supplies,
     _match_student_id,
+    has_payment_approve,
+    require_refund_reason,
+    require_approve_for_large_refund,
     TAIPEI_TZ,
     get_line_service,
     today_taipei,
@@ -95,7 +100,12 @@ async def batch_update_payment(
     _rl=Depends(_batch_payment_limiter),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """批次標記付款狀態（使用 GROUP BY 避免 N+1 查詢）
+    """批次標記為已繳費（僅此方向；未繳費全額沖帳已禁用）
+
+    Why: 批次把一串報名「標記未繳費」會一次寫多筆全額 refund，誤操作後果嚴重且
+    不可部分回滾。schema 層已禁止 is_paid=False（進到這裡一律是 True）；
+    若需把某筆退費，請改用 PUT /registrations/{id}/payment（帶
+    confirm_refund_amount）或 DELETE /payments/{id} 軟刪對應繳費。
 
     併發保護：`.with_for_update()` 鎖住目標 registration，避免兩個客戶端同時
     呼叫造成重複寫 payment_record 或 lost update。
@@ -114,85 +124,53 @@ async def batch_update_payment(
         if not regs:
             raise HTTPException(status_code=404, detail="找不到指定報名資料")
 
-        status_str = "已繳費" if body.is_paid else "未繳費"
         operator = current_user.get("username", "")
         today = today_taipei()
 
-        # 批次補齊/沖帳皆寫 today；若今日已簽核則拒絕，避免日結 snapshot 失準
+        # 批次補齊皆寫 today；若今日已簽核則拒絕，避免日結 snapshot 失準
         _require_daily_close_unlocked(session, today)
 
-        if body.is_paid:
-            # P3 N+1 修正：一次 GROUP BY 查詢所有應繳金額
-            unpaid_reg_ids = [reg.id for reg in regs if not reg.is_paid]
-            total_amount_map = (
-                _batch_calc_total_amounts(session, unpaid_reg_ids)
-                if unpaid_reg_ids
-                else {}
-            )
+        # P3 N+1 修正：一次 GROUP BY 查詢所有應繳金額
+        unpaid_reg_ids = [reg.id for reg in regs if not reg.is_paid]
+        total_amount_map = (
+            _batch_calc_total_amounts(session, unpaid_reg_ids) if unpaid_reg_ids else {}
+        )
 
-            for reg in regs:
-                if not reg.is_paid:
-                    total_amount = total_amount_map.get(reg.id, 0)
-                    shortfall = total_amount - (reg.paid_amount or 0)
-                    if shortfall > 0:
-                        rec = ActivityPaymentRecord(
-                            registration_id=reg.id,
-                            type="payment",
-                            amount=shortfall,
-                            payment_date=today,
-                            payment_method=SYSTEM_RECONCILE_METHOD,
-                            notes="（批次標記已繳費自動補齊）",
-                            operator=operator,
-                        )
-                        session.add(rec)
-                        reg.paid_amount = total_amount
-                    reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
-                activity_service.log_change(
-                    session,
-                    reg.id,
-                    reg.student_name,
-                    "批次更新付款狀態",
-                    f"付款狀態批次更新為：{status_str}",
-                    operator,
-                )
-        else:
-            # 改為寫退費沖帳（保留歷史紀錄），不 DELETE 任何 ActivityPaymentRecord。
-            # Why: 原本 DELETE 會毀掉審計軌跡，且已 daily-close 的日結 snapshot 會與 DB 永久失準。
-            for reg in regs:
-                current_paid = reg.paid_amount or 0
-                if current_paid > 0:
+        for reg in regs:
+            if not reg.is_paid:
+                total_amount = total_amount_map.get(reg.id, 0)
+                shortfall = total_amount - (reg.paid_amount or 0)
+                if shortfall > 0:
                     rec = ActivityPaymentRecord(
                         registration_id=reg.id,
-                        type="refund",
-                        amount=current_paid,
+                        type="payment",
+                        amount=shortfall,
                         payment_date=today,
                         payment_method=SYSTEM_RECONCILE_METHOD,
-                        notes="（批次標記未繳費自動沖帳）",
+                        notes="（批次標記已繳費自動補齊）",
                         operator=operator,
                     )
                     session.add(rec)
-                reg.paid_amount = 0
-                reg.is_paid = False
-                activity_service.log_change(
-                    session,
-                    reg.id,
-                    reg.student_name,
-                    "批次更新付款狀態",
-                    f"付款狀態批次更新為：{status_str}"
-                    + (f"（沖帳 NT${current_paid}）" if current_paid > 0 else ""),
-                    operator,
-                )
+                    reg.paid_amount = total_amount
+                reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
+            activity_service.log_change(
+                session,
+                reg.id,
+                reg.student_name,
+                "批次更新付款狀態",
+                "付款狀態批次更新為：已繳費",
+                operator,
+            )
 
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         logger.warning(
-            "批次付款狀態更新：筆數=%d is_paid=%s operator=%s",
+            "批次付款狀態更新：筆數=%d is_paid=True operator=%s",
             len(regs),
-            body.is_paid,
             operator,
         )
         return {
-            "message": f"已更新 {len(regs)} 筆報名為{status_str}",
+            "message": f"已更新 {len(regs)} 筆報名為已繳費",
             "updated": len(regs),
         }
     except HTTPException:
@@ -1549,8 +1527,28 @@ async def update_payment(
                     reg.paid_amount = total_amount
                 reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
         else:
-            # 改為寫退費沖帳（保留歷史紀錄），不 DELETE 任何 ActivityPaymentRecord。
+            # is_paid=False：一刀切全額沖帳會誤殺部分繳費者，收緊為「必須帶
+            # confirm_refund_amount == current_paid 且 refund_reason ≥ 5 字」。
             current_paid = reg.paid_amount or 0
+            if body.confirm_refund_amount is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"標記未繳費將沖帳全額已繳 NT${current_paid}，"
+                        "請於 confirm_refund_amount 明確填寫同金額以二次確認"
+                    ),
+                )
+            if body.confirm_refund_amount != current_paid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"confirm_refund_amount NT${body.confirm_refund_amount} "
+                        f"與當前已繳 NT${current_paid} 不符，請重新確認"
+                    ),
+                )
+            reason_cleaned = require_refund_reason(body.refund_reason)
+            # 大額沖帳需簽核權限
+            require_approve_for_large_refund(current_paid, current_user)
             if current_paid > 0:
                 rec = ActivityPaymentRecord(
                     registration_id=registration_id,
@@ -1558,7 +1556,7 @@ async def update_payment(
                     amount=current_paid,
                     payment_date=today,
                     payment_method=SYSTEM_RECONCILE_METHOD,
-                    notes="（標記未繳費自動沖帳）",
+                    notes=f"（標記未繳費自動沖帳）原因：{reason_cleaned}",
                     operator=operator,
                 )
                 session.add(rec)
@@ -2036,12 +2034,28 @@ async def remove_registration_supply(
         session.close()
 
 
+def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> str:
+    """對 operator 欄位去敏化：非簽核權限者只看得到首字 + ***。
+
+    Why: 員工帳號暴露給過廣的閱讀者（ACTIVITY_READ）等同於社工輔助材料；
+    但對於能執行簽核的主管/老闆仍需看完整帳號以便對帳追責。
+    """
+    if not operator:
+        return ""
+    if viewer_has_approve:
+        return operator
+    if operator == "system":
+        return "system"
+    # 保留首字，其餘遮蔽（例如 "fee_admin" → "f***"）
+    return operator[0] + "***"
+
+
 @router.get("/registrations/{registration_id}/payments")
 async def get_registration_payments(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得報名的繳費／退費明細記錄"""
+    """取得報名的繳費／退費明細記錄（含 voided 軟刪紀錄，標示 is_voided）"""
     session = get_session()
     try:
         reg = (
@@ -2063,6 +2077,7 @@ async def get_registration_payments(
         )
         total_amount = _calc_total_amount(session, registration_id)
         paid_amount = reg.paid_amount or 0
+        viewer_has_approve = has_payment_approve(current_user)
         return {
             "total_amount": total_amount,
             "paid_amount": paid_amount,
@@ -2077,8 +2092,12 @@ async def get_registration_payments(
                     ),
                     "payment_method": r.payment_method or "",
                     "notes": r.notes or "",
-                    "operator": r.operator or "",
+                    "operator": _desensitize_operator(r.operator, viewer_has_approve),
                     "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "is_voided": r.voided_at is not None,
+                    "voided_at": (r.voided_at.isoformat() if r.voided_at else None),
+                    "voided_by": _desensitize_operator(r.voided_by, viewer_has_approve),
+                    "void_reason": r.void_reason or "",
                 }
                 for r in records
             ],
@@ -2151,6 +2170,15 @@ async def add_registration_payment(
 
         # 已簽核日守衛（payment_date 落在 daily-close 之日則拒絕）
         _require_daily_close_unlocked(session, body.payment_date)
+
+        # ── 退費專屬守衛 ─────────────────────────────────────────────
+        # Pydantic 已在 schema 層強制 type=refund 時 notes ≥ MIN_REFUND_REASON_LENGTH；
+        # 此處再檢一次（防 schema 日後被放寬）並處理 cleaned notes
+        if body.type == "refund":
+            cleaned_reason = require_refund_reason(body.notes)
+            body.notes = cleaned_reason
+            # 金額閾值：超過則必須具備 ACTIVITY_PAYMENT_APPROVE
+            require_approve_for_large_refund(body.amount, current_user)
 
         # 行級鎖住該 registration，防併發繳/退費 lost update
         reg = _lock_registration(session, registration_id)
@@ -2273,9 +2301,18 @@ async def delete_registration_payment(
     registration_id: int,
     payment_id: int,
     request: Request,
-    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
+    body: VoidPaymentRequest,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
 ):
-    """刪除繳費記錄（更正用），自動重新計算已繳金額
+    """軟刪除（void）繳費記錄：原紀錄保留於 DB，設 voided_at/by/reason 並重算已繳金額。
+
+    Why: 員工可能濫用「POS 收現金 → DELETE payment → paid_amount 歸零 → 私吞」；
+    改軟刪後：
+      1. 原 payment row 永不消失，稽核可追溯完整金流
+      2. 需 ACTIVITY_PAYMENT_APPROVE（簽核權限）且強制填寫原因（≥5 字）
+      3. paid_amount / daily snapshot 重算時以 voided_at IS NULL 為前提排除
 
     併發保護：鎖 reg 行，避免 GROUP BY 重算與 POS checkout 並發時，
     POS 的新付款在本端 commit 時被 paid_amount = 舊 sum 的 UPDATE 覆蓋（lost update）。
@@ -2297,8 +2334,21 @@ async def delete_registration_payment(
         if not payment:
             raise _not_found("繳費記錄")
 
+        # 已軟刪的紀錄不可重複 void，避免操作紀錄被洗成多次 void
+        if payment.voided_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="此繳費記錄已於稍早被軟刪，不可重複操作",
+            )
+
         # 若被刪除的付款日期已被日結簽核，拒絕刪除以免 snapshot 與 DB 失準
         _require_daily_close_unlocked(session, payment.payment_date)
+
+        operator = current_user.get("username", "")
+        now = datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+        payment.voided_at = now
+        payment.voided_by = operator
+        payment.void_reason = body.reason
 
         deleted_snapshot = {
             "type": payment.type,
@@ -2308,14 +2358,17 @@ async def delete_registration_payment(
             ),
         }
 
-        session.delete(payment)
         session.flush()
 
+        # 重算 paid_amount：以 voided_at IS NULL 為前提，排除軟刪紀錄
         totals = (
             session.query(
                 ActivityPaymentRecord.type, func.sum(ActivityPaymentRecord.amount)
             )
-            .filter(ActivityPaymentRecord.registration_id == registration_id)
+            .filter(
+                ActivityPaymentRecord.registration_id == registration_id,
+                ActivityPaymentRecord.voided_at.is_(None),
+            )
             .group_by(ActivityPaymentRecord.type)
             .all()
         )
@@ -2330,9 +2383,12 @@ async def delete_registration_payment(
             session,
             registration_id,
             reg.student_name,
-            "刪除繳費記錄",
-            f"刪除記錄 id={payment_id}，重新計算已繳 NT${reg.paid_amount}",
-            current_user.get("username", ""),
+            "軟刪除繳費記錄",
+            (
+                f"void payment_id={payment_id}（{deleted_snapshot['type']} NT${deleted_snapshot['amount']}），"
+                f"原因：{body.reason}，重新計算已繳 NT${reg.paid_amount}"
+            ),
+            operator,
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
@@ -2340,21 +2396,23 @@ async def delete_registration_payment(
         # 才能讓「該筆報名的所有稽核事件」查詢命中此筆。
         request.state.audit_entity_id = str(registration_id)
         request.state.audit_summary = (
-            f"刪除繳費記錄：{reg.student_name} payment_id={payment_id} "
-            f"NT${deleted_snapshot['amount']}（{deleted_snapshot['type']}）"
+            f"軟刪繳費記錄：{reg.student_name} payment_id={payment_id} "
+            f"NT${deleted_snapshot['amount']}（{deleted_snapshot['type']}）原因：{body.reason}"
         )
         request.state.audit_changes = {
             "student_name": reg.student_name,
-            "deleted_payment_id": payment_id,
-            "deleted_type": deleted_snapshot["type"],
-            "deleted_amount": deleted_snapshot["amount"],
-            "deleted_payment_date": deleted_snapshot["payment_date"],
+            "voided_payment_id": payment_id,
+            "voided_type": deleted_snapshot["type"],
+            "voided_amount": deleted_snapshot["amount"],
+            "voided_payment_date": deleted_snapshot["payment_date"],
+            "void_reason": body.reason,
             "paid_amount_after": reg.paid_amount,
         }
         return {
-            "message": "記錄已刪除",
+            "message": "記錄已軟刪（原紀錄保留供稽核）",
             "paid_amount": reg.paid_amount,
             "payment_status": _derive_payment_status(reg.paid_amount, total_amount),
+            "voided_at": now.isoformat(),
         }
     except HTTPException:
         raise

@@ -298,6 +298,7 @@ class TestPOSCheckoutAtomicity:
             assert reg.paid_amount == 500  # 未變動
 
     def test_refund_reduces_paid_amount(self, pos_client):
+        """POS 退費必填 notes（原因 ≥ 5 字），500 小額不需簽核權限即可執行。"""
         client, sf = pos_client
         with sf() as s:
             _create_admin(s)
@@ -314,6 +315,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "type": "refund",
+                "notes": "客戶退課抵減",
             },
         )
         assert res.status_code == 201
@@ -1262,7 +1264,9 @@ class TestPosDailyClose:
         assert data["actual_cash_count"] == 1480
         assert data["cash_variance"] == -20  # 1480 - 1500
 
-    def test_approve_with_zero_actual_cash_count_sets_negative_variance(self, pos_client):
+    def test_approve_with_zero_actual_cash_count_sets_negative_variance(
+        self, pos_client
+    ):
         """actual_cash_count=0 視為有效盤點（非 None），variance = -1000。"""
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
@@ -1316,9 +1320,13 @@ class TestPosDailyClose:
             )
             s.commit()
         assert _login(client).status_code == 200
-        first = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        first = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+        )
         assert first.status_code == 201
-        second = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        second = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+        )
         assert second.status_code == 409
 
     def test_approve_rejects_future_date_with_400(self, pos_client):
@@ -1328,7 +1336,9 @@ class TestPosDailyClose:
             _create_admin(s, permissions=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
-        res = client.post(f"/api/activity/pos/daily-close/{future.isoformat()}", json={})
+        res = client.post(
+            f"/api/activity/pos/daily-close/{future.isoformat()}", json={}
+        )
         assert res.status_code == 400
 
     def test_approve_rejects_bad_date_format(self, pos_client):
@@ -1348,7 +1358,9 @@ class TestPosDailyClose:
             _create_admin(s, permissions=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
-        res = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        res = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+        )
         assert res.status_code == 201
         data = res.json()
         assert data["payment_total"] == 0
@@ -1487,9 +1499,16 @@ class TestPosDailyClose:
                 permissions=Permission.ACTIVITY_READ,
             )
             s.commit()
-        assert _login(client, username="viewer", password="Viewer12345").status_code == 200
+        assert (
+            _login(client, username="viewer", password="Viewer12345").status_code == 200
+        )
 
-        assert client.get(f"/api/activity/pos/daily-close/{target.isoformat()}").status_code == 200
+        assert (
+            client.get(
+                f"/api/activity/pos/daily-close/{target.isoformat()}"
+            ).status_code
+            == 200
+        )
         assert (
             client.post(
                 f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
@@ -1511,11 +1530,16 @@ class TestPosDailyClose:
                 s,
                 username="boss",
                 password="BossPass1234",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permissions=Permission.ACTIVITY_READ
+                | Permission.ACTIVITY_PAYMENT_APPROVE,
             )
             s.commit()
-        assert _login(client, username="boss", password="BossPass1234").status_code == 200
-        res = client.post(f"/api/activity/pos/daily-close/{target.isoformat()}", json={})
+        assert (
+            _login(client, username="boss", password="BossPass1234").status_code == 200
+        )
+        res = client.post(
+            f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+        )
         assert res.status_code == 201
         assert res.json()["approver_username"] == "boss"
 

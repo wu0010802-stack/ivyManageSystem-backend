@@ -46,6 +46,57 @@ SYSTEM_RECONCILE_METHOD = "系統補齊"
 # POS checkout 與後台 /registrations/{id}/payments 共用，避免管理員透過後者繞過 POS 管制。
 PAYMENT_DATE_BACK_LIMIT_DAYS = 30
 
+# 退費必填原因最短字數（避免「.」或「退」等無意義敷衍）
+MIN_REFUND_REASON_LENGTH = 5
+
+# 退費金額閾值：超過此金額的單筆退費必須具備 ACTIVITY_PAYMENT_APPROVE 權限
+# Why: 小額退費允許一線櫃檯彈性處理；大額退費強制雙簽以防內部舞弊
+REFUND_APPROVAL_THRESHOLD = 1000
+
+# 軟刪除 payment 原因最短字數
+MIN_VOID_REASON_LENGTH = 5
+
+
+def has_payment_approve(current_user: dict) -> bool:
+    """檢查使用者是否具備 ACTIVITY_PAYMENT_APPROVE 權限（老闆/高階簽核）。
+
+    用於：大額退費審批、DELETE payment 軟刪審批。避免只有 ACTIVITY_WRITE 的一線員工
+    直接執行敏感金流動作。
+    """
+    from utils.permissions import has_permission
+
+    perms = current_user.get("permissions", 0)
+    return has_permission(perms, Permission.ACTIVITY_PAYMENT_APPROVE)
+
+
+def require_refund_reason(notes: Optional[str]) -> str:
+    """驗證退費 notes（原因）必填且 ≥ MIN_REFUND_REASON_LENGTH 字。
+
+    供 POS refund / add_registration_payment(type=refund) 共用。
+    """
+    cleaned = (notes or "").strip()
+    if len(cleaned) < MIN_REFUND_REASON_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"退費必須填寫原因（至少 {MIN_REFUND_REASON_LENGTH} 個字）",
+        )
+    return cleaned
+
+
+def require_approve_for_large_refund(amount: int, current_user: dict) -> None:
+    """若退費金額超過 REFUND_APPROVAL_THRESHOLD，檢查 ACTIVITY_PAYMENT_APPROVE 權限。
+
+    不足即 403。供 POS refund / add_registration_payment(type=refund) 共用。
+    """
+    if amount > REFUND_APPROVAL_THRESHOLD and not has_payment_approve(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"單筆退費金額 NT${amount} 超過 NT${REFUND_APPROVAL_THRESHOLD} 審批閾值，"
+                f"需由具備『才藝課收款簽核』權限者執行"
+            ),
+        )
+
 
 def validate_payment_date(value: date) -> date:
     """驗證 payment_date 必須在今日回補窗（預設 30 天）內，不得指定未來。"""
@@ -153,10 +204,47 @@ class CopyCoursesRequest(BaseModel):
 
 class PaymentUpdate(BaseModel):
     is_paid: bool
+    # is_paid=False 時必填，且必須等於當前 paid_amount；避免誤觸按鈕一次把該筆全退
+    confirm_refund_amount: Optional[int] = Field(
+        None,
+        ge=0,
+        le=MAX_PAYMENT_AMOUNT,
+        description=(
+            "當 is_paid=False 時必填，且需等於當前 paid_amount；"
+            "供前端明確二次確認沖帳金額，避免誤操作整筆退費"
+        ),
+    )
+    refund_reason: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="當 is_paid=False 時必填，≥ 5 字；留於沖帳紀錄 notes",
+    )
 
 
 class RemarkUpdate(BaseModel):
     remark: str
+
+
+class VoidPaymentRequest(BaseModel):
+    """軟刪除 payment 紀錄的請求；reason 必填且 ≥ MIN_VOID_REASON_LENGTH 字。
+
+    不接受 DELETE 直接 body-less，避免一線員工順手按到就抹掉稽核。
+    """
+
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description=f"軟刪原因，最少 {MIN_VOID_REASON_LENGTH} 個字",
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_reason(cls, v: str) -> str:
+        cleaned = (v or "").strip()
+        if len(cleaned) < MIN_VOID_REASON_LENGTH:
+            raise ValueError(f"軟刪原因需至少 {MIN_VOID_REASON_LENGTH} 個字，不可敷衍")
+        return cleaned
 
 
 class InquiryReply(BaseModel):
@@ -193,7 +281,9 @@ class RegistrationTimeSettings(BaseModel):
 
 class BatchPaymentUpdate(BaseModel):
     ids: List[int] = Field(..., min_length=1, max_length=500)
-    is_paid: bool
+    # 只允許 True（批次補齊已繳費）；False 全額沖帳路徑已被收緊，改走單筆端點
+    # 並附明確 confirm_refund_amount，避免誤操作一次沖一批
+    is_paid: Literal[True]
 
 
 class AddPaymentRequest(BaseModel):
@@ -207,6 +297,18 @@ class AddPaymentRequest(BaseModel):
     payment_date: date
     payment_method: Literal["現金", "轉帳", "其他"] = "現金"
     notes: str = Field("", max_length=200)
+
+    @model_validator(mode="after")
+    def _refund_requires_reason(self):
+        """type=refund 時 notes（原因）必填且 ≥ MIN_REFUND_REASON_LENGTH 字。"""
+        if self.type == "refund":
+            cleaned = (self.notes or "").strip()
+            if len(cleaned) < MIN_REFUND_REASON_LENGTH:
+                raise ValueError(
+                    f"退費必須於 notes 填寫原因（至少 {MIN_REFUND_REASON_LENGTH} 個字）"
+                )
+        return self
+
     idempotency_key: Optional[str] = Field(
         None,
         description="冪等 key（8-64 英數/底線/連字號）；同 key 在 10 分鐘內視為重試並回傳先前結果",
@@ -620,6 +722,8 @@ def compute_daily_snapshot(session, target_date: date) -> dict:
 
     供 POS daily-summary 端點與日結簽核共用，避免邏輯雙寫。
     by_method 為 dict：{"現金": 1200, "轉帳": 500, ...}；method 為 NULL 者歸類為「未指定」。
+
+    Voided 紀錄（軟刪）一律排除，避免讓老闆簽核的總額包含已被作廢的交易。
     """
     rows = (
         session.query(
@@ -628,7 +732,10 @@ def compute_daily_snapshot(session, target_date: date) -> dict:
             func.count(ActivityPaymentRecord.id),
             func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
         )
-        .filter(ActivityPaymentRecord.payment_date == target_date)
+        .filter(
+            ActivityPaymentRecord.payment_date == target_date,
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
         .group_by(
             ActivityPaymentRecord.type,
             ActivityPaymentRecord.payment_method,
