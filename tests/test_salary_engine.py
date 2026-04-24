@@ -530,6 +530,23 @@ class TestCalculateSalary:
             breakdown.net_salary == breakdown.gross_salary - breakdown.total_deduction
         )
 
+    def test_employer_side_insurance_fields_populated(self, engine, sample_employee):
+        """雇主端三欄（labor_insurance_employer / health_insurance_employer /
+        pension_employer）必須非 0，供 finance_report 與 gov_reports 聚合用。
+
+        Why（回歸）：之前 breakdown / engine persist 層漏寫，三欄永遠 default=0，
+        導致財務月報「雇主保費+勞退」長期為 0，低估園方實際支出約 11% 薪資。
+        """
+        breakdown = engine.calculate_salary(
+            employee=sample_employee, year=2026, month=1
+        )
+        assert breakdown.labor_insurance_employer > 0
+        assert breakdown.health_insurance_employer > 0
+        assert breakdown.pension_employer > 0
+        # 雇主端 > 員工端是常態（雇主負擔比例較高）
+        assert breakdown.labor_insurance_employer > breakdown.labor_insurance
+        assert breakdown.health_insurance_employer > breakdown.health_insurance
+
     def test_hourly_employee(self, engine):
         """時薪制員工"""
         emp = {

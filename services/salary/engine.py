@@ -147,6 +147,10 @@ def _fill_salary_record(salary_record, breakdown, engine):
     salary_record.labor_insurance_employee = breakdown.labor_insurance
     salary_record.health_insurance_employee = breakdown.health_insurance
     salary_record.pension_employee = breakdown.pension_self
+    # 雇主端三欄：之前漏寫導致 finance_report_service / gov_reports 讀到 0
+    salary_record.labor_insurance_employer = breakdown.labor_insurance_employer
+    salary_record.health_insurance_employer = breakdown.health_insurance_employer
+    salary_record.pension_employer = breakdown.pension_employer
     salary_record.late_deduction = breakdown.late_deduction
     salary_record.early_leave_deduction = breakdown.early_leave_deduction
     salary_record.missing_punch_deduction = breakdown.missing_punch_deduction
@@ -1055,6 +1059,10 @@ class SalaryEngine:
             breakdown.labor_insurance = insurance.labor_employee
             breakdown.health_insurance = insurance.health_employee
             breakdown.pension_self = insurance.pension_employee
+            # 雇主端：員工薪水不扣，但園方實際支出；落 SalaryRecord 供財報 / 勞保局匯出
+            breakdown.labor_insurance_employer = insurance.labor_employer
+            breakdown.health_insurance_employer = insurance.health_employer
+            breakdown.pension_employer = insurance.pension_employer
         elif employee.get("employee_type") == "hourly":
             logger.warning(
                 "時薪制員工 %s 未設定 insurance_salary_level，本月不計勞健保扣繳，"

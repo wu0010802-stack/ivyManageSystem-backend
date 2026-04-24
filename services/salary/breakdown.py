@@ -32,10 +32,17 @@ class SalaryBreakdown:
     hourly_rate: float = 0
     hourly_total: float = 0
 
-    # 法定代扣
+    # 法定代扣（員工自付）
     labor_insurance: float = 0
     health_insurance: float = 0
     pension_self: float = 0
+
+    # 雇主端負擔（不從薪水扣，但會落到 SalaryRecord 供財報/政府匯出聚合）
+    # Why: 若 breakdown 不帶、engine 也不寫，SalaryRecord.*_employer 永遠 0，
+    # 財務月報「雇主保費+勞退」會低估園方總支出約員工薪資 11%。
+    labor_insurance_employer: float = 0
+    health_insurance_employer: float = 0
+    pension_employer: float = 0
 
     # 考勤扣款
     late_deduction: float = 0
