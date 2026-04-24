@@ -29,6 +29,7 @@ from models.database import (
     ActivityAttendance,
 )
 from services.activity_service import activity_service
+from services.report_cache_service import report_cache_service
 from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.auth import require_staff_permission
@@ -66,6 +67,15 @@ from utils.academic import resolve_academic_term_filters
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _invalidate_finance_summary_cache() -> None:
+    """金流寫入後失效 /finance-summary 快取（TTL 30 分，否則看到舊值）。"""
+    try:
+        report_cache_service.invalidate_category(None, "reports_finance_summary")
+    except Exception:
+        logger.warning("invalidate finance_summary cache failed", exc_info=True)
+
 
 _export_limiter = SlidingWindowLimiter(
     max_calls=5,
@@ -185,6 +195,7 @@ async def batch_update_payment(
 
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_finance_summary_cache()
         logger.warning(
             "批次付款狀態更新：筆數=%d is_paid=%s operator=%s",
             len(regs),
@@ -1576,6 +1587,7 @@ async def update_payment(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_finance_summary_cache()
         request.state.audit_summary = f"更新繳費狀態：{reg.student_name} → {status_str}"
         request.state.audit_changes = {
             "student_name": reg.student_name,
@@ -2267,6 +2279,7 @@ async def add_registration_payment(
                     }
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_finance_summary_cache()
         request.state.audit_summary = (
             f"新增{type_label}記錄：{reg.student_name} NT${body.amount}"
         )
@@ -2360,6 +2373,7 @@ async def delete_registration_payment(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_finance_summary_cache()
         # URL 尾段為 payment_id，middleware 預設會抓成 entity_id；覆寫為 registration_id
         # 才能讓「該筆報名的所有稽核事件」查詢命中此筆。
         request.state.audit_entity_id = str(registration_id)

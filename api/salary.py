@@ -12,6 +12,7 @@ from cachetools import TTLCache
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
+from services.report_cache_service import report_cache_service
 from utils.auth import require_permission, require_staff_permission
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
 from utils.finance_guards import (
@@ -20,6 +21,17 @@ from utils.finance_guards import (
 )
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
+
+
+def _invalidate_finance_summary_cache() -> None:
+    """薪資寫入後失效 /finance-summary 快取（TTL 30 分）。失敗不影響交易。"""
+    try:
+        report_cache_service.invalidate_category(None, "reports_finance_summary")
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "invalidate finance_summary cache failed", exc_info=True
+        )
+
 
 # 薪資計算為高 CPU 操作，每 IP 每小時最多 20 次（批次計算）
 _salary_calc_limiter = SlidingWindowLimiter(
@@ -322,6 +334,7 @@ def calculate_salaries_alt(
         except Exception as _le:
             logger.warning("薪資批次計算 LINE 推播失敗: %s", _le)
 
+    _invalidate_finance_summary_cache()
     return {"results": results, "errors": errors}
 
 
@@ -379,17 +392,17 @@ def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
             _, _last_day = _cal.monthrange(year, month)
             _start = date(year, month, 1)
             _end = date(year, month, _last_day)
+            # 當月在職：hire_date <= month_end 且 resign_date IS NULL 或 >= month_start
+            # Why: 舊版用 current is_active 判定，補算歷史月份會把當月尚未到職的人
+            # 算進去，proration 又會回全額 → 幫還沒到職的員工發整月薪。
             employees = (
                 session.query(Employee)
                 .filter(
+                    or_(Employee.hire_date.is_(None), Employee.hire_date <= _end),
                     or_(
-                        Employee.is_active == True,
-                        and_(
-                            Employee.is_active == False,
-                            Employee.resign_date >= _start,
-                            Employee.resign_date <= _end,
-                        ),
-                    )
+                        Employee.resign_date.is_(None),
+                        Employee.resign_date >= _start,
+                    ),
                 )
                 .all()
             )
@@ -406,6 +419,7 @@ def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
 
         results_dicts = [_breakdown_to_result_dict(e, b) for e, b in bulk_results]
         _salary_job_registry.complete(job_id, results_dicts, errors)
+        _invalidate_finance_summary_cache()
 
         if _line_service is not None and results_dicts:
             try:
@@ -820,6 +834,13 @@ def manual_adjust_salary(
             f"v{current_version}→v{new_version}：" + "；".join(changed_parts)
         )
 
+    # session_scope 退出後 commit，再失效 finance summary 快取
+    _invalidate_finance_summary_cache()
+
+    with session_scope() as session:
+        record = (
+            session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
+        )
         return {
             "message": "薪資金額已更新",
             "record": {
@@ -1362,12 +1383,16 @@ def finalize_salary_month(
             len(records),
             operator,
         )
-        return {
-            "message": f"已封存 {data.year} 年 {data.month} 月共 {len(records)} 筆薪資記錄",
-            "count": len(records),
-            "finalized_by": operator,
-            "finalized_at": now.isoformat(),
-        }
+        count = len(records)
+        finalized_at_iso = now.isoformat()
+
+    _invalidate_finance_summary_cache()
+    return {
+        "message": f"已封存 {data.year} 年 {data.month} 月共 {count} 筆薪資記錄",
+        "count": count,
+        "finalized_by": operator,
+        "finalized_at": finalized_at_iso,
+    }
 
 
 @router.delete("/salaries/{record_id}/finalize")

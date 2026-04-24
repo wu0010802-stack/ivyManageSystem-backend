@@ -19,6 +19,7 @@ from models.fees import (
     StudentFeeRecord,
     StudentFeeRefund,
 )
+from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_adjustment_reason, require_finance_approve
 from utils.permissions import Permission
@@ -26,6 +27,23 @@ from utils.permissions import Permission
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/fees", tags=["fees"])
+
+# 報表快取 category：任何學費寫入後呼叫 invalidate，避免 /finance-summary 30 分內
+# 給舊數字。與 api/activity + api/salary 共用同一 category key。
+_FINANCE_SUMMARY_CACHE_CATEGORY = "reports_finance_summary"
+
+
+def _invalidate_finance_summary_cache() -> None:
+    """money write path 結束後呼叫，讓 finance-summary 下次請求重算。
+
+    invalidate_categories 內部自開 session，不依賴當前 session，也不會因
+    cache 寫入失敗而影響主交易（例外被 service 自行 log+swallow）。
+    """
+    try:
+        report_cache_service.invalidate_category(None, _FINANCE_SUMMARY_CACHE_CATEGORY)
+    except Exception:
+        # 守衛：快取失效失敗不應影響金流交易
+        logger.warning("invalidate finance_summary cache failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +481,43 @@ def pay_fee_record(
       快照供清單顯示；真正的月度聚合看 StudentFeePayment
     - idempotency_key：全域唯一，同 key 重送回放（DB UNIQUE 兜底）
     """
+
+    def _assert_pay_payload_matches(session, hit: StudentFeePayment, record_id: int):
+        """同 key 必須對應完整相同的 payload 上下文（record_id + payment_date +
+        payment_method + 目標 amount_paid）；任一欄位不符視為 key 誤用 → 409。
+
+        Why: 若只驗 record_id，同 record 誤帶舊 key + 新 amount 會誤 replay，
+        呼叫端以為已登記但實際沒新增流水，導致資料掉筆。
+        """
+        mismatch = []
+        if hit.record_id != record_id:
+            mismatch.append(f"record_id（已用於 {hit.record_id}）")
+        if hit.payment_date != payload.payment_date:
+            mismatch.append(f"payment_date（原 {hit.payment_date}）")
+        if hit.payment_method != payload.payment_method:
+            mismatch.append(f"payment_method（原 {hit.payment_method}）")
+        # 推算 hit 建立當下 record 的累計已繳 = SUM(payments WHERE id <= hit.id)
+        hit_cumulative = (
+            session.query(func.coalesce(func.sum(StudentFeePayment.amount), 0))
+            .filter(
+                StudentFeePayment.record_id == hit.record_id,
+                StudentFeePayment.id <= hit.id,
+            )
+            .scalar()
+        ) or 0
+        if payload.amount_paid is not None and int(payload.amount_paid) != int(
+            hit_cumulative
+        ):
+            mismatch.append(
+                f"amount_paid（原累計 NT${hit_cumulative}，本次 NT${payload.amount_paid}）"
+            )
+        if mismatch:
+            raise HTTPException(
+                status_code=409,
+                detail="idempotency_key 與先前請求的 payload 不符："
+                + "、".join(mismatch),
+            )
+
     with session_scope() as session:
         # ── 冪等性重送檢查：先於任何寫入 ─────────────────────────────
         if payload.idempotency_key:
@@ -472,15 +527,7 @@ def pay_fee_record(
                 .first()
             )
             if hit is not None:
-                # 同 key 必須對應同一 record 與同 payload；上下文不同視為 key 誤用
-                if hit.record_id != record_id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            f"idempotency_key 已用於 record {hit.record_id}，"
-                            f"不可重複用於 record {record_id}"
-                        ),
-                    )
+                _assert_pay_payload_matches(session, hit, record_id)
                 rec = (
                     session.query(StudentFeeRecord)
                     .filter(StudentFeeRecord.id == record_id)
@@ -560,6 +607,7 @@ def pay_fee_record(
         request.state.audit_entity_id = record_id
 
         # DB 層 UNIQUE 攔下並發同 key 的第二筆：轉為 replay
+        # 和前置檢查共用 _assert_pay_payload_matches，不可放寬檢查力道
         try:
             session.flush()
         except IntegrityError as e:
@@ -576,7 +624,8 @@ def pay_fee_record(
                         )
                         .first()
                     )
-                    if hit and hit.record_id == record_id:
+                    if hit is not None:
+                        _assert_pay_payload_matches(replay_session, hit, record_id)
                         rec = (
                             replay_session.query(StudentFeeRecord)
                             .filter(StudentFeeRecord.id == record_id)
@@ -590,15 +639,10 @@ def pay_fee_record(
                             ),
                             "idempotent_replay": True,
                         }
-                    if hit:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                f"idempotency_key 已用於 record {hit.record_id}，"
-                                f"不可重複用於 record {record_id}"
-                            ),
-                        )
             raise
+
+    # session_scope commit 後失效報表快取
+    _invalidate_finance_summary_cache()
 
     # 金額變動 warning 保留一份（AuditLog 寫失敗時仍有日誌可查）
     if delta != 0:
@@ -840,6 +884,9 @@ def refund_fee_record(
                             "idempotent_replay": True,
                         }
             raise
+
+    # session_scope commit 後失效報表快取
+    _invalidate_finance_summary_cache()
 
     logger.warning(
         "FEE_REFUND record_id=%s student=%s operator=%s amount=%s reason=%s new_paid=%s",
