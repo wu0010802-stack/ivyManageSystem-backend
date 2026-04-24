@@ -1729,10 +1729,22 @@ class TestResignProration:
         result = engine._prorate_for_period(30000, None, "2026-01-15", 2026, 1)
         assert result == 30000 * 15 / 31
 
-    def test_resign_different_month_no_proration(self, engine):
-        """上月（12月）離職 → 本月全額（不折算）"""
+    def test_resign_before_this_month_returns_zero(self, engine):
+        """上月（12 月）就離職 → 本月應回 0（不能再發整月薪）
+
+        回歸：舊實作會走「全額」分支，造成補算歷史薪資時 caller 若用
+        current is_active 選人，會幫已離職的人發整月薪。
+        """
         result = engine._prorate_for_period(30000, None, "2025-12-15", 2026, 1)
-        assert result == 30000
+        assert result == 0.0
+
+    def test_hire_after_this_month_returns_zero(self, engine):
+        """入職日晚於計算月份 → 回 0（尚未到職，不能發薪）"""
+        result = engine._prorate_for_period(30000, "2026-03-01", None, 2026, 1)
+        assert result == 0.0
+        # _prorate_base_salary 亦同
+        result2 = engine._prorate_base_salary(30000, "2026-03-01", 2026, 1)
+        assert result2 == 0.0
 
     def test_hire_and_resign_same_month(self, engine):
         """同月（1月）10日入職、20日離職 → 在職11天 → 30000×11/31"""

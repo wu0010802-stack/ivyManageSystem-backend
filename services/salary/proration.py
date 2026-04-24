@@ -16,28 +16,31 @@ def _to_date(raw) -> Optional[date]:
         return raw
     if isinstance(raw, str):
         try:
-            return datetime.strptime(raw, '%Y-%m-%d').date()
+            return datetime.strptime(raw, "%Y-%m-%d").date()
         except ValueError:
             return None
     return None
 
 
-def _prorate_base_salary(contracted_base: float, hire_date_raw, year: int, month: int) -> float:
+def _prorate_base_salary(
+    contracted_base: float, hire_date_raw, year: int, month: int
+) -> float:
     """
     月中入職者：按「在職天數 ÷ 當月天數」比例折算本月應領底薪。
 
     規則：
+    - 入職日晚於當月 → 回 0（尚未到職，不該領薪；避免補算歷史月份時吃全額）
     - 入職日為計算月份的 2 日（含）以後 → 按自然日比例折算
     - 入職日為 1 日或更早（上月/更早入職） → 全額，不折算
-    - 入職日為非計算月份 → 全額，不折算
 
     ⚠️  注意：本方法「僅」影響 breakdown.base_salary（當月應領底薪顯示）。
         加班費時薪計算基準應以「完整契約月薪（emp.base_salary）÷ 30 ÷ 8」計算，
         絕不使用本方法回傳的折算後金額，否則會造成「雙重縮水」違反勞基法：
           錯誤：折算後底薪（15,000）/ 30 / 8 = 62.5 NTD/hr
-          正確：契約月薪（30,000）  / 30 / 8 = 125.0 NTD/hr
+          正確:契約月薪（30,000）  / 30 / 8 = 125.0 NTD/hr
     """
     import calendar as _cal
+
     if not contracted_base:
         return 0.0
     if not hire_date_raw:
@@ -47,12 +50,18 @@ def _prorate_base_salary(contracted_base: float, hire_date_raw, year: int, month
     if hire_d is None:
         return contracted_base
 
+    # 入職日晚於計算月份 → 尚未到職，本月不領薪
+    # Why: 補算歷史月份時若 caller 用 current is_active 選人，對「當月尚未到職」的
+    # 員工若不擋，會進入下方「入職月份不同」分支回全額，變成發整月薪。
+    if (hire_d.year, hire_d.month) > (year, month):
+        return 0.0
+
     # 僅當入職年月與計算月份相同且非月初（day > 1）才折算
     if hire_d.year != year or hire_d.month != month or hire_d.day <= 1:
         return contracted_base
 
     _, month_days = _cal.monthrange(year, month)
-    worked_days = month_days - hire_d.day + 1   # 入職日當天計入
+    worked_days = month_days - hire_d.day + 1  # 入職日當天計入
     return contracted_base * worked_days / month_days
 
 
@@ -77,19 +86,34 @@ def _prorate_for_period(
         加班費時薪基準仍應使用完整契約月薪，避免「雙重縮水」。
     """
     import calendar as _cal
+
     if not contracted_base:
         return 0.0
 
     _, month_days = _cal.monthrange(year, month)
+
+    hire_d = _to_date(hire_date_raw)
+    resign_d = _to_date(resign_date_raw)
+
+    # 非在職月份守衛：補算歷史薪資時若 caller 用 current is_active 選人，
+    # 對「當月尚未到職」或「當月已離職」者若不擋，會落到下方「全額」分支。
+    if hire_d and (hire_d.year, hire_d.month) > (year, month):
+        return 0.0  # 尚未到職
+    if resign_d and (resign_d.year, resign_d.month) < (year, month):
+        return 0.0  # 已離職
+
     start_day = 1
     end_day = month_days
 
-    hire_d = _to_date(hire_date_raw)
     if hire_d and hire_d.year == year and hire_d.month == month and hire_d.day >= 2:
         start_day = hire_d.day
 
-    resign_d = _to_date(resign_date_raw)
-    if resign_d and resign_d.year == year and resign_d.month == month and resign_d.day < month_days:
+    if (
+        resign_d
+        and resign_d.year == year
+        and resign_d.month == month
+        and resign_d.day < month_days
+    ):
         end_day = resign_d.day
 
     if start_day == 1 and end_day == month_days:
@@ -123,6 +147,7 @@ def _build_expected_workdays(
         raise ValueError(f"month 必須介於 1–12，收到 {month!r}")
 
     import calendar as _cal
+
     if today is None:
         today = date.today()
 

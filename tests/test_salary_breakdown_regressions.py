@@ -366,7 +366,9 @@ class TestDailySalaryBaseConsistency:
                 employee_type="regular",
                 base_salary=42000,
                 insurance_salary_level=42000,
-                hire_date=date(2026, 4, 1),
+                # 計算 2026/3 的薪資：hire_date 必須早於或等於該月，否則
+                # proration 會（正確地）回 0，導致 net 為負。
+                hire_date=date(2025, 4, 1),
                 is_active=True,
             )
             session.add(teacher)
