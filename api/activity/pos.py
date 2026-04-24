@@ -247,21 +247,18 @@ def _parse_receipt_response_from_record(
 def _find_idempotent_hit(
     session, idempotency_key: str
 ) -> Optional[ActivityPaymentRecord]:
-    """查詢視窗內是否已有相同 idempotency_key 的記錄。
+    """查詢相同 idempotency_key 的紀錄。
 
-    threshold 與 ActivityPaymentRecord.created_at 必須用同一種時間基準：
-    model 層 created_at default 已統一用 TAIPEI naive，threshold 同步；
-    這樣即使部署在 UTC 伺服器，冪等視窗仍精確對應 10 分鐘實時間。
+    Why: DB 層 UniqueConstraint 已將 idempotency_key 設為永久全域唯一。
+    過去這個 helper 額外用 10 分鐘視窗過濾，導致兩個衝突：
+    (1) window 外同 key 重送 → helper 找不到 → 繼續 INSERT → UNIQUE 拋
+        IntegrityError → catch 再查一次仍找不到 → 客戶端 500
+    (2) window 內同 key 重送但應視為重試也 OK，但 window 邏輯本身是冗餘
+    改為全域查詢：DB 語意（永久唯一）與 replay 語意一致，同 key 永遠回同結果。
     """
-    threshold = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(
-        seconds=_IDEMPOTENCY_WINDOW_SECONDS
-    )
     return (
         session.query(ActivityPaymentRecord)
-        .filter(
-            ActivityPaymentRecord.idempotency_key == idempotency_key,
-            ActivityPaymentRecord.created_at >= threshold,
-        )
+        .filter(ActivityPaymentRecord.idempotency_key == idempotency_key)
         .order_by(ActivityPaymentRecord.id.asc())
         .first()
     )

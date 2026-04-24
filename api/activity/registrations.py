@@ -2109,27 +2109,37 @@ async def add_registration_payment(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """新增繳費或退費記錄"""
+    """新增繳費或退費記錄
+
+    冪等語意（2026-04-24 修正）：
+    idempotency_key 於 DB 層永久全域唯一。同 key 必須對應同一 registration、
+    同一 type、同一 amount；若上下文不符視為 key 誤用，回 409 避免錯帳到
+    其他 registration（原本的 10 分鐘 window 過期後再重送會爆 500）。
+    """
     session = get_session()
     try:
         # ── 冪等性重送檢查（先於任何寫入） ────────────────────────
         if body.idempotency_key:
-            # threshold 與 ActivityPaymentRecord.created_at 都用 TAIPEI naive；
-            # UTC 部署時才不會讓視窗判定差 8 小時
-            threshold = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(
-                seconds=_IDEMPOTENCY_WINDOW_SECONDS
-            )
             hit = (
                 session.query(ActivityPaymentRecord)
-                .filter(
-                    ActivityPaymentRecord.idempotency_key == body.idempotency_key,
-                    ActivityPaymentRecord.created_at >= threshold,
-                )
+                .filter(ActivityPaymentRecord.idempotency_key == body.idempotency_key)
                 .order_by(ActivityPaymentRecord.id.asc())
                 .first()
             )
             if hit is not None:
-                # 重送到達時，用當下 reg 狀態回覆；不重複寫入。
+                # 上下文一致才 replay；不一致視為 key 誤用
+                if (
+                    hit.registration_id != registration_id
+                    or hit.type != body.type
+                    or hit.amount != body.amount
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"idempotency_key 已用於 registration {hit.registration_id} "
+                            f"（{hit.type} NT${hit.amount}），不可重複用於本請求"
+                        ),
+                    )
                 reg_hit = (
                     session.query(ActivityRegistration)
                     .filter(ActivityRegistration.id == hit.registration_id)
@@ -2212,6 +2222,7 @@ async def add_registration_payment(
             session.commit()
         except IntegrityError as e:
             # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：轉為 idempotent replay
+            # 重要：必須驗證 (registration_id, type, amount) 一致，否則視為 key 誤用
             session.rollback()
             if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
                 hit = (
@@ -2223,6 +2234,19 @@ async def add_registration_payment(
                     .first()
                 )
                 if hit is not None:
+                    if (
+                        hit.registration_id != registration_id
+                        or hit.type != body.type
+                        or hit.amount != body.amount
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"idempotency_key 已用於 registration "
+                                f"{hit.registration_id}（{hit.type} NT${hit.amount}），"
+                                f"不可重複用於本請求"
+                            ),
+                        )
                     reg_hit = (
                         session.query(ActivityRegistration)
                         .filter(ActivityRegistration.id == hit.registration_id)
