@@ -32,6 +32,7 @@ from models.database import (
     get_session,
 )
 from services.activity_service import activity_service
+from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
@@ -498,7 +499,7 @@ async def pos_checkout(
         response_items = []
         type_label = "繳費" if body.type == "payment" else "退費"
 
-        for item in body.items:
+        for idx, item in enumerate(body.items):
             reg = reg_by_id[item.registration_id]
             total_amount_pre = total_map.get(reg.id, 0) or 0
             if body.type == "refund" and item.amount > (reg.paid_amount or 0):
@@ -523,6 +524,12 @@ async def pos_checkout(
                         ),
                     )
 
+            # idempotency_key 只落在整張收據的「第一筆」記錄上，其餘為 NULL。
+            # Why: ActivityPaymentRecord.idempotency_key 有全域 UNIQUE 約束；
+            # 若一張收據 N 筆 item 都寫同一個 key，第二筆 flush 就會 IntegrityError
+            # 造成整張交易 rollback。Replay 時先用 key 找到第一筆，再透過
+            # receipt_no 拉整張收據（_parse_receipt_response_from_record）。
+            # NULL 在標準 SQL 允許重複，不受 UNIQUE 約束影響。
             rec = ActivityPaymentRecord(
                 registration_id=reg.id,
                 type=body.type,
@@ -531,7 +538,7 @@ async def pos_checkout(
                 payment_method=body.payment_method,
                 notes=stored_notes,
                 operator=operator,
-                idempotency_key=body.idempotency_key,
+                idempotency_key=body.idempotency_key if idx == 0 else None,
                 receipt_no=receipt_no,
             )
             session.add(rec)
@@ -608,6 +615,11 @@ async def pos_checkout(
                         return replay
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
+        # 金流變動影響 /finance-summary 報表快取（TTL 30 分），同步失效
+        try:
+            report_cache_service.invalidate_category(None, "reports_finance_summary")
+        except Exception:
+            logger.warning("invalidate finance_summary cache failed", exc_info=True)
 
         logger.warning(
             "POS checkout: receipt=%s operator=%s total=%d items=%d method=%s type=%s idk=%s",
