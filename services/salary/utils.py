@@ -112,6 +112,31 @@ def get_bonus_distribution_month(month: int) -> bool:
     return month in (2, 6, 9, 12)
 
 
+def get_current_period_passed_months(year: int, month: int) -> list[tuple[int, int]]:
+    """
+    回傳該月所屬發放期起點至查詢月（含）之 (year, month) 清單。
+    發放月（2/6/9/12）輸入時回空 list。
+
+    期間定義（對齊 get_meeting_deduction_period_start）：
+      - 2 月發放 12(去年)、1
+      - 6 月發放 2、3、4、5
+      - 9 月發放 6、7、8
+      - 12 月發放 9、10、11
+    """
+    if get_bonus_distribution_month(month):
+        return []
+
+    if month == 1:
+        return [(year - 1, 12), (year, 1)]
+    if 3 <= month <= 5:
+        return [(year, m) for m in range(2, month + 1)]
+    if 7 <= month <= 8:
+        return [(year, m) for m in range(6, month + 1)]
+    if 10 <= month <= 11:
+        return [(year, m) for m in range(9, month + 1)]
+    return []
+
+
 def calc_daily_salary(base_salary) -> float:
     """日薪計算：base_salary / 30（勞基法基準 MONTHLY_BASE_DAYS）"""
     return (base_salary or 0) / MONTHLY_BASE_DAYS

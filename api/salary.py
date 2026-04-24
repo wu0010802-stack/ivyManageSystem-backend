@@ -581,6 +581,130 @@ def get_festival_bonus(
         return results
 
 
+@router.get("/salaries/festival-bonus/period-accrual")
+def get_festival_bonus_period_accrual(
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+):
+    """
+    回傳該月所屬發放期「到目前為止」的節慶獎金、超額獎金、會議缺席扣款累積明細。
+    發放月（2/6/9/12）回空 rows + is_distribution_month=True。
+    DB 往返 O(月數)：每月一組共用資料 batch prefetch，與單月 get_festival_bonus 相同策略。
+    """
+    from services.salary.utils import (
+        get_bonus_distribution_month,
+        get_current_period_passed_months,
+    )
+
+    passed_months = get_current_period_passed_months(year, month)
+    if not passed_months:
+        return {
+            "is_distribution_month": get_bonus_distribution_month(month),
+            "period_start_month": None,
+            "current_month": month,
+            "distribution_month": None,
+            "rows": [],
+        }
+
+    # 發放月：本期之後最近的 2/6/9/12（12 月 → 次年 2）
+    distribution_month = next((c for c in (2, 6, 9, 12) if c > month), 2)
+
+    with session_scope() as session:
+        engine = (
+            _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
+        )
+
+        employees = (
+            session.query(Employee)
+            .options(joinedload(Employee.job_title_rel))
+            .filter(_active_employees_in_month_filter(year, month))
+            .all()
+        )
+
+        monthly_ctx_cache: dict[tuple[int, int], dict] = {}
+        for y, m in passed_months:
+            _, last_day = _cal.monthrange(y, m)
+            month_end = date(y, m, last_day)
+            monthly_ctx_cache[(y, m)] = {
+                "month_end": month_end,
+                "school_active": count_students_active_on(session, month_end),
+                "cls_count_map": classroom_student_count_map(session, month_end),
+                "classroom_map": {
+                    c.id: c
+                    for c in session.query(Classroom)
+                    .options(joinedload(Classroom.grade))
+                    .all()
+                },
+            }
+
+        rows = []
+        for emp in employees:
+            monthly = []
+            for y, m in passed_months:
+                ctx_cache = monthly_ctx_cache[(y, m)]
+                per_month_ctx = {
+                    "session": session,
+                    "employee": emp,
+                    "classroom": (
+                        ctx_cache["classroom_map"].get(emp.classroom_id)
+                        if emp.classroom_id
+                        else None
+                    ),
+                    "school_active_students": ctx_cache["school_active"],
+                    "classroom_count_map": ctx_cache["cls_count_map"],
+                }
+                try:
+                    row = engine.calculate_period_accrual_row(
+                        emp.id, y, m, _ctx=per_month_ctx
+                    )
+                except Exception:
+                    logger.exception(
+                        "period-accrual 計算失敗 emp=%s year=%s month=%s",
+                        emp.id,
+                        y,
+                        m,
+                    )
+                    row = {
+                        "festival_bonus": 0,
+                        "overtime_bonus": 0,
+                        "meeting_absence_deduction": 0,
+                        "category": "",
+                        "error": "計算失敗",
+                    }
+                monthly.append({"year": y, "month": m, **row})
+
+            fb_total = sum(r["festival_bonus"] for r in monthly)
+            ot_total = sum(r["overtime_bonus"] for r in monthly)
+            ded_total = sum(r["meeting_absence_deduction"] for r in monthly)
+            category = next(
+                (r.get("category") for r in monthly if r.get("category")), ""
+            )
+
+            rows.append(
+                {
+                    "employee_id": emp.id,
+                    "name": emp.name,
+                    "category": category,
+                    "monthly": monthly,
+                    "totals": {
+                        "festival_bonus": fb_total,
+                        "overtime_bonus": ot_total,
+                        "meeting_absence_deduction": ded_total,
+                        "net_estimate": max(0, fb_total + ot_total - ded_total),
+                    },
+                }
+            )
+
+        return {
+            "is_distribution_month": False,
+            "period_start_month": passed_months[0][1],
+            "current_month": month,
+            "distribution_month": distribution_month,
+            "rows": rows,
+        }
+
+
 @router.get("/salaries/records")
 def get_salary_records(
     background_tasks: BackgroundTasks,

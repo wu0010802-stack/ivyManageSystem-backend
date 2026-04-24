@@ -1490,6 +1490,113 @@ class SalaryEngine:
             if _own_session:
                 session.close()
 
+    def calculate_period_accrual_row(
+        self,
+        employee_id: int,
+        year: int,
+        month: int,
+        *,
+        _ctx: dict | None = None,
+    ) -> dict:
+        """單員工×單月的「本期累積」列資料（節慶/超額/會議扣款）。
+
+        不套用「事病假 >40 小時全清零」規則（該規則僅在發放月當月檢查，
+        非累積期間規則）。UI 須以 tooltip 聲明。
+        """
+        import calendar as _cal
+        from datetime import date as _date
+
+        from models.database import MeetingRecord
+
+        _own_session = _ctx is None
+        if _own_session:
+            session = _get_db_session()
+        else:
+            session = _ctx["session"]
+
+        try:
+            # 1) 呼叫 breakdown 取節慶獎金與 category
+            breakdown = self.calculate_festival_bonus_breakdown(
+                employee_id, year, month, _ctx=_ctx
+            )
+            festival_bonus = int(breakdown.get("festivalBonus") or 0)
+            category = breakdown.get("category", "")
+
+            # 2) overtime bonus（僅帶班老師，其他類別 0）
+            overtime_bonus = 0
+            if category == "帶班老師":
+                from .festival import calculate_overtime_bonus
+
+                if _ctx is not None and "employee" in _ctx:
+                    emp = _ctx["employee"]
+                else:
+                    from models.database import Employee as _Employee
+
+                    emp = session.query(_Employee).get(employee_id)
+
+                if _ctx is not None and "classroom" in _ctx:
+                    classroom = _ctx["classroom"]
+                else:
+                    from models.database import Classroom as _Classroom
+
+                    classroom = (
+                        session.query(_Classroom).get(emp.classroom_id)
+                        if emp and emp.classroom_id
+                        else None
+                    )
+
+                if classroom:
+                    _, last_day = _cal.monthrange(year, month)
+                    ref_date = _date(year, month, last_day)
+                    cls_ctx = self._build_classroom_context_from_db(
+                        session,
+                        classroom,
+                        emp.id,
+                        reference_date=ref_date,
+                        classroom_count_map=(
+                            _ctx.get("classroom_count_map") if _ctx else None
+                        ),
+                    )
+                    if cls_ctx:
+                        ot = calculate_overtime_bonus(
+                            role=cls_ctx["role"],
+                            grade_name=cls_ctx["grade_name"],
+                            current_enrollment=cls_ctx["current_enrollment"],
+                            has_assistant=cls_ctx["has_assistant"],
+                            is_shared_assistant=cls_ctx["is_shared_assistant"],
+                            overtime_target_map=self._overtime_target,
+                            overtime_per_person_map=self._overtime_per_person,
+                        )
+                        overtime_bonus = int(ot.get("overtime_bonus") or 0)
+
+            # 3) 會議缺席扣款
+            _, last_day = _cal.monthrange(year, month)
+            start_date = _date(year, month, 1)
+            end_date = _date(year, month, last_day)
+            absent_count = (
+                session.query(MeetingRecord)
+                .filter(
+                    MeetingRecord.employee_id == employee_id,
+                    MeetingRecord.meeting_date >= start_date,
+                    MeetingRecord.meeting_date <= end_date,
+                    MeetingRecord.attended == False,  # noqa: E712
+                )
+                .count()
+            )
+            meeting_absence_deduction = int(
+                absent_count * (self._meeting_absence_penalty or 0)
+            )
+
+            return {
+                "festival_bonus": festival_bonus,
+                "overtime_bonus": overtime_bonus,
+                "meeting_absence_deduction": meeting_absence_deduction,
+                "category": category,
+            }
+        finally:
+            if _own_session:
+                session.close()
+
     # ─── process_salary_calculation 私有輔助方法 ─────────────────────────────
 
     def _resolve_standard_base(self, emp) -> float:
