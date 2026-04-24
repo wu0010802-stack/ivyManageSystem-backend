@@ -128,21 +128,25 @@ def _title_row(ws, text: str, span_end: str) -> None:
 
 
 def _active_employees(session, year: int, month: int) -> list:
-    """取當月在職員工（含當月離職者）"""
+    """取「當月在職」員工：hire_date <= month_end 且 (resign_date IS NULL OR resign_date >= month_start)。
+
+    Why: 舊版只用 `is_active` 判斷，會造成兩個方向的錯誤申報：
+    - 今天在職但當月尚未到職 → 被列入（舊版：is_active=True 分支放過）
+    - 歷史當月在職但今天已離職 → 被漏掉（舊版：只有「當月離職」可進第二分支，
+      若離職月份晚於計算月份就沒機會被列入）
+    改用 hire/resign 日期的時間區間判斷，與 is_active 無關。
+    """
     last_day = cal_module.monthrange(year, month)[1]
     month_start = date(year, month, 1)
     month_end = date(year, month, last_day)
     return (
         session.query(Employee)
         .filter(
+            or_(Employee.hire_date.is_(None), Employee.hire_date <= month_end),
             or_(
-                Employee.is_active == True,
-                and_(
-                    Employee.is_active == False,
-                    Employee.resign_date >= month_start,
-                    Employee.resign_date <= month_end,
-                ),
-            )
+                Employee.resign_date.is_(None),
+                Employee.resign_date >= month_start,
+            ),
         )
         .order_by(Employee.name)
         .all()
@@ -200,7 +204,16 @@ def export_labor_insurance(
             sr = smap.get(emp.id)
             insured = int(emp.insurance_salary_level or emp.base_salary or 0)
 
-            if sr and (sr.labor_insurance_employee or sr.labor_insurance_employer):
+            # 必須「員工端 + 雇主端皆有值」才採用 record；否則走 fallback 重算。
+            # Why: 舊版 SalaryRecord 曾漏寫雇主端三欄（labor/health/pension
+            # _employer 長期為 0），條件寬鬆只要「員工端 or 雇主端」任一有值就
+            # 採用 record → 雇主端就寫成 0 匯出給勞保局。P1-A 修復後新紀錄
+            # 雇主端都有值，舊紀錄則透過下方 _ins_calc fallback 重算補齊。
+            if (
+                sr
+                and (sr.labor_insurance_employee or 0) > 0
+                and (sr.labor_insurance_employer or 0) > 0
+            ):
                 labor_emp = round(sr.labor_insurance_employee or 0)
                 labor_er = round(sr.labor_insurance_employer or 0)
                 # 政府補助 ≈ 總保費 * 10%；員工 20%，雇主 70%，故 gov = employee * 0.5
@@ -360,7 +373,12 @@ def export_health_insurance(
             sr = smap.get(emp.id)
             insured = int(emp.insurance_salary_level or emp.base_salary or 0)
 
-            if sr and (sr.health_insurance_employee or sr.health_insurance_employer):
+            # 同勞保：需員工端 + 雇主端皆有值才採用 record（避免舊資料雇主 0 被信任）
+            if (
+                sr
+                and (sr.health_insurance_employee or 0) > 0
+                and (sr.health_insurance_employer or 0) > 0
+            ):
                 health_emp = round(sr.health_insurance_employee or 0)
                 health_er = round(sr.health_insurance_employer or 0)
                 calc = _ins_calc(emp)
@@ -630,7 +648,9 @@ def export_pension(
             sr = smap.get(emp.id)
             insured = int(emp.insurance_salary_level or emp.base_salary or 0)
 
-            if sr and (sr.pension_employer is not None):
+            # 勞退：雇主提撥 > 0 才採用 record；= 0 或 None 一律走 fallback
+            # （舊資料 pension_employer 為 0，過去 `is not None` 會誤採用）
+            if sr and (sr.pension_employer or 0) > 0:
                 pension_er = round(sr.pension_employer or 0)
                 pension_self = round(sr.pension_employee or 0)
             else:
