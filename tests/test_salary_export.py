@@ -305,7 +305,7 @@ class TestSalaryManualAdjustApi:
 
         response = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={
+            json={"adjustment_reason": "自動化測試補欄位原因", 
                 "festival_bonus": 1800,
                 "leave_deduction": 500,
             },
@@ -350,7 +350,7 @@ class TestSalaryManualAdjustApi:
 
         response = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"festival_bonus": 1000},
+            json={"adjustment_reason": "自動化測試補欄位原因", "festival_bonus": 1000},
         )
 
         assert response.status_code == 409

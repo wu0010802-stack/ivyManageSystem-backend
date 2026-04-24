@@ -229,7 +229,7 @@ class TestManualAdjustSetsAuditState:
             _login(mw_client)
             res = mw_client.put(
                 f"/api/salaries/{record_id}/manual-adjust",
-                json={"festival_bonus": 2500},
+                json={"adjustment_reason": "自動化測試補欄位原因", "festival_bonus": 2500},
             )
             assert res.status_code == 200
 

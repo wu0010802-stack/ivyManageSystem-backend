@@ -148,7 +148,7 @@ class TestRefundEndpoint:
         assert _login(c).status_code == 200
         res = c.post(
             f"/api/fees/records/{rec_id}/refund",
-            json={"amount": 600, "reason": "誤收"},
+            json={"amount": 600, "reason": "誤收家長款項需修正"},
         )
         assert res.status_code == 400
         assert "超過已繳金額" in res.json()["detail"]
@@ -169,7 +169,7 @@ class TestRefundEndpoint:
         assert _login(c).status_code == 200
         res = c.post(
             f"/api/fees/records/{rec_id}/refund",
-            json={"amount": 1000, "reason": "全額退"},
+            json={"amount": 1000, "reason": "家長要求全額退費"},
         )
         assert res.status_code == 201, res.text
         assert res.json()["status"] == "unpaid"
@@ -184,7 +184,11 @@ class TestRefundEndpoint:
             rec_id = rec.id
 
         assert _login(c).status_code == 200
-        for amt, reason in [(200, "第一次退"), (300, "第二次退"), (400, "第三次退")]:
+        for amt, reason in [
+            (200, "第一次小額退款"),
+            (300, "第二次小額退款"),
+            (400, "第三次小額退款"),
+        ]:
             res = c.post(
                 f"/api/fees/records/{rec_id}/refund",
                 json={"amount": amt, "reason": reason},
@@ -197,7 +201,7 @@ class TestRefundEndpoint:
         assert data["total_refunded"] == 900
         assert len(data["refunds"]) == 3
         # 依 refunded_at desc，最新在前
-        assert data["refunds"][0]["reason"] == "第三次退"
+        assert data["refunds"][0]["reason"] == "第三次小額退款"
 
     def test_refund_without_paid_amount_returns_400(self, client):
         c, sf = client
@@ -210,7 +214,7 @@ class TestRefundEndpoint:
         assert _login(c).status_code == 200
         res = c.post(
             f"/api/fees/records/{rec_id}/refund",
-            json={"amount": 100, "reason": "誤退"},
+            json={"amount": 100, "reason": "誤點退費測試"},
         )
         assert res.status_code == 400
         assert "尚未有任何繳費" in res.json()["detail"]
@@ -303,7 +307,7 @@ class TestRefundIdempotency:
             f"/api/fees/records/{rec_id}/refund",
             json={
                 "amount": 300,
-                "reason": "第一次退",
+                "reason": "第一次退款請求",
                 "idempotency_key": "refund-k-001",
             },
         )
@@ -312,7 +316,7 @@ class TestRefundIdempotency:
             f"/api/fees/records/{rec_id}/refund",
             json={
                 "amount": 200,
-                "reason": "第二次退",
+                "reason": "第二次退款請求",
                 "idempotency_key": "refund-k-002",
             },
         )
@@ -337,7 +341,7 @@ class TestRefundIdempotency:
         for _ in range(2):
             res = c.post(
                 f"/api/fees/records/{rec_id}/refund",
-                json={"amount": 200, "reason": "legacy"},
+                json={"amount": 200, "reason": "舊版相容無冪等鍵"},
             )
             assert res.status_code == 201, res.text
 

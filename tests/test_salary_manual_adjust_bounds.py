@@ -14,39 +14,65 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.salary import SalaryManualAdjustRequest, _MANUAL_ADJUST_FIELD_MAX
 
+# 所有 payload 皆需 adjustment_reason（A 錢守衛強化）
+_REASON = "主管核准一次性獎勵"
+
 
 def test_field_at_upper_bound_accepted():
-    """剛好到上限（10,000,000）應被接受"""
-    req = SalaryManualAdjustRequest(base_salary=_MANUAL_ADJUST_FIELD_MAX)
+    """剛好到上限（500,000，已從舊版 1000 萬收緊）應被接受"""
+    req = SalaryManualAdjustRequest(
+        adjustment_reason=_REASON, base_salary=_MANUAL_ADJUST_FIELD_MAX
+    )
     assert req.base_salary == _MANUAL_ADJUST_FIELD_MAX
 
 
 def test_field_exceeds_upper_bound_rejected():
     """超過上限應拋 ValidationError"""
     with pytest.raises(ValidationError):
-        SalaryManualAdjustRequest(base_salary=_MANUAL_ADJUST_FIELD_MAX + 1)
+        SalaryManualAdjustRequest(
+            adjustment_reason=_REASON, base_salary=_MANUAL_ADJUST_FIELD_MAX + 1
+        )
 
 
 def test_negative_field_rejected():
     """負值仍如既有 ge=0 守衛拒絕"""
     with pytest.raises(ValidationError):
-        SalaryManualAdjustRequest(festival_bonus=-1)
+        SalaryManualAdjustRequest(adjustment_reason=_REASON, festival_bonus=-1)
 
 
 def test_normal_values_accepted():
     """正常金額不受影響"""
     req = SalaryManualAdjustRequest(
-        base_salary=35000, festival_bonus=3000, overtime_pay=2000
+        adjustment_reason=_REASON,
+        base_salary=35000,
+        festival_bonus=3000,
+        overtime_pay=2000,
     )
     assert req.base_salary == 35000
     assert req.festival_bonus == 3000
     assert req.overtime_pay == 2000
 
 
-def test_all_fields_have_upper_bound():
-    """所有欄位都應定義上限（守護新增欄位時忘了加 le）"""
+def test_adjustment_reason_required():
+    """未帶 adjustment_reason 應拒絕（A 錢守衛：強制留下稽核上下文）"""
+    with pytest.raises(ValidationError):
+        SalaryManualAdjustRequest(base_salary=35000)
+
+
+def test_adjustment_reason_too_short_rejected():
+    """reason 少於 5 字應拒絕"""
+    with pytest.raises(ValidationError):
+        SalaryManualAdjustRequest(adjustment_reason="誤", base_salary=35000)
+
+
+def test_all_numeric_fields_have_upper_bound():
+    """所有金額欄位都應定義 le 上限（守護新增欄位時忘了加）。
+
+    adjustment_reason 為 str，用 min_length 邊界守衛不在此斷言範圍。
+    """
     for field_name, field_info in SalaryManualAdjustRequest.model_fields.items():
-        # 用 metadata 取上限 constraint
+        if field_name == "adjustment_reason":
+            continue
         constraints = getattr(field_info, "metadata", []) or []
         has_le = any(getattr(c, "le", None) is not None for c in constraints) or any(
             hasattr(c, "le") and c.le is not None for c in constraints

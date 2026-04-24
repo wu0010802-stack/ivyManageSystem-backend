@@ -209,7 +209,7 @@ class TestManualAdjustNegativeSalaryGuard:
         # 將 other_deduction 設為 99999，遠超應發薪資 → 淨薪資應為負數
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 99999},
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 99999},
         )
         assert res.status_code == 400, (
             f"扣款超過薪資應被阻擋（400），但回傳 {res.status_code}: {res.json()}"
@@ -255,6 +255,6 @@ class TestManualAdjustNegativeSalaryGuard:
 
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 1000},  # 30000 - 1000 = 29000 > 0
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 1000},  # 30000 - 1000 = 29000 > 0
         )
         assert res.status_code == 200

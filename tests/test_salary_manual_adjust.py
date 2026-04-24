@@ -174,7 +174,10 @@ class TestRecalculatePreservesHourlyTotal:
 
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"meeting_absence_deduction": 0},
+            json={
+                "adjustment_reason": "測試連動：清空 meeting_absence",
+                "meeting_absence_deduction": 0,
+            },
         )
         assert res.status_code == 200
         rec = res.json()["record"]
@@ -189,12 +192,17 @@ class TestRecalculatePreservesHourlyTotal:
 
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"meeting_absence_deduction": 100},
+            json={
+                "adjustment_reason": "調整會議缺席扣減試算",
+                "meeting_absence_deduction": 100,
+            },
         )
         assert res.status_code == 200
         assert res.json()["record"]["festival_bonus"] == 1900
 
-    def test_edit_both_festival_and_meeting_absence_no_auto_recompute(self, salary_client):
+    def test_edit_both_festival_and_meeting_absence_no_auto_recompute(
+        self, salary_client
+    ):
         """同時手動覆寫 festival_bonus 與 meeting_absence_deduction：
         管理員的 festival 為最終值，不再自動回推 raw。"""
         client, sf = salary_client
@@ -203,7 +211,11 @@ class TestRecalculatePreservesHourlyTotal:
 
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"festival_bonus": 3000, "meeting_absence_deduction": 100},
+            json={
+                "adjustment_reason": "同時覆寫節慶與扣減",
+                "festival_bonus": 3000,
+                "meeting_absence_deduction": 100,
+            },
         )
         assert res.status_code == 200
         rec = res.json()["record"]
@@ -220,12 +232,15 @@ class TestRecalculatePreservesHourlyTotal:
         # 管理員加 500 元其他扣款
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 500},
+            json={
+                "adjustment_reason": "測試時薪 gross 保留",
+                "other_deduction": 500,
+            },
         )
         assert res.status_code == 200
         rec = res.json()["record"]
         # hourly_total 應仍為 24000，gross_salary 應為 24000
-        assert rec["gross_salary"] == 24000, (
-            f"時薪制 gross_salary 不應被歸零，得到 {rec['gross_salary']}"
-        )
+        assert (
+            rec["gross_salary"] == 24000
+        ), f"時薪制 gross_salary 不應被歸零，得到 {rec['gross_salary']}"
         assert rec["net_salary"] == 23500

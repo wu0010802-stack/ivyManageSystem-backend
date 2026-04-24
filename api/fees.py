@@ -15,6 +15,7 @@ from models.base import session_scope
 from models.classroom import Classroom, Student
 from models.fees import FeeItem, StudentFeeRecord, StudentFeeRefund
 from utils.auth import require_staff_permission
+from utils.finance_guards import require_adjustment_reason, require_finance_approve
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,11 @@ class PayRequest(BaseModel):
 
 
 class RefundRequest(BaseModel):
-    """退款請求。退款走獨立流程，於 StudentFeeRefund 表留下歷史。"""
+    """退款請求。退款走獨立流程，於 StudentFeeRefund 表留下歷史。
+
+    reason 最短 5 字（避免「.」或「誤」等敷衍）；金額 > FINANCE_APPROVAL_THRESHOLD
+    需 ACTIVITY_PAYMENT_APPROVE 權限（handler 層檢查）。
+    """
 
     amount: int = Field(
         ...,
@@ -72,7 +77,7 @@ class RefundRequest(BaseModel):
         le=MAX_FEE_AMOUNT,
         description=f"退款金額（正整數，上限 NT${MAX_FEE_AMOUNT:,}）",
     )
-    reason: str = Field(..., min_length=1, max_length=100)
+    reason: str = Field(..., min_length=5, max_length=100)
     notes: Optional[str] = Field("", max_length=200)
     idempotency_key: Optional[str] = Field(
         None,
@@ -645,6 +650,12 @@ def refund_fee_record(
                 status_code=400,
                 detail=f"退款金額 NT${payload.amount} 超過已繳金額 NT${paid}",
             )
+
+        # ── A 錢守衛 ─────────────────────────────────────────────────
+        # Pydantic 已強制 reason ≥ 5 字；此處再過一層 strip 並寫回 payload
+        payload.reason = require_adjustment_reason(payload.reason)
+        # 大額退款需金流簽核權限
+        require_finance_approve(payload.amount, current_user, action_label="學費退款")
 
         operator = current_user.get("username") or current_user.get("name") or "unknown"
 

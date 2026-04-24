@@ -14,6 +14,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from utils.errors import raise_safe_500
 from utils.auth import require_permission, require_staff_permission
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
+from utils.finance_guards import (
+    require_finance_approve,
+    require_not_self_salary_record,
+)
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
 
@@ -694,6 +698,11 @@ def manual_adjust_salary(
         if not record:
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
 
+        # ── A 錢守衛：不得調整自己的 SalaryRecord（純管理員帳號不受限）──
+        require_not_self_salary_record(
+            current_user, record.employee_id, action="調整自己的薪資紀錄"
+        )
+
         # advisory lock：確保與計算引擎不會同時寫入同筆 SalaryRecord
         acquire_salary_lock(
             session,
@@ -720,6 +729,8 @@ def manual_adjust_salary(
             )
 
         payload = data.model_dump(exclude_unset=True)
+        # adjustment_reason 為 schema required；從 payload 拉出後只留實際要寫入的金額欄位
+        adjustment_reason = (payload.pop("adjustment_reason", "") or "").strip()
         if not payload:
             raise HTTPException(status_code=400, detail="至少需要提供一個調整欄位")
 
@@ -730,6 +741,7 @@ def manual_adjust_salary(
         old_meeting_absence = round(record.meeting_absence_deduction or 0)
 
         changed_parts = []
+        max_abs_delta = 0  # 供後續大額閾值審批判斷
         for field, value in payload.items():
             if field not in EDITABLE_SALARY_FIELDS:
                 continue
@@ -741,9 +753,18 @@ def manual_adjust_salary(
             changed_parts.append(
                 f"{EDITABLE_SALARY_FIELDS[field]} {old_value}→{new_value}"
             )
+            delta = abs(new_value - old_value)
+            if delta > max_abs_delta:
+                max_abs_delta = delta
 
         if not changed_parts:
             raise HTTPException(status_code=400, detail="沒有實際變更")
+
+        # ── A 錢守衛：單欄位變動金額 > FINANCE_APPROVAL_THRESHOLD 需金流簽核權限 ──
+        # 舉例：把績效獎金從 5000 改成 100000（delta=95000）→ 需 ACTIVITY_PAYMENT_APPROVE
+        require_finance_approve(
+            max_abs_delta, current_user, action_label="薪資單欄位調整"
+        )
 
         # 連動：管理員只改 meeting_absence_deduction（未同時手動覆寫 festival_bonus）時，
         # festival_bonus 應跟著 raw 重算：raw = old_festival + old_meeting_absence。
@@ -771,7 +792,7 @@ def manual_adjust_salary(
         audit_note = (
             f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 手動編輯："
             + "；".join(changed_parts)
-            + f"；操作者：{operator}"
+            + f"；操作者：{operator}；原因：{adjustment_reason}"
         )
         record.remark = f"{(record.remark or '').strip()}\n{audit_note}".strip()
 
@@ -1184,12 +1205,21 @@ class FinalizeMonthRequest(BaseModel):
     month: int = Field(..., ge=1, le=12)
 
 
-# 單筆欄位合理上限：避免管理員誤輸入多零造成異常金額（如 30000 打成 3000000）。
-# 最大值 10,000,000 可涵蓋所有合法情境（最高薪資 / 一次性獎金），超過必屬誤植。
-_MANUAL_ADJUST_FIELD_MAX = 10_000_000.0
+# 單筆欄位合理上限：從舊版 10,000,000 降為 500,000 — 涵蓋幼稚園業界合法月薪/一次性
+# 獎金上限（含 outlier），超過視為誤植或舞弊嘗試。
+# Why: 單欄位上限 1000 萬 × 可同時調多欄位 = 單次可偷數千萬。降至 50 萬可有效壓縮
+# 舞弊上限，且合法調整不受影響。
+_MANUAL_ADJUST_FIELD_MAX = 500_000.0
 
 
 class SalaryManualAdjustRequest(BaseModel):
+    # 必填原因：供稽核追責，避免「from 5000 to 100000」無上下文 audit log
+    adjustment_reason: str = Field(
+        ...,
+        min_length=5,
+        max_length=200,
+        description="手動調整原因（至少 5 字，例：員工自請補發、主管核准一次性獎勵、誤算修正）",
+    )
     base_salary: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
     performance_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
     special_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)

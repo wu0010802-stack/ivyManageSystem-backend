@@ -14,6 +14,7 @@ from sqlalchemy.orm import joinedload
 from models.database import get_session, session_scope, Employee, Classroom, JobTitle
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
+from utils.finance_guards import require_not_self_edit
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
 from utils.validators import parse_optional_date
@@ -378,6 +379,11 @@ async def update_employee(
             raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
 
         update_data = emp.model_dump(exclude_unset=True)
+
+        # ── A 錢守衛：員工不得修改「自己」帳號的金流敏感欄位（底薪/時薪/投保級距等）
+        # 純管理員（無 employee_id）不會被擋；一般 HR/主管改「他人」資料不受影響。
+        require_not_self_edit(current_user, employee_id, update_data.keys())
+
         # 擷取 before 值（含可能被 side effect 異動的欄位），供 audit diff 使用。
         # title 不在 update_data 中，但 job_title_id 變動時會同步 db_employee.title，
         # 要在 snapshot 收錄才看得到它的變化。

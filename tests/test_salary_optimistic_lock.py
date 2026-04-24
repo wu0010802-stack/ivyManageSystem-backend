@@ -145,7 +145,7 @@ class TestOptimisticLock:
 
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 1000},
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 1000},
         )
         assert res.status_code == 200
         assert res.headers.get("ETag") == '"2"'
@@ -160,7 +160,7 @@ class TestOptimisticLock:
         # 第一次編輯（版本 1 → 2）
         res1 = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 1000},
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 1000},
             headers={"If-Match": '"1"'},
         )
         assert res1.status_code == 200
@@ -169,7 +169,7 @@ class TestOptimisticLock:
         # 第二個客戶端仍持有 v1，嘗試編輯應被拒絕
         res2 = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 500},
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 500},
             headers={"If-Match": '"1"'},
         )
         assert res2.status_code == 409
@@ -183,7 +183,7 @@ class TestOptimisticLock:
         # 第一次編輯
         res1 = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 1000},
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 1000},
             headers={"If-Match": '"1"'},
         )
         assert res1.status_code == 200
@@ -191,7 +191,7 @@ class TestOptimisticLock:
         # 重新讀取後取得 v2，再用 v2 送出
         res2 = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 500},
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 500},
             headers={"If-Match": '"2"'},
         )
         assert res2.status_code == 200
@@ -205,7 +205,7 @@ class TestOptimisticLock:
 
         res = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"other_deduction": 1000},
+            json={"adjustment_reason": "自動化測試補欄位原因", "other_deduction": 1000},
         )
         assert res.status_code == 200
         assert res.json()["record"]["version"] == 2
