@@ -70,6 +70,12 @@ from api.bonus_preview import (
     init_bonus_preview_services,
 )
 from api.health import router as health_router
+from api.attachments import (
+    router as attachments_router,
+    download_router as attachments_download_router,
+)
+from api.portfolio import observations_router
+from api.student_health import router as student_health_router
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -224,6 +230,26 @@ async def app_lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("薪資月底快照排程啟動失敗: %s", e)
 
+    # 用藥提醒排程：需要 MEDICATION_REMINDER_ENABLED=1；建議僅在單一 worker 啟用
+    medication_reminder_task = None
+    medication_reminder_stop_event: asyncio.Event | None = None
+    try:
+        if os.getenv("MEDICATION_REMINDER_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            from services.medication_reminder_scheduler import (
+                medication_reminder_loop,
+            )
+
+            medication_reminder_stop_event = asyncio.Event()
+            medication_reminder_task = asyncio.create_task(
+                medication_reminder_loop(medication_reminder_stop_event)
+            )
+    except Exception as e:
+        logger.warning("用藥提醒排程啟動失敗: %s", e)
+
     try:
         yield
     finally:
@@ -264,6 +290,17 @@ async def app_lifespan(app_instance: FastAPI):
                 salary_snapshot_task.cancel()
                 try:
                     await salary_snapshot_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if medication_reminder_task is not None:
+            if medication_reminder_stop_event is not None:
+                medication_reminder_stop_event.set()
+            try:
+                await asyncio.wait_for(medication_reminder_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                medication_reminder_task.cancel()
+                try:
+                    await medication_reminder_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源
@@ -421,6 +458,11 @@ app.include_router(student_change_logs_router)
 app.include_router(student_communications_router)
 app.include_router(bonus_preview_router)
 app.include_router(health_router)
+# Portfolio / 幼兒成長歷程（Batch A）
+app.include_router(attachments_router)
+app.include_router(attachments_download_router)
+app.include_router(observations_router)
+app.include_router(student_health_router)
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）

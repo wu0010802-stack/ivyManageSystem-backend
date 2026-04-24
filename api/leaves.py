@@ -961,6 +961,11 @@ def approve_leave(
                 detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的請假申請",
             )
 
+        # 核准/駁回狀態是否實質變動；True→False、False→True、None→True 都屬於
+        # 會影響 SalaryRecord 扣款的轉換，必須觸發封存守衛與薪資重算。
+        was_approved = leave.is_approved is True
+        approval_changed = was_approved != data.approved
+
         warning = None
         if data.approved:
             if requires_supporting_document(
@@ -983,6 +988,18 @@ def approve_leave(
                     leave.start_time,
                     leave.end_time,
                 )
+
+            # 核准最後一道關卡：時數不得超過該區間排班工時。建立路徑（管理端 / portal）
+            # 已檢查過，但匯入、舊資料或 DB 手改可能繞過，此處補一層 defense-in-depth。
+            validate_leave_hours_against_schedule(
+                session,
+                leave.employee_id,
+                leave.start_date,
+                leave.end_date,
+                leave.leave_hours,
+                leave.start_time,
+                leave.end_time,
+            )
 
             # 提示主管：該員工同期是否已有其他已核准假單（含時段比對，不強制阻擋，由主管判斷）
             conflict = _check_overlap(
@@ -1024,9 +1041,10 @@ def approve_leave(
                 include_pending=True,
             )
 
-            # ── 封存月薪保護（commit 前）────────────────────────────────────────
-            # 核准假單會觸發薪資重算；若該月薪資已封存，必須在 commit 前阻擋，
-            # 否則假單被核准、薪資沒更新，DB 永遠處於矛盾狀態。
+        # ── 封存月薪保護（commit 前）────────────────────────────────────────
+        # 核准假單或將已核准假單改為駁回都會改變 SalaryRecord；若該月薪資已封存，
+        # 必須在 commit 前阻擋，否則假單狀態被翻面、薪資沒更新，DB 永遠處於矛盾狀態。
+        if approval_changed:
             _check_salary_months_not_finalized(
                 session,
                 leave.employee_id,
@@ -1111,8 +1129,8 @@ def approve_leave(
             except Exception as _le:
                 logger.warning("假單審核 LINE 推播失敗: %s", _le)
 
-        # 核准後自動重算該員工所有涉及月份的薪資
-        if data.approved and _salary_engine is not None:
+        # 核准狀態變動（approve 或 reject-of-approved）後，自動重算該員工所有涉及月份的薪資
+        if approval_changed and _salary_engine is not None:
             try:
                 emp_id = leave.employee_id
                 # 計算假單跨越的所有 (year, month)
@@ -1130,17 +1148,20 @@ def approve_leave(
                 for year, month in sorted(months_to_recalc):
                     _salary_engine.process_salary_calculation(emp_id, year, month)
                     logger.info(
-                        f"請假核准後自動重算薪資：emp_id={emp_id}, {year}/{month}"
+                        f"請假審核狀態變動後自動重算薪資：emp_id={emp_id}, {year}/{month}, approved={data.approved}"
                     )
 
                 result["salary_recalculated"] = True
-                result["message"] = "已核准，薪資已自動重算"
+                if data.approved:
+                    result["message"] = "已核准，薪資已自動重算"
+                else:
+                    result["message"] = "已駁回，薪資已自動重算"
             except Exception as e:
                 result["salary_recalculated"] = False
                 result["salary_warning"] = (
-                    "已核准，但薪資重算失敗，請手動前往薪資頁面重新計算"
+                    "操作成功，但薪資重算失敗，請手動前往薪資頁面重新計算"
                 )
-                logger.error(f"請假核准後薪資重算失敗：{e}")
+                logger.error(f"請假審核後薪資重算失敗：{e}")
 
         return result
     finally:
@@ -1214,6 +1235,10 @@ def batch_approve_leaves(
                     )
                     continue
 
+                # 核准/駁回狀態是否實質變動（影響 SalaryRecord）
+                was_approved = leave.is_approved is True
+                approval_changed = was_approved != data.approved
+
                 if data.approved:
                     try:
                         if requires_supporting_document(
@@ -1223,6 +1248,17 @@ def batch_approve_leaves(
                                 status_code=400,
                                 detail="請假超過 2 天需檢附證明附件後才能核准",
                             )
+                        # 與單筆核准相同的防線：時數不得超過該區間排班工時，
+                        # 防止 import、舊資料或 DB 手改繞過的超額假單進入薪資。
+                        validate_leave_hours_against_schedule(
+                            session,
+                            leave.employee_id,
+                            leave.start_date,
+                            leave.end_date,
+                            leave.leave_hours,
+                            leave.start_time,
+                            leave.end_time,
+                        )
                         # 代理人序列式守衛
                         _check_substitute_guard(leave)
                         _check_substitute_leave_conflict(
@@ -1252,6 +1288,13 @@ def batch_approve_leaves(
                             exclude_id=leave_id,
                             include_pending=True,
                         )
+                    except HTTPException as e:
+                        failed.append({"id": leave_id, "reason": e.detail})
+                        continue
+
+                # 封存月薪保護：approve 或 reject-of-approved 都會改變 SalaryRecord
+                if approval_changed:
+                    try:
                         _check_salary_months_not_finalized(
                             session,
                             leave.employee_id,
@@ -1295,7 +1338,7 @@ def batch_approve_leaves(
                     data.rejection_reason if not data.approved else None,
                     session,
                 )
-                changes.append((leave_id, leave))
+                changes.append((leave_id, leave, approval_changed))
             except Exception as e:
                 session.rollback()
                 failed.append({"id": leave_id, "reason": str(e)})
@@ -1311,7 +1354,7 @@ def batch_approve_leaves(
                 _line_user_map: dict = {}
                 _emp_name_map: dict = {}
                 if _line_service is not None:
-                    change_emp_ids = list({lv.employee_id for _, lv in changes})
+                    change_emp_ids = list({lv.employee_id for _, lv, _ in changes})
                     for u in (
                         session.query(User)
                         .filter(User.employee_id.in_(change_emp_ids))
@@ -1325,7 +1368,7 @@ def batch_approve_leaves(
                     ):
                         _emp_name_map[e.id] = e.name
 
-                for leave_id, leave in changes:
+                for leave_id, leave, approval_changed in changes:
                     succeeded.append(leave_id)
 
                     # 個人 LINE 推播（審核結果）
@@ -1348,7 +1391,8 @@ def batch_approve_leaves(
                                 "批次假單審核 LINE 推播失敗（#%d）: %s", leave_id, _le
                             )
 
-                    if data.approved and _salary_engine is not None:
+                    # approve 或 reject-of-approved 都需重算薪資
+                    if approval_changed and _salary_engine is not None:
                         try:
                             emp_id = leave.employee_id
                             months: set = set()
@@ -1371,7 +1415,7 @@ def batch_approve_leaves(
                             )
             except Exception as e:
                 session.rollback()
-                for leave_id, _ in changes:
+                for leave_id, _, _ in changes:
                     failed.append({"id": leave_id, "reason": f"統一提交失敗：{e}"})
     finally:
         session.close()
@@ -1509,6 +1553,31 @@ async def import_leaves(
                     str(reason_raw).strip()
                     if reason_raw is not None and not pd.isna(reason_raw)
                     else None
+                )
+
+                # 與管理端 / portal 建立假單相同：時數不得超過該區間排班工時，
+                # 且不得超過假別年度配額（含待審）。匯入跳過會讓單日 100h 這種
+                # 超額假單進入待審，主管核准後直接依超額時數扣薪。
+                validate_leave_hours_against_schedule(
+                    session,
+                    emp.id,
+                    start_date,
+                    end_date,
+                    leave_hours,
+                )
+                _check_leave_limits(
+                    session,
+                    emp.id,
+                    leave_type,
+                    start_date,
+                    leave_hours,
+                )
+                _check_quota(
+                    session,
+                    emp.id,
+                    leave_type,
+                    start_date.year,
+                    leave_hours,
                 )
 
                 effective_ratio = LEAVE_DEDUCTION_RULES[leave_type]

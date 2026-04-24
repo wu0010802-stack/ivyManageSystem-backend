@@ -851,6 +851,16 @@ def update_overtime(
         else:
             new_end_dt = ot.end_time
 
+        if (
+            new_start_dt is not None
+            and new_end_dt is not None
+            and new_start_dt >= new_end_dt
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="start_time 必須早於 end_time（不支援跨日加班）",
+            )
+
         overlap = _check_overtime_overlap(
             session,
             ot.employee_id,
@@ -1043,6 +1053,47 @@ def approve_overtime(
         if not approved and was_approved:
             _revoke_comp_leave_grant(session, ot)
 
+        # ── 核准最後一致性驗證 ───────────────────────────────────────────────
+        # 建立路徑（管理端 create、portal、import）都有這些檢查，但舊資料、import
+        # 過去版本、或直接改 DB 的紀錄可能違規。核准會進薪資，必須在最後守門。
+        if approved and not was_approved:
+            if ot.start_time and ot.end_time and ot.start_time >= ot.end_time:
+                raise HTTPException(
+                    status_code=400,
+                    detail="start_time 必須早於 end_time（不支援跨日加班）",
+                )
+            overlap = _check_overtime_overlap(
+                session,
+                ot.employee_id,
+                ot.overtime_date,
+                ot.start_time,
+                ot.end_time,
+                exclude_id=overtime_id,
+            )
+            if overlap:
+                st = (
+                    overlap.start_time.strftime("%H:%M")
+                    if overlap.start_time
+                    else "未指定"
+                )
+                et = (
+                    overlap.end_time.strftime("%H:%M")
+                    if overlap.end_time
+                    else "未指定"
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
+                        f"（ID: {overlap.id}，{st}～{et}），請先處理衝突記錄再核准"
+                    ),
+                )
+            _check_monthly_overtime_cap(
+                session, ot.employee_id, ot.overtime_date, ot.hours,
+                exclude_id=overtime_id,
+            )
+            _check_overtime_type_calendar(session, ot.overtime_date, ot.overtime_type)
+
         ot.is_approved = approved
         ot.approved_by = current_user.get("username", approved_by) if approved else None
 
@@ -1141,34 +1192,63 @@ def batch_approve_overtimes(
                 if not data.approved and was_approved:
                     _revoke_comp_leave_grant(session, ot)
 
+                # 核准最後一致性驗證，防止舊資料 / import 舊版遺留壞紀錄進入薪資
+                if data.approved and not was_approved:
+                    if (
+                        ot.start_time
+                        and ot.end_time
+                        and ot.start_time >= ot.end_time
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="start_time 必須早於 end_time（不支援跨日加班）",
+                        )
+                    overlap = _check_overtime_overlap(
+                        session,
+                        ot.employee_id,
+                        ot.overtime_date,
+                        ot.start_time,
+                        ot.end_time,
+                        exclude_id=ot_id,
+                    )
+                    if overlap:
+                        st = (
+                            overlap.start_time.strftime("%H:%M")
+                            if overlap.start_time
+                            else "未指定"
+                        )
+                        et = (
+                            overlap.end_time.strftime("%H:%M")
+                            if overlap.end_time
+                            else "未指定"
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
+                                f"（ID: {overlap.id}，{st}～{et}）"
+                            ),
+                        )
+                    _check_monthly_overtime_cap(
+                        session,
+                        ot.employee_id,
+                        ot.overtime_date,
+                        ot.hours,
+                        exclude_id=ot_id,
+                    )
+                    _check_overtime_type_calendar(
+                        session, ot.overtime_date, ot.overtime_type
+                    )
+
                 ot.is_approved = data.approved
                 ot.approved_by = (
                     current_user.get("username", "管理員") if data.approved else None
                 )
 
-                if data.approved and ot.use_comp_leave and not ot.comp_leave_granted:
-                    year = ot.overtime_date.year
-                    quota = (
-                        session.query(LeaveQuota)
-                        .filter(
-                            LeaveQuota.employee_id == ot.employee_id,
-                            LeaveQuota.year == year,
-                            LeaveQuota.leave_type == "compensatory",
-                        )
-                        .first()
-                    )
-                    if quota:
-                        quota.total_hours += ot.hours
-                    else:
-                        quota = LeaveQuota(
-                            employee_id=ot.employee_id,
-                            year=year,
-                            leave_type="compensatory",
-                            total_hours=ot.hours,
-                            note="由加班補休累積",
-                        )
-                        session.add(quota)
-                    ot.comp_leave_granted = True
+                if data.approved:
+                    # 使用共用 helper 統一配額發放邏輯（含 with_for_update() 列鎖），
+                    # 避免批次與單筆核准在補休配額累積的 race condition。
+                    _grant_comp_leave_quota(session, ot, {})
 
                 action = "approved" if data.approved else "rejected"
                 _write_approval_log(
@@ -1318,6 +1398,10 @@ async def import_overtimes(
                         if val_str and val_str not in ("nan", ""):
                             try:
                                 h, m = map(int, val_str.split(":")[:2])
+                                if not (0 <= h <= 23 and 0 <= m <= 59):
+                                    raise ValueError(
+                                        f"{col_name} 時間值超出範圍（小時 0-23，分鐘 0-59）"
+                                    )
                                 dt = datetime.combine(
                                     overtime_date,
                                     datetime.min.time().replace(hour=h, minute=m),
@@ -1326,10 +1410,15 @@ async def import_overtimes(
                                     start_dt = dt
                                 else:
                                     end_dt = dt
-                            except Exception as e:
-                                logger.debug(
-                                    "Excel 時間欄位 %r 解析失敗，略過: %s", val_str, e
+                            except ValueError:
+                                raise
+                            except Exception:
+                                raise ValueError(
+                                    f"{col_name} 格式錯誤，應為 HH:MM"
                                 )
+
+                if start_dt is not None and end_dt is not None and start_dt >= end_dt:
+                    raise ValueError("開始時間必須早於結束時間（不支援跨日加班）")
 
                 comp_raw = row.get("補休(是/否,可空)")
                 use_comp_leave = False
@@ -1349,6 +1438,25 @@ async def import_overtimes(
                     if use_comp_leave
                     else calculate_overtime_pay(emp.base_salary, hours, ot_type_raw)
                 )
+
+                overlap = _check_overtime_overlap(
+                    session, emp.id, overtime_date, start_dt, end_dt
+                )
+                if overlap:
+                    st = (
+                        overlap.start_time.strftime("%H:%M")
+                        if overlap.start_time
+                        else "未指定"
+                    )
+                    et = (
+                        overlap.end_time.strftime("%H:%M")
+                        if overlap.end_time
+                        else "未指定"
+                    )
+                    raise ValueError(
+                        f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
+                        f"（ID: {overlap.id}，{st}～{et}），請勿重複匯入"
+                    )
 
                 _check_monthly_overtime_cap(session, emp.id, overtime_date, hours)
                 _check_overtime_type_calendar(session, overtime_date, ot_type_raw)

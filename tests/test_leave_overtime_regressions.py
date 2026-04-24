@@ -725,11 +725,12 @@ class TestBatchSelfApprovalGuard:
                 leave_hours=8,
                 is_approved=None,
             )
+            # 使用 5/4（週一）避開週末；schedule guard 會擋掉週末 0 工時的請假
             other_leave = LeaveRecord(
                 employee_id=other_employee.id,
                 leave_type="personal",
-                start_date=date(2026, 5, 2),
-                end_date=date(2026, 5, 2),
+                start_date=date(2026, 5, 4),
+                end_date=date(2026, 5, 4),
                 leave_hours=8,
                 is_approved=None,
             )

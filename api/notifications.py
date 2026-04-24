@@ -26,6 +26,7 @@ def get_notification_summary(
         return dashboard_query_service.build_notification_summary(
             session,
             user_permissions=current_user.get("permissions", 0),
+            current_user=current_user,
         )
     finally:
         session.close()

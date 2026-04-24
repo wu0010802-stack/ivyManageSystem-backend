@@ -1,27 +1,48 @@
 """上傳檔案共用工具：大小限制、magic bytes 驗證與內容讀取。"""
+
 from fastapi import HTTPException, UploadFile
 
-MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB（預設 / 影像 / 文件）
+MAX_VIDEO_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB（影片）
+
+# 影片副檔名集合
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm"}
 
 # ── Magic bytes 白名單 ─────────────────────────────────────────────────────
 # 格式：副檔名（小寫） → (比對起始偏移量, 期望的位元組序列)
 # 值為 None 表示該格式無 magic bytes（如 CSV），直接略過驗證。
 MAGIC_SIGNATURES: dict[str, tuple[int, bytes] | None] = {
-    ".jpg":  (0, b"\xff\xd8\xff"),
+    ".jpg": (0, b"\xff\xd8\xff"),
     ".jpeg": (0, b"\xff\xd8\xff"),
-    ".png":  (0, b"\x89PNG\r\n\x1a\n"),
-    ".gif":  (0, b"GIF8"),
-    ".pdf":  (0, b"%PDF"),
+    ".png": (0, b"\x89PNG\r\n\x1a\n"),
+    ".gif": (0, b"GIF8"),
+    ".pdf": (0, b"%PDF"),
     # HEIC/HEIF 使用 ISO Base Media File Format，"ftyp" 位於 offset 4
     ".heic": (4, b"ftyp"),
     ".heif": (4, b"ftyp"),
     # XLSX 本質是 ZIP archive
     ".xlsx": (0, b"PK\x03\x04"),
     # XLS 為 OLE2 Compound Document
-    ".xls":  (0, b"\xd0\xcf\x11\xe0"),
+    ".xls": (0, b"\xd0\xcf\x11\xe0"),
     # CSV 為純文字，無 magic bytes
-    ".csv":  None,
+    ".csv": None,
+    # MP4 / MOV 同屬 ISO Base Media File Format（QuickTime / ISO/IEC 14496-12）
+    # 第 4 byte 起是 "ftyp" box；檢查這段即可過濾非影片檔（實際品牌因裝置而異）
+    ".mp4": (4, b"ftyp"),
+    ".mov": (4, b"ftyp"),
+    # WebM 為 Matroska 變體，首 4 byte 為 EBML header "\x1A\x45\xDF\xA3"
+    ".webm": (0, b"\x1a\x45\xdf\xa3"),
 }
+
+
+def is_video_extension(extension: str) -> bool:
+    """判斷副檔名是否為影片（決定 size limit）。"""
+    return extension.lower() in VIDEO_EXTENSIONS
+
+
+def max_upload_size_for(extension: str) -> int:
+    """依副檔名取得 size limit。影片 50MB，其他 10MB。"""
+    return MAX_VIDEO_UPLOAD_SIZE if is_video_extension(extension) else MAX_UPLOAD_SIZE
 
 
 def validate_file_signature(content: bytes, extension: str) -> None:
@@ -50,9 +71,21 @@ def validate_file_signature(content: bytes, extension: str) -> None:
         )
 
 
-async def read_upload_with_size_check(file: UploadFile) -> bytes:
-    """讀取上傳檔案內容，超過 10 MB 則回傳 400。"""
+async def read_upload_with_size_check(
+    file: UploadFile,
+    *,
+    extension: str | None = None,
+) -> bytes:
+    """讀取上傳檔案內容，超過 size limit 則回傳 400。
+
+    Args:
+        file:      FastAPI UploadFile
+        extension: 若提供，依副檔名套用對應 size limit（影片 50MB / 其他 10MB）
+                   未提供時沿用 MAX_UPLOAD_SIZE (10MB)，維持舊呼叫者向後相容
+    """
     content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=400, detail="檔案超過 10MB 限制")
+    limit = max_upload_size_for(extension) if extension else MAX_UPLOAD_SIZE
+    if len(content) > limit:
+        mb = limit // (1024 * 1024)
+        raise HTTPException(status_code=400, detail=f"檔案超過 {mb}MB 限制")
     return content

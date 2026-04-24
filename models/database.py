@@ -95,6 +95,13 @@ from models.recruitment import (
     RecruitmentAreaInsightCache,
     RecruitmentSyncState,
 )
+from models.portfolio import (
+    Attachment,
+    StudentObservation,
+    StudentAllergy,
+    StudentMedicationOrder,
+    StudentMedicationLog,
+)
 
 __all__ = [
     # base
@@ -197,4 +204,10 @@ __all__ = [
     "RecruitmentCampusSetting",
     "RecruitmentAreaInsightCache",
     "RecruitmentSyncState",
+    # portfolio
+    "Attachment",
+    "StudentObservation",
+    "StudentAllergy",
+    "StudentMedicationOrder",
+    "StudentMedicationLog",
 ]

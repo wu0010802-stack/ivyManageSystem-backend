@@ -274,8 +274,79 @@ class DashboardQueryService:
 
         return sections
 
-    def build_notification_summary(self, session, *, user_permissions: int) -> dict:
-        cached = self._notification_cache.get(user_permissions)
+    def build_today_medication_summary(
+        self,
+        session,
+        *,
+        current_user: dict | None = None,
+        today: date | None = None,
+    ) -> dict:
+        """回傳今日用藥待辦總覽（班級 scope 已在 query 端套用）。
+
+        回傳 {"pending": int, "administered": int, "skipped": int, "total": int}。
+        不快取（每位使用者 / 每個時段都不同）。
+        """
+        from models.portfolio import StudentMedicationLog, StudentMedicationOrder
+        from utils.portfolio_access import student_ids_in_scope
+
+        today = today or date.today()
+
+        order_q = session.query(StudentMedicationOrder.id).filter(
+            StudentMedicationOrder.order_date == today
+        )
+        if current_user is not None:
+            scope = student_ids_in_scope(session, current_user)
+            if scope is None:
+                pass  # admin/hr/supervisor：不過濾
+            elif not scope:
+                return {
+                    "pending": 0,
+                    "administered": 0,
+                    "skipped": 0,
+                    "total": 0,
+                }
+            else:
+                order_q = order_q.filter(StudentMedicationOrder.student_id.in_(scope))
+        order_ids = [r.id for r in order_q.all()]
+        if not order_ids:
+            return {"pending": 0, "administered": 0, "skipped": 0, "total": 0}
+
+        logs = (
+            session.query(StudentMedicationLog)
+            .filter(
+                StudentMedicationLog.order_id.in_(order_ids),
+                StudentMedicationLog.correction_of.is_(None),
+            )
+            .all()
+        )
+        pending = administered = skipped = 0
+        for lg in logs:
+            if lg.administered_at is not None:
+                administered += 1
+            elif lg.skipped:
+                skipped += 1
+            else:
+                pending += 1
+        return {
+            "pending": pending,
+            "administered": administered,
+            "skipped": skipped,
+            "total": pending + administered + skipped,
+        }
+
+    def build_notification_summary(
+        self,
+        session,
+        *,
+        user_permissions: int,
+        current_user: dict | None = None,
+    ) -> dict:
+        # 為支援班級 scope，將 cache key 從 user_permissions 升為 (user_permissions, user_id)
+        cache_key = (
+            user_permissions,
+            current_user.get("user_id") if current_user else None,
+        )
+        cached = self._notification_cache.get(cache_key)
         if cached is not None:
             return cached
         action_items = []
@@ -346,12 +417,29 @@ class DashboardQueryService:
             if graduation_preview:
                 reminders.append(graduation_preview)
 
+        # 今日待辦用藥（依班級 scope 過濾，teacher 僅看自己班）
+        if has_permission(user_permissions, Permission.STUDENTS_HEALTH_READ):
+            med_summary = self.build_today_medication_summary(
+                session, current_user=current_user
+            )
+            if med_summary["pending"] > 0:
+                action_items.append(
+                    {
+                        "type": "medication_today",
+                        "title": "今日待餵藥",
+                        "count": med_summary["pending"],
+                        "route": "/portfolio/medication-today",
+                        "priority": self._priority_for_count(med_summary["pending"]),
+                        "breakdown": med_summary,
+                    }
+                )
+
         result = {
             "total_badge": sum(item["count"] for item in action_items),
             "action_items": action_items,
             "reminders": reminders,
         }
-        self._notification_cache[user_permissions] = result
+        self._notification_cache[cache_key] = result
         return result
 
 

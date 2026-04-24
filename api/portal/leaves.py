@@ -36,6 +36,7 @@ from models.database import (
     Holiday,
     AttendancePolicy,
     Employee,
+    OvertimeRecord,
 )
 from utils.auth import get_current_user
 from utils.error_messages import LEAVE_RECORD_NOT_FOUND
@@ -264,6 +265,36 @@ def create_my_leave(
             data.end_time,
         )
 
+        # 補休假單必須連結到一張合法的加班記錄：本人提出、已核准、補休模式、已發放配額。
+        # 缺少此驗證會讓 source_overtime_id 被誤寫入無關的加班 ID，後續撤銷加班時可能
+        # 自動駁回錯誤假單或阻擋正確流程。
+        if data.leave_type == "compensatory" and data.source_overtime_id is not None:
+            src_ot = (
+                session.query(OvertimeRecord)
+                .filter(OvertimeRecord.id == data.source_overtime_id)
+                .first()
+            )
+            if not src_ot:
+                raise HTTPException(status_code=400, detail="來源加班記錄不存在")
+            if src_ot.employee_id != emp.id:
+                raise HTTPException(
+                    status_code=403, detail="來源加班記錄不屬於本人"
+                )
+            if src_ot.is_approved is not True:
+                raise HTTPException(
+                    status_code=400, detail="來源加班記錄尚未核准，無法用於補休申請"
+                )
+            if not src_ot.use_comp_leave:
+                raise HTTPException(
+                    status_code=400,
+                    detail="來源加班記錄非補休模式，無法用於補休申請",
+                )
+            if not src_ot.comp_leave_granted:
+                raise HTTPException(
+                    status_code=400,
+                    detail="來源加班記錄尚未發放補休配額，無法用於補休申請",
+                )
+
         # 配額檢查（已核准 + 待審合計不得超出年度上限，防止併發刷假）
         _check_leave_limits(
             session,
@@ -349,6 +380,8 @@ async def upload_leave_attachments(
         )
         if not leave:
             raise HTTPException(status_code=404, detail="找不到請假記錄")
+        if leave.is_approved is not None:
+            raise HTTPException(status_code=400, detail="已審核的假單不可新增附件")
 
         existing = _parse_paths(leave.attachment_paths)
         if len(existing) + len(files) > _MAX_FILES:

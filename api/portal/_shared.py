@@ -13,6 +13,7 @@ from utils.masking import mask_bank_account
 from pydantic import BaseModel, field_validator, model_validator
 from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS, MAX_OVERTIME_HOURS
 from utils.leave_validators import validate_leave_hours_value, validate_leave_date_order
+from utils.validators import validate_hhmm_format
 
 from sqlalchemy import or_
 
@@ -78,6 +79,18 @@ class OvertimeCreatePortal(BaseModel):
         if v > MAX_OVERTIME_HOURS:
             raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS:.0f} 小時")
         return v
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v):
+        return validate_hhmm_format(v)
+
+    @model_validator(mode="after")
+    def validate_time_order(self):
+        if self.start_time and self.end_time:
+            if self.start_time >= self.end_time:
+                raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+        return self
 
 
 class AnomalyConfirm(BaseModel):
