@@ -20,7 +20,9 @@ from alembic import op
 from sqlalchemy import inspect
 
 revision = "w2s3t4u5v6w7"
-down_revision = "v0q1r2s3t4u5"
+# 接在 w1r2s3t4u5v6 stub 之後而非直接接 v0q1r2s3t4u5，避免 multiple heads。
+# w1r2s3t4u5v6 是已 revert 的才藝嚴格化 migration 的 placeholder（見該檔說明）。
+down_revision = "w1r2s3t4u5v6"
 branch_labels = None
 depends_on = None
 

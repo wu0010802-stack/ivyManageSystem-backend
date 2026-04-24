@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
-from models.database import get_session, MeetingRecord, Employee
+from models.database import get_session, MeetingRecord, Employee, SalaryRecord
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.approval_helpers import _get_finalized_salary_record
 from services.salary.constants import DEFAULT_MEETING_HOURS
 
 
@@ -72,6 +73,56 @@ def _enforce_absent_no_overtime(record) -> None:
     if not record.attended:
         record.overtime_hours = 0
         record.overtime_pay = 0
+
+
+def _assert_meeting_month_not_finalized(
+    session, employee_id: int, meeting_date: date
+) -> None:
+    """會議記錄寫入前檢查該員工該月薪資是否已封存。
+
+    會議出席影響 meeting_overtime_pay、缺席會扣節慶獎金，封存後仍可覆蓋
+    會讓薪資與會議原始資料分叉。
+    """
+    record = _get_finalized_salary_record(
+        session, employee_id, meeting_date.year, meeting_date.month
+    )
+    if record:
+        by = record.finalized_by or "系統"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{meeting_date.year} 年 {meeting_date.month} 月薪資已封存"
+                f"（結算人：{by}），無法修改會議紀錄。請先至薪資管理頁面解除封存後再操作。"
+            ),
+        )
+
+
+def _assert_meeting_batch_month_not_finalized(
+    session, emp_ids: list, meeting_date: date
+) -> None:
+    """批次建立/覆蓋會議記錄前：任一員工該月已封存即整批拒絕。"""
+    if not emp_ids:
+        return
+    record = (
+        session.query(SalaryRecord)
+        .filter(
+            SalaryRecord.employee_id.in_(emp_ids),
+            SalaryRecord.salary_year == meeting_date.year,
+            SalaryRecord.salary_month == meeting_date.month,
+            SalaryRecord.is_finalized == True,
+        )
+        .first()
+    )
+    if record:
+        by = record.finalized_by or "系統"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{meeting_date.year} 年 {meeting_date.month} 月薪資已封存"
+                f"（員工 #{record.employee_id}，結算人：{by}），"
+                "無法批次建立會議紀錄。請先至薪資管理頁面解除封存後再操作。"
+            ),
+        )
 
 
 # ============ Routes ============
@@ -137,6 +188,7 @@ def create_meeting(
     session = get_session()
     try:
         meeting_date = datetime.strptime(data.meeting_date, "%Y-%m-%d").date()
+        _assert_meeting_month_not_finalized(session, data.employee_id, meeting_date)
 
         # 檢查是否已存在
         existing = (
@@ -193,6 +245,9 @@ def create_meetings_batch(
     try:
         meeting_date = datetime.strptime(data.meeting_date, "%Y-%m-%d").date()
 
+        all_emp_ids = list({*data.attendees, *data.absentees})
+        _assert_meeting_batch_month_not_finalized(session, all_emp_ids, meeting_date)
+
         # 先刪除該日同類型已有記錄（覆蓋模式）
         session.query(MeetingRecord).filter(
             MeetingRecord.meeting_date == meeting_date,
@@ -202,7 +257,6 @@ def create_meetings_batch(
         created = 0
 
         # 查詢員工底薪用於計算平日加班費
-        all_emp_ids = list(set(data.attendees + data.absentees))
         employees = session.query(Employee).filter(Employee.id.in_(all_emp_ids)).all()
         emp_map = {e.id: e for e in employees}
 
@@ -260,6 +314,10 @@ def update_meeting(
         if not record:
             raise HTTPException(status_code=404, detail="記錄不存在")
 
+        _assert_meeting_month_not_finalized(
+            session, record.employee_id, record.meeting_date
+        )
+
         if data.attended is not None:
             record.attended = data.attended
         if data.overtime_hours is not None:
@@ -294,6 +352,10 @@ def delete_meeting(
         record = session.query(MeetingRecord).get(record_id)
         if not record:
             raise HTTPException(status_code=404, detail="記錄不存在")
+
+        _assert_meeting_month_not_finalized(
+            session, record.employee_id, record.meeting_date
+        )
 
         session.delete(record)
         session.commit()

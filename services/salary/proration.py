@@ -131,6 +131,7 @@ def _build_expected_workdays(
     hire_date_raw=None,
     resign_date_raw=None,
     today: "Optional[date]" = None,
+    makeup_set: "Optional[Set[date]]" = None,
 ) -> Set[date]:
     """
     建立指定月份的預期上班日集合。
@@ -138,10 +139,14 @@ def _build_expected_workdays(
     規則（優先順序由高至低）：
     1. 未來日期（> today）不計
     2. 假日（holiday_set）不計
-    3. 有排班記錄且 shift_type_id 非 None → 應上班
-    4. 無排班記錄 → 預設平日（週一～週五）
-    5. hire_date_raw：入職前不計
-    6. resign_date_raw：離職後不計
+    3. 入職前（hire_date_raw）/離職後（resign_date_raw）不計
+    4. 有排班記錄：shift_type_id 非 None → 應上班
+    5. 補班日（makeup_set）→ 視為應上班（即使落在週末）
+    6. 無排班記錄：預設平日（週一～週五）
+
+    makeup_set 是官方補班日（通常週六），由 caller 從 WorkdayOverride 載入。
+    Why: 若不納入，員工於補班日未打卡且無請假時薪資不會扣曠職，
+    但同日期在請假/工作日邏輯又被視為工作日，造成前後不一致。
     """
     if not 1 <= month <= 12:
         raise ValueError(f"month 必須介於 1–12，收到 {month!r}")
@@ -154,6 +159,7 @@ def _build_expected_workdays(
     # 預先解析 hire/resign 日期，避免逐日比較時重複轉型
     hire_d = _to_date(hire_date_raw)
     resign_d = _to_date(resign_date_raw)
+    makeup = makeup_set or set()
 
     expected_workdays: Set[date] = set()
     for day_num, weekday in _cal.Calendar().itermonthdays2(year, month):
@@ -171,6 +177,8 @@ def _build_expected_workdays(
         if d in daily_shift_map:
             if daily_shift_map[d] is not None:
                 expected_workdays.add(d)
+        elif d in makeup:
+            expected_workdays.add(d)
         else:
             if weekday < 5:
                 expected_workdays.add(d)

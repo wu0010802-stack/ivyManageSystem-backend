@@ -10,9 +10,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 
-from models.database import get_session, Employee, Attendance
+from models.database import get_session, Employee, Attendance, SalaryRecord
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.approval_helpers import _get_finalized_salary_record
 from ._shared import AttendanceRecordUpdate
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,97 @@ def _assert_attendance_within_retention(
             detail=(
                 f"考勤日期 {attendance_date} 在 5 年保存期內（≥ {cutoff}），"
                 "依勞基法第 30 條第 5 項出勤紀錄須保存 5 年，不得刪除"
+            ),
+        )
+
+
+def _assert_attendance_not_finalized(
+    session, employee_id: int, attendance_date: date
+) -> None:
+    """考勤寫入/刪除前檢查該員工該月薪資是否已封存。
+
+    封存月份若補寫或刪考勤紀錄，缺卡/遲到/曠職來源資料會變，
+    但 salary_records 仍保留原封存結果，造成對帳不一致。
+    """
+    record = _get_finalized_salary_record(
+        session, employee_id, attendance_date.year, attendance_date.month
+    )
+    if record:
+        by = record.finalized_by or "系統"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{attendance_date.year} 年 {attendance_date.month} 月薪資已封存"
+                f"（結算人：{by}），無法修改該月份考勤紀錄。請先至薪資管理頁面解除封存後再操作。"
+            ),
+        )
+
+
+def _assert_month_no_finalized_salary(session, year: int, month: int) -> None:
+    """整月考勤刪除前檢查該月份是否有任何員工薪資已封存。"""
+    record = (
+        session.query(SalaryRecord)
+        .filter(
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month,
+            SalaryRecord.is_finalized == True,
+        )
+        .first()
+    )
+    if record:
+        by = record.finalized_by or "系統"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{year} 年 {month} 月已有薪資封存（結算人：{by}），"
+                "無法整月刪除考勤紀錄。請先至薪資管理頁面解除封存後再操作。"
+            ),
+        )
+
+
+def _assert_upload_months_not_finalized(session, emp_ids: set, dates: set) -> None:
+    """考勤批次匯入前檢查：涉及的 (員工, 月份) 是否有薪資已封存。
+
+    邏輯對齊單筆守衛：任一將寫入的 (emp_id, year, month) 已封存 → 整批 409。
+    """
+    if not emp_ids or not dates:
+        return
+    from sqlalchemy import and_, or_
+
+    months = {(d.year, d.month) for d in dates}
+    rows = (
+        session.query(
+            SalaryRecord.employee_id,
+            SalaryRecord.salary_year,
+            SalaryRecord.salary_month,
+            SalaryRecord.finalized_by,
+        )
+        .filter(
+            SalaryRecord.employee_id.in_(emp_ids),
+            SalaryRecord.is_finalized == True,
+            or_(
+                *(
+                    and_(
+                        SalaryRecord.salary_year == y,
+                        SalaryRecord.salary_month == m,
+                    )
+                    for y, m in months
+                )
+            ),
+        )
+        .all()
+    )
+    if rows:
+        detail_rows = ", ".join(
+            f"員工#{r.employee_id} {r.salary_year}/{r.salary_month:02d}"
+            f"（結算人：{r.finalized_by or '系統'}）"
+            for r in rows
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"下列月份薪資已封存，無法批次匯入考勤：{detail_rows}。"
+                "請先至薪資管理頁面解除封存後再操作。"
             ),
         )
 
@@ -137,6 +229,8 @@ async def create_or_update_attendance_record(
             raise HTTPException(
                 status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD"
             )
+
+        _assert_attendance_not_finalized(session, employee.id, attendance_date)
 
         punch_in_time = None
         if record.punch_in and record.punch_in.strip():
@@ -275,6 +369,7 @@ async def delete_single_attendance_record(
     try:
         attendance_date = datetime.strptime(date, "%Y-%m-%d").date()
         _assert_attendance_within_retention(attendance_date)
+        _assert_attendance_not_finalized(session, employee_id, attendance_date)
 
         deleted = (
             session.query(Attendance)
@@ -315,6 +410,7 @@ def delete_single_attendance(
         except ValueError:
             target_date = datetime.strptime(date_str, "%Y/%m/%d").date()
         _assert_attendance_within_retention(target_date)
+        _assert_attendance_not_finalized(session, employee_id, target_date)
 
         record = (
             session.query(Attendance)
@@ -355,6 +451,7 @@ async def delete_attendance_records(
         end_date = date(year, month, last_day)
         # 整月任一天落在 5 年保存期內就拒絕（最嚴格保護）
         _assert_attendance_within_retention(end_date)
+        _assert_month_no_finalized_salary(session, year, month)
 
         deleted = (
             session.query(Attendance)

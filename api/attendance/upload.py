@@ -27,6 +27,7 @@ from utils.file_upload import read_upload_with_size_check, validate_file_signatu
 from utils.errors import raise_safe_500
 from utils.storage import get_storage_path
 from ._shared import AttendanceUploadRequest
+from .records import _assert_upload_months_not_finalized
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,8 @@ async def upload_attendance(
                             _pre_dates.add(_d)
                         except Exception:
                             pass
+
+                _assert_upload_months_not_finalized(session, _pre_emp_ids, _pre_dates)
 
                 attendance_cache: dict = {}
                 if _pre_emp_ids and _pre_dates:
@@ -563,6 +566,10 @@ async def upload_attendance(
                         for _d in _res.details:
                             _legacy_dates.add(_d["date"])
 
+                _assert_upload_months_not_finalized(
+                    session, _legacy_emp_ids, _legacy_dates
+                )
+
                 legacy_attendance_cache: dict = {}
                 if _legacy_emp_ids and _legacy_dates:
                     _lc = (
@@ -770,6 +777,8 @@ async def upload_attendance_csv(
                     _csv_dates.add(datetime.strptime(_row.date, "%Y-%m-%d").date())
             except ValueError:
                 pass
+
+        _assert_upload_months_not_finalized(session, _csv_emp_ids, _csv_dates)
 
         csv_attendance_cache: dict = {}
         if _csv_emp_ids and _csv_dates:

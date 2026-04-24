@@ -21,6 +21,7 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from sqlalchemy import or_, and_
 
 from models.database import get_session, Employee, SalaryRecord
+from services.salary.insurance_salary import resolve_insurance_salary_raw
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
@@ -166,11 +167,25 @@ def _salary_map(session, emp_ids: list, year: int, month: int) -> dict:
     return {r.employee_id: r for r in records}
 
 
+def _resolve_insured(emp: Employee) -> int:
+    """用 resolve_insurance_salary_raw 取合法投保基準（時薪員工會套 hourly × 176）。
+
+    舊實作 `insurance_salary_level or base_salary` 對時薪員工 base=0 會短報。
+    """
+    raw = resolve_insurance_salary_raw(
+        employee_type=getattr(emp, "employee_type", "regular") or "regular",
+        base_salary=emp.base_salary or 0,
+        insurance_salary_level=emp.insurance_salary_level or 0,
+        hourly_rate=getattr(emp, "hourly_rate", 0) or 0,
+    )
+    return int(raw or 0)
+
+
 def _ins_calc(emp: Employee):
     """使用 InsuranceService fallback 計算（當月無 SalaryRecord 時）"""
     if _insurance_service is None:
         return None
-    salary = emp.insurance_salary_level or emp.base_salary or 0
+    salary = _resolve_insured(emp)
     return _insurance_service.calculate(
         salary,
         dependents=emp.dependents or 0,
@@ -202,7 +217,7 @@ def export_labor_insurance(
         rows = []
         for emp in employees:
             sr = smap.get(emp.id)
-            insured = int(emp.insurance_salary_level or emp.base_salary or 0)
+            insured = _resolve_insured(emp)
 
             # 必須「員工端 + 雇主端皆有值」才採用 record；否則走 fallback 重算。
             # Why: 舊版 SalaryRecord 曾漏寫雇主端三欄（labor/health/pension
@@ -371,7 +386,7 @@ def export_health_insurance(
         rows = []
         for emp in employees:
             sr = smap.get(emp.id)
-            insured = int(emp.insurance_salary_level or emp.base_salary or 0)
+            insured = _resolve_insured(emp)
 
             # 同勞保：需員工端 + 雇主端皆有值才採用 record（避免舊資料雇主 0 被信任）
             if (
@@ -646,7 +661,7 @@ def export_pension(
         rows = []
         for emp in employees:
             sr = smap.get(emp.id)
-            insured = int(emp.insurance_salary_level or emp.base_salary or 0)
+            insured = _resolve_insured(emp)
 
             # 勞退：雇主提撥 > 0 才採用 record；= 0 或 None 一律走 fallback
             # （舊資料 pension_employer 為 0，過去 `is not None` 會誤採用）

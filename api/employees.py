@@ -563,8 +563,11 @@ async def final_salary_preview(
     if not (1 <= month <= 12):
         raise HTTPException(status_code=400, detail="month 必須介於 1–12")
 
+    # 用 preview_salary_calculation 僅計算、不寫入 SalaryRecord
+    # Why: 本端點為 GET preview，不該產生 DB 副作用；舊版若後續欄位存取出錯會回 500
+    # 但計算結果已 commit 到 DB。
     try:
-        breakdown = _salary_engine.process_salary_calculation(employee_id, year, month)
+        breakdown = _salary_engine.preview_salary_calculation(employee_id, year, month)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -633,7 +636,7 @@ async def final_salary_preview(
         "total_deduction": breakdown.total_deduction,
         "labor_insurance": breakdown.labor_insurance,
         "health_insurance": breakdown.health_insurance,
-        "pension": breakdown.pension,
+        "pension": breakdown.pension_self,
         "net_salary": breakdown.net_salary,
         "unused_annual_leave_hours": unused_annual_hours,
         "unused_annual_leave_compensation": round(unused_annual_compensation),

@@ -12,12 +12,16 @@ from pydantic import BaseModel
 from models.database import get_session, Employee, Attendance, PunchCorrectionRequest
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
-from utils.approval_helpers import _get_submitter_role, _check_approval_eligibility, _write_approval_log
+from utils.approval_helpers import (
+    _check_approval_eligibility,
+    _get_finalized_salary_record,
+    _get_submitter_role,
+    _write_approval_log,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["punch-corrections"])
-
 
 
 CORRECTION_TYPE_LABELS = {
@@ -39,9 +43,15 @@ def _format_correction(c: PunchCorrectionRequest, employee_name: str = "") -> di
         "employee_name": employee_name,
         "attendance_date": c.attendance_date.isoformat(),
         "correction_type": c.correction_type,
-        "correction_type_label": CORRECTION_TYPE_LABELS.get(c.correction_type, c.correction_type),
-        "requested_punch_in": c.requested_punch_in.isoformat() if c.requested_punch_in else None,
-        "requested_punch_out": c.requested_punch_out.isoformat() if c.requested_punch_out else None,
+        "correction_type_label": CORRECTION_TYPE_LABELS.get(
+            c.correction_type, c.correction_type
+        ),
+        "requested_punch_in": (
+            c.requested_punch_in.isoformat() if c.requested_punch_in else None
+        ),
+        "requested_punch_out": (
+            c.requested_punch_out.isoformat() if c.requested_punch_out else None
+        ),
         "reason": c.reason,
         "approval_status": c.approval_status,
         "approved_by": c.approved_by,
@@ -74,6 +84,7 @@ def list_punch_corrections(
 
         if year and month:
             import calendar as cal_module
+
             _, last_day = cal_module.monthrange(year, month)
             start = date(year, month, 1)
             end = date(year, month, last_day)
@@ -100,20 +111,26 @@ def approve_punch_correction(
     """核准或駁回補打卡申請"""
     session = get_session()
     try:
-        correction = session.query(PunchCorrectionRequest).filter(
-            PunchCorrectionRequest.id == correction_id
-        ).first()
+        correction = (
+            session.query(PunchCorrectionRequest)
+            .filter(PunchCorrectionRequest.id == correction_id)
+            .first()
+        )
         if not correction:
             raise HTTPException(status_code=404, detail="找不到此補打卡申請")
 
         if correction.is_approved is not None:
             status_label = "已核准" if correction.is_approved else "已駁回"
-            raise HTTPException(status_code=400, detail=f"此申請已{status_label}，無法再次審核")
+            raise HTTPException(
+                status_code=400, detail=f"此申請已{status_label}，無法再次審核"
+            )
 
         # ── 角色資格檢查 ──────────────────────────────────────────────────────
         submitter_role = _get_submitter_role(correction.employee_id, session)
         approver_role = current_user.get("role", "")
-        if not _check_approval_eligibility("punch_correction", submitter_role, approver_role, session):
+        if not _check_approval_eligibility(
+            "punch_correction", submitter_role, approver_role, session
+        ):
             raise HTTPException(
                 status_code=403,
                 detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的補打卡申請",
@@ -126,21 +143,51 @@ def approve_punch_correction(
             correction.is_approved = False
             correction.rejection_reason = body.rejection_reason.strip()
             correction.approved_by = current_user.get("username", "")
-            _write_approval_log("punch_correction", correction_id, "rejected", current_user,
-                                body.rejection_reason, session)
+            _write_approval_log(
+                "punch_correction",
+                correction_id,
+                "rejected",
+                current_user,
+                body.rejection_reason,
+                session,
+            )
             session.commit()
             logger.warning(
                 "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 駁回",
-                correction_id, correction.employee_id,
-                correction.attendance_date, current_user.get("username"),
+                correction_id,
+                correction.employee_id,
+                correction.attendance_date,
+                current_user.get("username"),
             )
             return {"message": "補打卡申請已駁回"}
 
+        # 核准前檢查該月薪資是否已封存（避免改動已結算月份的考勤來源資料）
+        finalized = _get_finalized_salary_record(
+            session,
+            correction.employee_id,
+            correction.attendance_date.year,
+            correction.attendance_date.month,
+        )
+        if finalized:
+            by = finalized.finalized_by or "系統"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{correction.attendance_date.year} 年 "
+                    f"{correction.attendance_date.month} 月薪資已封存"
+                    f"（結算人：{by}），無法核准補打卡。請先至薪資管理頁面解除封存後再操作。"
+                ),
+            )
+
         # 核准：取得或建立 Attendance 記錄
-        att = session.query(Attendance).filter(
-            Attendance.employee_id == correction.employee_id,
-            Attendance.attendance_date == correction.attendance_date,
-        ).first()
+        att = (
+            session.query(Attendance)
+            .filter(
+                Attendance.employee_id == correction.employee_id,
+                Attendance.attendance_date == correction.attendance_date,
+            )
+            .first()
+        )
         if not att:
             att = Attendance(
                 employee_id=correction.employee_id,
@@ -154,19 +201,23 @@ def approve_punch_correction(
             att.punch_out_time = correction.requested_punch_out
 
         # 重算缺打卡旗標
-        att.is_missing_punch_in = (att.punch_in_time is None)
-        att.is_missing_punch_out = (att.punch_out_time is None)
+        att.is_missing_punch_in = att.punch_in_time is None
+        att.is_missing_punch_out = att.punch_out_time is None
 
         # 更新申請狀態
         correction.is_approved = True
         correction.approved_by = current_user.get("username", "")
-        _write_approval_log("punch_correction", correction_id, "approved", current_user, None, session)
+        _write_approval_log(
+            "punch_correction", correction_id, "approved", current_user, None, session
+        )
         session.commit()
 
         logger.warning(
             "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 核准",
-            correction_id, correction.employee_id,
-            correction.attendance_date, current_user.get("username"),
+            correction_id,
+            correction.employee_id,
+            correction.attendance_date,
+            current_user.get("username"),
         )
         return {"message": "補打卡申請已核准，考勤記錄已更新"}
     except HTTPException:

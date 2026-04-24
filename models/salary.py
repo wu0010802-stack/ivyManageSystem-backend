@@ -303,6 +303,20 @@ class SalarySnapshot(Base):
     salary_year = Column(Integer, nullable=False)
     salary_month = Column(Integer, nullable=False)
 
+    # ── 設定版本 FK（與 SalaryRecord 同步，確保快照可獨立稽核） ───────────
+    bonus_config_id = Column(
+        Integer,
+        ForeignKey("bonus_configs.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="拍攝當下的獎金設定版本；與 SalaryRecord.bonus_config_id 對齊",
+    )
+    attendance_policy_id = Column(
+        Integer,
+        ForeignKey("attendance_policies.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="拍攝當下的考勤政策版本；與 SalaryRecord.attendance_policy_id 對齊",
+    )
+
     # ── 以下為 SalaryRecord 金額/計數/布林/備註欄位完整複製 ───────────────────
     base_salary = Column(Money, default=0)
     festival_bonus = Column(Money, default=0)

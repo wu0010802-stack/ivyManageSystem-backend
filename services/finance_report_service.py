@@ -337,19 +337,26 @@ def get_salary_detail(session: Session, year: int, month: int) -> list[dict]:
     result = []
     for rec, emp in rows:
         gross = int(rec.gross_salary or 0)
+        festival = int(rec.festival_bonus or 0)
+        overtime_bonus = int(rec.overtime_bonus or 0)
         employer = (
             int(rec.labor_insurance_employer or 0)
             + int(rec.health_insurance_employer or 0)
             + int(rec.pension_employer or 0)
         )
+        # 對齊月摘要 get_salary_expense_by_month：employee_gross = gross + festival + overtime
+        # supervisor_dividend 已含於 gross_salary，不再重複加。
+        real_cost = gross + festival + overtime_bonus + employer
         result.append(
             {
                 "employee_name": emp.name,
                 "employee_id": emp.id,
                 "gross_salary": gross,
+                "festival_bonus": festival,
+                "overtime_bonus": overtime_bonus,
                 "net_salary": int(rec.net_salary or 0),
                 "employer_benefit": employer,
-                "real_cost": gross + employer,
+                "real_cost": real_cost,
                 "is_finalized": bool(rec.is_finalized),
             }
         )
