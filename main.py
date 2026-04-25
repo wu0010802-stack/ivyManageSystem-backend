@@ -82,6 +82,7 @@ from api.parent_portal import (
     admin_router as parent_admin_router,
     init_parent_line_service,
 )
+from api.student_leaves import router as student_leaves_router
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -480,6 +481,7 @@ app.include_router(student_health_router)
 # 家長入口
 app.include_router(parent_portal_router)
 app.include_router(parent_admin_router)
+app.include_router(student_leaves_router)
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）
