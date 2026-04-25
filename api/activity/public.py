@@ -768,14 +768,14 @@ async def public_update_registration(
         if body.new_parent_phone and body.new_parent_phone != body.parent_phone:
             # 擋住改成「其他家長」正在使用的手機號：否則會讓三欄查詢 /public/query 候選
             # 變多，甚至讓不同家長的報名互相可見（name 同姓時）。
+            # 擴大為全域 is_active（不限同學期）——否則跨學期共用同支電話會讓對帳
+            # 混亂，無法還原哪支手機真正對應哪位家長。
             conflict = (
                 session.query(ActivityRegistration.id)
                 .filter(
                     ActivityRegistration.id != reg.id,
                     ActivityRegistration.parent_phone == body.new_parent_phone,
                     ActivityRegistration.is_active.is_(True),
-                    ActivityRegistration.school_year == reg.school_year,
-                    ActivityRegistration.semester == reg.semester,
                 )
                 .first()
             )

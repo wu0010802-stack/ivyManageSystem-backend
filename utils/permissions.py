@@ -61,9 +61,7 @@ class Permission(IntFlag):
     GUARDIANS_READ = 1 << 37  # 監護人資料 (檢視) — 家長資料屬敏感
     GUARDIANS_WRITE = 1 << 38  # 監護人資料 (編輯)
     RECRUITMENT_CONVERT = 1 << 39  # 招生訪視 → 正式學生 轉化
-
-    # --- 前端已預留：1 << 40 = BUSINESS_ANALYTICS（後端未實作，保留註解避免位元衝突） ---
-    # BUSINESS_ANALYTICS = 1 << 40  # 由前端 src/constants/permissions.js 佔用
+    BUSINESS_ANALYTICS = 1 << 40  # 經營分析（招生漏斗、流失預警等）
 
     # --- 學習 Portfolio（幼兒成長歷程） ---
     # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
@@ -172,6 +170,7 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.RECRUITMENT_READ
         | Permission.RECRUITMENT_WRITE
         | Permission.RECRUITMENT_CONVERT
+        | Permission.BUSINESS_ANALYTICS
         | Permission.REPORTS
         # Portfolio (supervisor 含發佈與健康編輯權限)
         | Permission.PORTFOLIO_READ
@@ -256,6 +255,7 @@ PERMISSION_LABELS: Dict[str, str] = {
     "GUARDIANS_READ": "監護人資料 (檢視)",
     "GUARDIANS_WRITE": "監護人資料 (編輯)",
     "RECRUITMENT_CONVERT": "招生轉化為學生",
+    "BUSINESS_ANALYTICS": "經營分析",
     # Portfolio
     "PORTFOLIO_READ": "成長歷程 (檢視)",
     "PORTFOLIO_WRITE": "成長歷程 (編輯)",
@@ -329,7 +329,7 @@ PERMISSION_GROUPS: List[Dict] = [
     },
     {
         "name": "園務行政",
-        "permissions": ["REPORTS", "AUDIT_LOGS"],
+        "permissions": ["REPORTS", "AUDIT_LOGS", "BUSINESS_ANALYTICS"],
         "split_permissions": [
             {
                 "module": "公告管理",

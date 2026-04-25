@@ -98,8 +98,75 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 - 對外輸入必過 Pydantic 驗證（含 `ge`/`le` 邊界）。
 - **不使用 `print()`**，一律 `logger = logging.getLogger(__name__)`。
 
-### 安全
-- 檔案路徑操作必做路徑穿越防護（參考 `utils/file_upload.py` 的 `_safe_attach_path()`）。
-- 使用者輸入不可拼接 SQL（已 ORM，維持此原則）。
-- 敏感操作（薪資匯出、核准）須 `logger.warning` 記稽核。
-- 高風險端點參考登入端點的限流模式。
+---
+
+### Git Commit 規範
+
+使用 Conventional Commits 格式：
+
+```
+<type>: <簡短描述（繁體中文）>
+
+<選填：詳細說明，包含 why 而非只有 what>
+```
+
+| Type | 用途 |
+|------|------|
+| `feat` | 新功能 |
+| `fix` | Bug 修正 |
+| `refactor` | 重構（不改行為） |
+| `test` | 新增或修改測試 |
+| `docs` | 文件更新 |
+| `chore` | 維護性雜項 |
+
+**原則：**
+- 一個 commit 只做一件事；修 bug 與補測試分成兩個 commit
+- Commit message 說明「為什麼」，程式碼本身說明「做了什麼」
+- 不 commit `.env`、`__pycache__`、`.pyc`
+
+---
+
+### 程式碼品質規範
+
+**通用：**
+- 函式單一職責：超過 40 行考慮拆分
+- 禁止魔法數字：薪資計算常數（如 `MONTHLY_BASE_DAYS = 30`）統一定義在模組頂部
+- 不重複邏輯：相同計算出現兩次就提取成函式
+
+**後端：**
+- 所有對外輸入必須過 Pydantic 驗證（含 `ge`/`le` 邊界）
+- 所有路由必須有 `require_permission()` 守衛
+- 不使用 `print()`，一律 `logger = logging.getLogger(__name__)`
+- 新路由若需要 `SalaryEngine` / `InsuranceService`，必須透過 `init_*_services()` 注入，不直接 import
+
+---
+
+## 服務模組
+
+### services/analytics/
+
+經營分析模組（招生漏斗 + 流失預警 — MVP）。
+- `constants.py` — 閾值（A=3 連續缺勤 / C=30 on_leave / D=14 學費逾期）、漏斗 6 階段、學期起始日 proxy、`parse_roc_month` / `term_start_date` helpers
+- `funnel_service.py` — 招生漏斗（雙源拼接 RecruitmentVisit + Student lifecycle）；`build_funnel`、`count_visit_side_stages`、`count_student_side_stages`、`slice_by_source`、`slice_by_grade`、`summarize_no_deposit_reasons`
+- `churn_service.py` — A/C/D 三訊號 at-risk 偵測 + 12 月歷史趨勢；`detect_at_risk_students`、`build_churn_history`、`detect_signal_consecutive_absence`、`detect_signal_long_on_leave`、`detect_signal_fee_overdue`
+
+對應 router：`api/analytics.py`，權限 `Permission.BUSINESS_ANALYTICS = 1 << 40`，預設只給 admin / supervisor 角色。
+快取走 `report_cache_service`，三類別 + TTL：
+- `analytics_funnel` — 30 min
+- `analytics_churn_at_risk` — 5 min
+- `analytics_churn_history` — 1 hr
+
+實作說明：
+- `RecruitmentVisit` 無 `student_id` FK，故 visit 端與 student 端用「招生年月 + 班別 + 來源」當共用維度（不直接 join）
+- 學費逾期 D 訊號用「學期起始日 + 14 天」當 due_date proxy（`FeeItem` 無 `due_date` 欄位）
+- 整班漏點名假缺勤過濾：若某天某班所有 active 學生皆無紀錄或皆「缺席」，視為老師當日漏點名
+
+---
+
+### 安全規範
+
+- 檔案路徑操作必須做路徑穿越防護（參考 `_safe_attach_path()`）
+- 使用者輸入不可直接拼接 SQL（已使用 ORM，維持此原則）
+- 敏感操作（薪資匯出、核准）須記錄 `logger.warning` 稽核日誌
+- 登入端點已有限流，新的高風險端點參考相同模式
+- Rate Limiter（`utils/rate_limit.py`）為 in-process 記憶體版，僅適用單 worker 部署；多實例需改 Redis-backed 方案

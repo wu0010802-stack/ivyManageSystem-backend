@@ -142,6 +142,7 @@ async def pending_daily_closes(
             .filter(
                 ActivityPaymentRecord.payment_date >= start,
                 ActivityPaymentRecord.payment_date <= end,
+                ActivityPaymentRecord.voided_at.is_(None),
             )
             .group_by(
                 ActivityPaymentRecord.payment_date,
@@ -418,13 +419,14 @@ async def pos_reconciliation(
             )
             .all()
         }
-        # 有交易的日期（僅這些日會出現在結果中）
+        # 有交易的日期（僅這些日會出現在結果中；排除全為 voided 的日期）
         tx_dates = {
             pd
             for (pd,) in session.query(ActivityPaymentRecord.payment_date.distinct())
             .filter(
                 ActivityPaymentRecord.payment_date >= start,
                 ActivityPaymentRecord.payment_date <= end,
+                ActivityPaymentRecord.voided_at.is_(None),
             )
             .all()
             if pd is not None

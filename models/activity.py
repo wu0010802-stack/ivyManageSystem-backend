@@ -354,6 +354,16 @@ class ActivityPaymentRecord(Base):
     # 部署在 UTC 伺服器時不會讓 snapshot / idempotency 判定差 8 小時。
     created_at = Column(DateTime, default=_now_taipei_naive)
 
+    # 軟刪除（voiding）：DELETE payment 不再真刪，改寫 voided_* 欄位保留完整 audit trail
+    # Why: 員工可能濫用「收現金 → 刪 payment → 私吞」路徑；軟刪可強制紀錄誰、何時、為何
+    voided_at = Column(
+        DateTime,
+        nullable=True,
+        comment="軟刪除時間（NULL=未刪）；voided 紀錄不計入 paid_amount",
+    )
+    voided_by = Column(String(50), nullable=True, comment="執行軟刪的操作者帳號")
+    void_reason = Column(String(200), nullable=True, comment="軟刪原因（必填）")
+
     __table_args__ = (
         Index("ix_activity_payment_records_reg", "registration_id"),
         # 冪等 key 範圍查詢（SELECT ... WHERE idempotency_key=X AND created_at>=threshold）

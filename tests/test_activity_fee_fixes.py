@@ -198,7 +198,11 @@ def _setup_reg(
 
 class TestMarkUnpaidWritesRefund:
     def test_single_mark_unpaid_writes_refund_not_delete(self, fee_client):
-        """單筆標記未繳費：應寫入一筆 refund 沖帳，保留原 payment 記錄。"""
+        """單筆標記未繳費：帶 confirm_refund_amount + refund_reason 後應寫 refund 沖帳。
+
+        API 收緊：is_paid=False 必須明確帶 confirm_refund_amount（等於當前 paid_amount）
+        與 refund_reason（≥5 字）；防止前端誤按一鍵沖帳。
+        """
         client, sf = fee_client
         with sf() as s:
             _create_admin(s)
@@ -218,9 +222,32 @@ class TestMarkUnpaidWritesRefund:
 
         assert _login(client).status_code == 200
 
+        # 缺 confirm_refund_amount 應被擋下
+        res_no_confirm = client.put(
+            f"/api/activity/registrations/{reg_id}/payment",
+            json={"is_paid": False, "refund_reason": "客戶取消報名"},
+        )
+        assert res_no_confirm.status_code == 400
+
+        # 金額不符應被擋下
+        res_bad_amount = client.put(
+            f"/api/activity/registrations/{reg_id}/payment",
+            json={
+                "is_paid": False,
+                "confirm_refund_amount": 900,
+                "refund_reason": "客戶取消報名",
+            },
+        )
+        assert res_bad_amount.status_code == 400
+
+        # 明確確認 + 原因齊備才過
         res = client.put(
             f"/api/activity/registrations/{reg_id}/payment",
-            json={"is_paid": False},
+            json={
+                "is_paid": False,
+                "confirm_refund_amount": 1000,
+                "refund_reason": "客戶取消報名（一年級轉班）",
+            },
         )
         assert res.status_code == 200
 
@@ -238,13 +265,17 @@ class TestMarkUnpaidWritesRefund:
             assert records[1].type == "refund"
             assert records[1].amount == 1000
             assert records[1].payment_method == "系統補齊"
+            assert "客戶取消" in (records[1].notes or "")
 
             reg = s.query(ActivityRegistration).get(reg_id)
             assert reg.paid_amount == 0
             assert reg.is_paid is False
 
-    def test_batch_mark_unpaid_writes_refund_not_delete(self, fee_client):
-        """批次標記未繳費：每筆都應寫入 refund，保留原有付款記錄。"""
+    def test_batch_mark_unpaid_is_disabled(self, fee_client):
+        """批次標記未繳費已被禁用（schema 層擋下 is_paid=False，回 422）。
+
+        Why: 批次一鍵沖帳風險過高，收緊為單筆端點逐筆確認。
+        """
         client, sf = fee_client
         with sf() as s:
             _create_admin(s)
@@ -270,25 +301,17 @@ class TestMarkUnpaidWritesRefund:
             "/api/activity/registrations/batch-payment",
             json={"ids": ids, "is_paid": False},
         )
-        assert res.status_code == 200
+        # Pydantic 422：Literal[True] 拒絕 False
+        assert res.status_code == 422
 
         with sf() as s:
-            for rid, original_amt in zip(ids, [500, 1000]):
-                records = (
-                    s.query(ActivityPaymentRecord)
-                    .filter(ActivityPaymentRecord.registration_id == rid)
-                    .order_by(ActivityPaymentRecord.id.asc())
-                    .all()
-                )
-                assert len(records) == 2, f"reg={rid} 應保留原 payment + 新增 refund"
-                assert records[0].type == "payment"
-                assert records[1].type == "refund"
-                assert records[1].amount == original_amt
-                assert records[1].payment_method == "系統補齊"
-
-                reg = s.query(ActivityRegistration).get(rid)
-                assert reg.paid_amount == 0
-                assert reg.is_paid is False
+            # 沒有新增任何 refund 紀錄
+            refund_count = (
+                s.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.type == "refund")
+                .count()
+            )
+            assert refund_count == 0
 
     def test_mark_paid_auto_fill_uses_system_reconcile_method(self, fee_client):
         """自動補齊時 payment_method 應為「系統補齊」而非「現金」，避免污染 POS 日結。"""
@@ -369,6 +392,7 @@ class TestAddPaymentIdempotency:
 
         assert _login(client).status_code == 200
 
+        # 注意：refund 必填原因 ≥ 5 字，否則會先被 schema 層擋（422）
         res = client.post(
             f"/api/activity/registrations/{reg_id}/payments",
             json={
@@ -376,7 +400,7 @@ class TestAddPaymentIdempotency:
                 "amount": 500,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "",
+                "notes": "超退測試用原因",
             },
         )
         assert res.status_code == 400
@@ -646,7 +670,7 @@ class TestDailyCloseGuard:
         assert res.status_code == 400
 
     def test_delete_payment_rejects_closed_day(self, fee_client):
-        """刪除付款若該筆 payment_date 已簽核應 400。"""
+        """軟刪付款若該筆 payment_date 已簽核應 400（DELETE 改軟刪後仍生效）。"""
         client, sf = fee_client
         with sf() as s:
             _create_admin(s)
@@ -668,11 +692,19 @@ class TestDailyCloseGuard:
 
         assert _login(client).status_code == 200
 
-        res = client.delete(f"/api/activity/registrations/{reg_id}/payments/{rec_id}")
+        res = client.request(
+            "DELETE",
+            f"/api/activity/registrations/{reg_id}/payments/{rec_id}",
+            json={"reason": "單據誤植，客戶已退款"},
+        )
         assert res.status_code == 400
 
     def test_mark_unpaid_rejects_closed_day(self, fee_client):
-        """今日已簽核時標記未繳費應 400（自動沖帳會寫 today）。"""
+        """今日已簽核時標記未繳費應 400（自動沖帳會寫 today）。
+
+        新 API 需帶 confirm_refund_amount + refund_reason；先通過 schema，
+        再由 _require_daily_close_unlocked 於 handler 第一步擋下。
+        """
         client, sf = fee_client
         with sf() as s:
             _create_admin(s)
@@ -685,7 +717,11 @@ class TestDailyCloseGuard:
 
         res = client.put(
             f"/api/activity/registrations/{reg_id}/payment",
-            json={"is_paid": False},
+            json={
+                "is_paid": False,
+                "confirm_refund_amount": 1000,
+                "refund_reason": "測試簽核日守衛",
+            },
         )
         assert res.status_code == 400
 
@@ -741,8 +777,10 @@ class TestActivityAuditStateOverride:
         app = self._make_capture_app(captured)
         with TestClient(app) as mw_client:
             assert _login(mw_client).status_code == 200
-            res = mw_client.delete(
-                f"/api/activity/registrations/{reg_id}/payments/{rec_id}"
+            res = mw_client.request(
+                "DELETE",
+                f"/api/activity/registrations/{reg_id}/payments/{rec_id}",
+                json={"reason": "單據誤植，需撤回"},
             )
             assert res.status_code == 200, res.text
 
@@ -750,7 +788,7 @@ class TestActivityAuditStateOverride:
             f"預期 entity_id 鎖回 registration_id={reg_id}，"
             f"但拿到 {captured['audit_entity_id']}（可能被 URL 尾段 payment_id 搶走）"
         )
-        assert captured["audit_summary"] and "刪除繳費記錄" in captured["audit_summary"]
+        assert captured["audit_summary"] and "軟刪繳費記錄" in captured["audit_summary"]
 
     def test_withdraw_course_sets_registration_as_entity(self, fee_client):
         client, sf = fee_client

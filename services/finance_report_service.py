@@ -72,7 +72,7 @@ def get_tuition_refund_by_month(session: Session, year: int) -> dict[int, int]:
 
 
 def get_activity_revenue_by_month(session: Session, year: int) -> dict[int, int]:
-    """才藝繳費（type='payment'），按 payment_date 月份聚合。"""
+    """才藝繳費（type='payment'），按 payment_date 月份聚合；排除 voided 軟刪紀錄。"""
     rows = (
         session.query(
             extract("month", ActivityPaymentRecord.payment_date).label("m"),
@@ -81,6 +81,7 @@ def get_activity_revenue_by_month(session: Session, year: int) -> dict[int, int]
         .filter(
             ActivityPaymentRecord.type == "payment",
             extract("year", ActivityPaymentRecord.payment_date) == year,
+            ActivityPaymentRecord.voided_at.is_(None),
         )
         .group_by("m")
         .all()
@@ -89,7 +90,7 @@ def get_activity_revenue_by_month(session: Session, year: int) -> dict[int, int]
 
 
 def get_activity_refund_by_month(session: Session, year: int) -> dict[int, int]:
-    """才藝退費（type='refund'），按 payment_date 月份聚合。"""
+    """才藝退費（type='refund'），按 payment_date 月份聚合；排除 voided 軟刪紀錄。"""
     rows = (
         session.query(
             extract("month", ActivityPaymentRecord.payment_date).label("m"),
@@ -98,6 +99,7 @@ def get_activity_refund_by_month(session: Session, year: int) -> dict[int, int]:
         .filter(
             ActivityPaymentRecord.type == "refund",
             extract("year", ActivityPaymentRecord.payment_date) == year,
+            ActivityPaymentRecord.voided_at.is_(None),
         )
         .group_by("m")
         .all()
@@ -291,7 +293,7 @@ def get_tuition_detail(session: Session, year: int, month: int) -> list[dict]:
 
 
 def get_activity_detail(session: Session, year: int, month: int) -> list[dict]:
-    """才藝繳費/退費明細（含報名關聯的學生姓名）。"""
+    """才藝繳費/退費明細（含報名關聯的學生姓名）；排除 voided 軟刪紀錄。"""
     rows = (
         session.query(ActivityPaymentRecord, ActivityRegistration)
         .outerjoin(
@@ -301,6 +303,7 @@ def get_activity_detail(session: Session, year: int, month: int) -> list[dict]:
         .filter(
             extract("year", ActivityPaymentRecord.payment_date) == year,
             extract("month", ActivityPaymentRecord.payment_date) == month,
+            ActivityPaymentRecord.voided_at.is_(None),
         )
         .order_by(ActivityPaymentRecord.payment_date)
         .all()
