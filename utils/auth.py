@@ -315,15 +315,53 @@ def require_permission(permission):
 
 
 def require_staff_permission(permission):
-    """限制管理端 API 僅供非 teacher 角色使用，並保留既有 permission 檢查。"""
+    """限制管理端 API 僅供 admin/hr/supervisor 角色使用，並保留既有 permission 檢查。
+
+    教師（teacher）走 portal 自助介面、家長（parent）走家長入口；兩者皆不得直接撞管理端 API。
+    """
 
     async def check_staff_permission(
         current_user: dict = Depends(require_permission(permission)),
     ):
-        if current_user.get("role") == "teacher":
+        role = current_user.get("role")
+        if role == "teacher":
             raise HTTPException(
                 status_code=403, detail="教師帳號不可直接存取管理端 API"
+            )
+        if role == "parent":
+            raise HTTPException(
+                status_code=403, detail="家長帳號不可直接存取管理端 API"
             )
         return current_user
 
     return check_staff_permission
+
+
+def require_parent_role():
+    """FastAPI dependency factory：限制端點僅供家長 (role='parent') 使用。"""
+
+    async def check(current_user: dict = Depends(get_current_user)):
+        if current_user.get("role") != "parent":
+            raise HTTPException(
+                status_code=403, detail="此 API 僅限家長端使用"
+            )
+        return current_user
+
+    return check
+
+
+def require_non_parent_role():
+    """FastAPI dependency factory：拒絕家長 token 撞員工/管理端路由。
+
+    Portal 與所有非家長路由建議在 router 層加掛此 dependency，
+    把保證從「每個 endpoint 都記得呼叫 _get_employee」升級為結構性擋線。
+    """
+
+    async def check(current_user: dict = Depends(get_current_user)):
+        if current_user.get("role") == "parent":
+            raise HTTPException(
+                status_code=403, detail="家長帳號不可存取此 API"
+            )
+        return current_user
+
+    return check

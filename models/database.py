@@ -30,6 +30,7 @@ from models.classroom import (
     StudentAssessment,
 )
 from models.guardian import Guardian
+from models.parent_binding import GuardianBindingCode
 from models.attendance import Attendance, AttendanceStatus
 from models.shift import ShiftType, ShiftAssignment, DailyShift, ShiftSwapRequest
 from models.leave import LeaveRecord, LeaveQuota, LeaveType
@@ -126,6 +127,7 @@ __all__ = [
     "StudentAssessment",
     # guardian
     "Guardian",
+    "GuardianBindingCode",
     # attendance
     "Attendance",
     "AttendanceStatus",

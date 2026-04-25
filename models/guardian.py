@@ -35,6 +35,12 @@ class Guardian(Base):
         ForeignKey("students.id", ondelete="CASCADE"),
         nullable=False,
     )
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="家長 User 帳號；NULL 表示未綁定。同一 User 可被多筆 Guardian 引用以支援一家長綁多孩",
+    )
     name = Column(String(50), nullable=False)
     phone = Column(String(20), nullable=True)
     email = Column(String(100), nullable=True)
@@ -64,4 +70,5 @@ class Guardian(Base):
         Index("ix_guardians_student", "student_id"),
         Index("ix_guardians_student_active", "student_id", "deleted_at"),
         Index("ix_guardians_phone", "phone"),
+        Index("ix_guardians_user", "user_id"),
     )

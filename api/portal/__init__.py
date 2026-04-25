@@ -1,8 +1,13 @@
 """
 Portal package - combines all portal sub-routers.
+
+Portal 為教師自助介面：所有路由皆掛 router-level `require_non_parent_role`，
+確保家長 token 即使被誤用也撞不進員工端 endpoint（結構性 IDOR 隔離）。
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from utils.auth import require_non_parent_role
 
 from .attendance import router as attendance_router
 from .anomalies import router as anomalies_router
@@ -21,7 +26,11 @@ from .student_attendance import router as student_attendance_router
 from .dismissal_calls import router as dismissal_calls_router
 from .activity import router as activity_router
 
-router = APIRouter(prefix="/api/portal", tags=["portal"])
+router = APIRouter(
+    prefix="/api/portal",
+    tags=["portal"],
+    dependencies=[Depends(require_non_parent_role())],
+)
 
 router.include_router(attendance_router)
 router.include_router(anomalies_router)

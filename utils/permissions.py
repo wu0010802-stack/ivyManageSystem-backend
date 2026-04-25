@@ -195,6 +195,8 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.STUDENTS_MEDICATION_ADMINISTER
         | Permission.STUDENTS_SPECIAL_NEEDS_READ
     ),
+    # 家長角色：恆無任何 Permission 位元；資源存取一律由 user_id → guardians 過濾
+    "parent": 0,
 }
 
 # 角色名稱對照表
@@ -203,6 +205,7 @@ ROLE_LABELS: Dict[str, str] = {
     "hr": "人事管理員",
     "supervisor": "主管",
     "teacher": "教師",
+    "parent": "家長",
 }
 
 
