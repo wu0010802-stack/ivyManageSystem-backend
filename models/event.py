@@ -110,6 +110,13 @@ class SchoolEvent(Base):
     end_time = Column(String(5), comment="結束時間 HH:MM")
     location = Column(String(100), comment="地點")
     is_active = Column(Boolean, default=True)
+    requires_acknowledgment = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="家長是否需簽閱此事件（家長入口顯示簽閱按鈕）",
+    )
+    ack_deadline = Column(Date, nullable=True, comment="家長簽閱截止日（可選）")
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -162,3 +169,91 @@ class AnnouncementRecipient(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     announcement_id = Column(Integer, ForeignKey("announcements.id", ondelete="CASCADE"), nullable=False)
     employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)
+
+
+class AnnouncementParentRecipient(Base):
+    """公告家長端發送對象（與員工端 AnnouncementRecipient 解耦）。
+
+    scope 規則：
+    - 'all'       → 所有家長
+    - 'classroom' → classroom_id 對應班級的所有家長
+    - 'student'   → student_id 對應學生的家長
+    - 'guardian'  → 精確指向單一監護人
+
+    可見性 predicate（家長 user_id → guardians → student_ids / classroom_ids
+    / guardian_ids）由 api/parent_portal/announcements.py 計算。
+    """
+
+    __tablename__ = "announcement_parent_recipients"
+    __table_args__ = (
+        Index("ix_ann_parent_scope", "announcement_id", "scope"),
+        Index("ix_ann_parent_classroom", "classroom_id"),
+        Index("ix_ann_parent_student", "student_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    announcement_id = Column(
+        Integer,
+        ForeignKey("announcements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scope = Column(String(20), nullable=False, comment="all/classroom/student/guardian")
+    classroom_id = Column(
+        Integer, ForeignKey("classrooms.id", ondelete="CASCADE"), nullable=True
+    )
+    student_id = Column(
+        Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=True
+    )
+    guardian_id = Column(
+        Integer, ForeignKey("guardians.id", ondelete="CASCADE"), nullable=True
+    )
+
+
+class AnnouncementParentRead(Base):
+    """家長端公告已讀紀錄。"""
+
+    __tablename__ = "announcement_parent_reads"
+    __table_args__ = (
+        UniqueConstraint("announcement_id", "user_id", name="uq_ann_parent_read"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    announcement_id = Column(
+        Integer,
+        ForeignKey("announcements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    read_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+class EventAcknowledgment(Base):
+    """家長對學校行事曆事件的簽閱紀錄。
+
+    一個 (event, user, student) 組合最多一筆。signature_name 由家長自填
+    （顯示在後台「誰簽了」的欄位中）。
+    """
+
+    __tablename__ = "event_acknowledgments"
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id", "user_id", "student_id", name="uq_event_ack"
+        ),
+        Index("ix_event_ack_event", "event_id"),
+        Index("ix_event_ack_user", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(
+        Integer, ForeignKey("school_events.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    student_id = Column(
+        Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False
+    )
+    acknowledged_at = Column(DateTime, default=datetime.now, nullable=False)
+    signature_name = Column(String(50), nullable=True, comment="家長自填姓名（簽章文字）")

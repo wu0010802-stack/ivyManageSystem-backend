@@ -64,6 +64,9 @@ from models.event import (
     Announcement,
     AnnouncementRead,
     AnnouncementRecipient,
+    AnnouncementParentRecipient,
+    AnnouncementParentRead,
+    EventAcknowledgment,
 )
 from models.auth import User
 from models.audit import AuditLog
@@ -169,6 +172,9 @@ __all__ = [
     "Announcement",
     "AnnouncementRead",
     "AnnouncementRecipient",
+    "AnnouncementParentRecipient",
+    "AnnouncementParentRead",
+    "EventAcknowledgment",
     # auth
     "User",
     # audit
