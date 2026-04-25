@@ -20,6 +20,7 @@ from .announcements import router as announcements_router
 from .attendance import router as attendance_router
 from .binding_admin import router as binding_admin_router
 from .events import router as events_router
+from .fees import router as fees_router
 from .leaves import router as leaves_router
 from .profile import router as profile_router
 
@@ -39,6 +40,7 @@ parent_router.include_router(attendance_router)
 parent_router.include_router(announcements_router)
 parent_router.include_router(events_router)
 parent_router.include_router(leaves_router)
+parent_router.include_router(fees_router)
 
 
 # 行政端綁定碼 router（前綴 /api/guardians，需 GUARDIANS_WRITE）

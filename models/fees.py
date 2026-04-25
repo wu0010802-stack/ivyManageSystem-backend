@@ -87,6 +87,11 @@ class StudentFeeRecord(Base):
     period = Column(
         String(20), nullable=False, comment="學年學期（denormalized，便於篩選）"
     )
+    due_date = Column(
+        Date,
+        nullable=True,
+        comment="繳費期限；家長端可分類「即將到期」與「已逾期」",
+    )
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -97,6 +102,7 @@ class StudentFeeRecord(Base):
         Index("ix_fee_records_student", "student_id"),
         Index("ix_fee_records_fee_item", "fee_item_id"),
         Index("ix_fee_records_student_period", "student_id", "period"),
+        Index("ix_fee_records_due_date", "due_date"),
     )
 
 

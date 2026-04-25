@@ -13,6 +13,7 @@ approve 規則（plan A.4）：
 reject / cancel 反向清除：僅清 remark 前綴吻合者（保留教師後手寫的紀錄）。
 """
 
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -23,6 +24,7 @@ from models.database import (
     Student,
     StudentAttendance,
     StudentLeaveRequest,
+    User,
     get_session,
 )
 from services.student_leave_service import (
@@ -35,7 +37,42 @@ from services.workday_rules import load_day_rule_maps
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/student-leaves", tags=["student-leaves"])
+
+_line_service = None
+
+
+def init_student_leaves_line_service(line_service) -> None:
+    """注入 LineService（main.py 啟動時呼叫一次）。未注入時推播靜默 noop。"""
+    global _line_service
+    _line_service = line_service
+
+
+def _notify_parent_leave_result_safe(session, item: StudentLeaveRequest, approved: bool) -> None:
+    """fail-safe 通知家長審核結果；任何失敗都僅 log，不影響審核 transaction。"""
+    if _line_service is None:
+        return
+    try:
+        applicant = (
+            session.query(User).filter(User.id == item.applicant_user_id).first()
+        )
+        if applicant is None or not applicant.line_user_id:
+            return
+        student = session.query(Student).filter(Student.id == item.student_id).first()
+        student_name = student.name if student else "您的小孩"
+        _line_service.notify_parent_leave_result(
+            applicant.line_user_id,
+            student_name,
+            item.leave_type,
+            item.start_date,
+            item.end_date,
+            approved=approved,
+            review_note=item.review_note,
+        )
+    except Exception:
+        logger.warning("家長端請假審核 LINE 推播失敗（已忽略）", exc_info=True)
 
 
 class ReviewPayload(BaseModel):
@@ -177,6 +214,7 @@ def approve_leave(
             session, item, reviewer_user_id=current_user["user_id"]
         )
         session.commit()
+        _notify_parent_leave_result_safe(session, item, approved=True)
         return {"status": "ok", "affected_days": affected}
     finally:
         session.close()
@@ -211,6 +249,7 @@ def reject_leave(
         item.reviewed_at = datetime.now()
         item.review_note = (payload.review_note or "").strip() or None
         session.commit()
+        _notify_parent_leave_result_safe(session, item, approved=False)
         return {"status": "ok"}
     finally:
         session.close()

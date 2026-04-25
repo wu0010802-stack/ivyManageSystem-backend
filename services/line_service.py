@@ -174,6 +174,31 @@ def build_dismissal_message(
     return msg
 
 
+def _build_parent_leave_result_message(
+    student_name: str,
+    leave_type: str,
+    start: date,
+    end: date,
+    approved: bool,
+    review_note: Optional[str] = None,
+) -> str:
+    """家長端：學生請假審核結果訊息（家長 LINE 個人推播）。"""
+    status_text = "已核准" if approved else "未核准"
+    period_text = (
+        start.isoformat() if start == end else f"{start.isoformat()}~{end.isoformat()}"
+    )
+    msg = (
+        f"【學生請假審核】\n"
+        f"學生：{student_name}\n"
+        f"假別：{leave_type}\n"
+        f"日期：{period_text}\n"
+        f"結果：{status_text}"
+    )
+    if review_note:
+        msg += f"\n備註：{review_note}"
+    return msg
+
+
 # ── Service ──────────────────────────────────────────────────────────────────
 
 
@@ -383,6 +408,83 @@ class LineService:
         """接送通知建立後群組推播（失敗時 log warning，不拋出）"""
         text = build_dismissal_message(student_name, classroom_name, note)
         self._push(text)
+
+    # ── 家長端通知方法（個人推播；非 enable 或無 line_user_id 時靜默） ──
+
+    def notify_parent_leave_result(
+        self,
+        line_user_id: str,
+        student_name: str,
+        leave_type: str,
+        start: date,
+        end: date,
+        approved: bool,
+        review_note: Optional[str] = None,
+    ) -> None:
+        text = _build_parent_leave_result_message(
+            student_name, leave_type, start, end, approved, review_note
+        )
+        self._push_to_user(line_user_id, text)
+
+    def notify_parent_attendance_alert(
+        self,
+        line_user_id: str,
+        student_name: str,
+        target_date: date,
+        status: str,
+    ) -> None:
+        text = (
+            f"【出席提醒】\n"
+            f"學生：{student_name}\n"
+            f"日期：{target_date.isoformat()}\n"
+            f"狀態：{status}\n"
+            f"如有誤請聯絡老師。"
+        )
+        self._push_to_user(line_user_id, text)
+
+    def notify_parent_announcement(
+        self,
+        line_user_id: str,
+        title: str,
+        preview: Optional[str] = None,
+    ) -> None:
+        body = f"【園所公告】\n{title}"
+        if preview:
+            snippet = preview.strip()
+            if len(snippet) > 60:
+                snippet = snippet[:60] + "…"
+            body += f"\n{snippet}"
+        body += "\n請開啟家長 App 查看詳情。"
+        self._push_to_user(line_user_id, body)
+
+    def notify_parent_fee_due(
+        self,
+        line_user_id: str,
+        student_name: str,
+        item_name: str,
+        outstanding: int,
+        due_date: date,
+    ) -> None:
+        text = (
+            f"【繳費提醒】\n"
+            f"學生：{student_name}\n"
+            f"項目：{item_name}\n"
+            f"未繳金額：${outstanding}\n"
+            f"繳費期限：{due_date.isoformat()}"
+        )
+        self._push_to_user(line_user_id, text)
+
+    def notify_parent_event_ack_required(
+        self,
+        line_user_id: str,
+        title: str,
+        deadline: Optional[date] = None,
+    ) -> None:
+        body = f"【需簽閱】\n事件：{title}"
+        if deadline:
+            body += f"\n簽閱截止：{deadline.isoformat()}"
+        body += "\n請開啟家長 App 完成簽閱。"
+        self._push_to_user(line_user_id, body)
 
     def handle_webhook_message(
         self,

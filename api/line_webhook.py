@@ -66,8 +66,31 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
         reply_token = event.get("replyToken", "")
 
         if event_type == "follow":
-            # 用戶加入好友或解除封鎖：回覆其 User ID，引導至 Portal 綁定
+            # 用戶加入好友或解除封鎖：
+            # 1. 若該 LINE userId 已綁定 User（教師或家長），寫入 line_follow_confirmed_at 作為推播可達性旗標
+            # 2. 仍回覆 User ID 給沒綁的使用者（向下相容既有教師流程）
             if _line_service and source_user_id:
+                from datetime import datetime as _dt
+                from models.database import User as _User
+
+                session = get_session()
+                try:
+                    user = (
+                        session.query(_User)
+                        .filter(_User.line_user_id == source_user_id)
+                        .first()
+                    )
+                    if user is not None:
+                        user.line_follow_confirmed_at = _dt.now()
+                        session.commit()
+                except Exception:
+                    logger.warning(
+                        "follow event 寫入 line_follow_confirmed_at 失敗（已忽略）",
+                        exc_info=True,
+                    )
+                finally:
+                    session.close()
+
                 _line_service._reply(
                     reply_token,
                     f"您的 LINE User ID 是：{source_user_id}\n"
