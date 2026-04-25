@@ -854,9 +854,12 @@ def update_leave(
             result["reset_to_pending"] = True
             if _salary_engine is not None:
                 try:
+                    # 跨月修改時,新區間只涵蓋新月份；舊月份的扣款須一併撤銷重算,
+                    # 否則 orig_month 的舊扣款仍存在於該月薪資,與新月份合計形成重複扣薪。
                     months_to_recalc = _collect_leave_months(
                         leave.start_date, leave.end_date
                     )
+                    months_to_recalc.add(orig_month)
                     for yr, mo in sorted(months_to_recalc):
                         _salary_engine.process_salary_calculation(
                             leave.employee_id, yr, mo
