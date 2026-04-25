@@ -57,6 +57,7 @@ from api.leaves_quota import (
     LEAVE_DEDUCTION_RULES,
     _check_leave_limits,
     _check_quota,
+    _check_compensatory_quota,
     _get_sick_committed_hours,
     assert_sick_leave_within_statutory_caps,
 )
@@ -157,7 +158,8 @@ def _guard_leave_quota(
     exclude_id: int = None,
     include_pending: bool = True,
 ) -> None:
-    """sick 走勞工請假規則第 4 條雙配額；其他假別走 _check_quota 單一配額。"""
+    """sick 走勞工請假規則第 4 條雙配額；compensatory 走補休專用配額（quota 不存在=0）；
+    其他假別走 _check_quota 單一配額。"""
     if leave_type == "sick":
         from datetime import date as _date  # local re-import safe
 
@@ -169,6 +171,15 @@ def _guard_leave_quota(
         )
         assert_sick_leave_within_statutory_caps(
             out_used, hosp_used, leave_hours, bool(is_hospitalized)
+        )
+    elif leave_type == "compensatory":
+        _check_compensatory_quota(
+            session,
+            employee_id,
+            year,
+            leave_hours,
+            exclude_id=exclude_id,
+            include_pending=include_pending,
         )
     else:
         _check_quota(

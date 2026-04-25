@@ -401,6 +401,66 @@ def _check_leave_limits(
             )
 
 
+def _check_compensatory_quota(
+    session,
+    employee_id: int,
+    year: int,
+    leave_hours: float,
+    exclude_id: int = None,
+    include_pending: bool = True,
+) -> None:
+    """補休配額專用檢查。
+
+    補休不在 QUOTA_LEAVE_TYPES(它由加班核准動態累積,不該被 init_leave_quotas 初始化),
+    但建立/核准補休假單時仍需驗證不超過累積配額。
+
+    與 _check_quota 的差異:LeaveQuota 不存在時視為 total_hours=0(從未累積過任何補休),
+    任何申請小時都會超限。_check_quota 在 quota is None 時略過(假設配額未初始化),
+    對補休是錯誤策略。
+    """
+    quota = (
+        session.query(LeaveQuota)
+        .filter(
+            LeaveQuota.employee_id == employee_id,
+            LeaveQuota.year == year,
+            LeaveQuota.leave_type == "compensatory",
+        )
+        .first()
+    )
+    total = float(quota.total_hours) if quota else 0.0
+
+    approved = _get_approved_hours_in_year(
+        session, employee_id, year, "compensatory", exclude_id
+    )
+    if include_pending:
+        pending = _get_pending_hours_in_year(
+            session, employee_id, year, "compensatory", exclude_id
+        )
+        committed = approved + pending
+    else:
+        pending = 0.0
+        committed = approved
+
+    remaining = max(0.0, total - committed)
+
+    if leave_hours > remaining + 1e-9:
+        label = LEAVE_TYPE_LABELS.get("compensatory", "補休")
+        pending_note = (
+            f"、待審 {pending:.0f} 小時" if include_pending and pending > 0 else ""
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{label}年度配額 {total:.0f} 小時"
+                f"({total / 8:.1f} 天),"
+                f"已核准 {approved:.0f} 小時{pending_note},"
+                f"剩餘可用 {remaining:.0f} 小時({remaining / 8:.1f} 天),"
+                f"本次申請 {leave_hours:.1f} 小時超過剩餘配額"
+                "(補休配額由加班核准動態累積,如不足請先申請加班)"
+            ),
+        )
+
+
 def _check_quota(
     session,
     employee_id: int,
