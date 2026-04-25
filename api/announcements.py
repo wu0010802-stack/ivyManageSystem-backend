@@ -4,14 +4,23 @@ Announcements router - Admin CRUD for announcements
 
 import logging
 from html.parser import HTMLParser
-from typing import Optional, List
+from typing import Literal, Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import joinedload, selectinload
 
-from models.database import get_session, Announcement, AnnouncementRecipient, Employee
+from models.database import (
+    get_session,
+    Announcement,
+    AnnouncementParentRecipient,
+    AnnouncementRecipient,
+    Classroom,
+    Employee,
+    Guardian,
+    Student,
+)
 from utils.auth import require_staff_permission
 from utils.error_messages import ANNOUNCEMENT_NOT_FOUND
 from utils.permissions import Permission
@@ -247,6 +256,202 @@ def delete_announcement(
         session.delete(ann)
         session.commit()
         return {"message": "公告已刪除"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+# ============ 家長端 scope（plan A.5） ============
+#
+# 員工端 announcement_recipients 不動；對家長另寫 announcement_parent_recipients。
+# 一筆 announcement 可同時對員工與家長兩端都有發送對象。
+#
+# scope 規則：
+# - 'all'       → 對所有家長可見（其他欄位必為 None）
+# - 'classroom' → 僅該班學生的家長可見（classroom_id 必填）
+# - 'student'   → 僅該學生的家長可見（student_id 必填）
+# - 'guardian'  → 僅該監護人本人可見（guardian_id 必填）
+#
+# 寫入採 replace-all 語意：PUT 時清掉舊的、寫入新的。
+
+
+class ParentRecipientItem(BaseModel):
+    scope: Literal["all", "classroom", "student", "guardian"]
+    classroom_id: Optional[int] = Field(None, gt=0)
+    student_id: Optional[int] = Field(None, gt=0)
+    guardian_id: Optional[int] = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _check_scope_and_id(self):
+        scope_to_field = {
+            "all": None,
+            "classroom": "classroom_id",
+            "student": "student_id",
+            "guardian": "guardian_id",
+        }
+        required_field = scope_to_field[self.scope]
+        for f in ("classroom_id", "student_id", "guardian_id"):
+            value = getattr(self, f)
+            if f == required_field:
+                if value is None:
+                    raise ValueError(f"scope='{self.scope}' 必須提供 {f}")
+            else:
+                if value is not None:
+                    raise ValueError(
+                        f"scope='{self.scope}' 不可帶 {f}（僅在對應 scope 下才有意義）"
+                    )
+        return self
+
+
+class ParentRecipientsUpdate(BaseModel):
+    recipients: List[ParentRecipientItem]
+
+
+def _serialize_parent_recipient(r: AnnouncementParentRecipient) -> dict:
+    return {
+        "id": r.id,
+        "scope": r.scope,
+        "classroom_id": r.classroom_id,
+        "student_id": r.student_id,
+        "guardian_id": r.guardian_id,
+    }
+
+
+@router.get("/{announcement_id}/parent-recipients")
+def list_parent_recipients(
+    announcement_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_READ)),
+):
+    """讀取目前公告對家長的發送對象設定。"""
+    session = get_session()
+    try:
+        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        rows = (
+            session.query(AnnouncementParentRecipient)
+            .filter(AnnouncementParentRecipient.announcement_id == announcement_id)
+            .order_by(AnnouncementParentRecipient.id.asc())
+            .all()
+        )
+        return {
+            "announcement_id": announcement_id,
+            "items": [_serialize_parent_recipient(r) for r in rows],
+            "total": len(rows),
+        }
+    finally:
+        session.close()
+
+
+def _validate_recipient_targets_exist(
+    session, recipients: list[ParentRecipientItem]
+) -> None:
+    """確認 classroom/student/guardian id 都存在；不存在則 400。"""
+    classroom_ids = {r.classroom_id for r in recipients if r.scope == "classroom"}
+    student_ids = {r.student_id for r in recipients if r.scope == "student"}
+    guardian_ids = {r.guardian_id for r in recipients if r.scope == "guardian"}
+
+    if classroom_ids:
+        existing = {
+            cid
+            for (cid,) in session.query(Classroom.id).filter(
+                Classroom.id.in_(classroom_ids)
+            )
+        }
+        missing = classroom_ids - existing
+        if missing:
+            raise HTTPException(
+                status_code=400, detail=f"找不到班級 id={sorted(missing)}"
+            )
+    if student_ids:
+        existing = {
+            sid
+            for (sid,) in session.query(Student.id).filter(Student.id.in_(student_ids))
+        }
+        missing = student_ids - existing
+        if missing:
+            raise HTTPException(
+                status_code=400, detail=f"找不到學生 id={sorted(missing)}"
+            )
+    if guardian_ids:
+        existing = {
+            gid
+            for (gid,) in session.query(Guardian.id).filter(
+                Guardian.id.in_(guardian_ids), Guardian.deleted_at.is_(None)
+            )
+        }
+        missing = guardian_ids - existing
+        if missing:
+            raise HTTPException(
+                status_code=400, detail=f"找不到監護人 id={sorted(missing)}"
+            )
+
+
+@router.put("/{announcement_id}/parent-recipients")
+def replace_parent_recipients(
+    announcement_id: int,
+    payload: ParentRecipientsUpdate,
+    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)),
+):
+    """整批替換公告對家長的發送對象。
+
+    - 空清單 = 對家長端不顯示（家長 portal 看不到此公告）
+    - 含 scope='all' 即可讓所有家長看到（其他項目可同時並存，但 'all'
+      已涵蓋；前端不應同時送 'all' + 其他 scope，後端不強擋以保留彈性）
+    """
+    if not payload.recipients:
+        return _replace_recipients_impl(announcement_id, [])
+    return _replace_recipients_impl(announcement_id, payload.recipients)
+
+
+def _replace_recipients_impl(
+    announcement_id: int, recipients: list[ParentRecipientItem]
+) -> dict:
+    session = get_session()
+    try:
+        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+
+        _validate_recipient_targets_exist(session, recipients)
+
+        # replace-all：先清舊
+        session.query(AnnouncementParentRecipient).filter(
+            AnnouncementParentRecipient.announcement_id == announcement_id
+        ).delete(synchronize_session=False)
+
+        for item in recipients:
+            session.add(
+                AnnouncementParentRecipient(
+                    announcement_id=announcement_id,
+                    scope=item.scope,
+                    classroom_id=item.classroom_id,
+                    student_id=item.student_id,
+                    guardian_id=item.guardian_id,
+                )
+            )
+        session.commit()
+
+        rows = (
+            session.query(AnnouncementParentRecipient)
+            .filter(AnnouncementParentRecipient.announcement_id == announcement_id)
+            .order_by(AnnouncementParentRecipient.id.asc())
+            .all()
+        )
+        logger.warning(
+            "[announcement-parent-recipients] announcement_id=%s 重設對家長 scope，共 %d 項",
+            announcement_id,
+            len(rows),
+        )
+        return {
+            "announcement_id": announcement_id,
+            "items": [_serialize_parent_recipient(r) for r in rows],
+            "total": len(rows),
+        }
     except HTTPException:
         raise
     except Exception as e:
