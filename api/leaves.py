@@ -929,6 +929,9 @@ class ApproveRequest(BaseModel):
     approved: bool
     rejection_reason: Optional[str] = None
     force_without_substitute: bool = False
+    # 同員工同時段已有其他已核准假單時，預設 409 阻擋；主管確認後可帶
+    # force_overlap=True 強制過（記稽核日誌），對齊 force_without_substitute 模式。
+    force_overlap: bool = False
 
 
 class LeaveBatchApproveRequest(BaseModel):
@@ -1015,7 +1018,9 @@ def approve_leave(
                 leave.end_time,
             )
 
-            # 提示主管：該員工同期是否已有其他已核准假單（含時段比對，不強制阻擋，由主管判斷）
+            # 重疊核准硬擋：同員工同時段已有其他已核准假單時，預設拒絕核准，
+            # 避免重複扣薪或重複占配額。主管確認後仍要核准，需帶 force_overlap=True
+            # 才會降級為 warning（會記稽核日誌）。
             conflict = _check_overlap(
                 session,
                 leave.employee_id,
@@ -1026,9 +1031,27 @@ def approve_leave(
                 exclude_id=leave_id,
             )
             if conflict:
+                if not data.force_overlap:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"該員工在 {conflict.start_date} ~ {conflict.end_date} "
+                            f"已有另一筆已核准的請假（ID: {conflict.id}），"
+                            "若確認仍要核准請帶 force_overlap=true"
+                        ),
+                    )
                 warning = (
-                    f"注意：該員工在 {conflict.start_date} ~ {conflict.end_date} "
-                    f"已有另一筆已核准的請假（ID: {conflict.id}），請確認是否重複核准"
+                    f"主管警告後核准：該員工在 {conflict.start_date} ~ "
+                    f"{conflict.end_date} 已有另一筆已核准的請假（ID: {conflict.id}）"
+                )
+                logger.warning(
+                    "假單 #%d 主管以 force_overlap=true 強制核准，"
+                    "與已核准假單 #%d (%s~%s) 重疊；操作者：%s",
+                    leave_id,
+                    conflict.id,
+                    conflict.start_date,
+                    conflict.end_date,
+                    current_user.get("username", "unknown"),
                 )
 
             # ── 配額硬檢查（核准動作）──────────────────────────────────────────
@@ -1302,6 +1325,28 @@ def batch_approve_leaves(
                             exclude_id=leave_id,
                             include_pending=True,
                         )
+                        # 重疊核准硬擋：批次無 force_overlap 旗標，一律拒絕。
+                        # 借助 SQLAlchemy autoflush，前一輪已 set is_approved=True
+                        # 的記錄會在這個 _check_overlap 查詢時被視為已核准，
+                        # 確保「同批兩張同員工同時段」的後者會被擋下。
+                        conflict = _check_overlap(
+                            session,
+                            leave.employee_id,
+                            leave.start_date,
+                            leave.end_date,
+                            leave.start_time,
+                            leave.end_time,
+                            exclude_id=leave_id,
+                        )
+                        if conflict:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    f"與已核准假單 #{conflict.id}"
+                                    f"（{conflict.start_date}~{conflict.end_date}）"
+                                    "重疊；批次核准不支援強制過，請改用單筆核准並帶 force_overlap"
+                                ),
+                            )
                     except HTTPException as e:
                         failed.append({"id": leave_id, "reason": e.detail})
                         continue
