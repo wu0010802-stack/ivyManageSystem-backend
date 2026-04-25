@@ -66,8 +66,8 @@ class TestPortalCreateLeaveCompensatoryQuota:
             p.start()
         try:
             with (
-                patch(
-                    "api.leaves_quota._check_compensatory_quota"
+                patch.object(
+                    portal_lv, "_check_compensatory_quota"
                 ) as mock_comp,
                 patch.object(portal_lv, "_check_quota") as mock_quota,
             ):

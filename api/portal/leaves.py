@@ -56,6 +56,7 @@ from api.leaves_workday import (
 )
 from api.leaves_quota import (
     _check_quota,
+    _check_compensatory_quota,
     _check_leave_limits,
     QUOTA_LEAVE_TYPES,
     STATUTORY_QUOTA_HOURS,
@@ -303,13 +304,23 @@ def create_my_leave(
             data.start_date,
             data.leave_hours,
         )
-        _check_quota(
-            session,
-            emp.id,
-            data.leave_type,
-            data.start_date.year,
-            data.leave_hours,
-        )
+        # 補休配額由加班核准動態累積，LeaveQuota 不存在代表 0；
+        # _check_quota 對非 QUOTA_LEAVE_TYPES 直接 return，會放過超額補休。
+        if data.leave_type == "compensatory":
+            _check_compensatory_quota(
+                session,
+                emp.id,
+                data.start_date.year,
+                data.leave_hours,
+            )
+        else:
+            _check_quota(
+                session,
+                emp.id,
+                data.leave_type,
+                data.start_date.year,
+                data.leave_hours,
+            )
 
         effective_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
         leave = LeaveRecord(
