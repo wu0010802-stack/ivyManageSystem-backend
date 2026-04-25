@@ -81,7 +81,12 @@ def create_my_overtime(
         if data.overtime_type not in OVERTIME_TYPE_LABELS:
             raise HTTPException(status_code=400, detail=f"無效的加班類型: {data.overtime_type}")
 
-        from api.overtimes import calculate_overtime_pay, _check_overtime_overlap
+        from api.overtimes import (
+            calculate_overtime_pay,
+            _check_overtime_overlap,
+            _check_monthly_overtime_cap,
+            _check_overtime_type_calendar,
+        )
         pay = 0.0 if data.use_comp_leave else calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
 
         start_dt = None
@@ -104,6 +109,11 @@ def create_my_overtime(
                     f"（ID: {overlap.id}，{st}～{et}），請勿重複送出"
                 ),
             )
+
+        # 與管理端 create_overtime 一致：46h/月上限 + 國定假日類型驗證。
+        # 否則教師可從 portal 繞過上限,或在國定假日用 weekday/weekend 短付加班費。
+        _check_monthly_overtime_cap(session, emp.id, data.overtime_date, data.hours)
+        _check_overtime_type_calendar(session, data.overtime_date, data.overtime_type)
 
         ot = OvertimeRecord(
             employee_id=emp.id,
