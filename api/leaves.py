@@ -1631,13 +1631,23 @@ async def import_leaves(
                     start_date,
                     leave_hours,
                 )
-                _check_quota(
-                    session,
-                    emp.id,
-                    leave_type,
-                    start_date.year,
-                    leave_hours,
-                )
+                # 補休配額由加班核准動態累積；_check_quota 對非 QUOTA_LEAVE_TYPES
+                # 直接 return，會放過超額補休（HR 可用 Excel 大量匯入繞過）。
+                if leave_type == "compensatory":
+                    _check_compensatory_quota(
+                        session,
+                        emp.id,
+                        start_date.year,
+                        leave_hours,
+                    )
+                else:
+                    _check_quota(
+                        session,
+                        emp.id,
+                        leave_type,
+                        start_date.year,
+                        leave_hours,
+                    )
 
                 effective_ratio = LEAVE_DEDUCTION_RULES[leave_type]
                 leave = LeaveRecord(
