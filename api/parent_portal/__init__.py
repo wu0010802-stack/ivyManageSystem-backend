@@ -16,7 +16,9 @@ from .auth import (
     init_line_login_service,
     router as auth_router,
 )
+from .attendance import router as attendance_router
 from .binding_admin import router as binding_admin_router
+from .profile import router as profile_router
 
 # 家長端 router（前綴 /api/parent，並掛 require_parent_role 統一擋線）
 parent_router = APIRouter(
@@ -25,9 +27,12 @@ parent_router = APIRouter(
 )
 # auth 子模組需要例外：liff-login / bind 在尚無 access token 前也得通；
 # bind-additional / logout 自帶 require_parent_role dependency。
-# 因此這個 parent_router 不掛 router-level dependency；後續其他子模組
-# （Batch 3+）將透過個別 sub-router 各自加掛 require_parent_role。
+# 因此這個 parent_router 不掛 router-level dependency；其他子模組（profile
+# / attendance / ...）在自身 endpoint 內掛 require_parent_role 即可，
+# 並一律經 _assert_student_owned 進行 IDOR 過濾。
 parent_router.include_router(auth_router)
+parent_router.include_router(profile_router)
+parent_router.include_router(attendance_router)
 
 
 # 行政端綁定碼 router（前綴 /api/guardians，需 GUARDIANS_WRITE）
