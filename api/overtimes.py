@@ -836,11 +836,18 @@ def update_overtime(
 
         # 先計算更新後的日期與時間（供重疊檢查使用）
         check_date = data.overtime_date or ot.overtime_date
+        date_changed = data.overtime_date is not None and data.overtime_date != ot.overtime_date
+
+        # 改日期但沒重新指定時間時，須以「新日期 + 舊時間」重組 datetime，
+        # 否則 datetime 會留在舊日期，造成 overtime_date 與 start/end 日期欄不一致，
+        # 且 _check_overtime_overlap 在 SQL 端會用舊日期 datetime 做比較而誤判。
         if data.start_time:
             h, m = map(int, data.start_time.split(":"))
             new_start_dt = datetime.combine(
                 check_date, datetime.min.time().replace(hour=h, minute=m)
             )
+        elif date_changed and ot.start_time is not None:
+            new_start_dt = datetime.combine(check_date, ot.start_time.time())
         else:
             new_start_dt = ot.start_time
         if data.end_time:
@@ -848,6 +855,8 @@ def update_overtime(
             new_end_dt = datetime.combine(
                 check_date, datetime.min.time().replace(hour=h, minute=m)
             )
+        elif date_changed and ot.end_time is not None:
+            new_end_dt = datetime.combine(check_date, ot.end_time.time())
         else:
             new_end_dt = ot.end_time
 
@@ -910,9 +919,11 @@ def update_overtime(
             if value is not None and key not in ("start_time", "end_time"):
                 setattr(ot, key, value)
 
-        if data.start_time:
+        # 改日期或改時間都需同步寫回 ORM，避免 overtime_date 與 start/end 日期欄
+        # 形成不一致狀態。
+        if data.start_time or (date_changed and ot.start_time is not None):
             ot.start_time = new_start_dt
-        if data.end_time:
+        if data.end_time or (date_changed and ot.end_time is not None):
             ot.end_time = new_end_dt
 
         # Recalculate pay（補休模式加班費固定為 0）
