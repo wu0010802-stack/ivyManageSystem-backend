@@ -16,6 +16,7 @@ from .auth import (
     init_line_login_service,
     router as auth_router,
 )
+from .activity import router as activity_router
 from .announcements import router as announcements_router
 from .attendance import router as attendance_router
 from .binding_admin import router as binding_admin_router
@@ -41,6 +42,7 @@ parent_router.include_router(announcements_router)
 parent_router.include_router(events_router)
 parent_router.include_router(leaves_router)
 parent_router.include_router(fees_router)
+parent_router.include_router(activity_router)
 
 
 # 行政端綁定碼 router（前綴 /api/guardians，需 GUARDIANS_WRITE）
