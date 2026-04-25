@@ -1,0 +1,461 @@
+"""api/parent_portal/auth.py — 家長端 LIFF 登入與綁定
+
+流程：
+1. POST /api/parent/auth/liff-login
+   家長前端從 LIFF SDK 取得 id_token → POST 至本端點。
+   - LINE.user_id 已綁定家長 User → 發正式 access_token，回 ok
+   - 未綁定 → 發 5 分鐘 temp_token（scope='bind'），回 need_binding
+2. POST /api/parent/auth/bind
+   未綁定家長以 temp_token + 行政發的綁定碼完成 claim：
+   - atomic UPDATE guardian_binding_codes WHERE code_hash=? AND used_at IS NULL AND expires_at > now
+   - 同 transaction 建 User(role='parent') + 設 Guardian.user_id
+3. POST /api/parent/auth/bind-additional
+   已綁定家長新增第二個小孩（共用 User）：
+   - 需正式 access_token + role='parent'
+   - atomic UPDATE 同上，但 Guardian.user_id 設為當前 user.id（不新建 User）
+4. POST /api/parent/auth/logout
+   清 cookie + token_version += 1（使所有 token 立即失效）
+
+防護：
+- IP rate-limit（共用 api/auth.py 既有 _check_ip_rate_limit）
+- 帳號層失敗鎖（line_user_id 為 key，連 5 次失敗鎖 15 分鐘）
+- atomic UPDATE 防 race（plan A.3）
+- aud 校驗在 LineLoginService.verify_id_token 完成
+"""
+
+import hashlib
+import logging
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from time import time as _time
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request, Response, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy import update
+
+from api.auth import (
+    _check_ip_rate_limit,
+    _ip_attempts as _login_ip_attempts,  # noqa: F401  (確保兩端 limiter 行為一致)
+)
+from models.database import (
+    Guardian,
+    GuardianBindingCode,
+    User,
+    get_session,
+)
+from services.line_login_service import LineLoginService
+from utils.auth import (
+    create_access_token,
+    decode_token,
+    get_current_user,
+    require_parent_role,
+    JWT_EXPIRE_MINUTES,
+)
+from utils.cookie import (
+    clear_access_token_cookie,
+    set_access_token_cookie,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/auth", tags=["parent-auth"])
+
+# ── 模組層 LineLoginService 注入點（main.py 啟動時呼叫 init_parent_line_service） ──
+_line_login_service: Optional[LineLoginService] = None
+
+
+def init_line_login_service(service: LineLoginService) -> None:
+    """注入 LineLoginService（main.py 啟動時呼叫一次）。"""
+    global _line_login_service
+    _line_login_service = service
+
+
+def _get_line_login_service() -> LineLoginService:
+    if _line_login_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="LineLoginService 尚未注入（程式啟動順序錯誤）",
+        )
+    return _line_login_service
+
+
+# ── bind token cookie / 帳號失敗鎖（line_user_id 層） ──────────────────────
+_BIND_TOKEN_COOKIE = "parent_bind_token"
+_BIND_TOKEN_PATH = "/api/parent/auth"
+_BIND_TOKEN_TTL_MINUTES = 5
+
+_BIND_FAIL_THRESHOLD = 5
+_BIND_FAIL_LOCKOUT = 900  # 15 分鐘
+_bind_failures: dict[str, list[float]] = defaultdict(list)
+
+
+def _set_bind_token_cookie(response: Response, token: str) -> None:
+    import os
+    is_dev = os.environ.get("ENV", "development").lower() in (
+        "development",
+        "dev",
+        "local",
+    )
+    response.set_cookie(
+        key=_BIND_TOKEN_COOKIE,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=not is_dev,
+        path=_BIND_TOKEN_PATH,
+        max_age=_BIND_TOKEN_TTL_MINUTES * 60,
+    )
+
+
+def _clear_bind_token_cookie(response: Response) -> None:
+    import os
+    is_dev = os.environ.get("ENV", "development").lower() in (
+        "development",
+        "dev",
+        "local",
+    )
+    response.delete_cookie(
+        key=_BIND_TOKEN_COOKIE,
+        httponly=True,
+        samesite="lax",
+        secure=not is_dev,
+        path=_BIND_TOKEN_PATH,
+    )
+
+
+def _check_bind_lockout(line_user_id: str) -> None:
+    """LIFF 已驗證的 line_user_id 為單位做失敗鎖；連 5 次失敗鎖 15 分鐘。"""
+    now = _time()
+    _bind_failures[line_user_id] = [
+        t for t in _bind_failures[line_user_id] if now - t < _BIND_FAIL_LOCKOUT
+    ]
+    if len(_bind_failures[line_user_id]) >= _BIND_FAIL_THRESHOLD:
+        logger.warning("家長綁定失敗次數過多，line_user_id=%s 已鎖", line_user_id)
+        raise HTTPException(
+            status_code=429,
+            detail="綁定失敗次數過多，請稍後再試",
+        )
+
+
+def _record_bind_failure(line_user_id: str) -> None:
+    _bind_failures[line_user_id].append(_time())
+
+
+def _clear_bind_failures(line_user_id: str) -> None:
+    _bind_failures[line_user_id] = []
+
+
+# ── 內部工具 ────────────────────────────────────────────────────────────
+
+
+def _hash_code(plain: str) -> str:
+    return hashlib.sha256(plain.strip().encode("utf-8")).hexdigest()
+
+
+def _now() -> datetime:
+    return datetime.now()
+
+
+def _build_user_payload(user: User) -> dict:
+    return {
+        "user_id": user.id,
+        "employee_id": None,
+        "role": "parent",
+        "name": user.username,
+        "permissions": 0,
+        "token_version": user.token_version or 0,
+        "line_user_id": user.line_user_id,
+    }
+
+
+def _issue_access_token(response: Response, user: User) -> str:
+    payload = _build_user_payload(user)
+    token = create_access_token(payload)
+    set_access_token_cookie(response, token)
+    return token
+
+
+def _issue_bind_temp_token(response: Response, line_user_id: str) -> str:
+    """5 分鐘 temp_token，scope='bind'。"""
+    payload = {
+        "scope": "bind",
+        "line_user_id": line_user_id,
+    }
+    token = create_access_token(
+        payload, expires_delta=timedelta(minutes=_BIND_TOKEN_TTL_MINUTES)
+    )
+    _set_bind_token_cookie(response, token)
+    return token
+
+
+def _decode_bind_temp_token(request: Request) -> str:
+    """從 cookie 解 temp_token，回傳 line_user_id；無/過期/scope 不符 → 401。"""
+    token = request.cookies.get(_BIND_TOKEN_COOKIE)
+    if not token:
+        raise HTTPException(status_code=401, detail="未提供綁定臨時 Token")
+    payload = decode_token(token)
+    if payload.get("scope") != "bind":
+        raise HTTPException(status_code=401, detail="Token scope 不符")
+    line_user_id = payload.get("line_user_id")
+    if not line_user_id:
+        raise HTTPException(status_code=401, detail="Token 缺少 line_user_id")
+    return line_user_id
+
+
+def _claim_binding_code_atomic(
+    session, code_hash: str, claimer_user_id: Optional[int]
+) -> Optional[GuardianBindingCode]:
+    """atomic UPDATE：把 guardian_binding_codes 標記為已用。
+
+    僅當 used_at IS NULL 且 expires_at > now 時更新，rowcount=1 才視為成功。
+    回傳更新後的 ORM 物件；失敗回 None（已用 / 過期 / 不存在）。
+
+    claimer_user_id 在 bind-additional 流程是當前 user，liff bind 流程
+    是新建的 user.id（兩階段流程：先 atomic UPDATE 鎖定碼、再建 User，
+    最後再 update used_by_user_id）。
+    """
+    now = _now()
+    stmt = (
+        update(GuardianBindingCode)
+        .where(
+            GuardianBindingCode.code_hash == code_hash,
+            GuardianBindingCode.used_at.is_(None),
+            GuardianBindingCode.expires_at > now,
+        )
+        .values(used_at=now, used_by_user_id=claimer_user_id)
+    )
+    result = session.execute(stmt)
+    if result.rowcount != 1:
+        return None
+    binding = (
+        session.query(GuardianBindingCode)
+        .filter(GuardianBindingCode.code_hash == code_hash)
+        .first()
+    )
+    return binding
+
+
+def _username_for_line(line_user_id: str) -> str:
+    """家長 User 的 username 規則：parent_line_<完整 line_user_id>。
+
+    LINE userId 為全球唯一的 33 字元字串（U 開頭），不會撞號；username
+    欄位 String(50)，組合 ≤44 字元安全。
+    """
+    return f"parent_line_{line_user_id}"
+
+
+def _create_parent_user(session, line_user_id: str) -> User:
+    """建立 role='parent' User。password_hash 寫入永不匹配的 sentinel。"""
+    user = User(
+        employee_id=None,
+        username=_username_for_line(line_user_id),
+        password_hash="!LINE_ONLY",  # sentinel，verify_password 永不通過
+        role="parent",
+        permissions=0,
+        is_active=True,
+        must_change_password=False,
+        line_user_id=line_user_id,
+        token_version=0,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+# ── Pydantic ────────────────────────────────────────────────────────────
+
+
+class LiffLoginRequest(BaseModel):
+    id_token: str = Field(..., min_length=10)
+
+
+class BindRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=20)
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────
+
+
+@router.post("/liff-login")
+def liff_login(
+    payload: LiffLoginRequest,
+    request: Request,
+    response: Response,
+):
+    """LIFF 登入。家長前端先取得 id_token 再 POST。"""
+    ip = request.client.host if request.client else "unknown"
+    _check_ip_rate_limit(ip)
+
+    service = _get_line_login_service()
+    line_payload = service.verify_id_token(payload.id_token)
+    line_user_id = line_payload["sub"]
+
+    session = get_session()
+    try:
+        user = (
+            session.query(User)
+            .filter(User.line_user_id == line_user_id, User.is_active == True)
+            .first()
+        )
+        if user and user.role == "parent":
+            _issue_access_token(response, user)
+            user.last_login = _now()
+            session.commit()
+            return {
+                "status": "ok",
+                "user": {
+                    "user_id": user.id,
+                    "name": user.username,
+                    "role": "parent",
+                },
+            }
+
+        # 沒有對應家長帳號：發臨時 token，引導去 bind
+        _issue_bind_temp_token(response, line_user_id)
+        return {
+            "status": "need_binding",
+            "line_user_id": line_user_id,
+            "name_hint": line_payload.get("name"),
+        }
+    finally:
+        session.close()
+
+
+@router.post("/bind")
+def bind_first_child(
+    payload: BindRequest,
+    request: Request,
+    response: Response,
+):
+    """以綁定碼完成首次帳號綁定（建立 parent User 並掛 Guardian.user_id）。"""
+    line_user_id = _decode_bind_temp_token(request)
+    _check_bind_lockout(line_user_id)
+
+    code_hash = _hash_code(payload.code)
+    session = get_session()
+    try:
+        # 第一階段：先 atomic UPDATE 鎖定碼（claimer_user_id 暫填 NULL）
+        binding = _claim_binding_code_atomic(session, code_hash, claimer_user_id=None)
+        if binding is None:
+            session.rollback()
+            _record_bind_failure(line_user_id)
+            raise HTTPException(
+                status_code=400, detail="綁定碼無效、已使用或已過期"
+            )
+
+        # 防同 LINE userId 重複建：若已有 parent User，僅補綁這筆 Guardian.user_id
+        existing_user = (
+            session.query(User)
+            .filter(User.line_user_id == line_user_id, User.role == "parent")
+            .first()
+        )
+        if existing_user:
+            user = existing_user
+        else:
+            user = _create_parent_user(session, line_user_id)
+
+        # 第二階段：把 used_by_user_id 落印 + 設 Guardian.user_id
+        binding.used_by_user_id = user.id
+        guardian = (
+            session.query(Guardian)
+            .filter(Guardian.id == binding.guardian_id)
+            .first()
+        )
+        if guardian is None or guardian.deleted_at is not None:
+            session.rollback()
+            raise HTTPException(status_code=400, detail="此綁定碼對應的監護人已不存在")
+        guardian.user_id = user.id
+        user.last_login = _now()
+        session.commit()
+        session.refresh(user)
+
+        _clear_bind_failures(line_user_id)
+        _clear_bind_token_cookie(response)
+        _issue_access_token(response, user)
+
+        logger.warning(
+            "[parent-bind] guardian_id=%s user_id=%s line_user_id=%s",
+            guardian.id,
+            user.id,
+            line_user_id,
+        )
+        return {
+            "status": "ok",
+            "user": {
+                "user_id": user.id,
+                "name": user.username,
+                "role": "parent",
+            },
+        }
+    finally:
+        session.close()
+
+
+@router.post("/bind-additional")
+def bind_additional_child(
+    payload: BindRequest,
+    request: Request,
+    current_user: dict = Depends(require_parent_role()),
+):
+    """已登入家長以另一張綁定碼新增第二（含以上）個小孩。
+
+    使用既有 access_token，**不**新建 User；只把對應 Guardian.user_id
+    指向當前 user.id。
+    """
+    user_id = current_user["user_id"]
+    code_hash = _hash_code(payload.code)
+    session = get_session()
+    try:
+        binding = _claim_binding_code_atomic(session, code_hash, claimer_user_id=user_id)
+        if binding is None:
+            session.rollback()
+            raise HTTPException(
+                status_code=400, detail="綁定碼無效、已使用或已過期"
+            )
+        guardian = (
+            session.query(Guardian)
+            .filter(Guardian.id == binding.guardian_id)
+            .first()
+        )
+        if guardian is None or guardian.deleted_at is not None:
+            session.rollback()
+            raise HTTPException(status_code=400, detail="此綁定碼對應的監護人已不存在")
+        if guardian.user_id and guardian.user_id != user_id:
+            # 該 Guardian 已被別的 parent User 認領 → 即使取得了 code 也擋
+            session.rollback()
+            raise HTTPException(
+                status_code=400, detail="此監護人已綁定其他家長帳號"
+            )
+        guardian.user_id = user_id
+        session.commit()
+
+        logger.warning(
+            "[parent-bind-additional] guardian_id=%s user_id=%s",
+            guardian.id,
+            user_id,
+        )
+        return {"status": "ok", "guardian_id": guardian.id, "student_id": guardian.student_id}
+    finally:
+        session.close()
+
+
+@router.post("/logout", status_code=204)
+def parent_logout(
+    response: Response,
+    current_user: dict = Depends(require_parent_role()),
+):
+    """登出：清 cookie + bump token_version 使所有現有 token 立即失效。"""
+    user_id = current_user["user_id"]
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if user:
+            user.token_version = (user.token_version or 0) + 1
+            session.commit()
+    finally:
+        session.close()
+
+    clear_access_token_cookie(response)
+    _clear_bind_token_cookie(response)
+    return Response(status_code=204)

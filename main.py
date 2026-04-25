@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
 from services.line_service import LineService
+from services.line_login_service import LineLoginService
 
 # Routers
 from api.employees import router as employees_router, init_employee_services
@@ -76,6 +77,11 @@ from api.attachments import (
 )
 from api.portfolio import observations_router
 from api.student_health import router as student_health_router
+from api.parent_portal import (
+    parent_router as parent_portal_router,
+    admin_router as parent_admin_router,
+    init_parent_line_service,
+)
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -132,6 +138,10 @@ def _is_production() -> bool:
 insurance_service = InsuranceService()
 salary_engine = SalaryEngine(load_from_db=True)
 line_service = LineService()
+# 家長入口 LIFF 認證；channel_id 可為空，端點會回 503 直到正確設定
+line_login_service = LineLoginService(
+    channel_id=os.environ.get("LINE_LOGIN_CHANNEL_ID", "")
+)
 
 
 def on_startup():
@@ -397,6 +407,7 @@ init_portal_notify_services(line_service)
 init_webhook_service(line_service)
 init_gov_report_services(insurance_service)
 init_bonus_preview_services(salary_engine)
+init_parent_line_service(line_login_service)
 
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)
@@ -466,6 +477,9 @@ app.include_router(attachments_router)
 app.include_router(attachments_download_router)
 app.include_router(observations_router)
 app.include_router(student_health_router)
+# 家長入口
+app.include_router(parent_portal_router)
+app.include_router(parent_admin_router)
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）
