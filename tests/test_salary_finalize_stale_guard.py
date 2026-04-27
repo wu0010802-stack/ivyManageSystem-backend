@@ -204,7 +204,12 @@ class TestFinalizeStaleGuard:
 
         res = client.post(
             "/api/salaries/finalize-month",
-            json={"year": 2026, "month": 3, "force": True},
+            json={
+                "year": 2026,
+                "month": 3,
+                "force": True,
+                "force_reason": "stale 員工驗證需要強制封存(測試)",
+            },
         )
         assert res.status_code == 200, res.text
 
