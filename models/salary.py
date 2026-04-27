@@ -244,6 +244,14 @@ class SalaryRecord(Base):
     finalized_at = Column(DateTime, comment="結算時間")
     finalized_by = Column(String(50), comment="結算人")
 
+    needs_recalc = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="True 表示最後一次重算失敗或上游審核變動後未成功重算;封存時必須為 False",
+    )
+
     version = Column(
         Integer, nullable=False, default=1, server_default="1", comment="樂觀鎖版本號"
     )
@@ -263,6 +271,7 @@ class SalaryRecord(Base):
             "is_finalized",
         ),
         Index("ix_salary_ym_finalized", "salary_year", "salary_month", "is_finalized"),
+        Index("ix_salary_ym_needs_recalc", "salary_year", "salary_month", "needs_recalc"),
         Index("ix_salary_bonus_config_id", "bonus_config_id"),
         Index("ix_salary_attendance_policy_id", "attendance_policy_id"),
     )
