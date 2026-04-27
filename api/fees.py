@@ -7,10 +7,11 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import outerjoin, func, case
 from sqlalchemy.exc import IntegrityError
 
+from api.activity._shared import validate_payment_date
 from models.base import session_scope
 from models.classroom import Classroom, Student
 from models.fees import (
@@ -92,6 +93,13 @@ class PayRequest(BaseModel):
         pattern=r"^[A-Za-z0-9_-]+$",
         description="繳費冪等鍵（全域唯一；同 key 重送視為重試並回放先前結果）",
     )
+
+    # 與活動繳費同源守衛（禁未來日）；學費跨月分期合法，回補上限放寬至 90 天。
+    # Why: 缺此守衛會計可填未來日或回填遠古日期搬動財報歸月；放 90 天涵蓋學期跨季合法分期。
+    @field_validator("payment_date")
+    @classmethod
+    def _validate_payment_date(cls, v: date) -> date:
+        return validate_payment_date(v, back_limit_days=90)
 
 
 class RefundRequest(BaseModel):
@@ -810,8 +818,18 @@ def refund_fee_record(
         # ── A 錢守衛 ─────────────────────────────────────────────────
         # Pydantic 已強制 reason ≥ 5 字；此處再過一層 strip 並寫回 payload
         payload.reason = require_adjustment_reason(payload.reason)
-        # 大額退款需金流簽核權限
-        require_finance_approve(payload.amount, current_user, action_label="學費退款")
+        # 累積退款簽核（最嚴格）：以同 record 過去已退 + 本次金額判斷，
+        # 任一筆讓累積跨閾值即整筆需 ACTIVITY_PAYMENT_APPROVE。
+        # Why: 舊版只看本次 amount，會計可拆成多筆 NT$1000 連退繞過簽核。
+        prior_refunded = (
+            session.query(func.coalesce(func.sum(StudentFeeRefund.amount), 0))
+            .filter(StudentFeeRefund.record_id == record_id)
+            .scalar()
+        ) or 0
+        cumulative_refund = int(prior_refunded) + int(payload.amount)
+        require_finance_approve(
+            cumulative_refund, current_user, action_label="學費累積退款"
+        )
 
         operator = current_user.get("username") or current_user.get("name") or "unknown"
 

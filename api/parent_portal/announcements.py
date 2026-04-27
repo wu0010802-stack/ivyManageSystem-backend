@@ -50,9 +50,7 @@ def _build_visibility_subquery(session, user_id: int):
             and_(apr.scope == "classroom", apr.classroom_id.in_(classroom_ids))
         )
     if student_ids:
-        conditions.append(
-            and_(apr.scope == "student", apr.student_id.in_(student_ids))
-        )
+        conditions.append(and_(apr.scope == "student", apr.student_id.in_(student_ids)))
     if guardian_ids:
         conditions.append(
             and_(apr.scope == "guardian", apr.guardian_id.in_(guardian_ids))
@@ -77,9 +75,7 @@ def list_announcements(
         q = (
             session.query(Announcement)
             .filter(visible_subq)
-            .order_by(
-                Announcement.created_at.desc()
-            )
+            .order_by(Announcement.created_at.desc())
         )
         total = q.count()
         rows = q.offset(skip).limit(limit).all()
@@ -115,26 +111,30 @@ def list_announcements(
         session.close()
 
 
+def count_unread_for_user(session, user_id: int) -> int:
+    """家長未讀公告數（可見 minus AnnouncementParentRead）。
+
+    可被 home/summary 等彙總端點重用，避免再起一支 RTT。
+    """
+    cond = _build_visibility_subquery(session, user_id)
+    apr = AnnouncementParentRecipient
+    visible_subq = exists().where(and_(apr.announcement_id == Announcement.id, cond))
+    read_ids_select = select(AnnouncementParentRead.announcement_id).where(
+        AnnouncementParentRead.user_id == user_id
+    )
+    return (
+        session.query(Announcement)
+        .filter(visible_subq, ~Announcement.id.in_(read_ids_select))
+        .count()
+    )
+
+
 @router.get("/unread-count")
 def unread_count(current_user: dict = Depends(require_parent_role())):
     user_id = current_user["user_id"]
     session = get_session()
     try:
-        cond = _build_visibility_subquery(session, user_id)
-        apr = AnnouncementParentRecipient
-        visible_subq = exists().where(
-            and_(apr.announcement_id == Announcement.id, cond)
-        )
-        # 可見 minus 已讀（用 select() 避免 SAWarning Coercing Subquery）
-        read_ids_select = select(AnnouncementParentRead.announcement_id).where(
-            AnnouncementParentRead.user_id == user_id
-        )
-        cnt = (
-            session.query(Announcement)
-            .filter(visible_subq, ~Announcement.id.in_(read_ids_select))
-            .count()
-        )
-        return {"unread_count": cnt}
+        return {"unread_count": count_unread_for_user(session, user_id)}
     finally:
         session.close()
 
@@ -155,9 +155,7 @@ def mark_read(
             session.query(Announcement)
             .filter(
                 Announcement.id == announcement_id,
-                exists().where(
-                    and_(apr.announcement_id == Announcement.id, cond)
-                ),
+                exists().where(and_(apr.announcement_id == Announcement.id, cond)),
             )
             .first()
         )

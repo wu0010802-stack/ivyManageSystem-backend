@@ -22,6 +22,7 @@ from .attendance import router as attendance_router
 from .binding_admin import router as binding_admin_router
 from .events import router as events_router
 from .fees import router as fees_router
+from .home import router as home_router
 from .leaves import router as leaves_router
 from .profile import router as profile_router
 
@@ -37,6 +38,7 @@ parent_router = APIRouter(
 # 並一律經 _assert_student_owned 進行 IDOR 過濾。
 parent_router.include_router(auth_router)
 parent_router.include_router(profile_router)
+parent_router.include_router(home_router)
 parent_router.include_router(attendance_router)
 parent_router.include_router(announcements_router)
 parent_router.include_router(events_router)

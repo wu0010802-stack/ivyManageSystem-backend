@@ -16,6 +16,7 @@ from services.report_cache_service import report_cache_service
 from utils.auth import require_permission, require_staff_permission
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
 from utils.finance_guards import (
+    has_finance_approve,
     require_finance_approve,
     require_not_self_salary_record,
 )
@@ -46,7 +47,7 @@ _salary_calc_limiter = SlidingWindowLimiter(
 MAX_BULK_EMPLOYEES_SYNC = 300
 from fastapi import BackgroundTasks
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
@@ -818,6 +819,79 @@ def _parse_if_match(header_value: Optional[str]) -> Optional[int]:
         return None
 
 
+# 單筆欄位合理上限：從舊版 10,000,000 降為 500,000 — 涵蓋幼稚園業界合法月薪/一次性
+# 獎金上限（含 outlier），超過視為誤植或舞弊嘗試。
+# Why: 單欄位上限 1000 萬 × 可同時調多欄位 = 單次可偷數千萬。降至 50 萬可有效壓縮
+# 舞弊上限，且合法調整不受影響。
+_MANUAL_ADJUST_FIELD_MAX = 500_000.0
+
+
+class SalaryManualAdjustRequest(BaseModel):
+    # 必填原因：供稽核追責，避免「from 5000 to 100000」無上下文 audit log
+    adjustment_reason: str = Field(
+        ...,
+        min_length=5,
+        max_length=200,
+        description="手動調整原因（至少 5 字，例：員工自請補發、主管核准一次性獎勵、誤算修正）",
+    )
+    base_salary: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    performance_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    special_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    festival_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    overtime_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    overtime_pay: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    supervisor_dividend: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    meeting_overtime_pay: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    birthday_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    labor_insurance_employee: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    health_insurance_employee: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    pension_employee: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    leave_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    late_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    early_leave_deduction: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    missing_punch_deduction: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    meeting_absence_deduction: Optional[float] = Field(
+        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
+    )
+    absence_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    other_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+
+
+EDITABLE_SALARY_FIELDS = {
+    "base_salary": "底薪",
+    "performance_bonus": "績效獎金",
+    "special_bonus": "特別獎金",
+    "festival_bonus": "節慶獎金",
+    "overtime_bonus": "超額獎金",
+    "overtime_pay": "加班津貼",
+    "supervisor_dividend": "主管紅利",
+    "meeting_overtime_pay": "會議加班",
+    "birthday_bonus": "生日禮金",
+    "labor_insurance_employee": "勞保",
+    "health_insurance_employee": "健保",
+    "pension_employee": "勞退自提",
+    "leave_deduction": "請假扣款",
+    "late_deduction": "遲到扣款",
+    "early_leave_deduction": "早退扣款",
+    "missing_punch_deduction": "未打卡扣款",
+    "meeting_absence_deduction": "節慶獎金扣減",
+    "absence_deduction": "曠職扣款",
+    "other_deduction": "其他扣款",
+}
+
+
 @router.put("/salaries/{record_id}/manual-adjust")
 def manual_adjust_salary(
     record_id: int,
@@ -885,7 +959,7 @@ def manual_adjust_salary(
         old_meeting_absence = round(record.meeting_absence_deduction or 0)
 
         changed_parts = []
-        max_abs_delta = 0  # 供後續大額閾值審批判斷
+        total_abs_delta = 0  # 本次請求所有欄位變動絕對值合計（涵蓋拆欄繞過）
         for field, value in payload.items():
             if field not in EDITABLE_SALARY_FIELDS:
                 continue
@@ -897,17 +971,16 @@ def manual_adjust_salary(
             changed_parts.append(
                 f"{EDITABLE_SALARY_FIELDS[field]} {old_value}→{new_value}"
             )
-            delta = abs(new_value - old_value)
-            if delta > max_abs_delta:
-                max_abs_delta = delta
+            total_abs_delta += abs(new_value - old_value)
 
         if not changed_parts:
             raise HTTPException(status_code=400, detail="沒有實際變更")
 
-        # ── A 錢守衛：單欄位變動金額 > FINANCE_APPROVAL_THRESHOLD 需金流簽核權限 ──
-        # 舉例：把績效獎金從 5000 改成 100000（delta=95000）→ 需 ACTIVITY_PAYMENT_APPROVE
+        # ── A 錢守衛：本次所有欄位 |delta| 合計 > FINANCE_APPROVAL_THRESHOLD 需金流簽核 ──
+        # Why: 舊版用「單欄位最大變動」作門檻，會計可一次調 N 欄各 999，總和達數千元
+        # 而仍各自低於門檻，繞過 ACTIVITY_PAYMENT_APPROVE。改用合計門檻封死拆欄路徑。
         require_finance_approve(
-            max_abs_delta, current_user, action_label="薪資單欄位調整"
+            total_abs_delta, current_user, action_label="薪資單欄位調整總額"
         )
 
         # 連動：管理員只改 meeting_absence_deduction（未同時手動覆寫 festival_bonus）時，
@@ -1381,79 +1454,25 @@ class FinalizeMonthRequest(BaseModel):
             "若有員工當月在職但無薪資記錄，預設會拒絕封存以避免漏發。"
         ),
     )
+    force_reason: Optional[str] = Field(
+        None,
+        max_length=500,
+        description=(
+            "force=True 時必填的封存原因（≥ 10 字），會寫入每筆 record.remark "
+            "與 audit_summary，供日後稽核回溯為何漏發/略過完整性檢查。"
+        ),
+    )
 
-
-# 單筆欄位合理上限：從舊版 10,000,000 降為 500,000 — 涵蓋幼稚園業界合法月薪/一次性
-# 獎金上限（含 outlier），超過視為誤植或舞弊嘗試。
-# Why: 單欄位上限 1000 萬 × 可同時調多欄位 = 單次可偷數千萬。降至 50 萬可有效壓縮
-# 舞弊上限，且合法調整不受影響。
-_MANUAL_ADJUST_FIELD_MAX = 500_000.0
-
-
-class SalaryManualAdjustRequest(BaseModel):
-    # 必填原因：供稽核追責，避免「from 5000 to 100000」無上下文 audit log
-    adjustment_reason: str = Field(
-        ...,
-        min_length=5,
-        max_length=200,
-        description="手動調整原因（至少 5 字，例：員工自請補發、主管核准一次性獎勵、誤算修正）",
-    )
-    base_salary: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    performance_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    special_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    festival_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    overtime_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    overtime_pay: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    supervisor_dividend: Optional[float] = Field(
-        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
-    )
-    meeting_overtime_pay: Optional[float] = Field(
-        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
-    )
-    birthday_bonus: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    labor_insurance_employee: Optional[float] = Field(
-        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
-    )
-    health_insurance_employee: Optional[float] = Field(
-        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
-    )
-    pension_employee: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    leave_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    late_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    early_leave_deduction: Optional[float] = Field(
-        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
-    )
-    missing_punch_deduction: Optional[float] = Field(
-        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
-    )
-    meeting_absence_deduction: Optional[float] = Field(
-        None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX
-    )
-    absence_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-    other_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
-
-
-EDITABLE_SALARY_FIELDS = {
-    "base_salary": "底薪",
-    "performance_bonus": "績效獎金",
-    "special_bonus": "特別獎金",
-    "festival_bonus": "節慶獎金",
-    "overtime_bonus": "超額獎金",
-    "overtime_pay": "加班津貼",
-    "supervisor_dividend": "主管紅利",
-    "meeting_overtime_pay": "會議加班",
-    "birthday_bonus": "生日禮金",
-    "labor_insurance_employee": "勞保",
-    "health_insurance_employee": "健保",
-    "pension_employee": "勞退自提",
-    "leave_deduction": "請假扣款",
-    "late_deduction": "遲到扣款",
-    "early_leave_deduction": "早退扣款",
-    "missing_punch_deduction": "未打卡扣款",
-    "meeting_absence_deduction": "節慶獎金扣減",
-    "absence_deduction": "曠職扣款",
-    "other_deduction": "其他扣款",
-}
+    @model_validator(mode="after")
+    def _force_requires_reason(self):
+        if self.force:
+            cleaned = (self.force_reason or "").strip()
+            if len(cleaned) < 10:
+                raise ValueError(
+                    "force=True 時必須在 force_reason 填寫原因（至少 10 字）"
+                )
+            self.force_reason = cleaned
+        return self
 
 
 def _recalculate_salary_record_totals(record: SalaryRecord):
@@ -1552,10 +1571,23 @@ def _find_stale_salary_employees(session, year: int, month: int) -> list[dict]:
 @router.post("/salaries/finalize-month")
 def finalize_salary_month(
     data: FinalizeMonthRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
 ):
     """封存整月薪資（封存後禁止重新計算，需手動解封才能修改）"""
     from utils.advisory_lock import acquire_salary_lock
+
+    # ── force=True 必須具備 ACTIVITY_PAYMENT_APPROVE ────────────────
+    # Why: force 會略過 missing/stale 完整性檢查，等同允許漏發/封存舊資料；
+    # 拉高權限要求避免單一 SALARY_WRITE 即可一鍵封存。reason 由 schema 強制必填。
+    if data.force and not has_finance_approve(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "force=True 強制封存需具備『金流簽核』權限（ACTIVITY_PAYMENT_APPROVE），"
+                "請改由具該權限者執行，或先補齊缺漏/重算後再封存"
+            ),
+        )
 
     with session_scope() as session:
         # 整月鎖，阻止同月任何重算發生於封存期間
@@ -1575,6 +1607,15 @@ def finalize_salary_month(
                 status_code=404,
                 detail=f"{data.year} 年 {data.month} 月無可封存的薪資記錄（可能尚未計算，或全部已封存）",
             )
+
+        # force=True 路徑：先快照被略過的清單，稍後寫入 audit / 每筆 remark
+        skipped_missing: list[dict] = []
+        skipped_stale: list[dict] = []
+        if data.force:
+            skipped_missing = _find_missing_salary_employees(
+                session, data.year, data.month
+            )
+            skipped_stale = _find_stale_salary_employees(session, data.year, data.month)
 
         # 完整性檢查：當月在職員工是否都有薪資記錄（含已封存者）
         if not data.force:
@@ -1621,18 +1662,54 @@ def finalize_salary_month(
 
         now = datetime.now()
         operator = current_user.get("username") or current_user.get("name") or "管理員"
+
+        # force 路徑：把被略過的清單與原因寫進每筆 record.remark，留稽核痕跡
+        force_remark_suffix = ""
+        if data.force:
+            missing_summary = (
+                "、".join(f"{m['name']}(#{m['id']})" for m in skipped_missing[:20])
+                or "無"
+            )
+            stale_summary = (
+                "、".join(f"{s['name']}(#{s['id']})" for s in skipped_stale[:20])
+                or "無"
+            )
+            force_remark_suffix = (
+                f"\n[{now.strftime('%Y-%m-%d %H:%M')}] FORCE 封存（操作者：{operator}）"
+                f"\n原因：{data.force_reason}"
+                f"\n略過缺漏（{len(skipped_missing)} 人）：{missing_summary}"
+                f"\n略過待重算（{len(skipped_stale)} 人）：{stale_summary}"
+            )
+
         for r in records:
             r.is_finalized = True
             r.finalized_at = now
             r.finalized_by = operator
+            if force_remark_suffix:
+                r.remark = (r.remark or "") + force_remark_suffix
             _snapshot_svc.create_finalize_snapshot(session, r, operator)
         logger.info(
-            "整月薪資封存：%d/%d，共 %d 筆，操作者=%s",
+            "整月薪資封存：%d/%d，共 %d 筆，操作者=%s%s",
             data.year,
             data.month,
             len(records),
             operator,
+            (
+                f"，FORCE（缺漏 {len(skipped_missing)}/待重算 {len(skipped_stale)}）"
+                f"，原因={data.force_reason}"
+                if data.force
+                else ""
+            ),
         )
+
+        # AuditMiddleware summary：把 force 詳情塞進稽核 row（不會被 body mask 掉）
+        if data.force:
+            request.state.audit_summary = (
+                f"FORCE 封存 {data.year}/{data.month} 共 {len(records)} 筆"
+                f"（缺漏 {len(skipped_missing)}、待重算 {len(skipped_stale)}）"
+                f"；原因：{data.force_reason}；by {operator}"
+            )
+
         count = len(records)
         finalized_at_iso = now.isoformat()
 
@@ -1642,19 +1719,55 @@ def finalize_salary_month(
         "count": count,
         "finalized_by": operator,
         "finalized_at": finalized_at_iso,
+        "force": data.force,
+        "skipped_missing": skipped_missing if data.force else [],
+        "skipped_stale": skipped_stale if data.force else [],
     }
+
+
+class UnfinalizeSalaryRequest(BaseModel):
+    """解除單筆薪資封存的請求 schema。
+
+    解封等同打開「結帳鎖定」窗口讓上游資料可被修改後重新封存，是高風險操作。
+    比照 force 封存：要求原因 ≥10 字 + ACTIVITY_PAYMENT_APPROVE 二人覆核。
+    """
+
+    reason: str = Field(
+        ...,
+        min_length=10,
+        max_length=500,
+        description=(
+            "解封原因（至少 10 字）。會寫入 record.remark 與 audit_summary，供日後稽核"
+            "回溯為何重開結帳鎖定。"
+        ),
+    )
 
 
 @router.delete("/salaries/{record_id}/finalize")
 def unfinalize_salary(
     record_id: int,
+    data: UnfinalizeSalaryRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
 ):
-    """解除單筆薪資封存（危險操作，僅限 admin/hr，會記錄稽核備註）"""
+    """解除單筆薪資封存（危險操作，要求 reason + ACTIVITY_PAYMENT_APPROVE）"""
     if current_user.get("role") not in ("admin", "hr"):
         raise HTTPException(
             status_code=403, detail="薪資封存解除僅限系統管理員或人事主管操作"
         )
+    # ── 比照 force 封存：解封等於重開結帳鎖定窗口，需金流簽核 ───────────────
+    # Why: 原設計 unfinalize 只要 SALARY_WRITE + admin/hr，操作者可先解封單筆、
+    # 改上游資料/手動調整、再重新封存，繞過原本封存代表的結帳語意。
+    if not has_finance_approve(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "解除薪資封存需具備『金流簽核』權限（ACTIVITY_PAYMENT_APPROVE），"
+                "請改由具該權限者執行"
+            ),
+        )
+    reason_cleaned = data.reason.strip()
+
     from utils.advisory_lock import acquire_salary_lock
 
     with session_scope() as session:
@@ -1663,6 +1776,10 @@ def unfinalize_salary(
         )
         if not record:
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
+        # 不得解除自己的薪資封存（避免一人完成「封存→解封→自我調整」）
+        require_not_self_salary_record(
+            current_user, record.employee_id, action="解除自己的薪資封存"
+        )
         acquire_salary_lock(
             session,
             employee_id=record.employee_id,
@@ -1673,18 +1790,35 @@ def unfinalize_salary(
         if not record.is_finalized:
             raise HTTPException(status_code=409, detail="此筆薪資尚未封存，無需解封")
         operator = current_user.get("username") or current_user.get("name") or "管理員"
+        finalized_by_before = record.finalized_by or "未知"
+        finalized_at_before = (
+            record.finalized_at.isoformat() if record.finalized_at else "未知"
+        )
         logger.warning(
-            "薪資封存解除！record_id=%d，employee_id=%d，%d/%d，操作者=%s",
+            "薪資封存解除！record_id=%d，employee_id=%d，%d/%d，操作者=%s，原因=%s",
             record_id,
             record.employee_id,
             record.salary_year,
             record.salary_month,
             operator,
+            reason_cleaned,
         )
         record.is_finalized = False
-        audit_note = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 封存解除，操作者：{operator}"
+        audit_note = (
+            f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 封存解除"
+            f"（操作者：{operator}）"
+            f"\n原封存：{finalized_by_before} @ {finalized_at_before}"
+            f"\n原因：{reason_cleaned}"
+        )
         record.remark = (record.remark or "") + audit_note
-        return {"message": "已解除封存，操作記錄已寫入備註欄位"}
+        request.state.audit_summary = (
+            f"解除薪資封存：record_id={record_id} employee_id={record.employee_id} "
+            f"{record.salary_year}/{record.salary_month}；原封存：{finalized_by_before}；"
+            f"操作者：{operator}；原因：{reason_cleaned}"
+        )
+    # 解封後 finance_summary 快取需失效（已封存月份的薪資金額會回變動態）
+    _invalidate_finance_summary_cache()
+    return {"message": "已解除封存，操作記錄已寫入備註欄位"}
 
 
 # ============ Salary Snapshots ============

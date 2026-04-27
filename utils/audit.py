@@ -95,7 +95,12 @@ ENTITY_LABELS = {
     "activity_settings": "才藝設定",
 }
 
-ACTION_LABELS = {"CREATE": "新增", "UPDATE": "修改", "DELETE": "刪除"}
+ACTION_LABELS = {
+    "CREATE": "新增",
+    "UPDATE": "修改",
+    "DELETE": "刪除",
+    "EXPORT": "匯出",
+}
 
 
 def _parse_entity_type(path):
@@ -182,6 +187,54 @@ def _schedule_audit_write(payload: dict) -> None:
     task = loop.create_task(asyncio.to_thread(_write_audit_sync, payload))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+def write_explicit_audit(
+    request: Request,
+    *,
+    action: str,
+    entity_type: str,
+    summary: str,
+    entity_id: str | None = None,
+    changes: dict | None = None,
+) -> None:
+    """為 GET 匯出 / 敏感讀取顯式寫 AuditLog。
+
+    Why: AuditMiddleware 只審計 POST/PUT/PATCH/DELETE,但匯出端點通常是 GET,
+    且會輸出 PII / 銀行帳號等敏感資料。此 helper 讓這類路徑留下不可推卸的
+    稽核痕跡(操作人、IP、筆數、是否含敏感欄位等)。
+
+    與 AuditMiddleware 同樣採 fire-and-forget 背景寫入,失敗只記 logger,
+    不會阻斷或影響原請求回應。
+    """
+    try:
+        user_id, username = _extract_user_from_header(request)
+        ip = request.client.host if request.client else None
+        changes_json = None
+        if changes is not None:
+            try:
+                changes_json = json.dumps(changes, ensure_ascii=False, default=str)
+                if len(changes_json) > 64 * 1024:
+                    changes_json = json.dumps(
+                        {"_truncated": True, "size": len(changes_json)}
+                    )
+            except (TypeError, ValueError) as e:
+                logger.warning(f"Explicit audit changes serialize failed: {e}")
+
+        payload = dict(
+            user_id=user_id,
+            username=username or "anonymous",
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            summary=summary,
+            changes=changes_json,
+            ip_address=ip,
+            created_at=datetime.now(),
+        )
+        _schedule_audit_write(payload)
+    except Exception as e:
+        logger.warning(f"Explicit audit write failed: {e}")
 
 
 class AuditMiddleware(BaseHTTPMiddleware):

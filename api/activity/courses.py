@@ -27,6 +27,7 @@ from ._shared import (
     _not_found,
     _duplicate_name,
     _invalidate_activity_dashboard_caches,
+    require_approve_for_high_price,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,9 @@ async def create_course(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """新增課程"""
+    require_approve_for_high_price(
+        body.price, current_user, label=f"課程「{body.name}」單價"
+    )
     session = get_session()
     try:
         sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
@@ -305,6 +309,10 @@ async def update_course(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新課程"""
+    if body.price is not None:
+        require_approve_for_high_price(
+            body.price, current_user, label=f"課程 #{course_id} 新單價"
+        )
     session = get_session()
     try:
         course = (

@@ -12,9 +12,10 @@ import logging
 import calendar as cal_module
 from datetime import date
 from io import BytesIO
+from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -23,9 +24,13 @@ from sqlalchemy import or_, and_
 from models.database import get_session, Employee, SalaryRecord
 from services.salary.insurance_salary import resolve_insurance_salary_raw
 from utils.auth import require_staff_permission
+from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
 from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
+
+# 政府申報 force 模式必填原因最短字數（高於一般金流的 5 字，避免敷衍繞過封存）
+_GOV_FORCE_REASON_MIN_LENGTH = 10
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +172,108 @@ def _salary_map(session, emp_ids: list, year: int, month: int) -> dict:
     return {r.employee_id: r for r in records}
 
 
+def _assert_salary_period_finalized(
+    session,
+    employees: list,
+    year: int,
+    month: Optional[int],
+    *,
+    force: bool,
+    force_reason: Optional[str],
+    current_user: dict,
+) -> None:
+    """匯出前驗證該期間在職員工的 SalaryRecord 必須 is_finalized=True 且 needs_recalc=False。
+
+    Why: 舊版 _salary_map 不檢查封存狀態，會計可在草稿/重算中匯出政府申報，
+    讓正式申報跟最終薪資對不上。本守衛把該期間任一員工未封存或標記重算的 record
+    視為阻塞；提供 force=True+force_reason+ACTIVITY_PAYMENT_APPROVE 三條件繞過。
+
+    - month=None 表年度匯出（withholding）：對該年內既存的所有 record 檢查
+    - month=int 表月度匯出：對該月每位 active 員工檢查必有封存且非 stale 的 record
+    """
+    if force:
+        if not has_finance_approve(current_user):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "force 模式匯出需具備『金流簽核』權限"
+                    "（ACTIVITY_PAYMENT_APPROVE）才能繞過封存守衛"
+                ),
+            )
+        cleaned = (force_reason or "").strip()
+        if len(cleaned) < _GOV_FORCE_REASON_MIN_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"force=true 必須提供 force_reason "
+                    f"（≥ {_GOV_FORCE_REASON_MIN_LENGTH} 字）說明繞過封存的具體原因"
+                ),
+            )
+        logger.warning(
+            "政府申報 FORCE 匯出（繞過封存守衛）：year=%s month=%s by=%s reason=%s",
+            year,
+            month,
+            current_user.get("username", ""),
+            cleaned,
+        )
+        return
+
+    emp_ids = [e.id for e in employees]
+    if not emp_ids:
+        return
+
+    q = session.query(
+        SalaryRecord.employee_id,
+        SalaryRecord.salary_year,
+        SalaryRecord.salary_month,
+        SalaryRecord.is_finalized,
+        SalaryRecord.needs_recalc,
+    ).filter(SalaryRecord.employee_id.in_(emp_ids))
+    if month is not None:
+        q = q.filter(
+            SalaryRecord.salary_year == year, SalaryRecord.salary_month == month
+        )
+    else:
+        q = q.filter(SalaryRecord.salary_year == year)
+    rows = q.all()
+
+    name_map = {e.id: e.name for e in employees}
+    issues: list[str] = []
+
+    if month is not None:
+        record_map = {r.employee_id: r for r in rows}
+        for emp in employees:
+            r = record_map.get(emp.id)
+            label = f"#{emp.id} {emp.name}"
+            if r is None:
+                issues.append(f"{label}：缺 {year}-{month:02d} 薪資紀錄")
+            elif not r.is_finalized:
+                issues.append(f"{label}：{year}-{month:02d} 尚未封存")
+            elif r.needs_recalc:
+                issues.append(f"{label}：{year}-{month:02d} 標記待重算")
+    else:
+        for r in rows:
+            label = f"#{r.employee_id} {name_map.get(r.employee_id, r.employee_id)}"
+            ym = f"{r.salary_year}-{r.salary_month:02d}"
+            if not r.is_finalized:
+                issues.append(f"{label}：{ym} 尚未封存")
+            elif r.needs_recalc:
+                issues.append(f"{label}：{ym} 標記待重算")
+
+    if issues:
+        sample = "\n".join(issues[:10])
+        more = f"\n…還有 {len(issues) - 10} 筆未列出" if len(issues) > 10 else ""
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"以下薪資紀錄尚未封存或標記待重算，無法匯出政府申報：\n{sample}{more}\n\n"
+                "請先至薪資管理頁面完成封存，"
+                "或於確認業務需要時加 query：force=true&force_reason=...（≥ "
+                f"{_GOV_FORCE_REASON_MIN_LENGTH} 字、需金流簽核權限）強制匯出。"
+            ),
+        )
+
+
 def _resolve_insured(emp: Employee) -> int:
     """用 resolve_insurance_salary_raw 取合法投保基準（時薪員工會套 hourly × 176）。
 
@@ -205,6 +312,12 @@ def export_labor_insurance(
     fmt: str = Query("xlsx", description="xlsx（Excel）或 txt（純文字）"),
     employer_name: str = Query("（請填入投保單位名稱）", description="投保單位名稱"),
     employer_code: str = Query("（請填入投保單位代號）", description="投保單位代號"),
+    force: bool = Query(
+        False, description="繞過封存守衛（需金流簽核權限+force_reason）"
+    ),
+    force_reason: Optional[str] = Query(
+        None, description="force=true 時必填的繞過原因"
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
@@ -212,6 +325,15 @@ def export_labor_insurance(
     session = get_session()
     try:
         employees = _active_employees(session, year, month)
+        _assert_salary_period_finalized(
+            session,
+            employees,
+            year,
+            month,
+            force=force,
+            force_reason=force_reason,
+            current_user=current_user,
+        )
         smap = _salary_map(session, [e.id for e in employees], year, month)
 
         rows = []
@@ -374,6 +496,12 @@ def export_health_insurance(
     month: int = Query(..., ge=1, le=12),
     employer_name: str = Query("（請填入投保單位名稱）"),
     employer_code: str = Query("（請填入投保單位代號）"),
+    force: bool = Query(
+        False, description="繞過封存守衛（需金流簽核權限+force_reason）"
+    ),
+    force_reason: Optional[str] = Query(
+        None, description="force=true 時必填的繞過原因"
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
@@ -381,6 +509,15 @@ def export_health_insurance(
     session = get_session()
     try:
         employees = _active_employees(session, year, month)
+        _assert_salary_period_finalized(
+            session,
+            employees,
+            year,
+            month,
+            force=force,
+            force_reason=force_reason,
+            current_user=current_user,
+        )
         smap = _salary_map(session, [e.id for e in employees], year, month)
 
         rows = []
@@ -519,6 +656,12 @@ def export_withholding(
     year: int = Query(..., ge=2000, le=2100),
     employer_name: str = Query("（請填入扣繳義務人名稱）"),
     employer_id: str = Query("（請填入統一編號）"),
+    force: bool = Query(
+        False, description="繞過封存守衛（需金流簽核權限+force_reason）"
+    ),
+    force_reason: Optional[str] = Query(
+        None, description="force=true 時必填的繞過原因"
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
@@ -530,6 +673,18 @@ def export_withholding(
             .join(Employee, SalaryRecord.employee_id == Employee.id)
             .filter(SalaryRecord.salary_year == year)
             .all()
+        )
+
+        # 年度匯出守衛：對既存 record 檢查 finalize/stale；不偵測缺月（部分在職員工正常）
+        emp_for_guard = list({sr.employee_id: emp for sr, emp in records}.values())
+        _assert_salary_period_finalized(
+            session,
+            emp_for_guard,
+            year,
+            None,
+            force=force,
+            force_reason=force_reason,
+            current_user=current_user,
         )
 
         agg: dict[int, dict] = {}
@@ -649,6 +804,12 @@ def export_pension(
     month: int = Query(..., ge=1, le=12),
     employer_name: str = Query("（請填入雇主名稱）"),
     employer_code: str = Query("（請填入雇主代號）"),
+    force: bool = Query(
+        False, description="繞過封存守衛（需金流簽核權限+force_reason）"
+    ),
+    force_reason: Optional[str] = Query(
+        None, description="force=true 時必填的繞過原因"
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     _: None = Depends(_rate_limit),
 ):
@@ -656,6 +817,15 @@ def export_pension(
     session = get_session()
     try:
         employees = _active_employees(session, year, month)
+        _assert_salary_period_finalized(
+            session,
+            employees,
+            year,
+            month,
+            force=force,
+            force_reason=force_reason,
+            current_user=current_user,
+        )
         smap = _salary_map(session, [e.id for e in employees], year, month)
 
         rows = []

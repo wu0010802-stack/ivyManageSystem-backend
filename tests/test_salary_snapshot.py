@@ -469,7 +469,12 @@ class TestFinalizeIntegration:
         _seed_admin_and_login(sf, client)
         client.post("/api/salaries/finalize-month", json={"year": 2026, "month": 3})
 
-        res = client.delete(f"/api/salaries/{rec_id}/finalize")
+        # 解封需帶 reason ≥10 字（2026-04-27 守衛）
+        res = client.request(
+            "DELETE",
+            f"/api/salaries/{rec_id}/finalize",
+            json={"reason": "回補上游遲到資料後重新封存"},
+        )
         assert res.status_code == 200
         # 解封後 finalize snapshot 仍保留
         with sf() as session:

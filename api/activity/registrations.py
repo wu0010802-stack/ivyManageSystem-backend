@@ -35,6 +35,10 @@ from utils.excel_utils import SafeWorksheet
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
+from utils.finance_guards import (
+    FINANCE_APPROVAL_THRESHOLD,
+    require_finance_approve,
+)
 
 from ._shared import (
     PaymentUpdate,
@@ -146,6 +150,24 @@ async def batch_update_payment(
             _batch_calc_total_amounts(session, unpaid_reg_ids) if unpaid_reg_ids else {}
         )
 
+        # ── 整批 shortfall 累積簽核 ────────────────────────────────────
+        # Why: 批次補齊把欠費直接寫成 system payment，會計可一鍵把報表變漂亮；
+        # 整批 shortfall 合計超過閾值即整批需具備 ACTIVITY_PAYMENT_APPROVE 才能執行
+        total_shortfall = 0
+        for reg in regs:
+            if not reg.is_paid:
+                total_amount = total_amount_map.get(reg.id, 0)
+                shortfall = total_amount - (reg.paid_amount or 0)
+                if shortfall > 0:
+                    total_shortfall += shortfall
+        if total_shortfall > 0:
+            require_finance_approve(
+                total_shortfall,
+                current_user,
+                action_label=f"批次補齊整批合計 NT${total_shortfall:,}",
+            )
+
+        notes_text = f"（批次標記已繳費自動補齊：{body.reason}）"
         for reg in regs:
             if not reg.is_paid:
                 total_amount = total_amount_map.get(reg.id, 0)
@@ -157,7 +179,7 @@ async def batch_update_payment(
                         amount=shortfall,
                         payment_date=today,
                         payment_method=SYSTEM_RECONCILE_METHOD,
-                        notes="（批次標記已繳費自動補齊）",
+                        notes=notes_text,
                         operator=operator,
                     )
                     session.add(rec)
@@ -168,7 +190,7 @@ async def batch_update_payment(
                 reg.id,
                 reg.student_name,
                 "批次更新付款狀態",
-                "付款狀態批次更新為：已繳費",
+                f"付款狀態批次更新為：已繳費（原因：{body.reason}）",
                 operator,
             )
 
@@ -397,8 +419,23 @@ async def export_payment_report(
             ws1.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
 
         # ── 工作表二：繳費明細 ──────────────────────────────────────────
+        # 軟刪（voided）紀錄獨立標示：類型欄加「（已作廢）」、新增作廢欄位顯示作廢人/
+        # 時間/原因，避免與有效流水混為一談；總覽工作表的金額計算已排除 voided。
         ws2 = SafeWorksheet(wb.create_sheet(title="繳費明細"))
-        headers2 = ["學生", "班級", "類型", "金額", "方式", "日期", "操作人員", "備註"]
+        headers2 = [
+            "學生",
+            "班級",
+            "類型",
+            "金額",
+            "方式",
+            "日期",
+            "操作人員",
+            "備註",
+            "作廢狀態",
+            "作廢人",
+            "作廢時間",
+            "作廢原因",
+        ]
         for col, h in enumerate(headers2, start=1):
             cell = ws2.cell(row=1, column=col, value=h)
             cell.font = _HEADER_FONT
@@ -408,16 +445,24 @@ async def export_payment_report(
         reg_meta = {r.id: r for r in regs}
         for pr in payment_records:
             reg = reg_meta.get(pr.registration_id)
+            is_voided = pr.voided_at is not None
+            type_label = "繳費" if pr.type == "payment" else "退費"
+            if is_voided:
+                type_label = f"{type_label}（已作廢）"
             ws2.append(
                 [
                     reg.student_name if reg else "",
                     reg.class_name if reg else "",
-                    "繳費" if pr.type == "payment" else "退費",
+                    type_label,
                     pr.amount,
                     pr.payment_method or "",
                     pr.payment_date.isoformat() if pr.payment_date else "",
                     pr.operator or "",
                     pr.notes or "",
+                    "已作廢" if is_voided else "",
+                    pr.voided_by or "",
+                    pr.voided_at.isoformat() if pr.voided_at else "",
+                    pr.void_reason or "",
                 ]
             )
 
@@ -1525,13 +1570,52 @@ async def update_payment(
             if not reg.is_paid:
                 shortfall = total_amount - (reg.paid_amount or 0)
                 if shortfall > 0:
+                    # ── 補齊欠費守衛 ──────────────────────────────────────
+                    # 原設計直接寫「系統補齊」payment 補上欠費，無 method/原因/簽核，
+                    # 會計可逐筆把欠費轉成收入流水。對齊 is_paid=False 嚴格度：
+                    # 1. 必填人工 payment_method（拒絕 SYSTEM_RECONCILE_METHOD）
+                    # 2. 必填 ≥5 字 payment_reason
+                    # 3. shortfall 過 FINANCE_APPROVAL_THRESHOLD 需金流簽核
+                    method_cleaned = (body.payment_method or "").strip()
+                    if not method_cleaned:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"標記已繳費需補齊 NT${shortfall} 欠費，"
+                                "請於 payment_method 填入實際收款方式"
+                                "（如：現金/轉帳/其他），不接受系統補齊"
+                            ),
+                        )
+                    if method_cleaned == SYSTEM_RECONCILE_METHOD:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"payment_method 不可填入「{SYSTEM_RECONCILE_METHOD}」，"
+                                "請填寫實際收款方式以利稽核"
+                            ),
+                        )
+                    reason_cleaned = (body.payment_reason or "").strip()
+                    if len(reason_cleaned) < MIN_REFUND_REASON_LENGTH:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"標記已繳費需補齊 NT${shortfall}，"
+                                f"請於 payment_reason 填寫原因（≥ {MIN_REFUND_REASON_LENGTH} 字）"
+                            ),
+                        )
+                    require_finance_approve(
+                        shortfall,
+                        current_user,
+                        threshold=FINANCE_APPROVAL_THRESHOLD,
+                        action_label="補齊欠費金額",
+                    )
                     rec = ActivityPaymentRecord(
                         registration_id=registration_id,
                         type="payment",
                         amount=shortfall,
                         payment_date=today,
-                        payment_method=SYSTEM_RECONCILE_METHOD,
-                        notes="（標記已繳費自動補齊）",
+                        payment_method=method_cleaned,
+                        notes=f"（標記已繳費補齊）方式：{method_cleaned}；原因：{reason_cleaned}",
                         operator=operator,
                     )
                     session.add(rec)
@@ -2193,19 +2277,38 @@ async def add_registration_payment(
         # 已簽核日守衛（payment_date 落在 daily-close 之日則拒絕）
         _require_daily_close_unlocked(session, body.payment_date)
 
-        # ── 退費專屬守衛 ─────────────────────────────────────────────
+        # ── 退費 reason 必填（schema 已強制；此處 cleaned 並覆寫）────
         # Pydantic 已在 schema 層強制 type=refund 時 notes ≥ MIN_REFUND_REASON_LENGTH；
         # 此處再檢一次（防 schema 日後被放寬）並處理 cleaned notes
         if body.type == "refund":
             cleaned_reason = require_refund_reason(body.notes)
             body.notes = cleaned_reason
-            # 金額閾值：超過則必須具備 ACTIVITY_PAYMENT_APPROVE
-            require_approve_for_large_refund(body.amount, current_user)
 
         # 行級鎖住該 registration，防併發繳/退費 lost update
         reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
+
+        # ── 累積退費簽核（必須在 _lock_registration 之後）─────────────
+        # 鎖之後才查 prior_refunded，確保兩個併發小額退費不會各自看到相同舊累積值
+        # 而各自通過簽核門檻；以同 registration 過去未作廢的退費 + 本次金額判斷，
+        # 任一筆讓累積跨閾值即整筆需 ACTIVITY_PAYMENT_APPROVE。
+        # Why: 舊版在 lock 前就算 prior_refunded，存在 race window；舊版亦有「只看本次
+        # body.amount」的拆單問題。本次累積簽核同時封死兩條繞過路徑。
+        if body.type == "refund":
+            prior_refunded = (
+                session.query(func.coalesce(func.sum(ActivityPaymentRecord.amount), 0))
+                .filter(
+                    ActivityPaymentRecord.registration_id == registration_id,
+                    ActivityPaymentRecord.type == "refund",
+                    ActivityPaymentRecord.voided_at.is_(None),
+                )
+                .scalar()
+            ) or 0
+            cumulative_refund = int(prior_refunded) + int(body.amount)
+            require_approve_for_large_refund(
+                cumulative_refund, current_user, label="活動累積退費總額"
+            )
 
         operator = current_user.get("username", "")
 

@@ -1401,7 +1401,11 @@ class TestPosDailyClose:
             ).status_code
             == 201
         )
-        res = client.delete(f"/api/activity/pos/daily-close/{target.isoformat()}")
+        res = client.request(
+            "DELETE",
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"reason": "盤點後發現有漏記交易，需重簽"},
+        )
         assert res.status_code == 204
         assert res.content == b""
 
@@ -1423,6 +1427,40 @@ class TestPosDailyClose:
             assert cancel_log.doc_id == int(target.strftime("%Y%m%d"))
             assert "解鎖" in (cancel_log.comment or "")
             assert "原簽核人 pos_admin" in (cancel_log.comment or "")
+            # 新增：comment 應包含原 snapshot 摘要與原因
+            assert "snapshot" in (cancel_log.comment or "")
+            assert "盤點後發現有漏記交易" in (cancel_log.comment or "")
+
+    def test_unlock_without_reason_rejected_422(self, pos_client):
+        """解鎖必填 reason ≥ 10 字（防止無稽核軌跡的解鎖重簽）。"""
+        client, sf = pos_client
+        target = date.today() - timedelta(days=1)
+        with sf() as s:
+            _create_admin(s, permissions=self.APPROVE_PERMS)
+            reg = _make_reg_minimal(s, student_name="X")
+            _add_payment(
+                s, reg.id, type_="payment", amount=100, method="現金", day=target
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+        assert (
+            client.post(
+                f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+            ).status_code
+            == 201
+        )
+        # 沒有 body
+        res = client.request(
+            "DELETE", f"/api/activity/pos/daily-close/{target.isoformat()}"
+        )
+        assert res.status_code == 422
+        # 太短
+        res = client.request(
+            "DELETE",
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"reason": "短"},
+        )
+        assert res.status_code == 422
 
     def test_unlock_nonexistent_returns_404(self, pos_client):
         client, sf = pos_client
@@ -1431,7 +1469,11 @@ class TestPosDailyClose:
             _create_admin(s, permissions=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
-        res = client.delete(f"/api/activity/pos/daily-close/{target.isoformat()}")
+        res = client.request(
+            "DELETE",
+            f"/api/activity/pos/daily-close/{target.isoformat()}",
+            json={"reason": "測試解鎖不存在的日期"},
+        )
         assert res.status_code == 404
 
     def test_full_cycle_approve_unlock_reapprove_captures_new_tx(self, pos_client):
@@ -1461,8 +1503,10 @@ class TestPosDailyClose:
             s.commit()
 
         assert (
-            client.delete(
-                f"/api/activity/pos/daily-close/{target.isoformat()}"
+            client.request(
+                "DELETE",
+                f"/api/activity/pos/daily-close/{target.isoformat()}",
+                json={"reason": "補登新交易後需重簽以更新總額"},
             ).status_code
             == 204
         )
@@ -1516,8 +1560,10 @@ class TestPosDailyClose:
             == 403
         )
         assert (
-            client.delete(
-                f"/api/activity/pos/daily-close/{target.isoformat()}"
+            client.request(
+                "DELETE",
+                f"/api/activity/pos/daily-close/{target.isoformat()}",
+                json={"reason": "權限測試：不應允許執行"},
             ).status_code
             == 403
         )

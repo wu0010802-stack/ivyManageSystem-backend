@@ -8,7 +8,8 @@ import calendar as cal_module
 from datetime import date, timedelta, time
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from utils.audit import write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
@@ -130,6 +131,7 @@ def _mask_bank_account(account: str | None) -> str:
 
 @router.get("/employees")
 def export_employees(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
@@ -144,11 +146,29 @@ def export_employees(
         can_view_full_account = has_permission(
             current_user.get("permissions", 0), Permission.SALARY_WRITE
         )
+        # 顯式寫 AuditLog:GET 匯出不會經 AuditMiddleware,但本端會輸出
+        # 全員姓名/聯絡電話/銀行帳號等敏感資料。is_full_bank_account=True 時
+        # 表示完整薪轉帳號被匯出,稽核必須看得見此事件。
+        export_count = len(employees)
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="employee",
+            summary=(
+                f"匯出員工名冊({export_count} 筆,"
+                f"{'含完整銀行帳號' if can_view_full_account else '銀行帳號遮罩'})"
+            ),
+            changes={
+                "count": export_count,
+                "is_full_bank_account": bool(can_view_full_account),
+            },
+        )
         if can_view_full_account:
             logger.warning(
-                "員工名冊含完整銀行帳號已匯出 by user=%s role=%s",
+                "員工名冊含完整銀行帳號已匯出 by user=%s role=%s count=%d",
                 current_user.get("username"),
                 current_user.get("role"),
+                export_count,
             )
 
         wb = Workbook()

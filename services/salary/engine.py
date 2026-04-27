@@ -1804,19 +1804,40 @@ class SalaryEngine:
             .all()
         )
 
-        late_count = sum(1 for a in attendances if a.is_late)
-        early_count = sum(1 for a in attendances if a.is_early_leave)
-        missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
-        missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
-        total_late_minutes = sum(a.late_minutes or 0 for a in attendances if a.is_late)
+        # admin_waive 標記的考勤異常薪資端視為已豁免（不計入遲到/早退/缺打卡）
+        from .utils import is_attendance_waived
+
+        late_count = sum(
+            1 for a in attendances if a.is_late and not is_attendance_waived(a)
+        )
+        early_count = sum(
+            1 for a in attendances if a.is_early_leave and not is_attendance_waived(a)
+        )
+        missing_in = sum(
+            1
+            for a in attendances
+            if a.is_missing_punch_in and not is_attendance_waived(a)
+        )
+        missing_out = sum(
+            1
+            for a in attendances
+            if a.is_missing_punch_out and not is_attendance_waived(a)
+        )
+        total_late_minutes = sum(
+            a.late_minutes or 0
+            for a in attendances
+            if a.is_late and not is_attendance_waived(a)
+        )
         total_early_minutes = sum(
-            a.early_leave_minutes or 0 for a in attendances if a.is_early_leave
+            a.early_leave_minutes or 0
+            for a in attendances
+            if a.is_early_leave and not is_attendance_waived(a)
         )
 
         late_details = [
             a.late_minutes or 0
             for a in attendances
-            if a.is_late and (a.late_minutes or 0) > 0
+            if a.is_late and not is_attendance_waived(a) and (a.late_minutes or 0) > 0
         ]
         emp_dict["_late_details"] = late_details
 
@@ -2702,23 +2723,46 @@ class SalaryEngine:
                     emp_dict = self._load_emp_dict(emp)
 
                     # ── 考勤統計（使用預載）
+                    # admin_waive 標記的考勤異常薪資端視為已豁免（不計入遲到/早退/缺打卡）
+                    from .utils import is_attendance_waived
+
                     attendances = att_by_emp[emp.id]
-                    late_count = sum(1 for a in attendances if a.is_late)
-                    early_count = sum(1 for a in attendances if a.is_early_leave)
-                    missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
-                    missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
+                    late_count = sum(
+                        1
+                        for a in attendances
+                        if a.is_late and not is_attendance_waived(a)
+                    )
+                    early_count = sum(
+                        1
+                        for a in attendances
+                        if a.is_early_leave and not is_attendance_waived(a)
+                    )
+                    missing_in = sum(
+                        1
+                        for a in attendances
+                        if a.is_missing_punch_in and not is_attendance_waived(a)
+                    )
+                    missing_out = sum(
+                        1
+                        for a in attendances
+                        if a.is_missing_punch_out and not is_attendance_waived(a)
+                    )
                     total_late_minutes = sum(
-                        a.late_minutes or 0 for a in attendances if a.is_late
+                        a.late_minutes or 0
+                        for a in attendances
+                        if a.is_late and not is_attendance_waived(a)
                     )
                     total_early_minutes = sum(
                         a.early_leave_minutes or 0
                         for a in attendances
-                        if a.is_early_leave
+                        if a.is_early_leave and not is_attendance_waived(a)
                     )
                     emp_dict["_late_details"] = [
                         a.late_minutes or 0
                         for a in attendances
-                        if a.is_late and (a.late_minutes or 0) > 0
+                        if a.is_late
+                        and not is_attendance_waived(a)
+                        and (a.late_minutes or 0) > 0
                     ]
 
                     if emp.employee_type == "hourly":

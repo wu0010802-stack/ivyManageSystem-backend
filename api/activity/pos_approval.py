@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 
 from models.database import (
@@ -50,6 +50,35 @@ class DailyCloseCreate(BaseModel):
     actual_cash_count: Optional[int] = Field(
         None, ge=0, le=9_999_999, description="實際現金盤點金額（可選）"
     )
+
+
+_UNLOCK_REASON_MIN_LENGTH = 10
+
+
+class DailyCloseUnlock(BaseModel):
+    """解鎖日結簽核的請求；reason 必填且 ≥ _UNLOCK_REASON_MIN_LENGTH 字。
+
+    Why: 解鎖會刪除 snapshot，後續可重簽不同金額；若無原因紀錄，同一個高權限者
+    可進出簽核狀態無痕修改帳。原因會與「原 snapshot 摘要」一起寫入 ApprovalLog
+    與 audit_changes，便於事後追蹤。
+    """
+
+    reason: str = Field(
+        ...,
+        min_length=_UNLOCK_REASON_MIN_LENGTH,
+        max_length=500,
+        description=f"解鎖原因（≥ {_UNLOCK_REASON_MIN_LENGTH} 字）",
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_reason(cls, v: str) -> str:
+        cleaned = (v or "").strip()
+        if len(cleaned) < _UNLOCK_REASON_MIN_LENGTH:
+            raise ValueError(
+                f"解鎖原因需至少 {_UNLOCK_REASON_MIN_LENGTH} 個字，不可敷衍"
+            )
+        return cleaned
 
 
 # ── 內部輔助 ────────────────────────────────────────────────────────────
@@ -323,12 +352,18 @@ async def approve_daily_close(
 @router.delete("/pos/daily-close/{date_str}", status_code=status.HTTP_204_NO_CONTENT)
 async def unlock_daily_close(
     date_str: str,
+    body: DailyCloseUnlock,
     request: Request,
     current_user: dict = Depends(
         require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
     ),
 ):
-    """解除某日簽核鎖定；寫 ApprovalLog(action='cancelled') 作稽核軌跡。"""
+    """解除某日簽核鎖定；必填 reason ≥ 10 字，原 snapshot 摘要寫入 ApprovalLog 稽核軌跡。
+
+    Why: 解鎖會刪 snapshot，原簽核者可重簽不同金額；無原因/無原 snapshot 摘要的解鎖
+    不利事後追蹤。本端點要求填寫具體原因，並將原 payment_total/refund_total/net_total
+    凍結於 ApprovalLog.comment 與 audit_changes，便於對帳查核。
+    """
     target = _parse_date(date_str)
     session = get_session()
     try:
@@ -344,6 +379,20 @@ async def unlock_daily_close(
         original_at = (
             row.approved_at.isoformat(timespec="seconds") if row.approved_at else "?"
         )
+        original_payment = int(row.payment_total or 0)
+        original_refund = int(row.refund_total or 0)
+        original_net = int(row.net_total or 0)
+        original_tx = int(row.transaction_count or 0)
+
+        snapshot_summary = (
+            f"原 snapshot：payment NT${original_payment:,}、"
+            f"refund NT${original_refund:,}、"
+            f"net NT${original_net:,}、{original_tx} 筆"
+        )
+        comment = (
+            f"解鎖；原簽核人 {original_approver} @ {original_at}；"
+            f"{snapshot_summary}；原因：{body.reason}"
+        )
 
         session.delete(row)
         session.add(
@@ -353,23 +402,36 @@ async def unlock_daily_close(
                 action="cancelled",
                 approver_username=current_user.get("username", ""),
                 approver_role=current_user.get("role"),
-                comment=f"解鎖；原簽核人 {original_approver} @ {original_at}",
+                comment=comment,
             )
         )
         session.commit()
         logger.warning(
-            "POS 日結解鎖：date=%s unlocker=%s original=%s@%s",
+            "POS 日結解鎖：date=%s unlocker=%s original=%s@%s reason=%s "
+            "snapshot=(payment=%d refund=%d net=%d tx=%d)",
             target.isoformat(),
             current_user.get("username", ""),
             original_approver,
             original_at,
+            body.reason,
+            original_payment,
+            original_refund,
+            original_net,
+            original_tx,
         )
         request.state.audit_entity_id = target.isoformat()
-        request.state.audit_summary = f"POS 日結解鎖：{target.isoformat()}"
+        request.state.audit_summary = (
+            f"POS 日結解鎖：{target.isoformat()}（原因：{body.reason}）"
+        )
         request.state.audit_changes = {
             "close_date": target.isoformat(),
             "original_approver": original_approver,
             "original_approved_at": original_at,
+            "original_payment_total": original_payment,
+            "original_refund_total": original_refund,
+            "original_net_total": original_net,
+            "original_transaction_count": original_tx,
+            "reason": body.reason,
         }
         return None
     except HTTPException:

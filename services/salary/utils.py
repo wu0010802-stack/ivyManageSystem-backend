@@ -13,6 +13,19 @@ from .constants import (
 from services.workday_rules import classify_day, load_day_rule_maps
 
 
+def is_attendance_waived(att) -> bool:
+    """考勤異常是否已由管理員豁免（薪資端應視為不扣）。
+
+    管理員在「考勤異常確認」頁面以 admin_waive 標記後，UI 顯示「管理員豁免」，
+    薪資計算遲到/早退/缺打卡扣款時亦應排除該日，否則前台處理狀態與薪資結果分叉
+    （員工以為被豁免、薪資仍照扣）。
+
+    與 admin_accept 區別：admin_accept 是管理員代為承認異常（仍扣），
+    admin_waive 才是真正豁免（不扣）。
+    """
+    return getattr(att, "confirmed_action", None) == "admin_waive"
+
+
 def _sum_leave_deduction(
     leaves,
     daily_salary: float,

@@ -25,7 +25,9 @@ from fastapi import HTTPException
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _make_leave(leave_id=1, employee_id=10, start=date(2026, 3, 15), end=date(2026, 3, 15)):
+def _make_leave(
+    leave_id=1, employee_id=10, start=date(2026, 3, 15), end=date(2026, 3, 15)
+):
     leave = types.SimpleNamespace()
     leave.id = leave_id
     leave.employee_id = employee_id
@@ -50,7 +52,9 @@ def _make_leave(leave_id=1, employee_id=10, start=date(2026, 3, 15), end=date(20
 def _patches_for_approve(leave, conflict=None):
     """建立呼叫 approve_leave 所需 patch。conflict=None 代表無衝突。"""
     session = MagicMock()
-    session.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = leave
+    session.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (
+        leave
+    )
     session.query.return_value.filter.return_value.first.return_value = None
     return session, [
         patch("api.leaves.get_session", return_value=session),
@@ -65,9 +69,7 @@ def _patches_for_approve(leave, conflict=None):
         patch("api.leaves._write_approval_log"),
         patch("api.leaves._salary_engine", None),  # 跳過薪資重算
         patch("api.leaves._check_overlap", return_value=conflict),
-        patch(
-            "services.leave_policy.requires_supporting_document", return_value=False
-        ),
+        patch("services.leave_policy.requires_supporting_document", return_value=False),
     ]
 
 
@@ -78,7 +80,9 @@ class TestSingleApproveOverlapBlock:
         from api.leaves import approve_leave, ApproveRequest
 
         leave = _make_leave()
-        conflict = _make_leave(leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15))
+        conflict = _make_leave(
+            leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15)
+        )
         conflict.is_approved = True
 
         session, patches = _patches_for_approve(leave, conflict=conflict)
@@ -98,11 +102,14 @@ class TestSingleApproveOverlapBlock:
                 p.stop()
 
     def test_overlap_with_force_returns_warning(self):
-        """有重疊 + force_overlap=True → 通過但回 warning"""
+        """有重疊 + force_overlap=True 且帶原因/簽核權限 → 通過並回 warning"""
         from api.leaves import approve_leave, ApproveRequest
+        from utils.permissions import Permission
 
         leave = _make_leave()
-        conflict = _make_leave(leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15))
+        conflict = _make_leave(
+            leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15)
+        )
         conflict.is_approved = True
 
         session, patches = _patches_for_approve(leave, conflict=conflict)
@@ -111,8 +118,16 @@ class TestSingleApproveOverlapBlock:
         try:
             result = approve_leave(
                 leave_id=leave.id,
-                data=ApproveRequest(approved=True, force_overlap=True),
-                current_user={"username": "admin", "role": "supervisor"},
+                data=ApproveRequest(
+                    approved=True,
+                    force_overlap=True,
+                    force_overlap_reason="園長確認補休重疊為合法行政安排",
+                ),
+                current_user={
+                    "username": "admin",
+                    "role": "supervisor",
+                    "permissions": int(Permission.ACTIVITY_PAYMENT_APPROVE),
+                },
             )
             assert result.get("warning") is not None
             assert "重疊" in result["warning"] or "99" in result["warning"]
@@ -149,7 +164,9 @@ class TestBatchApproveOverlapBlock:
 
         # session.query(LeaveRecord).filter(...).with_for_update().all() → leave list
         leave_records = list(leave_map.values())
-        session.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = leave_records
+        session.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = (
+            leave_records
+        )
 
         # session.query(User.employee_id, User.role).filter(...).all() → []
         # 角色資格檢查我們直接 patch 跳過,所以這個查詢結果不影響

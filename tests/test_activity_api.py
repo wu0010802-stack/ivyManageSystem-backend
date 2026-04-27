@@ -1113,7 +1113,9 @@ class TestBatchInputLimits:
         from api.activity._shared import BatchPaymentUpdate
 
         with pytest.raises(ValidationError):
-            BatchPaymentUpdate(ids=list(range(501)), is_paid=True)
+            BatchPaymentUpdate(
+                ids=list(range(501)), is_paid=True, reason="期末批次補繳"
+            )
 
     def test_batch_payment_update_min_length(self):
         """BatchPaymentUpdate.ids 空列表應拋 ValidationError"""
@@ -1121,13 +1123,15 @@ class TestBatchInputLimits:
         from api.activity._shared import BatchPaymentUpdate
 
         with pytest.raises(ValidationError):
-            BatchPaymentUpdate(ids=[], is_paid=True)
+            BatchPaymentUpdate(ids=[], is_paid=True, reason="期末批次補繳")
 
     def test_batch_payment_update_valid(self):
         """BatchPaymentUpdate.ids 正常 500 筆不應拋例外（只允許 is_paid=True）。"""
         from api.activity._shared import BatchPaymentUpdate
 
-        obj = BatchPaymentUpdate(ids=list(range(500)), is_paid=True)
+        obj = BatchPaymentUpdate(
+            ids=list(range(500)), is_paid=True, reason="期末批次補繳已收齊"
+        )
         assert len(obj.ids) == 500
 
     def test_batch_payment_update_rejects_unpaid(self):
@@ -1136,7 +1140,17 @@ class TestBatchInputLimits:
         from api.activity._shared import BatchPaymentUpdate
 
         with pytest.raises(ValidationError):
-            BatchPaymentUpdate(ids=[1], is_paid=False)
+            BatchPaymentUpdate(ids=[1], is_paid=False, reason="期末批次補繳")
+
+    def test_batch_payment_update_requires_reason(self):
+        """BatchPaymentUpdate 必填 reason ≥ 5 字（防止無稽核軌跡的批次補齊）。"""
+        from pydantic import ValidationError
+        from api.activity._shared import BatchPaymentUpdate
+
+        with pytest.raises(ValidationError):
+            BatchPaymentUpdate(ids=[1], is_paid=True)
+        with pytest.raises(ValidationError):
+            BatchPaymentUpdate(ids=[1], is_paid=True, reason="短")
 
     def test_public_registration_courses_max_length(self):
         """PublicRegistrationPayload.courses 超過 20 筆應拋 ValidationError"""

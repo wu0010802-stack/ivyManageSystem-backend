@@ -19,6 +19,7 @@ from ._shared import (
     _not_found,
     _duplicate_name,
     _invalidate_activity_dashboard_caches,
+    require_approve_for_high_price,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ async def create_supply(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """新增用品（同學期內名稱唯一）"""
+    require_approve_for_high_price(
+        body.price, current_user, label=f"用品「{body.name}」單價"
+    )
     session = get_session()
     try:
         sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
@@ -118,6 +122,10 @@ async def update_supply(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """更新用品"""
+    if body.price is not None:
+        require_approve_for_high_price(
+            body.price, current_user, label=f"用品 #{supply_id} 新單價"
+        )
     session = get_session()
     try:
         supply = (

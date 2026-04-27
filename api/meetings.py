@@ -40,14 +40,15 @@ class MeetingRecordCreate(BaseModel):
     meeting_type: str = "staff_meeting"
     attended: bool = True
     overtime_hours: float = DEFAULT_MEETING_HOURS
-    overtime_pay: Optional[float] = None  # 未指定時以勞基法平日加班費公式計算
+    # overtime_pay 一律由後端依勞基法平日加班費公式計算，不接受前端傳入
+    # （拿掉 override 防止 MEETINGS 權限者直接寫入超額金額繞過薪資簽核）
     remark: Optional[str] = None
 
 
 class MeetingRecordUpdate(BaseModel):
     attended: Optional[bool] = None
     overtime_hours: Optional[float] = None
-    overtime_pay: Optional[float] = None
+    # overtime_pay 由後端依 overtime_hours + 員工底薪自動重算，不接受前端 override
     remark: Optional[str] = None
 
 
@@ -204,12 +205,9 @@ def create_meeting(
         if existing:
             raise HTTPException(status_code=400, detail="該員工此日期已有記錄")
 
-        if data.overtime_pay is None:
-            emp = session.query(Employee).get(data.employee_id)
-            base = emp.base_salary if emp else 0
-            pay = _meeting_pay_for(base, data.overtime_hours)
-        else:
-            pay = data.overtime_pay
+        emp = session.query(Employee).get(data.employee_id)
+        base = emp.base_salary if emp else 0
+        pay = _meeting_pay_for(base, data.overtime_hours)
 
         record = MeetingRecord(
             employee_id=data.employee_id,
@@ -245,7 +243,18 @@ def create_meetings_batch(
     try:
         meeting_date = datetime.strptime(data.meeting_date, "%Y-%m-%d").date()
 
-        all_emp_ids = list({*data.attendees, *data.absentees})
+        # 既有同日同類型紀錄的所有 employee_id 也要納入封存檢查；
+        # 否則 payload 沒列到的舊員工會被下方 delete() 連帶清掉，繞過已封存月守衛。
+        existing_emp_ids = [
+            row[0]
+            for row in session.query(MeetingRecord.employee_id)
+            .filter(
+                MeetingRecord.meeting_date == meeting_date,
+                MeetingRecord.meeting_type == data.meeting_type,
+            )
+            .all()
+        ]
+        all_emp_ids = list({*data.attendees, *data.absentees, *existing_emp_ids})
         _assert_meeting_batch_month_not_finalized(session, all_emp_ids, meeting_date)
 
         # 先刪除該日同類型已有記錄（覆蓋模式）
@@ -294,6 +303,9 @@ def create_meetings_batch(
 
         session.commit()
         return {"message": f"批次建立完成，共 {created} 筆", "count": created}
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
@@ -322,12 +334,17 @@ def update_meeting(
             record.attended = data.attended
         if data.overtime_hours is not None:
             record.overtime_hours = data.overtime_hours
-        if data.overtime_pay is not None:
-            record.overtime_pay = data.overtime_pay
         if data.remark is not None:
             record.remark = data.remark
 
-        # 業務規則：缺席者不得有加班費（無論客戶端是否傳入 overtime_pay）
+        # overtime_pay 一律以勞基法公式重算（依當前 attended/overtime_hours/員工底薪）
+        # Why: 不接受前端 override，避免 MEETINGS 權限者塞高額金流進薪資
+        if record.attended:
+            emp = session.query(Employee).get(record.employee_id)
+            base = emp.base_salary if emp else 0
+            record.overtime_pay = _meeting_pay_for(base, record.overtime_hours or 0)
+
+        # 業務規則：缺席者不得有加班費（與上方 attended 分支互補）
         _enforce_absent_no_overtime(record)
 
         session.commit()

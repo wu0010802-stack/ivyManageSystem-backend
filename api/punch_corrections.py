@@ -210,6 +210,19 @@ def approve_punch_correction(
         _write_approval_log(
             "punch_correction", correction_id, "approved", current_user, None, session
         )
+
+        # 補打卡修改 punch_in/out 與缺卡旗標 → 影響遲到/早退/缺打卡扣款。
+        # 若該月薪資已計算但尚未封存（finalize 那關才會擋封存），需標 stale 讓
+        # finalize 完整性檢查擋下；避免會計在薪資計算後核准補卡造成考勤源與
+        # 薪資結果分叉，最後仍可能 finalize 通過。
+        from services.salary.utils import mark_salary_stale
+
+        mark_salary_stale(
+            session,
+            correction.employee_id,
+            correction.attendance_date.year,
+            correction.attendance_date.month,
+        )
         session.commit()
 
         logger.warning(

@@ -932,6 +932,20 @@ class ApproveRequest(BaseModel):
     # 同員工同時段已有其他已核准假單時，預設 409 阻擋；主管確認後可帶
     # force_overlap=True 強制過（記稽核日誌），對齊 force_without_substitute 模式。
     force_overlap: bool = False
+    # force_overlap=True 時必填原因（≥10 字）；會寫進 ApprovalLog comment 與 logger，
+    # 供日後稽核回溯為何允許重疊（避免重複扣薪/重複占配額被忽視）。
+    force_overlap_reason: Optional[str] = Field(None, max_length=500)
+
+    @model_validator(mode="after")
+    def _force_overlap_requires_reason(self):
+        if self.force_overlap:
+            cleaned = (self.force_overlap_reason or "").strip()
+            if len(cleaned) < 10:
+                raise ValueError(
+                    "force_overlap=True 時必須填寫 force_overlap_reason（至少 10 字）"
+                )
+            self.force_overlap_reason = cleaned
+        return self
 
 
 class LeaveBatchApproveRequest(BaseModel):
@@ -1037,21 +1051,39 @@ def approve_leave(
                         detail=(
                             f"該員工在 {conflict.start_date} ~ {conflict.end_date} "
                             f"已有另一筆已核准的請假（ID: {conflict.id}），"
-                            "若確認仍要核准請帶 force_overlap=true"
+                            "若確認仍要核准請帶 force_overlap=true 並填寫 force_overlap_reason"
                         ),
                     )
-                warning = (
-                    f"主管警告後核准：該員工在 {conflict.start_date} ~ "
-                    f"{conflict.end_date} 已有另一筆已核准的請假（ID: {conflict.id}）"
+                # ── force_overlap 三重守衛 ─────────────────────────────────
+                # 重疊放行可能造成同時段重複扣薪/重複占配額；不該只憑 force=True 即過：
+                # 1. force_overlap_reason ≥10 字（schema 已驗）
+                # 2. ACTIVITY_PAYMENT_APPROVE 簽核（避免一線主管獨自決定）
+                # 3. conflict 詳情寫進 ApprovalLog comment（永久稽核軌跡，不只是 logger）
+                from utils.finance_guards import has_finance_approve
+
+                if not has_finance_approve(current_user):
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "force_overlap=True 需具備『金流簽核』權限"
+                            "（ACTIVITY_PAYMENT_APPROVE），請改由具該權限者執行"
+                        ),
+                    )
+                conflict_summary = (
+                    f"主管警告後核准（force_overlap）：與假單 #{conflict.id} "
+                    f"({conflict.start_date}~{conflict.end_date}) 重疊；"
+                    f"原因：{data.force_overlap_reason}"
                 )
+                warning = conflict_summary
                 logger.warning(
                     "假單 #%d 主管以 force_overlap=true 強制核准，"
-                    "與已核准假單 #%d (%s~%s) 重疊；操作者：%s",
+                    "與已核准假單 #%d (%s~%s) 重疊；操作者：%s；原因：%s",
                     leave_id,
                     conflict.id,
                     conflict.start_date,
                     conflict.end_date,
                     current_user.get("username", "unknown"),
+                    data.force_overlap_reason,
                 )
 
             # ── 配額硬檢查（核准動作）──────────────────────────────────────────
@@ -1130,6 +1162,11 @@ def approve_leave(
         approval_comment = data.rejection_reason if not data.approved else None
         if data.approved and data.force_without_substitute:
             approval_comment = "主管警告後核准：未取得代理人接受"
+        # 重疊放行：把 conflict 與原因寫進 ApprovalLog，留永久稽核痕跡
+        if data.approved and warning:
+            approval_comment = (
+                f"{approval_comment}\n{warning}" if approval_comment else warning
+            )
         _write_approval_log(
             "leave", leave_id, action, current_user, approval_comment, session
         )

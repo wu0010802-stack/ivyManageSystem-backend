@@ -49,29 +49,50 @@ def _to_iso(value):
 
 
 def _calc_attendance_stats(attendances: list) -> dict:
-    """考勤統計：遲到/早退/未打卡次數、分鐘數、明細列表。"""
-    late_count = sum(1 for a in attendances if a.is_late)
-    early_count = sum(1 for a in attendances if a.is_early_leave)
-    missing_in = sum(1 for a in attendances if a.is_missing_punch_in)
-    missing_out = sum(1 for a in attendances if a.is_missing_punch_out)
-    total_late_min = sum(a.late_minutes or 0 for a in attendances if a.is_late)
+    """考勤統計：遲到/早退/未打卡次數、分鐘數、明細列表。
+
+    admin_waive 標記的考勤異常薪資端視為已豁免，不計入統計與明細。
+    """
+    from services.salary.utils import is_attendance_waived
+
+    late_count = sum(
+        1 for a in attendances if a.is_late and not is_attendance_waived(a)
+    )
+    early_count = sum(
+        1 for a in attendances if a.is_early_leave and not is_attendance_waived(a)
+    )
+    missing_in = sum(
+        1 for a in attendances if a.is_missing_punch_in and not is_attendance_waived(a)
+    )
+    missing_out = sum(
+        1 for a in attendances if a.is_missing_punch_out and not is_attendance_waived(a)
+    )
+    total_late_min = sum(
+        a.late_minutes or 0
+        for a in attendances
+        if a.is_late and not is_attendance_waived(a)
+    )
     total_early_min = sum(
-        a.early_leave_minutes or 0 for a in attendances if a.is_early_leave
+        a.early_leave_minutes or 0
+        for a in attendances
+        if a.is_early_leave and not is_attendance_waived(a)
     )
     late_details = [
         a.late_minutes or 0
         for a in attendances
-        if a.is_late and (a.late_minutes or 0) > 0
+        if a.is_late and not is_attendance_waived(a) and (a.late_minutes or 0) > 0
     ]
     early_rows = [
         {"date": _to_iso(a.attendance_date), "minutes": a.early_leave_minutes or 0}
         for a in attendances
-        if a.is_early_leave and (a.early_leave_minutes or 0) > 0
+        if a.is_early_leave
+        and not is_attendance_waived(a)
+        and (a.early_leave_minutes or 0) > 0
     ]
     late_rows = [
         {"date": _to_iso(a.attendance_date), "minutes": a.late_minutes or 0}
         for a in attendances
-        if a.is_late and (a.late_minutes or 0) > 0
+        if a.is_late and not is_attendance_waived(a) and (a.late_minutes or 0) > 0
     ]
     return {
         "late_count": late_count,

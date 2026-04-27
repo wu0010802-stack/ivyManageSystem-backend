@@ -313,8 +313,10 @@ class TestMarkUnpaidWritesRefund:
             )
             assert refund_count == 0
 
-    def test_mark_paid_auto_fill_uses_system_reconcile_method(self, fee_client):
-        """自動補齊時 payment_method 應為「系統補齊」而非「現金」，避免污染 POS 日結。"""
+    def test_mark_paid_auto_fill_requires_method_and_reason(self, fee_client):
+        """補齊欠費路徑（2026-04-27 守衛）：必須帶 payment_method（非系統補齊）+
+        payment_reason，避免會計把欠費直接轉成系統補齊收入流水。
+        """
         client, sf = fee_client
         with sf() as s:
             _create_admin(s)
@@ -324,11 +326,47 @@ class TestMarkUnpaidWritesRefund:
 
         assert _login(client).status_code == 200
 
+        # 1) 沒帶 method/reason → 400
         res = client.put(
             f"/api/activity/registrations/{reg_id}/payment",
             json={"is_paid": True},
         )
-        assert res.status_code == 200
+        assert res.status_code == 400, res.text
+        assert "payment_method" in res.json()["detail"]
+
+        # 2) method 填「系統補齊」→ 400（明確拒絕）
+        res = client.put(
+            f"/api/activity/registrations/{reg_id}/payment",
+            json={
+                "is_paid": True,
+                "payment_method": "系統補齊",
+                "payment_reason": "後台對帳補齊",
+            },
+        )
+        assert res.status_code == 400, res.text
+        assert "系統補齊" in res.json()["detail"]
+
+        # 3) reason 太短 → 400
+        res = client.put(
+            f"/api/activity/registrations/{reg_id}/payment",
+            json={
+                "is_paid": True,
+                "payment_method": "現金",
+                "payment_reason": "OK",
+            },
+        )
+        assert res.status_code == 400, res.text
+
+        # 4) 帶完整 method + reason 且 admin 具金流簽核 → 200，紀錄反映實際 method
+        res = client.put(
+            f"/api/activity/registrations/{reg_id}/payment",
+            json={
+                "is_paid": True,
+                "payment_method": "現金",
+                "payment_reason": "後台對帳補齊（家長已現金繳清）",
+            },
+        )
+        assert res.status_code == 200, res.text
 
         with sf() as s:
             rec = (
@@ -337,8 +375,9 @@ class TestMarkUnpaidWritesRefund:
                 .first()
             )
             assert rec is not None
-            assert rec.payment_method == "系統補齊"
+            assert rec.payment_method == "現金"
             assert rec.amount == 1500
+            assert "後台對帳補齊" in (rec.notes or "")
 
 
 # ══════════════════════════════════════════════════════════════════════

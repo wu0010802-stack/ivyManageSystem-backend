@@ -25,6 +25,7 @@ from utils.audit import (
     _parse_entity_type,
     _schedule_audit_write,
     _write_audit_sync,
+    write_explicit_audit,
 )
 
 
@@ -143,6 +144,92 @@ class TestScheduleAuditWrite:
 
         assert len(logs) == 1
         assert logs[0].summary == "無 loop 回退"
+
+
+class TestExplicitAudit:
+    """write_explicit_audit:給 GET 匯出端點顯式留稽核痕跡用。
+
+    AuditMiddleware 只審計 POST/PUT/PATCH/DELETE,GET 匯出無法被自動覆蓋,
+    這條路徑必須能獨立把 user/筆數/敏感旗標寫進 AuditLog。"""
+
+    def _make_request(self):
+        from starlette.requests import Request
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/exports/employees",
+            "headers": [],
+            "query_string": b"",
+            "client": ("10.0.0.1", 12345),
+        }
+        return Request(scope)
+
+    def test_writes_row_with_changes(self, sqlite_engine):
+        """提供 changes dict 應序列化成 JSON 寫入 changes 欄位。"""
+        _, session_factory = sqlite_engine
+        request = self._make_request()
+
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="employee",
+            summary="匯出員工名冊(3 筆,含完整銀行帳號)",
+            changes={"count": 3, "is_full_bank_account": True},
+        )
+
+        with session_factory() as s:
+            logs = s.query(AuditLog).all()
+
+        assert len(logs) == 1
+        log = logs[0]
+        assert log.action == "EXPORT"
+        assert log.entity_type == "employee"
+        assert "含完整銀行帳號" in log.summary
+        assert log.ip_address == "10.0.0.1"
+        # changes JSON 應保留 is_full_bank_account 旗標,讓稽核可篩選
+        assert log.changes is not None
+        assert "is_full_bank_account" in log.changes
+        assert "true" in log.changes.lower()
+
+    def test_anonymous_when_no_token(self, sqlite_engine):
+        """無 JWT 也應留下 anonymous 痕跡(避免拒絕 audit 寫入導致沉默)。"""
+        _, session_factory = sqlite_engine
+        request = self._make_request()
+
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="employee",
+            summary="匿名匯出測試",
+        )
+
+        with session_factory() as s:
+            logs = s.query(AuditLog).all()
+
+        assert len(logs) == 1
+        assert logs[0].username == "anonymous"
+
+    def test_swallows_exceptions(self, sqlite_engine, caplog, monkeypatch):
+        """內部失敗只記警告,不可影響原 GET 請求回應。"""
+        import utils.audit as audit_module
+
+        caplog.set_level("WARNING", logger="utils.audit")
+
+        def _raise(*_a, **_kw):
+            raise RuntimeError("forced")
+
+        monkeypatch.setattr(audit_module, "_schedule_audit_write", _raise)
+
+        # 不應拋錯
+        write_explicit_audit(
+            self._make_request(),
+            action="EXPORT",
+            entity_type="employee",
+            summary="例外測試",
+        )
+
+        assert any("Explicit audit write failed" in r.message for r in caplog.records)
 
 
 class TestActivityEntityTypeMapping:

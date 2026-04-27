@@ -475,7 +475,7 @@ async def pos_checkout(
         if body.type == "refund":
             cleaned_reason = require_refund_reason(body.notes)
             body.notes = cleaned_reason
-            # 審批閾值以「單筆交易總額」為準（item 合計），避免故意拆單規避
+            # 第一道：本次收據合計（不同 reg 的退費合在一張收據）超門檻即需簽核
             total_refund_amount = sum(it.amount for it in body.items)
             require_approve_for_large_refund(total_refund_amount, current_user)
 
@@ -492,6 +492,35 @@ async def pos_checkout(
                 status_code=400,
                 detail=f"找不到或已停用的報名 ID：{missing}",
             )
+
+        # ── 第二道：每 reg 累積退費簽核（須在 _lock_regs 之後）─────────
+        # 鎖之後才查 prior_refunded，避免兩個併發小額退費各自看到相同舊累積值；
+        # 並且封死「同 registration 連開多張小收據繞過第一道收據合計門檻」的拆單路徑。
+        # Why: 第一道（收據合計）只擋同收據內金額大；同 reg 用兩張小收據之間沒有檢查。
+        if body.type == "refund":
+            prior_rows = (
+                session.query(
+                    ActivityPaymentRecord.registration_id,
+                    func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
+                )
+                .filter(
+                    ActivityPaymentRecord.registration_id.in_(reg_ids),
+                    ActivityPaymentRecord.type == "refund",
+                    ActivityPaymentRecord.voided_at.is_(None),
+                )
+                .group_by(ActivityPaymentRecord.registration_id)
+                .all()
+            )
+            prior_refund_map = {rid: int(amt or 0) for rid, amt in prior_rows}
+            for item in body.items:
+                cumulative = prior_refund_map.get(item.registration_id, 0) + int(
+                    item.amount
+                )
+                require_approve_for_large_refund(
+                    cumulative,
+                    current_user,
+                    label=f"報名 {item.registration_id} 累積退費總額",
+                )
 
         total_map = _batch_calc_total_amounts(session, reg_ids)
         course_map = _fetch_reg_course_details(session, reg_ids)

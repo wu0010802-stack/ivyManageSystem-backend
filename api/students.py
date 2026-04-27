@@ -630,7 +630,9 @@ async def delete_student(
         # 同步：刪除學生時軟刪該生當學期才藝報名
         from api.activity._shared import sync_registrations_on_student_deactivate
 
-        synced = sync_registrations_on_student_deactivate(session, student.id)
+        synced = sync_registrations_on_student_deactivate(
+            session, student.id, current_user=current_user
+        )
         if synced:
             logger.info(
                 "學生刪除同步才藝報名：student_id=%s 軟刪 %s 筆",
@@ -708,7 +710,9 @@ async def graduate_student(
         # 同步：離園時軟刪該生當學期才藝報名
         from api.activity._shared import sync_registrations_on_student_deactivate
 
-        synced = sync_registrations_on_student_deactivate(session, student.id)
+        synced = sync_registrations_on_student_deactivate(
+            session, student.id, current_user=current_user
+        )
         if synced:
             logger.info(
                 "學生離園同步才藝報名：student_id=%s status=%s 軟刪 %s 筆",
@@ -915,7 +919,9 @@ async def transition_student_lifecycle(
         if item.to_status in terminal_like:
             from api.activity._shared import sync_registrations_on_student_deactivate
 
-            synced = sync_registrations_on_student_deactivate(session, student.id)
+            synced = sync_registrations_on_student_deactivate(
+                session, student.id, current_user=current_user
+            )
             if synced:
                 logger.info(
                     "學生生命週期轉入終態，同步軟刪才藝報名：student_id=%s to=%s 軟刪 %s 筆",

@@ -27,6 +27,50 @@ class AckRequest(BaseModel):
     signature_name: Optional[str] = Field(None, max_length=50)
 
 
+def count_pending_acks_for_user(session, user_id: int, student_ids: list[int]) -> int:
+    """家長尚未簽閱的 (event, student) 配對數。
+
+    用於 home/summary：例如有 2 個學生 × 1 個未簽 event = 2。
+    時間窗 = 過去 30 天 + 未來 180 天，與 list_events 相同。
+    """
+    if not student_ids:
+        return 0
+    today = date.today()
+    df = today - timedelta(days=_PAST_DAYS)
+    dt = today + timedelta(days=_FUTURE_DAYS)
+    events = (
+        session.query(SchoolEvent.id)
+        .filter(
+            SchoolEvent.is_active == True,  # noqa: E712
+            SchoolEvent.requires_acknowledgment == True,  # noqa: E712
+            SchoolEvent.event_date >= df,
+            SchoolEvent.event_date <= dt,
+        )
+        .all()
+    )
+    event_ids = [e[0] for e in events]
+    if not event_ids:
+        return 0
+    acked_pairs = set()
+    rows = (
+        session.query(EventAcknowledgment.event_id, EventAcknowledgment.student_id)
+        .filter(
+            EventAcknowledgment.user_id == user_id,
+            EventAcknowledgment.event_id.in_(event_ids),
+            EventAcknowledgment.student_id.in_(student_ids),
+        )
+        .all()
+    )
+    for ev_id, st_id in rows:
+        acked_pairs.add((ev_id, st_id))
+    pending = 0
+    for ev_id in event_ids:
+        for st_id in student_ids:
+            if (ev_id, st_id) not in acked_pairs:
+                pending += 1
+    return pending
+
+
 @router.get("")
 def list_events(current_user: dict = Depends(require_parent_role())):
     user_id = current_user["user_id"]
@@ -68,7 +112,11 @@ def list_events(current_user: dict = Depends(require_parent_role())):
         items = []
         for e in events:
             acked_for = sorted(ack_map.get(e.id, set()))
-            need_ack_for = sorted(set(student_ids) - set(acked_for)) if e.requires_acknowledgment else []
+            need_ack_for = (
+                sorted(set(student_ids) - set(acked_for))
+                if e.requires_acknowledgment
+                else []
+            )
             items.append(
                 {
                     "id": e.id,
@@ -82,7 +130,9 @@ def list_events(current_user: dict = Depends(require_parent_role())):
                     "end_time": e.end_time,
                     "location": e.location,
                     "requires_acknowledgment": bool(e.requires_acknowledgment),
-                    "ack_deadline": e.ack_deadline.isoformat() if e.ack_deadline else None,
+                    "ack_deadline": (
+                        e.ack_deadline.isoformat() if e.ack_deadline else None
+                    ),
                     "acked_student_ids": acked_for,
                     "need_ack_student_ids": need_ack_for,
                 }
@@ -111,9 +161,7 @@ def acknowledge_event(
         if event is None:
             raise HTTPException(status_code=404, detail="找不到事件")
         if not event.requires_acknowledgment:
-            raise HTTPException(
-                status_code=400, detail="此事件未要求簽閱"
-            )
+            raise HTTPException(status_code=400, detail="此事件未要求簽閱")
 
         existing = (
             session.query(EventAcknowledgment)

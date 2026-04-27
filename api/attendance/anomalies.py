@@ -212,6 +212,9 @@ def batch_confirm_anomalies(
             .filter(Attendance.id.in_(data.attendance_ids))
             .all()
         }
+        # 收集需重算薪資的 (employee_id, year, month)：admin_waive 改變薪資扣款結果
+        # （薪資端會把 waive 視為不扣），未封存的薪資需標 stale 觸發重算
+        salary_recalc_keys: set = set()
         for att_id in data.attendance_ids:
             att = att_map.get(att_id)
             if not att:
@@ -224,6 +227,20 @@ def batch_confirm_anomalies(
                     att.remark or ""
                 ) + f" [批次{ACTION_LABELS[data.action]}: {data.remark}]"
             processed += 1
+            if data.action == "admin_waive" and att.attendance_date:
+                salary_recalc_keys.add(
+                    (
+                        att.employee_id,
+                        att.attendance_date.year,
+                        att.attendance_date.month,
+                    )
+                )
+
+        if salary_recalc_keys:
+            from services.salary.utils import mark_salary_stale
+
+            for emp_id, year, month in salary_recalc_keys:
+                mark_salary_stale(session, emp_id, year, month)
 
         session.commit()
         logger.warning(

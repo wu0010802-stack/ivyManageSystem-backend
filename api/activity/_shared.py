@@ -53,6 +53,11 @@ MIN_REFUND_REASON_LENGTH = 5
 # Why: 小額退費允許一線櫃檯彈性處理；大額退費強制雙簽以防內部舞弊
 REFUND_APPROVAL_THRESHOLD = 1000
 
+# 課程/用品單品價格高額閾值：超過此金額的設定/異動必須具備 ACTIVITY_PAYMENT_APPROVE。
+# Why: 課程價格會被寫入 price_snapshot 進入應繳總額，搭配「補齊收入」路徑可建立異常高額
+# 應收。一般幼稚園單品價格遠低於 30,000，超過視為設定錯誤或舞弊嘗試。
+ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD = 30_000
+
 # 軟刪除 payment 原因最短字數
 MIN_VOID_REASON_LENGTH = 5
 
@@ -83,31 +88,59 @@ def require_refund_reason(notes: Optional[str]) -> str:
     return cleaned
 
 
-def require_approve_for_large_refund(amount: int, current_user: dict) -> None:
+def require_approve_for_high_price(
+    amount: int, current_user: dict, *, label: str = "單品價格"
+) -> None:
+    """若單品價格超過 ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD，檢查 ACTIVITY_PAYMENT_APPROVE。
+
+    用於 Course/Supply create/update：避免 ACTIVITY_WRITE 一線權限可任意設定極端
+    高價，搭配補齊收入路徑放大舞弊金額。
+    """
+    if amount > ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD and not has_payment_approve(
+        current_user
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{label} NT${amount:,} 超過 NT${ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD:,} 審批閾值，"
+                f"需由具備『才藝課收款簽核』權限者執行"
+            ),
+        )
+
+
+def require_approve_for_large_refund(
+    amount: int, current_user: dict, *, label: str = "單筆退費金額"
+) -> None:
     """若退費金額超過 REFUND_APPROVAL_THRESHOLD，檢查 ACTIVITY_PAYMENT_APPROVE 權限。
 
+    `amount` 可為單筆金額或「累積後總額」；`label` 控制錯誤訊息語意，
+    呼叫端傳累積值時請覆寫為「累積退費總額」等清楚字樣。
     不足即 403。供 POS refund / add_registration_payment(type=refund) 共用。
     """
     if amount > REFUND_APPROVAL_THRESHOLD and not has_payment_approve(current_user):
         raise HTTPException(
             status_code=403,
             detail=(
-                f"單筆退費金額 NT${amount} 超過 NT${REFUND_APPROVAL_THRESHOLD} 審批閾值，"
+                f"{label} NT${amount} 超過 NT${REFUND_APPROVAL_THRESHOLD} 審批閾值，"
                 f"需由具備『才藝課收款簽核』權限者執行"
             ),
         )
 
 
-def validate_payment_date(value: date) -> date:
-    """驗證 payment_date 必須在今日回補窗（預設 30 天）內，不得指定未來。"""
+def validate_payment_date(
+    value: date, *, back_limit_days: int = PAYMENT_DATE_BACK_LIMIT_DAYS
+) -> date:
+    """驗證 payment_date 必須在今日回補窗內，不得指定未來。
+
+    `back_limit_days` 預設 30（活動 POS 場景）；學費跨月分期需放寬，
+    呼叫端可覆寫此參數。
+    """
     today = datetime.now(TAIPEI_TZ).date()
     if value > today:
         raise ValueError("繳費日期不可指定未來日期")
-    earliest = today - timedelta(days=PAYMENT_DATE_BACK_LIMIT_DAYS)
+    earliest = today - timedelta(days=back_limit_days)
     if value < earliest:
-        raise ValueError(
-            f"繳費日期超出範圍，最多回補 {PAYMENT_DATE_BACK_LIMIT_DAYS} 天"
-        )
+        raise ValueError(f"繳費日期超出範圍，最多回補 {back_limit_days} 天")
     return value
 
 
@@ -160,7 +193,7 @@ def _item_not_found_in_list(resource: str, name: str) -> HTTPException:
 
 class CourseCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    price: int = Field(..., ge=0)
+    price: int = Field(..., ge=0, le=MAX_PAYMENT_AMOUNT)
     sessions: Optional[int] = Field(None, ge=1)
     capacity: int = Field(30, ge=1)
     video_url: Optional[str] = None
@@ -173,7 +206,7 @@ class CourseCreate(BaseModel):
 
 class CourseUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    price: Optional[int] = Field(None, ge=0)
+    price: Optional[int] = Field(None, ge=0, le=MAX_PAYMENT_AMOUNT)
     sessions: Optional[int] = Field(None, ge=1)
     capacity: Optional[int] = Field(None, ge=1)
     video_url: Optional[str] = None
@@ -183,14 +216,14 @@ class CourseUpdate(BaseModel):
 
 class SupplyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    price: int = Field(..., ge=0)
+    price: int = Field(..., ge=0, le=MAX_PAYMENT_AMOUNT)
     school_year: Optional[int] = Field(None, ge=100, le=200)
     semester: Optional[int] = Field(None, ge=1, le=2)
 
 
 class SupplyUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    price: Optional[int] = Field(None, ge=0)
+    price: Optional[int] = Field(None, ge=0, le=MAX_PAYMENT_AMOUNT)
 
 
 class CopyCoursesRequest(BaseModel):
@@ -218,6 +251,23 @@ class PaymentUpdate(BaseModel):
         None,
         max_length=200,
         description="當 is_paid=False 時必填，≥ 5 字；留於沖帳紀錄 notes",
+    )
+    # is_paid=True 補齊路徑（shortfall > 0）時必填：人工收款方式（不可 SYSTEM_RECONCILE_METHOD）
+    # 與 ≥5 字原因；handler 端會檢查並在大額時要求 ACTIVITY_PAYMENT_APPROVE。
+    # Why: 原設計 is_paid=True 直接寫一筆「系統補齊」payment 補上欠費，沒有 method/原因/
+    # 簽核，會計可逐筆把欠費轉成收入流水。對齊 is_paid=False 路徑的嚴格度。
+    payment_method: Optional[str] = Field(
+        None,
+        max_length=20,
+        description=(
+            "is_paid=True 補齊欠費時必填，必須為實際收款方式（如：現金/轉帳/其他），"
+            "不接受『系統補齊』；handler 端會驗證"
+        ),
+    )
+    payment_reason: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="is_paid=True 補齊欠費時必填，≥ 5 字；會寫進補齊紀錄 notes",
     )
 
 
@@ -284,6 +334,24 @@ class BatchPaymentUpdate(BaseModel):
     # 只允許 True（批次補齊已繳費）；False 全額沖帳路徑已被收緊，改走單筆端點
     # 並附明確 confirm_refund_amount，避免誤操作一次沖一批
     is_paid: Literal[True]
+    # 批次補齊會把欠費直接寫成系統 payment 流水，金額槓桿大；強制填原因防止濫用
+    # （例如「2026-04-25 期末補繳整批，已收齊現金，老闆確認」）
+    reason: str = Field(
+        ...,
+        min_length=MIN_REFUND_REASON_LENGTH,
+        max_length=200,
+        description=f"批次標記原因（≥ {MIN_REFUND_REASON_LENGTH} 字），會寫進每筆系統補齊紀錄的 notes",
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_reason(cls, v: str) -> str:
+        cleaned = (v or "").strip()
+        if len(cleaned) < MIN_REFUND_REASON_LENGTH:
+            raise ValueError(
+                f"批次標記原因需至少 {MIN_REFUND_REASON_LENGTH} 個字，不可敷衍"
+            )
+        return cleaned
 
 
 class AddPaymentRequest(BaseModel):
@@ -1018,13 +1086,20 @@ def sync_registrations_on_student_transfer(
     return len(regs)
 
 
-def sync_registrations_on_student_deactivate(session, student_id: int) -> int:
+def sync_registrations_on_student_deactivate(
+    session, student_id: int, *, current_user: Optional[dict] = None
+) -> int:
     """學生畢業 / 退學 / 刪除時，軟刪該生當前學期啟用中 ActivityRegistration。
 
     - 把 is_active 設為 False；保留原 match_status（供後台稽核）
     - 只處理當前學期（歷史學期的報名維持原狀，仍可供報表追溯）
     - **若 paid_amount > 0**：自動寫一筆「系統補齊」退費沖帳紀錄並清零，
       並以 logger.warning 留痕提醒管理員處理實體退款；避免幽靈金額留存
+    - **金流守衛**：若有任何 paid_amount > 0 且呼叫者未具 ACTIVITY_PAYMENT_APPROVE
+      則 403。避免具 STUDENTS_WRITE/STUDENTS_LIFECYCLE_WRITE 但無金流簽核者
+      透過學生狀態變更繞過活動退費端點的金流控管。
+      呼叫端在 pure-system 場景（如背景任務、無 user 上下文）可省略 current_user，
+      但生產 API handler 必須傳入；省略視為內部呼叫。
     - 回傳影響筆數
     """
     from utils.academic import resolve_current_academic_term
@@ -1042,10 +1117,24 @@ def sync_registrations_on_student_deactivate(session, student_id: int) -> int:
         .all()
     )
     today = datetime.now(TAIPEI_TZ).date()
+    has_paid = any((r.paid_amount or 0) > 0 for r in regs)
     # 若今日已簽核且有任何一筆需沖帳，直接拋以維持 snapshot 一致性
     # （上層 students.py 的刪除流程會因此回 400；需先解鎖日結再刪學生）
-    if any((r.paid_amount or 0) > 0 for r in regs):
+    if has_paid:
         _require_daily_close_unlocked(session, today)
+        # 金流守衛：要求呼叫者具備 ACTIVITY_PAYMENT_APPROVE
+        if current_user is not None and not has_payment_approve(current_user):
+            paid_total = sum(r.paid_amount or 0 for r in regs)
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"該生有 {sum(1 for r in regs if (r.paid_amount or 0) > 0)} 筆"
+                    f"已繳費才藝報名（合計 NT${paid_total:,}）。"
+                    "離園/刪除學生會自動沖帳全額退費，需具備『才藝課收款簽核』權限"
+                    "（ACTIVITY_PAYMENT_APPROVE）。請改由具該權限者執行，或先至活動退費端點"
+                    "個別處理退款後再刪除學生。"
+                ),
+            )
     for r in regs:
         current_paid = r.paid_amount or 0
         if current_paid > 0:
