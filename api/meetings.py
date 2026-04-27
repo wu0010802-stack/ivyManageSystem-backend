@@ -2,6 +2,7 @@
 園務會議記錄 API
 """
 
+import logging
 from datetime import date, datetime
 from typing import List, Optional
 
@@ -14,6 +15,32 @@ from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import _get_finalized_salary_record
 from services.salary.constants import DEFAULT_MEETING_HOURS
+
+logger = logging.getLogger(__name__)
+
+
+def _mark_meeting_emps_stale(session, emp_ids, meeting_date: date) -> None:
+    """會議異動後將相關員工該月薪資標 needs_recalc=True。
+
+    Why: 會議出席會進入 meeting_overtime_pay,缺席會在發放月扣節慶獎金;
+    薪資算完後再改會議紀錄,既有 SalaryRecord 必須標 stale 避免被 finalize
+    封存到舊金額。
+    """
+    if not emp_ids:
+        return
+    from services.salary.utils import mark_salary_stale
+
+    for eid in set(emp_ids):
+        try:
+            mark_salary_stale(session, eid, meeting_date.year, meeting_date.month)
+        except Exception:
+            logger.warning(
+                "會議異動標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+                eid,
+                meeting_date.year,
+                meeting_date.month,
+                exc_info=True,
+            )
 
 
 def _meeting_pay_for(base_salary: float, hours: float) -> float:
@@ -221,6 +248,8 @@ def create_meeting(
         # 業務規則：缺席者不得有加班費
         _enforce_absent_no_overtime(record)
         session.add(record)
+        # 未封存月既有薪資需標 stale,避免後續 finalize 把舊薪資封存
+        _mark_meeting_emps_stale(session, [data.employee_id], meeting_date)
         session.commit()
 
         return {"message": "建立成功", "id": record.id}
@@ -301,6 +330,9 @@ def create_meetings_batch(
             session.add(record)
             created += 1
 
+        # 未封存月既有薪資需標 stale。覆蓋模式下被刪除的舊員工(existing_emp_ids
+        # 中不在 attendees/absentees 內者)也算實質異動,須一併標。
+        _mark_meeting_emps_stale(session, all_emp_ids, meeting_date)
         session.commit()
         return {"message": f"批次建立完成，共 {created} 筆", "count": created}
     except HTTPException:
@@ -347,6 +379,8 @@ def update_meeting(
         # 業務規則：缺席者不得有加班費（與上方 attended 分支互補）
         _enforce_absent_no_overtime(record)
 
+        # 未封存月既有薪資需標 stale,避免後續 finalize 把舊薪資封存
+        _mark_meeting_emps_stale(session, [record.employee_id], record.meeting_date)
         session.commit()
         return {"message": "更新成功"}
     except HTTPException:
@@ -374,7 +408,11 @@ def delete_meeting(
             session, record.employee_id, record.meeting_date
         )
 
+        emp_id = record.employee_id
+        meeting_date = record.meeting_date
         session.delete(record)
+        # 未封存月既有薪資需標 stale,避免後續 finalize 把舊薪資封存
+        _mark_meeting_emps_stale(session, [emp_id], meeting_date)
         session.commit()
         return {"message": "刪除成功"}
     except HTTPException:
