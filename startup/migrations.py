@@ -5,6 +5,7 @@ startup/migrations.py — Alembic migration + 資料遷移函式
 import logging
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from sqlalchemy import inspect as sa_inspect
@@ -46,22 +47,40 @@ def run_alembic_upgrade():
         "-c",
         str(backend_root / "alembic.ini"),
     ]
+
+    def _run(args: list[str], label: str) -> None:
+        """執行 alembic 子指令並在失敗時把 stdout/stderr 完整吐到日誌。
+
+        為何不直接 inherit parent stdio：Zeabur 等容器平台對子程序輸出的緩衝
+        順序常與 Python traceback 錯置，導致使用者看不到真正的錯誤訊息。改抓
+        進來再 print，可確保失敗時錯誤訊息與 traceback 同位置出現。
+        """
+        proc = subprocess.run(
+            args,
+            cwd=backend_root,
+            capture_output=True,
+            text=True,
+        )
+        if proc.stdout:
+            sys.stdout.write(proc.stdout)
+            sys.stdout.flush()
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+            sys.stderr.flush()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"alembic {label} 失敗（exit={proc.returncode}）。"
+                f"指令：{' '.join(args)}"
+            )
+
     if needs_alembic_baseline_stamp():
         logger.info(
             "偵測到既有 schema 但沒有 alembic_version，先 stamp baseline=%s",
             ALEMBIC_BASELINE_REVISION,
         )
-        subprocess.run(
-            [*base_cmd, "stamp", ALEMBIC_BASELINE_REVISION],
-            cwd=backend_root,
-            check=True,
-        )
+        _run([*base_cmd, "stamp", ALEMBIC_BASELINE_REVISION], "stamp")
 
-    subprocess.run(
-        [*base_cmd, "upgrade", "heads"],
-        cwd=backend_root,
-        check=True,
-    )
+    _run([*base_cmd, "upgrade", "heads"], "upgrade heads")
 
 
 def migrate_school_year_to_roc():
