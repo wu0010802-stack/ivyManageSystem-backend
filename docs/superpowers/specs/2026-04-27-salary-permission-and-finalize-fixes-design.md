@@ -32,7 +32,7 @@
 
 **`simulate_salary`**:在拿到 `emp` 後立刻 `_enforce_self_or_full_salary(current_user, req.employee_id)`,放在現有 `if not emp` 檢查之後。
 
-**`get_salary_audit_log`**:現有程式已先 query SalaryRecord,改為 `record = session.query(SalaryRecord).filter(...).first()`,從 `record.employee_id` enforce。
+**`get_salary_audit_log`**:現有程式 L1010 只做 `EXISTS`(`first()` 的回傳值未保留),改為 `record = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()`,然後 `_enforce_self_or_full_salary(current_user, record.employee_id)`。
 
 ### 測試
 
@@ -87,16 +87,41 @@ Index:`Index("ix_salary_ym_needs_recalc", "salary_year", "salary_month", "needs_
 - 若存在,set `needs_recalc = True`,回 True;否則 False
 - 不 commit(由 caller 控制 transaction)
 
-#### engine.py 批次重算 except 路徑
+#### engine.py 批次重算 except 路徑(用 SAVEPOINT 取代 expire)
 
-L2879 inner except 內:
+**為何不用 `session.expire()`:** `models/base.py:82` 的 `sessionmaker(bind=get_engine())` 未指定 `autoflush=False`,SQLAlchemy 預設 `autoflush=True`。後續員工迭代中任何 query(holiday/classroom/period_records 等)都可能觸發 autoflush,把失敗員工尚未 expire 的 dirty UPDATE 送進 transaction;之後 expire() 雖然 reload in-memory,但 SQL-level 已寫入,batch commit 時失敗員工的 record 會出現「部分新值 + needs_recalc=True」,不符合「保留舊值」的語意。
 
-1. `existing = salary_record_by_emp.get(emp.id)`
-2. 若 existing 在 session(預載到的舊 record):`session.expire(existing)` 撤銷本輪部分修改 → set `existing.needs_recalc = True`
-3. 若 `salary_record` 是本輪新建且還在 session.new:`session.expunge(salary_record)` 撤銷,並不再寫入(沒有舊 record 可標,屬「從未算過」場景,由 finalize 的 missing 檢查擋下)
-4. 後續其他員工繼續正常處理,最終 batch commit 同時寫入「成功的新值」與「失敗者的 needs_recalc=True」
+**改用 SAVEPOINT** 在每個 emp iteration 開 nested transaction:
 
-成功的員工 set `needs_recalc = False`(預設值,不需明寫;若是預載到的舊 record 則需顯式設 False)。在 `_fill_salary_record` 內加上 `record.needs_recalc = False`。
+```python
+for emp in employees:
+    sp = session.begin_nested()  # SAVEPOINT
+    try:
+        # ... 既有計算與 _fill_salary_record(salary_record, breakdown, self) ...
+        sp.commit()  # RELEASE SAVEPOINT
+        results.append((emp, breakdown))
+    except Exception as e:
+        sp.rollback()  # ROLLBACK TO SAVEPOINT — 撤回此員工所有 in-memory 與 SQL-level 修改
+        logger.error("薪資計算失敗 員工=%s(id=%d): %s", emp.name, emp.id, e, exc_info=True)
+        errors.append({"employee_id": emp.id, "employee_name": emp.name, "error": str(e)})
+        # rollback 後重新 query 失敗員工該月舊 record(可能 None),標 needs_recalc=True
+        stale = (
+            session.query(SalaryRecord)
+            .filter(
+                SalaryRecord.employee_id == emp.id,
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+            )
+            .first()
+        )
+        if stale is not None:
+            stale.needs_recalc = True
+        # else: 從未算過,沒有舊 record;由 finalize 的 missing 檢查擋下
+```
+
+最後 `session.commit()` 同時寫入「成功員工的新值」與「失敗員工的 needs_recalc=True」。
+
+成功員工的 needs_recalc 由 `_fill_salary_record` 一律 set False(包含預載舊 record 與本輪新建 record)。
 
 #### 假單審核失敗降級(leaves.py)
 
