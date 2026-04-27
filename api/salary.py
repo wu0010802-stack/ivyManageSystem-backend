@@ -58,6 +58,7 @@ from models.database import (
     Employee,
     Classroom,
     SalaryRecord,
+    SalarySnapshot,
     Attendance,
 )
 from services.salary_engine import _compute_hourly_daily_hours
@@ -1007,8 +1008,14 @@ def get_salary_audit_log(
     from sqlalchemy import desc
 
     with session_scope() as session:
-        if not session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first():
+        record_owner = (
+            session.query(SalaryRecord.employee_id)
+            .filter(SalaryRecord.id == record_id)
+            .scalar()
+        )
+        if record_owner is None:
             raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
+        _enforce_self_or_full_salary(current_user, record_owner)
 
         logs = (
             session.query(AuditLog)
@@ -1654,6 +1661,12 @@ def list_salary_snapshots(
     employee_id: Optional[int] = Query(None, ge=1),
 ):
     """列出某月薪資快照（精簡 metadata）。"""
+    viewer_employee_id = _resolve_salary_viewer_employee_id(current_user)
+    if viewer_employee_id is not None:
+        if employee_id is None:
+            employee_id = viewer_employee_id
+        elif employee_id != viewer_employee_id:
+            raise HTTPException(status_code=403, detail="僅可查詢本人薪資")
     with session_scope() as session:
         return {
             "snapshots": _snapshot_svc.list_snapshots(session, year, month, employee_id)
@@ -1667,6 +1680,14 @@ def get_salary_snapshot(
 ):
     """取得單筆快照完整欄位。"""
     with session_scope() as session:
+        snap_owner = (
+            session.query(SalarySnapshot.employee_id)
+            .filter(SalarySnapshot.id == snapshot_id)
+            .scalar()
+        )
+        if snap_owner is None:
+            raise HTTPException(status_code=404, detail="找不到該薪資快照")
+        _enforce_self_or_full_salary(current_user, snap_owner)
         data = _snapshot_svc.get_snapshot_detail(session, snapshot_id)
         if data is None:
             raise HTTPException(status_code=404, detail="找不到該薪資快照")
@@ -1710,6 +1731,14 @@ def get_salary_snapshot_diff(
 ):
     """比對快照與當前 SalaryRecord 的欄位差異。"""
     with session_scope() as session:
+        snap_owner = (
+            session.query(SalarySnapshot.employee_id)
+            .filter(SalarySnapshot.id == snapshot_id)
+            .scalar()
+        )
+        if snap_owner is None:
+            raise HTTPException(status_code=404, detail="找不到該薪資快照")
+        _enforce_self_or_full_salary(current_user, snap_owner)
         data = _snapshot_svc.diff_with_current(session, snapshot_id)
         if data is None:
             raise HTTPException(status_code=404, detail="找不到該薪資快照")
@@ -1828,6 +1857,8 @@ def simulate_salary(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """薪資試算（沙盒模式，不寫入 DB）——套用覆蓋參數後回傳計算結果與實際紀錄對比。"""
+    # 權限檢查置於最前:即使薪資引擎未初始化,也不應對 non-admin/hr 洩漏「他人 employee_id 是否存在」之類的訊號
+    _enforce_self_or_full_salary(current_user, req.employee_id)
     if not _salary_engine:
         raise HTTPException(status_code=503, detail="薪資引擎尚未初始化")
 
@@ -1962,6 +1993,13 @@ def simulate_salary(
             month,
         )
 
+        # 發放月（2/6/9/12）試算須與正式落帳口徑一致：
+        # 用期間累積的 festival/overtime 覆蓋單月值，否則 simulate vs actual 的 diff
+        # 在發放月會被「單月 vs 期間累積」的口徑差異污染。
+        period_festival_total, period_overtime_total = (
+            engine._compute_period_accrual_totals(session, emp, year, month)
+        )
+
         breakdown = engine.calculate_salary(
             employee=emp_dict,
             year=year,
@@ -1973,6 +2011,8 @@ def simulate_salary(
             meeting_context=period_records["meeting_context"],
             overtime_work_pay=overtime_pay,
             personal_sick_leave_hours=personal_sick_hours,
+            period_festival_override=period_festival_total,
+            period_overtime_override=period_overtime_total,
         )
         breakdown.absent_count = absent_count
         breakdown.absence_deduction = round(absence_amount)
