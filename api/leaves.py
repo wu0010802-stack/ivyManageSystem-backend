@@ -853,13 +853,13 @@ def update_leave(
             result["message"] += "；原核准狀態已自動退回「待審核」，請重新送審"
             result["reset_to_pending"] = True
             if _salary_engine is not None:
+                # 跨月修改時,新區間只涵蓋新月份；舊月份的扣款須一併撤銷重算,
+                # 否則 orig_month 的舊扣款仍存在於該月薪資,與新月份合計形成重複扣薪。
+                months_to_recalc = _collect_leave_months(
+                    leave.start_date, leave.end_date
+                )
+                months_to_recalc.add(orig_month)
                 try:
-                    # 跨月修改時,新區間只涵蓋新月份；舊月份的扣款須一併撤銷重算,
-                    # 否則 orig_month 的舊扣款仍存在於該月薪資,與新月份合計形成重複扣薪。
-                    months_to_recalc = _collect_leave_months(
-                        leave.start_date, leave.end_date
-                    )
-                    months_to_recalc.add(orig_month)
                     for yr, mo in sorted(months_to_recalc):
                         _salary_engine.process_salary_calculation(
                             leave.employee_id, yr, mo
@@ -870,6 +870,28 @@ def update_leave(
                         "薪資重算失敗，請手動前往薪資頁面重新計算"
                     )
                     logger.error("請假修改退審後薪資重算失敗：%s", e)
+                    # 重算失敗 → 標 stale,避免後續 finalize 把「假單已退審但薪資未更新」
+                    # 的舊資料封存。對齊 approve_leave 降級樣板。
+                    from services.salary.utils import mark_salary_stale
+
+                    for yr, mo in sorted(months_to_recalc):
+                        try:
+                            mark_salary_stale(session, leave.employee_id, yr, mo)
+                        except Exception:
+                            logger.warning(
+                                "請假修改降級時標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+                                leave.employee_id,
+                                yr,
+                                mo,
+                                exc_info=True,
+                            )
+                    try:
+                        session.commit()
+                    except Exception:
+                        logger.warning(
+                            "請假修改降級時 commit stale 標記失敗", exc_info=True
+                        )
+                        session.rollback()
 
         return result
     except HTTPException:
@@ -914,6 +936,21 @@ def delete_leave(
                     "假單已刪除，但薪資重算失敗，請手動前往薪資頁面重新計算"
                 )
                 logger.error("刪除假單後薪資重算失敗：%s", e)
+                # 重算失敗 → 標 stale,避免後續 finalize 在「假單已刪除但扣款未撤銷」
+                # 的狀態下誤封存舊薪資。對齊 approve_leave 降級樣板。
+                from services.salary.utils import mark_salary_stale
+
+                try:
+                    mark_salary_stale(session, emp_id, *leave_month)
+                    session.commit()
+                except Exception:
+                    logger.warning(
+                        "刪除假單降級時 commit stale 標記失敗 emp=%d %d/%d",
+                        emp_id,
+                        *leave_month,
+                        exc_info=True,
+                    )
+                    session.rollback()
 
         return result
     except HTTPException:
@@ -1511,18 +1548,18 @@ def batch_approve_leaves(
 
                     # approve 或 reject-of-approved 都需重算薪資
                     if approval_changed and _salary_engine is not None:
+                        emp_id = leave.employee_id
+                        months: set = set()
+                        cur = date(leave.start_date.year, leave.start_date.month, 1)
+                        end_m = date(leave.end_date.year, leave.end_date.month, 1)
+                        while cur <= end_m:
+                            months.add((cur.year, cur.month))
+                            cur = (
+                                date(cur.year + 1, 1, 1)
+                                if cur.month == 12
+                                else date(cur.year, cur.month + 1, 1)
+                            )
                         try:
-                            emp_id = leave.employee_id
-                            months: set = set()
-                            cur = date(leave.start_date.year, leave.start_date.month, 1)
-                            end_m = date(leave.end_date.year, leave.end_date.month, 1)
-                            while cur <= end_m:
-                                months.add((cur.year, cur.month))
-                                cur = (
-                                    date(cur.year + 1, 1, 1)
-                                    if cur.month == 12
-                                    else date(cur.year, cur.month + 1, 1)
-                                )
                             for yr, mo in sorted(months):
                                 _salary_engine.process_salary_calculation(
                                     emp_id, yr, mo
@@ -1531,6 +1568,29 @@ def batch_approve_leaves(
                             logger.error(
                                 "批次審核後薪資重算失敗（假單 #%d）：%s", leave_id, se
                             )
+                            # 重算失敗 → 標 stale,避免後續 finalize 在「假單已審核
+                            # 但薪資未更新」的狀態下誤封存舊薪資。
+                            from services.salary.utils import mark_salary_stale
+
+                            for yr, mo in sorted(months):
+                                try:
+                                    mark_salary_stale(session, emp_id, yr, mo)
+                                except Exception:
+                                    logger.warning(
+                                        "批次審核降級時標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+                                        emp_id,
+                                        yr,
+                                        mo,
+                                        exc_info=True,
+                                    )
+                            try:
+                                session.commit()
+                            except Exception:
+                                logger.warning(
+                                    "批次審核降級時 commit stale 標記失敗",
+                                    exc_info=True,
+                                )
+                                session.rollback()
             except Exception as e:
                 session.rollback()
                 for leave_id, _, _ in changes:
