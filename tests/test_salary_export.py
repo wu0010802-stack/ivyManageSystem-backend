@@ -122,6 +122,115 @@ class TestSalaryExcelExport:
         )
         assert len(response.content) > 0
 
+    def test_xlsx_export_deduction_columns_reconcile_with_total(
+        self, salary_export_client
+    ):
+        """Excel 顯示的扣款明細加總必須等於 record.total_deduction。
+
+        Why: 修復前 Excel 只顯示勞保/健保/考勤扣款，遺漏勞退自提/曠職/其他扣款，
+        導致會計查不出「扣款合計」與看得見明細的差額來源。
+        """
+        from io import BytesIO
+        from openpyxl import load_workbook
+
+        client, session_factory = salary_export_client
+
+        with session_factory() as session:
+            employee = _create_employee(session, "E020", "對賬老師")
+            _create_user(session, "salary_recon_admin", int(Permission.SALARY_READ))
+            session.add(
+                SalaryRecord(
+                    employee_id=employee.id,
+                    salary_year=2026,
+                    salary_month=4,
+                    base_salary=30000,
+                    gross_salary=32000,
+                    labor_insurance_employee=700,
+                    health_insurance_employee=500,
+                    pension_employee=1800,
+                    late_deduction=100,
+                    early_leave_deduction=50,
+                    leave_deduction=300,
+                    absence_deduction=1500,
+                    other_deduction=200,
+                    total_deduction=700 + 500 + 1800 + 100 + 50 + 300 + 1500 + 200,
+                    net_salary=32000 - (700 + 500 + 1800 + 100 + 50 + 300 + 1500 + 200),
+                )
+            )
+            session.commit()
+
+        login_res = _login(client, "salary_recon_admin")
+        assert login_res.status_code == 200
+
+        response = client.get("/api/salaries/export-all?year=2026&month=4&format=xlsx")
+        assert response.status_code == 200
+
+        wb = load_workbook(BytesIO(response.content))
+        ws = wb.active
+        headers = [
+            ws.cell(row=3, column=col).value for col in range(1, ws.max_column + 1)
+        ]
+        # 修復後必備欄位
+        for required in ("勞退自提", "曠職扣款", "其他扣款"):
+            assert required in headers, f"缺欄位：{required}"
+
+        row_values = {
+            headers[col - 1]: ws.cell(row=4, column=col).value
+            for col in range(1, ws.max_column + 1)
+        }
+        # 顯示明細加總 == 扣款合計
+        deduction_columns = (
+            "勞保",
+            "健保",
+            "勞退自提",
+            "考勤扣款",
+            "曠職扣款",
+            "其他扣款",
+        )
+        displayed_sum = sum(int(row_values[c] or 0) for c in deduction_columns)
+        assert displayed_sum == int(
+            row_values["扣款合計"]
+        ), f"明細加總 {displayed_sum} 不等於扣款合計 {row_values['扣款合計']}"
+
+    def test_pdf_deduction_rows_reconcile_with_total(self):
+        """PDF 扣款表的個別明細加總必須等於 record.total_deduction。"""
+        from services.salary_slip import _build_deduction_rows
+
+        class _Rec:
+            labor_insurance_employee = 700
+            health_insurance_employee = 500
+            pension_employee = 1800
+            late_deduction = 100
+            early_leave_deduction = 50
+            leave_deduction = 300
+            absence_deduction = 1500
+            other_deduction = 200
+            late_count = 1
+            early_leave_count = 1
+            absent_count = 2
+            total_deduction = 700 + 500 + 1800 + 100 + 50 + 300 + 1500 + 200
+
+        rows = _build_deduction_rows(_Rec(), lambda v: int(v or 0))
+        rowmap = {r[0]: r[2] for r in rows[1:]}
+
+        # 顯示明細加總（不含小計與合計列）
+        item_keys = (
+            "勞保費 (自付)",
+            "健保費 (自付)",
+            "勞退自提",
+            "遲到扣款",
+            "早退扣款",
+            "請假扣款",
+            "曠職扣款",
+            "其他扣款",
+        )
+        displayed_sum = sum(int(rowmap[k]) for k in item_keys)
+        assert displayed_sum == _Rec.total_deduction
+        assert int(rowmap["扣款合計"]) == _Rec.total_deduction
+        # 小計欄正確性
+        assert int(rowmap["保險小計"]) == 700 + 500 + 1800
+        assert int(rowmap["考勤扣款小計"]) == 100 + 50 + 300
+
     def test_xlsx_export_includes_remark_column(self, salary_export_client):
         from io import BytesIO
         from openpyxl import load_workbook
@@ -305,7 +414,8 @@ class TestSalaryManualAdjustApi:
 
         response = client.put(
             f"/api/salaries/{record_id}/manual-adjust",
-            json={"adjustment_reason": "自動化測試補欄位原因", 
+            json={
+                "adjustment_reason": "自動化測試補欄位原因",
                 "festival_bonus": 1800,
                 "leave_deduction": 500,
             },

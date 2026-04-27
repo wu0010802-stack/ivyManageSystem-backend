@@ -34,6 +34,8 @@ class AttendancePolicy(Base):
 
     default_work_start = Column(String(5), default="08:00")
     default_work_end = Column(String(5), default="17:00")
+    # Deprecated（不再進入薪資計算）：扣款固定以勞基法基準（月薪/30/8/60）
+    # 計算，詳見 services/salary/deduction.py。欄位保留以維持資料庫相容性。
     late_deduction = Column(Float, default=50)
     early_leave_deduction = Column(Float, default=50)
     missing_punch_deduction = Column(Float, default=50)

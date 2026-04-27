@@ -25,11 +25,15 @@ def calculate_attendance_deduction(
 ) -> dict:
     """計算考勤扣款。
 
-    規則：
+    規則（業主 2026-04-25 確認：維持勞基法基準）：
     - 遲到/早退：按實際分鐘比例扣款（每分鐘 = 月薪 ÷ 30 ÷ 8 ÷ 60，勞基法基準）
       並設「單筆遲到/早退不超過當日日薪」上限，避免打卡異常造成超額扣款。
     - 未打卡：不扣款，僅記錄次數。
     - base_salary <= 0（時薪或未設定）→ 扣款皆為 0。
+
+    Note: AttendancePolicy.late_deduction / early_leave_deduction /
+    missing_punch_deduction 欄位已 deprecated，不影響本函式計算（DB 欄位保留
+    以維持資料相容性，但 AttendancePolicyUpdate API 不再接受這些欄位）。
     """
     per_minute_rate = (
         base_salary / (MONTHLY_BASE_DAYS * 8 * 60) if base_salary > 0 else 0

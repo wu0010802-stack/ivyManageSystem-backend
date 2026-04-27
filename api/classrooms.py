@@ -139,6 +139,67 @@ def _semester_label(school_year: int, semester: int) -> str:
     return f"{school_year}學年度{SEMESTER_LABELS.get(semester, str(semester))}"
 
 
+def _sync_employee_classroom_id(session, employee_ids: list[int]) -> None:
+    """重新計算指定員工的 Employee.classroom_id（取自當期 active classroom）。
+
+    Why: Employee.classroom_id 是冗餘欄位，過去班級頁面更新老師時並未同步寫回，
+    造成薪資引擎、薪資匯出、員工 API 全面失準（沉默歸零最危險）。本函式為單一
+    更新點，會在所有班級異動端點被呼叫，重新依當期 active 班級的 head/assistant/
+    art_teacher_id 計算每位受影響員工的 classroom_id。
+
+    優先序：head_teacher > assistant_teacher > art_teacher > 班級 id 較小者。
+    跨學期時取「當前學期」班級為準（與 utils.academic.resolve_current_academic_term
+    一致），其他學期班級不影響此值。
+    """
+    if not employee_ids:
+        return
+
+    school_year, semester = resolve_current_academic_term()
+    classrooms = (
+        session.query(Classroom)
+        .filter(
+            Classroom.is_active == True,
+            Classroom.school_year == school_year,
+            Classroom.semester == semester,
+        )
+        .order_by(Classroom.id.asc())
+        .all()
+    )
+
+    def _pick(emp_id: int) -> Optional[int]:
+        head = next((c for c in classrooms if c.head_teacher_id == emp_id), None)
+        if head:
+            return head.id
+        assistant = next(
+            (c for c in classrooms if c.assistant_teacher_id == emp_id), None
+        )
+        if assistant:
+            return assistant.id
+        art = next((c for c in classrooms if c.art_teacher_id == emp_id), None)
+        return art.id if art else None
+
+    employees = session.query(Employee).filter(Employee.id.in_(set(employee_ids))).all()
+    for emp in employees:
+        new_id = _pick(emp.id)
+        if emp.classroom_id != new_id:
+            emp.classroom_id = new_id
+
+
+def _classroom_teacher_ids(classroom: Optional[Classroom]) -> list[int]:
+    """從 Classroom 取出三個教師欄位中非空的 id 清單，便於同步呼叫。"""
+    if classroom is None:
+        return []
+    return [
+        tid
+        for tid in (
+            classroom.head_teacher_id,
+            classroom.assistant_teacher_id,
+            classroom.art_teacher_id,
+        )
+        if tid
+    ]
+
+
 def _validate_distinct_teacher_assignments(
     head_teacher_id: Optional[int],
     assistant_teacher_id: Optional[int],
@@ -621,6 +682,8 @@ async def create_classroom(
         payload["semester"] = semester
         classroom = Classroom(**payload)
         session.add(classroom)
+        session.flush()
+        _sync_employee_classroom_id(session, _classroom_teacher_ids(classroom))
         session.commit()
         return {"message": "班級新增成功", "id": classroom.id}
     except HTTPException:
@@ -657,6 +720,17 @@ async def update_classroom(
             for k in update_data.keys()
             if hasattr(classroom, k)
         }
+        # 變更前後的教師 id 集合都要納入同步範圍：被指派老師需新建立 classroom_id，
+        # 被取消指派的舊老師也要清除（或重指向其他班）。
+        affected_teacher_ids: set[int] = set(
+            tid
+            for tid in (
+                classroom.head_teacher_id,
+                classroom.assistant_teacher_id,
+                classroom.art_teacher_id,
+            )
+            if tid
+        )
         school_year = update_data.get("school_year", classroom.school_year)
         semester = update_data.get("semester", classroom.semester)
         resolve_academic_term_filters(school_year, semester)
@@ -706,6 +780,18 @@ async def update_classroom(
             if value is not None or key in NULLABLE_FIELDS:
                 setattr(classroom, key, value)
 
+        # 把變更後仍掛在班級的教師也納入同步集合
+        affected_teacher_ids.update(
+            tid
+            for tid in (
+                classroom.head_teacher_id,
+                classroom.assistant_teacher_id,
+                classroom.art_teacher_id,
+            )
+            if tid
+        )
+        session.flush()
+        _sync_employee_classroom_id(session, sorted(affected_teacher_ids))
         session.commit()
 
         diff = {}
@@ -772,6 +858,7 @@ async def clone_classrooms_to_term(
             )
 
         created = []
+        affected_teacher_ids: set[int] = set()
         for source in source_classrooms:
             cloned = Classroom(
                 name=source.name,
@@ -789,7 +876,13 @@ async def clone_classrooms_to_term(
             )
             session.add(cloned)
             created.append(cloned)
+            if item.copy_teachers:
+                affected_teacher_ids.update(_classroom_teacher_ids(cloned))
 
+        # 若 copy_teachers=True 且目標學期=當前學期，需同步 Employee.classroom_id；
+        # 目標若為未來學期則 _sync 內當期過濾不會匹配，等學期切換後自動生效。
+        session.flush()
+        _sync_employee_classroom_id(session, sorted(affected_teacher_ids))
         session.commit()
         return {
             "message": "班級複製成功",
@@ -995,6 +1088,33 @@ async def promote_classrooms_to_academic_year(
                 )
                 moved_student_count += moved or 0
 
+        # 升班完成後同步所有受影響教師的 Employee.classroom_id：
+        # 把來源班教師（取消指派）與目標班教師（新指派）一併重算。
+        affected_teacher_ids: set[int] = set()
+        for row, source, _, will_graduate in prepared_rows:
+            affected_teacher_ids.update(_classroom_teacher_ids(source))
+            if will_graduate:
+                continue
+        # 目標班教師：源班教師若 copy_teachers 已重複；額外把已落地的 reusable/new
+        # target classrooms 上的教師也涵蓋（包含 copy_teachers=False 時的清空案例）。
+        target_teacher_rows = (
+            session.query(
+                Classroom.head_teacher_id,
+                Classroom.assistant_teacher_id,
+                Classroom.art_teacher_id,
+            )
+            .filter(
+                Classroom.school_year == item.target_school_year,
+                Classroom.semester == item.target_semester,
+            )
+            .all()
+        )
+        for head_id, assistant_id, art_id in target_teacher_rows:
+            for teacher_id in (head_id, assistant_id, art_id):
+                if teacher_id:
+                    affected_teacher_ids.add(teacher_id)
+        session.flush()
+        _sync_employee_classroom_id(session, sorted(affected_teacher_ids))
         session.commit()
         logger.info(
             "班級跨學年升班成功 source=%s-%s target=%s-%s created=%s moved_students=%s graduated=%s operator=%s",
@@ -1054,10 +1174,13 @@ async def delete_classroom(
                 status_code=409, detail="班級仍有在學學生，請先轉班或移出學生後再停用"
             )
 
+        affected_teacher_ids = _classroom_teacher_ids(classroom)
         classroom.is_active = False
         classroom.head_teacher_id = None
         classroom.assistant_teacher_id = None
         classroom.art_teacher_id = None
+        session.flush()
+        _sync_employee_classroom_id(session, affected_teacher_ids)
         session.commit()
         return {"message": "班級已停用", "id": classroom.id}
     except HTTPException:

@@ -327,9 +327,14 @@ def _calc_festival_detail(
     office_bonus_base,
     meeting_absence_deduction: int,
     is_bonus_month: bool,
+    reference_date=None,
 ) -> dict:
     """計算節慶獎金詳情，涵蓋主管、辦公室、帶班老師三種路徑。"""
-    is_eligible = engine.is_eligible_for_festival_bonus(emp.hire_date)
+    # Why: reference_date 必須是薪資月份月底（與 engine._get_bonus_reference_date 一致），
+    # 否則查歷史月份明細會用今天判斷年資，導致「2025-11-15 到職員工查 2026-02 明細」誤判不合格
+    is_eligible = engine.is_eligible_for_festival_bonus(
+        emp.hire_date, reference_date=reference_date
+    )
     detail: dict = {}
 
     if supervisor_base is not None:
@@ -635,6 +640,7 @@ def build_salary_debug_snapshot(
         office_bonus_base,
         mtg["meeting_absence_deduction"],
         is_bonus_month,
+        reference_date=end_date,
     )
     bonus_forfeited_by_leave = lv_result["bonus_forfeited_by_leave"]
     if bonus_forfeited_by_leave and festival_detail:
@@ -670,6 +676,25 @@ def build_salary_debug_snapshot(
     ins_result = _calc_insurance_details(emp, engine.insurance_service)
     ins = ins_result["ins"]
 
+    # ── 從既存 SalaryRecord 取手動調整欄位（performance/special bonus） ──
+    # Why: 此兩欄位由手動調整端點寫入 SalaryRecord，非從 Employee 推導；
+    # snapshot gross_salary 必須包含才能與 engine.calculate_salary 公式對齊。
+    from models.database import SalaryRecord as _SalaryRecord
+
+    existing_record = (
+        session.query(_SalaryRecord)
+        .filter(
+            _SalaryRecord.employee_id == emp.id,
+            _SalaryRecord.salary_year == year,
+            _SalaryRecord.salary_month == month,
+        )
+        .first()
+    )
+    performance_bonus = (
+        float(existing_record.performance_bonus or 0) if existing_record else 0
+    )
+    special_bonus = float(existing_record.special_bonus or 0) if existing_record else 0
+
     # ── 遲到扣款明細 ──
     prorated_base = _prorate_for_period(
         base_salary, emp.hire_date, resign_date, year, month
@@ -690,6 +715,8 @@ def build_salary_debug_snapshot(
 
     gross_salary = round(
         prorated_base
+        + performance_bonus
+        + special_bonus
         + supervisor_dividend
         + birthday_bonus
         + mtg["meeting_overtime_pay_total"]
@@ -771,6 +798,8 @@ def build_salary_debug_snapshot(
         "salary_summary": {
             "prorated_base_salary": round(prorated_base),
             "proration_applied": round(prorated_base) != base_salary,
+            "performance_bonus": round(performance_bonus),
+            "special_bonus": round(special_bonus),
             "birthday_bonus": birthday_bonus,
             "meeting_overtime_pay": mtg["meeting_overtime_pay_total"],
             "absent_count": absence["absent_count"],

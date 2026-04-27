@@ -714,8 +714,33 @@ INSURANCE_TABLE_2026 = [
 
 
 class InsuranceService:
+    """勞健保計算服務。
+
+    費率/比例策略（部分覆蓋）：
+    - 員工/雇主負擔金額 (`labor_employee`、`labor_employer`、`health_employee`、
+      `health_employer`、`pension_employer`) 永遠由勞動部公告之 `INSURANCE_TABLE_2026`
+      級距表決定（這些值經過台灣勞工保險條例特殊鋪陳與分項加總，不可由單一
+      `amount × rate × ratio` 重算）。
+    - 僅「政府補貼」`labor_government` 與「勞退自提」`pension_employee` 採用
+      DB `InsuranceRate` 的費率即時計算；其餘費率欄位（如 `labor_rate`）僅作為
+      此兩項與報表使用的參數。
+    - DB `InsuranceRate.update` 後 `engine.load_config_from_db()` 會呼叫
+      `update_rates_from_db()` 同步本服務的 instance rates。
+    """
+
     def __init__(self):
         self.table = INSURANCE_TABLE_2026
+        # rate 改為 instance 屬性以便 update_rates_from_db 覆寫
+        self.labor_rate = LABOR_INSURANCE_RATE
+        self.labor_employee_ratio = LABOR_EMPLOYEE_RATIO
+        self.labor_employer_ratio = LABOR_EMPLOYER_RATIO
+        self.labor_government_ratio = LABOR_GOVERNMENT_RATIO
+        self.health_rate = HEALTH_INSURANCE_RATE
+        self.health_employee_ratio = HEALTH_EMPLOYEE_RATIO
+        self.health_employer_ratio = HEALTH_EMPLOYER_RATIO
+        self.pension_employer_rate = PENSION_EMPLOYER_RATE
+        self.average_dependents = AVERAGE_DEPENDENTS
+
         current = date.today().year
         if current > CURRENT_INSURANCE_YEAR:
             logger.warning(
@@ -724,6 +749,33 @@ class InsuranceService:
                 CURRENT_INSURANCE_YEAR,
                 current,
             )
+
+    def update_rates_from_db(self, rate_record) -> None:
+        """以 DB `InsuranceRate` 紀錄覆寫 instance 費率屬性。
+
+        被覆寫的費率僅影響 `labor_government` 與 `pension_employee` 計算結果；
+        員工/雇主級距金額仍依公告級距表（見 class docstring）。
+        欄位若為 None 視為「未設定，沿用模組常數預設」。
+        """
+        if rate_record is None:
+            return
+        for attr, default in (
+            ("labor_rate", LABOR_INSURANCE_RATE),
+            ("labor_employee_ratio", LABOR_EMPLOYEE_RATIO),
+            ("labor_employer_ratio", LABOR_EMPLOYER_RATIO),
+            ("health_rate", HEALTH_INSURANCE_RATE),
+            ("health_employee_ratio", HEALTH_EMPLOYEE_RATIO),
+            ("health_employer_ratio", HEALTH_EMPLOYER_RATIO),
+            ("pension_employer_rate", PENSION_EMPLOYER_RATE),
+            ("average_dependents", AVERAGE_DEPENDENTS),
+        ):
+            value = getattr(rate_record, attr, None)
+            setattr(self, attr, default if value is None else float(value))
+        # labor_government_ratio = 1 - employee_ratio - employer_ratio（守恆律）
+        self.labor_government_ratio = max(
+            0.0,
+            1.0 - self.labor_employee_ratio - self.labor_employer_ratio,
+        )
 
     def get_bracket(self, salary: float) -> dict:
         """根據薪資查找對應的級距（薪資介於兩個級距之間取較高級數）"""
@@ -750,8 +802,9 @@ class InsuranceService:
 
         labor_emp = labor_bracket["labor_employee"]
         labor_er = labor_bracket["labor_employer"]
+        # 政府補貼採 instance rate（受 InsuranceRate DB 設定影響），其他欄位由級距表決定
         labor_gov = round(
-            labor_bracket["amount"] * LABOR_INSURANCE_RATE * LABOR_GOVERNMENT_RATIO
+            labor_bracket["amount"] * self.labor_rate * self.labor_government_ratio
         )
 
         # 健保員工自付額依眷屬人數倍增（最多3人；負值以0計，防止DB舊資料或直接寫入產生負健保費）
@@ -760,6 +813,7 @@ class InsuranceService:
         health_er = health_bracket["health_employer"]
 
         pension_er = pension_bracket["pension"]
+        # 勞退自提採員工自選比例（0~6%）；雇主端 6% 仍依級距表
         pension_emp = round(
             pension_bracket["amount"] * pension_self_rate
         )  # 依勞基法以月提繳工資級距計算

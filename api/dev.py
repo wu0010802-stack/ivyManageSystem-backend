@@ -242,6 +242,7 @@ def _query_attendance_policy(session) -> dict | None:
     policy = (
         session.query(AttendancePolicy)
         .filter(AttendancePolicy.is_active == True)
+        .order_by(AttendancePolicy.id.desc())
         .first()
     )
     if not policy:
@@ -257,7 +258,12 @@ def _query_attendance_policy(session) -> dict | None:
 
 
 def _query_bonus_config(session) -> dict | None:
-    bonus = session.query(BonusConfig).filter(BonusConfig.is_active == True).first()
+    bonus = (
+        session.query(BonusConfig)
+        .filter(BonusConfig.is_active == True)
+        .order_by(BonusConfig.id.desc())
+        .first()
+    )
     if not bonus:
         return None
     return {
@@ -301,7 +307,12 @@ def _query_grade_targets(session) -> list:
 
 
 def _query_insurance_rate(session) -> dict | None:
-    rate = session.query(InsuranceRate).filter(InsuranceRate.is_active == True).first()
+    rate = (
+        session.query(InsuranceRate)
+        .filter(InsuranceRate.is_active == True)
+        .order_by(InsuranceRate.id.desc())
+        .first()
+    )
     if not rate:
         return None
     return {

@@ -247,3 +247,79 @@ class TestInsuranceSalaryFallbackNormalization:
 
         # contracted_base = base_salary = 30000 → get_bracket → 30300
         assert called_with[0] == engine.insurance_service.get_bracket(30000)["amount"]
+
+
+class TestUpdateRatesFromDb:
+    """update_rates_from_db: DB InsuranceRate 設定影響 labor_government 與 pension_employee。"""
+
+    def test_default_labor_government_unchanged(self, service):
+        """無 update_rates_from_db 呼叫時，labor_government 用模組常數預設費率。"""
+        result = service.calculate(salary=30000, dependents=0)
+        # amount=30300, labor_rate=0.125, labor_government_ratio=0.10
+        assert result.labor_government == round(30300 * 0.125 * 0.10)
+
+    def test_update_rates_changes_labor_government(self, service):
+        """調 labor_rate 後，labor_government 必須跟著改變（不再是硬編碼）。"""
+
+        class FakeRate:
+            labor_rate = 0.20  # 12.5% → 20%（明顯差異，避開浮點半邊界）
+            labor_employee_ratio = 0.20
+            labor_employer_ratio = 0.70
+            health_rate = 0.0517
+            health_employee_ratio = 0.30
+            health_employer_ratio = 0.60
+            pension_employer_rate = 0.06
+            average_dependents = 0.56
+
+        before = service.calculate(salary=30000, dependents=0).labor_government
+        service.update_rates_from_db(FakeRate())
+        after = service.calculate(salary=30000, dependents=0).labor_government
+        # 預設 0.125 → 20% 後 labor_government 應顯著上升（amount × rate × 0.10）
+        assert after > before
+        assert after == pytest.approx(round(30300 * 0.20 * 0.10), abs=1)
+        # 員工/雇主級距值維持公告級距表（與其他費率欄位無關）
+        result = service.calculate(salary=30000, dependents=0)
+        assert result.labor_employee == 758
+        assert result.health_employee == 470
+
+    def test_update_rates_recomputes_government_ratio_from_employee_employer(
+        self, service
+    ):
+        """labor_government_ratio 應由員工+雇主比例反推，避免設定不一致。"""
+
+        class FakeRate:
+            labor_rate = 0.125
+            labor_employee_ratio = 0.30  # 故意改高
+            labor_employer_ratio = 0.60  # 故意改低
+            health_rate = 0.0517
+            health_employee_ratio = 0.30
+            health_employer_ratio = 0.60
+            pension_employer_rate = 0.06
+            average_dependents = 0.56
+
+        service.update_rates_from_db(FakeRate())
+        # government_ratio = 1 - 0.30 - 0.60 = 0.10
+        assert service.labor_government_ratio == pytest.approx(0.10)
+
+    def test_update_rates_with_none_record_no_change(self, service):
+        """update_rates_from_db(None) 應該 no-op（保留原費率）。"""
+        original_rate = service.labor_rate
+        service.update_rates_from_db(None)
+        assert service.labor_rate == original_rate
+
+    def test_update_rates_with_partial_none_falls_back_to_defaults(self, service):
+        """欄位為 None 時應 fallback 到模組常數預設，避免 NoneType 進入計算。"""
+        from services.insurance_service import LABOR_INSURANCE_RATE
+
+        class FakeRate:
+            labor_rate = None  # 故意留空
+            labor_employee_ratio = 0.20
+            labor_employer_ratio = 0.70
+            health_rate = 0.0517
+            health_employee_ratio = 0.30
+            health_employer_ratio = 0.60
+            pension_employer_rate = 0.06
+            average_dependents = 0.56
+
+        service.update_rates_from_db(FakeRate())
+        assert service.labor_rate == LABOR_INSURANCE_RATE

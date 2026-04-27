@@ -9,7 +9,10 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.salary.utils import get_current_period_passed_months
+from services.salary.utils import (
+    get_current_period_passed_months,
+    get_distribution_period_months,
+)
 
 
 class TestGetCurrentPeriodPassedMonths:
@@ -53,6 +56,39 @@ class TestGetCurrentPeriodPassedMonths:
 
     def test_november_has_three_months(self):
         assert get_current_period_passed_months(2026, 11) == [
+            (2026, 9),
+            (2026, 10),
+            (2026, 11),
+        ]
+
+
+class TestGetDistributionPeriodMonths:
+    """發放月所結算的月份清單（不含發放月本身）。"""
+
+    def test_non_distribution_month_returns_empty(self):
+        for m in (1, 3, 4, 5, 7, 8, 10, 11):
+            assert get_distribution_period_months(2026, m) == []
+
+    def test_february_crosses_year_boundary(self):
+        assert get_distribution_period_months(2026, 2) == [(2025, 12), (2026, 1)]
+
+    def test_june_covers_feb_to_may(self):
+        assert get_distribution_period_months(2026, 6) == [
+            (2026, 2),
+            (2026, 3),
+            (2026, 4),
+            (2026, 5),
+        ]
+
+    def test_september_covers_jun_to_aug(self):
+        assert get_distribution_period_months(2026, 9) == [
+            (2026, 6),
+            (2026, 7),
+            (2026, 8),
+        ]
+
+    def test_december_covers_sep_to_nov(self):
+        assert get_distribution_period_months(2026, 12) == [
             (2026, 9),
             (2026, 10),
             (2026, 11),
@@ -217,6 +253,10 @@ class TestCalculatePeriodAccrualRow:
             )
 
         assert result["festival_bonus"] == 0
+        # 未滿 3 個月：overtime 也必須為 0（與 calculate_salary 路徑一致）
+        # 2026-04-27 改造：以前 overtime 不套 eligibility，現在統一套；此斷言
+        # 防止 future revert 把 overtime 拉回 buggy 路徑。
+        assert result["overtime_bonus"] == 0
 
     def test_non_classroom_employee_has_zero_overtime(
         self, db_session, salary_engine_no_db

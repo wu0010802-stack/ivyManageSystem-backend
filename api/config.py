@@ -109,13 +109,16 @@ def init_config_services(salary_engine, line_service=None):
 
 
 class AttendancePolicyUpdate(BaseModel):
-    """考勤政策更新"""
+    """考勤政策更新。
+
+    Deprecated 欄位（不再進入薪資計算，已從 schema 移除）：
+      - late_deduction / early_leave_deduction / missing_punch_deduction
+        實際扣款固定以勞基法基準（每分鐘 = 月薪 / 30 / 8 / 60）計算，
+        詳見 services/salary/deduction.py。DB 欄位保留以支援既有資料相容性。
+    """
 
     default_work_start: Optional[str] = None
     default_work_end: Optional[str] = None
-    late_deduction: Optional[float] = Field(None, ge=0)
-    early_leave_deduction: Optional[float] = Field(None, ge=0)
-    missing_punch_deduction: Optional[float] = Field(None, ge=0)
     festival_bonus_months: Optional[int] = Field(None, ge=0)
 
 
@@ -242,6 +245,7 @@ def get_attendance_policy(
         policy = (
             session.query(AttendancePolicy)
             .filter(AttendancePolicy.is_active == True)
+            .order_by(AttendancePolicy.id.desc())
             .first()
         )
         if not policy:
@@ -272,6 +276,7 @@ def update_attendance_policy(
         old_policy = (
             session.query(AttendancePolicy)
             .filter(AttendancePolicy.is_active == True)
+            .order_by(AttendancePolicy.id.desc())
             .first()
         )
 
@@ -324,7 +329,7 @@ def get_bonus_config(
         config = (
             session.query(DBBonusConfig)
             .filter(DBBonusConfig.is_active == True)
-            .order_by(DBBonusConfig.config_year.desc())
+            .order_by(DBBonusConfig.config_year.desc(), DBBonusConfig.id.desc())
             .first()
         )
         if not config:
@@ -367,7 +372,10 @@ def update_bonus_config(
     session = get_session()
     try:
         old_config = (
-            session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
+            session.query(DBBonusConfig)
+            .filter(DBBonusConfig.is_active == True)
+            .order_by(DBBonusConfig.id.desc())
+            .first()
         )
 
         # 複製舊版欄位值，再套用本次變更
@@ -449,7 +457,10 @@ def get_grade_targets(
     session = get_session()
     try:
         active_bonus = (
-            session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
+            session.query(DBBonusConfig)
+            .filter(DBBonusConfig.is_active == True)
+            .order_by(DBBonusConfig.id.desc())
+            .first()
         )
         if active_bonus:
             targets = (
@@ -494,7 +505,10 @@ def update_grade_target(
     session = get_session()
     try:
         active_bonus = (
-            session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
+            session.query(DBBonusConfig)
+            .filter(DBBonusConfig.is_active == True)
+            .order_by(DBBonusConfig.id.desc())
+            .first()
         )
         active_bonus_id = active_bonus.id if active_bonus else None
 
@@ -557,7 +571,7 @@ def get_insurance_rates(
         rate = (
             session.query(InsuranceRate)
             .filter(InsuranceRate.is_active == True)
-            .order_by(InsuranceRate.rate_year.desc())
+            .order_by(InsuranceRate.rate_year.desc(), InsuranceRate.id.desc())
             .first()
         )
         if not rate:
@@ -590,7 +604,10 @@ def update_insurance_rates(
     session = get_session()
     try:
         old_rate = (
-            session.query(InsuranceRate).filter(InsuranceRate.is_active == True).first()
+            session.query(InsuranceRate)
+            .filter(InsuranceRate.is_active == True)
+            .order_by(InsuranceRate.id.desc())
+            .first()
         )
 
         new_rate = InsuranceRate(is_active=True)
@@ -739,6 +756,7 @@ def get_all_configs(
         policy = (
             session.query(AttendancePolicy)
             .filter(AttendancePolicy.is_active == True)
+            .order_by(AttendancePolicy.id.desc())
             .first()
         )
         attendance_policy = None
@@ -754,7 +772,10 @@ def get_all_configs(
 
         # 獎金設定
         bonus = (
-            session.query(DBBonusConfig).filter(DBBonusConfig.is_active == True).first()
+            session.query(DBBonusConfig)
+            .filter(DBBonusConfig.is_active == True)
+            .order_by(DBBonusConfig.id.desc())
+            .first()
         )
         bonus_config = None
         if bonus:
@@ -801,7 +822,10 @@ def get_all_configs(
 
         # 勞健保費率
         rate = (
-            session.query(InsuranceRate).filter(InsuranceRate.is_active == True).first()
+            session.query(InsuranceRate)
+            .filter(InsuranceRate.is_active == True)
+            .order_by(InsuranceRate.id.desc())
+            .first()
         )
         insurance_rates = None
         if rate:

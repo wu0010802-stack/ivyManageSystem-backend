@@ -166,11 +166,12 @@ def _build_earnings_table(record, font_name: str, money_fmt):
     return earn_table
 
 
-def _build_deductions_table(record, font_name: str, money_fmt):
-    """建立扣款項目表格（保險、考勤扣款明細）。"""
-    from reportlab.lib import colors
-    from reportlab.platypus import Table, TableStyle
+def _build_deduction_rows(record, money_fmt) -> list:
+    """組合 PDF 扣款表格的 row 資料。
 
+    Why: 抽出可純函式測試，確保顯示明細加總 == record.total_deduction
+    （參見 tests/test_salary_export.py::TestSalaryDeductionReconcile）。
+    """
     total_insurance = (
         (record.labor_insurance_employee or 0)
         + (record.health_insurance_employee or 0)
@@ -179,11 +180,10 @@ def _build_deductions_table(record, font_name: str, money_fmt):
     total_attendance_deduction = (
         (record.late_deduction or 0)
         + (record.early_leave_deduction or 0)
-        + (record.missing_punch_deduction or 0)
         + (record.leave_deduction or 0)
     )
 
-    deduct_data = [
+    return [
         ["扣款項目", "", "金額"],
         ["勞保費 (自付)", "", money_fmt(record.labor_insurance_employee)],
         ["健保費 (自付)", "", money_fmt(record.health_insurance_employee)],
@@ -195,16 +195,24 @@ def _build_deductions_table(record, font_name: str, money_fmt):
             f"({record.early_leave_count or 0}次)",
             money_fmt(record.early_leave_deduction),
         ],
-        [
-            "未打卡扣款",
-            f"({record.missing_punch_count or 0}次)",
-            money_fmt(record.missing_punch_deduction),
-        ],
         ["請假扣款", "", money_fmt(record.leave_deduction)],
-        ["其他扣款", "", money_fmt(record.other_deduction)],
         ["考勤扣款小計", "", money_fmt(total_attendance_deduction)],
+        [
+            "曠職扣款",
+            f"({record.absent_count or 0}天)",
+            money_fmt(record.absence_deduction),
+        ],
+        ["其他扣款", "", money_fmt(record.other_deduction)],
         ["扣款合計", "", money_fmt(record.total_deduction)],
     ]
+
+
+def _build_deductions_table(record, font_name: str, money_fmt):
+    """建立扣款項目表格（保險、考勤扣款明細）。"""
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+
+    deduct_data = _build_deduction_rows(record, money_fmt)
 
     deduct_table = Table(deduct_data, colWidths=[120, 100, 120])
     deduct_table.setStyle(
@@ -367,7 +375,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
     money_fmt = "#,##0"
 
     # Title row
-    ws.merge_cells("A1:P1")
+    ws.merge_cells("A1:S1")
     ws["A1"] = f"{year}年{month}月 薪資總表"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = Alignment(horizontal="center")
@@ -386,7 +394,10 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
         "月薪應發",
         "勞保",
         "健保",
+        "勞退自提",
         "考勤扣款",
+        "曠職扣款",
+        "其他扣款",
         "扣款合計",
         "實發金額",
         "編輯紀錄",
@@ -410,7 +421,6 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
         attendance_deduction = (
             (record.late_deduction or 0)
             + (record.early_leave_deduction or 0)
-            + (record.missing_punch_deduction or 0)
             + (record.leave_deduction or 0)
         )
 
@@ -432,7 +442,10 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
             record.gross_salary or 0,
             record.labor_insurance_employee or 0,
             record.health_insurance_employee or 0,
+            record.pension_employee or 0,
             attendance_deduction,
+            record.absence_deduction or 0,
+            record.other_deduction or 0,
             record.total_deduction or 0,
             record.net_salary or 0,
             record.remark or "",
