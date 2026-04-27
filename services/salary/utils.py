@@ -137,9 +137,56 @@ def get_current_period_passed_months(year: int, month: int) -> list[tuple[int, i
     return []
 
 
+def get_distribution_period_months(year: int, month: int) -> list[tuple[int, int]]:
+    """發放月所結算的月份清單（不含發放月本身）。
+
+    Why: 節慶獎金規則為「發放月時加總期間每月各自比例」（業主 2026-04-25 確認）；
+    此 helper 提供 calculate_salary 在發放月時要 iterate 的目標月份清單。
+    非發放月輸入回 []。
+
+    對應關係：
+      2 月  → [(year-1, 12), (year, 1)]   （與 get_current_period_passed_months(year, 1) 一致）
+      6 月  → [(year, 2), (year, 3), (year, 4), (year, 5)]
+      9 月  → [(year, 6), (year, 7), (year, 8)]
+      12 月 → [(year, 9), (year, 10), (year, 11)]
+    """
+    if not get_bonus_distribution_month(month):
+        return []
+    if month == 2:
+        return get_current_period_passed_months(year, 1)
+    return get_current_period_passed_months(year, month - 1)
+
+
 def calc_daily_salary(base_salary) -> float:
     """日薪計算：base_salary / 30（勞基法基準 MONTHLY_BASE_DAYS）"""
     return (base_salary or 0) / MONTHLY_BASE_DAYS
+
+
+def mark_salary_stale(session, employee_id: int, year: int, month: int) -> bool:
+    """將指定員工該月 SalaryRecord 標記為 needs_recalc=True。
+
+    用於上游事件(假單/加班審核)後薪資重算失敗、批次重算 except 路徑等場景,
+    確保 finalize 完整性檢查能擋下未成功重算的記錄。
+
+    Returns:
+        True  — 找到 record 並標記成功(caller 仍需自行 commit)
+        False — 該月無 record(屬「從未算過」場景,由 finalize 的 missing 檢查擋下)
+    """
+    from models.database import SalaryRecord
+
+    rec = (
+        session.query(SalaryRecord)
+        .filter(
+            SalaryRecord.employee_id == employee_id,
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month,
+        )
+        .first()
+    )
+    if rec is None:
+        return False
+    rec.needs_recalc = True
+    return True
 
 
 def get_meeting_deduction_period_start(year: int, month: int) -> Optional[date]:

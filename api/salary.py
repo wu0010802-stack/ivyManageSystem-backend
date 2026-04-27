@@ -1527,6 +1527,28 @@ def _find_missing_salary_employees(session, year: int, month: int) -> list[dict]
     ]
 
 
+def _find_stale_salary_employees(session, year: int, month: int) -> list[dict]:
+    """回傳該月 SalaryRecord 仍標 needs_recalc=True 的員工清單。
+
+    用途:封存完整性檢查補強。批次重算單筆失敗、假單/加班審核降級時會把
+    對應 SalaryRecord 標 stale,本 helper 讓 finalize 能擋下這類記錄。
+    已封存(is_finalized=True)的記錄本來就不該再變動,故排除。
+    """
+    rows = (
+        session.query(SalaryRecord, Employee.name)
+        .join(Employee, SalaryRecord.employee_id == Employee.id)
+        .filter(
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month,
+            SalaryRecord.needs_recalc == True,
+            SalaryRecord.is_finalized != True,
+        )
+        .order_by(Employee.name)
+        .all()
+    )
+    return [{"id": r.employee_id, "name": name} for r, name in rows]
+
+
 @router.post("/salaries/finalize-month")
 def finalize_salary_month(
     data: FinalizeMonthRequest,
@@ -1565,6 +1587,26 @@ def finalize_salary_month(
                     detail=(
                         f"{data.year} 年 {data.month} 月有 {len(missing)} 位在職員工尚無薪資記錄："
                         f"{names}{more}。請先完成薪資計算，或於請求帶 force=true 強制封存（漏發風險自負）。"
+                    ),
+                )
+            # stale 檢查:批次重算單筆失敗、假單/加班審核降級會將 SalaryRecord
+            # 標 needs_recalc=True;此處擋下,避免封存到「上游事件後未成功重算」
+            # 的舊薪資。force=True 仍可繞過(維持原 missing 一致的逃生口)。
+            stale = _find_stale_salary_employees(session, data.year, data.month)
+            if stale:
+                names = "、".join(f"{s['name']}(#{s['id']})" for s in stale[:20])
+                more = f"…等 {len(stale)} 人" if len(stale) > 20 else ""
+                logger.warning(
+                    "finalize 攔截:%d 年 %d 月有 %d 筆 needs_recalc=True 薪資",
+                    data.year,
+                    data.month,
+                    len(stale),
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{data.year} 年 {data.month} 月有 {len(stale)} 位員工的薪資需重算："
+                        f"{names}{more}。請先重新計算薪資,或於請求帶 force=true 強制封存(將封存舊資料,自負漏算/錯算風險)。"
                     ),
                 )
 

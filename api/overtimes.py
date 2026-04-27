@@ -57,6 +57,7 @@ from utils.constants import (
 from utils.validators import validate_hhmm_format
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST, OVERTIME_RECORD_NOT_FOUND
 from utils.permissions import Permission
+from services.salary.utils import mark_salary_stale as _mark_salary_stale
 from utils.approval_helpers import (
     _get_submitter_role,
     _check_approval_eligibility,
@@ -329,6 +330,17 @@ def _notify_and_recalc_overtime(
                 else "已駁回，但薪資重算失敗，請手動前往薪資頁面重新計算"
             )
             logger.error("加班審核後薪資重算失敗：%s", e)
+            try:
+                _mark_salary_stale(
+                    session,
+                    ot.employee_id,
+                    ot.overtime_date.year,
+                    ot.overtime_date.month,
+                )
+                session.commit()
+            except Exception:
+                logger.warning("加班審核降級時標記 SalaryRecord stale 失敗", exc_info=True)
+                session.rollback()
 
 
 def _to_time(val) -> dt_time:
@@ -971,6 +983,13 @@ def update_overtime(
                     "加班記錄已更新，但薪資重算失敗，請手動前往薪資頁面重新計算"
                 )
                 logger.error("加班修改退審後薪資重算失敗：%s", e)
+                try:
+                    for year, month in sorted(recalculation_months):
+                        _mark_salary_stale(session, ot.employee_id, year, month)
+                    session.commit()
+                except Exception:
+                    logger.warning("加班修改退審降級時標記 stale 失敗", exc_info=True)
+                    session.rollback()
         return result
     except HTTPException:
         raise
@@ -1015,6 +1034,14 @@ def delete_overtime(
                     "加班記錄已刪除，但薪資重算失敗，請手動前往薪資頁面重新計算"
                 )
                 logger.error("刪除加班後薪資重算失敗：%s", e)
+                try:
+                    _mark_salary_stale(
+                        session, employee_id, overtime_month[0], overtime_month[1]
+                    )
+                    session.commit()
+                except Exception:
+                    logger.warning("刪除加班降級時標記 stale 失敗", exc_info=True)
+                    session.rollback()
         return result
     finally:
         session.close()
@@ -1289,6 +1316,21 @@ def batch_approve_overtimes(
                             logger.error(
                                 "批次審核後薪資重算失敗（加班 #%d）：%s", ot_id, se
                             )
+                            try:
+                                _mark_salary_stale(
+                                    session,
+                                    ot.employee_id,
+                                    ot.overtime_date.year,
+                                    ot.overtime_date.month,
+                                )
+                                session.commit()
+                            except Exception:
+                                logger.warning(
+                                    "批次審核降級時標記 stale 失敗（加班 #%d）",
+                                    ot_id,
+                                    exc_info=True,
+                                )
+                                session.rollback()
             except Exception as e:
                 session.rollback()
                 for ot_id, _, _ in changes:

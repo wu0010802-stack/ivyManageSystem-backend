@@ -164,6 +164,8 @@ def _fill_salary_record(salary_record, breakdown, engine):
     salary_record.early_leave_count = breakdown.early_leave_count
     salary_record.missing_punch_count = breakdown.missing_punch_count
     salary_record.absent_count = breakdown.absent_count
+    # 成功重算 → 清除 stale 旗標(若為預載的舊 record 之前可能被標 True)
+    salary_record.needs_recalc = False
     # 重算也視為 SalaryRecord 有效異動，推進樂觀鎖版本：
     # - 讓 ETag/If-Match 能偵測「前端拿到的是重算前版本」→ 409，避免覆蓋
     # - 讓 snapshot cache（key=(record_id, version)）自動失效，不再沿用舊 snapshot
@@ -218,9 +220,13 @@ class SalaryEngine:
         # 記錄目前載入的設定版本 ID，供薪資紀錄稽核用
         self._bonus_config_id: Optional[int] = None
         self._attendance_policy_id: Optional[int] = None
+        # deduction_rules 為歷史相容 stub：實際扣款由 services.salary.deduction
+        # 直接以勞基法基準（month_salary / 30 / 8 / 60）計算，AttendancePolicy
+        # 的 late_deduction / early_leave_deduction / missing_punch_deduction
+        # 欄位已 deprecated，不再進入薪資計算（dev 端點 _build_engine_config 仍引用）
         self.deduction_rules = {
             "late": {"per_minute": 1},
-            "missing": {"amount": 0},  # 未打卡不扣款，僅記錄
+            "missing": {"amount": 0},
             "early": {"per_minute": 1},
         }
         # 可被覆蓋的設定 - 節慶獎金（深拷貝，避免測試修改巢狀 dict 時汙染常數）
@@ -244,11 +250,9 @@ class SalaryEngine:
         # 園務會議設定
         self._meeting_absence_penalty = DEFAULT_MEETING_ABSENCE_PENALTY
         self._meeting_hours = DEFAULT_MEETING_HOURS
-        # 考勤政策設定
+        # 考勤政策設定（僅 festival_bonus_months 進入計算；其他欄位已 deprecated，
+        # 詳見 deduction_rules 的說明 + services/salary/deduction.py）
         self._attendance_policy = {
-            "late_per_minute": 1,
-            "early_per_minute": 1,
-            "missing_punch_deduction": 0,
             "festival_bonus_months": 3,
         }
 
@@ -266,34 +270,39 @@ class SalaryEngine:
                 InsuranceRate,
             )
 
-            # 載入考勤政策
+            # 載入勞健保費率（部分覆蓋：僅影響 labor_government 與 pension_employee）
+            insurance_rate = (
+                session.query(InsuranceRate)
+                .filter(InsuranceRate.is_active == True)
+                .order_by(InsuranceRate.id.desc())
+                .first()
+            )
+            if insurance_rate is not None:
+                self.insurance_service.update_rates_from_db(insurance_rate)
+
+            # 載入考勤政策（依 id desc 取最新 active，與 InsuranceRate 一致；
+            # 即使資料庫意外殘留多筆 is_active=true 也能穩定選到最新版本）
             policy = (
                 session.query(AttendancePolicy)
                 .filter(AttendancePolicy.is_active == True)
+                .order_by(AttendancePolicy.id.desc())
                 .first()
             )
             if policy:
                 self._attendance_policy_id = policy.id  # 記錄版本 ID
+                # AttendancePolicy.late_deduction / early_leave_deduction /
+                # missing_punch_deduction 欄位已 deprecated，不再進入扣款計算
+                # （業主決議維持勞基法基準：每分鐘 = 月薪 / 30 / 8 / 60）。
+                # 僅 festival_bonus_months 仍透過 _attendance_policy 影響節慶獎金資格。
                 self._attendance_policy = {
-                    "late_per_minute": getattr(policy, "late_per_minute", 1) or 1,
-                    "early_per_minute": getattr(policy, "early_per_minute", 1) or 1,
-                    "missing_punch_deduction": 0,
                     "festival_bonus_months": policy.festival_bonus_months,
                 }
-                self.deduction_rules = {
-                    "late": {
-                        "per_minute": self._attendance_policy["late_per_minute"],
-                    },
-                    "missing": {"amount": 0},
-                    "early": {
-                        "per_minute": self._attendance_policy["early_per_minute"]
-                    },
-                }
 
-            # 載入獎金設定
+            # 載入獎金設定（依 id desc 取最新 active，與 InsuranceRate 一致）
             bonus = (
                 session.query(DBBonusConfig)
                 .filter(DBBonusConfig.is_active == True)
+                .order_by(DBBonusConfig.id.desc())
                 .first()
             )
             if bonus:
@@ -683,7 +692,7 @@ class SalaryEngine:
             is_shared_assistant=classroom_context.get("is_shared_assistant", False),
         )
 
-        # 共用副班導：取所有共用班的分數平均（含本班 + shared_other_classes 全部）
+        # 共用副班導 / 跨班美師：取所有共用班的分數平均（含本班 + shared_other_classes 全部）
         # shared_other_classes 為新介面（list），shared_second_class 為向下相容（單班）
         other_classes = classroom_context.get("shared_other_classes")
         if not other_classes:
@@ -735,6 +744,95 @@ class SalaryEngine:
             "shared_second_result": other_results[0],
             "shared_other_results": other_results,
         }
+
+    @staticmethod
+    def _pick_primary_classroom(classrooms, employee_id: int):
+        """從候選班級挑「主要班級」：head_teacher > assistant_teacher > art_teacher。
+
+        Why: Employee.classroom_id 是冗餘欄位，可能因班級頁面更新未同步而失準。
+        所有薪資路徑改以 Classroom 表的 head/assistant/art_teacher_id 反查為準。
+        當教師同時帶多班（如美術老師跨多個班、共用副班導），優先取角色階層較高者。
+        """
+        head = next((c for c in classrooms if c.head_teacher_id == employee_id), None)
+        if head:
+            return head
+        assistant = next(
+            (c for c in classrooms if c.assistant_teacher_id == employee_id), None
+        )
+        if assistant:
+            return assistant
+        return next((c for c in classrooms if c.art_teacher_id == employee_id), None)
+
+    def _resolve_classroom_for_employee_in_term(
+        self,
+        session,
+        employee_id: int,
+        school_year: int,
+        semester: int,
+    ):
+        """反查指定學期內，員工所屬主要班級。
+
+        若該學期無對應 active 班級，fallback 至跨學期任一 active（並 log warning）。
+        Fallback 用於：學校未替每學期建立獨立班級紀錄（單班沿用）的相容情境。
+        """
+        from sqlalchemy import or_
+        from models.database import Classroom
+
+        base_q = (
+            session.query(Classroom)
+            .options(joinedload(Classroom.grade))
+            .filter(
+                Classroom.is_active == True,
+                or_(
+                    Classroom.head_teacher_id == employee_id,
+                    Classroom.assistant_teacher_id == employee_id,
+                    Classroom.art_teacher_id == employee_id,
+                ),
+            )
+        )
+
+        term_classrooms = (
+            base_q.filter(
+                Classroom.school_year == school_year,
+                Classroom.semester == semester,
+            )
+            .order_by(Classroom.id.asc())
+            .all()
+        )
+        if term_classrooms:
+            return self._pick_primary_classroom(term_classrooms, employee_id)
+
+        any_classrooms = base_q.order_by(Classroom.id.desc()).all()
+        picked = self._pick_primary_classroom(any_classrooms, employee_id)
+        if picked:
+            logger.warning(
+                "員工 %s 在 school_year=%s semester=%s 無對應 active 班級；"
+                "fallback 使用 classroom_id=%s（學校未建立該學期班級紀錄？）",
+                employee_id,
+                school_year,
+                semester,
+                picked.id,
+            )
+        return picked
+
+    def _resolve_classroom_for_employee_in_month(
+        self,
+        session,
+        employee_id: int,
+        year: int,
+        month: int,
+    ):
+        """根據薪資年月解析學期，反查當期主要班級。
+
+        為 _compute_period_accrual_totals 等需要逐月回算的路徑提供「依月份解析」入口，
+        避免拿目前的 emp.classroom_id 套用在跨學期的舊月份上（之前的 bug）。
+        """
+        from utils.academic import resolve_current_academic_term
+
+        school_year, semester = resolve_current_academic_term(date(year, month, 1))
+        return self._resolve_classroom_for_employee_in_term(
+            session, employee_id, school_year, semester
+        )
 
     def _build_classroom_context_from_db(
         self,
@@ -788,20 +886,33 @@ class SalaryEngine:
             "is_shared_assistant": False,
         }
 
+        # 同一員工跨多班時，將其他班資訊塞進 shared_other_classes，下游
+        # _calculate_with_classroom_context_dict 會以在籍人數加權平均節慶/超額獎金。
+        # 副班導：依 assistant_teacher_id 反查；美師：依 art_teacher_id 反查
+        # （第十二條：美師獎金跨班亦應反映各班負擔，而非只看 _pick_primary_classroom 挑到的單班）。
+        # 注意：若員工同時掛多個角色（例：head_teacher 於 A 班 + art_teacher 於 B 班），
+        # _pick_primary_classroom 取 head_teacher，B 班暫不會被合併進來；屬於另一個尚未涵蓋的情境。
+        shared_filter = None
         if role == "assistant_teacher":
+            shared_filter = DBClassroom.assistant_teacher_id == employee_id
+        elif role == "art_teacher":
+            shared_filter = DBClassroom.art_teacher_id == employee_id
+
+        if shared_filter is not None:
             # is_active 過濾與 process_bulk_salary_calculation 預載一致（line 2093），
             # 否則同一員工在單筆與批次路徑會得到不同的 is_shared_assistant 判斷。
             shared_classes = (
                 session.query(DBClassroom)
                 .options(joinedload(DBClassroom.grade))
                 .filter(
-                    DBClassroom.assistant_teacher_id == employee_id,
+                    shared_filter,
                     DBClassroom.is_active == True,
                 )
                 .all()
             )
             if len(shared_classes) >= 2:
-                classroom_context["is_shared_assistant"] = True
+                if role == "assistant_teacher":
+                    classroom_context["is_shared_assistant"] = True
                 other_classes = [c for c in shared_classes if c.id != classroom.id]
                 other_payload = []
                 for other in other_classes:
@@ -830,6 +941,7 @@ class SalaryEngine:
         classroom,
         db_count_map: dict,
         assistant_to_classes: dict,
+        art_to_classes: dict,
     ) -> Optional[dict]:
         """使用批次預載資料建構帶班獎金計算上下文（與 _build_classroom_context_from_db 邏輯一致）。"""
         if not classroom:
@@ -849,19 +961,26 @@ class SalaryEngine:
         is_shared_assistant = False
         shared_other_classes: list[dict] = []
 
+        # 副班導/美師跨多班時：合併其他班為 shared_other_classes，由下游加權平均。
+        # 與 _build_classroom_context_from_db 行為一致；mixed-role 邊界同樣留待後續處理。
+        shared_classes = []
         if role == "assistant_teacher":
             shared_classes = assistant_to_classes.get(emp.id, [])
-            if len(shared_classes) >= 2:
+        elif role == "art_teacher":
+            shared_classes = art_to_classes.get(emp.id, [])
+
+        if len(shared_classes) >= 2:
+            if role == "assistant_teacher":
                 is_shared_assistant = True
-                for other in shared_classes:
-                    if other.id == classroom.id:
-                        continue
-                    shared_other_classes.append(
-                        {
-                            "grade_name": other.grade.name if other.grade else "",
-                            "current_enrollment": db_count_map.get(other.id, 0),
-                        }
-                    )
+            for other in shared_classes:
+                if other.id == classroom.id:
+                    continue
+                shared_other_classes.append(
+                    {
+                        "grade_name": other.grade.name if other.grade else "",
+                        "current_enrollment": db_count_map.get(other.id, 0),
+                    }
+                )
 
         if not classroom.grade:
             logger.warning(
@@ -935,8 +1054,17 @@ class SalaryEngine:
         office_staff_context,
         bonus_settings,
         personal_sick_leave_hours: float,
+        *,
+        period_festival_override: Optional[float] = None,
+        period_overtime_override: Optional[float] = None,
     ) -> None:
-        """計算節慶獎金、超額獎金、主管紅利、生日禮金，並寫入 breakdown。"""
+        """計算節慶獎金、超額獎金、主管紅利、生日禮金，並寫入 breakdown。
+
+        發放月特殊規則（業主 2026-04-25 確認）：
+        若 month 為發放月 (2/6/9/12) 且呼叫端提供 period_*_override，會以期間
+        累積值覆蓋當月單月計算（例：6 月 = 2-5 月每月各自比例合計）。會議缺席
+        扣款仍由 _calculate_deductions 套用一次（用 absent_period × penalty）。
+        """
         hire_date = employee.get("hire_date")
         bonus_reference_date = self._get_bonus_reference_date(year, month)
         is_eligible = self.is_eligible_for_festival_bonus(
@@ -1018,6 +1146,13 @@ class SalaryEngine:
         if not get_bonus_distribution_month(month):
             breakdown.festival_bonus = 0
             breakdown.overtime_bonus = 0
+        elif period_festival_override is not None:
+            # 發放月：用期間累積總額覆蓋當月單月計算（業主 2026-04-25 確認）。
+            # 業務規則：6 月發 = 2-5 月每月各自比例的合計（不含 6 月本身）。
+            # 期間每月的計算（含逐月在籍人數、達成率）由呼叫端透過
+            # calculate_period_accrual_row 累計後傳入。
+            breakdown.festival_bonus = round(period_festival_override)
+            breakdown.overtime_bonus = round(period_overtime_override or 0)
 
         # 事假+病假累計超過40小時：取消節慶獎金與超額獎金（兩者具「全勤」性質）。
         # 主管月紅利（supervisor_dividend）與職務掛鉤、不與出勤掛鉤，不受此條件影響。
@@ -1216,6 +1351,8 @@ class SalaryEngine:
         working_days: int = 22,
         overtime_work_pay: float = 0,
         personal_sick_leave_hours: float = 0,
+        period_festival_override: Optional[float] = None,
+        period_overtime_override: Optional[float] = None,
     ) -> SalaryBreakdown:
         """
         計算單一員工薪資
@@ -1231,6 +1368,9 @@ class SalaryEngine:
             office_staff_context: 辦公室人員上下文
             meeting_context:    園務會議上下文
             personal_sick_leave_hours: 當月事假+病假累計時數（>40h 時取消所有節慶獎金及紅利）
+            period_festival_override: 發放月「期間累積」節慶獎金總額。提供時於發放月覆蓋
+                當月單月計算（業主 2026-04-25 確認規則：6 月發 = 2-5 月每月各自比例的合計）。
+            period_overtime_override: 發放月「期間累積」超額獎金總額（與上同義）。
         """
 
         is_hourly = employee.get("employee_type") == "hourly"
@@ -1265,6 +1405,8 @@ class SalaryEngine:
                 office_staff_context,
                 bonus_settings,
                 personal_sick_leave_hours,
+                period_festival_override=period_festival_override,
+                period_overtime_override=period_overtime_override,
             )
             breakdown.gross_salary = (
                 breakdown.base_salary
@@ -1353,19 +1495,21 @@ class SalaryEngine:
             if not emp:
                 return {}
 
-            # 優先使用 _ctx 中預先查好的班級
+            # 優先使用 _ctx 中預先查好的班級；否則依年月反查當期班級
+            # （不再讀 emp.classroom_id，因該欄位可能因班級頁面更新未同步而失準）
             if _ctx is not None and "classroom" in _ctx:
                 classroom = _ctx["classroom"]
-            elif emp.classroom_id:
-                classroom = session.query(Classroom).get(emp.classroom_id)
             else:
-                classroom = None
+                classroom = self._resolve_classroom_for_employee_in_month(
+                    session, employee_id, year, month
+                )
 
             bonus_base = 0
             target_enrollment = 0
             current_enrollment = 0
             ratio = 0
             festival_bonus = 0
+            overtime_bonus_value = 0
             remark = ""
             category = ""
 
@@ -1453,6 +1597,13 @@ class SalaryEngine:
                 target_enrollment = bonus_result.get("target", 0)
                 ratio = bonus_result.get("ratio", 0)
                 festival_bonus = bonus_result["festival_bonus"] if is_eligible else 0
+                # overtime 也走相同 _calculate_classroom_bonus_result（含共用副班導加權平均）
+                # 並套用相同 eligibility 規則，與 calculate_salary 路徑一致；
+                # 由 calculate_period_accrual_row 透過 overtimeBonus 欄位讀取，
+                # 避免在累積路徑上自行重算（會漏掉共用班加權）。
+                overtime_bonus_value = (
+                    int(bonus_result.get("overtime_bonus") or 0) if is_eligible else 0
+                )
                 if is_eligible:
                     other_count = len(
                         classroom_context.get("shared_other_classes")
@@ -1479,6 +1630,10 @@ class SalaryEngine:
                 "currentEnrollment": current_enrollment,
                 "ratio": ratio,
                 "festivalBonus": festival_bonus,
+                # 僅帶班老師路徑會填入 >0；其他類別維持 0（calculate_salary 約定）
+                "overtimeBonus": (
+                    overtime_bonus_value if category == "帶班老師" else 0
+                ),
                 "remark": remark,
             }
 
@@ -1515,61 +1670,18 @@ class SalaryEngine:
             session = _ctx["session"]
 
         try:
-            # 1) 呼叫 breakdown 取節慶獎金與 category
+            # 1) 呼叫 breakdown 同時取得節慶與超額獎金；breakdown 內部已用
+            # _calculate_classroom_bonus_result 對共用副班導/跨多班做加權平均，
+            # 也統一套 eligibility（未滿 3 個月），與 calculate_salary 路徑一致。
+            # 不要在這裡重新呼叫 calculate_overtime_bonus，否則會漏掉共用班加權。
             breakdown = self.calculate_festival_bonus_breakdown(
                 employee_id, year, month, _ctx=_ctx
             )
             festival_bonus = int(breakdown.get("festivalBonus") or 0)
+            overtime_bonus = int(breakdown.get("overtimeBonus") or 0)
             category = breakdown.get("category", "")
 
-            # 2) overtime bonus（僅帶班老師，其他類別 0）
-            overtime_bonus = 0
-            if category == "帶班老師":
-                from .festival import calculate_overtime_bonus
-
-                if _ctx is not None and "employee" in _ctx:
-                    emp = _ctx["employee"]
-                else:
-                    from models.database import Employee as _Employee
-
-                    emp = session.query(_Employee).get(employee_id)
-
-                if _ctx is not None and "classroom" in _ctx:
-                    classroom = _ctx["classroom"]
-                else:
-                    from models.database import Classroom as _Classroom
-
-                    classroom = (
-                        session.query(_Classroom).get(emp.classroom_id)
-                        if emp and emp.classroom_id
-                        else None
-                    )
-
-                if classroom:
-                    _, last_day = _cal.monthrange(year, month)
-                    ref_date = _date(year, month, last_day)
-                    cls_ctx = self._build_classroom_context_from_db(
-                        session,
-                        classroom,
-                        emp.id,
-                        reference_date=ref_date,
-                        classroom_count_map=(
-                            _ctx.get("classroom_count_map") if _ctx else None
-                        ),
-                    )
-                    if cls_ctx:
-                        ot = calculate_overtime_bonus(
-                            role=cls_ctx["role"],
-                            grade_name=cls_ctx["grade_name"],
-                            current_enrollment=cls_ctx["current_enrollment"],
-                            has_assistant=cls_ctx["has_assistant"],
-                            is_shared_assistant=cls_ctx["is_shared_assistant"],
-                            overtime_target_map=self._overtime_target,
-                            overtime_per_person_map=self._overtime_per_person,
-                        )
-                        overtime_bonus = int(ot.get("overtime_bonus") or 0)
-
-            # 3) 會議缺席扣款
+            # 2) 會議缺席扣款
             _, last_day = _cal.monthrange(year, month)
             start_date = _date(year, month, 1)
             end_date = _date(year, month, last_day)
@@ -1759,12 +1871,16 @@ class SalaryEngine:
         )
 
     def _build_contexts(self, session, emp, end_date: date) -> tuple:
-        """建構 (classroom_context, office_staff_context)。"""
-        from models.database import Classroom
+        """建構 (classroom_context, office_staff_context)。
 
+        以 end_date 對應的薪資月份反查當期班級（不再依賴 emp.classroom_id），
+        避免班級頁面更新未同步至 Employee.classroom_id 時整段帶班獎金歸 0。
+        """
         classroom_context = None
-        if emp.classroom_id:
-            classroom = session.query(Classroom).get(emp.classroom_id)
+        classroom = self._resolve_classroom_for_employee_in_month(
+            session, emp.id, end_date.year, end_date.month
+        )
+        if classroom:
             classroom_context = self._build_classroom_context_from_db(
                 session, classroom, emp.id, reference_date=end_date
             )
@@ -2022,6 +2138,63 @@ class SalaryEngine:
             month,
         )
 
+    def _compute_period_accrual_totals(
+        self,
+        session,
+        emp,
+        year: int,
+        month: int,
+        *,
+        monthly_ctx_cache: dict | None = None,
+    ) -> tuple[Optional[float], Optional[float]]:
+        """發放月時累積期間每月節慶/超額獎金，回傳 (festival_total, overtime_total)。
+
+        非發放月回 (None, None) — 呼叫端應傳給 calculate_salary 做為 override，
+        None 代表「不覆蓋，照原本當月單月邏輯」（在非發放月該邏輯會把 festival 歸 0）。
+
+        Args:
+            monthly_ctx_cache: 批次計算時用的快取（key=(y,m)），減少重覆查詢；
+                cache value 結構與 api/salary.py period-accrual 端點一致。
+        """
+        from .utils import get_distribution_period_months
+
+        period_months = get_distribution_period_months(year, month)
+        if not period_months:
+            return None, None
+
+        festival_total = 0
+        overtime_total = 0
+        for y, m in period_months:
+            try:
+                ctx: dict = {"session": session, "employee": emp}
+                cache = monthly_ctx_cache.get((y, m)) if monthly_ctx_cache else None
+                if cache:
+                    # supervisor / office staff 路徑使用 school_active_students；
+                    # classroom 路徑使用 classroom_count_map + classroom 物件
+                    if "school_active" in cache:
+                        ctx["school_active_students"] = cache["school_active"]
+                    if "cls_count_map" in cache:
+                        ctx["classroom_count_map"] = cache["cls_count_map"]
+                # 依「該月份所對應的學期」反查班級，避免拿目前 classroom 套用在跨學期的舊月份。
+                # 若 cache 內預先放了該月解析好的 classroom，優先使用以節省查詢。
+                cached_classroom = (
+                    cache.get("classroom_for_emp", {}).get(emp.id) if cache else None
+                )
+                if cached_classroom is not None:
+                    ctx["classroom"] = cached_classroom
+                else:
+                    ctx["classroom"] = self._resolve_classroom_for_employee_in_month(
+                        session, emp.id, y, m
+                    )
+                row = self.calculate_period_accrual_row(emp.id, y, m, _ctx=ctx)
+                festival_total += int(row.get("festival_bonus", 0) or 0)
+                overtime_total += int(row.get("overtime_bonus", 0) or 0)
+            except Exception:
+                logger.exception(
+                    "計算期間累積失敗 emp=%s year=%s month=%s", emp.id, y, m
+                )
+        return festival_total, overtime_total
+
     def _build_breakdown_for_month(self, session, emp, year: int, month: int):
         """純計算：依員工、年月產出 SalaryBreakdown，不寫入任何 DB 記錄。
 
@@ -2060,6 +2233,11 @@ class SalaryEngine:
             month,
         )
 
+        # 發放月：累積期間每月節慶/超額獎金
+        period_festival_total, period_overtime_total = (
+            self._compute_period_accrual_totals(session, emp, year, month)
+        )
+
         breakdown = self.calculate_salary(
             employee=emp_dict,
             year=year,
@@ -2071,6 +2249,8 @@ class SalaryEngine:
             meeting_context=period_records["meeting_context"],
             overtime_work_pay=period_records["overtime_work_pay"],
             personal_sick_leave_hours=period_records["personal_sick_leave_hours"],
+            period_festival_override=period_festival_total,
+            period_overtime_override=period_overtime_total,
         )
 
         breakdown.absent_count = absent_count
@@ -2254,9 +2434,58 @@ class SalaryEngine:
             classroom_map = {c.id: c for c in all_classrooms}
             # 助理教師 → 班級清單（避免迴圈內 O(classrooms) 線性掃描，改為 O(1) 查表）
             assistant_to_classes: dict[int, list] = defaultdict(list)
+            art_to_classes: dict[int, list] = defaultdict(list)
             for _c in all_classrooms:
                 if _c.assistant_teacher_id:
                     assistant_to_classes[_c.assistant_teacher_id].append(_c)
+                if _c.art_teacher_id:
+                    art_to_classes[_c.art_teacher_id].append(_c)
+
+            # 員工 → 當期主要班級反查表（取代 emp.classroom_id 讀取）
+            # 優先用本月份對應學期（school_year, semester）篩選；若該員在當期無班，
+            # 個別 fallback 至跨學期任一 active（例如學校沿用同一個 Classroom 紀錄跨學期）。
+            from utils.academic import resolve_current_academic_term as _resolve_term
+
+            target_school_year, target_semester = _resolve_term(end_date)
+
+            def _role_priority(c, employee_id: int) -> int:
+                if c.head_teacher_id == employee_id:
+                    return 1
+                if c.assistant_teacher_id == employee_id:
+                    return 2
+                if c.art_teacher_id == employee_id:
+                    return 3
+                return 99
+
+            def _accumulate(target: dict, classrooms):
+                for _c in classrooms:
+                    for tid in (
+                        _c.head_teacher_id,
+                        _c.assistant_teacher_id,
+                        _c.art_teacher_id,
+                    ):
+                        if not tid:
+                            continue
+                        existing = target.get(tid)
+                        if existing is None or _role_priority(_c, tid) < _role_priority(
+                            existing, tid
+                        ):
+                            target[tid] = _c
+
+            employee_to_classroom: dict[int, Classroom] = {}
+            term_classrooms = [
+                c
+                for c in all_classrooms
+                if c.school_year == target_school_year and c.semester == target_semester
+            ]
+            _accumulate(employee_to_classroom, term_classrooms)
+            # 對未在當期班級表中出現的教師，再從跨學期 active 補上 fallback
+            missing_classrooms = [c for c in all_classrooms if c not in term_classrooms]
+            fallback_target: dict[int, Classroom] = {}
+            _accumulate(fallback_target, missing_classrooms)
+            for tid, _c in fallback_target.items():
+                if tid not in employee_to_classroom:
+                    employee_to_classroom[tid] = _c
 
             # 5. 學生數（1 次批次查詢，取代每人 1 次）
             db_count_map = classroom_student_count_map(session, end_date)
@@ -2371,6 +2600,25 @@ class SalaryEngine:
 
             # ── 批次預載結束，開始計算 ──────────────────────────────────────────
 
+            # 發放月：預載期間每月的班級/學生快照，供 _compute_period_accrual_totals
+            # 使用，避免 N×期間月 重覆查詢
+            monthly_ctx_cache: dict[tuple[int, int], dict] = {}
+            from .utils import get_distribution_period_months as _gdpm
+            from services.student_enrollment import (
+                count_students_active_on as _csa,
+                classroom_student_count_map as _csm,
+            )
+
+            for _y, _m in _gdpm(year, month):
+                _, _last = calendar.monthrange(_y, _m)
+                _ref = date(_y, _m, _last)
+                monthly_ctx_cache[(_y, _m)] = {
+                    "month_end": _ref,
+                    "school_active": _csa(session, _ref),
+                    "cls_count_map": _csm(session, _ref),
+                    "classroom_map": classroom_map,
+                }
+
             results = []
             errors = []
             total = len(employee_ids)
@@ -2445,6 +2693,11 @@ class SalaryEngine:
                             logger.debug("progress_callback 失敗，忽略", exc_info=True)
                     continue
 
+                # SAVEPOINT 包覆每位員工:失敗時 sp.rollback() 同時撤回 in-memory
+                # 與 SQL-level(autoflush 觸發的)修改,確保失敗員工保留舊資料,僅
+                # 在外層補上 needs_recalc=True;成功員工繼續同一 transaction,最後
+                # 統一 commit(維持原 batch atomicity)。
+                sp = session.begin_nested()
                 try:
                     emp_dict = self._load_emp_dict(emp)
 
@@ -2519,13 +2772,18 @@ class SalaryEngine:
                     )
 
                     # ── classroom_context / office_staff_context（使用預載 + 共用方法）
+                    # 改用反查 map（不再讀 emp.classroom_id），可同時修：
+                    #   - 班級頁面指派老師時未同步 Employee.classroom_id 的 silent zero bug
+                    #   - 跨學期老師被誤套用其他學期班級的問題（term filter）
                     classroom_context = None
-                    if emp.classroom_id and emp.classroom_id in classroom_map:
+                    primary_classroom = employee_to_classroom.get(emp.id)
+                    if primary_classroom is not None:
                         classroom_context = self._build_classroom_context_from_batch(
                             emp,
-                            classroom_map[emp.classroom_id],
+                            primary_classroom,
                             db_count_map,
                             assistant_to_classes,
+                            art_to_classes,
                         )
                     office_staff_context = self._build_office_staff_context(
                         emp, total_students, classroom_context
@@ -2591,6 +2849,17 @@ class SalaryEngine:
                             month,
                         )
 
+                    # 發放月：累積期間每月節慶/超額（共用 monthly_ctx_cache）
+                    period_festival_total, period_overtime_total = (
+                        self._compute_period_accrual_totals(
+                            session,
+                            emp,
+                            year,
+                            month,
+                            monthly_ctx_cache=monthly_ctx_cache,
+                        )
+                    )
+
                     # ── 計算薪資
                     breakdown = self.calculate_salary(
                         employee=emp_dict,
@@ -2603,6 +2872,8 @@ class SalaryEngine:
                         meeting_context=meeting_context,
                         overtime_work_pay=overtime_work_pay_total,
                         personal_sick_leave_hours=personal_sick_leave_hours,
+                        period_festival_override=period_festival_total,
+                        period_overtime_override=period_overtime_total,
                     )
 
                     breakdown.absent_count = absent_count
@@ -2635,9 +2906,11 @@ class SalaryEngine:
                         session.add(salary_record)
 
                     _fill_salary_record(salary_record, breakdown, self)
+                    sp.commit()  # RELEASE SAVEPOINT
                     results.append((emp, breakdown))
 
                 except Exception as e:
+                    sp.rollback()  # ROLLBACK TO SAVEPOINT — 撤回此員工 in-memory + SQL-level 修改
                     logger.error(
                         "薪資計算失敗 員工=%s(id=%d): %s",
                         emp.name,
@@ -2652,6 +2925,21 @@ class SalaryEngine:
                             "error": str(e),
                         }
                     )
+                    # 失敗員工:重新 query 該月舊 record,標 needs_recalc=True 讓
+                    # 後續 finalize 完整性檢查擋下。已封存的 record 不動(避免與
+                    # 「封存即不可變」的不變式衝突;此情況代表 _check_not_finalized
+                    # 攔下了重算企圖,本來就不該寫入)。
+                    stale = (
+                        session.query(SalaryRecord)
+                        .filter(
+                            SalaryRecord.employee_id == emp.id,
+                            SalaryRecord.salary_year == year,
+                            SalaryRecord.salary_month == month,
+                        )
+                        .first()
+                    )
+                    if stale is not None and not stale.is_finalized:
+                        stale.needs_recalc = True
                 finally:
                     done += 1
                     if progress_callback:

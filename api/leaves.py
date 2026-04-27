@@ -1199,6 +1199,28 @@ def approve_leave(
                     "操作成功，但薪資重算失敗，請手動前往薪資頁面重新計算"
                 )
                 logger.error(f"請假審核後薪資重算失敗：{e}")
+                # 把所有應重算月份的 SalaryRecord 標 stale,避免後續 finalize
+                # 在「假單已審核但薪資未更新」的狀態下誤封存舊薪資。
+                from services.salary.utils import mark_salary_stale
+
+                for year, month in sorted(months_to_recalc):
+                    try:
+                        mark_salary_stale(session, emp_id, year, month)
+                    except Exception:
+                        logger.warning(
+                            "請假審核降級時標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+                            emp_id,
+                            year,
+                            month,
+                            exc_info=True,
+                        )
+                try:
+                    session.commit()
+                except Exception:
+                    logger.warning(
+                        "請假審核降級時 commit stale 標記失敗", exc_info=True
+                    )
+                    session.rollback()
 
         return result
     finally:
