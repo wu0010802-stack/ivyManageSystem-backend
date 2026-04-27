@@ -485,3 +485,139 @@ class TestPortalDateBoundaryValidation:
         for url, params in endpoints:
             res = client.get(url, params=params)
             assert res.status_code == 422, f"{url} 應回傳 422，實際 {res.status_code}"
+
+
+# ─────────────────────────────────────────────────────────────
+# MEDIUM-5：薪資快照 / simulate / audit-log 端點 self-check
+#
+# advisor 指出五個端點漏 _enforce_self_or_full_salary，導致只要 staff 持有
+# SALARY_READ 權限就可用任意 employee_id / snapshot_id / record_id 讀到他人
+# 資料。本組測試固定一般 staff 行為:他人資料 → 403、本人資料 → 不是 403。
+# ─────────────────────────────────────────────────────────────
+
+
+def _seed_two_employees_with_salary(session, year: int = 2026, month: int = 3):
+    """建立員工 A（給 staff 帳號）、員工 B（他人）+ 各一筆 SalaryRecord。"""
+    emp_a = _create_employee(session, "SELF001", "本人A")
+    emp_b = _create_employee(session, "OTHER01", "他人B")
+    rec_a = SalaryRecord(
+        employee_id=emp_a.id,
+        salary_year=year,
+        salary_month=month,
+        base_salary=30000,
+    )
+    rec_b = SalaryRecord(
+        employee_id=emp_b.id,
+        salary_year=year,
+        salary_month=month,
+        base_salary=32000,
+    )
+    session.add_all([rec_a, rec_b])
+    session.flush()
+    return emp_a, emp_b, rec_a, rec_b
+
+
+def _seed_snapshot_for(session, emp_id: int, year: int = 2026, month: int = 3):
+    from models.database import SalarySnapshot
+
+    snap = SalarySnapshot(
+        salary_record_id=None,
+        employee_id=emp_id,
+        salary_year=year,
+        salary_month=month,
+        snapshot_type="manual",
+        captured_by="seed",
+        source_version=1,
+        base_salary=30000,
+        net_salary=28000,
+    )
+    session.add(snap)
+    session.flush()
+    return snap.id
+
+
+class TestSalarySnapshotAndSimulateSelfCheck:
+    """非 admin/hr 帳號(僅持 SALARY_READ)不可透過快照/simulate/audit-log 讀他人薪資。"""
+
+    def _setup_staff(self, client_with_db):
+        client, sf = client_with_db
+        with sf() as session:
+            emp_a, emp_b, rec_a, rec_b = _seed_two_employees_with_salary(session)
+            _create_user(
+                session,
+                username="staff_snap",
+                password="TempPass123",
+                role="supervisor",
+                permissions=Permission.SALARY_READ,
+                employee=emp_a,
+            )
+            snap_a_id = _seed_snapshot_for(session, emp_a.id)
+            snap_b_id = _seed_snapshot_for(session, emp_b.id)
+            session.commit()
+            ids = {
+                "emp_a": emp_a.id,
+                "emp_b": emp_b.id,
+                "rec_a": rec_a.id,
+                "rec_b": rec_b.id,
+                "snap_a": snap_a_id,
+                "snap_b": snap_b_id,
+            }
+        _login(client, "staff_snap", "TempPass123")
+        return client, ids
+
+    def test_list_snapshots_with_other_employee_id_returns_403(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.get(
+            "/api/salaries/snapshots",
+            params={"year": 2026, "month": 3, "employee_id": ids["emp_b"]},
+        )
+        assert res.status_code == 403, res.text
+
+    def test_list_snapshots_without_employee_id_filters_to_self(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.get(
+            "/api/salaries/snapshots", params={"year": 2026, "month": 3}
+        )
+        assert res.status_code == 200, res.text
+        rows = res.json()["snapshots"]
+        # 不傳 employee_id：staff 只能看到自己,絕不能看到他人快照
+        assert all(r["employee_id"] == ids["emp_a"] for r in rows)
+        assert any(r["employee_id"] == ids["emp_a"] for r in rows)
+
+    def test_get_snapshot_detail_other_returns_403(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.get(f"/api/salaries/snapshots/{ids['snap_b']}")
+        assert res.status_code == 403, res.text
+
+    def test_get_snapshot_detail_self_succeeds(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.get(f"/api/salaries/snapshots/{ids['snap_a']}")
+        assert res.status_code == 200, res.text
+
+    def test_get_snapshot_diff_other_returns_403(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.get(f"/api/salaries/snapshots/{ids['snap_b']}/diff")
+        assert res.status_code == 403, res.text
+
+    def test_simulate_salary_other_returns_403(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.post(
+            "/api/salaries/simulate",
+            json={
+                "employee_id": ids["emp_b"],
+                "year": 2026,
+                "month": 3,
+                "overrides": {},
+            },
+        )
+        assert res.status_code == 403, res.text
+
+    def test_audit_log_other_record_returns_403(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.get(f"/api/salaries/{ids['rec_b']}/audit-log")
+        assert res.status_code == 403, res.text
+
+    def test_audit_log_self_record_succeeds(self, client_with_db):
+        client, ids = self._setup_staff(client_with_db)
+        res = client.get(f"/api/salaries/{ids['rec_a']}/audit-log")
+        assert res.status_code == 200, res.text
