@@ -558,6 +558,12 @@ async def final_salary_preview(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """最終薪資預覽：呼叫薪資引擎計算指定員工指定月份薪資（含月中離職折算）"""
+    # F-012：非 admin/hr 僅可查本人薪資；持 SALARY_READ 但角色不在 FULL_SALARY_ROLES
+    # 不可越權查他人最終薪資（含應發/實發/保險/退休金等敏感欄位）。
+    from utils.salary_access import enforce_self_or_full_salary
+
+    enforce_self_or_full_salary(current_user, employee_id)
+
     if _salary_engine is None:
         raise HTTPException(status_code=503, detail="薪資引擎尚未初始化")
     if not (1 <= month <= 12):

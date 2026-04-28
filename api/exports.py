@@ -632,7 +632,16 @@ def export_overtimes(
     year: int = Query(...),
     month: int = Query(...),
 ):
-    """匯出加班記錄 Excel"""
+    """匯出加班記錄 Excel。
+
+    F-036：加班費（overtime_pay）= 時薪 × 倍率，可反推時薪/底薪，屬薪資範疇敏感欄位。
+    持 OVERTIME_READ 但非 admin/hr 的角色（含同時擁有 SALARY_READ 的自訂角色）僅可看時數，
+    金額欄位以「—」遮罩。
+    """
+    from utils.salary_access import has_full_salary_view
+
+    can_see_pay = has_full_salary_view(current_user)
+
     session = get_session()
     try:
         _, last_day = cal_module.monthrange(year, month)
@@ -685,7 +694,7 @@ def export_overtimes(
                     start_t,
                     end_t,
                     ot.hours or 0,
-                    round(ot.overtime_pay or 0),
+                    round(ot.overtime_pay or 0) if can_see_pay else "—",
                     ot.reason or "",
                     _approval_label(ot.is_approved),
                 ],

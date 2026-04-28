@@ -273,9 +273,26 @@ def get_finance_summary_detail(
     month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
 ):
-    """單月收支明細：學費 / 才藝 / 薪資三來源原始交易列表（下鑽用）。"""
+    """單月收支明細：學費 / 才藝 / 薪資三來源原始交易列表（下鑽用）。
+
+    F-031：薪資逐員金額（gross/net/employer_benefit/real_cost）屬 SALARY_READ 範疇，
+    REPORTS 持有者若非 admin/hr 不可下鑽到逐員實發；此處依角色層遮罩 salary[] 欄位。
+    """
+    from utils.salary_access import has_full_salary_view, mask_dict_fields
+
     with session_scope() as session:
-        return build_finance_detail(session, year=year, month=month)
+        result = build_finance_detail(session, year=year, month=month)
+        if not has_full_salary_view(current_user):
+            result = dict(result)
+            result["salary"] = [
+                mask_dict_fields(
+                    r,
+                    ("gross_salary", "net_salary", "employer_benefit", "real_cost"),
+                    placeholder=None,
+                )
+                for r in result.get("salary", [])
+            ]
+        return result
 
 
 @router.get("/finance-summary/export")
@@ -288,9 +305,15 @@ def export_finance_summary(
 
     指定 month 時，額外附三張明細分頁（學費、才藝、薪資）；
     未指定 month 時只輸出月度彙總與分類統計兩張分頁。
+
+    F-031：薪資明細 Sheet 5 在非 admin/hr 角色下需以「—」遮罩金額欄位，
+    避免 supervisor / 自訂 REPORTS 角色透過匯出取得逐員實發名冊。
     """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
+    from utils.salary_access import has_full_salary_view
+
+    can_see_salary = has_full_salary_view(current_user)
 
     with session_scope() as session:
         summary = build_finance_summary(session, year=year, month=month)
@@ -385,7 +408,7 @@ def export_finance_summary(
             ws4.cell(row=i, column=6, value=r.get("operator"))
             ws4.cell(row=i, column=7, value=r.get("receipt_no"))
 
-        # Sheet 5：薪資明細
+        # Sheet 5：薪資明細（金額僅 admin/hr 可見；F-031）
         ws5 = SafeWorksheet(wb.create_sheet("薪資明細"))
         _write_header(
             ws5,
@@ -393,10 +416,16 @@ def export_finance_summary(
         )
         for i, r in enumerate(detail["salary"], start=2):
             ws5.cell(row=i, column=1, value=r.get("employee_name"))
-            ws5.cell(row=i, column=2, value=r["gross_salary"])
-            ws5.cell(row=i, column=3, value=r["net_salary"])
-            ws5.cell(row=i, column=4, value=r["employer_benefit"])
-            ws5.cell(row=i, column=5, value=r["real_cost"])
+            if can_see_salary:
+                ws5.cell(row=i, column=2, value=r["gross_salary"])
+                ws5.cell(row=i, column=3, value=r["net_salary"])
+                ws5.cell(row=i, column=4, value=r["employer_benefit"])
+                ws5.cell(row=i, column=5, value=r["real_cost"])
+            else:
+                ws5.cell(row=i, column=2, value="—")
+                ws5.cell(row=i, column=3, value="—")
+                ws5.cell(row=i, column=4, value="—")
+                ws5.cell(row=i, column=5, value="—")
             ws5.cell(row=i, column=6, value="是" if r["is_finalized"] else "")
 
     suffix = f"{year}" + (f"-{month:02d}" if month else "-全年")

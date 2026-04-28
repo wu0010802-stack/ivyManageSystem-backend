@@ -221,34 +221,14 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
 
 
 # ============ Access control helpers ============
-
-# admin / hr 可看全員薪資；其他角色僅可查自己
-FULL_SALARY_ROLES = frozenset({"admin", "hr"})
-
-
-def _resolve_salary_viewer_employee_id(current_user: dict) -> Optional[int]:
-    """回傳 None 表示可看全員（admin/hr）；否則回傳鎖定的 employee_id。
-
-    即便擁有 SALARY_READ 權限，非 admin/hr 角色只能查詢自己的薪資；
-    若無法識別身份（缺 employee_id）則 403。
-    """
-    role = current_user.get("role", "")
-    if role in FULL_SALARY_ROLES:
-        return None
-    viewer_employee_id = current_user.get("employee_id")
-    if viewer_employee_id is None:
-        raise HTTPException(status_code=403, detail="無法識別員工身分，禁止查詢薪資")
-    return viewer_employee_id
-
-
-def _enforce_self_or_full_salary(current_user: dict, target_employee_id: int) -> None:
-    """非 admin/hr 查其他員工薪資 → 403。"""
-    viewer_employee_id = _resolve_salary_viewer_employee_id(current_user)
-    if viewer_employee_id is None:
-        return
-    if viewer_employee_id != target_employee_id:
-        raise HTTPException(status_code=403, detail="僅可查詢本人薪資")
-
+#
+# 由 utils/salary_access.py 統一維護（IDOR audit Phase 2 抽出）；本檔保留同名 alias，
+# 避免散落於本檔的多處呼叫需要重新命名。
+from utils.salary_access import (  # noqa: E402
+    FULL_SALARY_ROLES,
+    resolve_salary_viewer_employee_id as _resolve_salary_viewer_employee_id,
+    enforce_self_or_full_salary as _enforce_self_or_full_salary,
+)
 
 # ============ Routes ============
 
@@ -540,6 +520,10 @@ def get_festival_bonus(
     """
     Return breakdown of festival bonus calculation
     """
+    # F-013：跨員工彙總端點，僅 admin/hr 可使用；其他持 SALARY_READ 的角色一律 403。
+    # 對齊 _enforce_self_or_full_salary 的精神：非全員視野者不可看到全體節慶獎金明細。
+    if _resolve_salary_viewer_employee_id(current_user) is not None:
+        raise HTTPException(status_code=403, detail="僅可查詢本人薪資")
     with session_scope() as session:
         # 使用啟動時已載入設定的 singleton，避免每次請求重跑 4 次 DB 查詢
         engine = (
@@ -595,6 +579,10 @@ def get_festival_bonus_period_accrual(
     發放月（2/6/9/12）回空 rows + is_distribution_month=True。
     DB 往返 O(月數)：每月一組共用資料 batch prefetch，與單月 get_festival_bonus 相同策略。
     """
+    # F-013：跨員工彙總端點，僅 admin/hr 可使用；其他角色 403。
+    if _resolve_salary_viewer_employee_id(current_user) is not None:
+        raise HTTPException(status_code=403, detail="僅可查詢本人薪資")
+
     from services.salary.utils import (
         get_bonus_distribution_month,
         get_current_period_passed_months,

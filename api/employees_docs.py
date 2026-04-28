@@ -120,14 +120,19 @@ def _cert_to_dict(r: EmployeeCertificate) -> dict:
     }
 
 
-def _contract_to_dict(r: EmployeeContract) -> dict:
+def _contract_to_dict(r: EmployeeContract, *, mask_salary: bool = False) -> dict:
+    """合約序列化；mask_salary=True 時 salary_at_contract 隱藏為 None。
+
+    F-014：合約金額屬薪資範疇敏感資料，需與 salary.py 同等門檻
+    （admin/hr 可看全員，其他角色僅可看自己）。
+    """
     return {
         "id": r.id,
         "employee_id": r.employee_id,
         "contract_type": r.contract_type,
         "start_date": r.start_date.isoformat() if r.start_date else None,
         "end_date": r.end_date.isoformat() if r.end_date else None,
-        "salary_at_contract": r.salary_at_contract,
+        "salary_at_contract": (None if mask_salary else r.salary_at_contract),
         "remark": r.remark,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
@@ -350,6 +355,12 @@ def list_contracts(
     employee_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
+    # F-014：非 admin/hr 且非本人時遮罩 salary_at_contract（合約簽訂月薪屬薪資敏感欄位）。
+    # 寫入端點（create/update/delete）走 EMPLOYEES_WRITE，僅 admin/hr/supervisor 持有；
+    # 此處讀取面用 can_view_salary_of 與 salary.py 維持同一致性。
+    from utils.salary_access import can_view_salary_of
+
+    mask_salary = not can_view_salary_of(current_user, employee_id)
     with session_scope() as session:
         _ensure_employee(session, employee_id)
         rows = (
@@ -358,7 +369,7 @@ def list_contracts(
             .order_by(EmployeeContract.start_date.desc())
             .all()
         )
-        return [_contract_to_dict(r) for r in rows]
+        return [_contract_to_dict(r, mask_salary=mask_salary) for r in rows]
 
 
 @router.post("/employees/{employee_id}/contracts", status_code=201)
