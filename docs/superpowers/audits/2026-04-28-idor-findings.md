@@ -29,6 +29,13 @@
 - [F-015](#f-015) [High] punch_corrections: `PUT /punch-corrections/{correction_id}/approve` 缺自我核准守衛，可自審補打卡（直接影響本人薪資扣款）
 - [F-016](#f-016) [Medium] bonus_preview: `GET /bonus-preview/dashboard` 與 `POST /bonus-impact-preview` 以 `STUDENTS_READ`/`STUDENTS_WRITE` 控管，但回傳每位教師估算節慶獎金金額
 - [F-017](#f-017) [Medium] employees: `GET /employees` 與 `GET /employees/{id}` 回傳 `base_salary` / `hourly_rate` 給僅持 `EMPLOYEES_READ` 之自訂角色（無 `SALARY_READ`）
+- [F-018](#f-018) [High] students/classrooms: `GET /students` / `GET /students/{id}` / `GET /students/{id}/profile` / `GET /classrooms/{id}` 在 `STUDENTS_READ` / `CLASSROOMS_READ` 下回傳 `allergy` / `medication` / `special_needs`，繞過 `STUDENTS_HEALTH_READ` 與 `STUDENTS_SPECIAL_NEEDS_READ`
+- [F-019](#f-019) [High] student_communications: 全 CRUD 無班級 scope；持 `STUDENTS_READ`/`STUDENTS_WRITE` 之自訂角色可讀／改／刪別班學生家長溝通紀錄
+- [F-020](#f-020) [High] student_attendance: `batch` / `by-student` / `monthly` / `export` 無班級 scope；可任意改寫別班出席（影響家長端／薪資未連動但屬學生記錄完整性）
+- [F-021](#f-021) [High] student_leaves: `POST /{leave_id}/approve` 與 `/reject` 無班級 scope，可審核別班家長端請假並寫入 `StudentAttendance`
+- [F-022](#f-022) [Medium] student_change_logs: list/summary/export/CRUD 無班級 scope；持 `STUDENTS_READ` 可讀全校異動軌跡（含轉班/退學/休學原因）
+- [F-023](#f-023) [Medium] student_incidents/assessments: list 端點 `student_id` 與 `classroom_id` 都未帶時跳過 `_require_classroom_access`，回傳全校事件／評量
+- [F-024](#f-024) [Medium] students/records: `GET /students/records` 時間軸（`services/student_records_timeline`）無 viewer-side 班級過濾，回傳全校事件＋評量＋異動
 
 ---
 
@@ -214,4 +221,110 @@
 - **根因**：`_format_employee_response` 只區分「`SALARY_WRITE` → 銀行/身分證遮罩」一條規則，沒有第二層「`SALARY_READ` → 薪資金額遮罩」。背後假設「能看員工的就能看薪資」，但 EMPLOYEES_READ 與 SALARY_READ 為獨立 bit，配置上可被拆開。
 - **建議修法**：在 `_format_employee_response` 多接受 `can_view_salary` 參數，由 caller 用 `has_permission(perms, Permission.SALARY_READ)` 判斷；若 `can_view_salary=False`，把 `base_salary` / `hourly_rate` / `insurance_salary_level` / `pension_self_rate` 改為 `None` 或 `"***"`。同時更新 `_format_employee_response` 文件註記「薪資欄位遮罩規則：需 SALARY_READ」。亦可一併把 `hire_date` 之外的 PII（phone/address/emergency_contact_*）對「沒有自己 employee_id 對映」的查詢者遮罩，但這超出 Threat a 範圍，建議拆 finding 處理。
 - **是否需新測試**：no（Medium；現行預設角色不會觸發；列為 Phase 2 與自訂角色 RBAC 改造一併處理）
+- **修補狀態**：⏳ Pending
+
+### F-018 [High] students/classrooms: `GET /students` / `GET /students/{id}` / `GET /students/{id}/profile` / `GET /classrooms/{id}` 在 `STUDENTS_READ` / `CLASSROOMS_READ` 下回傳 `allergy` / `medication` / `special_needs`，繞過 `STUDENTS_HEALTH_READ` 與 `STUDENTS_SPECIAL_NEEDS_READ`
+
+- **位置**：
+  - `api/students.py:368` `GET /students`（response 含 `allergy` / `medication` / `special_needs` / `emergency_contact_*`，line 427-432）
+  - `api/students.py:481-515` `GET /students/{student_id}`（同上）
+  - `api/students.py:852-874` `GET /students/{student_id}/profile`（呼叫 `services/student_profile.py:_serialize_basic`，line 288-289 `allergy` / `medication`，line 286 `special_needs`）
+  - `api/classrooms.py:576-594` `GET /classrooms/{classroom_id}`（`_serialize_classroom_detail` line 384-386 在 `students` list 內含 `allergy` / `medication` / `special_needs`）
+- **威脅模型**：b
+- **PoC**：與 F-014 / F-017 同型 — 預設角色配置（admin/hr/supervisor 通常同時持 `STUDENTS_READ` 與 `STUDENTS_HEALTH_READ` / `STUDENTS_SPECIAL_NEEDS_READ`）下不易觸發；風險在**自訂角色**：若管理員建立「學生目錄查詢者」「教務助理」等只授予 `STUDENTS_READ`（不授 `STUDENTS_HEALTH_READ` / `STUDENTS_SPECIAL_NEEDS_READ`）的角色，該角色呼叫 `GET /students` 即可拿到全校學生 `allergy`（過敏原）、`medication`（用藥）、`special_needs`（特殊需求）。同樣 `GET /classrooms/{id}` 在僅持 `CLASSROOMS_READ` 的角色下會把該班所有學生的健康／特殊需求欄位連帶外洩。權限系統把這三個欄位獨立成 bit `STUDENTS_HEALTH_READ`（1<<44）、`STUDENTS_SPECIAL_NEEDS_READ`（1<<47）就是為了把健康／IEP 與一般學生資料拆開，但這四個 endpoint 完全未檢查；存取該欄位的細粒度 RBAC 完全失效。
+- **根因**：`students.py` 與 `classrooms.py` 的 GET 端點直接 dump 整個 ORM row（含三個敏感欄位）回傳，沒有比照 `student_health.py` 走 `STUDENTS_HEALTH_READ` 路徑、也沒有像 `_format_employee_response` 在 response 層做欄位遮罩。`api/student_health.py:196` 起的端點明確以 `STUDENTS_HEALTH_READ` 守門 + `assert_student_access` 班級 scope；同一個資料卻在 students/classrooms 端被以更低門檻直接外洩。
+- **建議修法**：（1）在 `_format_student_response`（students.py 沒抽出，需新建）與 `_serialize_classroom_detail` / `_serialize_basic` 多接 `can_view_health` / `can_view_special_needs` 參數，由 caller 以 `has_permission(perms, Permission.STUDENTS_HEALTH_READ)` 與 `STUDENTS_SPECIAL_NEEDS_READ` 判斷；無權者把三欄位改回 `None`。（2）長期建議把 `allergy` / `medication` / `special_needs` 從 `Student` 主表移出，改走 `StudentAllergy`/`StudentMedicationOrder`/`SpecialNeed` 子表（`student_health.py` 已是這個方向），然後 `Student.allergy/medication` 在 schema 層 deprecate，避免雙寫。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-019 [High] student_communications: 全 CRUD 無班級 scope；持 `STUDENTS_READ`/`STUDENTS_WRITE` 之自訂角色可讀／改／刪別班學生家長溝通紀錄
+
+- **位置**：`api/student_communications.py:126-209` `GET /api/students/communications`；`api/student_communications.py:212-252` `POST`；`api/student_communications.py:255-290` `PUT /{log_id}`；`api/student_communications.py:293-318` `DELETE /{log_id}`
+- **威脅模型**：b
+- **PoC**：教師 A 透過自訂角色被授予 `STUDENTS_READ` / `STUDENTS_WRITE`（或 supervisor 跨班），呼叫 `GET /api/students/communications?classroom_id={B 班 id}` 即可取得 B 班所有學生與家長間的溝通紀錄（含 `topic` / `content` / `follow_up`，這是親師之間最敏感的對話文本，含家庭狀況、孩子行為描述、衝突細節）；`PUT /{log_id}` 與 `DELETE /{log_id}` 完全沒檢查 log 屬於哪個學生／哪個班，可任意改寫他人 log 的 `content`、刪除別班的紀錄。整個 router 完全沒有 `assert_student_access` 或 `_require_classroom_access` 呼叫，與 `student_health.py` / `portfolio/observations.py` 形成強烈反差。
+- **根因**：作者僅以 `STUDENTS_READ`/`STUDENTS_WRITE` 為 perm gate，並假設「能看到溝通紀錄頁的就是行政 / supervisor」，沒有考慮自訂角色或多班教師跨班讀取他班 log。`PUT/DELETE` 的 path param 為 `log_id`，沒有 `student_id` 段，也沒從 log 反查 student → classroom 做 owner 驗證。
+- **建議修法**：
+  1. list 與 export：對非 admin/hr/supervisor，以 `accessible_classroom_ids(session, current_user)` 限縮 `Student.classroom_id.in_(allowed)`；若 `classroom_id` query 帶值且不在 allowed 內回 403。
+  2. POST / PUT / DELETE：取出 `log` 後 `assert_student_access(session, current_user, log.student_id)`；若不存在 / 無權一律 404，避免 404 vs 403 枚舉。
+  3. 與 student_health.py 共用 `utils/portfolio_access.py` helper，避免每個 router 重寫。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-020 [High] student_attendance: `batch` / `by-student` / `monthly` / `export` 無班級 scope；可任意改寫別班出席
+
+- **位置**：
+  - `api/student_attendance.py:229-275` `GET /student-attendance?classroom_id=...`（僅讀）
+  - `api/student_attendance.py:278-339` `POST /student-attendance/batch`（**寫**：upsert 任意 `student_id` 出席）
+  - `api/student_attendance.py:342-398` `GET /student-attendance/by-student?student_id=...`（讀單生紀錄）
+  - `api/student_attendance.py:401-415` `GET /student-attendance/monthly?classroom_id=...`
+  - `api/student_attendance.py:418-488` `GET /student-attendance/export`
+  - `api/student_attendance.py:205-226` `GET /student-attendance/overview`
+- **威脅模型**：b
+- **PoC**：所有端點僅以 `STUDENTS_READ` / `STUDENTS_WRITE` 把關，完全沒有 `_require_classroom_access` 或 `assert_student_access`。攻擊路徑：
+  1. 跨班讀：教師 A 持 `STUDENTS_READ`（自訂角色或 supervisor），`GET /student-attendance?classroom_id={B}` 即取 B 班逐生出席；`GET /student-attendance/export` 無 classroom_id 時匯出全園多 sheet。
+  2. **跨班寫**：教師 A 持 `STUDENTS_WRITE`，`POST /student-attendance/batch` 帶任意 `student_id`，可把別班學生狀態改為「缺席」「請假」，並覆蓋既有 `recorded_by`。儘管薪資不直接連動，這仍會：(a) 影響家長端可見的歷史出席（家長對班導投訴時拿到不一致紀錄）、(b) 觸發 `invalidate_student_attendance_report_caches` 導致全校報表重算、(c) 與 `api/student_leaves.py` 的 `_apply_attendance_for_leave`（line 131-167）打架，覆寫家長端假單寫入的紀錄而不留痕。
+- **根因**：與 student_communications.py 同型 — 整個 router 從頭到尾沒做班級 scope；list 端點允許任意 `classroom_id`、batch 端點允許任意 `student_id`。
+- **建議修法**：
+  1. `GET /student-attendance` / `monthly` / `export`：對非 admin/hr/supervisor 走 `accessible_classroom_ids`，限制 `classroom_id` 必須在 allowed 內，否則 403；export 全園模式需 `STUDENTS_READ` 且 admin/hr/supervisor。
+  2. `POST /batch`：對 payload 中所有 `student_id` 批次走 `filter_student_ids_by_access`，發現非 allowed 即整批回 403（避免「partial write，部分成功」）。
+  3. `GET /by-student`：以 `assert_student_access` 取代裸 query。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-021 [High] student_leaves: `POST /{leave_id}/approve` 與 `/reject` 無班級 scope，可審核別班家長端請假並寫入 `StudentAttendance`
+
+- **位置**：`api/student_leaves.py:189-220` `POST /api/student-leaves/{leave_id}/approve`；`api/student_leaves.py:223-255` `POST /api/student-leaves/{leave_id}/reject`；`api/student_leaves.py:100-128` `GET /api/student-leaves`
+- **威脅模型**：b
+- **PoC**：教師 A 透過自訂角色取得 `STUDENTS_READ` / `STUDENTS_WRITE`（或 supervisor），呼叫 `POST /api/student-leaves/{leave_id}/approve` 對任意 leave_id 即可：(1) 把別班家長端送的 `StudentLeaveRequest.status` 改為 `approved`、設 `reviewed_by=A`、(2) 透過 `_apply_attendance_for_leave`（line 131-167）對該生請假區間每個應到日 upsert `StudentAttendance` row（覆蓋既有 status / remark），**留下「教師 A 審核了 B 班學生請假」的稽核軌跡**，且在覆蓋既有 attendance 時連帶觸發家長端可見的出席異動。`reject` 同樣可任意操作；既有 approved 紀錄會走 `_revert_attendance_for_leave`（line 170-187），把 attendance row delete 掉。`GET /api/student-leaves` 列表也沒帶班級過濾，可枚舉全校 pending 假單。
+- **根因**：endpoint 只把關 `STUDENTS_READ`/`STUDENTS_WRITE`，沒對 leave 取出後的 `student.classroom_id` 做班級 scope；列表沒有對非特權角色強制 `classroom_id` query 必須在 allowed 範圍。學生請假審核屬「改別班學生紀錄」，比 attendance batch 更直接 — 動作會被 LINE 通知家長（`_notify_parent_leave_result_safe`），且寫入 attendance 同時還影響薪資代班相關的後續出席報表。
+- **建議修法**：
+  1. `approve` / `reject`：取出 `item` 後立刻 `assert_student_access(session, current_user, item.student_id)`；非自班 一律 403。
+  2. `GET`：對非 admin/hr/supervisor，若沒帶 `classroom_id` 自動限縮為 `accessible_classroom_ids`；帶了但不在 allowed 內回 403。
+  3. 補測試 `tests/test_student_leaves_cross_classroom.py`：建立兩班、模擬 B 班教師對 A 班 leave_id approve → 預期 403；同時驗 `StudentAttendance` 未被寫入。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-022 [Medium] student_change_logs: list/summary/export/CRUD 無班級 scope；持 `STUDENTS_READ` 可讀全校異動軌跡
+
+- **位置**：`api/student_change_logs.py:165-208` `GET /api/students/change-logs/summary`；`api/student_change_logs.py:211-316` `GET /api/students/change-logs`（list）；`api/student_change_logs.py:319-446` `GET /api/students/change-logs/export`；`api/student_change_logs.py:449-577` `POST` / `PUT /{log_id}` / `DELETE /{log_id}`
+- **威脅模型**：b
+- **PoC**：持 `STUDENTS_READ` 的自訂角色（或 supervisor 跨班）呼叫 `GET /api/students/change-logs?classroom_id={B}` 取得 B 班全部異動紀錄（轉班、退學、休學、復學的 `event_type` + `reason`+`notes` + `from_classroom_id` + `to_classroom_id`），這對家長 / 學生屬於敏感人事決策軌跡（退學原因、家庭狀況等）。`GET /export` 可一鍵下載全校 5000 筆 CSV。`PUT /{log_id}` / `DELETE /{log_id}` 雖只允許改/刪手動補登（`source != 'lifecycle'`）的紀錄，但仍未驗證 log 對應的學生是否屬於 caller 班級 — 教師 A 可改寫 B 班的 manual log 內容、刪除 B 班的補登紀錄。
+- **根因**：與 student_communications.py / student_attendance.py 同型，整個 router 沒做班級 scope。
+- **建議修法**：
+  1. list / summary / export：對非 admin/hr/supervisor，以 `accessible_classroom_ids` 限縮 `classroom_id` / `from_classroom_id` / `to_classroom_id`（任一在 allowed 即可）；帶了不允許的 classroom_id 回 403。
+  2. POST / PUT / DELETE：取出 log 後 `assert_student_access(session, current_user, log.student_id)`。
+- **是否需新測試**：no（Medium；列為 Phase 2 與 F-019/F-020/F-021 同步處理）
+- **修補狀態**：⏳ Pending
+
+### F-023 [Medium] student_incidents/assessments: list 端點 `student_id` 與 `classroom_id` 都未帶時跳過 `_require_classroom_access`，回傳全校事件／評量
+
+- **位置**：
+  - `api/student_incidents.py:85-140` `GET /api/student-incidents`（line 102-116 條件分支：`if student_id` 才走 `_require_classroom_access`，`if classroom_id` 才走；兩者皆 None 時直接 query 全校）
+  - `api/student_assessments.py:81-133` `GET /api/student-assessments`（同上 pattern，line 97-112）
+- **威脅模型**：b
+- **PoC**：教師 A 持 `STUDENTS_READ`（自訂角色），呼叫 `GET /api/student-incidents`（不帶 `student_id` 也不帶 `classroom_id`）即取得全校事件紀錄列表（含 `severity`、`description`、`action_taken`、`parent_notified`），同樣對 `student-assessments` 也成立。helper `_require_classroom_access` 只在帶過濾參數時被觸發；no-filter 路徑等於跳過所有班級 scope，全部回傳。`POST` / `PUT` / `DELETE` 分支已正確調用 helper（見 incidents.py line 156-161 / 211-212 / 270-273），這 finding 僅針對 list 端點。
+- **根因**：list 端點假設前端 UI 一定會帶 `classroom_id`，但 API 層沒強制；非特權角色（教師）打 list 時若不帶任一過濾，就跳過 helper。應在 list 入口先檢查角色 — 非 admin/hr/supervisor 至少必須帶 `classroom_id` 或 `student_id` 之一，且帶的值必須在 `accessible_classroom_ids` 內；或 default 強制 filter `Student.classroom_id.in_(allowed)`。
+- **建議修法**：在 list 端點起始處：
+  ```python
+  role = current_user.get("role", "")
+  if role not in ("admin", "hr", "supervisor"):
+      allowed = accessible_classroom_ids(session, current_user)
+      if not allowed:
+          return {"total": 0, "items": []}
+      query = query.filter(Student.classroom_id.in_(allowed))
+  ```
+  保留現有 `if student_id` / `if classroom_id` 分支的 helper 呼叫做雙重防線。incidents 與 assessments 共用同一個 helper（`utils/portfolio_access.py:accessible_classroom_ids`）即可。
+- **是否需新測試**：no（Medium；結合 F-024 一起測）
+- **修補狀態**：⏳ Pending
+
+### F-024 [Medium] students/records: `GET /students/records` 時間軸無 viewer-side 班級過濾，回傳全校事件＋評量＋異動
+
+- **位置**：`api/students.py:444-478` `GET /api/students/records`（呼叫 `services/student_records_timeline.list_timeline`，line 213-301）
+- **威脅模型**：b
+- **PoC**：endpoint 接受 `student_id`、`classroom_id`、`type`（incident / assessment / change_log）等過濾參數，但 `list_timeline` 完全沒有 `current_user` 參數，內部沒有 `accessible_classroom_ids` 過濾。教師 A 持 `STUDENTS_READ`（自訂角色）呼叫 `GET /api/students/records`（不帶 classroom_id），即同時取得全校事件＋評量＋異動三類紀錄的合併時間軸；帶 `classroom_id={B}` 也照樣回傳 B 班全部紀錄。屬「跨班看別班學生紀錄」典型 IDOR；與 F-023 同型但作用範圍更廣（一個端點打三個資料源）。
+- **根因**：`list_timeline` 為純資料服務，未帶 `current_user`；endpoint 為了簡化沒做 viewer-side filter，仰賴前端只帶自班 classroom_id。
+- **建議修法**：
+  1. `list_timeline` 加 `accessible_classroom_ids: list[int] | None` 參數（None=全放行 admin）；內部 `_fetch_incidents` / `_fetch_assessments` 透過 `Student.classroom_id.in_(allowed)`、`_fetch_change_logs` 透過 `StudentChangeLog.classroom_id.in_(allowed)` 過濾。
+  2. `GET /students/records` endpoint 在進入 service 前 `from utils.portfolio_access import is_unrestricted, accessible_classroom_ids; allowed = None if is_unrestricted(current_user) else accessible_classroom_ids(session, current_user)`，傳給 service。
+- **是否需新測試**：no（Medium）
 - **修補狀態**：⏳ Pending
