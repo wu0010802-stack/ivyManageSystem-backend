@@ -23,6 +23,12 @@
 - [F-009](#f-009) [Low] portal/announcements: `POST /announcements/{announcement_id}/read` 缺少可見性檢查並可枚舉公告存在性
 - [F-010](#f-010) [Low] portal/activity: `GET /activity/attendance/sessions/{session_id}` 即使該場次不含自班學生仍回傳場次中介資料，可枚舉場次存在性與課程名稱
 - [F-011](#f-011) [Low] portal/leaves: 補休申請 `source_overtime_id` 400 vs 403 可枚舉加班記錄存在性
+- [F-012](#f-012) [High] employees: `GET /employees/{employee_id}/final-salary-preview` 缺 `_enforce_self_or_full_salary`，可看任意員工最終薪資結算
+- [F-013](#f-013) [High] salary: `GET /salaries/festival-bonus` 與 `/salaries/festival-bonus/period-accrual` 未限縮查詢者，回傳全員節慶獎金與期中累積金額
+- [F-014](#f-014) [High] employees_docs: `GET /employees/{employee_id}/contracts` 回傳 `salary_at_contract`，繞過 `_enforce_self_or_full_salary`
+- [F-015](#f-015) [High] punch_corrections: `PUT /punch-corrections/{correction_id}/approve` 缺自我核准守衛，可自審補打卡（直接影響本人薪資扣款）
+- [F-016](#f-016) [Medium] bonus_preview: `GET /bonus-preview/dashboard` 與 `POST /bonus-impact-preview` 以 `STUDENTS_READ`/`STUDENTS_WRITE` 控管，但回傳每位教師估算節慶獎金金額
+- [F-017](#f-017) [Medium] employees: `GET /employees` 與 `GET /employees/{id}` 回傳 `base_salary` / `hourly_rate` 給僅持 `EMPLOYEES_READ` 之自訂角色（無 `SALARY_READ`）
 
 ---
 
@@ -142,4 +148,70 @@
 - **根因**：先 `session.query(OvertimeRecord).filter(id==source_overtime_id).first()` 再檢查 owner，兩種失敗路徑 status code + detail 差異化。
 - **建議修法**：合併為單一 status code（例：一律 400「來源加班記錄無效或無權使用」），不揭露存在性差異。
 - **是否需新測試**：no
+- **修補狀態**：⏳ Pending
+
+### F-012 [High] employees: `GET /employees/{employee_id}/final-salary-preview` 缺 `_enforce_self_or_full_salary`，可看任意員工最終薪資結算
+
+- **位置**：`api/employees.py:553-644` `GET /api/employees/{employee_id}/final-salary-preview`
+- **威脅模型**：a
+- **PoC**：任何持有 `Permission.SALARY_READ` 但非 admin/hr 角色的使用者（例：自訂角色僅給 SALARY_READ 供查自己歷史薪資；或主管被臨時授予 SALARY_READ）對任意 `employee_id` 呼叫此端點。response 直接回傳該員工 `contracted_base_salary` / `base_salary`（含月中離職折算） / `festival_bonus` / `gross_salary` / `total_deduction` / `labor_insurance` / `health_insurance` / `pension` / `net_salary` / `unused_annual_leave_compensation` / `net_salary_with_unused_annual`，等於別人離職當月的完整薪資結算。salary.py 內所有 `record_id` 與 `employee_id` 端點（`/breakdown`、`/audit-log`、`/field-breakdown`、`/export`、`/history`、`/snapshots/{id}`、`/simulate`）都調用 `_enforce_self_or_full_salary`，唯獨此 employees 路徑下的端點漏掛。
+- **根因**：endpoint 只用 `require_staff_permission(Permission.SALARY_READ)` 做權限門檻，未呼叫 `_enforce_self_or_full_salary(current_user, employee_id)` 限縮為「admin/hr 看全部，其他角色只能看自己」。`_salary_engine.preview_salary_calculation(employee_id, ...)` 回傳的 breakdown 也沒有 viewer-side 過濾。
+- **建議修法**：在進入 `_salary_engine.preview_salary_calculation` 前先呼叫 `from api.salary import _enforce_self_or_full_salary; _enforce_self_or_full_salary(current_user, employee_id)`；或抽出 `utils/salary_access.py` 共用 helper 後同時供 salary.py / employees.py 使用，避免端點散落各處時容易漏掛。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-013 [High] salary: `GET /salaries/festival-bonus` 與 `/salaries/festival-bonus/period-accrual` 未限縮查詢者，回傳全員節慶獎金與期中累積金額
+
+- **位置**：`api/salary.py:534-584` `GET /api/salaries/festival-bonus`；`api/salary.py:587-720` `GET /api/salaries/festival-bonus/period-accrual`
+- **威脅模型**：a
+- **PoC**：任何持有 `Permission.SALARY_READ` 但非 admin/hr 角色（例：自訂角色僅給 SALARY_READ 用以查自己歷史；或主管被臨時授予 SALARY_READ）呼叫上述任一端點。處理流程是「`session.query(Employee).filter(_active_employees_in_month_filter(year, month)).all()` → 對每筆計算 `engine.calculate_festival_bonus_breakdown(...)` 或 `engine.calculate_period_accrual_row(...)` → 整批回傳」，過程完全不引用 `_resolve_salary_viewer_employee_id` 也未呼叫 `_enforce_self_or_full_salary`。攻擊者一次請求即可拿到全體在職員工該月的：節慶獎金（festivalBonus）、超額獎金、會議缺席扣款、bonusBase（職稱基數）、targetEnrollment、period-accrual 每月明細與累積總和（含預估淨領金額 `net_estimate`）。對比同檔 `/salaries/records`（line 723）正確使用 `_resolve_salary_viewer_employee_id` 過濾 query；festival-bonus 兩條路徑屬同型敏感資料卻未加守衛。
+- **根因**：兩端點皆在 admin/hr 預設情境下開發，假設只有他們會使用；未防範「ad-hoc 授予 SALARY_READ 的非 admin/hr 角色」會打到同一 endpoint。
+- **建議修法**：兩端點 query 員工前先 `viewer = _resolve_salary_viewer_employee_id(current_user)`；若 `viewer is not None`（非 admin/hr），用 `Employee.id == viewer` 進一步過濾員工 query，使該角色僅能看到自己一筆。或全面拒絕（403）非 admin/hr 對「彙總式」端點的存取，要求改用 `/salaries/records?employee_id=self` 查單筆。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-014 [High] employees_docs: `GET /employees/{employee_id}/contracts` 回傳 `salary_at_contract`，繞過 `_enforce_self_or_full_salary`
+
+- **位置**：`api/employees_docs.py:348-361` `GET /api/employees/{employee_id}/contracts`（response 由 `_contract_to_dict`，line 123-134 組裝，含 `salary_at_contract`）
+- **威脅模型**：a
+- **PoC**：任何持 `Permission.EMPLOYEES_READ` 之使用者（預設配置：admin/hr）對任意 `employee_id` 呼叫即可取得該員工每一段合約的 `salary_at_contract`（合約簽訂時月薪）。salary.py 已用 `_enforce_self_or_full_salary` 限縮非 admin/hr 看自己；employees_docs 則完全交給 `EMPLOYEES_READ`。員工合約上的薪資是高敏感資訊（影響退休金、資遣費基數），等同薪資資料，若僅被授予 EMPLOYEES_READ（例：人資助理/自訂查資料的 viewer 角色）即可看遍全員合約金額。同樣 pattern 還會洩漏合約類型 / 起訖日（敏感人事決策軌跡，可推算他人是否續約、轉正、即將到期）。
+- **根因**：employees_docs 將 contracts/educations/certificates 三類一律用 `EMPLOYEES_READ` 控管，未區分 sensitive（contracts → 含薪資）與 non-sensitive（educations / certificates）；亦未調用既有的 `_enforce_self_or_full_salary` 阻擋非 admin/hr 看他人合約。
+- **建議修法**：（1）`list_contracts` / `update_contract` / `delete_contract` 新增 `_enforce_self_or_full_salary(current_user, employee_id)`，比照 salary.py 的「admin/hr 看全部，其他僅看自己」。（2）或在 response 層動態 mask `salary_at_contract` 給沒有 `SALARY_READ` 的 viewer。建議用 (1)，避免維護兩套遮罩規則；附帶把 contracts 的 perm 提升為 `EMPLOYEES_READ + SALARY_READ` 雙重門檻。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-015 [High] punch_corrections: `PUT /punch-corrections/{correction_id}/approve` 缺自我核准守衛，可自審補打卡（直接影響本人薪資扣款）
+
+- **位置**：`api/punch_corrections.py:105-254` `PUT /api/punch-corrections/{correction_id}/approve`
+- **威脅模型**：a
+- **PoC**：員工 A 為主管或具 `Permission.APPROVALS` 之角色，先以 portal 建立自己的補打卡申請（`PunchCorrectionRequest.employee_id = A`），再以管理端 API `PUT /punch-corrections/{id}/approve` 對自己這筆呼叫 `approved=true`。endpoint 通過 `_check_approval_eligibility` 檢查（同為 supervisor → supervisor 路徑視配置可能放行），但**完全沒有「approver_eid == correction.employee_id 拒絕」這層守衛**。對比 `api/leaves.py:1018` 與 `api/overtimes.py:1079` 都有相同 idiom：`approver_eid = current_user.get("employee_id"); if approver_eid and ot/leave.employee_id == approver_eid: 403`，唯獨 punch_corrections 漏掛。核准補打卡會 (1) 建立 / 改動 Attendance 的 punch_in/out_time、(2) 把 is_missing_punch_in / out 設成 False、(3) `mark_salary_stale` 觸發後續重算，等同 A 可單人完成「補打卡 → 自審 → 漂白遲到/缺卡 → 取消扣款」的閉環，違反勞動法的職務分工原則，也是金流 A 錢路徑（補打卡內容直接屬於 task brief 的 Critical 級別判定）。
+- **根因**：punch_corrections.py:105 `approve_punch_correction` 在 line 128 角色資格檢查之後，未補上自我核准防護，與同期重構過的 leaves / overtimes 不一致；屬遺漏修補。
+- **建議修法**：在 `approve_punch_correction` 取得 correction 物件後（line 119 之後）加入：
+  ```python
+  approver_eid = current_user.get("employee_id")
+  if approver_eid and correction.employee_id == approver_eid:
+      raise HTTPException(status_code=403, detail="不可自我核准補打卡申請")
+  ```
+  並比照 leaves/overtimes 補測試（`tests/test_punch_corrections_self_approve.py`）。長期建議抽出 `utils/approval_helpers.py:require_not_self_approval(current_user, submitter_employee_id, action="...")` 共用 helper，避免日後新增審核端點再次漏寫。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-016 [Medium] bonus_preview: `GET /bonus-preview/dashboard` 與 `POST /bonus-impact-preview` 以 `STUDENTS_READ`/`STUDENTS_WRITE` 控管，但回傳每位教師估算節慶獎金金額
+
+- **位置**：`api/bonus_preview.py:184-334` `POST /api/bonus-impact-preview`（perm: `STUDENTS_WRITE`）；`api/bonus_preview.py:342-472` `GET /api/bonus-preview/dashboard`（perm: `STUDENTS_READ`）
+- **威脅模型**：a
+- **PoC**：supervisor 預設模板含 `STUDENTS_READ` 與 `STUDENTS_WRITE` 但**不含 `SALARY_READ`**。supervisor 呼叫 `/bonus-preview/dashboard` 即可拿到每班導／副班導的 `estimated_bonus`（即將發放的節慶獎金估算金額）、`base_amount`（職稱基數），以及全校 `estimated_total_bonus` 與每位主管/辦公室人員（category="主管"/"辦公室"）的 `current_bonus`。`bonus-impact-preview` 進一步揭露各教師在學生數異動下的 `current_bonus → projected_bonus` 變化，可被 supervisor 用來反推他人薪資的變動性與職稱基數差異。雖然這是「估算金額」而非「實發金額」，但節慶獎金本就是員工月薪可顯現的一部分，且職稱基數能反推是否帶 A/B/C 級獎金、主管紅利身份等敏感人事資料。
+- **根因**：兩端點為了讓 supervisor 評估「招生變動 → 獎金影響」與「全校達成率」，把獎金金額納入 response，但 perm 只用 `STUDENTS_READ`/`STUDENTS_WRITE`，未要求同時持 `SALARY_READ`。預期 supervisor 看「自己 + 自班教師」沒問題，但 response 未限縮班級或 employee_id 範圍。
+- **建議修法**：（1）若維持給 supervisor 用，把 response 中各員工 `estimated_bonus` / `base_amount` 用 mask（例：四捨五入到千、或以 `<3000`/`3000-5000`/`5000+` 區間取代具體數字）。（2）或要求 perm 加上 `SALARY_READ`，使僅 admin/hr/被明確授權者可看細節；supervisor 仍可用班級總計版本（`estimated_total_bonus` + 達成率，不含個別員工金額）。建議 (1)：保留 supervisor 用以評估招生決策的 UX，又不洩漏個別員工估算金額。
+- **是否需新測試**：no（Medium；列為 Phase 2 優先處理）
+- **修補狀態**：⏳ Pending
+
+### F-017 [Medium] employees: `GET /employees` 與 `GET /employees/{id}` 回傳 `base_salary` / `hourly_rate` 給僅持 `EMPLOYEES_READ` 之自訂角色（無 `SALARY_READ`）
+
+- **位置**：`api/employees.py:167-194` `GET /employees`；`api/employees.py:247-290` `GET /employees/{employee_id}`；響應由 `_format_employee_response`（line 40-93）組裝
+- **威脅模型**：a
+- **PoC**：在預設角色配置下 admin/hr 才有 EMPLOYEES_READ，且兩者也都有 SALARY_READ；此 finding 主要適用於**自訂角色**情境：若管理員建立「人資助理」「員工目錄查詢者」等只授予 `EMPLOYEES_READ`（不授 SALARY_READ）的角色，該使用者呼叫 `GET /employees` 即可取得每位員工的 `base_salary`（月薪）、`hourly_rate`（時薪）、`insurance_salary_level`（投保級距）、`pension_self_rate`（勞退自提率）、`dependents`（眷屬人數，影響保費）。`bank_code` / `bank_account_name` / 完整 `bank_account` / 完整 `id_number` 已正確被 `SALARY_WRITE` gate 遮蔽，但**底薪/時薪/投保級距/自提率四個欄位完全沒被 mask**。`hire_date` / `birthday` / `phone` / `address` / `emergency_contact_*` 也都會洩漏，但相對而言薪資金額更直接。
+- **根因**：`_format_employee_response` 只區分「`SALARY_WRITE` → 銀行/身分證遮罩」一條規則，沒有第二層「`SALARY_READ` → 薪資金額遮罩」。背後假設「能看員工的就能看薪資」，但 EMPLOYEES_READ 與 SALARY_READ 為獨立 bit，配置上可被拆開。
+- **建議修法**：在 `_format_employee_response` 多接受 `can_view_salary` 參數，由 caller 用 `has_permission(perms, Permission.SALARY_READ)` 判斷；若 `can_view_salary=False`，把 `base_salary` / `hourly_rate` / `insurance_salary_level` / `pension_self_rate` 改為 `None` 或 `"***"`。同時更新 `_format_employee_response` 文件註記「薪資欄位遮罩規則：需 SALARY_READ」。亦可一併把 `hire_date` 之外的 PII（phone/address/emergency_contact_*）對「沒有自己 employee_id 對映」的查詢者遮罩，但這超出 Threat a 範圍，建議拆 finding 處理。
+- **是否需新測試**：no（Medium；現行預設角色不會觸發；列為 Phase 2 與自訂角色 RBAC 改造一併處理）
 - **修補狀態**：⏳ Pending
