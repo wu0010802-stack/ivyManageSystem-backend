@@ -41,6 +41,7 @@
 - [F-027](#f-027) [Medium] activity/registrations: `GET /students/search` 僅以 `ACTIVITY_WRITE` 守門，回傳全校在校生 `student_id` 學號 / `birthday` / `parent_phone`，繞過 `STUDENTS_READ`
 - [F-028](#f-028) [Low] activity/pos: `GET /pos/outstanding-by-student` / `GET /pos/recent-transactions` 在 `ACTIVITY_READ` 下回傳全校學生 `student_name` / `birthday` / `class_name`，可被一線櫃檯偷帶走
 - [F-029](#f-029) [Low] activity/public: `POST /public/update` 換手機號 409 `此手機號碼已被其他報名使用` 形成 phone enumeration oracle
+- [F-030](#f-030) [Medium] activity/public: `POST /public/register` 多重未認證枚舉 oracle（學生姓名/生日 + 家長電話）
 
 ---
 
@@ -388,4 +389,18 @@
 - **根因**：為了把「兩個家長共用一支號碼」的對帳混亂擋掉，更新流程加了全域 `is_active` phone 唯一性檢查，但 409 detail 直接告知攻擊者「此手機號碼已被其他報名使用」。可區分 200 / 409 即洩漏存在性。
 - **建議修法**：（1）保留 phone 唯一性檢查，但 409 detail 改為通用訊息：`此手機號碼變更失敗，請聯繫校方協助處理` 或 `更新成功`（silent accept 但實際不寫入 phone，並另發 admin alert）；前者較不破壞 UX 但仍然部分洩漏（依然可區分 200 / 409）；後者完全消除 oracle 但 UX 變差。建議走 silent accept + 轉送至「校方審核佇列」。（2）強化 rate limit：`_public_register_limiter` 從 5/min 降為 5/hour（或 phone 變更專屬 limiter，3/day per IP），讓窮舉成本提高。建議 (1) + (2) 同時做。
 - **是否需新測試**：no（Low）
+- **修補狀態**：⏳ Pending
+
+### F-030 [Medium] activity/public: `POST /public/register` 多重未認證枚舉 oracle（學生姓名/生日 + 家長電話）
+
+- **位置**：`api/activity/public.py:467-500` `POST /api/activity/public/register`
+- **威脅模型**：c + d
+- **PoC**：未登入攻擊者直接呼叫 `POST /public/register` 並提交任意 `(student_name, birthday)`：
+  1. 若該組合在當學期已有有效報名 → 400「此學生本學期已有有效報名」
+  2. 若不存在 → 流程繼續（最終會在後續 3 欄驗證失敗，但此差異化已洩漏存在性）
+  另用 `parent_phone` 探測：若該電話有 pending 報名 → 400「您的報名仍在確認中」。
+  攻擊者**不需事先持有任何有效身分組合**即可枚舉系統內學生姓名+生日 / 家長電話的存在性，與 F-029（需先持有效三欄）相比，威脅面更廣。
+- **根因**：`existing` 與 `pending_dup` 兩個檢查在 `_verify_parent_identity` 之前執行；當這兩支查詢命中時直接 raise 400，與其他失敗路徑（驗證錯誤、無資料）回傳的 status / detail 不同，形成存在性 oracle。
+- **建議修法**：將 `existing` / `pending_dup` 檢查移到 `_verify_parent_identity` 之後（即先確認家長合法身分再檢查重複報名），或合併為 generic「請聯絡園所」訊息隱藏存在性差異。亦應評估提高 `_public_register_limiter` 嚴格度（目前 5/min/IP，攻擊者輪換 IP 可達 7,200/day）。
+- **是否需新測試**：yes
 - **修補狀態**：⏳ Pending
