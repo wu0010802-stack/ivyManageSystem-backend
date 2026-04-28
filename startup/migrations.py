@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sqlalchemy import inspect as sa_inspect
 
+from models.base import Base
 from models.database import get_engine, get_session, User
 from utils.permissions import _RW_PAIRS
 
@@ -18,19 +19,40 @@ logger = logging.getLogger(__name__)
 ALEMBIC_BASELINE_REVISION = "4ddf3ebad3e8"
 
 
-def needs_alembic_baseline_stamp():
-    """舊部署若已有 schema 但未建立 alembic_version，先 stamp baseline。"""
+def _detect_alembic_state() -> str:
+    """偵測 DB 對 alembic 的初始化狀態，回傳三態之一：
+
+    - ``empty``         全新空 DB（沒有 user table 也沒有 alembic_version）
+    - ``needs_baseline`` 既有 schema 但無 alembic_version（舊部署首次接上 alembic）
+    - ``versioned``     已版控（alembic_version 存在）
+
+    Why: baseline migration `4ddf3ebad3e8` 內容皆為 ``op.alter_column`` 修改既有
+    table 的 comment/nullable，**沒有** CREATE TABLE。在「empty」狀態直接
+    ``alembic upgrade heads`` 會撞到 ``UndefinedTable: relation "allowance_types"
+    does not exist``。三態必須分流：empty → ORM ``create_all`` + ``stamp heads``；
+    needs_baseline → ``stamp baseline`` + ``upgrade heads``；versioned → ``upgrade heads``。
+    """
     inspector = sa_inspect(get_engine())
     tables = set(inspector.get_table_names())
     if "alembic_version" in tables:
-        return False
-
+        return "versioned"
     user_tables = tables - {"alembic_version"}
-    return bool(user_tables)
+    if not user_tables:
+        return "empty"
+    return "needs_baseline"
+
+
+def needs_alembic_baseline_stamp() -> bool:
+    """舊部署若已有 schema 但未建立 alembic_version，先 stamp baseline。
+
+    保留為 ``_detect_alembic_state`` 的 thin wrapper 以維持向後相容；新程式碼
+    直接呼叫 ``_detect_alembic_state`` 取得完整三態判斷。
+    """
+    return _detect_alembic_state() == "needs_baseline"
 
 
 def run_alembic_upgrade():
-    """執行 Alembic schema migration。"""
+    """執行 Alembic schema bootstrap + migration（三態分流，見 ``_detect_alembic_state``）。"""
     backend_root = Path(__file__).resolve().parent.parent
     alembic_bin = shutil.which("alembic")
     if not alembic_bin:
@@ -73,14 +95,23 @@ def run_alembic_upgrade():
                 f"指令：{' '.join(args)}"
             )
 
-    if needs_alembic_baseline_stamp():
+    state = _detect_alembic_state()
+    if state == "empty":
+        logger.info(
+            "偵測到全新空 DB，先以 ORM Base.metadata.create_all 建立完整 schema，"
+            "再 alembic stamp heads 標已 fully migrated（不執行 baseline migration）"
+        )
+        Base.metadata.create_all(get_engine())
+        _run([*base_cmd, "stamp", "heads"], "stamp heads")
+    elif state == "needs_baseline":
         logger.info(
             "偵測到既有 schema 但沒有 alembic_version，先 stamp baseline=%s",
             ALEMBIC_BASELINE_REVISION,
         )
-        _run([*base_cmd, "stamp", ALEMBIC_BASELINE_REVISION], "stamp")
-
-    _run([*base_cmd, "upgrade", "heads"], "upgrade heads")
+        _run([*base_cmd, "stamp", ALEMBIC_BASELINE_REVISION], "stamp baseline")
+        _run([*base_cmd, "upgrade", "heads"], "upgrade heads")
+    else:
+        _run([*base_cmd, "upgrade", "heads"], "upgrade heads")
 
 
 def migrate_school_year_to_roc():

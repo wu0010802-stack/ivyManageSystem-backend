@@ -164,12 +164,20 @@ def test_run_maintenance_tasks_executes_alembic_and_permission_backfill(monkeypa
     ]
 
 
-def test_run_alembic_upgrade_stamps_baseline_for_legacy_schema(monkeypatch):
-    from startup import migrations as migrations_module
+class _MockSubprocessResult:
+    """模擬 subprocess.run 的回傳；returncode=0 表示成功，避免 _run 拋 RuntimeError。"""
 
-    calls = []
+    returncode = 0
+    stdout = ""
+    stderr = ""
 
-    monkeypatch.setattr(migrations_module, "needs_alembic_baseline_stamp", lambda: True)
+
+def _patch_alembic_subprocess(monkeypatch, migrations_module, calls):
+    """把 shutil.which 與 subprocess.run 換成可記錄呼叫的 mock。
+
+    subprocess.run 簽名接受 **kwargs，避免 commit 3fa99e9e 之後 capture_output=True
+    打到只接固定參數的 lambda 而 TypeError。
+    """
     monkeypatch.setattr(
         migrations_module,
         "shutil",
@@ -183,68 +191,145 @@ def test_run_alembic_upgrade_stamps_baseline_for_legacy_schema(monkeypatch):
             },
         )(),
     )
+
+    def _fake_run(args, **kwargs):
+        calls.append(args)
+        return _MockSubprocessResult()
+
     monkeypatch.setattr(
         migrations_module,
         "subprocess",
-        type(
-            "MockSubprocess",
-            (),
-            {
-                "run": staticmethod(
-                    lambda args, cwd, check: calls.append((args, cwd, check))
-                )
-            },
-        )(),
+        type("MockSubprocess", (), {"run": staticmethod(_fake_run)})(),
     )
+
+
+def test_run_alembic_upgrade_empty_db_creates_schema_and_stamps_heads(monkeypatch):
+    """全新空 DB（無 user table、無 alembic_version）：
+
+    呼叫 Base.metadata.create_all 建出完整 ORM schema，再 alembic stamp heads
+    標記已 fully migrated（不再 upgrade），避免 baseline migration 的
+    op.alter_column 對著還沒建立的 allowance_types 表跑而 UndefinedTable。
+    """
+    from startup import migrations as migrations_module
+
+    calls = []
+    create_all_args = []
+
+    monkeypatch.setattr(migrations_module, "_detect_alembic_state", lambda: "empty")
+    monkeypatch.setattr(
+        migrations_module, "get_engine", lambda: "fake_engine_handle"
+    )
+
+    class _FakeMetadata:
+        @staticmethod
+        def create_all(engine):
+            create_all_args.append(engine)
+
+    monkeypatch.setattr(
+        migrations_module, "Base", type("FakeBase", (), {"metadata": _FakeMetadata})
+    )
+    _patch_alembic_subprocess(monkeypatch, migrations_module, calls)
 
     migrations_module.run_alembic_upgrade()
 
-    assert [call[0][-2:] for call in calls] == [
+    assert create_all_args == [
+        "fake_engine_handle"
+    ], "空 DB 必須先呼叫 Base.metadata.create_all() 建立完整 schema"
+    assert [list(c[-2:]) for c in calls] == [
+        ["stamp", "heads"]
+    ], "空 DB 標 heads（不執行 baseline migration）"
+
+
+def test_run_alembic_upgrade_legacy_schema_stamps_baseline_then_upgrades(monkeypatch):
+    """既有 schema 但無 alembic_version（舊部署首次接上 alembic）：
+
+    stamp baseline 後再 upgrade heads；維持原有路徑不變。
+    """
+    from startup import migrations as migrations_module
+
+    calls = []
+    create_all_args = []
+
+    monkeypatch.setattr(
+        migrations_module, "_detect_alembic_state", lambda: "needs_baseline"
+    )
+    monkeypatch.setattr(
+        migrations_module, "get_engine", lambda: "fake_engine_handle"
+    )
+
+    class _FakeMetadata:
+        @staticmethod
+        def create_all(engine):
+            create_all_args.append(engine)
+
+    monkeypatch.setattr(
+        migrations_module, "Base", type("FakeBase", (), {"metadata": _FakeMetadata})
+    )
+    _patch_alembic_subprocess(monkeypatch, migrations_module, calls)
+
+    migrations_module.run_alembic_upgrade()
+
+    assert create_all_args == [], "既有 schema 不應再次呼叫 create_all"
+    assert [list(c[-2:]) for c in calls] == [
         ["stamp", "4ddf3ebad3e8"],
         ["upgrade", "heads"],
     ]
 
 
-def test_run_alembic_upgrade_skips_stamp_when_schema_is_versioned(monkeypatch):
+def test_run_alembic_upgrade_versioned_db_only_upgrades(monkeypatch):
+    """已版控（alembic_version 存在）：直接 upgrade heads。"""
     from startup import migrations as migrations_module
 
     calls = []
+    create_all_args = []
 
     monkeypatch.setattr(
-        migrations_module, "needs_alembic_baseline_stamp", lambda: False
+        migrations_module, "_detect_alembic_state", lambda: "versioned"
     )
     monkeypatch.setattr(
-        migrations_module,
-        "shutil",
-        type(
-            "MockShutil",
-            (),
-            {
-                "which": staticmethod(
-                    lambda name: "/mock/alembic" if name == "alembic" else None
-                )
-            },
-        )(),
+        migrations_module, "get_engine", lambda: "fake_engine_handle"
     )
+
+    class _FakeMetadata:
+        @staticmethod
+        def create_all(engine):
+            create_all_args.append(engine)
+
     monkeypatch.setattr(
-        migrations_module,
-        "subprocess",
-        type(
-            "MockSubprocess",
-            (),
-            {
-                "run": staticmethod(
-                    lambda args, cwd, check: calls.append((args, cwd, check))
-                )
-            },
-        )(),
+        migrations_module, "Base", type("FakeBase", (), {"metadata": _FakeMetadata})
     )
+    _patch_alembic_subprocess(monkeypatch, migrations_module, calls)
 
     migrations_module.run_alembic_upgrade()
 
-    assert [call[0][-2:] for call in calls] == [
-        ["upgrade", "heads"],
-    ]
+    assert create_all_args == []
+    assert [list(c[-2:]) for c in calls] == [["upgrade", "heads"]]
+
+
+def test_detect_alembic_state_classifies_three_modes(monkeypatch, tmp_path):
+    """_detect_alembic_state 直接針對 SQLite engine 驗三態判斷。"""
+    from startup import migrations as migrations_module
+    from sqlalchemy import text
+
+    # 1. 空 DB
+    empty_engine = create_engine(f"sqlite:///{tmp_path / 'empty.sqlite'}")
+    monkeypatch.setattr(migrations_module, "get_engine", lambda: empty_engine)
+    assert migrations_module._detect_alembic_state() == "empty"
+
+    # 2. 既有 schema、無 alembic_version
+    legacy_engine = create_engine(f"sqlite:///{tmp_path / 'legacy.sqlite'}")
+    with legacy_engine.begin() as conn:
+        conn.execute(text("CREATE TABLE employees (id INTEGER PRIMARY KEY)"))
+    monkeypatch.setattr(migrations_module, "get_engine", lambda: legacy_engine)
+    assert migrations_module._detect_alembic_state() == "needs_baseline"
+
+    # 3. 已版控
+    versioned_engine = create_engine(f"sqlite:///{tmp_path / 'versioned.sqlite'}")
+    with versioned_engine.begin() as conn:
+        conn.execute(text("CREATE TABLE employees (id INTEGER PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR)"))
+    monkeypatch.setattr(migrations_module, "get_engine", lambda: versioned_engine)
+    assert migrations_module._detect_alembic_state() == "versioned"
 
 
 def test_startup_event_only_runs_bootstrap(monkeypatch):
