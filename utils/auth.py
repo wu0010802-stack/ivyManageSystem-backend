@@ -23,8 +23,10 @@ _is_dev = os.environ.get("ENV", "development").lower() in (
 
 if not _jwt_secret:
     if _is_dev:
-        _jwt_secret = "dev-only-insecure-key-do-not-use-in-production"
-        logger.warning("JWT_SECRET_KEY 未設定，使用開發用預設值。請勿在正式環境使用！")
+        _jwt_secret = secrets.token_urlsafe(64)
+        logger.warning(
+            "JWT_SECRET_KEY 未設定，已隨機產生開發用 secret；每次重啟會 invalidate 所有 session。請勿在正式環境使用！"
+        )
     else:
         raise RuntimeError("JWT_SECRET_KEY 環境變數未設定，正式環境不允許啟動。")
 
@@ -137,12 +139,102 @@ def needs_rehash(hashed_password: str) -> bool:
 
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
+    """簽發 access token；自動產生 jti 以支援 LOW-2 黑名單機制。
+
+    呼叫端可以自行傳 `jti` 覆寫（測試用）；多數情境讓本函數產生即可。
+    """
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
+    to_encode.setdefault("jti", secrets.token_urlsafe(16))
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def is_token_revoked(jti: str) -> bool:
+    """LOW-2：查詢 jti 是否已加入 blocklist。
+
+    DB 失敗時 fail-open（log 警告，但不拒絕請求）—— 若 DB 抖動就把全站打掛。
+    """
+    if not jti:
+        return False
+    try:
+        from sqlalchemy import text
+
+        from models.base import get_engine
+
+        engine = get_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT 1 FROM jwt_blocklist WHERE jti = :jti AND expires_at > :now"
+                ),
+                {"jti": jti, "now": datetime.now(timezone.utc)},
+            ).fetchone()
+            return row is not None
+    except Exception as e:
+        logger.warning("is_token_revoked 查詢失敗，fail-open: %s", e)
+        return False
+
+
+def revoke_token(
+    jti: str,
+    expires_at: datetime,
+    reason: str = "logout",
+) -> None:
+    """LOW-2：把 jti 寫入 blocklist。
+
+    - jti 為空或已存在 → 靜默忽略（idempotent）
+    - DB 失敗 → log error 但不拋（不阻擋登出流程）
+    """
+    if not jti:
+        return
+    try:
+        from sqlalchemy import text
+        from sqlalchemy.exc import IntegrityError
+
+        from models.base import get_engine
+
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO jwt_blocklist (jti, expires_at, revoked_at, reason)
+                    VALUES (:jti, :expires_at, :revoked_at, :reason)
+                    ON CONFLICT (jti) DO NOTHING
+                    """),
+                {
+                    "jti": jti,
+                    "expires_at": expires_at,
+                    "revoked_at": datetime.now(timezone.utc),
+                    "reason": reason,
+                },
+            )
+    except Exception as e:
+        logger.error("revoke_token 寫入失敗 jti=%s: %s", jti, e)
+
+
+def cleanup_jwt_blocklist() -> int:
+    """LOW-2：刪除已過期的黑名單項。回傳刪除筆數。
+
+    通常每天呼叫一次（由 scheduler 排程）。
+    """
+    try:
+        from sqlalchemy import text
+
+        from models.base import get_engine
+
+        engine = get_engine()
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("DELETE FROM jwt_blocklist WHERE expires_at < :now"),
+                {"now": datetime.now(timezone.utc)},
+            )
+            return result.rowcount or 0
+    except Exception as e:
+        logger.warning("cleanup_jwt_blocklist 失敗: %s", e)
+        return 0
 
 
 def _check_token_algorithm(token: str) -> None:
@@ -187,6 +279,8 @@ def verify_ws_token(token: str) -> dict:
         HTTPException(403)：帳號需先修改密碼
     """
     payload = decode_token(token)  # 驗證 JWT 簽名與過期
+    if is_token_revoked(payload.get("jti", "")):
+        raise HTTPException(status_code=401, detail="Token 已廢止，請重新登入")
 
     user_id = payload.get("user_id")
     if user_id is None:
@@ -258,6 +352,8 @@ async def get_current_user(request: Request):
     if not token:
         raise HTTPException(status_code=401, detail="未提供認證 Token")
     payload = decode_token(token)
+    if is_token_revoked(payload.get("jti", "")):
+        raise HTTPException(status_code=401, detail="Token 已廢止，請重新登入")
     user_id = payload.get("user_id")
     if user_id is None:
         return payload
@@ -342,9 +438,7 @@ def require_parent_role():
 
     async def check(current_user: dict = Depends(get_current_user)):
         if current_user.get("role") != "parent":
-            raise HTTPException(
-                status_code=403, detail="此 API 僅限家長端使用"
-            )
+            raise HTTPException(status_code=403, detail="此 API 僅限家長端使用")
         return current_user
 
     return check
@@ -359,9 +453,7 @@ def require_non_parent_role():
 
     async def check(current_user: dict = Depends(get_current_user)):
         if current_user.get("role") == "parent":
-            raise HTTPException(
-                status_code=403, detail="家長帳號不可存取此 API"
-            )
+            raise HTTPException(status_code=403, detail="家長帳號不可存取此 API")
         return current_user
 
     return check

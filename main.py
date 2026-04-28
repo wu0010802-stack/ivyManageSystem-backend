@@ -264,6 +264,20 @@ async def app_lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("用藥提醒排程啟動失敗: %s", e)
 
+    # 安全支援表 GC：rate_limit_buckets / jwt_blocklist；預設啟用，env 可關
+    security_gc_task = None
+    security_gc_stop_event: asyncio.Event | None = None
+    try:
+        from services import security_gc_scheduler as _sec_gc
+
+        if _sec_gc.scheduler_enabled():
+            security_gc_stop_event = asyncio.Event()
+            security_gc_task = asyncio.create_task(
+                _sec_gc.run_security_gc_scheduler(security_gc_stop_event)
+            )
+    except Exception as e:
+        logger.warning("安全支援表 GC 排程啟動失敗: %s", e)
+
     try:
         yield
     finally:
@@ -315,6 +329,17 @@ async def app_lifespan(app_instance: FastAPI):
                 medication_reminder_task.cancel()
                 try:
                     await medication_reminder_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if security_gc_task is not None:
+            if security_gc_stop_event is not None:
+                security_gc_stop_event.set()
+            try:
+                await asyncio.wait_for(security_gc_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                security_gc_task.cancel()
+                try:
+                    await security_gc_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源

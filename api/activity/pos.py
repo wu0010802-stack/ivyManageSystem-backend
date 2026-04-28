@@ -34,6 +34,7 @@ from models.database import (
 from services.activity_service import activity_service
 from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
+from utils.errors import raise_safe_500
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
 
@@ -712,8 +713,7 @@ async def pos_checkout(
         raise
     except Exception as e:
         session.rollback()
-        logger.exception("POS checkout 發生非預期錯誤")
-        raise HTTPException(status_code=500, detail=f"結帳失敗：{e}")
+        raise_safe_500(e, context="POS checkout")
     finally:
         session.close()
 

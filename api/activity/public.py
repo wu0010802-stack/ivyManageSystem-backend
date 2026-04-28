@@ -2,7 +2,9 @@
 api/activity/public.py — 公開前台端點（無需認證，10 個）
 """
 
+import asyncio
 import logging
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -56,6 +58,7 @@ from ._shared import (
     PublicUpdatePayload,
     PublicInquiryPayload,
     SYSTEM_RECONCILE_METHOD,
+    should_silent_reject_bot,
     _not_found,
     _item_not_found_in_list,
     _invalid_class,
@@ -312,7 +315,10 @@ async def public_query_registration(
     """前台：依姓名+生日+家長手機查詢報名資料
 
     三欄必須同時相符；任一欄不符一律回相同的通用錯誤（不洩漏是哪一欄不符）。
+
+    LOW-3：對成功與失敗 path 加入 200~500ms 隨機延遲，提高低成本枚舉成本。
     """
+    await asyncio.sleep(random.uniform(0.2, 0.5))
     session = get_session()
     try:
         normalized_phone = _normalize_phone(parent_phone)
@@ -437,7 +443,21 @@ async def public_register(
 
     隱私契約：response 絕不洩漏 match_status / classroom_id / student_id /
     pending_review 等任何比對結果；成功/失敗家長看到同樣的中性訊息。
+
+    LOW-4：honeypot + 時序檢查若命中 → silent reject（回偽裝成功訊息、不寫 DB）。
     """
+    if should_silent_reject_bot(body.hp, body.ts):
+        logger.warning(
+            "public_register silent-reject (honeypot/ts) name=%r phone=%r",
+            body.name,
+            body.parent_phone,
+        )
+        return {
+            "message": "報名資料已送出，校方將於 1-2 個工作天確認後主動與您聯繫。",
+            "id": 0,
+            "waitlisted": False,
+            "waitlist_courses": [],
+        }
     session = get_session()
     try:
         _check_registration_open(session)
@@ -1083,7 +1103,17 @@ async def public_create_inquiry(
     body: PublicInquiryPayload,
     _: None = Depends(_public_inquiry_limiter),
 ):
-    """前台：提交家長提問"""
+    """前台：提交家長提問
+
+    LOW-4：honeypot + 時序檢查若命中 → silent reject（回偽裝成功訊息、不寫 DB）。
+    """
+    if should_silent_reject_bot(body.hp, body.ts):
+        logger.warning(
+            "public_create_inquiry silent-reject (honeypot/ts) name=%r phone=%r",
+            body.name,
+            body.phone,
+        )
+        return {"message": "感謝您的提問，我們會儘快回覆您！"}
     session = get_session()
     try:
         inquiry = ParentInquiry(

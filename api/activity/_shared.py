@@ -411,9 +411,41 @@ class PublicSupplyItem(BaseModel):
 
 
 class PublicInquiryPayload(BaseModel):
+    """LOW-4：附 honeypot（hp）+ 時間戳（ts）兩個 alias 欄位。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
     name: str = Field(..., min_length=1, max_length=50)
     phone: str = Field(..., min_length=1, max_length=30)
     question: str = Field(..., min_length=1, max_length=2000)
+    hp: str = Field(default="", alias="_hp", max_length=200)
+    ts: Optional[int] = Field(default=None, alias="_ts")
+
+
+def should_silent_reject_bot(hp: str, ts: Optional[int]) -> bool:
+    """LOW-4：honeypot + 時序檢查。回 True 表示「請當作機器人 silent reject」。
+
+    判定條件（任一命中即視為 bot）：
+    - 隱形 _hp 欄位被填入任何字元 → 真人看不到該欄位，bot 表單填充器會填
+    - 提交時間距離頁面載入不到 3 秒 → 真人讀題作答幾乎不可能這麼快
+
+    呼叫端應在判定為 bot 時：
+    - 不寫 DB
+    - 不發 LINE 推播
+    - 仍回 200/201 + 正常成功訊息（不洩漏偵測）
+    - log.warning 留痕方便事後分析
+    """
+    if hp:
+        return True
+    if ts is not None:
+        try:
+            now_ms = int(datetime.now(TAIPEI_TZ).timestamp() * 1000)
+            elapsed_ms = now_ms - int(ts)
+            if 0 <= elapsed_ms < 3000:
+                return True
+        except (ValueError, TypeError):
+            pass
+    return False
 
 
 _TW_MOBILE_RE = re.compile(r"^09\d{8}$")
@@ -467,6 +499,9 @@ class PublicRegistrationPayload(BaseModel):
     # 前端可選擇性傳入；不傳時 API 端用當前學期
     school_year: Optional[int] = Field(None, ge=100, le=200)
     semester: Optional[int] = Field(None, ge=1, le=2)
+    # LOW-4：honeypot + 提交時間戳（ms epoch）
+    hp: str = Field(default="", alias="_hp", max_length=200)
+    ts: Optional[int] = Field(default=None, alias="_ts")
 
     @field_validator("birthday")
     @classmethod

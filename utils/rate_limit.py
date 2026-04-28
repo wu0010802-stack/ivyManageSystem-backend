@@ -88,15 +88,125 @@ class SlidingWindowLimiter(BaseLimiter):
         self._timestamps[key].append(now)
 
 
-# 未來 Redis 化時的預留 stub。實作時 import redis，建立 RedisLimiter(BaseLimiter)，
-# 於 main.py 啟動 lifespan 中以環境變數 REDIS_URL 決定使用哪個 limiter class，
-# 其他呼叫端完全不變。
-#
-# class RedisLimiter(BaseLimiter):
-#     def __init__(self, redis_client, max_calls: int, window_seconds: int, name: str = "",
-#                  error_detail: str = "請求過於頻繁，請稍後再試"):
-#         ...
-#
-#     def check(self, key: str) -> None:
-#         # INCR + EXPIRE 或 ZADD + ZRANGEBYSCORE
-#         ...
+class PostgresLimiter(BaseLimiter):
+    """PostgreSQL 固定視窗限流器（LOW-1）
+
+    用 `rate_limit_buckets` 表計數，UPSERT 原子操作；視窗以 `window_seconds` 切齊。
+
+    與 SlidingWindowLimiter 的差異：
+    - 固定視窗（floor(now / window) * window）：邊界附近兩個視窗合計可達 2x 限額。
+      這是工程取捨：滑動視窗要存每筆 timestamp，PG 寫入成本高出許多。
+    - 對暴力破解防護仍綽綽有餘；對「精準 RPS」場景才不夠用。
+
+    DB 失敗時的策略：fail-open（log 警告，但不擋住正常請求）。
+    避免 DB 短暫失聯時把所有 API 都 503。
+    """
+
+    def __init__(
+        self,
+        max_calls: int,
+        window_seconds: int,
+        name: str = "",
+        error_detail: str = "請求過於頻繁，請稍後再試",
+    ):
+        self.max_calls = max_calls
+        self.window = window_seconds
+        self.name = name
+        self.error_detail = error_detail
+
+    def check(self, key: str) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import text
+
+        from models.base import get_engine
+
+        now = datetime.now(timezone.utc)
+        bucket_start_epoch = (int(now.timestamp()) // self.window) * self.window
+        window_start = datetime.fromtimestamp(bucket_start_epoch, tz=timezone.utc)
+        bucket_key = f"{self.name}:{key}"
+
+        try:
+            engine = get_engine()
+            with engine.begin() as conn:
+                row = conn.execute(
+                    text("""
+                        INSERT INTO rate_limit_buckets (bucket_key, window_start, count)
+                        VALUES (:bucket_key, :window_start, 1)
+                        ON CONFLICT (bucket_key, window_start)
+                        DO UPDATE SET count = rate_limit_buckets.count + 1
+                        RETURNING count
+                        """),
+                    {"bucket_key": bucket_key, "window_start": window_start},
+                ).fetchone()
+                count = row[0] if row else 1
+        except Exception as e:
+            logger.warning(
+                "PostgresLimiter [%s] DB 操作失敗，fail-open: %s",
+                self.name,
+                e,
+            )
+            return
+
+        if count > self.max_calls:
+            logger.warning(
+                "Rate limit exceeded [%s] key=%s count=%s",
+                self.name,
+                key,
+                count,
+            )
+            raise HTTPException(status_code=429, detail=self.error_detail)
+
+
+def create_limiter(
+    max_calls: int,
+    window_seconds: int,
+    name: str = "",
+    error_detail: str = "請求過於頻繁，請稍後再試",
+) -> BaseLimiter:
+    """工廠函數：根據環境變數 RATE_LIMIT_BACKEND 決定限流器實作。
+
+    - `postgres`：PG-backed（多 worker 安全；推薦 production）
+    - `memory` 或未設定：in-process dict（單 worker 開發/小型部署）
+    """
+    import os
+
+    backend = os.environ.get("RATE_LIMIT_BACKEND", "memory").lower()
+    if backend == "postgres":
+        return PostgresLimiter(
+            max_calls=max_calls,
+            window_seconds=window_seconds,
+            name=name,
+            error_detail=error_detail,
+        )
+    return SlidingWindowLimiter(
+        max_calls=max_calls,
+        window_seconds=window_seconds,
+        name=name,
+        error_detail=error_detail,
+    )
+
+
+def cleanup_rate_limit_buckets(retention_minutes: int = 60) -> int:
+    """GC：刪除超過保留時間的舊視窗紀錄。回傳刪除筆數。
+
+    通常每 5 分鐘呼叫一次（由 scheduler 排程）。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import text
+
+    from models.base import get_engine
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=retention_minutes)
+    try:
+        engine = get_engine()
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("DELETE FROM rate_limit_buckets WHERE window_start < :cutoff"),
+                {"cutoff": cutoff},
+            )
+            return result.rowcount or 0
+    except Exception as e:
+        logger.warning("cleanup_rate_limit_buckets 失敗: %s", e)
+        return 0

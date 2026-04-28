@@ -18,16 +18,27 @@ from pydantic import BaseModel
 from models.database import get_session, User, Employee
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
 from utils.auth import (
-    hash_password, verify_password, needs_rehash, create_access_token,
-    get_current_user, decode_token_allow_expired, require_staff_permission,
+    hash_password,
+    verify_password,
+    needs_rehash,
+    create_access_token,
+    get_current_user,
+    decode_token_allow_expired,
+    require_staff_permission,
     validate_password_strength,
 )
 from utils.cookie import (
-    set_access_token_cookie, clear_access_token_cookie,
-    set_admin_token_cookie, clear_admin_token_cookie,
+    set_access_token_cookie,
+    clear_access_token_cookie,
+    set_admin_token_cookie,
+    clear_admin_token_cookie,
 )
 from utils.permissions import Permission
-from utils.permissions import get_permissions_definition, get_role_default_permissions, ROLE_LABELS
+from utils.permissions import (
+    get_permissions_definition,
+    get_role_default_permissions,
+    ROLE_LABELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +68,7 @@ def _is_school_wifi(ip_str: str) -> bool:
     except ValueError:
         return False
 
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # 預計算的假密碼雜湊，用於帳號不存在時仍執行 PBKDF2 運算
@@ -74,10 +86,10 @@ _DUMMY_PASSWORD_HASH = hash_password("__dummy_timing_padding__")
 #   登入成功後自動解除（reset 失敗計數）
 #   防止：針對特定帳號的定向暴力破解
 
-_IP_WINDOW = 300        # IP 滑動視窗長度：5 分鐘
-_IP_MAX_ATTEMPTS = 20   # 同 IP 視窗內最多嘗試次數
-_FAIL_THRESHOLD = 5     # 帳號連續失敗次數上限
-_FAIL_LOCKOUT = 900     # 帳號鎖定時間：15 分鐘
+_IP_WINDOW = 300  # IP 滑動視窗長度：5 分鐘
+_IP_MAX_ATTEMPTS = 20  # 同 IP 視窗內最多嘗試次數
+_FAIL_THRESHOLD = 5  # 帳號連續失敗次數上限
+_FAIL_LOCKOUT = 900  # 帳號鎖定時間：15 分鐘
 
 _ip_attempts: dict[str, list[float]] = defaultdict(list)
 _account_failures: dict[str, list[float]] = defaultdict(list)
@@ -122,6 +134,7 @@ def _clear_login_failures(username: str) -> None:
 
 # ============ Pydantic Models ============
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -156,8 +169,13 @@ class ImpersonateRequest(BaseModel):
 
 # ============ Public Routes ============
 
+
 @router.post("/impersonate")
-def impersonate_user(data: ImpersonateRequest, request: Request, current_user: dict = Depends(get_current_user)):
+def impersonate_user(
+    data: ImpersonateRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """切換使用者身份（管理員限定）"""
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="權限不足")
@@ -165,22 +183,29 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
     session = get_session()
     try:
         # 1. 檢查目標員工是否存在
-        target_emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
+        target_emp = (
+            session.query(Employee).filter(Employee.id == data.employee_id).first()
+        )
         if not target_emp:
             raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
 
         # 2. 尋找該員工的使用者帳號
-        target_user = session.query(User).filter(User.employee_id == data.employee_id).first()
+        target_user = (
+            session.query(User).filter(User.employee_id == data.employee_id).first()
+        )
 
         # 3. 如果沒有使用者帳號，拒絕切換
         if not target_user:
-            raise HTTPException(status_code=400, detail="該員工沒有使用者帳號，無法切換")
+            raise HTTPException(
+                status_code=400, detail="該員工沒有使用者帳號，無法切換"
+            )
 
         # 4. 禁止冒充 admin（防止平級或提權冒充）
         if target_user.role == "admin":
             logger.warning(
                 "冒充被拒（目標為 admin）：操作者 user_id=%s 嘗試冒充 user_id=%s",
-                current_user.get("user_id"), target_user.id,
+                current_user.get("user_id"),
+                target_user.id,
             )
             raise HTTPException(status_code=403, detail="不可冒充管理員帳號")
 
@@ -188,7 +213,8 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
         if not target_user.is_active:
             logger.warning(
                 "冒充被拒（帳號已停用）：操作者 user_id=%s 嘗試冒充已停用 user_id=%s",
-                current_user.get("user_id"), target_user.id,
+                current_user.get("user_id"),
+                target_user.id,
             )
             raise HTTPException(status_code=403, detail="無法冒充已停用的帳號")
 
@@ -196,23 +222,32 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
         if not target_emp.is_active:
             logger.warning(
                 "冒充被拒（員工已離職）：操作者 user_id=%s 嘗試冒充已離職 employee_id=%s",
-                current_user.get("user_id"), target_emp.id,
+                current_user.get("user_id"),
+                target_emp.id,
             )
             raise HTTPException(status_code=403, detail="無法冒充已離職員工")
 
         # 5. 產生該使用者的 token
-        permissions = target_user.permissions if target_user.permissions is not None else get_role_default_permissions(target_user.role)
-        target_token = create_access_token({
-            "user_id": target_user.id,
-            "employee_id": target_user.employee_id,
-            "role": target_user.role,
-            "name": target_emp.name,
-            "permissions": permissions,
-            "token_version": target_user.token_version,
-        })
+        permissions = (
+            target_user.permissions
+            if target_user.permissions is not None
+            else get_role_default_permissions(target_user.role)
+        )
+        target_token = create_access_token(
+            {
+                "user_id": target_user.id,
+                "employee_id": target_user.employee_id,
+                "role": target_user.role,
+                "name": target_emp.name,
+                "permissions": permissions,
+                "token_version": target_user.token_version,
+            }
+        )
 
         # 6. 取得管理員原始 token（用於備份到 admin_token Cookie）
-        admin_token = request.cookies.get("admin_token") or request.cookies.get("access_token")
+        admin_token = request.cookies.get("admin_token") or request.cookies.get(
+            "access_token"
+        )
         if not admin_token:
             authorization = request.headers.get("authorization", "")
             if authorization.startswith("Bearer "):
@@ -222,7 +257,10 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
         client_ip = request.client.host if request.client else "unknown"
         logger.warning(
             "冒充操作：操作者 user_id=%s 切換為 user_id=%s（role=%s）來源 IP=%s",
-            current_user.get("user_id"), target_user.id, target_user.role, client_ip,
+            current_user.get("user_id"),
+            target_user.id,
+            target_user.role,
+            client_ip,
         )
         request.state.audit_summary = (
             f"[冒充] 操作者 {current_user.get('name')}（user_id={current_user.get('user_id')}）"
@@ -230,18 +268,24 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
             f"{ROLE_LABELS.get(target_user.role, target_user.role)}）"
         )
 
-        response = JSONResponse(content={
-            "user": {
-                "id": target_user.id,
-                "username": target_user.username,
-                "role": target_user.role,
-                "role_label": ROLE_LABELS.get(target_user.role, target_user.role),
-                "permissions": permissions,
-                "employee_id": target_user.employee_id,
-                "name": target_emp.name,
-                "title": (target_emp.job_title_rel.name if target_emp.job_title_rel else (target_emp.title or "")),
-            },
-        })
+        response = JSONResponse(
+            content={
+                "user": {
+                    "id": target_user.id,
+                    "username": target_user.username,
+                    "role": target_user.role,
+                    "role_label": ROLE_LABELS.get(target_user.role, target_user.role),
+                    "permissions": permissions,
+                    "employee_id": target_user.employee_id,
+                    "name": target_emp.name,
+                    "title": (
+                        target_emp.job_title_rel.name
+                        if target_emp.job_title_rel
+                        else (target_emp.title or "")
+                    ),
+                },
+            }
+        )
         set_access_token_cookie(response, target_token)
         # 備份管理員 Token 到 admin_token Cookie（httpOnly，前端無法讀取）
         if admin_token:
@@ -249,6 +293,7 @@ def impersonate_user(data: ImpersonateRequest, request: Request, current_user: d
         return response
     finally:
         session.close()
+
 
 @router.post("/login")
 def login(data: LoginRequest, request: Request):
@@ -261,10 +306,14 @@ def login(data: LoginRequest, request: Request):
 
     session = get_session()
     try:
-        user = session.query(User).filter(
-            User.username == data.username,
-            User.is_active == True,
-        ).first()
+        user = (
+            session.query(User)
+            .filter(
+                User.username == data.username,
+                User.is_active == True,
+            )
+            .first()
+        )
 
         if not user:
             # 帳號不存在：仍執行密碼驗證（對假 hash），使回應時間與「密碼錯誤」一致
@@ -295,30 +344,42 @@ def login(data: LoginRequest, request: Request):
         session.commit()
 
         # permissions: -1 表示全部權限，teacher 角色不需要 permissions
-        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
+        permissions = (
+            user.permissions
+            if user.permissions is not None
+            else get_role_default_permissions(user.role)
+        )
 
-        token = create_access_token({
-            "user_id": user.id,
-            "employee_id": user.employee_id,
-            "role": user.role,
-            "name": emp.name if emp else "",
-            "permissions": permissions,
-            "token_version": user.token_version,
-        })
-
-        response = JSONResponse(content={
-            "must_change_password": bool(user.must_change_password),
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "role": user.role,
-                "role_label": ROLE_LABELS.get(user.role, user.role),
-                "permissions": permissions,
+        token = create_access_token(
+            {
+                "user_id": user.id,
                 "employee_id": user.employee_id,
+                "role": user.role,
                 "name": emp.name if emp else "",
-                "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
-            },
-        })
+                "permissions": permissions,
+                "token_version": user.token_version,
+            }
+        )
+
+        response = JSONResponse(
+            content={
+                "must_change_password": bool(user.must_change_password),
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "role": user.role,
+                    "role_label": ROLE_LABELS.get(user.role, user.role),
+                    "permissions": permissions,
+                    "employee_id": user.employee_id,
+                    "name": emp.name if emp else "",
+                    "title": (
+                        emp.job_title_rel.name
+                        if emp and emp.job_title_rel
+                        else (emp.title if emp else "")
+                    ),
+                },
+            }
+        )
         set_access_token_cookie(response, token)
         return response
     except HTTPException:
@@ -331,6 +392,7 @@ def login(data: LoginRequest, request: Request):
 
 
 # ============ Token Refresh ============
+
 
 @router.post("/refresh")
 def refresh_token(request: Request):
@@ -357,7 +419,11 @@ def refresh_token(request: Request):
     # 驗證使用者仍然有效
     session = get_session()
     try:
-        user = session.query(User).filter(User.id == user_id, User.is_active == True).first()
+        user = (
+            session.query(User)
+            .filter(User.id == user_id, User.is_active == True)
+            .first()
+        )
         if not user:
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
         if user.must_change_password:
@@ -366,32 +432,46 @@ def refresh_token(request: Request):
         # 驗證 token_version：帳號停用或權限變更時版本遞增，使舊 token 無法換發
         # payload 缺少 token_version（舊 token 向下相容）時視為 0，與 DB 預設值相符
         if payload.get("token_version", 0) != user.token_version:
-            raise HTTPException(status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）")
+            raise HTTPException(
+                status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
+            )
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
+        permissions = (
+            user.permissions
+            if user.permissions is not None
+            else get_role_default_permissions(user.role)
+        )
 
-        new_token = create_access_token({
-            "user_id": user.id,
-            "employee_id": user.employee_id,
-            "role": user.role,
-            "name": emp.name if emp else "",
-            "permissions": permissions,
-            "token_version": user.token_version,
-        })
-
-        response = JSONResponse(content={
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "role": user.role,
-                "role_label": ROLE_LABELS.get(user.role, user.role),
-                "permissions": permissions,
+        new_token = create_access_token(
+            {
+                "user_id": user.id,
                 "employee_id": user.employee_id,
+                "role": user.role,
                 "name": emp.name if emp else "",
-                "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
-            },
-        })
+                "permissions": permissions,
+                "token_version": user.token_version,
+            }
+        )
+
+        response = JSONResponse(
+            content={
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "role": user.role,
+                    "role_label": ROLE_LABELS.get(user.role, user.role),
+                    "permissions": permissions,
+                    "employee_id": user.employee_id,
+                    "name": emp.name if emp else "",
+                    "title": (
+                        emp.job_title_rel.name
+                        if emp and emp.job_title_rel
+                        else (emp.title if emp else "")
+                    ),
+                },
+            }
+        )
         set_access_token_cookie(response, new_token)
         return response
     finally:
@@ -399,6 +479,7 @@ def refresh_token(request: Request):
 
 
 # ============ Logout ============
+
 
 @router.post("/logout")
 def logout(request: Request):
@@ -412,7 +493,13 @@ def logout(request: Request):
 
     if token:
         try:
-            from utils.auth import decode_token
+            from datetime import datetime, timezone
+            from utils.auth import (
+                JWT_REFRESH_GRACE_HOURS,
+                decode_token,
+                revoke_token,
+            )
+
             payload = decode_token(token)
             user_id = payload.get("user_id")
             if user_id:
@@ -424,6 +511,20 @@ def logout(request: Request):
                         session.commit()
                 finally:
                     session.close()
+            # LOW-2：除了 token_version 整批廢止外，把當前 jti 寫入黑名單
+            #   防護精細到單一 token，且涵蓋無 user_id 的 guest token 場景
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti and exp:
+                exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
+                # 寬限期內仍可換發，所以 expires_at 設為 exp + grace
+                from datetime import timedelta
+
+                revoke_token(
+                    jti,
+                    exp_dt + timedelta(hours=JWT_REFRESH_GRACE_HOURS),
+                    reason="logout",
+                )
         except Exception:
             pass  # token 已過期或無效，無需廢止
 
@@ -434,6 +535,7 @@ def logout(request: Request):
 
 
 # ============ End Impersonate ============
+
 
 @router.post("/end-impersonate")
 def end_impersonate(request: Request):
@@ -447,6 +549,7 @@ def end_impersonate(request: Request):
 
     # 驗證 admin_token 仍然有效
     from utils.auth import decode_token_allow_expired
+
     payload = decode_token_allow_expired(admin_token)
 
     user_id = payload.get("user_id")
@@ -455,40 +558,58 @@ def end_impersonate(request: Request):
 
     session = get_session()
     try:
-        user = session.query(User).filter(User.id == user_id, User.is_active == True).first()
+        user = (
+            session.query(User)
+            .filter(User.id == user_id, User.is_active == True)
+            .first()
+        )
         if not user:
             raise HTTPException(status_code=401, detail="管理員帳號已停用或不存在")
-            
+
         if user.role != "admin":
-            raise HTTPException(status_code=403, detail="無效的管理員 Token（角色非 admin）")
+            raise HTTPException(
+                status_code=403, detail="無效的管理員 Token（角色非 admin）"
+            )
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
+        permissions = (
+            user.permissions
+            if user.permissions is not None
+            else get_role_default_permissions(user.role)
+        )
 
         # 為管理員簽發新的 access token（避免使用可能已接近過期的舊 token）
-        new_token = create_access_token({
-            "user_id": user.id,
-            "employee_id": user.employee_id,
-            "role": user.role,
-            "name": emp.name if emp else "",
-            "permissions": permissions,
-            "token_version": user.token_version,
-        })
-        
+        new_token = create_access_token(
+            {
+                "user_id": user.id,
+                "employee_id": user.employee_id,
+                "role": user.role,
+                "name": emp.name if emp else "",
+                "permissions": permissions,
+                "token_version": user.token_version,
+            }
+        )
+
         request.state.audit_summary = f"[結束冒充] 恢復為管理員 {emp.name if emp else user.username}（user_id={user.id}）"
 
-        response = JSONResponse(content={
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "role": user.role,
-                "role_label": ROLE_LABELS.get(user.role, user.role),
-                "permissions": permissions,
-                "employee_id": user.employee_id,
-                "name": emp.name if emp else "",
-                "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
-            },
-        })
+        response = JSONResponse(
+            content={
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "role": user.role,
+                    "role_label": ROLE_LABELS.get(user.role, user.role),
+                    "permissions": permissions,
+                    "employee_id": user.employee_id,
+                    "name": emp.name if emp else "",
+                    "title": (
+                        emp.job_title_rel.name
+                        if emp and emp.job_title_rel
+                        else (emp.title if emp else "")
+                    ),
+                },
+            }
+        )
         set_access_token_cookie(response, new_token)
         clear_admin_token_cookie(response)
         return response
@@ -497,6 +618,7 @@ def end_impersonate(request: Request):
 
 
 # ============ Protected Routes ============
+
 
 @router.get("/me")
 def get_me(current_user: dict = Depends(get_current_user)):
@@ -507,7 +629,11 @@ def get_me(current_user: dict = Depends(get_current_user)):
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = user.permissions if user.permissions is not None else get_role_default_permissions(user.role)
+        permissions = (
+            user.permissions
+            if user.permissions is not None
+            else get_role_default_permissions(user.role)
+        )
         return {
             "id": user.id,
             "username": user.username,
@@ -516,14 +642,20 @@ def get_me(current_user: dict = Depends(get_current_user)):
             "permissions": permissions,
             "employee_id": user.employee_id,
             "name": emp.name if emp else "",
-            "title": (emp.job_title_rel.name if emp and emp.job_title_rel else (emp.title if emp else "")),
+            "title": (
+                emp.job_title_rel.name
+                if emp and emp.job_title_rel
+                else (emp.title if emp else "")
+            ),
         }
     finally:
         session.close()
 
 
 @router.post("/change-password")
-def change_password(data: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
+def change_password(
+    data: ChangePasswordRequest, current_user: dict = Depends(get_current_user)
+):
     """修改密碼"""
     session = get_session()
     try:
@@ -548,31 +680,50 @@ def change_password(data: ChangePasswordRequest, current_user: dict = Depends(ge
 
 # ============ Admin Routes ============
 
+
 @router.get("/users")
-def list_users(current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_READ))):
+def list_users(
+    current_user: dict = Depends(
+        require_staff_permission(Permission.USER_MANAGEMENT_READ)
+    ),
+):
     """列出所有使用者"""
     session = get_session()
     try:
-        users = session.query(User, Employee).outerjoin(
-            Employee, User.employee_id == Employee.id
-        ).all()
-        return [{
-            "id": u.id,
-            "username": u.username,
-            "role": u.role,
-            "role_label": ROLE_LABELS.get(u.role, u.role),
-            "permissions": u.permissions if u.permissions is not None else get_role_default_permissions(u.role),
-            "is_active": u.is_active,
-            "employee_id": u.employee_id,
-            "employee_name": emp.name if emp else "",
-            "last_login": u.last_login.isoformat() if u.last_login else None,
-        } for u, emp in users]
+        users = (
+            session.query(User, Employee)
+            .outerjoin(Employee, User.employee_id == Employee.id)
+            .all()
+        )
+        return [
+            {
+                "id": u.id,
+                "username": u.username,
+                "role": u.role,
+                "role_label": ROLE_LABELS.get(u.role, u.role),
+                "permissions": (
+                    u.permissions
+                    if u.permissions is not None
+                    else get_role_default_permissions(u.role)
+                ),
+                "is_active": u.is_active,
+                "employee_id": u.employee_id,
+                "employee_name": emp.name if emp else "",
+                "last_login": u.last_login.isoformat() if u.last_login else None,
+            }
+            for u, emp in users
+        ]
     finally:
         session.close()
 
 
 @router.post("/users", status_code=201)
-def create_user(data: CreateUserRequest, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
+def create_user(
+    data: CreateUserRequest,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.USER_MANAGEMENT_WRITE)
+    ),
+):
     """建立使用者帳號"""
     session = get_session()
     try:
@@ -582,7 +733,9 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_st
         if data.employee_id is not None:
             if session.query(User).filter(User.employee_id == data.employee_id).first():
                 raise HTTPException(status_code=400, detail="該員工已有帳號")
-            emp = session.query(Employee).filter(Employee.id == data.employee_id).first()
+            emp = (
+                session.query(Employee).filter(Employee.id == data.employee_id).first()
+            )
             if not emp:
                 raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
         else:
@@ -618,7 +771,13 @@ def create_user(data: CreateUserRequest, current_user: dict = Depends(require_st
 
 
 @router.put("/users/{user_id}/reset-password")
-def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
+def reset_password(
+    user_id: int,
+    data: ResetPasswordRequest,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.USER_MANAGEMENT_WRITE)
+    ),
+):
     """重設密碼"""
     session = get_session()
     try:
@@ -628,7 +787,9 @@ def reset_password(user_id: int, data: ResetPasswordRequest, current_user: dict 
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = True  # 管理員代為重設密碼，強制當事人下次登入修改
-        user.token_version = (user.token_version or 0) + 1  # 使所有現有 session 的 token 立即無法刷新
+        user.token_version = (
+            user.token_version or 0
+        ) + 1  # 使所有現有 session 的 token 立即無法刷新
         session.commit()
         return {"message": "密碼重設成功"}
     except HTTPException:
@@ -647,7 +808,14 @@ def get_permissions():
 
 
 @router.put("/users/{user_id}")
-def update_user(user_id: int, data: UpdateUserRequest, request: Request, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
+def update_user(
+    user_id: int,
+    data: UpdateUserRequest,
+    request: Request,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.USER_MANAGEMENT_WRITE)
+    ),
+):
     """更新使用者角色與權限"""
     # 禁止管理員停用自己的帳號（防止系統鎖死）
     if user_id == current_user.get("user_id") and data.is_active is False:
@@ -679,9 +847,9 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
         # 帳號停用、角色或權限實際變更時，遞增 token_version
         # 使所有已持有的 token 在下次嘗試 refresh 時立即被拒絕（最長 15 分鐘後完全失效）
         should_revoke = (
-            (not user.is_active and old_is_active) or
-            (user.role != old_role) or
-            (user.permissions != old_permissions)
+            (not user.is_active and old_is_active)
+            or (user.role != old_role)
+            or (user.permissions != old_permissions)
         )
         if should_revoke:
             user.token_version = (user.token_version or 0) + 1
@@ -709,7 +877,12 @@ def update_user(user_id: int, data: UpdateUserRequest, request: Request, current
 
 
 @router.delete("/users/{user_id}")
-def delete_user(user_id: int, current_user: dict = Depends(require_staff_permission(Permission.USER_MANAGEMENT_WRITE))):
+def delete_user(
+    user_id: int,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.USER_MANAGEMENT_WRITE)
+    ),
+):
     """刪除使用者帳號"""
     # 禁止管理員刪除自己的帳號（防止系統鎖死）
     if user_id == current_user.get("user_id"):

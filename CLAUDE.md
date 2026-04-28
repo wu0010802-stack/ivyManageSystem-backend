@@ -169,4 +169,8 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 - 使用者輸入不可直接拼接 SQL（已使用 ORM，維持此原則）
 - 敏感操作（薪資匯出、核准）須記錄 `logger.warning` 稽核日誌
 - 登入端點已有限流，新的高風險端點參考相同模式
-- Rate Limiter（`utils/rate_limit.py`）為 in-process 記憶體版，僅適用單 worker 部署；多實例需改 Redis-backed 方案
+- Rate Limiter（`utils/rate_limit.py`）支援兩個 backend：in-memory（預設）與 PG-based。多 worker 部署時設 `RATE_LIMIT_BACKEND=postgres`，由 `services/security_gc_scheduler.py` 自動清舊視窗
+- JWT 黑名單（`utils/auth.is_token_revoked`）：使用者 logout 時 jti 寫入 `jwt_blocklist` 表；任何受保護端點透過 `get_current_user` / `verify_ws_token` 自動檢查
+- 公開端點不可使用 `HTTPException(500, str(e))` 或 `HTTPException(500, f"...{e}")` —— 一律走 `utils/errors.raise_safe_500(e, context=...)`
+- 升級依賴後必須跑 `pip-audit -r requirements.txt`；CI 會 enforce
+- 完整資安發現清單見 `SECURITY_AUDIT.md`；新發現以 finding 格式追加並標記嚴重度

@@ -39,6 +39,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: 依賴 CVE 掃描（HIGH-1）
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --strict
+
       - name: Run tests
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test

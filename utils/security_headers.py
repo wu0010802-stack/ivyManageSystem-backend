@@ -17,25 +17,47 @@ from starlette.responses import Response
 
 _is_prod = os.environ.get("ENV", "development").lower() in ("production", "prod")
 
-_STATIC_HEADERS: list[tuple[str, str]] = [
-    ("X-Content-Type-Options", "nosniff"),
-    ("X-Frame-Options", "DENY"),
-    ("Referrer-Policy", "strict-origin-when-cross-origin"),
-    (
-        "Content-Security-Policy",
+
+def _build_csp() -> str:
+    """組 CSP header（MEDIUM-2）。
+
+    路徑 A（預設）：Vite build 後 dist/index.html 不含 inline <script>，可移除
+        `script-src 'unsafe-inline'`。`'unsafe-eval'` 一併不放，封鎖 eval/new Function。
+    路徑 B（fallback）：若部署環境（例如 第三方 CDN 或注入 SDK）導致 inline <script>
+        無法避免，可透過 env var `CSP_SCRIPT_HASHES`（空白分隔的 'sha256-XXX' 清單）
+        加入授權 hash；該 env 缺失時不啟用 fallback。
+
+    `style-src 'unsafe-inline'` 保留：Element Plus / Vue <style scoped> 會產生 inline
+    style，移除成本高且報酬有限，屬於工程取捨。
+    """
+    script_extras = ""
+    hashes = os.environ.get("CSP_SCRIPT_HASHES", "").strip()
+    if hashes:
+        # 允許空白分隔；單個 hash 必須形如 'sha256-XXX'
+        token_list = [h.strip() for h in hashes.split() if h.strip()]
+        if token_list:
+            script_extras = " " + " ".join(token_list)
+
+    return (
         "default-src 'self'; "
-        # 保留 'unsafe-inline'：Vite build 目前仍會注入 inline bootstrap script；移除 'unsafe-eval' 封鎖 eval() / new Function() 的 XSS 面
-        "script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com; "
-        # 樣式 'unsafe-inline' 仍需保留：Element Plus、Vue <style scoped> 會產生 inline style
+        f"script-src 'self'{script_extras} https://maps.googleapis.com https://maps.gstatic.com; "
+        # style 'unsafe-inline' 仍保留：Element Plus / Vue <style scoped> 限制
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com https://*.tile.openstreetmap.org; "
         "connect-src 'self' https://maps.googleapis.com https://*.tile.openstreetmap.org wss: ws:; "
         "frame-ancestors 'none'; "
-        "object-src 'none'; "  # 封鎖 Flash / 舊式外掛的 XSS 路徑
-        "base-uri 'self'; "  # 防止 <base> tag 注入把相對 URL 指向第三方
-        "form-action 'self'",  # 表單只能送回本站，防資料外送
-    ),
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+
+
+_STATIC_HEADERS: list[tuple[str, str]] = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ("Content-Security-Policy", _build_csp()),
 ]
 
 # HSTS 只在正式環境加（HTTP 環境加了也無害，但避免誤導）

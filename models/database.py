@@ -107,6 +107,7 @@ from models.portfolio import (
     StudentMedicationOrder,
     StudentMedicationLog,
 )
+from models.security import JwtBlocklist, RateLimitBucket
 
 __all__ = [
     # base
@@ -220,4 +221,7 @@ __all__ = [
     "StudentAllergy",
     "StudentMedicationOrder",
     "StudentMedicationLog",
+    # security support tables
+    "RateLimitBucket",
+    "JwtBlocklist",
 ]
