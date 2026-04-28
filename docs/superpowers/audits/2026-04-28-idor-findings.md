@@ -248,7 +248,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：endpoint 只用 `require_staff_permission(Permission.SALARY_READ)` 做權限門檻，未呼叫 `_enforce_self_or_full_salary(current_user, employee_id)` 限縮為「admin/hr 看全部，其他角色只能看自己」。`_salary_engine.preview_salary_calculation(employee_id, ...)` 回傳的 breakdown 也沒有 viewer-side 過濾。
 - **建議修法**：在進入 `_salary_engine.preview_salary_calculation` 前先呼叫 `from api.salary import _enforce_self_or_full_salary; _enforce_self_or_full_salary(current_user, employee_id)`；或抽出 `utils/salary_access.py` 共用 helper 後同時供 salary.py / employees.py 使用，避免端點散落各處時容易漏掛。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 2eac2552)
 
 ### F-013 [High] salary: `GET /salaries/festival-bonus` 與 `/salaries/festival-bonus/period-accrual` 未限縮查詢者，回傳全員節慶獎金與期中累積金額
 
@@ -258,7 +258,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：兩端點皆在 admin/hr 預設情境下開發，假設只有他們會使用；未防範「ad-hoc 授予 SALARY_READ 的非 admin/hr 角色」會打到同一 endpoint。
 - **建議修法**：兩端點 query 員工前先 `viewer = _resolve_salary_viewer_employee_id(current_user)`；若 `viewer is not None`（非 admin/hr），用 `Employee.id == viewer` 進一步過濾員工 query，使該角色僅能看到自己一筆。或全面拒絕（403）非 admin/hr 對「彙總式」端點的存取，要求改用 `/salaries/records?employee_id=self` 查單筆。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 2eac2552)
 
 ### F-014 [High] employees_docs: `GET /employees/{employee_id}/contracts` 回傳 `salary_at_contract`，繞過 `_enforce_self_or_full_salary`
 
@@ -268,7 +268,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：employees_docs 將 contracts/educations/certificates 三類一律用 `EMPLOYEES_READ` 控管，未區分 sensitive（contracts → 含薪資）與 non-sensitive（educations / certificates）；亦未調用既有的 `_enforce_self_or_full_salary` 阻擋非 admin/hr 看他人合約。
 - **建議修法**：（1）`list_contracts` / `update_contract` / `delete_contract` 新增 `_enforce_self_or_full_salary(current_user, employee_id)`，比照 salary.py 的「admin/hr 看全部，其他僅看自己」。（2）或在 response 層動態 mask `salary_at_contract` 給沒有 `SALARY_READ` 的 viewer。建議用 (1)，避免維護兩套遮罩規則；附帶把 contracts 的 perm 提升為 `EMPLOYEES_READ + SALARY_READ` 雙重門檻。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 2eac2552) — 採方案 (2) 在 list_contracts 動態遮罩 salary_at_contract（非 admin/hr 且非 self），write 端點維持 EMPLOYEES_WRITE 不變
 
 ### F-015 [High] punch_corrections: `PUT /punch-corrections/{correction_id}/approve` 缺自我核准守衛，可自審補打卡（直接影響本人薪資扣款）
 
@@ -496,7 +496,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. **viewer-side mask**：在 `build_finance_detail` 加 `can_view_salary_detail: bool` 參數，無權者把 `salary[]` 整個轉為「合計只回總額不回逐員」或把 `employee_name`/各金額欄位 mask 為 `None`；export 同理。建議 (1) 較簡潔且符合既有 RBAC 設計（薪資金額屬 SALARY_READ 範圍）。
   併用時：endpoint 加 SALARY_READ 雙閘門 + service 層仍接受 viewer 旗標，避免未來新增 caller 時忘記加 perm。
 - **是否需新測試**：yes（`tests/security/test_idor_admin_endpoints.py`：建立 supervisor 帳號（含 REPORTS、無 SALARY_READ），呼叫 `/finance-summary/detail` 應 403；含 SALARY_READ 才應 200，且 `salary[]` 含逐員金額。export 同型驗證）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 2eac2552) — 採 viewer-side mask（角色守衛 has_full_salary_view）：非 admin/hr 看到 detail 中 salary[] 各金額欄位為 null、export Sheet 5 顯示「—」；自訂角色 REPORTS+SALARY_READ 仍被遮罩（角色非 perm-only）
 
 ### F-032 [High] exports: `GET /exports/employee-attendance?employee_id=...` 缺自我守衛，可任意員工 id 拉同事個人逐日打卡明細
 
@@ -600,7 +600,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：與 F-017 / F-031 同型 — 「敏感金額」由次要 perm 把關，缺與 `SALARY_READ` 的「邏輯與」閘門。
 - **建議修法**：要求同時持 `OVERTIME_READ` AND `SALARY_READ` 才回傳金額欄位；或對缺 SALARY_READ 者遮罩 `overtime_pay`（僅回時數），與 F-017/F-031 修補方向一致；可一起抽 `mask_salary_fields(row, current_user)` helper。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 2eac2552) — 採角色守衛 has_full_salary_view：非 admin/hr 看到 overtime_pay 欄位為「—」；自訂角色 OVERTIME_READ+SALARY_READ 仍被遮罩（角色非 perm-only）
 
 ### F-037 [Critical] auth: `POST /api/auth/users` 缺權限/角色上限守衛，持 USER_MANAGEMENT_WRITE 之非 admin 可建 admin 帳號 + permissions=-1 自我提權
 
