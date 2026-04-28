@@ -271,6 +271,74 @@ class LineService:
             logger.warning("LINE 個人推播失敗: %s", exc)
             return False
 
+    def _push_to_user_with_quick_reply(
+        self, line_user_id: str, text: str, quick_reply: dict
+    ) -> bool:
+        """推送純文字 + quickReply（postback button）給個人 LINE 用戶。"""
+        if not self._enabled or not self._token or not line_user_id:
+            return False
+        try:
+            resp = requests.post(
+                _LINE_PUSH_URL,
+                headers={"Authorization": f"Bearer {self._token}"},
+                json={
+                    "to": line_user_id,
+                    "messages": [
+                        {
+                            "type": "text",
+                            "text": text,
+                            "quickReply": quick_reply,
+                        }
+                    ],
+                },
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "LINE 個人推播 quickReply 失敗: %s %s",
+                    resp.status_code,
+                    resp.text,
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.warning("LINE 個人推播 quickReply 失敗: %s", exc)
+            return False
+
+    def _reply_with_quick_reply(
+        self, reply_token: str, text: str, quick_reply: dict
+    ) -> bool:
+        """使用 LINE Reply API 回覆並附 quickReply（postback buttons）。"""
+        if not self._token or not reply_token:
+            return False
+        try:
+            resp = requests.post(
+                _LINE_REPLY_URL,
+                headers={"Authorization": f"Bearer {self._token}"},
+                json={
+                    "replyToken": reply_token,
+                    "messages": [
+                        {
+                            "type": "text",
+                            "text": text,
+                            "quickReply": quick_reply,
+                        }
+                    ],
+                },
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "LINE Reply quickReply 失敗: %s %s",
+                    resp.status_code,
+                    resp.text,
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.warning("LINE Reply quickReply 失敗: %s", exc)
+            return False
+
     def _reply(self, reply_token: str, text: str) -> bool:
         """使用 LINE Reply API 回覆 Webhook 訊息，成功回傳 True，失敗回傳 False"""
         if not self._token or not reply_token:
@@ -411,6 +479,90 @@ class LineService:
 
     # ── 家長端通知方法（個人推播；非 enable 或無 line_user_id 時靜默） ──
 
+    def should_push_to_parent(
+        self,
+        session,
+        *,
+        user_id: int,
+        event_type: str,  # 'message_received' / 'announcement' / 'event_ack_required' / ...
+    ) -> Optional[str]:
+        """家長端 push gate：回傳 line_user_id 表可推；None 表跳過。
+
+        條件：
+        1. service enabled & token 已設
+        2. user 存在、is_active、有 line_user_id
+        3. line_follow_confirmed_at IS NOT NULL（家長已加 Bot 為好友才能推）
+        4. (Phase 6 接通) ParentNotificationPreference enabled 才推；現階段 stub 為 True
+
+        DB 異常 / 找不到 user 等情境一律 fail-closed（return None），不打 LINE API；
+        push 失敗本來就是非阻斷，靜默略過比硬推更安全。
+        """
+        if not self._enabled or not self._token:
+            return None
+        try:
+            from models.auth import User
+
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user or not user.is_active:
+                return None
+            if not user.line_user_id or not user.line_follow_confirmed_at:
+                return None
+            # Phase 6：通知偏好（缺 row = enabled）
+            from api.parent_portal.notifications import is_pref_enabled
+
+            if not is_pref_enabled(
+                session, user_id=user_id, event_type=event_type, channel="line"
+            ):
+                return None
+            return user.line_user_id
+        except Exception as exc:
+            logger.warning("should_push_to_parent failed (fail-closed): %s", exc)
+            return None
+
+    def notify_parent_message_received(
+        self,
+        session,
+        *,
+        parent_user_id: int,
+        teacher_name: str,
+        student_name: Optional[str],
+        body_preview: str,
+        thread_id: Optional[int] = None,
+    ) -> None:
+        """老師發訊／回訊後通知家長 LINE（gate 不通則靜默）。
+
+        thread_id 傳入時會附 quick-reply postback 按鈕，家長點即進入 reply 模式。
+        """
+        line_id = self.should_push_to_parent(
+            session, user_id=parent_user_id, event_type="message_received"
+        )
+        if not line_id:
+            return
+        snippet = (body_preview or "(附件)").strip()
+        if len(snippet) > 60:
+            snippet = snippet[:60] + "…"
+        prefix = f"💬 {teacher_name} 傳了新訊息"
+        if student_name:
+            prefix += f"（{student_name}）"
+        text = f"{prefix}：\n{snippet}\n\n可直接回覆此訊息或開啟家長 App。"
+        if thread_id is not None:
+            quick_reply = {
+                "items": [
+                    {
+                        "type": "action",
+                        "action": {
+                            "type": "postback",
+                            "label": "💬 回覆此訊息",
+                            "data": f"thread_id={thread_id}",
+                            "displayText": "回覆此訊息",
+                        },
+                    }
+                ]
+            }
+            self._push_to_user_with_quick_reply(line_id, text, quick_reply)
+        else:
+            self._push_to_user(line_id, text)
+
     def notify_parent_leave_result(
         self,
         line_user_id: str,
@@ -520,7 +672,10 @@ class LineService:
                 .first()
             )
             if not record:
-                self._reply(reply_token, "查無已結算的薪資記錄,請待主管完成當期薪資封存後再查詢。")
+                self._reply(
+                    reply_token,
+                    "查無已結算的薪資記錄,請待主管完成當期薪資封存後再查詢。",
+                )
                 return
             reply = (
                 f"【薪資摘要】{record.salary_year}/{record.salary_month:02d}\n"

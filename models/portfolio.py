@@ -34,10 +34,14 @@ from models.base import Base
 ATTACHMENT_OWNER_OBSERVATION = "observation"
 ATTACHMENT_OWNER_REPORT = "report"
 ATTACHMENT_OWNER_MEDICATION_ORDER = "medication_order"
+ATTACHMENT_OWNER_MESSAGE = "message"
+ATTACHMENT_OWNER_EVENT_ACK = "event_acknowledgment"
 ATTACHMENT_OWNER_TYPES = (
     ATTACHMENT_OWNER_OBSERVATION,
     ATTACHMENT_OWNER_REPORT,
     ATTACHMENT_OWNER_MEDICATION_ORDER,
+    ATTACHMENT_OWNER_MESSAGE,
+    ATTACHMENT_OWNER_EVENT_ACK,
 )
 
 # ── 觀察 domain 枚舉（沿用 StudentAssessment.domain） ──────────────────────

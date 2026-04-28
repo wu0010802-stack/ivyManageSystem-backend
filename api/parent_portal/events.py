@@ -3,18 +3,43 @@
 - GET /api/parent/events：家長可見事件清單（過去 30 天 + 未來 180 天），
   附加 `requires_acknowledgment` 與「家長對哪幾個小孩已簽 / 未簽」資訊
 - POST /api/parent/events/{event_id}/ack：簽閱（指定哪一個小孩簽）
+- POST /api/parent/events/{event_id}/ack/signature：上傳手寫簽名 PNG
+  （兩段式：先 ack 取得 ack_id，再上傳簽名圖；簽名圖可重新覆蓋）
 """
 
+import logging
+import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 
-from models.database import EventAcknowledgment, SchoolEvent, get_session
+from models.database import (
+    Attachment,
+    EventAcknowledgment,
+    SchoolEvent,
+    get_session,
+)
+from models.portfolio import ATTACHMENT_OWNER_EVENT_ACK
 from utils.auth import require_parent_role
+from utils.file_upload import validate_file_signature
 
 from ._shared import _assert_student_owned, _get_parent_student_ids
+
+logger = logging.getLogger(__name__)
+
+# 簽名圖大小硬上限：200KB（canvas toBlob 通常 5-30KB；防止濫用）
+_SIGNATURE_MAX_BYTES = 200 * 1024
+_SIGNATURE_ALLOWED_EXT = {".png"}
 
 router = APIRouter(prefix="/events", tags=["parent-events"])
 
@@ -191,7 +216,112 @@ def acknowledge_event(
         return {
             "status": "ok",
             "already_acknowledged": False,
+            "ack_id": ack.id,
             "acknowledged_at": ack.acknowledged_at.isoformat(),
+        }
+    finally:
+        session.close()
+
+
+@router.post("/{event_id}/ack/signature", status_code=201)
+async def upload_ack_signature(
+    event_id: int,
+    request: Request,
+    student_id: int = Query(..., gt=0),
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_parent_role()),
+):
+    """上傳已建立的簽收紀錄之手寫簽名圖（PNG）。
+
+    重複上傳會將先前的 attachment 軟刪除並換成新檔（家長簽錯可重簽）。
+    """
+    user_id = current_user["user_id"]
+
+    filename = file.filename or "signature.png"
+    ext = os.path.splitext(filename)[1].lower() or ".png"
+    if ext not in _SIGNATURE_ALLOWED_EXT:
+        raise HTTPException(status_code=400, detail="簽名檔僅接受 PNG")
+
+    # 不沿用 read_upload_with_size_check 預設 10MB 上限：簽名圖過大代表非預期使用
+    content = await file.read()
+    if len(content) > _SIGNATURE_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"簽名圖過大（{len(content)} bytes，上限 {_SIGNATURE_MAX_BYTES}）",
+        )
+    validate_file_signature(content, ext)
+
+    from utils.portfolio_storage import get_portfolio_storage
+
+    session = get_session()
+    try:
+        _assert_student_owned(session, user_id, student_id)
+        ack = (
+            session.query(EventAcknowledgment)
+            .filter(
+                EventAcknowledgment.event_id == event_id,
+                EventAcknowledgment.user_id == user_id,
+                EventAcknowledgment.student_id == student_id,
+            )
+            .first()
+        )
+        if ack is None:
+            raise HTTPException(
+                status_code=404,
+                detail="尚未簽收此事件，請先 POST /ack 後再上傳簽名",
+            )
+
+        # 若已有舊簽名，軟刪除以保留歷史
+        if ack.signature_attachment_id:
+            old = (
+                session.query(Attachment)
+                .filter(Attachment.id == ack.signature_attachment_id)
+                .first()
+            )
+            if old and not old.deleted_at:
+                old.deleted_at = datetime.now()
+
+        storage = get_portfolio_storage()
+        stored = storage.put_attachment(content, ext)
+        att = Attachment(
+            owner_type=ATTACHMENT_OWNER_EVENT_ACK,
+            owner_id=ack.id,
+            storage_key=stored.storage_key,
+            display_key=stored.display_key,
+            thumb_key=stored.thumb_key,
+            original_filename=filename,
+            mime_type=stored.mime_type,
+            size_bytes=len(content),
+            uploaded_by=user_id,
+        )
+        session.add(att)
+        session.flush()
+        session.refresh(att)
+        ack.signature_attachment_id = att.id
+        session.commit()
+
+        request.state.audit_entity_id = str(ack.id)
+        request.state.audit_summary = (
+            f"家長上傳事件簽名：event_id={event_id} student_id={student_id} "
+            f"ack_id={ack.id} attachment_id={att.id} size={len(content)}B"
+        )
+        logger.info(
+            "家長上傳簽名：event_id=%d student_id=%d ack_id=%d att_id=%d size=%d",
+            event_id,
+            student_id,
+            ack.id,
+            att.id,
+            len(content),
+        )
+        return {
+            "ack_id": ack.id,
+            "signature_attachment_id": att.id,
+            "url": f"/api/parent/uploads/portfolio/{att.storage_key}",
+            "thumb_url": (
+                f"/api/parent/uploads/portfolio/{att.thumb_key}"
+                if att.thumb_key
+                else None
+            ),
         }
     finally:
         session.close()

@@ -60,6 +60,13 @@ ENTITY_PATTERNS = [
     (r"/api/activity/inquiries", "activity_inquiry"),
     (r"/api/activity/sessions", "activity_session"),
     (r"/api/activity/settings", "activity_settings"),
+    # 家長入口 2.0 — 家園溝通平台
+    # first-match：events/.+/ack 必須排在 messages / medication-orders 之前不衝突，但都不衝突，順序自由
+    (r"/api/parent/messages", "parent_message"),
+    (r"/api/parent/medication-orders", "parent_medication_order"),
+    (r"/api/parent/events/.+/ack", "parent_event_ack"),
+    (r"/api/parent/notifications", "parent_notification_pref"),
+    (r"/api/portal/parent-messages", "parent_message"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -93,6 +100,11 @@ ENTITY_LABELS = {
     "activity_pos": "才藝 POS",
     "activity_daily_close": "POS 日結",
     "activity_settings": "才藝設定",
+    # 家園溝通平台
+    "parent_message": "家長訊息",
+    "parent_medication_order": "家長用藥單",
+    "parent_event_ack": "事件簽收",
+    "parent_notification_pref": "家長通知偏好",
 }
 
 ACTION_LABELS = {

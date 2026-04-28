@@ -40,6 +40,7 @@ from models.database import (
     session_scope,
 )
 from models.portfolio import ALLERGY_SEVERITIES, MEDICATION_SOURCE_TEACHER
+from services.medication_service import create_order_with_logs
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -406,7 +407,8 @@ async def create_medication_order(
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
 
-            order = StudentMedicationOrder(
+            order = create_order_with_logs(
+                session,
                 student_id=student_id,
                 order_date=payload.order_date,
                 medication_name=payload.medication_name,
@@ -416,19 +418,6 @@ async def create_medication_order(
                 created_by=current_user.get("user_id"),
                 source=MEDICATION_SOURCE_TEACHER,
             )
-            session.add(order)
-            session.flush()
-
-            # 預建 pending logs
-            for slot in payload.time_slots:
-                session.add(
-                    StudentMedicationLog(
-                        order_id=order.id,
-                        scheduled_time=slot,
-                    )
-                )
-            session.flush()
-            session.refresh(order)
             logs = _load_logs_for_order(session, order.id)
 
             request.state.audit_entity_id = str(student_id)

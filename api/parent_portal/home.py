@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends
 from models.database import Classroom, Guardian, Student, get_session
 from utils.auth import require_parent_role
 
+from services.parent_message_service import count_unread_for_parent
+
 from ._shared import _get_parent_student_ids, _get_parent_user
 from .announcements import count_unread_for_user as count_unread_announcements
 from .events import count_pending_acks_for_user as count_pending_event_acks
@@ -85,6 +87,9 @@ def home_summary(current_user: dict = Depends(require_parent_role())):
                 "fees": fees["totals"],
                 "pending_event_acks": count_pending_event_acks(
                     session, user_id, student_ids
+                ),
+                "unread_messages": count_unread_for_parent(
+                    session, parent_user_id=user_id
                 ),
             },
         }

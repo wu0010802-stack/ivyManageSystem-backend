@@ -74,6 +74,10 @@ class Permission(IntFlag):
     STUDENTS_SPECIAL_NEEDS_READ = 1 << 47  # 特殊需求檢視
     STUDENTS_SPECIAL_NEEDS_WRITE = 1 << 48  # 特殊需求編輯 / IEP 管理
 
+    # --- 家園溝通平台（家長入口 2.0） ---
+    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
+    PARENT_MESSAGES_WRITE = 1 << 49  # 家長 1對1 訊息（教師端發送/回覆）
+
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
 
@@ -181,6 +185,8 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.STUDENTS_MEDICATION_ADMINISTER
         | Permission.STUDENTS_SPECIAL_NEEDS_READ
         | Permission.STUDENTS_SPECIAL_NEEDS_WRITE
+        # 家園溝通平台：主管可主動發訊（後端 endpoint 仍以班導師守衛把關發起 thread 範圍）
+        | Permission.PARENT_MESSAGES_WRITE
     ),
     "teacher": (
         Permission.DASHBOARD
@@ -194,6 +200,8 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.STUDENTS_HEALTH_READ
         | Permission.STUDENTS_MEDICATION_ADMINISTER
         | Permission.STUDENTS_SPECIAL_NEEDS_READ
+        # 家園溝通平台：教師可發訊；發起 thread 範圍由 endpoint 端 assert_teacher_is_homeroom 守衛
+        | Permission.PARENT_MESSAGES_WRITE
     ),
     # 家長角色：恆無任何 Permission 位元；資源存取一律由 user_id → guardians 過濾
     "parent": 0,
@@ -268,6 +276,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     "STUDENTS_MEDICATION_ADMINISTER": "餵藥執行與紀錄",
     "STUDENTS_SPECIAL_NEEDS_READ": "特殊需求 (檢視)",
     "STUDENTS_SPECIAL_NEEDS_WRITE": "特殊需求 (編輯 / IEP)",
+    # 家園溝通平台
+    "PARENT_MESSAGES_WRITE": "家長訊息 (發送/回覆)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -332,7 +342,12 @@ PERMISSION_GROUPS: List[Dict] = [
     },
     {
         "name": "園務行政",
-        "permissions": ["REPORTS", "AUDIT_LOGS", "BUSINESS_ANALYTICS"],
+        "permissions": [
+            "REPORTS",
+            "AUDIT_LOGS",
+            "BUSINESS_ANALYTICS",
+            "PARENT_MESSAGES_WRITE",
+        ],
         "split_permissions": [
             {
                 "module": "公告管理",

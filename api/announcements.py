@@ -69,12 +69,14 @@ def _strip_html(text: str) -> str:
     p.close()
     return p.get_text()
 
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/announcements", tags=["announcements"])
 
 
 # ============ Pydantic Models ============
+
 
 class AnnouncementCreate(BaseModel):
     title: str
@@ -94,22 +96,29 @@ class AnnouncementUpdate(BaseModel):
 
 # ============ Endpoints ============
 
+
 @router.get("")
 def list_announcements(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
-    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_READ)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_READ)
+    ),
 ):
     """列出所有公告（管理員用）"""
     session = get_session()
     try:
-        query = session.query(Announcement).options(
-            joinedload(Announcement.author),
-            selectinload(Announcement.reads),
-            selectinload(Announcement.recipients),
-        ).order_by(
-            Announcement.is_pinned.desc(),
-            Announcement.created_at.desc(),
+        query = (
+            session.query(Announcement)
+            .options(
+                joinedload(Announcement.author),
+                selectinload(Announcement.reads),
+                selectinload(Announcement.recipients),
+            )
+            .order_by(
+                Announcement.is_pinned.desc(),
+                Announcement.created_at.desc(),
+            )
         )
         total = query.count()
         items = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -122,7 +131,11 @@ def list_announcements(
         }
         read_employee_map = {}
         if read_employee_ids:
-            employees = session.query(Employee.id, Employee.name).filter(Employee.id.in_(read_employee_ids)).all()
+            employees = (
+                session.query(Employee.id, Employee.name)
+                .filter(Employee.id.in_(read_employee_ids))
+                .all()
+            )
             read_employee_map = {employee.id: employee.name for employee in employees}
 
         results = []
@@ -141,23 +154,29 @@ def list_announcements(
                 }
                 for read in sorted_reads
             ]
-            results.append({
-                "id": ann.id,
-                "title": ann.title,
-                "content": ann.content,
-                "priority": ann.priority,
-                "is_pinned": ann.is_pinned,
-                "created_by": ann.created_by,
-                "created_by_name": ann.author.name if ann.author else "未知",
-                "created_at": ann.created_at.isoformat() if ann.created_at else None,
-                "updated_at": ann.updated_at.isoformat() if ann.updated_at else None,
-                "read_count": len(ann.reads),
-                "read_preview": readers[:3],
-                "has_more_readers": len(readers) > 3,
-                "readers": readers,
-                "recipient_count": len(recipient_ids),
-                "recipient_ids": recipient_ids,
-            })
+            results.append(
+                {
+                    "id": ann.id,
+                    "title": ann.title,
+                    "content": ann.content,
+                    "priority": ann.priority,
+                    "is_pinned": ann.is_pinned,
+                    "created_by": ann.created_by,
+                    "created_by_name": ann.author.name if ann.author else "未知",
+                    "created_at": (
+                        ann.created_at.isoformat() if ann.created_at else None
+                    ),
+                    "updated_at": (
+                        ann.updated_at.isoformat() if ann.updated_at else None
+                    ),
+                    "read_count": len(ann.reads),
+                    "read_preview": readers[:3],
+                    "has_more_readers": len(readers) > 3,
+                    "readers": readers,
+                    "recipient_count": len(recipient_ids),
+                    "recipient_ids": recipient_ids,
+                }
+            )
 
         return {"total": total, "items": results}
     finally:
@@ -167,7 +186,9 @@ def list_announcements(
 @router.post("", status_code=201)
 def create_announcement(
     data: AnnouncementCreate,
-    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
 ):
     """新增公告"""
     if data.priority not in ("normal", "important", "urgent"):
@@ -187,7 +208,9 @@ def create_announcement(
 
         if data.target_employee_ids:
             for emp_id in data.target_employee_ids:
-                session.add(AnnouncementRecipient(announcement_id=ann.id, employee_id=emp_id))
+                session.add(
+                    AnnouncementRecipient(announcement_id=ann.id, employee_id=emp_id)
+                )
 
         session.commit()
         return {"message": "公告已發佈", "id": ann.id}
@@ -202,12 +225,18 @@ def create_announcement(
 def update_announcement(
     announcement_id: int,
     data: AnnouncementUpdate,
-    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
 ):
     """更新公告"""
     session = get_session()
     try:
-        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
         if not ann:
             raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
 
@@ -228,7 +257,11 @@ def update_announcement(
                 AnnouncementRecipient.announcement_id == announcement_id
             ).delete()
             for emp_id in data.target_employee_ids:
-                session.add(AnnouncementRecipient(announcement_id=announcement_id, employee_id=emp_id))
+                session.add(
+                    AnnouncementRecipient(
+                        announcement_id=announcement_id, employee_id=emp_id
+                    )
+                )
 
         session.commit()
         return {"message": "公告已更新"}
@@ -244,12 +277,18 @@ def update_announcement(
 @router.delete("/{announcement_id}")
 def delete_announcement(
     announcement_id: int,
-    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
 ):
     """刪除公告"""
     session = get_session()
     try:
-        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
         if not ann:
             raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
 
@@ -324,12 +363,18 @@ def _serialize_parent_recipient(r: AnnouncementParentRecipient) -> dict:
 @router.get("/{announcement_id}/parent-recipients")
 def list_parent_recipients(
     announcement_id: int,
-    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_READ)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_READ)
+    ),
 ):
     """讀取目前公告對家長的發送對象設定。"""
     session = get_session()
     try:
-        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
         if not ann:
             raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
         rows = (
@@ -391,11 +436,121 @@ def _validate_recipient_targets_exist(
             )
 
 
+# ── LINE 推播（Phase 4） ──────────────────────────────────────────────────
+
+# 由 main.py 注入的 LineService singleton；未注入時 push 變 no-op
+_line_service = None
+
+
+def init_announcement_line_service(svc) -> None:
+    global _line_service
+    _line_service = svc
+
+
+def _resolve_parent_user_ids(
+    session, recipients: list[AnnouncementParentRecipient]
+) -> set[int]:
+    """依 recipient scope 反查所有應收到推播的 parent user_id 集合。"""
+    from models.database import Classroom, Guardian, Student, User
+
+    user_ids: set[int] = set()
+    has_all = any(r.scope == "all" for r in recipients)
+    if has_all:
+        # 'all' = 全體家長 user；LINE 可達性過濾統一交給 should_push_to_parent gate
+        rows = (
+            session.query(User.id)
+            .filter(
+                User.role == "parent",
+                User.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+        for r in rows:
+            user_ids.add(r[0])
+        return user_ids
+
+    classroom_ids = {r.classroom_id for r in recipients if r.scope == "classroom"}
+    student_ids = {r.student_id for r in recipients if r.scope == "student"}
+    guardian_ids = {r.guardian_id for r in recipients if r.scope == "guardian"}
+
+    if classroom_ids:
+        rows = (
+            session.query(Guardian.user_id)
+            .join(Student, Student.id == Guardian.student_id)
+            .filter(
+                Student.classroom_id.in_(classroom_ids),
+                Guardian.user_id.isnot(None),
+                Guardian.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for r in rows:
+            user_ids.add(r[0])
+
+    if student_ids:
+        rows = (
+            session.query(Guardian.user_id)
+            .filter(
+                Guardian.student_id.in_(student_ids),
+                Guardian.user_id.isnot(None),
+                Guardian.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for r in rows:
+            user_ids.add(r[0])
+
+    if guardian_ids:
+        rows = (
+            session.query(Guardian.user_id)
+            .filter(
+                Guardian.id.in_(guardian_ids),
+                Guardian.user_id.isnot(None),
+                Guardian.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for r in rows:
+            user_ids.add(r[0])
+
+    return user_ids
+
+
+def _fire_announcement_push(
+    session,
+    announcement: Announcement,
+    recipients: list[AnnouncementParentRecipient],
+) -> None:
+    """推播給所有應收到此公告的家長。每位家長走 should_push_to_parent gate。"""
+    if _line_service is None:
+        return
+    user_ids = _resolve_parent_user_ids(session, recipients)
+    sent = 0
+    for uid in user_ids:
+        line_id = _line_service.should_push_to_parent(
+            session, user_id=uid, event_type="announcement"
+        )
+        if not line_id:
+            continue
+        # 直接呼叫既有 notify_parent_announcement（不會再做 gate；line_id 已驗）
+        _line_service.notify_parent_announcement(
+            line_id, announcement.title, announcement.content
+        )
+        sent += 1
+    logger.info(
+        "公告 LINE 推播：announcement_id=%s 對 %d 名家長推播",
+        announcement.id,
+        sent,
+    )
+
+
 @router.put("/{announcement_id}/parent-recipients")
 def replace_parent_recipients(
     announcement_id: int,
     payload: ParentRecipientsUpdate,
-    current_user: dict = Depends(require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
 ):
     """整批替換公告對家長的發送對象。
 
@@ -413,7 +568,11 @@ def _replace_recipients_impl(
 ) -> dict:
     session = get_session()
     try:
-        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
         if not ann:
             raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
 
@@ -447,6 +606,17 @@ def _replace_recipients_impl(
             announcement_id,
             len(rows),
         )
+
+        # Phase 4：推播 LINE 通知（fire-and-forget；commit 後執行；空 recipient 不推）
+        if rows:
+            try:
+                _fire_announcement_push(session, ann, rows)
+            except Exception as exc:
+                logger.warning(
+                    "announcement push 失敗（已吞）：announcement_id=%s err=%s",
+                    announcement_id,
+                    exc,
+                )
         return {
             "announcement_id": announcement_id,
             "items": [_serialize_parent_recipient(r) for r in rows],

@@ -41,7 +41,10 @@ from api.portal import router as portal_router, init_portal_notify_services
 from api.shifts import router as shifts_router
 from api.events import router as events_router
 from api.meetings import router as meetings_router
-from api.announcements import router as announcements_router
+from api.announcements import (
+    router as announcements_router,
+    init_announcement_line_service,
+)
 from api.approvals import router as approvals_router
 from api.notifications import router as notifications_router
 from api.reports import router as reports_router
@@ -433,6 +436,7 @@ init_leaves_line_service(line_service)
 init_dismissal_line_service(line_service)
 init_activity_services(line_service)
 init_portal_notify_services(line_service)
+init_announcement_line_service(line_service)
 init_webhook_service(line_service)
 init_gov_report_services(insurance_service)
 init_bonus_preview_services(salary_engine)

@@ -108,6 +108,13 @@ from models.portfolio import (
     StudentMedicationLog,
 )
 from models.security import JwtBlocklist, RateLimitBucket
+from models.parent_message import (
+    LineReplyContext,
+    LineWebhookEvent,
+    ParentMessage,
+    ParentMessageThread,
+)
+from models.parent_notification import ParentNotificationPreference
 
 __all__ = [
     # base
@@ -224,4 +231,12 @@ __all__ = [
     # security support tables
     "RateLimitBucket",
     "JwtBlocklist",
+    # parent communication (Phase 3)
+    "ParentMessageThread",
+    "ParentMessage",
+    "LineWebhookEvent",
+    # parent notification preferences (Phase 6)
+    "ParentNotificationPreference",
+    # LINE webhook reply context (Phase 5)
+    "LineReplyContext",
 ]

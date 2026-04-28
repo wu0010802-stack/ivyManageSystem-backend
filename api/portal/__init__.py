@@ -25,6 +25,10 @@ from .assessments import router as assessments_router
 from .student_attendance import router as student_attendance_router
 from .dismissal_calls import router as dismissal_calls_router
 from .activity import router as activity_router
+from .parent_messages import (
+    router as parent_messages_router,
+    init_parent_messages_line_service,
+)
 
 router = APIRouter(
     prefix="/api/portal",
@@ -48,9 +52,11 @@ router.include_router(assessments_router, tags=["portal-assessments"])
 router.include_router(student_attendance_router, tags=["portal-student-attendance"])
 router.include_router(dismissal_calls_router, tags=["portal-dismissal-calls"])
 router.include_router(activity_router, tags=["portal-activity"])
+router.include_router(parent_messages_router, tags=["portal-parent-messages"])
 
 
 def init_portal_notify_services(line_service):
     """注入 LINE 通知服務至 portal 子模組"""
     init_leave_notify(line_service)
     init_overtime_notify(line_service)
+    init_parent_messages_line_service(line_service)

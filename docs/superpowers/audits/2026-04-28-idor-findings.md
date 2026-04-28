@@ -318,7 +318,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：`students.py` 與 `classrooms.py` 的 GET 端點直接 dump 整個 ORM row（含三個敏感欄位）回傳，沒有比照 `student_health.py` 走 `STUDENTS_HEALTH_READ` 路徑、也沒有像 `_format_employee_response` 在 response 層做欄位遮罩。`api/student_health.py:196` 起的端點明確以 `STUDENTS_HEALTH_READ` 守門 + `assert_student_access` 班級 scope；同一個資料卻在 students/classrooms 端被以更低門檻直接外洩。
 - **建議修法**：（1）在 `_format_student_response`（students.py 沒抽出，需新建）與 `_serialize_classroom_detail` / `_serialize_basic` 多接 `can_view_health` / `can_view_special_needs` 參數，由 caller 以 `has_permission(perms, Permission.STUDENTS_HEALTH_READ)` 與 `STUDENTS_SPECIAL_NEEDS_READ` 判斷；無權者把三欄位改回 `None`。（2）長期建議把 `allergy` / `medication` / `special_needs` 從 `Student` 主表移出，改走 `StudentAllergy`/`StudentMedicationOrder`/`SpecialNeed` 子表（`student_health.py` 已是這個方向），然後 `Student.allergy/medication` 在 schema 層 deprecate，避免雙寫。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 94c47409)
 
 ### F-019 [High] student_communications: 全 CRUD 無班級 scope；持 `STUDENTS_READ`/`STUDENTS_WRITE` 之自訂角色可讀／改／刪別班學生家長溝通紀錄
 
@@ -331,7 +331,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. POST / PUT / DELETE：取出 `log` 後 `assert_student_access(session, current_user, log.student_id)`；若不存在 / 無權一律 404，避免 404 vs 403 枚舉。
   3. 與 student_health.py 共用 `utils/portfolio_access.py` helper，避免每個 router 重寫。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 94c47409)
 
 ### F-020 [High] student_attendance: `batch` / `by-student` / `monthly` / `export` 無班級 scope；可任意改寫別班出席
 
@@ -352,7 +352,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. `POST /batch`：對 payload 中所有 `student_id` 批次走 `filter_student_ids_by_access`，發現非 allowed 即整批回 403（避免「partial write，部分成功」）。
   3. `GET /by-student`：以 `assert_student_access` 取代裸 query。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 94c47409)
 
 ### F-021 [High] student_leaves: `POST /{leave_id}/approve` 與 `/reject` 無班級 scope，可審核別班家長端請假並寫入 `StudentAttendance`
 
