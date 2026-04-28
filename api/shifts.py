@@ -25,6 +25,7 @@ from models.database import (
     Employee,
     DailyShift,
     ShiftSwapRequest,
+    SalaryRecord,
 )
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
@@ -37,8 +38,48 @@ from utils.schedule_utils import (
     compute_weekly_hours,
     build_weekly_warning,
 )
+from utils.approval_helpers import _get_finalized_salary_record
 
 logger = logging.getLogger(__name__)
+
+
+def _assert_shift_month_not_finalized(
+    session, employee_id: int, target_date: date
+) -> None:
+    """每日排班寫入前檢查該員工該月薪資是否已封存。
+
+    Why: 薪資曠職偵測讀 DailyShift 來建立 expected_workdays;封存後改排班會
+    讓應上班日改變但既有薪資仍以舊基準算扣款,造成資料分叉。
+    """
+    record = _get_finalized_salary_record(
+        session, employee_id, target_date.year, target_date.month
+    )
+    if record:
+        by = record.finalized_by or "系統"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{target_date.year} 年 {target_date.month} 月薪資已封存"
+                f"(結算人:{by}),無法修改該月份的每日排班。"
+                "請先至薪資管理頁面解除封存後再操作。"
+            ),
+        )
+
+
+def _mark_shift_emp_stale(session, employee_id: int, target_date: date) -> None:
+    """每日排班異動後將該員工該月薪資標 needs_recalc=True。"""
+    from services.salary.utils import mark_salary_stale
+
+    try:
+        mark_salary_stale(session, employee_id, target_date.year, target_date.month)
+    except Exception:
+        logger.warning(
+            "排班異動標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+            employee_id,
+            target_date.year,
+            target_date.month,
+            exc_info=True,
+        )
 
 # ShiftType 很少變動，使用 TTLCache 減少重複 DB 查詢（5 分鐘 TTL）
 _shift_type_cache: TTLCache = TTLCache(maxsize=3, ttl=300)
@@ -505,6 +546,9 @@ def upsert_daily_shift(
     try:
         target_date = date.fromisoformat(data.date)
 
+        # 封存月禁改:排班直接影響應上班日 → 曠職扣款基準
+        _assert_shift_month_not_finalized(session, data.employee_id, target_date)
+
         # 檢查是否已存在
         existing = (
             session.query(DailyShift)
@@ -529,10 +573,14 @@ def upsert_daily_shift(
             session.add(new_shift)
             msg = "Created daily shift"
 
+        # 未封存月既有薪資需標 stale,避免後續 finalize 把舊薪資封存
+        _mark_shift_emp_stale(session, data.employee_id, target_date)
         session.commit()
         logger.info(f"{msg}: {data.employee_id} on {target_date}")
         return {"message": "已儲存"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
@@ -552,7 +600,14 @@ def delete_daily_shift(
         if not ds:
             raise HTTPException(status_code=404, detail="找不到該排班記錄")
 
+        # 封存月禁改:排班直接影響應上班日 → 曠職扣款基準
+        _assert_shift_month_not_finalized(session, ds.employee_id, ds.date)
+
+        emp_id = ds.employee_id
+        target_date = ds.date
         session.delete(ds)
+        # 未封存月既有薪資需標 stale,避免後續 finalize 把舊薪資封存
+        _mark_shift_emp_stale(session, emp_id, target_date)
         session.commit()
         return {"message": "已刪除"}
     except HTTPException:
