@@ -6,6 +6,7 @@ import logging
 import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, case
@@ -891,12 +892,16 @@ class ActivityService:
         registration_id: int,
         operator: str,
         force_refund: bool = False,
+        refund_reason: Optional[str] = None,
     ):
         """軟刪除報名，並對每門正式課程嘗試自動升位候補。
 
         若 paid_amount > 0：
           - force_refund=False → 拋 ValueError，迫使呼叫端先退費或確認
           - force_refund=True  → 自動寫一筆「系統補齊」退費紀錄沖帳
+
+        `refund_reason` 由 router 預先驗證（require_refund_reason）後傳入；
+        附入退費 notes 供稽核。內部背景呼叫不需簽核時可省略。
 
         Why: 原本軟刪時 paid_amount 仍掛著，帳務上成為幽靈金額；新機制保留
         完整 payment history 供稽核，同時強制操作者在刪除前面對退費責任。
@@ -954,7 +959,11 @@ class ActivityService:
                     amount=current_paid,
                     payment_date=today,
                     payment_method="系統補齊",
-                    notes="（刪除報名自動沖帳）",
+                    notes=(
+                        f"（刪除報名自動沖帳）原因：{refund_reason}"
+                        if refund_reason
+                        else "（刪除報名自動沖帳）"
+                    ),
                     operator=operator,
                 )
             )

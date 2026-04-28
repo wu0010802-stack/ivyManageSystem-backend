@@ -503,7 +503,10 @@ class TestWithdrawAndDeleteGuards:
 
         assert _login(client).status_code == 200
 
-        res = client.delete(f"/api/activity/registrations/{reg_id}?force_refund=true")
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}"
+            "?force_refund=true&refund_reason=測試刪除沖帳"
+        )
         assert res.status_code == 200
 
         with sf() as s:
@@ -559,7 +562,7 @@ class TestWithdrawAndDeleteGuards:
 
         res = client.delete(
             f"/api/activity/registrations/{reg_id}/courses/{course_id}"
-            "?force_refund=true"
+            "?force_refund=true&refund_reason=測試退課沖帳"
         )
         assert res.status_code == 200
         data = res.json()
@@ -939,7 +942,7 @@ class TestRemoveSupplyGuards:
 
         res = client.delete(
             f"/api/activity/registrations/{reg_id}/supplies/{supply_record_id}"
-            "?force_refund=true"
+            "?force_refund=true&refund_reason=測試移除用品沖帳"
         )
         assert res.status_code == 200
         data = res.json()
@@ -1088,3 +1091,318 @@ class TestAddOutstandingAmount:
         assert data["paid_amount"] == 500
         assert data["outstanding_amount"] == 300
         assert data["payment_status"] == "partial"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# #6 — force_refund 自動沖帳須套用退費原因 + 大額簽核（P1 Security）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 修正前：remove_supply / withdraw_course / delete_registration 的 force_refund
+#   分支可由 ACTIVITY_WRITE 直接寫 ActivityPaymentRecord(type="refund")，
+#   完全繞過 require_refund_reason / require_approve_for_large_refund 簽核門檻。
+# 修正後：與正式退費端點（POST /payments、PUT /payment）同一套守衛。
+
+
+_REFUND_REASON_OK = "課程取消主管核准退款"  # ≥ 5 字
+
+
+class TestForceRefundReasonAndApprovalGuards:
+    """確保三條 force_refund 自動沖帳路徑（移除用品 / 退課 / 刪報名）都套：
+    - 退費原因 ≥ MIN_REFUND_REASON_LENGTH (5)
+    - 累積退費 > REFUND_APPROVAL_THRESHOLD (1000) 時要 ACTIVITY_PAYMENT_APPROVE
+    - 通過後 refund 紀錄 notes 須帶原因供稽核
+    """
+
+    # ── remove_supply ────────────────────────────────────────────────
+    def test_remove_supply_force_refund_missing_reason_400(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(
+                s, course_price=500, supply_price=500,
+                paid_amount=1000, is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            rs_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{rs_id}"
+            "?force_refund=true"
+        )
+        assert res.status_code == 400, res.text
+        assert "原因" in res.json().get("detail", "")
+
+    def test_remove_supply_force_refund_short_reason_400(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(
+                s, course_price=500, supply_price=500,
+                paid_amount=1000, is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            rs_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{rs_id}"
+            "?force_refund=true&refund_reason=abc"  # 3 字 < 5
+        )
+        assert res.status_code == 400, res.text
+
+    def test_remove_supply_force_refund_large_amount_without_approve_403(
+        self, fee_client
+    ):
+        """退費 1500 超過 NT$1000 閾值；操作者僅有 ACTIVITY_WRITE → 403。"""
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(
+                s,
+                username="lowperm",
+                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+            )
+            reg = _setup_reg(
+                s, course_price=500, supply_price=1500,
+                paid_amount=2000, is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            rs_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+        assert _login(client, username="lowperm").status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{rs_id}"
+            f"?force_refund=true&refund_reason={_REFUND_REASON_OK}"
+        )
+        assert res.status_code == 403, res.text
+        assert "簽核" in res.json().get("detail", "")
+
+        with sf() as s:
+            # 守衛應在寫退費紀錄前 fail-fast，不留下沖帳紀錄
+            refunds = (
+                s.query(ActivityPaymentRecord)
+                .filter(
+                    ActivityPaymentRecord.registration_id == reg_id,
+                    ActivityPaymentRecord.type == "refund",
+                )
+                .count()
+            )
+            assert refunds == 0, "403 後不應寫入退費紀錄"
+            rs = (
+                s.query(RegistrationSupply)
+                .filter(RegistrationSupply.id == rs_id)
+                .first()
+            )
+            assert rs is not None, "403 後用品不應被刪除"
+
+    def test_remove_supply_force_refund_writes_reason_to_notes(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(
+                s, course_price=500, supply_price=500,
+                paid_amount=1000, is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            rs_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{rs_id}"
+            f"?force_refund=true&refund_reason={_REFUND_REASON_OK}"
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as s:
+            refunds = (
+                s.query(ActivityPaymentRecord)
+                .filter(
+                    ActivityPaymentRecord.registration_id == reg_id,
+                    ActivityPaymentRecord.type == "refund",
+                )
+                .all()
+            )
+            assert len(refunds) == 1
+            assert _REFUND_REASON_OK in (refunds[0].notes or "")
+
+    # ── withdraw_course ──────────────────────────────────────────────
+    def test_withdraw_course_force_refund_missing_reason_400(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, course_price=500, paid_amount=500, is_paid=True)
+            s.commit()
+            reg_id = reg.id
+            course_id = (
+                s.query(RegistrationCourse.course_id)
+                .filter(RegistrationCourse.registration_id == reg_id)
+                .scalar()
+            )
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/courses/{course_id}"
+            "?force_refund=true"
+        )
+        assert res.status_code == 400, res.text
+
+    def test_withdraw_course_force_refund_large_amount_without_approve_403(
+        self, fee_client
+    ):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(
+                s,
+                username="lowperm",
+                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+            )
+            reg = _setup_reg(
+                s, course_price=2000, paid_amount=2000, is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            course_id = (
+                s.query(RegistrationCourse.course_id)
+                .filter(RegistrationCourse.registration_id == reg_id)
+                .scalar()
+            )
+        assert _login(client, username="lowperm").status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/courses/{course_id}"
+            f"?force_refund=true&refund_reason={_REFUND_REASON_OK}"
+        )
+        assert res.status_code == 403, res.text
+
+        with sf() as s:
+            # fail-fast：課程不應被退、refund 不應寫入
+            rc = (
+                s.query(RegistrationCourse)
+                .filter(
+                    RegistrationCourse.registration_id == reg_id,
+                    RegistrationCourse.course_id == course_id,
+                )
+                .first()
+            )
+            assert rc is not None, "403 後 RC 不應被刪"
+
+    def test_withdraw_course_force_refund_writes_reason_to_notes(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, course_price=500, paid_amount=500, is_paid=True)
+            s.commit()
+            reg_id = reg.id
+            course_id = (
+                s.query(RegistrationCourse.course_id)
+                .filter(RegistrationCourse.registration_id == reg_id)
+                .scalar()
+            )
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/courses/{course_id}"
+            f"?force_refund=true&refund_reason={_REFUND_REASON_OK}"
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as s:
+            refunds = (
+                s.query(ActivityPaymentRecord)
+                .filter(
+                    ActivityPaymentRecord.registration_id == reg_id,
+                    ActivityPaymentRecord.type == "refund",
+                )
+                .all()
+            )
+            assert len(refunds) == 1
+            assert _REFUND_REASON_OK in (refunds[0].notes or "")
+
+    # ── delete_registration ─────────────────────────────────────────
+    def test_delete_registration_force_refund_missing_reason_400(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=1000)
+            s.commit()
+            reg_id = reg.id
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}?force_refund=true"
+        )
+        assert res.status_code == 400, res.text
+
+    def test_delete_registration_force_refund_large_amount_without_approve_403(
+        self, fee_client
+    ):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(
+                s,
+                username="lowperm",
+                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+            )
+            reg = _setup_reg(s, course_price=2000, paid_amount=2000)
+            s.commit()
+            reg_id = reg.id
+        assert _login(client, username="lowperm").status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}"
+            f"?force_refund=true&refund_reason={_REFUND_REASON_OK}"
+        )
+        assert res.status_code == 403, res.text
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).get(reg_id)
+            assert reg.is_active is True, "403 後報名不應被刪"
+
+    def test_delete_registration_force_refund_writes_reason_to_notes(
+        self, fee_client
+    ):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=1000)
+            s.commit()
+            reg_id = reg.id
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}"
+            f"?force_refund=true&refund_reason={_REFUND_REASON_OK}"
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as s:
+            refunds = (
+                s.query(ActivityPaymentRecord)
+                .filter(
+                    ActivityPaymentRecord.registration_id == reg_id,
+                    ActivityPaymentRecord.type == "refund",
+                )
+                .all()
+            )
+            assert len(refunds) == 1
+            assert _REFUND_REASON_OK in (refunds[0].notes or "")

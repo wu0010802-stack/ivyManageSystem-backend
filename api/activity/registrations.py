@@ -2020,6 +2020,10 @@ async def remove_registration_supply(
         False,
         description="移除用品後若出現超繳，需顯式帶 true 才允許移除並自動寫退費沖帳紀錄",
     ),
+    refund_reason: Optional[str] = Query(
+        None,
+        description="當 force_refund 觸發實際退費時必填（≥5 字），原因會寫入 notes 供稽核",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """後台移除已報名的單筆用品。
@@ -2075,6 +2079,17 @@ async def remove_registration_supply(
                 ),
             )
 
+        # 與正式退費端點同套守衛：fail-fast，避免 ACTIVITY_WRITE 經自動沖帳繞過
+        # require_refund_reason / require_approve_for_large_refund 簽核閾值
+        cleaned_reason: Optional[str] = None
+        if preview_refund > 0 and force_refund:
+            cleaned_reason = require_refund_reason(refund_reason)
+            require_approve_for_large_refund(
+                preview_refund,
+                current_user,
+                label="移除用品自動沖帳金額",
+            )
+
         session.delete(rs)
         session.flush()
 
@@ -2091,7 +2106,11 @@ async def remove_registration_supply(
                     amount=refund_needed,
                     payment_date=today,
                     payment_method=SYSTEM_RECONCILE_METHOD,
-                    notes=f"（移除用品「{supply_name}」自動沖帳）",
+                    notes=(
+                        f"（移除用品「{supply_name}」自動沖帳）原因：{cleaned_reason}"
+                        if cleaned_reason
+                        else f"（移除用品「{supply_name}」自動沖帳）"
+                    ),
                     operator=current_user.get("username", ""),
                 )
             )
@@ -2643,6 +2662,10 @@ async def withdraw_course(
         False,
         description="退課後若出現超繳，需顯式帶 true 才允許退課並自動寫退費沖帳紀錄",
     ),
+    refund_reason: Optional[str] = Query(
+        None,
+        description="當 force_refund 觸發實際退費時必填（≥5 字），原因會寫入 notes 供稽核",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """退出單一課程（含候補），若為正式報名則自動升位候補
@@ -2706,6 +2729,17 @@ async def withdraw_course(
                 ),
             )
 
+        # 與正式退費端點同套守衛：fail-fast，避免 ACTIVITY_WRITE 經自動沖帳繞過
+        # require_refund_reason / require_approve_for_large_refund 簽核閾值
+        cleaned_reason: Optional[str] = None
+        if preview_refund > 0 and force_refund:
+            cleaned_reason = require_refund_reason(refund_reason)
+            require_approve_for_large_refund(
+                preview_refund,
+                current_user,
+                label="退課自動沖帳金額",
+            )
+
         session.delete(rc)
         session.flush()
 
@@ -2744,7 +2778,11 @@ async def withdraw_course(
                     amount=refund_needed,
                     payment_date=today,
                     payment_method=SYSTEM_RECONCILE_METHOD,
-                    notes=f"（退課「{course_name}」自動沖帳）",
+                    notes=(
+                        f"（退課「{course_name}」自動沖帳）原因：{cleaned_reason}"
+                        if cleaned_reason
+                        else f"（退課「{course_name}」自動沖帳）"
+                    ),
                     operator=current_user.get("username", ""),
                 )
             )
@@ -2806,6 +2844,10 @@ async def delete_registration(
         False,
         description="若報名已有繳費金額，需顯式帶 true 才允許刪除並自動寫退費沖帳紀錄",
     ),
+    refund_reason: Optional[str] = Query(
+        None,
+        description="當 force_refund 觸發實際退費時必填（≥5 字），原因會寫入 notes 供稽核",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """軟刪除報名"""
@@ -2813,17 +2855,32 @@ async def delete_registration(
     try:
         reg_preview = (
             session.query(ActivityRegistration)
-            .filter(ActivityRegistration.id == registration_id)
+            .filter(
+                ActivityRegistration.id == registration_id,
+                ActivityRegistration.is_active.is_(True),
+            )
             .first()
         )
         student_name = reg_preview.student_name if reg_preview else None
         paid_before = (reg_preview.paid_amount or 0) if reg_preview else 0
+
+        # 與正式退費端點同套守衛：fail-fast，避免 ACTIVITY_WRITE 經自動沖帳繞過
+        # require_refund_reason / require_approve_for_large_refund 簽核閾值
+        cleaned_reason: Optional[str] = None
+        if paid_before > 0 and force_refund:
+            cleaned_reason = require_refund_reason(refund_reason)
+            require_approve_for_large_refund(
+                paid_before,
+                current_user,
+                label="刪除報名自動沖帳金額",
+            )
 
         activity_service.delete_registration(
             session,
             registration_id,
             current_user.get("username", ""),
             force_refund=force_refund,
+            refund_reason=cleaned_reason,
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
