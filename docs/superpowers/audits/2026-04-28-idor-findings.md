@@ -48,6 +48,15 @@
 - [F-034](#f-034) [Medium] fees: `GET /records?student_id=...` 跨班讀全校學生繳費紀錄，僅以 `FEES_READ` 守門
 - [F-035](#f-035) [Low] audit-logs: `GET /audit-logs/export` 自身未呼叫 `write_explicit_audit`，匯出全系統操作軌跡的事件本身無痕
 - [F-036](#f-036) [Medium] exports: `GET /exports/overtimes` 用 OVERTIME_READ 即可外洩逐員加班費，可反推時薪/底薪
+- [F-037](#f-037) [Critical] auth: `POST /api/auth/users` 缺權限/角色上限守衛，持 USER_MANAGEMENT_WRITE 之非 admin 可建 admin 帳號 + permissions=-1 自我提權
+- [F-038](#f-038) [Critical] auth: `PUT /api/auth/users/{user_id}` 自我提權 — 僅擋 self-disable，未擋 self 升 role / 自賦 permissions=-1，非 admin 可一鍵變 admin
+- [F-039](#f-039) [Critical] auth: `PUT /api/auth/users/{user_id}/reset-password` 缺 target.role 守衛，hr/supervisor 持 USER_MANAGEMENT_WRITE 可重設 admin 密碼後接管
+- [F-040](#f-040) [High] auth: `DELETE /api/auth/users/{user_id}` 僅擋 self-delete，未擋刪除其他 admin / 跨權限刪同事帳號
+- [F-041](#f-041) [High] attendance/records: `POST /attendance/record` / `DELETE /attendance/record(s)/{employee_id}/{date}` 缺自我守衛，hr 可改/刪自己遲到/早退/缺打卡記錄繞過薪資扣款
+- [F-042](#f-042) [High] attendance/anomalies: `POST /anomalies/batch-confirm` 缺自我守衛，可自我 admin_waive 異常記錄消除本人扣款
+- [F-043](#f-043) [Medium] dev: `/api/dev/employee-salary-debug` 在非 production 環境（含 staging/test/未設 ENV）暴露任意員工薪資完整明細，僅需 SETTINGS_READ
+- [F-044](#f-044) [Low] dismissal_calls: `POST /dismissal-calls/{call_id}/cancel` 不限發起者本人，任一持 STUDENTS_WRITE 可取消他人接送通知
+- [F-045](#f-045) [Low] announcements: `PUT /announcements/{id}/parent-recipients` 缺受眾範圍守衛，ANNOUNCEMENTS_WRITE 即可任意指定 student_id / guardian_id 對外發送
 
 ---
 
@@ -529,4 +538,195 @@
 - **根因**：與 F-017 / F-031 同型 — 「敏感金額」由次要 perm 把關，缺與 `SALARY_READ` 的「邏輯與」閘門。
 - **建議修法**：要求同時持 `OVERTIME_READ` AND `SALARY_READ` 才回傳金額欄位；或對缺 SALARY_READ 者遮罩 `overtime_pay`（僅回時數），與 F-017/F-031 修補方向一致；可一起抽 `mask_salary_fields(row, current_user)` helper。
 - **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-037 [Critical] auth: `POST /api/auth/users` 缺權限/角色上限守衛，持 USER_MANAGEMENT_WRITE 之非 admin 可建 admin 帳號 + permissions=-1 自我提權
+
+- **位置**：`api/auth.py:720-770` `POST /api/auth/users`（`CreateUserRequest` line 148-153 接受任意 `role` / `permissions`）
+- **威脅模型**：a + e（內部高權限角色之間提權）
+- **PoC**：endpoint 僅以 `require_staff_permission(Permission.USER_MANAGEMENT_WRITE)` 守門。USER_MANAGEMENT_WRITE 預設只給 admin（見 `utils/permissions.py` ROLE_DEFAULT），但業主可在「角色與權限」UI 自訂角色或將該 bit 加給 hr/supervisor 進行人事行政。一旦 hr/supervisor（或自訂財務、行政角色）持有此權限：
+  1. `POST /api/auth/users` body：`{employee_id: <自選>, username: "ghost_admin", password: "Strong!@#1234", role: "admin", permissions: -1}`
+  2. handler line 745-748 直接 `final_permissions = data.permissions`（接受 -1 = 全權），line 753-760 直接以該 `role` / `permissions` 寫 DB，**無「不得超過 caller 自身 role / permissions 上限」守衛**。
+  3. 攻擊者立刻有一個全權 admin 影子帳號（`must_change_password=True` 但首次登入後即可自設密碼）。後續可用此 admin 開啟 impersonate、改任意員工薪資、刪稽核紀錄。
+
+  類似 attack 也可建立 `role="hr"` 但 `permissions=-1` 的「假 hr 真 admin」混淆稽核軌跡。
+
+  延伸：對照 `impersonate_user`（line 173-295）已正確擋「冒充 admin」（line 204-210）、「冒充已停用帳號」（line 213-219）。但**創建 admin** 卻沒擋，比冒充更直接。
+- **根因**：`CreateUserRequest`（line 148-153）對 `role` / `permissions` 純資料校驗，無 caller-relative 上限檢查；handler line 744-748 對 `data.permissions` 直接信任，line 753-760 對 `role="admin"` 不額外要求 caller 必須是 admin。整體缺少「不得創建比自己權限高的帳號」這條最低的提權阻擋。
+- **建議修法**：
+  1. handler 開頭加上「caller 不是 admin → 拒絕 `role="admin"`」（呼應 `impersonate_user` 的 line 204）；或更嚴格：「caller 自身 role 必須 ≥ 目標 role 的優先序」。
+  2. `data.permissions` 與 caller 自己的 permissions 做 bitwise check：`if (data.permissions & ~caller_permissions) != 0: 403`。`-1`（全權）只允許 caller 持 -1 才放行。
+  3. 操作必落 audit：`request.state.audit_summary = f"建立帳號 {username}（role={role}, permissions={final_permissions}）"`，避免被當作普通寫入混過 AuditMiddleware。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-038 [Critical] auth: `PUT /api/auth/users/{user_id}` 自我提權 — 僅擋 self-disable，未擋 self 升 role / 自賦 permissions=-1，非 admin 可一鍵變 admin
+
+- **位置**：`api/auth.py:810-876` `PUT /api/auth/users/{user_id}`
+- **威脅模型**：a + e
+- **PoC**：endpoint 持 USER_MANAGEMENT_WRITE 即可呼叫。line 821 只擋 `user_id == current_user["user_id"] and data.is_active is False`（不可停用自己），但**未擋自己改 role / permissions**：
+  1. caller 是 hr，user_id 帶自己的 id，body `{role: "admin", permissions: -1}`
+  2. line 835-839：`user.role = "admin"`、line 841-842 `user.permissions = -1`
+  3. line 854-855 檢查到 role 變動 → 自己 token_version +1，舊 token 立刻失效 → 重新登入後就是 admin。
+
+  另一條路徑：caller 是 hr，user_id 帶其他 admin（沒擋 target.role）；caller 可以 `permissions=0, is_active=False` **停用其他 admin 帳號** —— 不是直接提權但可以鎖死其他 admin 形成單一 admin 鎖定（系統依賴只剩一位 admin 時的 blast radius 放大）。
+
+  與 F-037 互補：F-037 是「建新 admin」，F-038 是「自己變 admin」/「廢掉其他 admin」。修補方向不同（F-037 限 caller 對新建帳號的 role/perm 上限；F-038 限 caller 對自己 + 其他 admin 的修改範圍），故拆兩筆。
+- **根因**：line 821 只考慮 `is_active=False` 的單一鎖死保護，未考慮：(1) 不得自我升 role/perm，(2) 不得修改更高權限的 target（例：hr 不可改 admin），(3) 不得使 permissions 落在 caller 沒持有的 bit。
+- **建議修法**：
+  1. **self 提權守衛**：若 `user_id == caller.user_id`，禁止調整 role / permissions（self 只能改密碼，不能自我加權）。
+  2. **target ≥ caller 守衛**：若 `target.role` 在 ROLE_LABELS 的優先序高於 caller，拒絕（hr 不可改 admin）。
+  3. **permissions bitwise 上限**：`new_permissions & ~caller_permissions == 0`（caller 沒有的 bit 不能授出）。
+  4. 與 F-037 共用 helper `_assert_can_grant_role_and_permissions(caller, target_role, target_permissions)`。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-039 [Critical] auth: `PUT /api/auth/users/{user_id}/reset-password` 缺 target.role 守衛，hr/supervisor 持 USER_MANAGEMENT_WRITE 可重設 admin 密碼後接管
+
+- **位置**：`api/auth.py:773-801` `PUT /api/auth/users/{user_id}/reset-password`
+- **威脅模型**：a + e
+- **PoC**：endpoint 僅 `require_staff_permission(Permission.USER_MANAGEMENT_WRITE)`。若該 bit 被授給 hr / supervisor / 自訂角色（業務上「人事可重設員工密碼」是合理需求），handler line 784-794 對 target user 沒有 role 上限檢查：
+  1. caller hr 找出某個 admin 的 user_id（從 `GET /api/auth/users` 可見全部帳號 + role）
+  2. `PUT /api/auth/users/<admin_user_id>/reset-password` body `{"new_password": "Pwned!23456"}`
+  3. line 788-789：直接覆蓋 `password_hash` 並設 `must_change_password=True`、line 790-792 token_version +1（廢掉 admin 現有 session）
+  4. caller 用該帳號 + 新密碼登入 → handler line 429-431 `must_change_password=True` 不擋 `/api/auth/login`（只擋 `/api/auth/refresh`），仍可登入並走 `change-password` 設定永久密碼 → 取得 admin 完整權限。
+
+  比 F-037 更隱蔽：F-037 留下「新建帳號」audit；本攻擊「修改既有 admin 密碼」也會留 AuditMiddleware（PUT 會審）但事後恢復原密碼困難（hash 不可逆），admin 重新登入發現 must_change_password=True 才會察覺。
+- **根因**：reset-password handler 視 USER_MANAGEMENT_WRITE 為單一閘門，未檢查 target 是否為高於 caller 角色的帳號；對照 `impersonate_user` line 204-210 已禁止 admin 之外的人冒充 admin，reset-password 卻沒這條對等保護。
+- **建議修法**：
+  1. 若 `target.role == "admin"` 且 caller 非 admin → 403。
+  2. 更嚴格：`target.role` 優先序 > caller.role → 403。
+  3. 落顯式 audit：`request.state.audit_summary = f"重設使用者 {target.username}（role={target.role}）密碼"`，避免後續查無痕跡。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-040 [High] auth: `DELETE /api/auth/users/{user_id}` 僅擋 self-delete，未擋刪除其他 admin / 跨權限刪同事帳號
+
+- **位置**：`api/auth.py:879-900` `DELETE /api/auth/users/{user_id}`
+- **威脅模型**：a + e
+- **PoC**：endpoint 持 USER_MANAGEMENT_WRITE 即可呼叫；line 888-889 只擋 `user_id == caller.user_id`。caller 是 hr，可呼叫 `DELETE /api/auth/users/<admin_user_id>`，line 896 `session.delete(user)` 直接硬刪 admin 帳號。後果：
+  1. 系統若僅一位 admin → 立刻無法以 admin 登入；只能透過 SQL 直接 INSERT 補回。
+  2. 被刪帳號的 AuditLog `user_id` FK 雖通常允許 NULL，但若有 ON DELETE CASCADE 設定可能連帶刪除其稽核軌跡（需查 `models/database.py` confirm；本 audit 未深入 schema 但屬已知 high-risk pattern）。
+  3. 刪除是 hard delete（`session.delete`），不留 soft-deleted 標記；事後恢復僅能靠 DB backup。
+
+  與 F-038 的 `is_active=False` 鎖死類似但更激進。標 High 而非 Critical 因為 `cancel_dismissal_call` 等寫入會因 user FK 失效，部分情況下會讓系統提早報錯讓管理員察覺；但攻擊面同樣讓非 admin 能對其他 admin 帳號做硬性損害。
+- **根因**：handler 只考慮「不可刪自己」這條防鎖死規則，未考慮「不可刪除高於自己權限的帳號」也是同類保護。`session.delete` 直接 hard delete 沒做 soft-delete 化，刪除後不可復原。
+- **建議修法**：
+  1. 加 target.role 守衛：若 `target.role == "admin"` 且 caller 非 admin → 403；或更嚴格 `target.role` 優先序 > caller.role → 403。
+  2. 改為 soft delete（與 employee soft delete 一致）：`user.is_active = False` + `user.deleted_at = now()`，硬刪交給 DB 清理 job。
+  3. 若仍要保留 hard delete 路徑，requires admin only 且需 force_reason（≥ 10 字）。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-041 [High] attendance/records: `POST /attendance/record` / `DELETE /attendance/record(s)/{employee_id}/{date}` 缺自我守衛，hr 可改/刪自己遲到/早退/缺打卡記錄繞過薪資扣款
+
+- **位置**：
+  - `api/attendance/records.py:212-367` `POST /api/attendance/record`（path `/record`，由 `attendance_router` 掛載）
+  - `api/attendance/records.py:370-412` `DELETE /api/attendance/record/{employee_id}/{date}`
+  - `api/attendance/records.py:415-458` `DELETE /api/attendance/records/{employee_id}/{date_str}`
+- **威脅模型**：a
+- **PoC**：endpoints 僅 `require_staff_permission(Permission.ATTENDANCE_WRITE)`。預設 hr 持 ATTENDANCE_WRITE，可：
+  1. 自己當天遲到 30 分鐘 → 系統打卡資料寫進 `Attendance(is_late=True, late_minutes=30)`
+  2. caller 呼叫 `POST /api/attendance/record` body `{employee_id: <self>, date: "2026-04-28", punch_in: "08:00", punch_out: "17:00"}` → handler line 281-303 重新依 work_start 計算為 normal status、`is_late=False, late_minutes=0`、line 313-322 既存記錄被覆蓋為 normal。line 346-348 `mark_salary_stale` 觸發薪資重算，下次 finalize 時遲到扣款歸零。
+  3. 等價手法：`DELETE /api/attendance/record/{self_emp_id}/2026-04-28` → 整筆刪除，`mark_salary_stale` 重算 → 該日視為「無記錄」，依扣款規則可能不扣（曠職偵測依排班 vs 工作日推導，可能落入「未排班無扣款」灰區）。
+
+  與 F-015（punch_corrections 自我核准）同型：核准面已修補，但**直接編輯/刪除 attendance** 的 caller-relative 守衛缺失。`finance_guards.require_not_self_attendance_modify` 或類似 helper 並未在此被呼叫（grep `require_not_self` 僅在 salary/employees/punch_corrections 有用）。`_assert_attendance_not_finalized`（line 53-72）只擋封存月，無自我守衛。
+- **根因**：attendance/records.py 把 ATTENDANCE_WRITE 視為單一閘門，未疊加自我攔截。historical 是給 hr 補同事漏打卡的設計，但同一道門也可改自己。
+- **建議修法**：
+  1. 三支端點開頭加：
+     ```python
+     if employee_id == current_user.get("employee_id"):
+         require_attendance_self_guard(current_user, action="修改自己的考勤記錄")
+     ```
+     參考 `utils/finance_guards.require_not_self_salary_record` 的設計，新增 helper `require_not_self_attendance` 在 `utils/attendance_guards.py`。
+  2. 例外：admin 可繞過守衛 + 留稽核（與 finance_guards force=true 模式一致）。
+  3. 補測試 `tests/security/test_attendance_self_modify_guard.py`：hr 改自己 → 403；admin 改自己 + force_reason → 200 + audit log。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-042 [High] attendance/anomalies: `POST /anomalies/batch-confirm` 缺自我守衛，可自我 admin_waive 異常記錄消除本人扣款
+
+- **位置**：`api/attendance/anomalies.py:192-310` `POST /api/attendance/anomalies/batch-confirm`
+- **威脅模型**：a
+- **PoC**：endpoint 僅 `require_staff_permission(Permission.ATTENDANCE_WRITE)`。caller hr 取得自己當月有遲到/早退/缺打卡的 `attendance_id`（透過 `GET /anomalies?year=...&month=...&status=pending`，本人記錄會出現在清單裡），body：
+  ```json
+  {"attendance_ids": [<自己的 id>...], "action": "admin_waive", "remark": "..."}
+  ```
+  handler line 198-202 只擋 action 是否為合法值；line 220-262 封存月守衛不擋本人 + 未封存月；line 267-286 將 `confirmed_action="admin_waive"`、line 279-286 `salary_recalc_keys` 加入 (本人, year, month) → line 288-292 觸發薪資重算 → 該月遲到/早退預估扣款轉為 0（薪資端把 admin_waive 視為不扣，見 `services/salary/deduction.py`）。
+
+  與 F-041 互為旁路：F-041 是直接改 attendance 欄位，F-042 是改 confirmed_action 欄位。兩者都直接金額影響薪資；F-041 還影響 attendance 原始紀錄（更難事後追查），F-042 留下 admin_waive 標記反而較容易被查覺，因此標 High 而非 Critical。
+- **根因**：與 F-041 同型 — endpoint 缺自我守衛。`admin_waive` 設計上是「管理員代決定不扣」的權力，本應禁止對自己使用。
+- **建議修法**：
+  1. line 207 之後 loop 中加：
+     ```python
+     for att_id in data.attendance_ids:
+         att = att_map.get(att_id)
+         if not att:
+             continue
+         if att.employee_id == current_user.get("employee_id"):
+             raise HTTPException(403, "不可批次確認自己的考勤異常")
+     ```
+     或抽到 `require_not_self_attendance_anomaly` helper。
+  2. admin 可加 force_reason 繞過 + 留 audit。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-043 [Medium] dev: `/api/dev/employee-salary-debug` 在非 production 環境（含 staging/test/未設 ENV）暴露任意員工薪資完整明細，僅需 SETTINGS_READ
+
+- **位置**：
+  - mount：`main.py:483-488`（`if not _is_production(): app.include_router(dev_router)`，依 `os.environ.get("ENV", "development")` 判斷）
+  - endpoint：`api/dev.py:485-511` `GET /api/dev/employee-salary-debug?employee_id=...&year=...&month=...`
+- **威脅模型**：a + e
+- **PoC**：`_is_production()`（main.py line 133-134）只接受 `ENV in ("production", "prod")`。實務常見 ENV 設成 `staging` / `test` / `dev` 或**完全未設**（預設 `development`），這些情況 dev_router 全部掛載。一旦掛載：
+  1. caller 持 SETTINGS_READ（hr/supervisor 預設都有）。
+  2. `GET /api/dev/employee-salary-debug?employee_id=<任意>&year=2026&month=4` → handler line 485-509 直接回 `build_salary_debug_snapshot`，內含完整薪資 breakdown（base_salary、各項津貼、扣款、應發實發、節慶獎金預估、勞健保負擔細項），等同跨員工 SALARY_READ。
+  3. 同檔的 `GET /api/dev/salary-logic`（line 450-482）洩漏全部 engine config + insurance rate 設定，洩漏程度較低但仍超出 SETTINGS_READ 設計意圖。
+
+  也與 F-012 / F-014 / F-031 同調 — 都是用次要 perm（SETTINGS_READ / REPORTS / EMPLOYEES_READ）拿到應由 SALARY_READ 守的金額。本筆獨立列出因攻擊面取決於 deployment ENV 設定，是「config-time bypass」而非永遠存在的越權路徑。
+- **根因**：
+  1. `_is_production()` 白名單過窄（只認 production / prod）；staging / test 等實務常見值都會打開 dev router。
+  2. dev endpoint 自身仍以業務 perm（SETTINGS_READ）守門，假設「掛上就是內網」，但 ENV 設定錯誤即直接面向公網。
+  3. 沒有 dev router 的「hard kill switch」（例：DEV_ROUTER_ENABLED=true 必須額外顯式啟用）。
+- **建議修法**：
+  1. **白名單反轉**：`_is_production()` 改為「ENV 必須是 development / dev / local 才視為非 production」；其他值（含未設）一律當 production，不掛 dev router。
+  2. **顯式 opt-in**：dev_router 改 require `os.environ.get("DEV_ROUTER_ENABLED") == "true"`（非預設）。
+  3. **再加一道 perm 守門**：`employee-salary-debug` 改要求 `SALARY_READ` 而非 `SETTINGS_READ`，與 `salary.py` 對等保護。
+  4. README 與 SECURITY_AUDIT 補一條 deployment checklist：「prod 必須 ENV=production」。
+- **是否需新測試**：no（Medium；改成 SALARY_READ 那條可加，但主要修補是 deployment guard 與 import 邏輯，不易單元測試）
+- **修補狀態**：⏳ Pending
+
+### F-044 [Low] dismissal_calls: `POST /dismissal-calls/{call_id}/cancel` 不限發起者本人，任一持 STUDENTS_WRITE 可取消他人接送通知
+
+- **位置**：`api/dismissal_calls.py:255-297` `POST /api/dismissal-calls/{call_id}/cancel`
+- **威脅模型**：a + b
+- **PoC**：endpoint 僅 `require_staff_permission(Permission.STUDENTS_WRITE)`。`_db_cancel_dismissal_call` line 255-281 接到 call 後不檢查 `call.requested_by_user_id == current_user.user_id`，也不檢查班級 scope。後果：
+  1. 教師 A 替 A 班學生發了接送通知 → call.id=123, status=pending
+  2. 教師 B（持 STUDENTS_WRITE，不在 A 班）`POST /api/dismissal-calls/123/cancel`
+  3. handler 直接 set status=cancelled、廣播 `dismissal_call_cancelled` → 家長到了校門 / 司機正開車前往，狀態被惡意改寫，可能造成接錯小孩 / 接送遺漏。
+
+  攻擊面有限（需 STUDENTS_WRITE，預設 teacher 不持有；不洩漏資料），但**直接影響線下流程**，且事後追查只能從 audit log 找出 caller，flow 已經進行下去了。
+- **根因**：cancel 設計只擋狀態（line 264-268：只能取消 pending/acknowledged），未擋發起者；對照 `parent_portal/leaves` 已有 `_assert_student_owned`，dismissal_calls 預設「行政可代取消」但缺自我/班級界線。
+- **建議修法**：
+  1. caller 是教師 → 必須是 call 的發起者（`call.requested_by_user_id == caller.user_id`）或所屬班級的班導/副班導（reuse `_get_teacher_classroom_ids`）。
+  2. caller 是 admin/hr/supervisor → 需 force_reason（≥ 10 字）才能跨人取消，並寫稽核（與 finance_guards force 模式一致）。
+  3. 標 Low 而非 Medium：實務上 teacher 預設無 STUDENTS_WRITE；但業主若把該 bit 給跨班協作角色就會中標。
+- **是否需新測試**：no（Low）
+- **修補狀態**：⏳ Pending
+
+### F-045 [Low] announcements: `PUT /announcements/{id}/parent-recipients` 缺受眾範圍守衛，ANNOUNCEMENTS_WRITE 即可任意指定 student_id / guardian_id 對外發送
+
+- **位置**：`api/announcements.py:394-461` `PUT /api/announcements/{announcement_id}/parent-recipients`
+- **威脅模型**：c + e
+- **PoC**：endpoint 僅 `require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)`。caller 持該 bit（預設只有 admin/supervisor，但業主可能授給「公關/行政助理」自訂角色）。`_validate_recipient_targets_exist` line 350-391 只驗 ID 存在性，**不驗 caller 是否有權對該班級 / 學生 / 監護人發訊**：
+  1. caller 帶 scope=`guardian` + 任意 `guardian_id` → 該則公告透過 parent portal 推給該家長
+  2. caller 帶 scope=`classroom` + 任意 `classroom_id` → 全班家長都看到
+  3. 若 announcement content 在 line 178-179 / line 215-216 已 `_strip_html`（防 XSS），但**內容本身仍可由 caller 自由撰寫**（如「請於今晚 9 點到 [假地址] 領取小孩」社交工程攻擊）。
+
+  與 F-029 / F-030（公開報名 enumeration）同型：受眾選擇本應疊加 guardian/student 看得到的範圍，但被當作純資料入口設計。
+- **根因**：parent_recipients 視 ANNOUNCEMENTS_WRITE 為「對家長端發送的單一閘門」，未疊加 STUDENTS_READ / GUARDIANS_READ 的範圍守門（呼應 F-026 的「次要 perm 拿到 PII」反例）。
+- **建議修法**：
+  1. 對 scope=`guardian` / `student` / `classroom`，要求 caller 同時持有對應的 STUDENTS_READ / CLASSROOMS_READ；或更嚴格：caller 必須能透過 `accessible_classroom_ids` / `accessible_student_ids` 看到該對象（不能對非自己 scope 的對象發私訊）。
+  2. scope=`all` 應限 admin / supervisor only。
+  3. 端點加顯式 audit `request.state.audit_summary = f"設定公告 {announcement_id} 對家長受眾（{len(recipients)} 項）"`。
+- **是否需新測試**：no
 - **修補狀態**：⏳ Pending
