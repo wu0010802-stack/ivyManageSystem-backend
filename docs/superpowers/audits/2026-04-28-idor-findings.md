@@ -365,7 +365,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. `GET`：對非 admin/hr/supervisor，若沒帶 `classroom_id` 自動限縮為 `accessible_classroom_ids`；帶了但不在 allowed 內回 403。
   3. 補測試 `tests/test_student_leaves_cross_classroom.py`：建立兩班、模擬 B 班教師對 A 班 leave_id approve → 預期 403；同時驗 `StudentAttendance` 未被寫入。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 94c47409)
 
 ### F-022 [Medium] student_change_logs: list/summary/export/CRUD 無班級 scope；持 `STUDENTS_READ` 可讀全校異動軌跡
 
