@@ -54,6 +54,29 @@ def _get_shift_type_id_map(session) -> dict:
     return result
 
 
+def _mark_attendance_upload_stale(session, affected_months: set) -> None:
+    """考勤匯入後將實際被異動的 (emp_id, year, month) 批次標 needs_recalc=True。
+
+    Why: 考勤改動會影響遲到/早退/缺打卡/曠職基準等扣款來源,薪資若已算過必須
+    標 stale 避免後續 finalize 把舊薪資封存。
+    """
+    if not affected_months:
+        return
+    from services.salary.utils import mark_salary_stale
+
+    for emp_id, yr, mo in affected_months:
+        try:
+            mark_salary_stale(session, emp_id, yr, mo)
+        except Exception:
+            logger.warning(
+                "考勤匯入標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+                emp_id,
+                yr,
+                mo,
+                exc_info=True,
+            )
+
+
 router = APIRouter()
 
 
@@ -175,6 +198,9 @@ async def upload_attendance(
                             pass
 
                 _assert_upload_months_not_finalized(session, _pre_emp_ids, _pre_dates)
+
+                # 累積實際被異動的 (emp_id, year, month),供 commit 後批次標 stale
+                _affected_months: set = set()
 
                 attendance_cache: dict = {}
                 if _pre_emp_ids and _pre_dates:
@@ -473,6 +499,9 @@ async def upload_attendance(
                             )
 
                         results_data["success"] += 1
+                        _affected_months.add(
+                            (employee.id, attendance_date.year, attendance_date.month)
+                        )
 
                         if emp_name not in employee_stats:
                             employee_stats[emp_name] = {
@@ -504,6 +533,10 @@ async def upload_attendance(
                         results_data["failed"] += 1
                         results_data["errors"].append(f"第 {idx+2} 行: {str(e)}")
 
+                # 已異動的 (emp, year, month) 批次標 needs_recalc=True
+                # Why: 考勤改動會影響遲到/早退/缺打卡/曠職基準等扣款來源,薪資若已算過
+                # 必須標 stale 避免後續 finalize 把舊薪資封存。
+                _mark_attendance_upload_stale(session, _affected_months)
                 session.commit()
 
                 summary_data = list(employee_stats.values())
@@ -569,6 +602,9 @@ async def upload_attendance(
                 _assert_upload_months_not_finalized(
                     session, _legacy_emp_ids, _legacy_dates
                 )
+
+                # 累積實際被異動的 (emp_id, year, month),供 commit 後批次標 stale
+                _legacy_affected_months: set = set()
 
                 legacy_attendance_cache: dict = {}
                 if _legacy_emp_ids and _legacy_dates:
@@ -714,7 +750,12 @@ async def upload_attendance(
                             legacy_attendance_cache[(employee.id, a_date)] = att
 
                         db_save_count += 1
+                        _legacy_affected_months.add(
+                            (employee.id, a_date.year, a_date.month)
+                        )
 
+                # 已異動的 (emp, year, month) 批次標 needs_recalc=True
+                _mark_attendance_upload_stale(session, _legacy_affected_months)
                 session.commit()
 
             except Exception as e:
@@ -779,6 +820,9 @@ async def upload_attendance_csv(
                 pass
 
         _assert_upload_months_not_finalized(session, _csv_emp_ids, _csv_dates)
+
+        # 累積實際被異動的 (emp_id, year, month),供 commit 後批次標 stale
+        _csv_affected_months: set = set()
 
         csv_attendance_cache: dict = {}
         if _csv_emp_ids and _csv_dates:
@@ -924,6 +968,9 @@ async def upload_attendance_csv(
                     csv_attendance_cache[(employee.id, attendance_date)] = attendance
 
                 results["success"] += 1
+                _csv_affected_months.add(
+                    (employee.id, attendance_date.year, attendance_date.month)
+                )
 
                 if employee.name not in employee_stats:
                     employee_stats[employee.name] = {
@@ -955,6 +1002,8 @@ async def upload_attendance_csv(
                 results["failed"] += 1
                 results["errors"].append(f"處理記錄時發生錯誤: {str(e)}")
 
+        # 已異動的 (emp, year, month) 批次標 needs_recalc=True
+        _mark_attendance_upload_stale(session, _csv_affected_months)
         session.commit()
 
         results["summary"] = list(employee_stats.values())
