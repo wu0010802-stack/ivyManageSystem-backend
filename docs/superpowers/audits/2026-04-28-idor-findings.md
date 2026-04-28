@@ -57,6 +57,7 @@
 - [F-043](#f-043) [Medium] dev: `/api/dev/employee-salary-debug` 在非 production 環境（含 staging/test/未設 ENV）暴露任意員工薪資完整明細，僅需 SETTINGS_READ
 - [F-044](#f-044) [Low] dismissal_calls: `POST /dismissal-calls/{call_id}/cancel` 不限發起者本人，任一持 STUDENTS_WRITE 可取消他人接送通知
 - [F-045](#f-045) [Low] announcements: `PUT /announcements/{id}/parent-recipients` 缺受眾範圍守衛，ANNOUNCEMENTS_WRITE 即可任意指定 student_id / guardian_id 對外發送
+- [F-046](#f-046) [High] attendance/upload: bulk upload 缺自我守衛，可一次改寫含自己在內的多人考勤
 
 ---
 
@@ -729,4 +730,14 @@
   2. scope=`all` 應限 admin / supervisor only。
   3. 端點加顯式 audit `request.state.audit_summary = f"設定公告 {announcement_id} 對家長受眾（{len(recipients)} 項）"`。
 - **是否需新測試**：no
+- **修補狀態**：⏳ Pending
+
+### F-046 [High] attendance/upload: bulk upload 缺自我守衛，可一次改寫含自己在內的多人考勤
+
+- **位置**：`api/attendance/upload.py:83` `POST /api/attendance/upload`、`api/attendance/upload.py:787` `POST /api/attendance/upload-csv`
+- **威脅模型**：a + e
+- **PoC**：HR / 持 `ATTENDANCE_WRITE` 的員工 X 可上傳一份打卡 CSV/Excel，其中包含 X 自己的調整列（例如把當月遲到改成正常）。endpoint 僅 `ATTENDANCE_WRITE` 守衛，缺 F-015 / F-041 同型 `require_not_self_attendance` 自我守衛。比 F-041 影響更大：bulk 一次可改全校多人，含自己。後續 `mark_salary_stale` 觸發薪資重算，金額影響等價於補打卡。
+- **根因**：與 F-041、F-015 同型 — 缺「不可改自己」自我守衛；bulk 路徑覆蓋面更大且容易繞過 manual review。
+- **建議修法**：在每筆 row 寫入前比對 `current_user.user_id`，若 row.employee_id 對應的 user_id 等於 caller，依 policy 拒絕該 row（或要求雙簽核）。可抽 `utils/attendance_guards.require_not_self_attendance(session, current_user, employee_id)` 共用 helper，給 records.py / anomalies.py / upload.py 三檔同步呼叫。
+- **是否需新測試**：yes
 - **修補狀態**：⏳ Pending
