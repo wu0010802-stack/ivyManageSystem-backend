@@ -48,6 +48,7 @@ from .utils import (
     calc_daily_salary,
 )
 from . import festival as _festival
+from .totals import recompute_record_totals
 from services.student_enrollment import count_students_active_on
 
 logger = logging.getLogger(__name__)
@@ -123,47 +124,6 @@ def _get_ytd_sick_hours_bulk(
     return result
 
 
-def _recompute_record_totals_from_fields(salary_record):
-    """從 SalaryRecord 各欄位重算 gross/total_deduction/net/bonus_amount。
-
-    Why: 當 manual_overrides 保留部分欄位、其餘從 breakdown 覆寫時,breakdown 的
-        gross/total/net 不再與 record 上的混合值一致。需從 record 自身重算。
-
-    與 api.salary._recalculate_salary_record_totals 同公式,搬到 engine 端避免
-    services → api 反向依賴。
-    """
-    salary_record.gross_salary = round(
-        (salary_record.base_salary or 0)
-        + (salary_record.hourly_total or 0)
-        + (salary_record.performance_bonus or 0)
-        + (salary_record.special_bonus or 0)
-        + (salary_record.supervisor_dividend or 0)
-        + (salary_record.meeting_overtime_pay or 0)
-        + (salary_record.birthday_bonus or 0)
-        + (salary_record.overtime_pay or 0)
-    )
-    salary_record.total_deduction = round(
-        (salary_record.labor_insurance_employee or 0)
-        + (salary_record.health_insurance_employee or 0)
-        + (salary_record.pension_employee or 0)
-        + (salary_record.late_deduction or 0)
-        + (salary_record.early_leave_deduction or 0)
-        + (salary_record.missing_punch_deduction or 0)
-        + (salary_record.leave_deduction or 0)
-        + (salary_record.absence_deduction or 0)
-        + (salary_record.other_deduction or 0)
-    )
-    salary_record.bonus_amount = round(
-        (salary_record.festival_bonus or 0)
-        + (salary_record.overtime_bonus or 0)
-        + (salary_record.supervisor_dividend or 0)
-    )
-    salary_record.bonus_separate = (salary_record.bonus_amount or 0) > 0
-    salary_record.net_salary = round(
-        (salary_record.gross_salary or 0) - (salary_record.total_deduction or 0)
-    )
-
-
 def _fill_salary_record(salary_record, breakdown, engine):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
 
@@ -215,7 +175,7 @@ def _fill_salary_record(salary_record, breakdown, engine):
     if overrides:
         # 有人工調整時,從 record 自身重算總額,避免 breakdown 的 gross/total/net 與
         # 被保留的人工值脫節。
-        _recompute_record_totals_from_fields(salary_record)
+        recompute_record_totals(salary_record)
     else:
         salary_record.gross_salary = breakdown.gross_salary
         salary_record.total_deduction = breakdown.total_deduction
