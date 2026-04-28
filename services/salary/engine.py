@@ -123,34 +123,6 @@ def _get_ytd_sick_hours_bulk(
     return result
 
 
-# 可被 manual_adjust_salary 寫入並列入 manual_overrides 的欄位:重算時須避開覆寫
-# (對應 api/salary.py 的 EDITABLE_SALARY_FIELDS;欄位映射時若 breakdown 用不同名稱,
-#  以 SalaryRecord 欄位名為準)
-_MANUAL_OVERRIDABLE_FIELDS = frozenset(
-    {
-        "base_salary",
-        "performance_bonus",
-        "special_bonus",
-        "festival_bonus",
-        "overtime_bonus",
-        "overtime_pay",
-        "supervisor_dividend",
-        "meeting_overtime_pay",
-        "birthday_bonus",
-        "labor_insurance_employee",
-        "health_insurance_employee",
-        "pension_employee",
-        "leave_deduction",
-        "late_deduction",
-        "early_leave_deduction",
-        "missing_punch_deduction",
-        "meeting_absence_deduction",
-        "absence_deduction",
-        "other_deduction",
-    }
-)
-
-
 def _recompute_record_totals_from_fields(salary_record):
     """從 SalaryRecord 各欄位重算 gross/total_deduction/net/bonus_amount。
 
