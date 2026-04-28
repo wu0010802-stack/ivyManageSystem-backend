@@ -65,6 +65,7 @@ from models.database import (
 from services.salary_engine import _compute_hourly_daily_hours
 from services.salary.utils import calc_daily_salary
 from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
+from services.salary.totals import recompute_record_totals
 from services.salary_field_breakdown import (
     FIELD_LABELS,
     build_field_breakdown,
@@ -795,6 +796,9 @@ def get_salary_records(
                     "calculated_at": (
                         record.updated_at.isoformat() if record.updated_at else None
                     ),
+                    # 被 manual_adjust 寫過的欄位名單;前端可在欄位旁加上「人工調整」指示器,
+                    # 提示該欄位不會被後續上游事件觸發的重算覆寫
+                    "manual_overrides": list(record.manual_overrides or []),
                     # 前端 salaryResults 使用的欄位別名（供頁面重整後重建計算結果列表）
                     "pension_self": record.pension_employee or 0,
                     "total_deductions": record.total_deduction or 0,
@@ -1075,6 +1079,7 @@ def manual_adjust_salary(
                 "bonus_amount": record.bonus_amount or 0,
                 "bonus_separate": bool(record.bonus_separate),
                 "remark": record.remark,
+                "manual_overrides": list(record.manual_overrides or []),
             },
         }
 
@@ -1189,6 +1194,7 @@ def get_salary_breakdown(
                 "bonus_separate": bool(record.bonus_separate),
                 "bonus_amount": record.bonus_amount or 0,
             },
+            "manual_overrides": list(record.manual_overrides or []),
         }
 
 
@@ -1485,37 +1491,12 @@ class FinalizeMonthRequest(BaseModel):
 
 
 def _recalculate_salary_record_totals(record: SalaryRecord):
-    # hourly_total 為時薪制員工的核心收入（base_salary 為 0），漏加會把 gross 歸零
-    record.gross_salary = round(
-        (record.base_salary or 0)
-        + (record.hourly_total or 0)
-        + (record.performance_bonus or 0)
-        + (record.special_bonus or 0)
-        + (record.supervisor_dividend or 0)
-        + (record.meeting_overtime_pay or 0)
-        + (record.birthday_bonus or 0)
-        + (record.overtime_pay or 0)
-    )
-    record.total_deduction = round(
-        (record.labor_insurance_employee or 0)
-        + (record.health_insurance_employee or 0)
-        + (record.pension_employee or 0)
-        + (record.late_deduction or 0)
-        + (record.early_leave_deduction or 0)
-        + (record.missing_punch_deduction or 0)
-        + (record.leave_deduction or 0)
-        + (record.absence_deduction or 0)
-        + (record.other_deduction or 0)
-    )
-    record.bonus_amount = round(
-        (record.festival_bonus or 0)
-        + (record.overtime_bonus or 0)
-        + (record.supervisor_dividend or 0)
-    )
-    record.bonus_separate = record.bonus_amount > 0
-    record.net_salary = round(
-        (record.gross_salary or 0) - (record.total_deduction or 0)
-    )
+    """重算 SalaryRecord 聚合欄位 — 委派至 services.salary.totals.recompute_record_totals。
+
+    保留此 wrapper 以維持既有 test/外部 import 相容(tests/test_salary_manual_adjust.py
+    與其他 module 直接 from api.salary import _recalculate_salary_record_totals)。
+    """
+    recompute_record_totals(record)
 
 
 def _find_missing_salary_employees(session, year: int, month: int) -> list[dict]:
