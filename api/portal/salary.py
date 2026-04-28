@@ -109,6 +109,7 @@ def get_salary_preview(
                 "total_deduction": salary.total_deduction,
                 "net_salary": salary.net_salary,
                 "is_finalized": salary.is_finalized,
+                "needs_recalc": bool(salary.needs_recalc),
                 "version": int(salary.version or 1),
             }
 

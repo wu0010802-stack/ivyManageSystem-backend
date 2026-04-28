@@ -506,16 +506,21 @@ class LineService:
         cmd = (text or "").strip()
 
         if cmd == "我的薪資":
+            # 只取已封存且非待重算的記錄,避免員工看到草稿/重算中的薪資造成爭議
             record = (
                 session.query(SalaryRecord)
-                .filter(SalaryRecord.employee_id == emp_id)
+                .filter(
+                    SalaryRecord.employee_id == emp_id,
+                    SalaryRecord.is_finalized == True,
+                    SalaryRecord.needs_recalc == False,
+                )
                 .order_by(
                     SalaryRecord.salary_year.desc(), SalaryRecord.salary_month.desc()
                 )
                 .first()
             )
             if not record:
-                self._reply(reply_token, "查無薪資記錄。")
+                self._reply(reply_token, "查無已結算的薪資記錄,請待主管完成當期薪資封存後再查詢。")
                 return
             reply = (
                 f"【薪資摘要】{record.salary_year}/{record.salary_month:02d}\n"
