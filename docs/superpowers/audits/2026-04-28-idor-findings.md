@@ -16,6 +16,12 @@
 - [F-002](#f-002) [Low] parent_portal/fees: `GET /fees/records/{record_id}/payments` 404 vs 403 可枚舉費用記錄存在性
 - [F-003](#f-003) [Low] parent_portal/activity: `GET /activity/registrations/{registration_id}/payments` 404 vs 403 可枚舉報名記錄存在性
 - [F-004](#f-004) [Low] parent_portal/leaves: `GET /{leave_id}` 與 `POST /{leave_id}/cancel` 404 vs 403 可枚舉請假申請存在性
+- [F-005](#f-005) [Medium] portal/leaves: `_check_substitute_leave_conflict` 透過 409 detail 洩漏代理人請假/加班區間與狀態，可被探測同事行程
+- [F-006](#f-006) [Low] portal/dismissal_calls: `acknowledge` 與 `complete` 404 vs 403 可枚舉接送通知存在性
+- [F-007](#f-007) [Low] portal/incidents: `POST /incidents` 404 vs 403 可枚舉學生 ID 存在性
+- [F-008](#f-008) [Low] portal/assessments: `POST /assessments` 404 vs 403 可枚舉學生 ID 存在性
+- [F-009](#f-009) [Low] portal/announcements: `POST /announcements/{announcement_id}/read` 缺少可見性檢查並可枚舉公告存在性
+- [F-010](#f-010) [Low] portal/activity: `GET /activity/attendance/sessions/{session_id}` 即使該場次不含自班學生仍回傳場次中介資料，可枚舉場次存在性與課程名稱
 
 ---
 
@@ -64,5 +70,65 @@
 - **PoC**：家長 A 暴力遞增 `leave_id`。不存在 → 404，存在但非 A 小孩 → 403（`_assert_student_owned` 拋出）。可枚舉 StudentLeaveRequest id 序號分布、推測其他家庭是否有 pending/approved 請假紀錄。
 - **根因**：與 F-002/F-003 相同 — 先 query 再 ownership check，兩種失敗路徑分岔。
 - **建議修法**：同 F-002/F-003，一律 403（或一律 404）；建議集中於共用 helper。
+- **是否需新測試**：no
+- **修補狀態**：⏳ Pending
+
+### F-005 [Medium] portal/leaves: `_check_substitute_leave_conflict` 409 detail 洩漏代理人請假/加班區間與狀態，可被探測同事行程
+
+- **位置**：helper 在 `api/leaves.py:450-502`；portal 入口在 `api/portal/leaves.py:224` `POST /api/portal/my-leaves`（建立假單時若帶 `substitute_employee_id` 觸發）
+- **威脅模型**：a
+- **PoC**：員工 A 想刺探員工 B 的請假/加班排程：A 反覆呼叫 `POST /api/portal/my-leaves`，故意填入 `substitute_employee_id=B`，搭配不同 `start_date`/`end_date`/`start_time`/`end_time`。一旦命中 B 的請假或加班時段，伺服器會回 409，detail 內含 `代理人在 {start_date} ~ {end_date} 已有{待審核|已核准}請假記錄` 或 `代理人在 {date} 有{狀態}加班記錄`，等於把 B 的具體日期區間與審批狀態回傳給 A。重複二分搜尋即可還原 B 整段排假/加班行事曆。
+- **根因**：`_check_substitute_leave_conflict` 為了讓 UI 顯示「代理人衝突」直接把對方的日期、狀態回灌進錯誤訊息；portal 端沒有把訊息泛化或抹除日期/狀態欄位。
+- **建議修法**：對於從 portal 發起的代理人衝突檢查，回傳泛化訊息（例：`此代理人於該時段不可用，請改派他人`），不揭露對方假單/加班的日期、起訖時間與審批狀態；管理端 `api/leaves.py` 維持原訊息但限定僅在持有 `LEAVES_READ` 等高權限呼叫情境下顯示。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-006 [Low] portal/dismissal_calls: `acknowledge` 與 `complete` 404 vs 403 可枚舉接送通知存在性
+
+- **位置**：`api/portal/dismissal_calls.py:128-131` `_db_transition_call`；端點 `POST /api/portal/dismissal-calls/{call_id}/acknowledge`（line 176）與 `POST /api/portal/dismissal-calls/{call_id}/complete`（line 192）
+- **威脅模型**：b
+- **PoC**：教師 A 暴力遞增 `call_id`。不存在 → 404 `找不到通知`；存在但屬於別班 → 403 `無權操作此通知`；存在且屬於本班但狀態不對 → 422。三種狀態碼分岔等於可枚舉 `StudentDismissalCall.id` 是否存在以及對應班級是否屬於 A，再交叉比對 `/portal/my-students` 即能還原當日其他班的接送通知數量分布。
+- **根因**：先 `session.query(...).first()` 判 404，再以 `call.classroom_id not in classroom_ids` 判 403，兩條路徑回不同 status code。
+- **建議修法**：當通知不存在或屬於非本班時統一回 404（或統一 403），勿揭露差異；建議在 helper 內集中處理。
+- **是否需新測試**：no
+- **修補狀態**：⏳ Pending
+
+### F-007 [Low] portal/incidents: `POST /incidents` 404 vs 403 可枚舉學生 ID 存在性
+
+- **位置**：`api/portal/incidents.py:90-94` `POST /api/portal/incidents`
+- **威脅模型**：b
+- **PoC**：教師 A 暴力遞增 `payload.student_id`。學生不存在 → 404 `STUDENT_NOT_FOUND`；學生存在但不屬於 A 班 → 403 `無權為此學生填寫事件紀錄`。可枚舉 `Student.id` 序號分布；若再交叉 `/my-students`，可推估其他班學生的 id 範圍與在學狀態。
+- **根因**：先 `session.query(Student).filter(Student.id == payload.student_id).first()` 判存在性，再以 `student.classroom_id not in classroom_ids` 判班級歸屬，兩條路徑分流回不同 status code。此外此處也未過濾 `Student.is_active`，已畢業/退學學生若仍存在 row 也會走 403 路徑。
+- **建議修法**：兩種失敗一律回同一 status code（建議 404，與 STUDENT_NOT_FOUND 一致），並加上 `Student.is_active.is_(True)` 條件避免揭露已停用學生。
+- **是否需新測試**：no
+- **修補狀態**：⏳ Pending
+
+### F-008 [Low] portal/assessments: `POST /assessments` 404 vs 403 可枚舉學生 ID 存在性
+
+- **位置**：`api/portal/assessments.py:84-88` `POST /api/portal/assessments`
+- **威脅模型**：b
+- **PoC**：與 F-007 相同模式：教師 A 列舉 `payload.student_id`。學生不存在 → 404；存在但不屬於本班 → 403 `無權為此學生填寫評量記錄`。可枚舉學生 id 序號分布。
+- **根因**：與 F-007 相同：先 query 再班級歸屬檢查，兩路徑回不同 status code；亦未過濾 `Student.is_active`。
+- **建議修法**：同 F-007，一律回同一 status code 並加上 `is_active` 條件。建議與 F-007 共用同一個 `_assert_teacher_owns_student` helper（IDOR design 第 4 節已預留）。
+- **是否需新測試**：no
+- **修補狀態**：⏳ Pending
+
+### F-009 [Low] portal/announcements: `POST /announcements/{announcement_id}/read` 缺少可見性檢查並可枚舉公告存在性
+
+- **位置**：`api/portal/announcements.py:74-101` `POST /api/portal/announcements/{announcement_id}/read`
+- **威脅模型**：a
+- **PoC**：員工 A 暴力遞增 `announcement_id`。公告不存在 → 404 `ANNOUNCEMENT_NOT_FOUND`；公告存在但非 targeted 給 A → 200 並寫入 `AnnouncementRead(announcement_id, employee_id=A)`。差異化的 status code 可枚舉所有 `Announcement.id`；同時 A 可任意把不該屬於自己的指定公告標為已讀，使自己 `/portal/unread-count` 失真（`total - read` 可能歸零，遮蔽真正待讀公告，間接干擾己身公告 UX，但不直接竄改他人狀態）。
+- **根因**：`mark_announcement_read` 只查 `Announcement` 是否存在，沒有比對 `AnnouncementRecipient`（即 `get_portal_announcements` 用的 `visible_filter`）；可見性檢查只做在 list 端點，未做在 mark-read 端點。
+- **建議修法**：寫入 `AnnouncementRead` 前先套用相同的 `visible_filter`（無 recipients 或 recipients 含當前 emp_id）；不可見即回 404，與不存在時相同訊息，避免列舉。
+- **是否需新測試**：no
+- **修補狀態**：⏳ Pending
+
+### F-010 [Low] portal/activity: `GET /activity/attendance/sessions/{session_id}` 場次中介資料無視自班學生即外洩
+
+- **位置**：`api/portal/activity.py:290-318` `GET /api/portal/activity/attendance/sessions/{session_id}`
+- **威脅模型**：b
+- **PoC**：教師 A（即使無管轄班級或本場次無自班學生）暴力遞增 `session_id`。不存在 → 404 `找不到場次`；存在 → 200 並回傳完整 session 物件含 `course_name`、`session_date`、`notes`、`created_by`、`created_at`（見 `api/activity/_shared.py:1385-1397` `_build_session_detail_response`），即使 `students` 因 `classroom_ids_filter` 過濾為空也照樣外露課程名稱與日期等中介資料。教師端可由此推算每堂課的開課時程與授課動態，包含其他班別參與的課程。
+- **根因**：權限只擋 `students` 列表（用 `classroom_ids_filter`），對 session 根節點欄位（`course_name`、`notes` 等）未做門檻；當教師完全沒有自班學生在該場次時應視為無權查閱。
+- **建議修法**：當 `classroom_ids_filter` 套用後 `students` 為空且該教師對課程無其他存取權限時，直接回 404（或 403），勿外露課程／場次中介資料。或在進入 helper 前先驗證教師有至少一筆自班 enrollment 落在此 session 對應 course。
 - **是否需新測試**：no
 - **修補狀態**：⏳ Pending
