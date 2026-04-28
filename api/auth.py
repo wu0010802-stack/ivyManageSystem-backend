@@ -69,6 +69,62 @@ def _is_school_wifi(ip_str: str) -> bool:
         return False
 
 
+def _assert_can_manage_user(
+    current_user: dict,
+    *,
+    target_user: Optional[User] = None,
+    payload_role: Optional[str] = None,
+    payload_permissions: Optional[int] = None,
+) -> None:
+    """USER_MANAGEMENT_WRITE 守衛：caller 不可超過自身權限管理他人。
+
+    1. caller_role == 'admin' → 一律放行
+    2. target_user.role == 'admin' → 拒絕（不可動 admin 帳號）
+    3. payload_role == 'admin' → 拒絕（不可指定 admin 角色）
+    4. 「最終權限」(payload_permissions or 角色預設) 必須 ⊆ caller_permissions
+    """
+    caller_role = current_user.get("role")
+    if caller_role == "admin":
+        return
+
+    caller_id = current_user.get("user_id")
+    caller_perms = int(current_user.get("permissions") or 0)
+
+    if target_user is not None and target_user.role == "admin":
+        logger.warning(
+            "user-management 拒絕：caller user_id=%s role=%s 嘗試管理 admin user_id=%s",
+            caller_id,
+            caller_role,
+            target_user.id,
+        )
+        raise HTTPException(status_code=403, detail="不可管理管理員帳號")
+
+    if payload_role == "admin":
+        logger.warning(
+            "user-management 拒絕：caller user_id=%s role=%s 嘗試指定 admin 角色",
+            caller_id,
+            caller_role,
+        )
+        raise HTTPException(status_code=403, detail="不可指定 admin 角色")
+
+    final_perms = payload_permissions
+    if final_perms is None and payload_role is not None:
+        final_perms = get_role_default_permissions(payload_role)
+
+    if final_perms is not None:
+        final_perms_int = int(final_perms)
+        if (final_perms_int & ~caller_perms) != 0:
+            logger.warning(
+                "user-management 拒絕：caller user_id=%s 權限 %s 不足以授予 %s",
+                caller_id,
+                caller_perms,
+                final_perms_int,
+            )
+            raise HTTPException(
+                status_code=403, detail="授予的權限超出您本身擁有的範圍"
+            )
+
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # 預計算的假密碼雜湊，用於帳號不存在時仍執行 PBKDF2 運算
@@ -725,6 +781,12 @@ def create_user(
     ),
 ):
     """建立使用者帳號"""
+    _assert_can_manage_user(
+        current_user,
+        payload_role=data.role,
+        payload_permissions=data.permissions,
+    )
+
     session = get_session()
     try:
         if session.query(User).filter(User.username == data.username).first():
@@ -784,6 +846,9 @@ def reset_password(
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
+
+        _assert_can_manage_user(current_user, target_user=user)
+
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = True  # 管理員代為重設密碼，強制當事人下次登入修改
@@ -826,6 +891,13 @@ def update_user(
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
+
+        _assert_can_manage_user(
+            current_user,
+            target_user=user,
+            payload_role=data.role,
+            payload_permissions=data.permissions,
+        )
 
         # 記錄舊值，用於審計摘要
         old_role = user.role
@@ -893,6 +965,9 @@ def delete_user(
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
+
+        _assert_can_manage_user(current_user, target_user=user)
+
         session.delete(user)
         session.commit()
         return {"message": "帳號已刪除"}
