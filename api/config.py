@@ -6,12 +6,23 @@ import logging
 from typing import Optional
 
 from cachetools import TTLCache
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.constants import MIN_CONFIG_YEAR, MAX_CONFIG_YEAR
+from utils.finance_guards import (
+    MIN_FINANCE_REASON_LENGTH,
+    require_adjustment_reason,
+    require_finance_approve,
+    require_not_self_salary_record,
+)
 from pydantic import BaseModel, Field
+
+# 標準底薪上限（NT$）— 與 SalaryManualAdjustRequest 的 _MANUAL_ADJUST_FIELD_MAX 對齊。
+# Why: 防止先把標準設成天文數字，再透過 sync_position_salary 繞過 manual-adjust
+# 的 le=500_000 與 require_finance_approve 簽核閾值。詳見 P1-2 安全評審。
+_POSITION_SALARY_MAX = 500_000.0
 
 from sqlalchemy import or_
 
@@ -195,23 +206,27 @@ class BonusTypeCreate(BaseModel):
 
 
 class PositionSalaryUpdate(BaseModel):
-    """職位標準底薪設定更新"""
+    """職位標準底薪設定更新
 
-    head_teacher_a: Optional[float] = Field(None, ge=0)
-    head_teacher_b: Optional[float] = Field(None, ge=0)
-    head_teacher_c: Optional[float] = Field(None, ge=0)
-    assistant_teacher_a: Optional[float] = Field(None, ge=0)
-    assistant_teacher_b: Optional[float] = Field(None, ge=0)
-    assistant_teacher_c: Optional[float] = Field(None, ge=0)
-    admin_staff: Optional[float] = Field(None, ge=0)
-    english_teacher: Optional[float] = Field(None, ge=0)
-    art_teacher: Optional[float] = Field(None, ge=0)
-    designer: Optional[float] = Field(None, ge=0)
-    nurse: Optional[float] = Field(None, ge=0)
-    driver: Optional[float] = Field(None, ge=0)
-    kitchen_staff: Optional[float] = Field(None, ge=0)
-    director: Optional[float] = Field(None, ge=0)
-    principal: Optional[float] = Field(None, ge=0)
+    每欄位 le=_POSITION_SALARY_MAX：與 manual-adjust 同一上限，避免天文數字標準
+    透過 sync 繞過手動調薪審批。
+    """
+
+    head_teacher_a: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    head_teacher_b: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    head_teacher_c: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    assistant_teacher_a: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    assistant_teacher_b: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    assistant_teacher_c: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    admin_staff: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    english_teacher: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    art_teacher: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    designer: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    nurse: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    driver: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    kitchen_staff: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    director: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
+    principal: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
 
 
 class LineConfigRead(BaseModel):
@@ -1297,18 +1312,40 @@ def compare_position_salary(
 
 
 class PositionSalarySyncRequest(BaseModel):
+    """職位薪資同步請求。
+
+    P1 Security：必填 adjustment_reason 供稽核（≥ MIN_FINANCE_REASON_LENGTH 字）；
+    與 manual-adjust 一致，避免批次調薪不留原因。
+    """
+
     employee_ids: list[int] = Field(
         default_factory=list, description="空清單表示同步全部可對應員工"
+    )
+    adjustment_reason: str = Field(
+        ...,
+        min_length=MIN_FINANCE_REASON_LENGTH,
+        max_length=200,
+        description=(
+            f"批次調薪原因（≥ {MIN_FINANCE_REASON_LENGTH} 字），會寫入操作日誌與 audit"
+        ),
     )
 
 
 @router.post("/position-salary/sync")
 def sync_position_salary(
     data: PositionSalarySyncRequest,
-    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
 ):
-    """將指定員工（或全部）的底薪更新為職位標準底薪。"""
+    """將指定員工（或全部）的底薪更新為職位標準底薪。
+
+    P1 Security：權限改用 SALARY_WRITE（移除 SETTINGS_WRITE 旁路）；
+    員工不得同步自己的薪資；任一員工 |delta| > FINANCE_APPROVAL_THRESHOLD
+    需 ACTIVITY_PAYMENT_APPROVE；逐員工 audit_changes 寫入 request.state。
+    """
     from models.database import Employee
+
+    cleaned_reason = require_adjustment_reason(data.adjustment_reason)
 
     session = get_session()
     try:
@@ -1322,7 +1359,8 @@ def sync_position_salary(
             query = query.filter(Employee.id.in_(data.employee_ids))
         employees = query.all()
 
-        updated = []
+        # 第一輪：dry-run 算出每位 delta，用於守衛 + audit；通過後再 mutate。
+        planned_updates = []  # [(emp, old, new, delta_abs)]
         skipped = []
         for emp in employees:
             key = _map_employee_to_standard_key(emp)
@@ -1335,18 +1373,55 @@ def sync_position_salary(
                 continue
             old = float(emp.base_salary or 0)
             if abs(old - standard) >= 1:
-                emp.base_salary = standard
-                updated.append({"name": emp.name, "old": old, "new": standard})
+                planned_updates.append(
+                    (emp, old, float(standard), abs(float(standard) - old))
+                )
+
+        # 自我修改攔截：員工不得 sync 自己（即使只是「同步至標準」也屬調薪）
+        for emp, _old, _new, _delta in planned_updates:
+            require_not_self_salary_record(
+                current_user,
+                emp.id,
+                action="同步自己的薪資至職位標準",
+            )
+
+        # 大額調薪簽核：任一員工的 |delta| 超過閾值即整批需金流簽核
+        max_delta = max((d for _, _, _, d in planned_updates), default=0)
+        if max_delta > 0:
+            require_finance_approve(
+                int(max_delta),
+                current_user,
+                action_label=f"批次同步職位標準底薪（最大單員工調幅 NT${int(max_delta):,}）",
+            )
+
+        updated = []
+        for emp, old, standard, _delta in planned_updates:
+            emp.base_salary = standard
+            updated.append({"name": emp.name, "old": old, "new": standard})
 
         session.commit()
         operator = current_user.get("username", "")
         logger.warning(
-            "職位標準底薪同步：操作人 %s，更新 %d 人：%s",
+            "職位標準底薪同步：操作人 %s，更新 %d 人，原因：%s，名單：%s",
             operator,
             len(updated),
+            cleaned_reason,
             [u["name"] for u in updated],
         )
+        # 中央稽核：逐員工 old/new 寫入 audit_changes 供 AuditLog 留底
+        request.state.audit_summary = (
+            f"職位標準底薪同步：更新 {len(updated)} 人；原因：{cleaned_reason}"
+        )
+        request.state.audit_changes = {
+            "reason": cleaned_reason,
+            "updated": updated,
+            "skipped": skipped,
+            "max_single_delta": int(max_delta),
+        }
         return {"updated": updated, "skipped": skipped, "total_updated": len(updated)}
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
