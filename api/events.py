@@ -15,7 +15,7 @@ from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from pydantic import BaseModel
 
-from models.database import get_session, SchoolEvent, Holiday
+from models.database import get_session, SchoolEvent, Holiday, SalaryRecord
 from services.official_calendar import build_admin_calendar_feed
 from utils.auth import require_staff_permission
 from utils.error_messages import EVENT_NOT_FOUND
@@ -322,12 +322,23 @@ def get_holiday_import_template(
     return xlsx_streaming_response(wb, "假日匯入範本.xlsx")
 
 
+_HOLIDAY_FORCE_REASON_MIN_LENGTH = 10
+
+
 @router.post("/events/holidays/import")
 async def import_holidays(
     file: UploadFile = File(...),
+    force: bool = Query(False),
+    force_reason: Optional[str] = Query(None),
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
 ):
-    """批次匯入國定假日（UPSERT by date，同日期若已存在則更新）"""
+    """批次匯入國定假日（UPSERT by date，同日期若已存在則更新）。
+
+    封存月禁改:任一涉及月份有薪資 is_finalized=True 即整批 409;
+    force=true 配合 force_reason(≥ 10 字)可繞過,留稽核日誌。
+    匯入成功後,該月份所有未封存的 SalaryRecord 將被標 needs_recalc=True,
+    避免後續 finalize 把舊曠職/加班判定的薪資誤封存。
+    """
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, ".xlsx")
     try:
@@ -335,9 +346,75 @@ async def import_holidays(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
 
+    # 預掃描:收集所有可解析日期所屬的 (year, month) 集合,供封存檢查與 stale 標記
+    affected_months: set = set()
+    for _, _row in df.iterrows():
+        _dr = _row.get("日期")
+        if _dr is None or pd.isna(_dr):
+            continue
+        try:
+            _hd = pd.to_datetime(_dr).date()
+            affected_months.add((_hd.year, _hd.month))
+        except Exception:
+            pass
+
     results: dict = {"total": 0, "upserted": 0, "failed": 0, "errors": []}
     session = get_session()
     try:
+        # 封存月守衛:任一月份已封存即整批拒絕,除非 force=true
+        if affected_months and not force:
+            from sqlalchemy import and_, or_
+
+            conditions = [
+                and_(
+                    SalaryRecord.salary_year == y,
+                    SalaryRecord.salary_month == m,
+                )
+                for y, m in affected_months
+            ]
+            finalized = (
+                session.query(
+                    SalaryRecord.salary_year,
+                    SalaryRecord.salary_month,
+                    SalaryRecord.finalized_by,
+                )
+                .filter(or_(*conditions), SalaryRecord.is_finalized == True)
+                .distinct()
+                .all()
+            )
+            if finalized:
+                detail_rows = ", ".join(
+                    f"{r.salary_year}/{r.salary_month:02d}"
+                    f"(結算人:{r.finalized_by or '系統'})"
+                    for r in finalized[:10]
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"下列月份薪資已封存,無法批次匯入假日:{detail_rows}。"
+                        "請先解除封存,或於請求帶 force=true&force_reason=... 強制匯入"
+                        "(舊薪資將標記為 needs_recalc,封存值不變)。"
+                    ),
+                )
+
+        if force:
+            cleaned = (force_reason or "").strip()
+            if len(cleaned) < _HOLIDAY_FORCE_REASON_MIN_LENGTH:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"force=true 必須提供 force_reason "
+                        f"(≥ {_HOLIDAY_FORCE_REASON_MIN_LENGTH} 字)"
+                        "說明繞過封存的具體原因"
+                    ),
+                )
+            logger.warning(
+                "假日匯入 FORCE(繞過封存守衛):by=%s reason=%s months=%s",
+                current_user.get("username", ""),
+                cleaned,
+                sorted(affected_months),
+            )
+
         for idx, row in df.iterrows():
             results["total"] += 1
             row_num = int(idx) + 2
@@ -394,8 +471,41 @@ async def import_holidays(
                 results["failed"] += 1
                 results["errors"].append(f"第 {row_num} 行: {str(e)}")
 
+        # 涉及月份的所有未封存薪資標 needs_recalc=True
+        # 假日異動會改變應出勤日(影響曠職偵測)與假日加班判定,影響全體員工
+        # → 整月所有員工的 SalaryRecord 一律標 stale。
+        stale_count = 0
+        if affected_months:
+            from sqlalchemy import and_, or_
+
+            stale_conditions = [
+                and_(
+                    SalaryRecord.salary_year == y,
+                    SalaryRecord.salary_month == m,
+                )
+                for y, m in affected_months
+            ]
+            stale_count = (
+                session.query(SalaryRecord)
+                .filter(
+                    or_(*stale_conditions),
+                    SalaryRecord.is_finalized == False,
+                )
+                .update(
+                    {SalaryRecord.needs_recalc: True}, synchronize_session=False
+                )
+            )
+            if stale_count:
+                logger.info(
+                    "假日匯入後標 stale: %d 筆 SalaryRecord, months=%s",
+                    stale_count,
+                    sorted(affected_months),
+                )
+
         session.commit()
+        results["stale_marked"] = stale_count
     except HTTPException:
+        session.rollback()
         raise
     except Exception as e:
         session.rollback()
