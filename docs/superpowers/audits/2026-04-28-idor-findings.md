@@ -620,7 +620,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. `data.permissions` 與 caller 自己的 permissions 做 bitwise check：`if (data.permissions & ~caller_permissions) != 0: 403`。`-1`（全權）只允許 caller 持 -1 才放行。
   3. 操作必落 audit：`request.state.audit_summary = f"建立帳號 {username}（role={role}, permissions={final_permissions}）"`，避免被當作普通寫入混過 AuditMiddleware。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 397e2e13)
 
 ### F-038 [Critical] auth: `PUT /api/auth/users/{user_id}` 自我提權 — 僅擋 self-disable，未擋 self 升 role / 自賦 permissions=-1，非 admin 可一鍵變 admin
 
@@ -641,7 +641,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   3. **permissions bitwise 上限**：`new_permissions & ~caller_permissions == 0`（caller 沒有的 bit 不能授出）。
   4. 與 F-037 共用 helper `_assert_can_grant_role_and_permissions(caller, target_role, target_permissions)`。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 397e2e13)
 
 ### F-039 [Critical] auth: `PUT /api/auth/users/{user_id}/reset-password` 缺 target.role 守衛，hr/supervisor 持 USER_MANAGEMENT_WRITE 可重設 admin 密碼後接管
 
@@ -660,7 +660,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. 更嚴格：`target.role` 優先序 > caller.role → 403。
   3. 落顯式 audit：`request.state.audit_summary = f"重設使用者 {target.username}（role={target.role}）密碼"`，避免後續查無痕跡。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 397e2e13)
 
 ### F-040 [High] auth: `DELETE /api/auth/users/{user_id}` 僅擋 self-delete，未擋刪除其他 admin / 跨權限刪同事帳號
 
@@ -678,7 +678,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. 改為 soft delete（與 employee soft delete 一致）：`user.is_active = False` + `user.deleted_at = now()`，硬刪交給 DB 清理 job。
   3. 若仍要保留 hard delete 路徑，requires admin only 且需 force_reason（≥ 10 字）。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 397e2e13)
 
 ### F-041 [High] attendance/records: `POST /attendance/record` / `DELETE /attendance/record(s)/{employee_id}/{date}` 缺自我守衛，hr 可改/刪自己遲到/早退/缺打卡記錄繞過薪資扣款
 
