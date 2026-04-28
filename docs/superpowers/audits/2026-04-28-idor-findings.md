@@ -47,6 +47,7 @@
 - [F-033](#f-033) [Medium] exports/gov_reports: GET 匯出（students / attendance / leaves / overtimes / shifts / employee-attendance / 政府申報四端點）未呼叫 `write_explicit_audit`，PII 與身分證匯出無稽核軌跡
 - [F-034](#f-034) [Medium] fees: `GET /records?student_id=...` 跨班讀全校學生繳費紀錄，僅以 `FEES_READ` 守門
 - [F-035](#f-035) [Low] audit-logs: `GET /audit-logs/export` 自身未呼叫 `write_explicit_audit`，匯出全系統操作軌跡的事件本身無痕
+- [F-036](#f-036) [Medium] exports: `GET /exports/overtimes` 用 OVERTIME_READ 即可外洩逐員加班費，可反推時薪/底薪
 
 ---
 
@@ -518,4 +519,14 @@
   ```
   注意 entity_type 取 `audit_log` 而非 `audit`，避免與 path pattern 衝突。
 - **是否需新測試**：no（Low）
+- **修補狀態**：⏳ Pending
+
+### F-036 [Medium] exports: `GET /exports/overtimes` 用 OVERTIME_READ 即可外洩逐員加班費，可反推時薪/底薪
+
+- **位置**：`api/exports.py:628-697` `GET /api/exports/overtimes`
+- **威脅模型**：e
+- **PoC**：supervisor 預設持 `OVERTIME_READ` 但無 `SALARY_READ`，呼叫此端點即可下載全校月度加班 Excel，每列含 `overtime_pay`（≈ 第 688 行）。`overtime_pay = 時薪 × 倍率（1.34 / 1.67）`，搜集連續多月即可反推每位員工的時薪 / 底薪，等同間接拿到薪資資料。
+- **根因**：與 F-017 / F-031 同型 — 「敏感金額」由次要 perm 把關，缺與 `SALARY_READ` 的「邏輯與」閘門。
+- **建議修法**：要求同時持 `OVERTIME_READ` AND `SALARY_READ` 才回傳金額欄位；或對缺 SALARY_READ 者遮罩 `overtime_pay`（僅回時數），與 F-017/F-031 修補方向一致；可一起抽 `mask_salary_fields(row, current_user)` helper。
+- **是否需新測試**：yes
 - **修補狀態**：⏳ Pending
