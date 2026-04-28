@@ -959,6 +959,7 @@ def manual_adjust_salary(
         old_meeting_absence = round(record.meeting_absence_deduction or 0)
 
         changed_parts = []
+        modified_fields = []  # 本次寫過的欄位名單,稍後合併入 record.manual_overrides
         total_abs_delta = 0  # 本次請求所有欄位變動絕對值合計（涵蓋拆欄繞過）
         for field, value in payload.items():
             if field not in EDITABLE_SALARY_FIELDS:
@@ -971,6 +972,7 @@ def manual_adjust_salary(
             changed_parts.append(
                 f"{EDITABLE_SALARY_FIELDS[field]} {old_value}→{new_value}"
             )
+            modified_fields.append(field)
             total_abs_delta += abs(new_value - old_value)
 
         if not changed_parts:
@@ -996,6 +998,13 @@ def manual_adjust_salary(
                 changed_parts.append(
                     f"節慶獎金（連動）{old_festival_bonus}→{recomputed_festival}"
                 )
+                # 連動寫入的 festival_bonus 也視為人工調整,同一原則保留不被重算覆寫
+                modified_fields.append("festival_bonus")
+
+        # 將本次寫過的欄位名稱合併進 manual_overrides;後續上游事件觸發的重算,
+        # _fill_salary_record 會跳過清單內的欄位,避免覆寫人工調整。
+        existing_overrides = set(record.manual_overrides or [])
+        record.manual_overrides = sorted(existing_overrides | set(modified_fields))
 
         _recalculate_salary_record_totals(record)
 
@@ -1593,6 +1602,7 @@ def finalize_salary_month(
         # 整月鎖，阻止同月任何重算發生於封存期間
         acquire_salary_lock(session, year=data.year, month=data.month)
 
+        # 第一輪查詢:用於決定要鎖哪些 emp_id;rows 本身在 lock 取得後會 refresh。
         records = (
             session.query(SalaryRecord)
             .filter(
@@ -1608,7 +1618,33 @@ def finalize_salary_month(
                 detail=f"{data.year} 年 {data.month} 月無可封存的薪資記錄（可能尚未計算，或全部已封存）",
             )
 
+        # 對每位員工取鎖，與 bulk/manual 重算路徑互斥。
+        # 必須在 missing/stale 檢查之前完成,否則檢查與封存之間可能有並發 mark_salary_stale。
+        for r in records:
+            acquire_salary_lock(
+                session,
+                employee_id=r.employee_id,
+                year=data.year,
+                month=data.month,
+            )
+
+        # 取鎖後 refresh 既有 record,確保看到的 needs_recalc / is_finalized 為 lock 後最新值。
+        # Why: pg_advisory_xact_lock 取得後,session.refresh 會以 READ COMMITTED 拉到最新 commit;
+        #      避免「query → 並發 mark_stale → 取鎖 → 仍以舊記憶體值封存」的 TOCTOU。
+        for r in records:
+            session.refresh(r)
+        # 過濾掉鎖前一刻被其他流程封存的 record
+        records = [r for r in records if not r.is_finalized]
+        if not records:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{data.year} 年 {data.month} 月在取得封存鎖時,所有候選紀錄皆已被其他流程封存"
+                ),
+            )
+
         # force=True 路徑：先快照被略過的清單，稍後寫入 audit / 每筆 remark
+        # (在 lock 與 refresh 之後,避免快照與真實封存之間再發生變化)
         skipped_missing: list[dict] = []
         skipped_stale: list[dict] = []
         if data.force:
@@ -1618,6 +1654,7 @@ def finalize_salary_month(
             skipped_stale = _find_stale_salary_employees(session, data.year, data.month)
 
         # 完整性檢查：當月在職員工是否都有薪資記錄（含已封存者）
+        # 在取得 per-emp lock + refresh 之後執行,確保 stale 旗標反映 lock 後狀態。
         if not data.force:
             missing = _find_missing_salary_employees(session, data.year, data.month)
             if missing:
@@ -1650,15 +1687,6 @@ def finalize_salary_month(
                         f"{names}{more}。請先重新計算薪資,或於請求帶 force=true 強制封存(將封存舊資料,自負漏算/錯算風險)。"
                     ),
                 )
-
-        # 對每位員工取鎖，與 bulk/manual 重算路徑互斥
-        for r in records:
-            acquire_salary_lock(
-                session,
-                employee_id=r.employee_id,
-                year=data.year,
-                month=data.month,
-            )
 
         now = datetime.now()
         operator = current_user.get("username") or current_user.get("name") or "管理員"

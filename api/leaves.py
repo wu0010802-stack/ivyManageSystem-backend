@@ -1034,6 +1034,30 @@ def approve_leave(
         was_approved = leave.is_approved is True
         approval_changed = was_approved != data.approved
 
+        # ── 提早取得薪資鎖（封存守衛 + commit + 重算共用同一鎖窗）─────────────
+        # Why: 原流程「_check_finalized → commit leave → process_salary_calculation」
+        # 中間沒有 lock，finalize 可能在 commit 之後 / recalc 之前搶到鎖,結果
+        # 假單變更已落地但薪資沒重算就被封存。改在 approval_changed 路徑一進來
+        # 就 acquire per-emp salary lock(同 transaction 可重入,recalc 內再取一次
+        # 不會 deadlock),保證守衛/commit/recalc 三步在同個鎖窗內完成。
+        if approval_changed:
+            from utils.advisory_lock import acquire_salary_lock as _acquire_salary_lock
+
+            _months_for_lock: set[tuple[int, int]] = set()
+            _cur = date(leave.start_date.year, leave.start_date.month, 1)
+            _end = date(leave.end_date.year, leave.end_date.month, 1)
+            while _cur <= _end:
+                _months_for_lock.add((_cur.year, _cur.month))
+                _cur = (
+                    date(_cur.year + 1, 1, 1)
+                    if _cur.month == 12
+                    else date(_cur.year, _cur.month + 1, 1)
+                )
+            for _y, _m in sorted(_months_for_lock):
+                _acquire_salary_lock(
+                    session, employee_id=leave.employee_id, year=_y, month=_m
+                )
+
         warning = None
         if data.approved:
             if requires_supporting_document(

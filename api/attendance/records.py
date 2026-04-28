@@ -338,6 +338,15 @@ async def create_or_update_attendance_record(
             session.add(attendance)
             message = "考勤記錄已新增"
 
+        # 考勤異動會改變遲到/早退/缺打卡計數,進而影響薪資扣款計算;
+        # 該月若有未封存薪資需標 stale,讓 finalize 守衛擋下舊薪資。
+        # 已封存月份由 _assert_attendance_not_finalized 攔下,此處不會執行。
+        from services.salary.utils import mark_salary_stale
+
+        mark_salary_stale(
+            session, employee.id, attendance_date.year, attendance_date.month
+        )
+
         session.commit()
 
         return {
@@ -379,6 +388,13 @@ async def delete_single_attendance_record(
             )
             .delete()
         )
+
+        if deleted:
+            from services.salary.utils import mark_salary_stale
+
+            mark_salary_stale(
+                session, employee_id, attendance_date.year, attendance_date.month
+            )
 
         session.commit()
 
@@ -425,6 +441,11 @@ def delete_single_attendance(
             raise HTTPException(status_code=404, detail="找不到該筆考勤記錄")
 
         session.delete(record)
+
+        from services.salary.utils import mark_salary_stale
+
+        mark_salary_stale(session, employee_id, target_date.year, target_date.month)
+
         session.commit()
         return {"message": "刪除成功"}
 
@@ -453,6 +474,18 @@ async def delete_attendance_records(
         _assert_attendance_within_retention(end_date)
         _assert_month_no_finalized_salary(session, year, month)
 
+        # 刪除前先撈出涉及的員工 id,以便整月刪除後標 stale
+        affected_emp_ids = [
+            row[0]
+            for row in session.query(Attendance.employee_id)
+            .filter(
+                Attendance.attendance_date >= start_date,
+                Attendance.attendance_date <= end_date,
+            )
+            .distinct()
+            .all()
+        ]
+
         deleted = (
             session.query(Attendance)
             .filter(
@@ -461,6 +494,12 @@ async def delete_attendance_records(
             )
             .delete()
         )
+
+        if affected_emp_ids:
+            from services.salary.utils import mark_salary_stale
+
+            for emp_id in affected_emp_ids:
+                mark_salary_stale(session, emp_id, year, month)
 
         session.commit()
 

@@ -161,6 +161,17 @@ def approve_punch_correction(
             )
             return {"message": "補打卡申請已駁回"}
 
+        # 提早取得薪資鎖,讓「封存守衛 → 改 attendance → mark_stale → commit」
+        # 在同一鎖窗內完成,避免 finalize 在 commit 與 mark_stale 之間搶先封存。
+        from utils.advisory_lock import acquire_salary_lock as _acquire_salary_lock
+
+        _acquire_salary_lock(
+            session,
+            employee_id=correction.employee_id,
+            year=correction.attendance_date.year,
+            month=correction.attendance_date.month,
+        )
+
         # 核准前檢查該月薪資是否已封存（避免改動已結算月份的考勤來源資料）
         finalized = _get_finalized_salary_record(
             session,

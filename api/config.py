@@ -37,6 +37,7 @@ from models.database import (
     BonusType,
     PositionSalaryConfig,
     LineConfig,
+    SalaryRecord,
 )
 
 # BonusConfig 所有可複製的業務欄位（不含 id/version/changed_by/is_active/timestamps）
@@ -280,6 +281,37 @@ def get_attendance_policy(
         session.close()
 
 
+def _mark_existing_salary_stale_for_config(
+    session,
+    *,
+    attendance_policy_id: Optional[int] = None,
+    bonus_config_id: Optional[int] = None,
+) -> int:
+    """設定改版後將既有「未封存且非以新版本計算」的薪資標 needs_recalc。
+
+    Why: PUT /api/config/* 只 reload engine,卻不通知既有 SalaryRecord;
+        若使用者已用舊設定算過 N 月薪資,改版後 finalize 仍會通過,等同
+        以舊參數封存。標 stale 後 finalize 守衛會擋下 109 並要求重算。
+
+    封存 (is_finalized=True) 的不動,維持結帳鎖定語意。
+    """
+    if attendance_policy_id is None and bonus_config_id is None:
+        return 0
+    q = session.query(SalaryRecord).filter(SalaryRecord.is_finalized != True)
+    if attendance_policy_id is not None:
+        q = q.filter(
+            (SalaryRecord.attendance_policy_id != attendance_policy_id)
+            | (SalaryRecord.attendance_policy_id.is_(None))
+        )
+    if bonus_config_id is not None:
+        q = q.filter(
+            (SalaryRecord.bonus_config_id != bonus_config_id)
+            | (SalaryRecord.bonus_config_id.is_(None))
+        )
+    affected = q.update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
+    return affected
+
+
 @router.put("/attendance-policy")
 def update_attendance_policy(
     data: AttendancePolicyUpdate,
@@ -315,13 +347,25 @@ def update_attendance_policy(
             old_policy.is_active = False
 
         session.add(new_policy)
+        session.flush()  # 取得 new_policy.id
+        stale_marked = _mark_existing_salary_stale_for_config(
+            session, attendance_policy_id=new_policy.id
+        )
         session.commit()
+        if stale_marked:
+            logger.warning(
+                "考勤政策更新後標記 %d 筆未封存薪資為 needs_recalc(舊政策 id=%s → 新 id=%s)",
+                stale_marked,
+                old_policy.id if old_policy else None,
+                new_policy.id,
+            )
         _salary_engine.load_config_from_db()
         _clear_cache("attendance_policy")
         return {
             "message": "考勤政策更新成功",
             "version": new_policy.version,
             "id": new_policy.id,
+            "salary_records_marked_stale": stale_marked,
         }
     except Exception as e:
         session.rollback()
@@ -449,13 +493,24 @@ def update_bonus_config(
                 )
             )
 
+        stale_marked = _mark_existing_salary_stale_for_config(
+            session, bonus_config_id=new_config.id
+        )
         session.commit()
+        if stale_marked:
+            logger.warning(
+                "獎金設定更新後標記 %d 筆未封存薪資為 needs_recalc(舊獎金 id=%s → 新 id=%s)",
+                stale_marked,
+                old_config.id if old_config else None,
+                new_config.id,
+            )
         _salary_engine.load_config_from_db()
         _clear_cache("bonus")
         return {
             "message": "獎金設定更新成功",
             "version": new_config.version,
             "id": new_config.id,
+            "salary_records_marked_stale": stale_marked,
         }
     except Exception as e:
         session.rollback()
@@ -562,9 +617,36 @@ def update_grade_target(
             if value is not None and key != "grade_name":
                 setattr(target, key, value)
 
+        # GradeTarget 是 BonusConfig 的子表; 此端點不升 bonus_config 版本,直接 mutate
+        # 現役 row。SalaryRecord 透過 bonus_config_id 間接引用此目標,改值後既有未封存
+        # 薪資若不重算,finalize 會以新目標封存舊薪資。標 needs_recalc 讓守衛擋下 109。
+        # 封存的維持鎖定語意; bonus_config_id 為 NULL 的舊資料不在此端點影響範圍內。
+        stale_marked = 0
+        if active_bonus_id is not None:
+            stale_marked = (
+                session.query(SalaryRecord)
+                .filter(
+                    SalaryRecord.is_finalized != True,
+                    SalaryRecord.bonus_config_id == active_bonus_id,
+                )
+                .update(
+                    {SalaryRecord.needs_recalc: True}, synchronize_session=False
+                )
+            )
+
         session.commit()
+        if stale_marked:
+            logger.warning(
+                "年級目標 %s 更新後標記 %d 筆未封存薪資為 needs_recalc(bonus_config_id=%s)",
+                data.grade_name,
+                stale_marked,
+                active_bonus_id,
+            )
         _salary_engine.load_config_from_db()
-        return {"message": f"{data.grade_name}目標人數更新成功"}
+        return {
+            "message": f"{data.grade_name}目標人數更新成功",
+            "salary_records_marked_stale": stale_marked,
+        }
     except Exception as e:
         session.rollback()
         raise_safe_500(e)

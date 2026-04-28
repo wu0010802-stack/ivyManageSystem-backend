@@ -339,7 +339,9 @@ def _notify_and_recalc_overtime(
                 )
                 session.commit()
             except Exception:
-                logger.warning("加班審核降級時標記 SalaryRecord stale 失敗", exc_info=True)
+                logger.warning(
+                    "加班審核降級時標記 SalaryRecord stale 失敗", exc_info=True
+                )
                 session.rollback()
 
 
@@ -848,7 +850,9 @@ def update_overtime(
 
         # 先計算更新後的日期與時間（供重疊檢查使用）
         check_date = data.overtime_date or ot.overtime_date
-        date_changed = data.overtime_date is not None and data.overtime_date != ot.overtime_date
+        date_changed = (
+            data.overtime_date is not None and data.overtime_date != ot.overtime_date
+        )
 
         # 改日期但沒重新指定時間時，須以「新日期 + 舊時間」重組 datetime，
         # 否則 datetime 會留在舊日期，造成 overtime_date 與 start/end 日期欄不一致，
@@ -1087,6 +1091,19 @@ def approve_overtime(
             )
 
         if approved or was_approved:
+            # 提早取得薪資鎖,讓「封存守衛 → commit overtime → recalc」三步在
+            # 同一鎖窗內完成,避免 finalize 在 commit 與 recalc 之間搶先封存舊薪資。
+            # 與 leaves approve 同樣模式。
+            from utils.advisory_lock import (
+                acquire_salary_lock as _acquire_salary_lock,
+            )
+
+            _acquire_salary_lock(
+                session,
+                employee_id=ot.employee_id,
+                year=ot.overtime_date.year,
+                month=ot.overtime_date.month,
+            )
             _check_salary_month_not_finalized(session, ot.employee_id, ot.overtime_date)
         if not approved and was_approved:
             _revoke_comp_leave_grant(session, ot)
@@ -1115,9 +1132,7 @@ def approve_overtime(
                     else "未指定"
                 )
                 et = (
-                    overlap.end_time.strftime("%H:%M")
-                    if overlap.end_time
-                    else "未指定"
+                    overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
                 )
                 raise HTTPException(
                     status_code=409,
@@ -1127,7 +1142,10 @@ def approve_overtime(
                     ),
                 )
             _check_monthly_overtime_cap(
-                session, ot.employee_id, ot.overtime_date, ot.hours,
+                session,
+                ot.employee_id,
+                ot.overtime_date,
+                ot.hours,
                 exclude_id=overtime_id,
             )
             _check_overtime_type_calendar(session, ot.overtime_date, ot.overtime_type)
@@ -1232,11 +1250,7 @@ def batch_approve_overtimes(
 
                 # 核准最後一致性驗證，防止舊資料 / import 舊版遺留壞紀錄進入薪資
                 if data.approved and not was_approved:
-                    if (
-                        ot.start_time
-                        and ot.end_time
-                        and ot.start_time >= ot.end_time
-                    ):
+                    if ot.start_time and ot.end_time and ot.start_time >= ot.end_time:
                         raise HTTPException(
                             status_code=400,
                             detail="start_time 必須早於 end_time（不支援跨日加班）",
@@ -1466,9 +1480,7 @@ async def import_overtimes(
                             except ValueError:
                                 raise
                             except Exception:
-                                raise ValueError(
-                                    f"{col_name} 格式錯誤，應為 HH:MM"
-                                )
+                                raise ValueError(f"{col_name} 格式錯誤，應為 HH:MM")
 
                 if start_dt is not None and end_dt is not None and start_dt >= end_dt:
                     raise ValueError("開始時間必須早於結束時間（不支援跨日加班）")

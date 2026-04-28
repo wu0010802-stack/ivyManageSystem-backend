@@ -3,9 +3,12 @@
 """
 
 import calendar
+import copy
 import logging
+import threading
 from collections import defaultdict
-from typing import Dict, List, Optional
+from contextlib import contextmanager
+from typing import Dict, Iterator, List, Optional
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy.exc import IntegrityError
@@ -120,50 +123,138 @@ def _get_ytd_sick_hours_bulk(
     return result
 
 
+# 可被 manual_adjust_salary 寫入並列入 manual_overrides 的欄位:重算時須避開覆寫
+# (對應 api/salary.py 的 EDITABLE_SALARY_FIELDS;欄位映射時若 breakdown 用不同名稱,
+#  以 SalaryRecord 欄位名為準)
+_MANUAL_OVERRIDABLE_FIELDS = frozenset(
+    {
+        "base_salary",
+        "performance_bonus",
+        "special_bonus",
+        "festival_bonus",
+        "overtime_bonus",
+        "overtime_pay",
+        "supervisor_dividend",
+        "meeting_overtime_pay",
+        "birthday_bonus",
+        "labor_insurance_employee",
+        "health_insurance_employee",
+        "pension_employee",
+        "leave_deduction",
+        "late_deduction",
+        "early_leave_deduction",
+        "missing_punch_deduction",
+        "meeting_absence_deduction",
+        "absence_deduction",
+        "other_deduction",
+    }
+)
+
+
+def _recompute_record_totals_from_fields(salary_record):
+    """從 SalaryRecord 各欄位重算 gross/total_deduction/net/bonus_amount。
+
+    Why: 當 manual_overrides 保留部分欄位、其餘從 breakdown 覆寫時,breakdown 的
+        gross/total/net 不再與 record 上的混合值一致。需從 record 自身重算。
+
+    與 api.salary._recalculate_salary_record_totals 同公式,搬到 engine 端避免
+    services → api 反向依賴。
+    """
+    salary_record.gross_salary = round(
+        (salary_record.base_salary or 0)
+        + (salary_record.hourly_total or 0)
+        + (salary_record.performance_bonus or 0)
+        + (salary_record.special_bonus or 0)
+        + (salary_record.supervisor_dividend or 0)
+        + (salary_record.meeting_overtime_pay or 0)
+        + (salary_record.birthday_bonus or 0)
+        + (salary_record.overtime_pay or 0)
+    )
+    salary_record.total_deduction = round(
+        (salary_record.labor_insurance_employee or 0)
+        + (salary_record.health_insurance_employee or 0)
+        + (salary_record.pension_employee or 0)
+        + (salary_record.late_deduction or 0)
+        + (salary_record.early_leave_deduction or 0)
+        + (salary_record.missing_punch_deduction or 0)
+        + (salary_record.leave_deduction or 0)
+        + (salary_record.absence_deduction or 0)
+        + (salary_record.other_deduction or 0)
+    )
+    salary_record.bonus_amount = round(
+        (salary_record.festival_bonus or 0)
+        + (salary_record.overtime_bonus or 0)
+        + (salary_record.supervisor_dividend or 0)
+    )
+    salary_record.bonus_separate = (salary_record.bonus_amount or 0) > 0
+    salary_record.net_salary = round(
+        (salary_record.gross_salary or 0) - (salary_record.total_deduction or 0)
+    )
+
+
 def _fill_salary_record(salary_record, breakdown, engine):
-    """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。"""
+    """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
+
+    若 SalaryRecord.manual_overrides 不為空,清單內欄位視為「人工調整鎖定」,
+    跳過 breakdown 覆寫,並從 record 重算 gross/total/net 確保總額一致。
+    """
+    overrides = set(salary_record.manual_overrides or [])
+
     salary_record.bonus_config_id = engine._bonus_config_id
     salary_record.attendance_policy_id = engine._attendance_policy_id
 
-    salary_record.base_salary = breakdown.base_salary
-    salary_record.festival_bonus = breakdown.festival_bonus
-    salary_record.overtime_bonus = breakdown.overtime_bonus
-    salary_record.bonus_separate = breakdown.bonus_separate
-    salary_record.performance_bonus = breakdown.performance_bonus
-    salary_record.special_bonus = breakdown.special_bonus
-    salary_record.bonus_amount = (
-        breakdown.festival_bonus
-        + breakdown.overtime_bonus
-        + breakdown.supervisor_dividend
-    )
-    salary_record.supervisor_dividend = breakdown.supervisor_dividend
-    salary_record.overtime_pay = breakdown.overtime_work_pay
-    salary_record.meeting_overtime_pay = breakdown.meeting_overtime_pay
-    salary_record.meeting_absence_deduction = breakdown.meeting_absence_deduction
-    salary_record.birthday_bonus = breakdown.birthday_bonus
+    def _apply(field, value):
+        if field not in overrides:
+            setattr(salary_record, field, value)
+
+    # 受 manual_overrides 保護的欄位透過 _apply,其他欄位直接覆寫
+    _apply("base_salary", breakdown.base_salary)
+    _apply("festival_bonus", breakdown.festival_bonus)
+    _apply("overtime_bonus", breakdown.overtime_bonus)
+    _apply("performance_bonus", breakdown.performance_bonus)
+    _apply("special_bonus", breakdown.special_bonus)
+    _apply("supervisor_dividend", breakdown.supervisor_dividend)
+    _apply("overtime_pay", breakdown.overtime_work_pay)
+    _apply("meeting_overtime_pay", breakdown.meeting_overtime_pay)
+    _apply("meeting_absence_deduction", breakdown.meeting_absence_deduction)
+    _apply("birthday_bonus", breakdown.birthday_bonus)
+    _apply("labor_insurance_employee", breakdown.labor_insurance)
+    _apply("health_insurance_employee", breakdown.health_insurance)
+    _apply("pension_employee", breakdown.pension_self)
+    _apply("late_deduction", breakdown.late_deduction)
+    _apply("early_leave_deduction", breakdown.early_leave_deduction)
+    _apply("missing_punch_deduction", breakdown.missing_punch_deduction)
+    _apply("leave_deduction", breakdown.leave_deduction)
+    _apply("absence_deduction", breakdown.absence_deduction)
+    _apply("other_deduction", breakdown.other_deduction)
+
+    # 不可由 manual_adjust 調整的欄位:時薪/雇主端/考勤統計恆覆寫
     salary_record.work_hours = breakdown.work_hours
     salary_record.hourly_rate = breakdown.hourly_rate
     salary_record.hourly_total = breakdown.hourly_total
-    salary_record.labor_insurance_employee = breakdown.labor_insurance
-    salary_record.health_insurance_employee = breakdown.health_insurance
-    salary_record.pension_employee = breakdown.pension_self
-    # 雇主端三欄：之前漏寫導致 finance_report_service / gov_reports 讀到 0
     salary_record.labor_insurance_employer = breakdown.labor_insurance_employer
     salary_record.health_insurance_employer = breakdown.health_insurance_employer
     salary_record.pension_employer = breakdown.pension_employer
-    salary_record.late_deduction = breakdown.late_deduction
-    salary_record.early_leave_deduction = breakdown.early_leave_deduction
-    salary_record.missing_punch_deduction = breakdown.missing_punch_deduction
-    salary_record.leave_deduction = breakdown.leave_deduction
-    salary_record.absence_deduction = breakdown.absence_deduction
-    salary_record.other_deduction = breakdown.other_deduction
-    salary_record.gross_salary = breakdown.gross_salary
-    salary_record.total_deduction = breakdown.total_deduction
-    salary_record.net_salary = breakdown.net_salary
     salary_record.late_count = breakdown.late_count
     salary_record.early_leave_count = breakdown.early_leave_count
     salary_record.missing_punch_count = breakdown.missing_punch_count
     salary_record.absent_count = breakdown.absent_count
+
+    if overrides:
+        # 有人工調整時,從 record 自身重算總額,避免 breakdown 的 gross/total/net 與
+        # 被保留的人工值脫節。
+        _recompute_record_totals_from_fields(salary_record)
+    else:
+        salary_record.gross_salary = breakdown.gross_salary
+        salary_record.total_deduction = breakdown.total_deduction
+        salary_record.net_salary = breakdown.net_salary
+        salary_record.bonus_separate = breakdown.bonus_separate
+        salary_record.bonus_amount = (
+            breakdown.festival_bonus
+            + breakdown.overtime_bonus
+            + breakdown.supervisor_dividend
+        )
+
     # 成功重算 → 清除 stale 旗標(若為預載的舊 record 之前可能被標 True)
     salary_record.needs_recalc = False
     # 重算也視為 SalaryRecord 有效異動，推進樂觀鎖版本：
@@ -229,6 +320,9 @@ class SalaryEngine:
             "missing": {"amount": 0},
             "early": {"per_minute": 1},
         }
+        # 重算歷史月份時用來序列化 engine 設定切換,避免兩個並發請求互相
+        # 蓋掉對方剛 swap 進來的設定;使用 RLock 讓同一執行緒可重入。
+        self._config_swap_lock = threading.RLock()
         # 可被覆蓋的設定 - 節慶獎金（深拷貝，避免測試修改巢狀 dict 時汙染常數）
         self._bonus_base = {k: dict(v) for k, v in FESTIVAL_BONUS_BASE.items()}
         self._target_enrollment = {k: dict(v) for k, v in TARGET_ENROLLMENT.items()}
@@ -258,6 +352,197 @@ class SalaryEngine:
 
         if load_from_db:
             self.load_config_from_db()
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 設定版本切換（歷史月份重算用）
+    # ─────────────────────────────────────────────────────────────────────
+    # 為何需要這層 context：
+    #   `load_config_from_db()` 永遠取「目前 active」的 BonusConfig / AttendancePolicy /
+    #   InsuranceRate。重算歷史月份時若直接套這份目前設定,會把舊月份的薪資算成新獎金、
+    #   新政策,跟使用者實際在「該月份當下」的設定脫鉤。
+    #
+    # 解法：以該月份 last day 為時間切片,選 `created_at <= 月底` 中最新的版本作為
+    # 該月有效設定;若沒有任何 created_at 早於該月,fallback 至最舊版本(代表系統建立
+    # 之初的 baseline)。所有 calc 路徑(process_salary_calculation / period accrual)
+    # 進入時 swap 進該月份設定,離開時還原。
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _snapshot_config_state(self) -> dict:
+        """快照所有受 load_config_from_db() 影響的 engine 屬性,供 restore 使用。"""
+        return {
+            "bonus_config_id": self._bonus_config_id,
+            "attendance_policy_id": self._attendance_policy_id,
+            "bonus_base": copy.deepcopy(self._bonus_base),
+            "supervisor_festival_bonus": dict(self._supervisor_festival_bonus),
+            "office_festival_bonus_base": dict(self._office_festival_bonus_base),
+            "supervisor_dividend": dict(self._supervisor_dividend),
+            "overtime_per_person": copy.deepcopy(self._overtime_per_person),
+            "school_wide_target": self._school_wide_target,
+            "target_enrollment": copy.deepcopy(self._target_enrollment),
+            "overtime_target": copy.deepcopy(self._overtime_target),
+            "attendance_policy": dict(self._attendance_policy),
+            # InsuranceService 的 instance 屬性
+            "insurance": {
+                "labor_rate": self.insurance_service.labor_rate,
+                "labor_employee_ratio": self.insurance_service.labor_employee_ratio,
+                "labor_employer_ratio": self.insurance_service.labor_employer_ratio,
+                "labor_government_ratio": self.insurance_service.labor_government_ratio,
+                "health_rate": self.insurance_service.health_rate,
+                "health_employee_ratio": self.insurance_service.health_employee_ratio,
+                "health_employer_ratio": self.insurance_service.health_employer_ratio,
+                "pension_employer_rate": self.insurance_service.pension_employer_rate,
+                "average_dependents": self.insurance_service.average_dependents,
+            },
+        }
+
+    def _restore_config_state(self, snapshot: dict) -> None:
+        """以 snapshot 還原 engine + insurance_service 屬性。"""
+        self._bonus_config_id = snapshot["bonus_config_id"]
+        self._attendance_policy_id = snapshot["attendance_policy_id"]
+        self._bonus_base = snapshot["bonus_base"]
+        self._supervisor_festival_bonus = snapshot["supervisor_festival_bonus"]
+        self._office_festival_bonus_base = snapshot["office_festival_bonus_base"]
+        self._supervisor_dividend = snapshot["supervisor_dividend"]
+        self._overtime_per_person = snapshot["overtime_per_person"]
+        self._school_wide_target = snapshot["school_wide_target"]
+        self._target_enrollment = snapshot["target_enrollment"]
+        self._overtime_target = snapshot["overtime_target"]
+        self._attendance_policy = snapshot["attendance_policy"]
+        for k, v in snapshot["insurance"].items():
+            setattr(self.insurance_service, k, v)
+
+    @staticmethod
+    def _select_active_at(session, model, year: int, month: int):
+        """選出該月最後一日(含)前最新建立的 row;若無則 fallback 最舊 row。
+
+        Why created_at: BonusConfig / InsuranceRate 沒有 effective_date 欄位,
+        AttendancePolicy 雖有但歷史資料未必填;以 created_at 推估等同「設定上線當下生效」,
+        對純歷史重算來說與直觀預期一致(改設定當天才會影響當月以後計算)。
+        """
+        last_day = calendar.monthrange(year, month)[1]
+        cutoff = datetime(year, month, last_day, 23, 59, 59)
+        row = (
+            session.query(model)
+            .filter(model.created_at <= cutoff)
+            .order_by(model.id.desc())
+            .first()
+        )
+        if row is None:
+            row = session.query(model).order_by(model.id.asc()).first()
+        return row
+
+    def _apply_configs_for_month(self, session, year: int, month: int) -> None:
+        """以 (year, month) 對應的歷史版本覆寫 engine state(in-place)。"""
+        from models.database import (
+            AttendancePolicy,
+            BonusConfig as DBBonusConfig,
+            GradeTarget,
+            InsuranceRate,
+        )
+
+        rate = self._select_active_at(session, InsuranceRate, year, month)
+        if rate is not None:
+            self.insurance_service.update_rates_from_db(rate)
+
+        policy = self._select_active_at(session, AttendancePolicy, year, month)
+        if policy is not None:
+            self._attendance_policy_id = policy.id
+            self._attendance_policy = {
+                "festival_bonus_months": policy.festival_bonus_months,
+            }
+
+        bonus = self._select_active_at(session, DBBonusConfig, year, month)
+        if bonus is not None:
+            self._bonus_config_id = bonus.id
+            self._bonus_base = {
+                "head_teacher": {
+                    "A": bonus.head_teacher_ab,
+                    "B": bonus.head_teacher_ab,
+                    "C": bonus.head_teacher_c,
+                },
+                "assistant_teacher": {
+                    "A": bonus.assistant_teacher_ab,
+                    "B": bonus.assistant_teacher_ab,
+                    "C": bonus.assistant_teacher_c,
+                },
+            }
+            self._supervisor_festival_bonus = {
+                "園長": bonus.principal_festival,
+                "主任": bonus.director_festival,
+                "組長": bonus.leader_festival,
+            }
+            self._office_festival_bonus_base = {
+                "司機": bonus.driver_festival,
+                "美編": bonus.designer_festival,
+                "行政": bonus.admin_festival,
+            }
+            self._supervisor_dividend = {
+                "園長": bonus.principal_dividend,
+                "主任": bonus.director_dividend,
+                "組長": bonus.leader_dividend,
+                "副組長": bonus.vice_leader_dividend,
+            }
+            self._overtime_per_person = {
+                "head_teacher": {
+                    "大班": bonus.overtime_head_normal,
+                    "中班": bonus.overtime_head_normal,
+                    "小班": bonus.overtime_head_normal,
+                    "幼幼班": bonus.overtime_head_baby,
+                },
+                "assistant_teacher": {
+                    "大班": bonus.overtime_assistant_normal,
+                    "中班": bonus.overtime_assistant_normal,
+                    "小班": bonus.overtime_assistant_normal,
+                    "幼幼班": bonus.overtime_assistant_baby,
+                },
+            }
+            if bonus.school_wide_target:
+                self._school_wide_target = bonus.school_wide_target
+
+            # 年級目標:綁定到 bonus.id 的版本目標 + NULL fallback
+            null_targets = {
+                t.grade_name: t
+                for t in session.query(GradeTarget)
+                .filter(GradeTarget.bonus_config_id == None)  # noqa: E711
+                .all()
+            }
+            versioned_targets = {
+                t.grade_name: t
+                for t in session.query(GradeTarget)
+                .filter(GradeTarget.bonus_config_id == bonus.id)
+                .all()
+            }
+            merged = {**null_targets, **versioned_targets}
+            if merged:
+                self._target_enrollment = {}
+                self._overtime_target = {}
+                for grade_name, t in merged.items():
+                    self._target_enrollment[grade_name] = {
+                        "2_teachers": t.festival_two_teachers,
+                        "1_teacher": t.festival_one_teacher,
+                        "shared_assistant": t.festival_shared,
+                    }
+                    self._overtime_target[grade_name] = {
+                        "2_teachers": t.overtime_two_teachers,
+                        "1_teacher": t.overtime_one_teacher,
+                        "shared_assistant": t.overtime_shared,
+                    }
+
+    @contextmanager
+    def config_for_month(self, session, year: int, month: int) -> Iterator[None]:
+        """臨時把 engine 設定切換成 (year, month) 對應的歷史版本,離開時還原。
+
+        - 取 _config_swap_lock 序列化,避免兩個並發 calc 把對方的 swap 蓋掉
+        - 失敗(任何例外)時也會 restore,保持 engine 狀態一致
+        - 同 thread 可重入(RLock),內層 context 一樣會 swap & restore
+        """
+        with self._config_swap_lock:
+            snapshot = self._snapshot_config_state()
+            try:
+                self._apply_configs_for_month(session, year, month)
+                yield
+            finally:
+                self._restore_config_state(snapshot)
 
     def load_config_from_db(self):
         """從資料庫載入設定"""
@@ -2207,7 +2492,11 @@ class SalaryEngine:
                     ctx["classroom"] = self._resolve_classroom_for_employee_in_month(
                         session, emp.id, y, m
                     )
-                row = self.calculate_period_accrual_row(emp.id, y, m, _ctx=ctx)
+                # 期間累積每月用該月份對應的 BonusConfig/AttendancePolicy/InsuranceRate,
+                # 而非「目前最新」設定;與 _build_breakdown_for_month 同一語意,
+                # 但這裡是 per-iteration swap(因為要為每個歷史月份各自挑版本)。
+                with self.config_for_month(session, y, m):
+                    row = self.calculate_period_accrual_row(emp.id, y, m, _ctx=ctx)
                 festival_total += int(row.get("festival_bonus", 0) or 0)
                 overtime_total += int(row.get("overtime_bonus", 0) or 0)
             except Exception:
@@ -2216,79 +2505,119 @@ class SalaryEngine:
                 )
         return festival_total, overtime_total
 
+    def _load_manual_salary_fields(
+        self, session, employee_id: int, year: int, month: int
+    ) -> dict:
+        """讀取既有 SalaryRecord 上由 HR 手動調整的欄位,供重算保留。
+
+        Why: 重算流程預設把 performance_bonus / special_bonus 由 employee dict 取出
+            後 fill 回 record;若 HR 已在 record 上手動補加績效/特別獎金,沒先載入
+            就會被歸 0(計算流程也會誤算 gross)。本 helper 在重算前先撈出舊值,
+            塞回 employee dict,計算流程即可把它們算進 gross,_fill_salary_record
+            也會原值寫回 record,達成「重算保留人工調整」。
+        """
+        from models.database import SalaryRecord
+
+        rec = (
+            session.query(SalaryRecord)
+            .filter(
+                SalaryRecord.employee_id == employee_id,
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+            )
+            .first()
+        )
+        if rec is None:
+            return {"performance_bonus": 0, "special_bonus": 0}
+        return {
+            "performance_bonus": rec.performance_bonus or 0,
+            "special_bonus": rec.special_bonus or 0,
+        }
+
     def _build_breakdown_for_month(self, session, emp, year: int, month: int):
         """純計算：依員工、年月產出 SalaryBreakdown，不寫入任何 DB 記錄。
 
         Why: preview 端點（GET）必須「只算不寫」，避免副作用；同時讓
         process_salary_calculation 與 preview_salary_calculation 共用計算流程。
+
+        歷史月份重算：以 config_for_month 切換成 (year, month) 對應版本後計算,
+        避免重算舊月份時套用「目前最新」設定。內層 _compute_period_accrual_totals
+        進入時會再為每個被累積月份各自切換版本。
         """
         import calendar
 
-        emp_dict = self._load_emp_dict(emp)
-
-        _, last_day = calendar.monthrange(year, month)
-        start_date = date(year, month, 1)
-        end_date = date(year, month, last_day)
-
-        attendance_result, attendances = self._load_attendance_result(
-            session, emp, start_date, end_date, emp_dict
-        )
-
-        classroom_context, office_staff_context = self._build_contexts(
-            session, emp, end_date
-        )
-
-        daily_salary = calc_daily_salary(emp_dict["base_salary"])
-        period_records = self._load_period_records(
-            session, emp, start_date, end_date, year, month, daily_salary
-        )
-
-        absent_count, absence_deduction_amount = self._detect_absences(
-            session,
-            emp,
-            attendances,
-            period_records["approved_leaves"],
-            start_date,
-            end_date,
-            year,
-            month,
-        )
-
-        # 發放月：累積期間每月節慶/超額獎金
-        period_festival_total, period_overtime_total = (
-            self._compute_period_accrual_totals(session, emp, year, month)
-        )
-
-        breakdown = self.calculate_salary(
-            employee=emp_dict,
-            year=year,
-            month=month,
-            attendance=attendance_result,
-            leave_deduction=period_records["leave_deduction"],
-            classroom_context=classroom_context,
-            office_staff_context=office_staff_context,
-            meeting_context=period_records["meeting_context"],
-            overtime_work_pay=period_records["overtime_work_pay"],
-            personal_sick_leave_hours=period_records["personal_sick_leave_hours"],
-            period_festival_override=period_festival_total,
-            period_overtime_override=period_overtime_total,
-        )
-
-        breakdown.absent_count = absent_count
-        breakdown.absence_deduction = round(absence_deduction_amount)
-        breakdown.total_deduction = round(
-            breakdown.total_deduction + absence_deduction_amount
-        )
-        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
-
-        if breakdown.total_deduction < 0:
-            raise ValueError(
-                f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
+        with self.config_for_month(session, year, month):
+            emp_dict = self._load_emp_dict(emp)
+            # 把既有 record 的手動調整欄位載入,讓重算路徑保留 HR 人工加的績效/特別獎金。
+            emp_dict.update(
+                self._load_manual_salary_fields(session, emp.id, year, month)
             )
-        if breakdown.net_salary < 0:
-            raise ValueError(f"net_salary 異常負值（含曠職）: {breakdown.net_salary}")
 
-        return breakdown
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+
+            attendance_result, attendances = self._load_attendance_result(
+                session, emp, start_date, end_date, emp_dict
+            )
+
+            classroom_context, office_staff_context = self._build_contexts(
+                session, emp, end_date
+            )
+
+            daily_salary = calc_daily_salary(emp_dict["base_salary"])
+            period_records = self._load_period_records(
+                session, emp, start_date, end_date, year, month, daily_salary
+            )
+
+            absent_count, absence_deduction_amount = self._detect_absences(
+                session,
+                emp,
+                attendances,
+                period_records["approved_leaves"],
+                start_date,
+                end_date,
+                year,
+                month,
+            )
+
+            # 發放月：累積期間每月節慶/超額獎金（內部會逐月再 swap 設定）
+            period_festival_total, period_overtime_total = (
+                self._compute_period_accrual_totals(session, emp, year, month)
+            )
+
+            breakdown = self.calculate_salary(
+                employee=emp_dict,
+                year=year,
+                month=month,
+                attendance=attendance_result,
+                leave_deduction=period_records["leave_deduction"],
+                classroom_context=classroom_context,
+                office_staff_context=office_staff_context,
+                meeting_context=period_records["meeting_context"],
+                overtime_work_pay=period_records["overtime_work_pay"],
+                personal_sick_leave_hours=period_records["personal_sick_leave_hours"],
+                period_festival_override=period_festival_total,
+                period_overtime_override=period_overtime_total,
+            )
+
+            breakdown.absent_count = absent_count
+            breakdown.absence_deduction = round(absence_deduction_amount)
+            breakdown.total_deduction = round(
+                breakdown.total_deduction + absence_deduction_amount
+            )
+            breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
+            if breakdown.total_deduction < 0:
+                raise ValueError(
+                    f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
+                )
+            if breakdown.net_salary < 0:
+                raise ValueError(
+                    f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
+                )
+
+            return breakdown
 
     def preview_salary_calculation(self, employee_id: int, year: int, month: int):
         """只算不存：GET preview 專用，保證不留下任何 SalaryRecord 副作用。
@@ -2696,303 +3025,333 @@ class SalaryEngine:
                     ),
                 )
 
-            for emp_id in employee_ids:
-                emp = emp_map.get(emp_id)
-                if not emp:
-                    errors.append(
-                        {
-                            "employee_id": emp_id,
-                            "employee_name": "(未知)",
-                            "error": "Employee not found",
-                        }
-                    )
-                    done += 1
-                    if progress_callback:
-                        try:
-                            progress_callback(done, total, "(未知)")
-                        except Exception:
-                            logger.debug("progress_callback 失敗，忽略", exc_info=True)
-                    continue
-
-                # SAVEPOINT 包覆每位員工:失敗時 sp.rollback() 同時撤回 in-memory
-                # 與 SQL-level(autoflush 觸發的)修改,確保失敗員工保留舊資料,僅
-                # 在外層補上 needs_recalc=True;成功員工繼續同一 transaction,最後
-                # 統一 commit(維持原 batch atomicity)。
-                sp = session.begin_nested()
-                try:
-                    emp_dict = self._load_emp_dict(emp)
-
-                    # ── 考勤統計（使用預載）
-                    # admin_waive 標記的考勤異常薪資端視為已豁免（不計入遲到/早退/缺打卡）
-                    from .utils import is_attendance_waived
-
-                    attendances = att_by_emp[emp.id]
-                    late_count = sum(
-                        1
-                        for a in attendances
-                        if a.is_late and not is_attendance_waived(a)
-                    )
-                    early_count = sum(
-                        1
-                        for a in attendances
-                        if a.is_early_leave and not is_attendance_waived(a)
-                    )
-                    missing_in = sum(
-                        1
-                        for a in attendances
-                        if a.is_missing_punch_in and not is_attendance_waived(a)
-                    )
-                    missing_out = sum(
-                        1
-                        for a in attendances
-                        if a.is_missing_punch_out and not is_attendance_waived(a)
-                    )
-                    total_late_minutes = sum(
-                        a.late_minutes or 0
-                        for a in attendances
-                        if a.is_late and not is_attendance_waived(a)
-                    )
-                    total_early_minutes = sum(
-                        a.early_leave_minutes or 0
-                        for a in attendances
-                        if a.is_early_leave and not is_attendance_waived(a)
-                    )
-                    emp_dict["_late_details"] = [
-                        a.late_minutes or 0
-                        for a in attendances
-                        if a.is_late
-                        and not is_attendance_waived(a)
-                        and (a.late_minutes or 0) > 0
-                    ]
-
-                    if emp.employee_type == "hourly":
-                        _work_end_t = datetime.strptime(
-                            emp.work_end_time or "17:00", "%H:%M"
-                        ).time()
-                        total_hours = 0.0
-                        total_hourly_pay = 0.0
-                        monthly_ot_used = 0.0
-                        sorted_attendances = sorted(
-                            attendances,
-                            key=lambda a: a.punch_in_time or datetime.max,
+            # 整批共用 config_for_month:本批次都針對同一個 (year, month),
+            # 因此進入 loop 前 swap 一次即可;內層 _compute_period_accrual_totals
+            # 對每個被累積月份還會各自再 swap(RLock 重入安全)。
+            with self.config_for_month(session, year, month):
+                for emp_id in employee_ids:
+                    emp = emp_map.get(emp_id)
+                    if not emp:
+                        errors.append(
+                            {
+                                "employee_id": emp_id,
+                                "employee_name": "(未知)",
+                                "error": "Employee not found",
+                            }
                         )
-                        for a in sorted_attendances:
-                            if not a.punch_in_time:
-                                continue
-                            day_hours = _compute_hourly_daily_hours(
-                                a.punch_in_time, a.punch_out_time, _work_end_t
-                            )
-                            total_hours += day_hours
-                            remaining = max(
-                                0.0, MAX_MONTHLY_OVERTIME_HOURS - monthly_ot_used
-                            )
-                            day_pay, ot_used = _calc_daily_hourly_pay_with_cap(
-                                day_hours,
-                                emp.hourly_rate or 0,
-                                remaining_ot_quota=remaining,
-                            )
-                            monthly_ot_used += ot_used
-                            total_hourly_pay += day_pay
-                        if monthly_ot_used >= MAX_MONTHLY_OVERTIME_HOURS - 1e-9:
-                            logger.warning(
-                                "時薪員工 emp_id=%d 當月加班時數觸及 %.0fh 上限，後續加班以 1.0 倍率計薪",
-                                emp.id,
-                                MAX_MONTHLY_OVERTIME_HOURS,
-                            )
-                        emp_dict["work_hours"] = round(total_hours, 2)
-                        emp_dict["hourly_calculated_pay"] = round(total_hourly_pay, 2)
+                        done += 1
+                        if progress_callback:
+                            try:
+                                progress_callback(done, total, "(未知)")
+                            except Exception:
+                                logger.debug(
+                                    "progress_callback 失敗，忽略", exc_info=True
+                                )
+                        continue
 
-                    attendance_result = AttendanceResult(
-                        employee_name=emp.name,
-                        total_days=len(attendances),
-                        normal_days=len(attendances) - late_count - early_count,
-                        late_count=late_count,
-                        early_leave_count=early_count,
-                        missing_punch_in_count=missing_in,
-                        missing_punch_out_count=missing_out,
-                        total_late_minutes=total_late_minutes,
-                        total_early_minutes=total_early_minutes,
-                        details=[],
-                    )
-
-                    # ── classroom_context / office_staff_context（使用預載 + 共用方法）
-                    # 改用反查 map（不再讀 emp.classroom_id），可同時修：
-                    #   - 班級頁面指派老師時未同步 Employee.classroom_id 的 silent zero bug
-                    #   - 跨學期老師被誤套用其他學期班級的問題（term filter）
-                    classroom_context = None
-                    primary_classroom = employee_to_classroom.get(emp.id)
-                    if primary_classroom is not None:
-                        classroom_context = self._build_classroom_context_from_batch(
-                            emp,
-                            primary_classroom,
-                            db_count_map,
-                            assistant_to_classes,
-                            art_to_classes,
+                    # SAVEPOINT 包覆每位員工:失敗時 sp.rollback() 同時撤回 in-memory
+                    # 與 SQL-level(autoflush 觸發的)修改,確保失敗員工保留舊資料,僅
+                    # 在外層補上 needs_recalc=True;成功員工繼續同一 transaction,最後
+                    # 統一 commit(維持原 batch atomicity)。
+                    sp = session.begin_nested()
+                    try:
+                        emp_dict = self._load_emp_dict(emp)
+                        # 載入既有 record 的手動調整欄位(performance/special bonus),
+                        # 避免 bulk 重算把 HR 人工加的獎金歸 0。已在 salary_record_by_emp
+                        # 預載過 record,直接讀記憶體值省一次 query。
+                        _existing_rec = salary_record_by_emp.get(emp.id)
+                        emp_dict["performance_bonus"] = (
+                            (_existing_rec.performance_bonus or 0)
+                            if _existing_rec
+                            else 0
                         )
-                    office_staff_context = self._build_office_staff_context(
-                        emp, total_students, classroom_context
-                    )
+                        emp_dict["special_bonus"] = (
+                            (_existing_rec.special_bonus or 0) if _existing_rec else 0
+                        )
 
-                    # ── 請假、加班、會議（使用預載）
-                    approved_leaves = leaves_by_emp[emp.id]
-                    daily_salary = calc_daily_salary(emp_dict["base_salary"])
-                    leave_deduction_total = _sum_leave_deduction(
-                        approved_leaves,
-                        daily_salary,
-                        ytd_sick_hours_before_month=ytd_sick_by_emp.get(emp.id, 0.0),
-                    )
-                    personal_sick_leave_hours = sum(
-                        lv.leave_hours or 0
-                        for lv in approved_leaves
-                        if lv.leave_type in ("personal", "sick")
-                    )
-                    overtime_work_pay_total = sum(
-                        o.overtime_pay or 0 for o in ot_by_emp[emp.id]
-                    )
+                        # ── 考勤統計（使用預載）
+                        # admin_waive 標記的考勤異常薪資端視為已豁免（不計入遲到/早退/缺打卡）
+                        from .utils import is_attendance_waived
 
-                    meeting_records = meetings_by_emp[emp.id]
-                    meeting_attended = sum(1 for m in meeting_records if m.attended)
-                    meeting_absent_current = sum(
-                        1 for m in meeting_records if not m.attended
-                    )
-                    meeting_overtime_pay_total = sum(
-                        m.overtime_pay or 0 for m in meeting_records if m.attended
-                    )
-                    absent_period = meeting_absent_current + prior_absent_by_emp[emp.id]
-                    meeting_context = None
-                    if meeting_records or absent_period > 0:
-                        meeting_context = {
-                            "attended": meeting_attended,
-                            "absent": meeting_absent_current,
-                            "absent_period": absent_period,
-                            "overtime_pay_total": meeting_overtime_pay_total,
-                        }
+                        attendances = att_by_emp[emp.id]
+                        late_count = sum(
+                            1
+                            for a in attendances
+                            if a.is_late and not is_attendance_waived(a)
+                        )
+                        early_count = sum(
+                            1
+                            for a in attendances
+                            if a.is_early_leave and not is_attendance_waived(a)
+                        )
+                        missing_in = sum(
+                            1
+                            for a in attendances
+                            if a.is_missing_punch_in and not is_attendance_waived(a)
+                        )
+                        missing_out = sum(
+                            1
+                            for a in attendances
+                            if a.is_missing_punch_out and not is_attendance_waived(a)
+                        )
+                        total_late_minutes = sum(
+                            a.late_minutes or 0
+                            for a in attendances
+                            if a.is_late and not is_attendance_waived(a)
+                        )
+                        total_early_minutes = sum(
+                            a.early_leave_minutes or 0
+                            for a in attendances
+                            if a.is_early_leave and not is_attendance_waived(a)
+                        )
+                        emp_dict["_late_details"] = [
+                            a.late_minutes or 0
+                            for a in attendances
+                            if a.is_late
+                            and not is_attendance_waived(a)
+                            and (a.late_minutes or 0) > 0
+                        ]
 
-                    # ── 曠職偵測（使用預載 + 共用方法）
-                    absent_count = 0
-                    absence_deduction_amount = 0.0
-                    if emp.employee_type != "hourly":
-                        expected_workdays = _build_expected_workdays(
+                        if emp.employee_type == "hourly":
+                            _work_end_t = datetime.strptime(
+                                emp.work_end_time or "17:00", "%H:%M"
+                            ).time()
+                            total_hours = 0.0
+                            total_hourly_pay = 0.0
+                            monthly_ot_used = 0.0
+                            sorted_attendances = sorted(
+                                attendances,
+                                key=lambda a: a.punch_in_time or datetime.max,
+                            )
+                            for a in sorted_attendances:
+                                if not a.punch_in_time:
+                                    continue
+                                day_hours = _compute_hourly_daily_hours(
+                                    a.punch_in_time, a.punch_out_time, _work_end_t
+                                )
+                                total_hours += day_hours
+                                remaining = max(
+                                    0.0, MAX_MONTHLY_OVERTIME_HOURS - monthly_ot_used
+                                )
+                                day_pay, ot_used = _calc_daily_hourly_pay_with_cap(
+                                    day_hours,
+                                    emp.hourly_rate or 0,
+                                    remaining_ot_quota=remaining,
+                                )
+                                monthly_ot_used += ot_used
+                                total_hourly_pay += day_pay
+                            if monthly_ot_used >= MAX_MONTHLY_OVERTIME_HOURS - 1e-9:
+                                logger.warning(
+                                    "時薪員工 emp_id=%d 當月加班時數觸及 %.0fh 上限，後續加班以 1.0 倍率計薪",
+                                    emp.id,
+                                    MAX_MONTHLY_OVERTIME_HOURS,
+                                )
+                            emp_dict["work_hours"] = round(total_hours, 2)
+                            emp_dict["hourly_calculated_pay"] = round(
+                                total_hourly_pay, 2
+                            )
+
+                        attendance_result = AttendanceResult(
+                            employee_name=emp.name,
+                            total_days=len(attendances),
+                            normal_days=len(attendances) - late_count - early_count,
+                            late_count=late_count,
+                            early_leave_count=early_count,
+                            missing_punch_in_count=missing_in,
+                            missing_punch_out_count=missing_out,
+                            total_late_minutes=total_late_minutes,
+                            total_early_minutes=total_early_minutes,
+                            details=[],
+                        )
+
+                        # ── classroom_context / office_staff_context（使用預載 + 共用方法）
+                        # 改用反查 map（不再讀 emp.classroom_id），可同時修：
+                        #   - 班級頁面指派老師時未同步 Employee.classroom_id 的 silent zero bug
+                        #   - 跨學期老師被誤套用其他學期班級的問題（term filter）
+                        classroom_context = None
+                        primary_classroom = employee_to_classroom.get(emp.id)
+                        if primary_classroom is not None:
+                            classroom_context = (
+                                self._build_classroom_context_from_batch(
+                                    emp,
+                                    primary_classroom,
+                                    db_count_map,
+                                    assistant_to_classes,
+                                    art_to_classes,
+                                )
+                            )
+                        office_staff_context = self._build_office_staff_context(
+                            emp, total_students, classroom_context
+                        )
+
+                        # ── 請假、加班、會議（使用預載）
+                        approved_leaves = leaves_by_emp[emp.id]
+                        daily_salary = calc_daily_salary(emp_dict["base_salary"])
+                        leave_deduction_total = _sum_leave_deduction(
+                            approved_leaves,
+                            daily_salary,
+                            ytd_sick_hours_before_month=ytd_sick_by_emp.get(
+                                emp.id, 0.0
+                            ),
+                        )
+                        personal_sick_leave_hours = sum(
+                            lv.leave_hours or 0
+                            for lv in approved_leaves
+                            if lv.leave_type in ("personal", "sick")
+                        )
+                        overtime_work_pay_total = sum(
+                            o.overtime_pay or 0 for o in ot_by_emp[emp.id]
+                        )
+
+                        meeting_records = meetings_by_emp[emp.id]
+                        meeting_attended = sum(1 for m in meeting_records if m.attended)
+                        meeting_absent_current = sum(
+                            1 for m in meeting_records if not m.attended
+                        )
+                        meeting_overtime_pay_total = sum(
+                            m.overtime_pay or 0 for m in meeting_records if m.attended
+                        )
+                        absent_period = (
+                            meeting_absent_current + prior_absent_by_emp[emp.id]
+                        )
+                        meeting_context = None
+                        if meeting_records or absent_period > 0:
+                            meeting_context = {
+                                "attended": meeting_attended,
+                                "absent": meeting_absent_current,
+                                "absent_period": absent_period,
+                                "overtime_pay_total": meeting_overtime_pay_total,
+                            }
+
+                        # ── 曠職偵測（使用預載 + 共用方法）
+                        absent_count = 0
+                        absence_deduction_amount = 0.0
+                        if emp.employee_type != "hourly":
+                            expected_workdays = _build_expected_workdays(
+                                year=year,
+                                month=month,
+                                holiday_set=holiday_set,
+                                daily_shift_map=shifts_by_emp[emp.id],
+                                hire_date_raw=emp.hire_date,
+                                resign_date_raw=getattr(emp, "resign_date", None),
+                                makeup_set=makeup_set,
+                            )
+                            absent_count, absence_deduction_amount = (
+                                self._compute_absence(
+                                    emp.id,
+                                    attendances,
+                                    approved_leaves,
+                                    expected_workdays,
+                                    daily_salary,
+                                    start_date,
+                                    end_date,
+                                    year,
+                                    month,
+                                )
+                            )
+
+                        # 發放月：累積期間每月節慶/超額（共用 monthly_ctx_cache）
+                        period_festival_total, period_overtime_total = (
+                            self._compute_period_accrual_totals(
+                                session,
+                                emp,
+                                year,
+                                month,
+                                monthly_ctx_cache=monthly_ctx_cache,
+                            )
+                        )
+
+                        # ── 計算薪資
+                        breakdown = self.calculate_salary(
+                            employee=emp_dict,
                             year=year,
                             month=month,
-                            holiday_set=holiday_set,
-                            daily_shift_map=shifts_by_emp[emp.id],
-                            hire_date_raw=emp.hire_date,
-                            resign_date_raw=getattr(emp, "resign_date", None),
-                            makeup_set=makeup_set,
-                        )
-                        absent_count, absence_deduction_amount = self._compute_absence(
-                            emp.id,
-                            attendances,
-                            approved_leaves,
-                            expected_workdays,
-                            daily_salary,
-                            start_date,
-                            end_date,
-                            year,
-                            month,
+                            attendance=attendance_result,
+                            leave_deduction=leave_deduction_total,
+                            classroom_context=classroom_context,
+                            office_staff_context=office_staff_context,
+                            meeting_context=meeting_context,
+                            overtime_work_pay=overtime_work_pay_total,
+                            personal_sick_leave_hours=personal_sick_leave_hours,
+                            period_festival_override=period_festival_total,
+                            period_overtime_override=period_overtime_total,
                         )
 
-                    # 發放月：累積期間每月節慶/超額（共用 monthly_ctx_cache）
-                    period_festival_total, period_overtime_total = (
-                        self._compute_period_accrual_totals(
-                            session,
-                            emp,
-                            year,
-                            month,
-                            monthly_ctx_cache=monthly_ctx_cache,
+                        breakdown.absent_count = absent_count
+                        breakdown.absence_deduction = round(absence_deduction_amount)
+                        breakdown.total_deduction = round(
+                            breakdown.total_deduction + absence_deduction_amount
                         )
-                    )
-
-                    # ── 計算薪資
-                    breakdown = self.calculate_salary(
-                        employee=emp_dict,
-                        year=year,
-                        month=month,
-                        attendance=attendance_result,
-                        leave_deduction=leave_deduction_total,
-                        classroom_context=classroom_context,
-                        office_staff_context=office_staff_context,
-                        meeting_context=meeting_context,
-                        overtime_work_pay=overtime_work_pay_total,
-                        personal_sick_leave_hours=personal_sick_leave_hours,
-                        period_festival_override=period_festival_total,
-                        period_overtime_override=period_overtime_total,
-                    )
-
-                    breakdown.absent_count = absent_count
-                    breakdown.absence_deduction = round(absence_deduction_amount)
-                    breakdown.total_deduction = round(
-                        breakdown.total_deduction + absence_deduction_amount
-                    )
-                    breakdown.net_salary = (
-                        breakdown.gross_salary - breakdown.total_deduction
-                    )
-
-                    if breakdown.total_deduction < 0:
-                        raise ValueError(
-                            f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
-                        )
-                    if breakdown.net_salary < 0:
-                        raise ValueError(
-                            f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
+                        breakdown.net_salary = (
+                            breakdown.gross_salary - breakdown.total_deduction
                         )
 
-                    # ── SalaryRecord upsert（延後至迴圈結束統一 commit）
-                    salary_record = salary_record_by_emp.get(emp.id)
-                    self._check_not_finalized(salary_record, emp.name, year, month)
-                    if not salary_record:
-                        salary_record = SalaryRecord(
-                            employee_id=emp.id,
-                            salary_year=year,
-                            salary_month=month,
-                        )
-                        session.add(salary_record)
-
-                    _fill_salary_record(salary_record, breakdown, self)
-                    sp.commit()  # RELEASE SAVEPOINT
-                    results.append((emp, breakdown))
-
-                except Exception as e:
-                    sp.rollback()  # ROLLBACK TO SAVEPOINT — 撤回此員工 in-memory + SQL-level 修改
-                    logger.error(
-                        "薪資計算失敗 員工=%s(id=%d): %s",
-                        emp.name,
-                        emp.id,
-                        e,
-                        exc_info=True,
-                    )
-                    errors.append(
-                        {
-                            "employee_id": emp.id,
-                            "employee_name": emp.name,
-                            "error": str(e),
-                        }
-                    )
-                    # 失敗員工:重新 query 該月舊 record,標 needs_recalc=True 讓
-                    # 後續 finalize 完整性檢查擋下。已封存的 record 不動(避免與
-                    # 「封存即不可變」的不變式衝突;此情況代表 _check_not_finalized
-                    # 攔下了重算企圖,本來就不該寫入)。
-                    stale = (
-                        session.query(SalaryRecord)
-                        .filter(
-                            SalaryRecord.employee_id == emp.id,
-                            SalaryRecord.salary_year == year,
-                            SalaryRecord.salary_month == month,
-                        )
-                        .first()
-                    )
-                    if stale is not None and not stale.is_finalized:
-                        stale.needs_recalc = True
-                finally:
-                    done += 1
-                    if progress_callback:
-                        try:
-                            progress_callback(
-                                done, total, emp.name if emp else "(未知)"
+                        if breakdown.total_deduction < 0:
+                            raise ValueError(
+                                f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
                             )
-                        except Exception:
-                            logger.debug("progress_callback 失敗，忽略", exc_info=True)
+                        if breakdown.net_salary < 0:
+                            raise ValueError(
+                                f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
+                            )
+
+                        # ── SalaryRecord upsert（延後至迴圈結束統一 commit）
+                        salary_record = salary_record_by_emp.get(emp.id)
+                        self._check_not_finalized(salary_record, emp.name, year, month)
+                        if not salary_record:
+                            salary_record = SalaryRecord(
+                                employee_id=emp.id,
+                                salary_year=year,
+                                salary_month=month,
+                            )
+                            session.add(salary_record)
+
+                        _fill_salary_record(salary_record, breakdown, self)
+                        sp.commit()  # RELEASE SAVEPOINT
+                        results.append((emp, breakdown))
+
+                    except Exception as e:
+                        sp.rollback()  # ROLLBACK TO SAVEPOINT — 撤回此員工 in-memory + SQL-level 修改
+                        logger.error(
+                            "薪資計算失敗 員工=%s(id=%d): %s",
+                            emp.name,
+                            emp.id,
+                            e,
+                            exc_info=True,
+                        )
+                        errors.append(
+                            {
+                                "employee_id": emp.id,
+                                "employee_name": emp.name,
+                                "error": str(e),
+                            }
+                        )
+                        # 失敗員工:重新 query 該月舊 record,標 needs_recalc=True 讓
+                        # 後續 finalize 完整性檢查擋下。已封存的 record 不動(避免與
+                        # 「封存即不可變」的不變式衝突;此情況代表 _check_not_finalized
+                        # 攔下了重算企圖,本來就不該寫入)。
+                        stale = (
+                            session.query(SalaryRecord)
+                            .filter(
+                                SalaryRecord.employee_id == emp.id,
+                                SalaryRecord.salary_year == year,
+                                SalaryRecord.salary_month == month,
+                            )
+                            .first()
+                        )
+                        if stale is not None and not stale.is_finalized:
+                            stale.needs_recalc = True
+                    finally:
+                        done += 1
+                        if progress_callback:
+                            try:
+                                progress_callback(
+                                    done, total, emp.name if emp else "(未知)"
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "progress_callback 失敗，忽略", exc_info=True
+                                )
 
             # 單次 commit（相較 N 次 commit 大幅減少 I/O 往返）
             session.commit()

@@ -181,9 +181,16 @@ def mark_salary_stale(session, employee_id: int, year: int, month: int) -> bool:
     用於上游事件(假單/加班審核)後薪資重算失敗、批次重算 except 路徑等場景,
     確保 finalize 完整性檢查能擋下未成功重算的記錄。
 
+    Why 排除 finalized:
+        已封存(is_finalized=True)的薪資代表結帳已鎖定,不可再被重算,
+        若仍標 stale 等同把已封存資料標成「待修改」,會與封存語意衝突,
+        並讓上游 admin_waive 等異動誤動到已封存月份的計算來源。
+        上游若需異動已封存月份,呼叫端應先用 finalize 守衛攔下並要求解封,
+        此 helper 不負責豁免封存。
+
     Returns:
-        True  — 找到 record 並標記成功(caller 仍需自行 commit)
-        False — 該月無 record(屬「從未算過」場景,由 finalize 的 missing 檢查擋下)
+        True  — 找到未封存 record 並標記成功(caller 仍需自行 commit)
+        False — 該月無 record 或 record 已封存(屬「不該重算」場景)
     """
     from models.database import SalaryRecord
 
@@ -196,7 +203,7 @@ def mark_salary_stale(session, employee_id: int, year: int, month: int) -> bool:
         )
         .first()
     )
-    if rec is None:
+    if rec is None or rec.is_finalized:
         return False
     rec.needs_recalc = True
     return True

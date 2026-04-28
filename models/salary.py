@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Index,
+    JSON,
     Text,
     UniqueConstraint,
 )
@@ -250,6 +251,16 @@ class SalaryRecord(Base):
         default=False,
         server_default="false",
         comment="True 表示最後一次重算失敗或上游審核變動後未成功重算;封存時必須為 False",
+    )
+
+    manual_overrides = Column(
+        JSON,
+        nullable=True,
+        default=list,
+        comment=(
+            "被 manual_adjust_salary 寫過的欄位名稱清單。重算時 _fill_salary_record "
+            "會跳過清單內的欄位,避免上游事件觸發的自動重算覆蓋人工調整。"
+        ),
     )
 
     version = Column(

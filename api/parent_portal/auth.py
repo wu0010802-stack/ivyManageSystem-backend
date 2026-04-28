@@ -54,6 +54,8 @@ from utils.auth import (
 )
 from utils.cookie import (
     clear_access_token_cookie,
+    get_cookie_samesite,
+    get_cookie_secure,
     set_access_token_cookie,
 )
 
@@ -91,35 +93,23 @@ _bind_failures: dict[str, list[float]] = defaultdict(list)
 
 
 def _set_bind_token_cookie(response: Response, token: str) -> None:
-    import os
-    is_dev = os.environ.get("ENV", "development").lower() in (
-        "development",
-        "dev",
-        "local",
-    )
     response.set_cookie(
         key=_BIND_TOKEN_COOKIE,
         value=token,
         httponly=True,
-        samesite="lax",
-        secure=not is_dev,
+        samesite=get_cookie_samesite(),
+        secure=get_cookie_secure(),
         path=_BIND_TOKEN_PATH,
         max_age=_BIND_TOKEN_TTL_MINUTES * 60,
     )
 
 
 def _clear_bind_token_cookie(response: Response) -> None:
-    import os
-    is_dev = os.environ.get("ENV", "development").lower() in (
-        "development",
-        "dev",
-        "local",
-    )
     response.delete_cookie(
         key=_BIND_TOKEN_COOKIE,
         httponly=True,
-        samesite="lax",
-        secure=not is_dev,
+        samesite=get_cookie_samesite(),
+        secure=get_cookie_secure(),
         path=_BIND_TOKEN_PATH,
     )
 

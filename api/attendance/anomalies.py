@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from sqlalchemy import or_
 
-from models.database import get_session, Employee, Attendance
+from models.database import get_session, Employee, Attendance, SalaryRecord
 from services.salary.utils import calc_daily_salary
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -212,6 +212,55 @@ def batch_confirm_anomalies(
             .filter(Attendance.id.in_(data.attendance_ids))
             .all()
         }
+
+        # 封存守衛：admin_waive 會改變薪資扣款結果（薪資端視為不扣），
+        # 已封存月份不可被改寫；admin_accept 雖不改薪資結果，但仍代表
+        # 對該月 attendance 狀態的事後變更，封存後若需修正應先解封。
+        # 任一目標 (emp, year, month) 已封存 → 整批 409，避免部份成功部份阻擋。
+        target_months = {
+            (a.employee_id, a.attendance_date.year, a.attendance_date.month)
+            for a in att_map.values()
+            if a.attendance_date
+        }
+        if target_months:
+            from sqlalchemy import and_, or_
+
+            finalized_rows = (
+                session.query(
+                    SalaryRecord.employee_id,
+                    SalaryRecord.salary_year,
+                    SalaryRecord.salary_month,
+                    SalaryRecord.finalized_by,
+                )
+                .filter(
+                    SalaryRecord.is_finalized == True,
+                    or_(
+                        *(
+                            and_(
+                                SalaryRecord.employee_id == eid,
+                                SalaryRecord.salary_year == y,
+                                SalaryRecord.salary_month == m,
+                            )
+                            for eid, y, m in target_months
+                        )
+                    ),
+                )
+                .all()
+            )
+            if finalized_rows:
+                detail = ", ".join(
+                    f"員工#{r.employee_id} {r.salary_year}/{r.salary_month:02d}"
+                    f"（結算人：{r.finalized_by or '系統'}）"
+                    for r in finalized_rows
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"下列月份薪資已封存，無法批次處理考勤異常：{detail}。"
+                        "請先至薪資管理頁面解除封存後再操作。"
+                    ),
+                )
+
         # 收集需重算薪資的 (employee_id, year, month)：admin_waive 改變薪資扣款結果
         # （薪資端會把 waive 視為不扣），未封存的薪資需標 stale 觸發重算
         salary_recalc_keys: set = set()
@@ -250,6 +299,10 @@ def batch_confirm_anomalies(
             processed,
         )
         return {"processed": processed}
+    except HTTPException:
+        # 封存守衛、無效 action 等業務錯誤需保留原 status code,別被 500 蓋掉
+        session.rollback()
+        raise
     except Exception as e:
         session.rollback()
         raise_safe_500(e)

@@ -10,8 +10,12 @@ Cookies are configured with:
 
 LOW-5 設計選擇：
   - 預設 SameSite=Strict（最強 CSRF 防護）
-  - 環境變數 `COOKIE_SAMESITE` 可調為 lax（若 LIFF 或外部站連回流程受影響）
-  - 不接受 none（會強迫 secure，且 CSRF 暴露面太大）
+  - 環境變數 `COOKIE_SAMESITE` 可調為 lax / none
+  - 設 none 時會強制 Secure；dev 模式（HTTP）拒絕 none 並 fallback lax，
+    避免本機端 cookie 被瀏覽器拒收
+  - none 用於前後端跨網域部署（如 ivymanageportal.zeabur.app +
+    ivymanagesystem-api.zeabur.app）；CSRF 暴露面靠 token_version + JWT
+    黑名單 + 路由權限守衛收斂
 """
 
 import logging
@@ -28,17 +32,33 @@ _is_dev = os.environ.get("ENV", "development").lower() in (
 
 def _resolve_samesite() -> str:
     raw = os.environ.get("COOKIE_SAMESITE", "strict").lower()
-    if raw not in ("strict", "lax"):
+    if raw not in ("strict", "lax", "none"):
         logger.warning("COOKIE_SAMESITE=%s 不被支援，回退 strict", raw)
         return "strict"
+    if raw == "none" and _is_dev:
+        logger.warning(
+            "COOKIE_SAMESITE=none 需 Secure（HTTPS），dev 環境不支援，回退 lax"
+        )
+        return "lax"
     return raw
 
 
 # Cookie 共用參數
-_COOKIE_SECURE = not _is_dev  # 正式環境限 HTTPS
 _COOKIE_SAMESITE = _resolve_samesite()
+# samesite=none 強制 Secure（瀏覽器規範）；其他模式維持 dev/prod 自動判斷
+_COOKIE_SECURE = True if _COOKIE_SAMESITE == "none" else (not _is_dev)
 _COOKIE_PATH = "/api"
 _COOKIE_MAX_AGE = 86400  # 24 小時（與 JWT refresh grace period 對齊）
+
+
+def get_cookie_samesite() -> str:
+    """供其他模組（如 parent_portal/auth.py 的 bind cookie）共用同一份決策。"""
+    return _COOKIE_SAMESITE
+
+
+def get_cookie_secure() -> bool:
+    """供其他模組共用 Secure 決策。"""
+    return _COOKIE_SECURE
 
 
 def set_access_token_cookie(response, token: str) -> None:
