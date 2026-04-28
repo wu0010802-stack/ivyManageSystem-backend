@@ -21,6 +21,12 @@ from services.student_attendance_report import (
 )
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.portfolio_access import (
+    accessible_classroom_ids,
+    assert_student_access,
+    filter_student_ids_by_access,
+    is_unrestricted,
+)
 from api.exports import (
     SafeWorksheet,
     _sanitize_excel_value,
@@ -240,6 +246,11 @@ async def get_daily_attendance(
 
     session = get_session()
     try:
+        # 班級 scope：非管理角色僅可查詢自己班級
+        if not is_unrestricted(current_user):
+            allowed = accessible_classroom_ids(session, current_user)
+            if classroom_id not in allowed:
+                raise HTTPException(status_code=403, detail="您無權存取此班級")
         students = (
             session.query(Student)
             .filter(Student.classroom_id == classroom_id, Student.is_active == True)
@@ -293,6 +304,17 @@ async def batch_save_attendance(
     user_id = current_user.get("id")
     session = get_session()
     try:
+        # 班級 scope：批次內所有 student_id 必須通過存取檢查；任何一筆不通過整批 403
+        if not is_unrestricted(current_user):
+            candidate_ids = {e.student_id for e in payload.entries}
+            allowed_ids = filter_student_ids_by_access(
+                session, current_user, candidate_ids
+            )
+            if candidate_ids - allowed_ids:
+                raise HTTPException(
+                    status_code=403, detail="批次中包含您無權存取的學生"
+                )
+
         existing = {
             r.student_id: r
             for r in session.query(StudentAttendance)
@@ -360,9 +382,8 @@ async def get_attendance_by_student(
 
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if not student:
-            raise HTTPException(status_code=404, detail="找不到學生")
+        # 班級 scope：assert_student_access 同時處理 404 / 403
+        student = assert_student_access(session, current_user, student_id)
 
         q = session.query(StudentAttendance).filter(
             StudentAttendance.student_id == student_id
@@ -408,6 +429,11 @@ async def get_monthly_summary(
     """取得班級整月出席統計、出席率與連缺告警。"""
     session = get_session()
     try:
+        # 班級 scope：非管理角色僅可查詢自己班級
+        if not is_unrestricted(current_user):
+            allowed = accessible_classroom_ids(session, current_user)
+            if classroom_id not in allowed:
+                raise HTTPException(status_code=403, detail="您無權存取此班級")
         return build_monthly_attendance_report(session, classroom_id, year, month)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -426,8 +452,19 @@ def export_student_attendance(
     """匯出班級（或全園）月出席 Excel。
     classroom_id 不傳時匯出全園（多 sheet + 摘要 sheet）。
     """
+    # 班級 scope：
+    # - 全園匯出（classroom_id = None）僅 admin/hr/supervisor 可用
+    # - 單班匯出：非管理角色必須在自己 accessible 範圍內
     session = get_session()
     try:
+        if not is_unrestricted(current_user):
+            if classroom_id is None:
+                raise HTTPException(
+                    status_code=403, detail="僅管理角色可匯出全園出席月報"
+                )
+            allowed = accessible_classroom_ids(session, current_user)
+            if classroom_id not in allowed:
+                raise HTTPException(status_code=403, detail="您無權存取此班級")
         if classroom_id is not None:
             classrooms = (
                 session.query(Classroom)

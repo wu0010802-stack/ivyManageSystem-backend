@@ -36,6 +36,11 @@ from services.student_leave_service import (
 from services.workday_rules import load_day_rule_maps
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.portfolio_access import (
+    accessible_classroom_ids,
+    assert_student_access,
+    is_unrestricted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +55,9 @@ def init_student_leaves_line_service(line_service) -> None:
     _line_service = line_service
 
 
-def _notify_parent_leave_result_safe(session, item: StudentLeaveRequest, approved: bool) -> None:
+def _notify_parent_leave_result_safe(
+    session, item: StudentLeaveRequest, approved: bool
+) -> None:
     """fail-safe 通知家長審核結果；任何失敗都僅 log，不影響審核 transaction。"""
     if _line_service is None:
         return
@@ -111,13 +118,24 @@ def list_pending_leaves(
         )
         if status:
             q = q.filter(StudentLeaveRequest.status == status)
-        if classroom_id is not None:
+
+        # 班級 scope：
+        # - 帶 classroom_id：必須在 caller 可存取範圍內，否則 403
+        # - 未帶 classroom_id 且為非管理角色：自動限縮為自己班級
+        if not is_unrestricted(current_user):
+            allowed = accessible_classroom_ids(session, current_user)
+            if classroom_id is not None:
+                if classroom_id not in allowed:
+                    raise HTTPException(status_code=403, detail="您無權存取此班級")
+                q = q.filter(Student.classroom_id == classroom_id)
+            else:
+                if not allowed:
+                    return {"items": [], "total": 0}
+                q = q.filter(Student.classroom_id.in_(allowed))
+        elif classroom_id is not None:
             q = q.filter(Student.classroom_id == classroom_id)
-        rows = (
-            q.order_by(StudentLeaveRequest.created_at.desc())
-            .limit(limit)
-            .all()
-        )
+
+        rows = q.order_by(StudentLeaveRequest.created_at.desc()).limit(limit).all()
         return {
             "items": [
                 _serialize(item, student_name=student.name) for item, student in rows
@@ -134,7 +152,9 @@ def _apply_attendance_for_leave(
     """在當前 session 內（必由 caller 開的 transaction）upsert StudentAttendance。
     回傳實際被建立或覆蓋的天數。
     """
-    holiday_map, makeup_map = load_day_rule_maps(session, leave.start_date, leave.end_date)
+    holiday_map, makeup_map = load_day_rule_maps(
+        session, leave.start_date, leave.end_date
+    )
     dates = compute_attendance_dates(
         leave.start_date, leave.end_date, holiday_map, makeup_map
     )
@@ -201,6 +221,8 @@ def approve_leave(
         )
         if item is None:
             raise HTTPException(status_code=404, detail="找不到申請")
+        # 班級 scope：caller 必須能存取該假單對應的學生
+        assert_student_access(session, current_user, item.student_id)
         if item.status != "pending":
             raise HTTPException(
                 status_code=400, detail=f"狀態為 {item.status}，僅 pending 可審核"
@@ -235,6 +257,8 @@ def reject_leave(
         )
         if item is None:
             raise HTTPException(status_code=404, detail="找不到申請")
+        # 班級 scope：caller 必須能存取該假單對應的學生
+        assert_student_access(session, current_user, item.student_id)
         if item.status not in ("pending", "approved"):
             raise HTTPException(
                 status_code=400, detail=f"狀態為 {item.status}，無法駁回"

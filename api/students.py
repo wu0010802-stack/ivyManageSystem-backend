@@ -23,6 +23,7 @@ from utils.academic import resolve_current_academic_term, resolve_academic_term_
 from utils.auth import require_staff_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
+from utils.portfolio_access import mask_student_health_fields
 
 logger = logging.getLogger(__name__)
 
@@ -405,34 +406,33 @@ async def get_students(
 
         items = []
         for s in students:
-            items.append(
-                {
-                    "id": s.id,
-                    "student_id": s.student_id,
-                    "name": s.name,
-                    "gender": s.gender,
-                    "birthday": s.birthday.isoformat() if s.birthday else None,
-                    "classroom_id": s.classroom_id,
-                    "enrollment_date": (
-                        s.enrollment_date.isoformat() if s.enrollment_date else None
-                    ),
-                    "graduation_date": (
-                        s.graduation_date.isoformat() if s.graduation_date else None
-                    ),
-                    "status": s.status,
-                    "parent_name": s.parent_name,
-                    "parent_phone": s.parent_phone,
-                    "address": s.address,
-                    "status_tag": s.status_tag,
-                    "allergy": s.allergy,
-                    "medication": s.medication,
-                    "special_needs": s.special_needs,
-                    "emergency_contact_name": s.emergency_contact_name,
-                    "emergency_contact_phone": s.emergency_contact_phone,
-                    "emergency_contact_relation": s.emergency_contact_relation,
-                    "is_active": s.is_active,
-                }
-            )
+            row = {
+                "id": s.id,
+                "student_id": s.student_id,
+                "name": s.name,
+                "gender": s.gender,
+                "birthday": s.birthday.isoformat() if s.birthday else None,
+                "classroom_id": s.classroom_id,
+                "enrollment_date": (
+                    s.enrollment_date.isoformat() if s.enrollment_date else None
+                ),
+                "graduation_date": (
+                    s.graduation_date.isoformat() if s.graduation_date else None
+                ),
+                "status": s.status,
+                "parent_name": s.parent_name,
+                "parent_phone": s.parent_phone,
+                "address": s.address,
+                "status_tag": s.status_tag,
+                "allergy": s.allergy,
+                "medication": s.medication,
+                "special_needs": s.special_needs,
+                "emergency_contact_name": s.emergency_contact_name,
+                "emergency_contact_phone": s.emergency_contact_phone,
+                "emergency_contact_relation": s.emergency_contact_relation,
+                "is_active": s.is_active,
+            }
+            items.append(mask_student_health_fields(row, current_user))
         return {"items": items, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
@@ -489,7 +489,7 @@ async def get_student(
         student = session.query(Student).filter(Student.id == student_id).first()
         if not student:
             raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
-        return {
+        payload = {
             "id": student.id,
             "student_id": student.student_id,
             "name": student.name,
@@ -511,6 +511,7 @@ async def get_student(
             "emergency_contact_relation": student.emergency_contact_relation,
             "is_active": student.is_active,
         }
+        return mask_student_health_fields(payload, current_user)
     finally:
         session.close()
 
@@ -869,6 +870,11 @@ async def get_student_profile(
         )
         if profile is None:
             raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # 缺 STUDENTS_HEALTH_READ / STUDENTS_SPECIAL_NEEDS_READ 時遮罩 health 欄位
+        if "health" in profile:
+            profile["health"] = mask_student_health_fields(
+                profile["health"], current_user
+            )
         return profile
     finally:
         session.close()

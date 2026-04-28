@@ -10,11 +10,12 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Iterable
 
 from fastapi import HTTPException
 
 from models.classroom import Classroom, Student
+from utils.permissions import Permission, has_permission
 
 _UNRESTRICTED_ROLES = frozenset({"admin", "hr", "supervisor"})
 
@@ -85,6 +86,47 @@ def filter_student_ids_by_access(
         .all()
     )
     return {r.id for r in rows}
+
+
+def has_perm(current_user: dict, permission: Permission) -> bool:
+    """檢查 caller 是否持有指定 permission bit；委派 utils.permissions.has_permission，
+    可正確處理 -1（全權限）sentinel。"""
+    perms = current_user.get("permissions")
+    if perms is None:
+        return False
+    return has_permission(int(perms), permission)
+
+
+def can_view_student_health(current_user: dict) -> bool:
+    """是否可檢視學生健康欄位（allergy / medication）。"""
+    return has_perm(current_user, Permission.STUDENTS_HEALTH_READ)
+
+
+def can_view_student_special_needs(current_user: dict) -> bool:
+    """是否可檢視學生特殊需求欄位（special_needs）。"""
+    return has_perm(current_user, Permission.STUDENTS_SPECIAL_NEEDS_READ)
+
+
+def mask_student_health_fields(
+    student_dict: dict[str, Any], current_user: dict
+) -> dict[str, Any]:
+    """依 caller 權限遮罩學生健康欄位。
+
+    - 缺 STUDENTS_HEALTH_READ：將 allergy / medication 設為 None
+    - 缺 STUDENTS_SPECIAL_NEEDS_READ：將 special_needs 設為 None
+
+    回傳新 dict（不修改原物件）；若 dict 不含對應 key 則維持不變。
+    """
+    result = dict(student_dict)
+    if not can_view_student_health(current_user):
+        if "allergy" in result:
+            result["allergy"] = None
+        if "medication" in result:
+            result["medication"] = None
+    if not can_view_student_special_needs(current_user):
+        if "special_needs" in result:
+            result["special_needs"] = None
+    return result
 
 
 def student_ids_in_scope(session, current_user: dict) -> list[int] | None:

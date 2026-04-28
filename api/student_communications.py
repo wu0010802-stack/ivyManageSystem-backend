@@ -13,6 +13,12 @@ from models.database import get_session, Student
 from models.student_log import ParentCommunicationLog, COMMUNICATION_TYPES
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.portfolio_access import (
+    accessible_classroom_ids,
+    assert_student_access,
+    is_unrestricted,
+    student_ids_in_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,15 +138,24 @@ async def list_communications(
     date_to: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """查詢家長溝通紀錄（分頁，支援 student_id / classroom_id 過濾）"""
     session = get_session()
     try:
         q = session.query(ParentCommunicationLog)
+
+        # 班級 scope：非管理角色必須在自己的班級範圍內查詢
         if student_id:
+            # student_id 帶值：直接驗證單生存取權
+            assert_student_access(session, current_user, student_id)
             q = q.filter(ParentCommunicationLog.student_id == student_id)
-        if classroom_id:
+        elif classroom_id:
+            # classroom_id 帶值：驗證該班級在 caller 的可存取列
+            if not is_unrestricted(current_user):
+                allowed = accessible_classroom_ids(session, current_user)
+                if classroom_id not in allowed:
+                    raise HTTPException(status_code=403, detail="您無權存取此班級")
             student_ids_in_class = [
                 sid
                 for (sid,) in session.query(Student.id)
@@ -153,6 +168,18 @@ async def list_communications(
                 )
             else:
                 q = q.filter(False)
+        else:
+            # 無過濾：非管理角色僅回傳自己班級的紀錄
+            scope = student_ids_in_scope(session, current_user)
+            if scope is not None:
+                if not scope:
+                    return {
+                        "items": [],
+                        "total": 0,
+                        "page": page,
+                        "page_size": page_size,
+                    }
+                q = q.filter(ParentCommunicationLog.student_id.in_(scope))
         if communication_type:
             q = q.filter(
                 ParentCommunicationLog.communication_type == communication_type
@@ -217,9 +244,8 @@ async def create_communication(
     """新增家長溝通紀錄"""
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == item.student_id).first()
-        if not student:
-            raise HTTPException(status_code=404, detail="找不到學生")
+        # 班級 scope：assert_student_access 同時處理 404 / 403
+        student = assert_student_access(session, current_user, item.student_id)
 
         log = ParentCommunicationLog(
             student_id=item.student_id,
@@ -256,7 +282,7 @@ async def create_communication(
 async def update_communication(
     log_id: int,
     item: CommunicationUpdate,
-    _: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """編輯家長溝通紀錄"""
     session = get_session()
@@ -268,6 +294,8 @@ async def update_communication(
         )
         if not log:
             raise HTTPException(status_code=404, detail="找不到紀錄")
+        # 班級 scope：caller 必須能存取 log 對應的學生
+        assert_student_access(session, current_user, log.student_id)
 
         data = item.model_dump(exclude_unset=True)
         for key, value in data.items():
@@ -293,7 +321,7 @@ async def update_communication(
 @router.delete("/{log_id}")
 async def delete_communication(
     log_id: int,
-    _: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """刪除家長溝通紀錄"""
     session = get_session()
@@ -305,6 +333,8 @@ async def delete_communication(
         )
         if not log:
             raise HTTPException(status_code=404, detail="找不到紀錄")
+        # 班級 scope：caller 必須能存取 log 對應的學生
+        assert_student_access(session, current_user, log.student_id)
         session.delete(log)
         session.commit()
         return {"message": "已刪除", "id": log_id}

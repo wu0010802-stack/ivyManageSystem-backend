@@ -17,6 +17,7 @@ from utils.academic import resolve_current_academic_term, resolve_academic_term_
 from utils.auth import require_staff_permission
 from utils.error_messages import CLASSROOM_NOT_FOUND
 from utils.permissions import Permission
+from utils.portfolio_access import mask_student_health_fields
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +339,9 @@ def _term_start_date(school_year: int, semester: int) -> date:
     return date(western_year + 1, 2, 1)
 
 
-def _serialize_classroom_detail(session, classroom: Classroom):
+def _serialize_classroom_detail(
+    session, classroom: Classroom, current_user: Optional[dict] = None
+):
     # Classroom.grade 已透過 joinedload 預載，直接存取即可
     grade_name = classroom.grade.name if classroom.grade else None
 
@@ -372,8 +375,9 @@ def _serialize_classroom_detail(session, classroom: Classroom):
         .all()
     )
 
-    student_list = [
-        {
+    student_list = []
+    for s in students:
+        row = {
             "id": s.id,
             "student_id": s.student_id,
             "name": s.name,
@@ -385,8 +389,9 @@ def _serialize_classroom_detail(session, classroom: Classroom):
             "medication": s.medication,
             "special_needs": s.special_needs,
         }
-        for s in students
-    ]
+        if current_user is not None:
+            row = mask_student_health_fields(row, current_user)
+        student_list.append(row)
 
     # is_active = NULL 視為在讀（歷史資料無明確設定時的預設行為）
     active_count = sum(1 for s in students if s.is_active is not False)
@@ -589,7 +594,7 @@ async def get_classroom(
         )
         if not classroom:
             raise HTTPException(status_code=404, detail=CLASSROOM_NOT_FOUND)
-        return _serialize_classroom_detail(session, classroom)
+        return _serialize_classroom_detail(session, classroom, current_user)
     finally:
         session.close()
 
