@@ -42,9 +42,10 @@ from models.database import (
     ActivityCourse,
     ActivitySupply,
     ActivityRegistration,
+    ActivitySession,
+    ActivityAttendance,
     RegistrationCourse,
     RegistrationSupply,
-    ActivityPaymentRecord,
     ParentInquiry,
     ActivityRegistrationSettings,
 )
@@ -57,7 +58,6 @@ from ._shared import (
     PublicRegistrationPayload,
     PublicUpdatePayload,
     PublicInquiryPayload,
-    SYSTEM_RECONCILE_METHOD,
     should_silent_reject_bot,
     _not_found,
     _item_not_found_in_list,
@@ -70,11 +70,9 @@ from ._shared import (
     _attach_supplies,
     _calc_total_amount,
     _compute_is_paid,
-    _is_daily_closed,
     _match_student_with_parent_phone,
     _normalize_phone,
     TAIPEI_TZ,
-    today_taipei,
 )
 from utils.academic import resolve_academic_term_filters
 
@@ -665,9 +663,14 @@ async def public_update_registration(
     """前台：依 id 更新報名資料（班級/課程/用品）
 
     帳務對帳守則：
-    - 若更新後產生超繳（paid_amount > new_total）→ 自動寫「系統補齊」退費紀錄並扣 paid_amount
-    - 若更新使 is_paid 狀態變更（例如從已繳清 → 欠費）→ 同步更新 is_paid 旗標
-    - 若需要寫退費但今日已完成日結簽核 → 拒絕更新，請家長聯繫管理員
+    - 若更新後會產生超繳（paid_amount > new_total）→ 一律 409 拒絕，不寫任何
+      退費紀錄、不扣 paid_amount。Why: 公開端點無法執行金流簽核
+      （ACTIVITY_PAYMENT_APPROVE），允許家長端自動沖帳會繞過所有金流守衛
+      （無金額閘門、無原因記錄、無 admin 即時通知）。退費一律改由管理員後台
+      （/registrations/{id}/payment、withdraw_course）處理。
+    - 若家長把已被點名的課程移除 → 同步清該 reg 在那些課程的 ActivityAttendance
+      （與 withdraw_course 一致），避免出席統計納入退課孤兒。
+    - 同步 is_paid 旗標（與後台共用 _compute_is_paid，total=0 時一律未結清）。
     """
     session = get_session()
     try:
@@ -872,55 +875,34 @@ async def public_update_registration(
         for vacated_cid in vacated_course_ids:
             activity_service._auto_promote_first_waitlist(session, vacated_cid)
 
+        # 清除已不再報名課程的 ActivityAttendance 孤兒紀錄（與管理端 withdraw_course
+        # 對齊）。否則退課學生仍掛在 attendance，污染出席率統計與點名表。
+        if vacated_course_ids:
+            session_ids_subq = (
+                session.query(ActivitySession.id)
+                .filter(ActivitySession.course_id.in_(vacated_course_ids))
+                .subquery()
+            )
+            session.query(ActivityAttendance).filter(
+                ActivityAttendance.registration_id == reg.id,
+                ActivityAttendance.session_id.in_(session_ids_subq),
+            ).delete(synchronize_session=False)
+
         reg.remark = body.remark
 
-        # ── 帳務對帳 ─────────────────────────────────────────────────────
-        # 之前家長自助更新只改課程/用品，完全不碰 paid_amount / is_paid，會讓已繳
-        # 家長在改課後產生幽靈金額與錯誤的 is_paid 顯示。此處重算：
-        #   1) 若 paid > new_total → 自動寫系統沖帳退費（並需通過今日日結守衛）
-        #   2) 同步 is_paid 旗標（total=0 時一律視為未結清，與後台共用 _compute_is_paid）
+        # 超繳一律拒絕（不再自動沖帳）。理由詳見 docstring；replace 後若需退費，
+        # 請家長改聯繫校方由管理員執行帶簽核權限的退費流程。
         paid_amount = reg.paid_amount or 0
         new_total = _calc_total_amount(session, reg.id)
-        refunded_amount = 0
         if paid_amount > new_total:
             refund_needed = paid_amount - new_total
-            today = today_taipei()
-            # 若今日已簽核則拒絕，避免偷偷動到已凍結 snapshot。家長看到訊息後需請管理員處理
-            if _is_daily_closed(session, today):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "此次更新會產生退費，但今日帳務已結算簽核，無法即時處理。"
-                        "請改聯繫管理員協助更新資料。"
-                    ),
-                )
-            session.add(
-                ActivityPaymentRecord(
-                    registration_id=reg.id,
-                    type="refund",
-                    amount=refund_needed,
-                    payment_date=today,
-                    payment_method=SYSTEM_RECONCILE_METHOD,
-                    notes="（家長前台更新課程/用品後自動沖帳）",
-                    operator="system",
-                )
-            )
-            reg.paid_amount = max(0, paid_amount - refund_needed)
-            refunded_amount = refund_needed
-            logger.warning(
-                "家長前台更新產生超繳自動沖帳：reg_id=%s student=%s refunded=NT$%d，"
-                "請管理員跟進實體退款",
-                reg.id,
-                reg.student_name,
-                refund_needed,
-            )
-            activity_service.log_change(
-                session,
-                reg.id,
-                reg.student_name,
-                "家長更新自動沖帳",
-                f"因課程/用品調整產生超繳 NT${refund_needed}，已寫系統退費紀錄",
-                "system",
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"此次更新會產生退費 NT${refund_needed}，"
+                    "為確保金流安全無法於前台直接處理。"
+                    "請改聯繫校方協助更新資料。"
+                ),
             )
         reg.is_paid = _compute_is_paid(reg.paid_amount or 0, new_total)
 
@@ -931,7 +913,6 @@ async def public_update_registration(
             "message": "資料更新成功！",
             "total_amount": new_total,
             "paid_amount": reg.paid_amount or 0,
-            "refunded_amount": refunded_amount,
             "payment_status": _derive_payment_status(reg.paid_amount or 0, new_total),
         }
     except HTTPException:
