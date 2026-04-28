@@ -42,6 +42,11 @@
 - [F-028](#f-028) [Low] activity/pos: `GET /pos/outstanding-by-student` / `GET /pos/recent-transactions` 在 `ACTIVITY_READ` 下回傳全校學生 `student_name` / `birthday` / `class_name`，可被一線櫃檯偷帶走
 - [F-029](#f-029) [Low] activity/public: `POST /public/update` 換手機號 409 `此手機號碼已被其他報名使用` 形成 phone enumeration oracle
 - [F-030](#f-030) [Medium] activity/public: `POST /public/register` 多重未認證枚舉 oracle（學生姓名/生日 + 家長電話）
+- [F-031](#f-031) [High] reports/finance-summary: `GET /finance-summary/detail` 與 `/finance-summary/export` 在 `Permission.REPORTS` 下回傳逐員 `gross_salary` / `net_salary` / `employer_benefit` / `real_cost`，繞過 `SALARY_READ`
+- [F-032](#f-032) [High] exports: `GET /exports/employee-attendance?employee_id=...` 缺自我守衛，可任意員工 id 拉同事個人逐日打卡明細
+- [F-033](#f-033) [Medium] exports/gov_reports: GET 匯出（students / attendance / leaves / overtimes / shifts / employee-attendance / 政府申報四端點）未呼叫 `write_explicit_audit`，PII 與身分證匯出無稽核軌跡
+- [F-034](#f-034) [Medium] fees: `GET /records?student_id=...` 跨班讀全校學生繳費紀錄，僅以 `FEES_READ` 守門
+- [F-035](#f-035) [Low] audit-logs: `GET /audit-logs/export` 自身未呼叫 `write_explicit_audit`，匯出全系統操作軌跡的事件本身無痕
 
 ---
 
@@ -403,4 +408,114 @@
 - **根因**：`existing` 與 `pending_dup` 兩個檢查在 `_verify_parent_identity` 之前執行；當這兩支查詢命中時直接 raise 400，與其他失敗路徑（驗證錯誤、無資料）回傳的 status / detail 不同，形成存在性 oracle。
 - **建議修法**：將 `existing` / `pending_dup` 檢查移到 `_verify_parent_identity` 之後（即先確認家長合法身分再檢查重複報名），或合併為 generic「請聯絡園所」訊息隱藏存在性差異。亦應評估提高 `_public_register_limiter` 嚴格度（目前 5/min/IP，攻擊者輪換 IP 可達 7,200/day）。
 - **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-031 [High] reports/finance-summary: `GET /finance-summary/detail` 與 `/finance-summary/export` 在 `Permission.REPORTS` 下回傳逐員 `gross_salary` / `net_salary` / `employer_benefit` / `real_cost`，繞過 `SALARY_READ`
+
+- **位置**：
+  - `api/reports.py:270-278` `GET /api/reports/finance-summary/detail`（`build_finance_detail` 回 `detail["salary"]` 含 `employee_name` / `gross_salary` / `net_salary` / `employer_benefit` / `real_cost` / `is_finalized` 逐員 row）
+  - `api/reports.py:281-403` `GET /api/reports/finance-summary/export`（Sheet 5「薪資明細」逐員列出同一組欄位 + 是否封存）
+  - `api/reports.py:222-238` `GET /api/reports/dashboard`（同樣 `Permission.REPORTS`，但只回月度合計，本 finding 不涵蓋）
+- **威脅模型**：e
+- **PoC**：預設角色配置中，**supervisor 持 `Permission.REPORTS` 但無 `SALARY_READ`**（見 `utils/permissions.py:149-184`，supervisor template 無 SALARY_READ；對比 hr 同時持 SALARY_READ + REPORTS）。supervisor（園長/主任）登入後直接呼叫 `GET /api/reports/finance-summary/detail?year=2026&month=4`，response payload `salary[]` 即逐員回傳 `employee_name`（姓名）、`gross_salary`（應發）、`net_salary`（實發）、`employer_benefit`（雇主保費+勞退）、`real_cost`（園方真實支出）、`is_finalized`。或呼叫 `/api/reports/finance-summary/export?year=2026&month=4` 一鍵下載 Excel，第 5 個 sheet「薪資明細」就是逐員實發名冊。等於用 REPORTS 位元繞過 SALARY_READ 的閘門 — 後者本來把 supervisor 隔離在薪資金額之外，前者卻把同一份欄位以「彙總/明細」名義打開。本 finding 與 F-017（`base_salary` 在 EMPLOYEES_READ 下外洩）、F-026（`parent_phone` 在 ACTIVITY_READ 下外洩）同型：「同一份敏感欄位由次要 router 用較低門檻外洩」，但**這支是 e 威脅中影響範圍最大的薪資金額**，且 export 直接落 Excel，可離線分發。
+- **根因**：`reports.py` 的設計把「跨來源金流彙總」當作 admin/老闆視角，給了單一的 `Permission.REPORTS` 閘門；但 supervisor 角色預設就有 REPORTS（用於招生/出勤年度報表），而 supervisor 並非預設可看薪資金額的角色。`build_finance_detail` 服務層內未做 viewer-side 欄位 mask，由呼叫端決定回傳；endpoint 層又把所有 REPORTS 持有者一視同仁。Excel 匯出的 Sheet 5 也因此把同一份欄位連帶外洩。
+- **建議修法**：兩擇一或併用——
+  1. **endpoint 加雙 perm 閘門**：`/finance-summary/detail` 與 `/finance-summary/export` 改為同時要求 `Permission.REPORTS + Permission.SALARY_READ`（用 `require_staff_permissions_all` helper），確保只有 hr/admin/有 SALARY_READ 的自訂角色才能下鑽到逐員薪資明細。Dashboard / 月度彙總（`/dashboard`、`/finance-summary` 不含 detail）保持 `Permission.REPORTS`。
+  2. **viewer-side mask**：在 `build_finance_detail` 加 `can_view_salary_detail: bool` 參數，無權者把 `salary[]` 整個轉為「合計只回總額不回逐員」或把 `employee_name`/各金額欄位 mask 為 `None`；export 同理。建議 (1) 較簡潔且符合既有 RBAC 設計（薪資金額屬 SALARY_READ 範圍）。
+  併用時：endpoint 加 SALARY_READ 雙閘門 + service 層仍接受 viewer 旗標，避免未來新增 caller 時忘記加 perm。
+- **是否需新測試**：yes（`tests/security/test_idor_admin_endpoints.py`：建立 supervisor 帳號（含 REPORTS、無 SALARY_READ），呼叫 `/finance-summary/detail` 應 403；含 SALARY_READ 才應 200，且 `salary[]` 含逐員金額。export 同型驗證）
+- **修補狀態**：⏳ Pending
+
+### F-032 [High] exports: `GET /exports/employee-attendance?employee_id=...` 缺自我守衛，可任意員工 id 拉同事個人逐日打卡明細
+
+- **位置**：`api/exports.py:852-1178` `GET /api/exports/employee-attendance?employee_id=...&year=...&month=...`
+- **威脅模型**：a + e
+- **PoC**：endpoint 僅 `require_staff_permission(Permission.ATTENDANCE_READ)`，未檢查 `employee_id` 是否為呼叫者自己、也未要求高權限角色（admin/hr/supervisor）才能查他人。預設角色中 supervisor / hr 都持 ATTENDANCE_READ，**任何持 ATTENDANCE_READ 的自訂角色（例：班導兼出勤助理、教務助理）對任意員工 id 即可下載個人月報 Excel**：含逐日打卡時間 (`punch_in_time` / `punch_out_time`)、工時、遲到/早退分鐘、請假類型 / 假時、加班類型 / 時數、備註，等同同事每日上下班時間表 + 請假明細 + 加班記錄全帶走。對比同 router 的 `/exports/attendance`（line 308-483）走全員彙總統計、未洩漏單人逐日明細，這支端點是**單人逐日**版的「個人考勤側信道」。
+  與 F-015（補打卡跨員工自審）、F-012/F-014（薪資跨員工讀取）成同一類威脅 a；同時也是 e（內部高權限角色之間：supervisor/hr 應該能看，但純 ATTENDANCE_READ 不該能下鑽到同事每日進出時間 — 那是出勤管理員職責，不是 supervisor）。
+- **根因**：endpoint 只把 ATTENDANCE_READ 當作門檻，沒接 `_enforce_self_or_full_attendance` 等 helper（系統其他位置如 `api/attendance/*`、`api/employees.py:final-salary-preview` 經 F-012 修補後已建立 self-or-perm pattern，本 endpoint 漏掉）。`/exports/leaves` / `/exports/overtimes` 雖然走全員 list 不收 `employee_id` 過濾、屬不同 risk profile，但本端點明確接收 `employee_id` query 卻未做 owner 比對。
+- **建議修法**：在 line 864（`session.query(Employee).filter(Employee.id == employee_id).first()`）取出 emp 後立刻：
+  ```python
+  perms = current_user.get("permissions", 0)
+  is_self = current_user.get("employee_id") == emp.id
+  has_full_view = has_permission(perms, Permission.SALARY_READ) or current_user.get("role") in ("admin", "hr")
+  if not (is_self or has_full_view):
+      raise HTTPException(status_code=403, detail="不得匯出他人個人出勤月報")
+  ```
+  或直接調用 `_enforce_self_or_full_salary` 等價的 attendance 版 helper（建議在 `utils/idor_guards.py` 抽 `assert_self_or_attendance_admin`）。Phase 2 一併修。
+- **是否需新測試**：yes（`tests/security/test_idor_employee_financial.py` 或新建 `test_idor_admin_endpoints.py`：建立 teacher/supervisor 帳號（含 ATTENDANCE_READ），用其 token 呼叫他人 `employee_id` 預期 403；同帳號自身 employee_id 預期 200；admin/hr 預期 200）
+- **修補狀態**：⏳ Pending
+
+### F-033 [Medium] exports/gov_reports: GET 匯出（students / attendance / leaves / overtimes / shifts / employee-attendance / 政府申報四端點）未呼叫 `write_explicit_audit`，PII 與身分證匯出無稽核軌跡
+
+- **位置**：
+  - `api/exports.py:241-302` `GET /exports/students`（全校學生 PII：student_id、生日、家長電話、地址）
+  - `api/exports.py:308-483` `GET /exports/attendance`
+  - `api/exports.py:560-622` `GET /exports/leaves`
+  - `api/exports.py:628-697` `GET /exports/overtimes`
+  - `api/exports.py:703-749` `GET /exports/holidays`
+  - `api/exports.py:755-813` `GET /exports/shifts`
+  - `api/exports.py:852-1178` `GET /exports/employee-attendance`（個人逐日打卡）
+  - `api/exports.py:497-546` `GET /exports/calendar`
+  - `api/gov_reports.py:308-924` `GET /gov-reports/labor-insurance` / `/health-insurance` / `/withholding` / `/pension`（含全員 `id_number` 身分證）
+  - **對照組**：`api/exports.py:132-235` `GET /exports/employees` 已正確調用 `write_explicit_audit(action="EXPORT", entity_type="employee", ...)`（line 153-165），是唯一有顯式稽核痕跡的匯出端點。
+- **威脅模型**：e
+- **PoC**：依 `utils/audit.py:240-311` AuditMiddleware 設計，**只審計 POST/PUT/PATCH/DELETE，GET 請求不寫 AuditLog**；GET 匯出路徑（含 PII / 身分證 / 銀行帳號等敏感資料）必須由 endpoint 顯式調用 `write_explicit_audit`（line 192-237），否則沒有不可推卸的稽核軌跡。`exports.py` 只有 `/exports/employees`（員工名冊）做了，其他 8 支端點全沒做；`gov_reports.py` 所有四支政府申報端點（每支都會輸出全員 `id_number` 身分證）也沒做，僅以 `logger.warning` 留軌跡（log 為運維工具，retention 短且非業務證據）。
+  攻擊面：持有 SALARY_READ 的會計（hr）對 `/gov-reports/withholding?year=2026` 下載含全員身分證 + 全年所得，**事後無 AuditLog 可追**；持 STUDENTS_READ 的角色（supervisor/自訂）對 `/exports/students` 下載含全校生日 + 家長手機 + 地址，**亦無紀錄**。事故發生（PII 外洩、勒索郵件）時，無法從 `AuditLog` 表回溯誰於何時下載過該檔，只能挖 nginx access log（依部署而定，可能未保留 query string 或已被 rotate）。
+  本 finding 屬「稽核完整性」缺口而非直接 IDOR 越權，但落在威脅 e 的範疇：**內部高權限角色之間缺少彼此可驗證的痕跡，會計可一夜下載身分證後否認**。
+- **根因**：`write_explicit_audit` 是後加的 helper（見 `utils/audit.py:192-237` docstring 說明「為 GET 匯出 / 敏感讀取顯式寫 AuditLog」），但只回填到 `/exports/employees` 一處，其他匯出端點實作時未補上。Excel 匯出 + StreamingResponse 的設計本身不會自動觸發 audit。
+- **建議修法**：在每支匯出端點 return 之前統一調用：
+  ```python
+  write_explicit_audit(
+      request,
+      action="EXPORT",
+      entity_type="<student|attendance|leave|overtime|shift|gov_report>",
+      summary=f"匯出{...}（{count} 筆）",
+      changes={"count": count, "year": year, "month": month, ...},
+  )
+  ```
+  並在 `utils/audit.py:ENTITY_LABELS` 補 `gov_report`、`shift_assignment` 等 label。`/gov-reports/*` 還可在 `changes` 內標 `is_full_id_number=True`、`force=True`（force 模式更敏感），讓 SOC 能優先告警。
+- **是否需新測試**：no（Medium；建議 Phase 2 與其他 audit 完整性修補一起做。新測試型如：呼叫 `/exports/students`，斷言 AuditLog 表新增一筆 `action='EXPORT'`、`entity_type='student'`，且 `changes.count` 等於 returned 筆數）
+- **修補狀態**：⏳ Pending
+
+### F-034 [Medium] fees: `GET /records?student_id=...` 跨班讀全校學生繳費紀錄，僅以 `FEES_READ` 守門
+
+- **位置**：`api/fees.py:402-464` `GET /api/fees/records?student_id=...`（line 409 接受 `student_id` query；line 419-427 透過 `_apply_fee_record_filters` 過濾，無班級 scope）
+- **威脅模型**：e + b
+- **PoC**：endpoint 僅 `require_staff_permission(Permission.FEES_READ)`。預設 supervisor 持 FEES_READ + STUDENTS_READ（合法看全校）；但**自訂角色（如「財務助理」「會計記帳」）若只授予 FEES_READ 不授 STUDENTS_READ**，呼叫 `GET /api/fees/records?student_id={X}` 即可拿到任意學生跨學期所有費用紀錄（`student_name`、`classroom_name`、`fee_item_name`、`amount_due` / `amount_paid` / `status` / `payment_date`），等於用 FEES_READ 拿到 STUDENTS_READ 級的學生目錄資訊（姓名、班級、繳費狀況）。同 finding 也適用 `/api/fees/records`（不帶 student_id 但帶 `period` 或 `classroom_name`）— 寬鬆過濾下可一頁拉全校 200 筆繳費明細。本 finding 與 F-027（`api/activity/students/search` 在 ACTIVITY_WRITE 下回傳全校學生目錄）、F-028（POS 端點在 ACTIVITY_READ 下回 student PII）同型，但 fees 涉及金額；對家庭隱私敏感。
+  另：班導/副班導若被授 FEES_READ（而非 STUDENTS_READ）也能透過此端點側面查到不屬於自班的學生繳費紀錄 — 屬 b 威脅。
+- **根因**：`fees.py` 把 FEES_READ 視為單一閘門，未疊加 STUDENTS_READ 或班級 scope（`accessible_classroom_ids`）。退費 / 繳費端點已有 finance_guards 三重門檻（reason / 累積閾值 / 自我守衛）保護金流寫入面，但**讀取面**對 viewer 角色未做欄位區隔。
+- **建議修法**：兩擇一——
+  1. **perm gate 升級**：endpoint 改為 `FEES_READ + STUDENTS_READ`（`require_staff_permissions_all`），符合「看學生繳費紀錄需同時看得到學生本人」的實務設計。
+  2. **班級 scope 收斂**：對非 admin/hr/supervisor 強制走 `accessible_classroom_ids`，限縮 `classroom_name` filter；帶不在 allowed 內的 classroom 回 403。
+  建議 (1)：(2) 因 list 端點以 `classroom_name` 字串過濾（非 FK），實作較複雜；(1) 一行改動且更明確。
+- **是否需新測試**：no（Medium；列為 Phase 2 與 F-017 / F-026 / F-027 自訂角色 RBAC 改造一併處理）
+- **修補狀態**：⏳ Pending
+
+### F-035 [Low] audit-logs: `GET /audit-logs/export` 自身未呼叫 `write_explicit_audit`，匯出全系統操作軌跡的事件本身無痕
+
+- **位置**：`api/audit.py:141-215` `GET /api/audit-logs/export`
+- **威脅模型**：e
+- **PoC**：endpoint 受 `Permission.AUDIT_LOGS` 守門（預設僅 admin 持有），單看 perm 沒問題。但**匯出全系統操作軌跡（含他人薪資修改、員工資料異動、學費繳費等敏感寫入歷史）**這個動作本身**未被審計**：handler 只 stream CSV、不調用 `write_explicit_audit`，AuditMiddleware 又只審計 POST/PUT/DELETE。結果：admin A 下載全系統 10000 筆 AuditLog（含其他 admin/hr 的所有操作軌跡，最敏感 — 全公司動向都在裡面）、轉檔離線分發、之後否認，**`AuditLog` 表內找不到 A 下載過 export 的痕跡**。屬「meta-audit」缺口：稽核工具自身不被稽核。
+  雖然多 admin 互信，且預設角色配置下只有 admin 可觸發，但對 SOC / 法遵需求（誰看了全系統紀錄需要可追）構成弱點。比較對照組：`api/exports.py:/exports/employees` 已有 `write_explicit_audit`，是對「員工名冊匯出」的 meta-audit。AuditLog 自身匯出反而沒有，明顯不一致。
+- **根因**：`audit.py` 為早期實作（在 `write_explicit_audit` helper 之前），未回填。匯出上限 10000 筆已限制單次 blast radius，但對單一匯出事件本身的可追性無幫助。
+- **建議修法**：在 line 172 取得 `items` 後、return StreamingResponse 之前調用：
+  ```python
+  write_explicit_audit(
+      request,
+      action="EXPORT",
+      entity_type="audit_log",  # 需在 utils/audit.py:ENTITY_LABELS 補 audit_log: "操作紀錄"
+      summary=f"匯出操作審計紀錄（{len(items)} 筆，篩選：entity_type={entity_type or '*'}, action={action or '*'}, username={username or '*'}）",
+      changes={
+          "count": len(items),
+          "filters": {
+              "entity_type": entity_type, "action": action, "username": username,
+              "entity_id": entity_id, "ip_address": ip_address,
+              "start_at": start_at.isoformat() if start_at else None,
+              "end_at": end_at.isoformat() if end_at else None,
+          },
+      },
+  )
+  ```
+  注意 entity_type 取 `audit_log` 而非 `audit`，避免與 path pattern 衝突。
+- **是否需新測試**：no（Low）
 - **修補狀態**：⏳ Pending
