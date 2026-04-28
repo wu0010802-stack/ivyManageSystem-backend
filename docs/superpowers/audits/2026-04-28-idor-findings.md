@@ -3,7 +3,7 @@
 **日期**：2026-04-28
 **Spec**：`docs/superpowers/specs/2026-04-28-idor-audit-design.md`
 **Plan**：`docs/superpowers/plans/2026-04-28-idor-audit-phase1.md`
-**狀態**：🚧 In Progress
+**狀態**：✅ Phase 1 Complete
 
 > 對 ivy-backend 全部 API 路由的 IDOR 靜態盤查結果。每筆 finding 含位置、威脅模型、PoC、建議修法。
 > Phase 2（修補）另起 plan。
@@ -63,7 +63,68 @@
 
 ## Statistics
 
-> （Phase 1 結束時填入；按級別 × 威脅模型 × 模組統計。）
+### 按級別
+
+| 級別 | 筆數 |
+|---|---:|
+| **Critical** | 3 |
+| **High** | 15 |
+| **Medium** | 14 |
+| **Low** | 14 |
+| **總計** | **46** |
+
+### 按威脅模型（含複合，故總和大於 46）
+
+| 模型 | 描述 | 涉及筆數 |
+|---|---|---:|
+| **a** | 員工 A 偷看員工 B | 19 |
+| **b** | 跨班教師看別班學生 | 14 |
+| **c** | 家長 A 偷看別家小孩 | 7 |
+| **d** | 未認證 / 公開越權 | 1 |
+| **e** | 高權限角色之間欄位級洩漏 | 16 |
+
+### 按模組（聚合）
+
+| 模組分組 | 筆數 |
+|---|---:|
+| `api/auth.py` | 4 (F-037~F-040) |
+| `api/portal/*` | 7 |
+| `api/student_*.py` 系列 | 6 |
+| `api/activity/*` | 5 |
+| `api/parent_portal/*` | 4 |
+| `api/attendance/*` | 3 |
+| `api/exports.py` + `gov_reports.py` | 3 |
+| `api/employees.py` + `employees_docs.py` | 3 |
+| 其他單一模組（11 檔） | 11 |
+
+---
+
+## Phase 2 規劃
+
+依本報告級別分批修補：
+
+1. **Critical batch（3 筆，F-037~F-039）**：auth USER_MANAGEMENT_WRITE 提權鏈，最高優先；補 `target.role` 與 `caller can promote to admin?` 守衛 + pytest 回歸測試
+2. **High batch（15 筆）**：欄位級薪資洩漏（F-012~F-014、F-031、F-036）、跨班學生資料（F-018~F-021）、自我守衛缺口（F-040~F-042、F-046）、家長綁定（F-001、F-015）
+3. **Medium batch（14 筆）**：次要 perm 欄位疏漏與班級 scope 缺口；可抽 `mask_*_fields` / `assert_*_access` 共用 helper
+4. **Low batch（14 筆）**：404/403 枚舉一致化；可一次抽 `_get_owned_resource_or_403` helper
+
+Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix-phase2.md`
+
+### 共用 helper 抽取建議（spec section 4 + 盤查驗證）
+
+- `utils/idor_guards.assert_employee_self_or_perm` — 員工自查 / admin 越過
+- `utils/idor_guards.assert_teacher_owns_student` — 班級 scope（已部分存在於 `utils/portfolio_access`）
+- `utils/idor_guards.assert_parent_owns_student` — 家長綁定（已存在於 `parent_portal/_shared._assert_student_owned`，可上升為共用）
+- `utils/attendance_guards.require_not_self_attendance` — 自我守衛（leaves/overtimes 已有 idiom，attendance/punch_corrections 缺）
+- `utils/finance_response.mask_salary_fields` — 欄位級薪資遮罩（解 F-017/F-031/F-036/F-043 同型）
+
+### 風險最高的三筆
+
+1. **F-037 [Critical]** `POST /api/auth/users` — 任一 USER_MANAGEMENT_WRITE 持有者可建 admin 帳號
+2. **F-038 [Critical]** `PUT /api/auth/users/{user_id}` — 自我升 admin
+3. **F-039 [Critical]** `PUT /api/auth/users/{user_id}/reset-password` — 重設 admin 密碼後接管
+
+> 三筆共同根因：USER_MANAGEMENT_WRITE 缺 `target.role <= caller.role` 與 `payload.role/permissions <= caller.role/permissions` 的上限守衛。修補時應一併處理。
 
 ---
 
