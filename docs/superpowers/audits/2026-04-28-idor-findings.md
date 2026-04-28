@@ -37,6 +37,10 @@
 - [F-023](#f-023) [Medium] student_incidents/assessments: list 端點 `student_id` 與 `classroom_id` 都未帶時跳過 `_require_classroom_access`，回傳全校事件／評量
 - [F-024](#f-024) [Medium] students/records: `GET /students/records` 時間軸（`services/student_records_timeline`）無 viewer-side 班級過濾，回傳全校事件＋評量＋異動
 - [F-025](#f-025) [Medium] students: `GET /students/{student_id}/guardians` 缺班級 scope，可跨班讀家長聯絡資料
+- [F-026](#f-026) [Medium] activity/registrations: `GET /registrations` / `GET /registrations/{id}` / `GET /registrations/pending` 在 `ACTIVITY_READ` 下回傳 `parent_phone` / `birthday` / `email` / `student_id` / `classroom_id`，繞過 `GUARDIANS_READ` / `STUDENTS_READ`
+- [F-027](#f-027) [Medium] activity/registrations: `GET /students/search` 僅以 `ACTIVITY_WRITE` 守門，回傳全校在校生 `student_id` 學號 / `birthday` / `parent_phone`，繞過 `STUDENTS_READ`
+- [F-028](#f-028) [Low] activity/pos: `GET /pos/outstanding-by-student` / `GET /pos/recent-transactions` 在 `ACTIVITY_READ` 下回傳全校學生 `student_name` / `birthday` / `class_name`，可被一線櫃檯偷帶走
+- [F-029](#f-029) [Low] activity/public: `POST /public/update` 換手機號 409 `此手機號碼已被其他報名使用` 形成 phone enumeration oracle
 
 ---
 
@@ -338,4 +342,50 @@
 - **根因**：endpoint 僅 `require_staff_permission(GUARDIANS_READ)`，缺 `assert_student_access` 或 `accessible_classroom_ids` 過濾；同 pattern 已在 F-019/F-022 出現。
 - **建議修法**：在 endpoint 入口加 `assert_student_access(session, current_user, student_id)`；或將 `GUARDIANS_READ` 視為 admin-only 並收歸 supervisor 角色（依業主 policy 二擇一）。
 - **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-026 [Medium] activity/registrations: `GET /registrations` / `/{id}` / `/pending` 在 `ACTIVITY_READ` 下回傳 `parent_phone` / `birthday` / `email` / `student_id` / `classroom_id`，繞過 `GUARDIANS_READ` / `STUDENTS_READ`
+
+- **位置**：
+  - `api/activity/registrations.py:1283-1435` `GET /registrations`（response item line 1395-1424：`parent_phone`、`birthday`、`student_id`、`classroom_id`）
+  - `api/activity/registrations.py:1438-1542` `GET /registrations/{registration_id}`（response line 1517-1540：同上 + `email`）
+  - `api/activity/registrations.py:733-803` `GET /registrations/pending` 透過 `_serialize_pending_item`（line 711-730：`parent_phone`、`birthday`、`email`、`classroom_id`）
+- **威脅模型**：e
+- **PoC**：在預設角色配置下 admin/hr 通常同時持 ACTIVITY_READ + STUDENTS_READ + GUARDIANS_READ，本 finding 主要適用於**自訂角色**情境：若管理員建立「活動行政」「才藝助教」等只授予 `ACTIVITY_READ`（不授 `STUDENTS_READ` / `GUARDIANS_READ`）的角色，該角色呼叫 `GET /registrations?limit=200` 即可一頁拉走當學期所有報名學生的 `parent_phone`（家長手機）+ `birthday`（生日）+ `student_id`（在校 Student.id）+ `classroom_id`（班級 FK）+ `email`，等同跨班把全校報名才藝家庭的 PII 攜帶外帶。`/registrations/{id}` 與 `/registrations/pending` 同型外洩。`parent_phone` 在系統其他位置（`api/students.py:1003 /students/{id}/guardians`、F-025）已被視為 GUARDIANS_READ 級別敏感欄位；此處走 ACTIVITY_READ 即繞過。本 finding 與 F-017（`base_salary` 在 EMPLOYEES_READ 下外洩）、F-022（change_logs 在 STUDENTS_READ 下無班級 scope）同型——都是「同一份 PII 由次要 router 用較低門檻外洩」。
+- **根因**：`registrations.py` GET 端點直接 dump 整個 ORM row 到 response，未區分基本資料（`student_name` / `class_name` / `course_count` 等運維所需）與聯絡 PII（`parent_phone` / `email` / `birthday`）。無 viewer-side 欄位 mask、亦未檢查呼叫者是否同時持 `GUARDIANS_READ` / `STUDENTS_READ`。
+- **建議修法**：（1）在 list / detail / pending response 組裝處接受 `can_view_pii` 參數（caller 用 `has_permission(perms, Permission.GUARDIANS_READ)` 與 `STUDENTS_READ` 任一判斷），無權者把 `parent_phone` / `birthday` / `email` 改為 `None` 或 `"***"`；`student_id` / `classroom_id` 對非 STUDENTS_READ 也建議遮蔽。（2）或要求端點 perm 為 `ACTIVITY_READ + GUARDIANS_READ`，但會影響既有「活動行政」角色職責，需業主決策。建議 (1)，與 F-017 改造一致並可共享 helper。
+- **是否需新測試**：no（Medium；現行預設角色不會觸發；列為 Phase 2 與 F-017 自訂角色 RBAC 改造一併處理）
+- **修補狀態**：⏳ Pending
+
+### F-027 [Medium] activity/registrations: `GET /students/search` 僅以 `ACTIVITY_WRITE` 守門，回傳全校在校生 `student_id` 學號 / `birthday` / `parent_phone`，繞過 `STUDENTS_READ`
+
+- **位置**：`api/activity/registrations.py:806-848` `GET /api/activity/students/search`
+- **威脅模型**：e
+- **PoC**：endpoint perm 僅 `ACTIVITY_WRITE`。非 admin/hr 但持 ACTIVITY_WRITE 的角色（例：自訂「活動行政」「才藝櫃檯」）以 `q=王`、`q=09` 等寬鬆關鍵字呼叫，response（line 836-846）即逐筆回傳 `student_id`（學號）、`name`、`birthday`、`classroom_id`、`classroom_name`、`parent_phone`，相當於在無 STUDENTS_READ 權限下取得全校在校生目錄與家長聯絡資料。同模組正規端點（`api/students.py:368 GET /students`、F-018/F-019）至少需 `STUDENTS_READ`，且部分敏感欄位（健康/特殊需求）需更高位元；此 search 端點走 ACTIVITY_WRITE 等於建立側信道。`limit=50` 上限雖小，配合多次不同關鍵字仍可窮舉。
+- **根因**：endpoint 為了讓後台「待審核 → 手動 match」流程能搜學生，把學生搜尋 colocate 在 activity router 內，僅以 ACTIVITY_WRITE 守門，未要求同時持 STUDENTS_READ。亦未對非 admin/hr/supervisor 強制最小關鍵字長度（≥2 已有，但 phone like `09` 即可命中大量學生）或限縮為僅匹配 pending registration 上下文（要求帶 `registration_id` 才回傳）。
+- **建議修法**：（1）perm gate 改為 `ACTIVITY_WRITE + STUDENTS_READ`（`require_staff_permissions_all` helper）；（2）或要求 query 必須帶 `registration_id`，handler 校驗該 reg 為 pending 且呼叫者具 ACTIVITY_WRITE 才開放；（3）response 對非 STUDENTS_READ 角色把 `birthday` / `parent_phone` mask 為 `None`，僅回 `id` / `student_id` / `name` / `classroom_name` 供 match。建議 (1) 最小改動。
+- **是否需新測試**：yes
+- **修補狀態**：⏳ Pending
+
+### F-028 [Low] activity/pos: `GET /pos/outstanding-by-student` / `GET /pos/recent-transactions` 在 `ACTIVITY_READ` 下回傳全校學生 `student_name` / `birthday` / `class_name`
+
+- **位置**：
+  - `api/activity/pos.py:283-414` `GET /api/activity/pos/outstanding-by-student`（group response line 376-409：`student_name`、`birthday`、`class_name`，每組附 registrations[].class_name + courses 明細）
+  - `api/activity/pos.py:762-900` `GET /api/activity/pos/recent-transactions`（response line 871-893 包含 `student_names` 列表 + `items[].student_name` / `class_name`）
+  - `api/activity/pos.py:913-1111` `GET /api/activity/pos/semester-reconciliation`（response line 1070-1092：`student_name` / `class_name`，全學期）
+- **威脅模型**：e
+- **PoC**：與 F-026 同型但範圍稍窄。自訂「POS 櫃檯」角色僅有 ACTIVITY_READ（用於日結對帳）即可呼叫 `outstanding-by-student?q=&limit=500` 一頁取走全校未繳清才藝報名的學生姓名+生日+班級，或 `pos/semester-reconciliation` 取整學期全校才藝清單。`recent-transactions` 雖以日期過濾但每日交易仍含 `student_name` + `class_name`。實務上 ACTIVITY_READ 通常授給活動行政，但生日資料對社工釣魚有實際價值。
+- **根因**：POS 端點以 `ACTIVITY_READ` 為單一閘門，未疊加 `STUDENTS_READ` 或欄位遮罩。設計上假設操作者同時為老闆/會計（同時持兩個 perm），未防範自訂 RBAC 拆分。
+- **建議修法**：與 F-026 共用 viewer-side 欄位 mask helper。對非 STUDENTS_READ 角色：`outstanding-by-student` 將 `birthday` 改為 `None`（保留 `student_name` + `class_name` 供櫃檯叫號識別）；`semester-reconciliation` 同理；`recent-transactions` 已較少敏感欄位，可保留。或把這三個端點 perm gate 升為 `ACTIVITY_READ + STUDENTS_READ`，逼業主明確授權。
+- **是否需新測試**：no（Low；列為 Phase 2 與 F-017/F-026 同步處理）
+- **修補狀態**：⏳ Pending
+
+### F-029 [Low] activity/public: `POST /public/update` 換手機號 409 `此手機號碼已被其他報名使用` 形成 phone enumeration oracle
+
+- **位置**：`api/activity/public.py:796-809` `POST /api/activity/public/update`（`new_parent_phone` 衝突檢查）
+- **威脅模型**：c
+- **PoC**：攻擊者先用任意自家或社工取得的某筆有效報名（`name + birthday + parent_phone` 三欄通過驗證）取得對該 reg 的 update 權限。接著以 `new_parent_phone={target_TW_mobile}` 嘗試更新。若 target 號碼**未**綁定任何 active registration → 200 更新成功；若 target 號碼**已**綁定（任何家長正在使用）→ 409 `此手機號碼已被其他報名使用，請聯繫校方協助處理`。攻擊者可由此**枚舉任意 09 開頭 10 碼台灣手機是否在系統內出現過**（含家長、員工兼家長、轉班過的家庭等），用於：(1) 確認某支號碼是否與本園有教養關係；(2) 配合社工釣魚，先以 phone hits 縮小目標再實施其他攻擊。雖有 `_public_register_limiter`（5/min）限速，仍允許每分鐘 5 個 probe，每天約 7,200 個（一支 IP）；對 09 + 10 碼的 ~10^7 空間在已知/常見手機號白名單裡可有實質效果。
+- **根因**：為了把「兩個家長共用一支號碼」的對帳混亂擋掉，更新流程加了全域 `is_active` phone 唯一性檢查，但 409 detail 直接告知攻擊者「此手機號碼已被其他報名使用」。可區分 200 / 409 即洩漏存在性。
+- **建議修法**：（1）保留 phone 唯一性檢查，但 409 detail 改為通用訊息：`此手機號碼變更失敗，請聯繫校方協助處理` 或 `更新成功`（silent accept 但實際不寫入 phone，並另發 admin alert）；前者較不破壞 UX 但仍然部分洩漏（依然可區分 200 / 409）；後者完全消除 oracle 但 UX 變差。建議走 silent accept + 轉送至「校方審核佇列」。（2）強化 rate limit：`_public_register_limiter` 從 5/min 降為 5/hour（或 phone 變更專屬 limiter，3/day per IP），讓窮舉成本提高。建議 (1) + (2) 同時做。
+- **是否需新測試**：no（Low）
 - **修補狀態**：⏳ Pending
