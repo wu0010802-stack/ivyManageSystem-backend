@@ -36,6 +36,7 @@
 - [F-022](#f-022) [Medium] student_change_logs: list/summary/export/CRUD 無班級 scope；持 `STUDENTS_READ` 可讀全校異動軌跡（含轉班/退學/休學原因）
 - [F-023](#f-023) [Medium] student_incidents/assessments: list 端點 `student_id` 與 `classroom_id` 都未帶時跳過 `_require_classroom_access`，回傳全校事件／評量
 - [F-024](#f-024) [Medium] students/records: `GET /students/records` 時間軸（`services/student_records_timeline`）無 viewer-side 班級過濾，回傳全校事件＋評量＋異動
+- [F-025](#f-025) [Medium] students: `GET /students/{student_id}/guardians` 缺班級 scope，可跨班讀家長聯絡資料
 
 ---
 
@@ -327,4 +328,14 @@
   1. `list_timeline` 加 `accessible_classroom_ids: list[int] | None` 參數（None=全放行 admin）；內部 `_fetch_incidents` / `_fetch_assessments` 透過 `Student.classroom_id.in_(allowed)`、`_fetch_change_logs` 透過 `StudentChangeLog.classroom_id.in_(allowed)` 過濾。
   2. `GET /students/records` endpoint 在進入 service 前 `from utils.portfolio_access import is_unrestricted, accessible_classroom_ids; allowed = None if is_unrestricted(current_user) else accessible_classroom_ids(session, current_user)`，傳給 service。
 - **是否需新測試**：no（Medium）
+- **修補狀態**：⏳ Pending
+
+### F-025 [Medium] students: `GET /students/{student_id}/guardians` 缺班級 scope，可跨班讀家長聯絡資料
+
+- **位置**：`api/students.py:1003` `GET /students/{student_id}/guardians`
+- **威脅模型**：b
+- **PoC**：教師 A 班導 1 班，但持 `GUARDIANS_READ`（custom role 或 supervisor）。對任意 student_id 呼叫此端點，可讀該學生家長姓名、與學生關係、電話、Email 等聯絡 PII，跨班搜集家庭聯絡資料。
+- **根因**：endpoint 僅 `require_staff_permission(GUARDIANS_READ)`，缺 `assert_student_access` 或 `accessible_classroom_ids` 過濾；同 pattern 已在 F-019/F-022 出現。
+- **建議修法**：在 endpoint 入口加 `assert_student_access(session, current_user, student_id)`；或將 `GUARDIANS_READ` 視為 admin-only 並收歸 supervisor 角色（依業主 policy 二擇一）。
+- **是否需新測試**：yes
 - **修補狀態**：⏳ Pending
