@@ -2,6 +2,8 @@
 api/activity/_shared.py — 才藝系統共用 schemas、helpers、常數
 """
 
+import hashlib
+import json
 import re
 import logging
 from collections import defaultdict
@@ -9,7 +11,8 @@ from datetime import datetime, date, timedelta
 from typing import Optional, List, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request, Response
+from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select as sa_select
 
@@ -651,6 +654,31 @@ def _invalidate_activity_dashboard_caches(
         activity_service.invalidate_summary_cache(session)
         return
     activity_service.invalidate_dashboard_caches(session)
+
+
+def _public_etag_response(request: Request, response: Response, payload):
+    """為公開端點套上 ETag + no-cache 行為。
+
+    Why: 原本 `Cache-Control: max-age=300` 讓後台新增/異動課程後，前台需等
+    5~6 分鐘才看到（CDN/瀏覽器都會吃住快取）。改成 ETag + no-cache：
+    - no-cache 表示每次都需 revalidate，不會盲信舊快取
+    - ETag 命中時回 304 不傳 body，伺服器負擔仍接近零
+
+    payload 可為 dict / list / 任意可 JSON 序列化結構；命中 304 時回傳
+    PlainResponse(304)，否則回 payload 並設好 ETag。
+    """
+    etag = (
+        '"'
+        + hashlib.md5(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        + '"'
+    )
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
+    if request.headers.get("If-None-Match") == etag:
+        return PlainResponse(status_code=304, headers={"ETag": etag})
+    return payload
 
 
 def _parse_settings_iso(value: Optional[str]) -> Optional[datetime]:

@@ -72,6 +72,7 @@ from ._shared import (
     _compute_is_paid,
     _match_student_with_parent_phone,
     _normalize_phone,
+    _public_etag_response,
     TAIPEI_TZ,
 )
 from utils.academic import resolve_academic_term_filters
@@ -116,25 +117,26 @@ _PUBLIC_DISPLAY_FIELDS = (
 
 
 @router.get("/public/registration-time")
-async def get_public_registration_time(response: Response):
+async def get_public_registration_time(request: Request, response: Response):
     """公開端點：前台查詢報名開放時間 + 顯示設定（無需認證）"""
     session = get_session()
     try:
         settings = session.query(ActivityRegistrationSettings).first()
-        response.headers["Cache-Control"] = "public, max-age=60"
         if not settings:
-            return {
+            payload = {
                 "is_open": False,
                 "open_at": None,
                 "close_at": None,
                 **{k: None for k in _PUBLIC_DISPLAY_FIELDS},
             }
-        return {
-            "is_open": settings.is_open,
-            "open_at": settings.open_at,
-            "close_at": settings.close_at,
-            **{k: getattr(settings, k, None) for k in _PUBLIC_DISPLAY_FIELDS},
-        }
+        else:
+            payload = {
+                "is_open": settings.is_open,
+                "open_at": settings.open_at,
+                "close_at": settings.close_at,
+                **{k: getattr(settings, k, None) for k in _PUBLIC_DISPLAY_FIELDS},
+            }
+        return _public_etag_response(request, response, payload)
     finally:
         session.close()
 
@@ -171,7 +173,7 @@ async def get_public_poster(filename: str, response: Response):
 
 
 @router.get("/public/courses")
-async def get_public_courses(response: Response):
+async def get_public_courses(request: Request, response: Response):
     """前台：取得課程列表"""
     session = get_session()
     try:
@@ -181,19 +183,17 @@ async def get_public_courses(response: Response):
             .order_by(ActivityCourse.id)
             .all()
         )
-        response.headers["Cache-Control"] = (
-            "public, max-age=300, stale-while-revalidate=60"
-        )
-        return [
+        payload = [
             {"name": c.name, "price": c.price, "sessions": c.sessions, "frequency": ""}
             for c in courses
         ]
+        return _public_etag_response(request, response, payload)
     finally:
         session.close()
 
 
 @router.get("/public/supplies")
-async def get_public_supplies(response: Response):
+async def get_public_supplies(request: Request, response: Response):
     """前台：取得用品列表"""
     session = get_session()
     try:
@@ -203,16 +203,14 @@ async def get_public_supplies(response: Response):
             .order_by(ActivitySupply.id)
             .all()
         )
-        response.headers["Cache-Control"] = (
-            "public, max-age=300, stale-while-revalidate=60"
-        )
-        return [{"name": s.name, "price": s.price} for s in supplies]
+        payload = [{"name": s.name, "price": s.price} for s in supplies]
+        return _public_etag_response(request, response, payload)
     finally:
         session.close()
 
 
 @router.get("/public/classes")
-async def get_public_classes(response: Response):
+async def get_public_classes(request: Request, response: Response):
     """前台：取得班級選項"""
     session = get_session()
     try:
@@ -222,8 +220,8 @@ async def get_public_classes(response: Response):
             .order_by(Classroom.id)
             .all()
         )
-        response.headers["Cache-Control"] = "public, max-age=600"
-        return [c.name for c in classrooms]
+        payload = [c.name for c in classrooms]
+        return _public_etag_response(request, response, payload)
     finally:
         session.close()
 
@@ -284,7 +282,7 @@ async def get_public_courses_availability(request: Request, response: Response):
 
 
 @router.get("/public/course-videos")
-async def get_public_course_videos(response: Response):
+async def get_public_course_videos(request: Request, response: Response):
     """前台：取得課程介紹影片 URL"""
     session = get_session()
     try:
@@ -297,8 +295,8 @@ async def get_public_course_videos(response: Response):
             )
             .all()
         )
-        response.headers["Cache-Control"] = "public, max-age=300"
-        return {c.name: c.video_url for c in courses}
+        payload = {c.name: c.video_url for c in courses}
+        return _public_etag_response(request, response, payload)
     finally:
         session.close()
 
