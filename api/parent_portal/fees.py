@@ -148,14 +148,16 @@ def list_payments(
     user_id = current_user["user_id"]
     session = get_session()
     try:
+        # F-002：collapse 「記錄不存在」與「不屬於本家庭」為同一 403，
+        # 避免攻擊者透過 status code 差異枚舉 fee record id 存在性。
+        _, owned_student_ids = _get_parent_student_ids(session, user_id)
         record = (
             session.query(StudentFeeRecord)
             .filter(StudentFeeRecord.id == record_id)
             .first()
         )
-        if record is None:
-            raise HTTPException(status_code=404, detail="找不到費用記錄")
-        _assert_student_owned(session, user_id, record.student_id)
+        if record is None or record.student_id not in owned_student_ids:
+            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
 
         payments = (
             session.query(StudentFeePayment)

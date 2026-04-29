@@ -360,4 +360,5 @@ class TestPublicUpdatePhoneConflict:
             },
         )
         assert r_upd.status_code == 409
-        assert "已被其他報名" in r_upd.json()["detail"]
+        # F-029：detail 已改為 generic 不洩漏存在性，僅檢查 status 與通用字眼。
+        assert "無法使用" in r_upd.json()["detail"]

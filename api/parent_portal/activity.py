@@ -92,9 +92,7 @@ def list_courses(
         session.close()
 
 
-def _registration_summary(
-    session, reg: ActivityRegistration
-) -> dict:
+def _registration_summary(session, reg: ActivityRegistration) -> dict:
     """組合 registration 與 enrolled/waitlist courses 摘要。"""
     courses = (
         session.query(RegistrationCourse, ActivityCourse)
@@ -225,7 +223,9 @@ def register_courses(
         for course_id in payload.course_ids:
             course = (
                 session.query(ActivityCourse)
-                .filter(ActivityCourse.id == course_id, ActivityCourse.is_active == True)
+                .filter(
+                    ActivityCourse.id == course_id, ActivityCourse.is_active == True
+                )
                 .first()
             )
             if course is None:
@@ -262,7 +262,9 @@ def register_courses(
         for supply_id in payload.supply_ids:
             supply = (
                 session.query(ActivitySupply)
-                .filter(ActivitySupply.id == supply_id, ActivitySupply.is_active == True)
+                .filter(
+                    ActivitySupply.id == supply_id, ActivitySupply.is_active == True
+                )
                 .first()
             )
             if supply is None:
@@ -298,6 +300,9 @@ def confirm_promotion(
     user_id = current_user["user_id"]
     session = get_session()
     try:
+        # F-003：「報名不存在」「未綁定學生」「不屬於本家庭」一律 generic 403，
+        # 避免透過 status code/detail 差異枚舉 ActivityRegistration id 存在性。
+        _, owned_student_ids = _get_parent_student_ids(session, user_id)
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -306,11 +311,12 @@ def confirm_promotion(
             )
             .first()
         )
-        if reg is None:
-            raise HTTPException(status_code=404, detail="找不到報名")
-        if reg.student_id is None:
-            raise HTTPException(status_code=400, detail="此報名未綁定學生")
-        _assert_student_owned(session, user_id, reg.student_id)
+        if (
+            reg is None
+            or reg.student_id is None
+            or reg.student_id not in owned_student_ids
+        ):
+            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
 
         rc = (
             session.query(RegistrationCourse)
@@ -323,9 +329,7 @@ def confirm_promotion(
         if rc is None:
             raise HTTPException(status_code=404, detail="找不到該報名課程")
         if rc.status != "promoted_pending":
-            raise HTTPException(
-                status_code=400, detail=f"狀態為 {rc.status}，無法確認"
-            )
+            raise HTTPException(status_code=400, detail=f"狀態為 {rc.status}，無法確認")
         if rc.confirm_deadline and rc.confirm_deadline < datetime.now():
             raise HTTPException(status_code=400, detail="確認期限已過")
         rc.status = "enrolled"
@@ -344,6 +348,8 @@ def registration_payments(
     user_id = current_user["user_id"]
     session = get_session()
     try:
+        # F-003：「報名不存在」「未綁定學生」「不屬於本家庭」一律 generic 403。
+        _, owned_student_ids = _get_parent_student_ids(session, user_id)
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -352,11 +358,12 @@ def registration_payments(
             )
             .first()
         )
-        if reg is None:
-            raise HTTPException(status_code=404, detail="找不到報名")
-        if reg.student_id is None:
-            raise HTTPException(status_code=400, detail="此報名未綁定學生")
-        _assert_student_owned(session, user_id, reg.student_id)
+        if (
+            reg is None
+            or reg.student_id is None
+            or reg.student_id not in owned_student_ids
+        ):
+            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
 
         rows = (
             session.query(ActivityPaymentRecord)
@@ -376,7 +383,9 @@ def registration_payments(
                 {
                     "type": r.type,
                     "amount": r.amount,
-                    "payment_date": r.payment_date.isoformat() if r.payment_date else None,
+                    "payment_date": (
+                        r.payment_date.isoformat() if r.payment_date else None
+                    ),
                     "payment_method": r.payment_method,
                     "receipt_no": r.receipt_no,
                 }

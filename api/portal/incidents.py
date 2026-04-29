@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-
 @router.get("/my-class-incidents")
 def get_my_class_incidents(
     classroom_id: Optional[int] = Query(None),
@@ -39,7 +38,9 @@ def get_my_class_incidents(
         with session_scope() as session:
             emp = _get_employee(session, current_user)
             _, student_ids = _get_teacher_student_ids(
-                session, emp.id, classroom_id,
+                session,
+                emp.id,
+                classroom_id,
                 forbidden_detail="無權查看此班級的事件紀錄",
             )
             if not student_ids:
@@ -61,7 +62,12 @@ def get_my_class_incidents(
                 query = query.filter(StudentIncident.occurred_at <= end_dt)
 
             total = query.count()
-            rows = query.order_by(StudentIncident.occurred_at.desc()).offset(skip).limit(limit).all()
+            rows = (
+                query.order_by(StudentIncident.occurred_at.desc())
+                .offset(skip)
+                .limit(limit)
+                .all()
+            )
 
             return {
                 "total": total,
@@ -79,19 +85,29 @@ def create_portal_incident(
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
 ):
     """教師填寫新事件（只能填寫自己班級的學生）"""
-    validate_incident_fields(incident_type=payload.incident_type, severity=payload.severity)
+    validate_incident_fields(
+        incident_type=payload.incident_type, severity=payload.severity
+    )
 
     try:
         with session_scope() as session:
             emp = _get_employee(session, current_user)
             classroom_ids = _get_teacher_classroom_ids(session, emp.id)
 
-            # 驗證學生屬於教師班級
-            student = session.query(Student).filter(Student.id == payload.student_id).first()
-            if not student:
-                raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
-            if student.classroom_id not in classroom_ids:
-                raise HTTPException(status_code=403, detail="無權為此學生填寫事件紀錄")
+            # F-007：「學生不存在」「不屬於本班」「已停用」一律 generic 403，
+            # 避免透過 status code 差異枚舉 Student id 存在性與在學狀態。
+            student = (
+                session.query(Student)
+                .filter(
+                    Student.id == payload.student_id,
+                    Student.is_active.is_(True),
+                )
+                .first()
+            )
+            if not student or student.classroom_id not in classroom_ids:
+                raise HTTPException(
+                    status_code=403, detail="查無此學生或無權為此學生填寫事件紀錄"
+                )
 
             incident = StudentIncident(
                 student_id=payload.student_id,
@@ -108,8 +124,12 @@ def create_portal_incident(
             session.flush()
             session.refresh(incident)
 
-            logger.info("教師新增學生事件紀錄：emp=%s student_id=%d type=%s",
-                        emp.name, payload.student_id, payload.incident_type)
+            logger.info(
+                "教師新增學生事件紀錄：emp=%s student_id=%d type=%s",
+                emp.name,
+                payload.student_id,
+                payload.incident_type,
+            )
             return incident_to_dict(incident, student)
     except HTTPException:
         raise

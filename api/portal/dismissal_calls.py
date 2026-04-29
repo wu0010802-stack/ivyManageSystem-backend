@@ -24,6 +24,7 @@ router = APIRouter()
 # 輔助函式
 # ---------------------------------------------------------------------------
 
+
 def _build_calls_out_bulk(calls: list, session) -> list[dict]:
     """批量組裝 API 回傳 dict，避免 N+1 查詢（用於列表端點）。"""
     if not calls:
@@ -32,24 +33,33 @@ def _build_calls_out_bulk(calls: list, session) -> list[dict]:
     student_ids = {c.student_id for c in calls}
     classroom_ids = {c.classroom_id for c in calls}
 
-    students = {s.id: s for s in session.query(Student).filter(Student.id.in_(student_ids)).all()}
-    classrooms = {c.id: c for c in session.query(Classroom).filter(Classroom.id.in_(classroom_ids)).all()}
+    students = {
+        s.id: s
+        for s in session.query(Student).filter(Student.id.in_(student_ids)).all()
+    }
+    classrooms = {
+        c.id: c
+        for c in session.query(Classroom).filter(Classroom.id.in_(classroom_ids)).all()
+    }
 
     return [
-        _call_base_dict(call, students.get(call.student_id), classrooms.get(call.classroom_id))
+        _call_base_dict(
+            call, students.get(call.student_id), classrooms.get(call.classroom_id)
+        )
         for call in calls
     ]
 
 
 def _get_manager():
     from api.dismissal_ws import manager
-    return manager
 
+    return manager
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get("/dismissal-calls")
 def portal_list_dismissal_calls(
@@ -67,12 +77,17 @@ def portal_list_dismissal_calls(
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 
-        calls = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.classroom_id.in_(classroom_ids),
-            StudentDismissalCall.status.in_(["pending", "acknowledged"]),
-            StudentDismissalCall.requested_at >= day_start,
-            StudentDismissalCall.requested_at <= day_end,
-        ).order_by(StudentDismissalCall.requested_at.desc()).all()
+        calls = (
+            session.query(StudentDismissalCall)
+            .filter(
+                StudentDismissalCall.classroom_id.in_(classroom_ids),
+                StudentDismissalCall.status.in_(["pending", "acknowledged"]),
+                StudentDismissalCall.requested_at >= day_start,
+                StudentDismissalCall.requested_at <= day_end,
+            )
+            .order_by(StudentDismissalCall.requested_at.desc())
+            .all()
+        )
 
         return _build_calls_out_bulk(calls, session)
     finally:
@@ -95,12 +110,16 @@ def portal_pending_count(
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 
-        count = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.classroom_id.in_(classroom_ids),
-            StudentDismissalCall.status == "pending",
-            StudentDismissalCall.requested_at >= day_start,
-            StudentDismissalCall.requested_at <= day_end,
-        ).count()
+        count = (
+            session.query(StudentDismissalCall)
+            .filter(
+                StudentDismissalCall.classroom_id.in_(classroom_ids),
+                StudentDismissalCall.status == "pending",
+                StudentDismissalCall.requested_at >= day_start,
+                StudentDismissalCall.requested_at <= day_end,
+            )
+            .count()
+        )
         return {"count": count}
     finally:
         session.close()
@@ -122,13 +141,16 @@ def _db_transition_call(
         emp = _get_employee(session, current_user)
         classroom_ids = _get_teacher_classroom_ids(session, emp.id)
 
-        call = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.id == call_id
-        ).first()
-        if not call:
-            raise HTTPException(status_code=404, detail="找不到通知")
-        if call.classroom_id not in classroom_ids:
-            raise HTTPException(status_code=403, detail="無權操作此通知")
+        call = (
+            session.query(StudentDismissalCall)
+            .filter(StudentDismissalCall.id == call_id)
+            .first()
+        )
+        # F-006：「通知不存在」與「屬於別班」collapse 為單一 403 generic，
+        # 避免透過 status code 差異枚舉 StudentDismissalCall id 存在性。
+        # 422（own-class 但狀態不符）保留為合法業務流程錯誤，不算 enum oracle。
+        if not call or call.classroom_id not in classroom_ids:
+            raise HTTPException(status_code=403, detail="查無此通知或無權存取")
         if call.status != required_status:
             raise HTTPException(
                 status_code=422,
@@ -137,7 +159,9 @@ def _db_transition_call(
 
         # 在 commit 前預讀，避免 post-commit N+1 查詢
         student = session.query(Student).filter(Student.id == call.student_id).first()
-        classroom = session.query(Classroom).filter(Classroom.id == call.classroom_id).first()
+        classroom = (
+            session.query(Classroom).filter(Classroom.id == call.classroom_id).first()
+        )
 
         classroom_id = call.classroom_id
         call.status = new_status
@@ -157,18 +181,24 @@ def _db_transition_call(
 
 def _db_acknowledge(call_id: int, current_user: dict) -> tuple[dict, int]:
     return _db_transition_call(
-        call_id, current_user,
-        required_status="pending", new_status="acknowledged",
-        by_field="acknowledged_by_employee_id", at_field="acknowledged_at",
+        call_id,
+        current_user,
+        required_status="pending",
+        new_status="acknowledged",
+        by_field="acknowledged_by_employee_id",
+        at_field="acknowledged_at",
         action_label="已收到",
     )
 
 
 def _db_complete(call_id: int, current_user: dict) -> tuple[dict, int]:
     return _db_transition_call(
-        call_id, current_user,
-        required_status="acknowledged", new_status="completed",
-        by_field="completed_by_employee_id", at_field="completed_at",
+        call_id,
+        current_user,
+        required_status="acknowledged",
+        new_status="completed",
+        by_field="completed_by_employee_id",
+        at_field="completed_at",
         action_label="已放學",
     )
 
@@ -180,12 +210,17 @@ async def portal_acknowledge(
 ):
     """老師確認已收到接送通知（pending → acknowledged）。"""
     loop = asyncio.get_running_loop()
-    out, classroom_id = await loop.run_in_executor(None, _db_acknowledge, call_id, current_user)
+    out, classroom_id = await loop.run_in_executor(
+        None, _db_acknowledge, call_id, current_user
+    )
 
-    await _get_manager().broadcast(classroom_id, {
-        "type": "dismissal_call_updated",
-        "payload": out,
-    })
+    await _get_manager().broadcast(
+        classroom_id,
+        {
+            "type": "dismissal_call_updated",
+            "payload": out,
+        },
+    )
     return out
 
 
@@ -196,10 +231,15 @@ async def portal_complete(
 ):
     """老師確認學生已放學（acknowledged → completed）。"""
     loop = asyncio.get_running_loop()
-    out, classroom_id = await loop.run_in_executor(None, _db_complete, call_id, current_user)
+    out, classroom_id = await loop.run_in_executor(
+        None, _db_complete, call_id, current_user
+    )
 
-    await _get_manager().broadcast(classroom_id, {
-        "type": "dismissal_call_updated",
-        "payload": out,
-    })
+    await _get_manager().broadcast(
+        classroom_id,
+        {
+            "type": "dismissal_call_updated",
+            "payload": out,
+        },
+    )
     return out

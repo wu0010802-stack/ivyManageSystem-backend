@@ -830,9 +830,13 @@ async def public_update_registration(
                 .first()
             )
             if conflict is not None:
+                # F-029：原訊息「此手機號碼已被其他報名使用」會形成 phone enumeration
+                # oracle，攻擊者可枚舉任意 09 開頭手機是否在系統內出現過。改用 generic
+                # 訊息避免 200 vs 409 status code 差異洩漏存在性（rate limit 仍由
+                # _public_register_limiter 控制 5/min/IP）。
                 raise HTTPException(
                     status_code=409,
-                    detail="此手機號碼已被其他報名使用，請聯繫校方協助處理",
+                    detail="此手機號碼無法使用，請聯繫校方協助處理",
                 )
             reg.parent_phone = body.new_parent_phone
             effective_phone = body.new_parent_phone

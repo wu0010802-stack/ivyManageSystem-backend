@@ -304,16 +304,22 @@ def portal_get_session_detail(
             .filter(ActivitySession.id == session_id)
             .first()
         )
+        # F-010：「場次不存在」與「場次不含自班學生」collapse 為同一 generic 403，
+        # 避免透過 status code 差異枚舉 ActivitySession id 與 course_name 中介資料。
         if not sess:
-            raise HTTPException(status_code=404, detail="找不到場次")
+            raise HTTPException(status_code=403, detail="查無此場次或無權存取")
 
         group_key = "classroom" if group_by == "classroom" else None
-        return _build_session_detail_response(
+        response = _build_session_detail_response(
             session,
             sess,
             classroom_ids_filter=classroom_ids,
             group_by=group_key,
         )
+        # 若教師對此場次無自班學生，視同無權查閱：不外露 course_name / 日期等中介資料。
+        if not response.get("students"):
+            raise HTTPException(status_code=403, detail="查無此場次或無權存取")
+        return response
     finally:
         session.close()
 

@@ -275,11 +275,13 @@ def create_my_leave(
                 .filter(OvertimeRecord.id == data.source_overtime_id)
                 .first()
             )
-            if not src_ot:
-                raise HTTPException(status_code=400, detail="來源加班記錄不存在")
-            if src_ot.employee_id != emp.id:
+            # F-011：「加班記錄不存在」與「不屬於本人」collapse 為同一 400 generic，
+            # 避免透過 status code/detail 差異枚舉 OvertimeRecord id 存在性與
+            # 同事加班排程。後續業務驗證（未核准/非補休模式/未發放配額）仍維持
+            # 各自具體訊息——這些不洩漏跨員工存在性。
+            if not src_ot or src_ot.employee_id != emp.id:
                 raise HTTPException(
-                    status_code=403, detail="來源加班記錄不屬於本人"
+                    status_code=400, detail="來源加班記錄無效或無權使用"
                 )
             if src_ot.is_approved is not True:
                 raise HTTPException(

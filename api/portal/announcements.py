@@ -5,7 +5,13 @@ Portal - announcement endpoints
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 
-from models.database import get_session, Employee, Announcement, AnnouncementRead, AnnouncementRecipient
+from models.database import (
+    get_session,
+    Employee,
+    Announcement,
+    AnnouncementRead,
+    AnnouncementRecipient,
+)
 from utils.auth import get_current_user
 from utils.error_messages import ANNOUNCEMENT_NOT_FOUND
 
@@ -24,20 +30,29 @@ def get_portal_announcements(
         emp_id = current_user["employee_id"]
 
         # 過濾：全員公告（無 recipients）或指定包含當前員工的公告
-        no_recipients_subq = ~session.query(AnnouncementRecipient).filter(
-            AnnouncementRecipient.announcement_id == Announcement.id
-        ).exists()
-        targeted_to_me_subq = session.query(AnnouncementRecipient).filter(
-            AnnouncementRecipient.announcement_id == Announcement.id,
-            AnnouncementRecipient.employee_id == emp_id,
-        ).exists()
+        no_recipients_subq = (
+            ~session.query(AnnouncementRecipient)
+            .filter(AnnouncementRecipient.announcement_id == Announcement.id)
+            .exists()
+        )
+        targeted_to_me_subq = (
+            session.query(AnnouncementRecipient)
+            .filter(
+                AnnouncementRecipient.announcement_id == Announcement.id,
+                AnnouncementRecipient.employee_id == emp_id,
+            )
+            .exists()
+        )
         visible_filter = no_recipients_subq | targeted_to_me_subq
 
-        base_q = session.query(Announcement, Employee.name).outerjoin(
-            Employee, Announcement.created_by == Employee.id
-        ).filter(visible_filter).order_by(
-            Announcement.is_pinned.desc(),
-            Announcement.created_at.desc(),
+        base_q = (
+            session.query(Announcement, Employee.name)
+            .outerjoin(Employee, Announcement.created_by == Employee.id)
+            .filter(visible_filter)
+            .order_by(
+                Announcement.is_pinned.desc(),
+                Announcement.created_at.desc(),
+            )
         )
 
         total = session.query(Announcement).filter(visible_filter).count()
@@ -47,24 +62,31 @@ def get_portal_announcements(
         read_ids = set()
         if ann_ids:
             read_ids = set(
-                r.announcement_id for r in session.query(AnnouncementRead).filter(
+                r.announcement_id
+                for r in session.query(AnnouncementRead)
+                .filter(
                     AnnouncementRead.employee_id == emp_id,
                     AnnouncementRead.announcement_id.in_(ann_ids),
-                ).all()
+                )
+                .all()
             )
 
         items = []
         for ann, author_name in rows:
-            items.append({
-                "id": ann.id,
-                "title": ann.title,
-                "content": ann.content,
-                "priority": ann.priority,
-                "is_pinned": ann.is_pinned,
-                "created_by_name": author_name or "未知",
-                "created_at": ann.created_at.isoformat() if ann.created_at else None,
-                "is_read": ann.id in read_ids,
-            })
+            items.append(
+                {
+                    "id": ann.id,
+                    "title": ann.title,
+                    "content": ann.content,
+                    "priority": ann.priority,
+                    "is_pinned": ann.is_pinned,
+                    "created_by_name": author_name or "未知",
+                    "created_at": (
+                        ann.created_at.isoformat() if ann.created_at else None
+                    ),
+                    "is_read": ann.id in read_ids,
+                }
+            )
 
         return {"items": items, "total": total, "skip": skip, "limit": limit}
     finally:
@@ -81,14 +103,40 @@ def mark_announcement_read(
     try:
         emp_id = current_user["employee_id"]
 
-        ann = session.query(Announcement).filter(Announcement.id == announcement_id).first()
-        if not ann:
-            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        # F-009：補上可見性檢查（與 list 端 visible_filter 同步），
+        # 並把「公告不存在」「不可見（指定 recipients 不含本人）」collapse 為
+        # 同一 generic 403，避免透過 status code/detail 差異枚舉 Announcement id。
+        no_recipients_subq = (
+            ~session.query(AnnouncementRecipient)
+            .filter(AnnouncementRecipient.announcement_id == Announcement.id)
+            .exists()
+        )
+        targeted_to_me_subq = (
+            session.query(AnnouncementRecipient)
+            .filter(
+                AnnouncementRecipient.announcement_id == Announcement.id,
+                AnnouncementRecipient.employee_id == emp_id,
+            )
+            .exists()
+        )
+        visible_filter = no_recipients_subq | targeted_to_me_subq
 
-        existing = session.query(AnnouncementRead).filter(
-            AnnouncementRead.announcement_id == announcement_id,
-            AnnouncementRead.employee_id == emp_id,
-        ).first()
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == announcement_id, visible_filter)
+            .first()
+        )
+        if not ann:
+            raise HTTPException(status_code=403, detail="查無此公告或無權存取")
+
+        existing = (
+            session.query(AnnouncementRead)
+            .filter(
+                AnnouncementRead.announcement_id == announcement_id,
+                AnnouncementRead.employee_id == emp_id,
+            )
+            .first()
+        )
 
         if not existing:
             read_record = AnnouncementRead(
@@ -117,19 +165,29 @@ def get_unread_count(
     try:
         emp_id = current_user["employee_id"]
 
-        no_recipients_subq = ~session.query(AnnouncementRecipient).filter(
-            AnnouncementRecipient.announcement_id == Announcement.id
-        ).exists()
-        targeted_to_me_subq = session.query(AnnouncementRecipient).filter(
-            AnnouncementRecipient.announcement_id == Announcement.id,
-            AnnouncementRecipient.employee_id == emp_id,
-        ).exists()
+        no_recipients_subq = (
+            ~session.query(AnnouncementRecipient)
+            .filter(AnnouncementRecipient.announcement_id == Announcement.id)
+            .exists()
+        )
+        targeted_to_me_subq = (
+            session.query(AnnouncementRecipient)
+            .filter(
+                AnnouncementRecipient.announcement_id == Announcement.id,
+                AnnouncementRecipient.employee_id == emp_id,
+            )
+            .exists()
+        )
         visible_filter = no_recipients_subq | targeted_to_me_subq
 
         total = session.query(Announcement).filter(visible_filter).count()
-        read = session.query(AnnouncementRead).filter(
-            AnnouncementRead.employee_id == emp_id,
-        ).count()
+        read = (
+            session.query(AnnouncementRead)
+            .filter(
+                AnnouncementRead.employee_id == emp_id,
+            )
+            .count()
+        )
 
         return {"unread_count": max(0, total - read)}
     finally:

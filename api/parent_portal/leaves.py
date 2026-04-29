@@ -84,7 +84,8 @@ def _check_overlap(session, student_id: int, start: date, end: date) -> None:
     )
     if overlap is not None:
         raise HTTPException(
-            status_code=400, detail="此期間已有其他申請（pending/approved），請先處理或調整日期"
+            status_code=400,
+            detail="此期間已有其他申請（pending/approved），請先處理或調整日期",
         )
 
 
@@ -113,7 +114,9 @@ def create_leave(
     session = get_session()
     try:
         _assert_student_owned(session, user_id, payload.student_id)
-        _check_overlap(session, payload.student_id, payload.start_date, payload.end_date)
+        _check_overlap(
+            session, payload.student_id, payload.start_date, payload.end_date
+        )
 
         guardian = (
             session.query(Guardian)
@@ -169,14 +172,16 @@ def get_leave(
     user_id = current_user["user_id"]
     session = get_session()
     try:
+        # F-004：「申請不存在」與「不屬於本家庭」collapse 為單一 403，
+        # 避免透過 status code 差異枚舉 StudentLeaveRequest id 存在性。
+        _, owned_student_ids = _get_parent_student_ids(session, user_id)
         item = (
             session.query(StudentLeaveRequest)
             .filter(StudentLeaveRequest.id == leave_id)
             .first()
         )
-        if item is None:
-            raise HTTPException(status_code=404, detail="找不到申請")
-        _assert_student_owned(session, user_id, item.student_id)
+        if item is None or item.student_id not in owned_student_ids:
+            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
         return _serialize(item)
     finally:
         session.close()
@@ -191,14 +196,15 @@ def cancel_leave(
     user_id = current_user["user_id"]
     session = get_session()
     try:
+        # F-004：同 GET，「申請不存在」與「不屬於本家庭」collapse 為單一 403。
+        _, owned_student_ids = _get_parent_student_ids(session, user_id)
         item = (
             session.query(StudentLeaveRequest)
             .filter(StudentLeaveRequest.id == leave_id)
             .first()
         )
-        if item is None:
-            raise HTTPException(status_code=404, detail="找不到申請")
-        _assert_student_owned(session, user_id, item.student_id)
+        if item is None or item.student_id not in owned_student_ids:
+            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
         if item.status != "pending":
             raise HTTPException(
                 status_code=400, detail=f"狀態為 {item.status}，無法取消"

@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from fastapi import HTTPException
 
@@ -145,6 +145,39 @@ def mask_student_health_fields(
         if "special_needs" in result:
             result["special_needs"] = None
     return result
+
+
+def get_owned_resource_or_403(
+    session,
+    model: Any,
+    resource_id: int,
+    *,
+    owner_check: Callable[[Any], bool],
+    detail: str = "查無此資料或無權存取",
+) -> Any:
+    """通用 helper：以 id fetch resource，若不存在或 owner_check 失敗，
+    一律 raise 403 + generic detail（不揭露存在性）。
+
+    用於遮蔽「resource 不存在」與「resource 存在但非自己」兩種失敗
+    回應差異（IDOR enumeration oracle）。
+
+    Args:
+        session: SQLAlchemy session
+        model: ORM model class（須有 ``id`` 欄位）
+        resource_id: PK of resource to fetch
+        owner_check: callable(resource) -> bool. True 表示通過。
+        detail: error message（預設遮蔽存在性）
+
+    Returns:
+        通過檢查的 resource 物件。
+
+    Raises:
+        HTTPException(403): resource 不存在或 ownership 失敗。
+    """
+    resource = session.query(model).filter(model.id == resource_id).first()
+    if resource is None or not owner_check(resource):
+        raise HTTPException(status_code=403, detail=detail)
+    return resource
 
 
 def student_ids_in_scope(session, current_user: dict) -> list[int] | None:
