@@ -704,7 +704,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. 例外：admin 可繞過守衛 + 留稽核（與 finance_guards force=true 模式一致）。
   3. 補測試 `tests/security/test_attendance_self_modify_guard.py`：hr 改自己 → 403；admin 改自己 + force_reason → 200 + audit log。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 877e3e4a)
 
 ### F-042 [High] attendance/anomalies: `POST /anomalies/batch-confirm` 缺自我守衛，可自我 admin_waive 異常記錄消除本人扣款
 
@@ -731,7 +731,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
      或抽到 `require_not_self_attendance_anomaly` helper。
   2. admin 可加 force_reason 繞過 + 留 audit。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 877e3e4a)
 
 ### F-043 [Medium] dev: `/api/dev/employee-salary-debug` 在非 production 環境（含 staging/test/未設 ENV）暴露任意員工薪資完整明細，僅需 SETTINGS_READ
 
@@ -801,4 +801,4 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：與 F-041、F-015 同型 — 缺「不可改自己」自我守衛；bulk 路徑覆蓋面更大且容易繞過 manual review。
 - **建議修法**：在每筆 row 寫入前比對 `current_user.user_id`，若 row.employee_id 對應的 user_id 等於 caller，依 policy 拒絕該 row（或要求雙簽核）。可抽 `utils/attendance_guards.require_not_self_attendance(session, current_user, employee_id)` 共用 helper，給 records.py / anomalies.py / upload.py 三檔同步呼叫。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 877e3e4a)
