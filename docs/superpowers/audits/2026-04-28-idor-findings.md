@@ -148,7 +148,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：先 `session.query(StudentFeeRecord).filter(id==record_id).first()` 再 `_assert_student_owned`，兩種失敗路徑回傳不同 status code。
 - **建議修法**：當 record 不存在或非自己小孩時，一律回 403（或一律 404），不揭露差異；helper 內部統一處理。
 - **是否需新測試**：no（Low；列為 Phase 2 順手處理）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — endpoint 改先取 owned student_ids 後一次判斷 record 是否存在且屬於本家庭，「不存在」與「不屬於本家庭」一律回 generic 403「查無此資料或無權存取」；tests/test_enumeration_oracle_consistency.py:TestF002
 
 ### F-003 [Low] parent_portal/activity: `GET /activity/registrations/{registration_id}/payments` 404 vs 403 可枚舉報名記錄存在性
 
@@ -158,7 +158,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：先 `session.query(ActivityRegistration).first()` 再 `_assert_student_owned`，404/403 路徑分岔。
 - **建議修法**：同 F-002，一律 403（或一律 404）。建議集中於共用 helper（`_get_owned_registration_or_403`）。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `registration_payments` 與 `confirm_promotion` 兩支端點均改為「不存在 / 未綁定學生 / 不屬於本家庭」一律回 generic 403「查無此資料或無權存取」；tests/test_enumeration_oracle_consistency.py:TestF003
 
 ### F-004 [Low] parent_portal/leaves: `GET /{leave_id}` 與 `POST /{leave_id}/cancel` 404 vs 403 可枚舉請假申請存在性
 
@@ -168,7 +168,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：與 F-002/F-003 相同 — 先 query 再 ownership check，兩種失敗路徑分岔。
 - **建議修法**：同 F-002/F-003，一律 403（或一律 404）；建議集中於共用 helper。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `get_leave` / `cancel_leave` 兩支端點改先取 owned student_ids 後一次判斷，「不存在」與「不屬於本家庭」一律回 generic 403「查無此資料或無權存取」；tests/test_enumeration_oracle_consistency.py:TestF004
 
 ### F-005 [Medium] portal/leaves: `_check_substitute_leave_conflict` 409 detail 洩漏代理人請假/加班區間與狀態，可被探測同事行程
 
@@ -188,7 +188,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：先 `session.query(...).first()` 判 404，再以 `call.classroom_id not in classroom_ids` 判 403，兩條路徑回不同 status code。
 - **建議修法**：當通知不存在或屬於非本班時統一回 404（或統一 403），勿揭露差異；建議在 helper 內集中處理。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `_db_transition_call` 對「通知不存在」與「屬於別班」collapse 為單一 generic 403「查無此通知或無權存取」；422（own-class 狀態不符）保留為合法業務流程錯誤；tests/test_enumeration_oracle_consistency.py:TestF006
 
 ### F-007 [Low] portal/incidents: `POST /incidents` 404 vs 403 可枚舉學生 ID 存在性
 
@@ -198,7 +198,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：先 `session.query(Student).filter(Student.id == payload.student_id).first()` 判存在性，再以 `student.classroom_id not in classroom_ids` 判班級歸屬，兩條路徑分流回不同 status code。此外此處也未過濾 `Student.is_active`，已畢業/退學學生若仍存在 row 也會走 403 路徑。
 - **建議修法**：兩種失敗一律回同一 status code（建議 404，與 STUDENT_NOT_FOUND 一致），並加上 `Student.is_active.is_(True)` 條件避免揭露已停用學生。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — query 加上 `is_active.is_(True)` 過濾，「不存在 / 不屬於本班 / 已停用」一律回 generic 403「查無此學生或無權為此學生填寫事件紀錄」；tests/test_enumeration_oracle_consistency.py:TestF007
 
 ### F-008 [Low] portal/assessments: `POST /assessments` 404 vs 403 可枚舉學生 ID 存在性
 
@@ -208,7 +208,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：與 F-007 相同：先 query 再班級歸屬檢查，兩路徑回不同 status code；亦未過濾 `Student.is_active`。
 - **建議修法**：同 F-007，一律回同一 status code 並加上 `is_active` 條件。建議與 F-007 共用同一個 `_assert_teacher_owns_student` helper（IDOR design 第 4 節已預留）。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — 同 F-007，query 加上 `is_active.is_(True)` 過濾，「不存在 / 不屬於本班 / 已停用」一律回 generic 403「查無此學生或無權為此學生填寫評量記錄」；tests/test_enumeration_oracle_consistency.py:TestF008
 
 ### F-009 [Low] portal/announcements: `POST /announcements/{announcement_id}/read` 缺少可見性檢查並可枚舉公告存在性
 
@@ -218,7 +218,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：`mark_announcement_read` 只查 `Announcement` 是否存在，沒有比對 `AnnouncementRecipient`（即 `get_portal_announcements` 用的 `visible_filter`）；可見性檢查只做在 list 端點，未做在 mark-read 端點。
 - **建議修法**：寫入 `AnnouncementRead` 前先套用相同的 `visible_filter`（無 recipients 或 recipients 含當前 emp_id）；不可見即回 404，與不存在時相同訊息，避免列舉。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `mark_announcement_read` 補上與 list 端點一致的 `visible_filter`，「不存在」與「不可見（targeted recipients 不含本人）」一律回 generic 403「查無此公告或無權存取」，且不可見公告不會寫入 `AnnouncementRead`（避免 unread-count 被污染）；tests/test_enumeration_oracle_consistency.py:TestF009
 
 ### F-010 [Low] portal/activity: `GET /activity/attendance/sessions/{session_id}` 場次中介資料無視自班學生即外洩
 
@@ -228,7 +228,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：權限只擋 `students` 列表（用 `classroom_ids_filter`），對 session 根節點欄位（`course_name`、`notes` 等）未做門檻；當教師完全沒有自班學生在該場次時應視為無權查閱。
 - **建議修法**：當 `classroom_ids_filter` 套用後 `students` 為空且該教師對課程無其他存取權限時，直接回 404（或 403），勿外露課程／場次中介資料。或在進入 helper 前先驗證教師有至少一筆自班 enrollment 落在此 session 對應 course。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `portal_get_session_detail` 在端點層補後置守衛：若 `_build_session_detail_response` 回傳 `students` 為空（即該教師無自班學生於此場次），與「場次不存在」collapse 為同一 generic 403「查無此場次或無權存取」，避免外洩 course_name / 場次中介資料；shared helper 不動以免影響 admin 端；tests/test_enumeration_oracle_consistency.py:TestF010
 
 ### F-011 [Low] portal/leaves: 補休申請 `source_overtime_id` 400 vs 403 可枚舉加班記錄存在性
 
@@ -238,7 +238,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：先 `session.query(OvertimeRecord).filter(id==source_overtime_id).first()` 再檢查 owner，兩種失敗路徑 status code + detail 差異化。
 - **建議修法**：合併為單一 status code（例：一律 400「來源加班記錄無效或無權使用」），不揭露存在性差異。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `create_my_leave` 對 compensatory `source_overtime_id` 將「不存在」與「不屬於本人」collapse 為單一 400「來源加班記錄無效或無權使用」；後續業務驗證（未核准/非補休模式/未發放配額）保留原訊息（這些不洩漏跨員工存在性）；tests/test_enumeration_oracle_consistency.py:TestF011
 
 ### F-012 [High] employees: `GET /employees/{employee_id}/final-salary-preview` 缺 `_enforce_self_or_full_salary`，可看任意員工最終薪資結算
 
@@ -466,7 +466,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：為了把「兩個家長共用一支號碼」的對帳混亂擋掉，更新流程加了全域 `is_active` phone 唯一性檢查，但 409 detail 直接告知攻擊者「此手機號碼已被其他報名使用」。可區分 200 / 409 即洩漏存在性。
 - **建議修法**：（1）保留 phone 唯一性檢查，但 409 detail 改為通用訊息：`此手機號碼變更失敗，請聯繫校方協助處理` 或 `更新成功`（silent accept 但實際不寫入 phone，並另發 admin alert）；前者較不破壞 UX 但仍然部分洩漏（依然可區分 200 / 409）；後者完全消除 oracle 但 UX 變差。建議走 silent accept + 轉送至「校方審核佇列」。（2）強化 rate limit：`_public_register_limiter` 從 5/min 降為 5/hour（或 phone 變更專屬 limiter，3/day per IP），讓窮舉成本提高。建議 (1) + (2) 同時做。
 - **是否需新測試**：no（Low）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — 採 generic-409 方案：detail 改為「此手機號碼無法使用，請聯繫校方協助處理」（不揭露「已被其他報名使用」字眼），保留 phone 唯一性檢查與既有 5/min/IP rate limit；可區分 200/409 仍存在但訊息不洩漏存在性，與 PoC 中可枚舉「09 開頭手機是否在系統內出現過」相比，缺乏明確訊號；tests/test_enumeration_oracle_consistency.py:TestF029
 
 ### F-030 [Medium] activity/public: `POST /public/register` 多重未認證枚舉 oracle（學生姓名/生日 + 家長電話）
 
