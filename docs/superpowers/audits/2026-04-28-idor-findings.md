@@ -3,7 +3,7 @@
 **日期**：2026-04-28
 **Spec**：`docs/superpowers/specs/2026-04-28-idor-audit-design.md`
 **Plan**：`docs/superpowers/plans/2026-04-28-idor-audit-phase1.md`
-**狀態**：✅ Phase 1 Complete
+**狀態**：✅ Phase 1 Complete + Phase 2 Complete (46/46 fixed)
 
 > 對 ivy-backend 全部 API 路由的 IDOR 靜態盤查結果。每筆 finding 含位置、威脅模型、PoC、建議修法。
 > Phase 2（修補）另起 plan。
@@ -101,14 +101,14 @@
 
 ## Phase 2 規劃
 
-依本報告級別分批修補：
+✅ **Phase 2 Complete (46/46 fixed, 2026-04-28)**
 
-1. **Critical batch（3 筆，F-037~F-039）**：auth USER_MANAGEMENT_WRITE 提權鏈，最高優先；補 `target.role` 與 `caller can promote to admin?` 守衛 + pytest 回歸測試
-2. **High batch（15 筆）**：欄位級薪資洩漏（F-012~F-014、F-031、F-036）、跨班學生資料（F-018~F-021）、自我守衛缺口（F-040~F-042、F-046）、家長綁定（F-001、F-015）
-3. **Medium batch（14 筆）**：次要 perm 欄位疏漏與班級 scope 缺口；可抽 `mask_*_fields` / `assert_*_access` 共用 helper
-4. **Low batch（14 筆）**：404/403 枚舉一致化；可一次抽 `_get_owned_resource_or_403` helper
+依本報告級別分批修補（全部完成）：
 
-Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix-phase2.md`
+1. ✅ **Critical batch（3 筆，F-037~F-039）**：auth USER_MANAGEMENT_WRITE 提權鏈守衛（commit 397e2e13）
+2. ✅ **High batch（15 筆）**：欄位級薪資洩漏（F-012~F-014、F-031、F-036）、跨班學生資料（F-018~F-021）、自我守衛缺口（F-040~F-042、F-046）、家長綁定（F-001、F-015）
+3. ✅ **Medium batch（14 筆）**：次要 perm 欄位疏漏與班級 scope 收斂；抽 `mask_*_fields` / `assert_*_access` 共用 helper
+4. ✅ **Low batch（14 筆）**：404/403 枚舉一致化（最後 2 筆 F-035/F-044 為 commit 0e6ffba9）
 
 ### 共用 helper 抽取建議（spec section 4 + 盤查驗證）
 
@@ -590,7 +590,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   ```
   注意 entity_type 取 `audit_log` 而非 `audit`，避免與 path pattern 衝突。
 - **是否需新測試**：no（Low）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 0e6ffba9) — `api/audit.py:export_audit_logs` 補 `write_explicit_audit(entity_type='audit_log', action='EXPORT', ...)`，含篩選條件 + 筆數；`utils/audit.py:ENTITY_LABELS` 補 `audit_log: '操作紀錄'`。tests/test_final_low_authz.py:TestF035_AuditLogExport
 
 ### F-036 [Medium] exports: `GET /exports/overtimes` 用 OVERTIME_READ 即可外洩逐員加班費，可反推時薪/底薪
 
@@ -773,7 +773,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. caller 是 admin/hr/supervisor → 需 force_reason（≥ 10 字）才能跨人取消，並寫稽核（與 finance_guards force 模式一致）。
   3. 標 Low 而非 Medium：實務上 teacher 預設無 STUDENTS_WRITE；但業主若把該 bit 給跨班協作角色就會中標。
 - **是否需新測試**：no（Low）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 0e6ffba9) — `api/dismissal_calls.py:_db_cancel_dismissal_call` 簽名加 `current_user`，加守衛：caller 必須為原建立者（`call.requested_by_user_id == caller.user_id`）或角色為 admin/hr/supervisor，否則 403。tests/test_final_low_authz.py:TestF044_DismissalCancel（4 個 case：originator ✓ / 他人 staff ✗ / admin ✓ / supervisor ✓）
 
 ### F-045 [Low] announcements: `PUT /announcements/{id}/parent-recipients` 缺受眾範圍守衛，ANNOUNCEMENTS_WRITE 即可任意指定 student_id / guardian_id 對外發送
 
