@@ -178,7 +178,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：`_check_substitute_leave_conflict` 為了讓 UI 顯示「代理人衝突」直接把對方的日期、狀態回灌進錯誤訊息；portal 端沒有把訊息泛化或抹除日期/狀態欄位。
 - **建議修法**：對於從 portal 發起的代理人衝突檢查，回傳泛化訊息（例：`此代理人於該時段不可用，請改派他人`），不揭露對方假單/加班的日期、起訖時間與審批狀態；管理端 `api/leaves.py` 維持原訊息但限定僅在持有 `LEAVES_READ` 等高權限呼叫情境下顯示。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `_check_substitute_leave_conflict` 兩條衝突路徑（請假/加班）統一改為 generic detail「代理人於該期間已有其他請假/加班，無法擔任代理人，請改選其他人選」，不再洩漏起訖日期與 approved/pending 狀態；admin 端共用同 helper 一併收斂（避免維護兩套訊息）。tests/test_misc_medium_authz.py:TestF005
 
 ### F-006 [Low] portal/dismissal_calls: `acknowledge` 與 `complete` 404 vs 403 可枚舉接送通知存在性
 
@@ -480,7 +480,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：`existing` 與 `pending_dup` 兩個檢查在 `_verify_parent_identity` 之前執行；當這兩支查詢命中時直接 raise 400，與其他失敗路徑（驗證錯誤、無資料）回傳的 status / detail 不同，形成存在性 oracle。
 - **建議修法**：將 `existing` / `pending_dup` 檢查移到 `_verify_parent_identity` 之後（即先確認家長合法身分再檢查重複報名），或合併為 generic「請聯絡園所」訊息隱藏存在性差異。亦應評估提高 `_public_register_limiter` 嚴格度（目前 5/min/IP，攻擊者輪換 IP 可達 7,200/day）。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — 採「matched 才看 400 明確訊息；unmatched silent-success」分流：`_match_student_with_parent_phone` 提前到 `existing` / `pending_dup` 之前；命中重複時若三欄已驗（matched）→ 維持 400 UX，未驗 → 回 silent-success（與 honeypot 路徑一致：201 + id=0 + 中性訊息，不寫 DB）。`IntegrityError`（並發 race）路徑同樣分流，避免存在性 oracle 從 race-condition 仍洩漏。回歸測試 `test_soft_dedup_blocks_duplicate_pending_same_phone` 從「r2 應 400」改為「r2 應 201 但 DB 仍只 1 筆」，保留 dedup 守衛不洩漏。tests/test_misc_medium_authz.py:TestF030
 
 ### F-031 [High] reports/finance-summary: `GET /finance-summary/detail` 與 `/finance-summary/export` 在 `Permission.REPORTS` 下回傳逐員 `gross_salary` / `net_salary` / `employer_benefit` / `real_cost`，繞過 `SALARY_READ`
 
@@ -547,7 +547,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   ```
   並在 `utils/audit.py:ENTITY_LABELS` 補 `gov_report`、`shift_assignment` 等 label。`/gov-reports/*` 還可在 `changes` 內標 `is_full_id_number=True`、`force=True`（force 模式更敏感），讓 SOC 能優先告警。
 - **是否需新測試**：no（Medium；建議 Phase 2 與其他 audit 完整性修補一起做。新測試型如：呼叫 `/exports/students`，斷言 AuditLog 表新增一筆 `action='EXPORT'`、`entity_type='student'`，且 `changes.count` 等於 returned 筆數）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `api/exports.py` 7 個 GET 端點（students / attendance / calendar / leaves / overtimes / holidays / shifts / employee-attendance）與 `api/gov_reports.py` 4 個端點（labor / health / withholding / pension）皆補 `write_explicit_audit`；`utils/audit.py:ENTITY_LABELS` 增 `shift_assignment / holiday / gov_report`；政府申報 `changes` 帶 `is_full_id_number=True`、`force` 旗標供 SOC 告警。tests/test_misc_medium_authz.py:TestF033（mock 驗證 3 + 1 端點）
 
 ### F-034 [Medium] fees: `GET /records?student_id=...` 跨班讀全校學生繳費紀錄，僅以 `FEES_READ` 守門
 
@@ -755,7 +755,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   3. **再加一道 perm 守門**：`employee-salary-debug` 改要求 `SALARY_READ` 而非 `SETTINGS_READ`，與 `salary.py` 對等保護。
   4. README 與 SECURITY_AUDIT 補一條 deployment checklist：「prod 必須 ENV=production」。
 - **是否需新測試**：no（Medium；改成 SALARY_READ 那條可加，但主要修補是 deployment guard 與 import 邏輯，不易單元測試）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — 採方案 (1) 白名單反轉：`main.py` 新增 `_should_mount_dev_router()` helper，僅 `ENV ∈ {development, dev, local, test}` 才掛 `dev_router`；舊 `not _is_production()` 黑名單拿掉。staging / prod / 未設 ENV 一律不掛，攻擊面收斂。`_is_production()` 保留供 logging 用。tests/test_misc_medium_authz.py:TestF043（含 helper 直接驗證 + 反向確認 main.py 確實使用新 helper）
 
 ### F-044 [Low] dismissal_calls: `POST /dismissal-calls/{call_id}/cancel` 不限發起者本人，任一持 STUDENTS_WRITE 可取消他人接送通知
 
@@ -791,7 +791,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. scope=`all` 應限 admin / supervisor only。
   3. 端點加顯式 audit `request.state.audit_summary = f"設定公告 {announcement_id} 對家長受眾（{len(recipients)} 項）"`。
 - **是否需新測試**：no
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `api/announcements.py` 新增 `_validate_recipient_audience_scope`：非 `is_unrestricted` caller（non admin/hr/supervisor）必須使所有 scope=classroom/student/guardian 的對象落在 `accessible_classroom_ids`，否則 403；scope='all' 對非 unrestricted caller 一律 403。admin/hr/supervisor 不受限制。tests/test_misc_medium_authz.py:TestF045（涵蓋 in-scope ✓ / out-of-scope ✗ / scope='all' ✗ / admin 全可）
 
 ### F-046 [High] attendance/upload: bulk upload 缺自我守衛，可一次改寫含自己在內的多人考勤
 
