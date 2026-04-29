@@ -32,7 +32,8 @@ class ClassroomCreate(BaseModel):
     class_code: Optional[str] = Field(None, max_length=20)
     school_year: Optional[int] = Field(None, ge=100, le=200)
     semester: Optional[int] = Field(None, ge=1, le=2)
-    grade_id: Optional[int] = Field(None, ge=1)
+    # 年級為必填：缺漏會導致該班無法掛入「在籍統計」（後端 SQL JOIN ClassGrade）
+    grade_id: int = Field(..., ge=1)
     capacity: int = Field(30, ge=1, le=200)
     head_teacher_id: Optional[int] = Field(None, ge=1)
     assistant_teacher_id: Optional[int] = Field(None, ge=1)

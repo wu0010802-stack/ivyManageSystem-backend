@@ -79,15 +79,22 @@ def _create_teacher(session, employee_id: str, name: str) -> Employee:
 
 
 def _login(client: TestClient, username: str, password: str = "TempPass123"):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 class TestClassroomsApi:
-    def test_create_defaults_to_current_academic_term(self, client_with_db, monkeypatch):
+    def test_create_defaults_to_current_academic_term(
+        self, client_with_db, monkeypatch
+    ):
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_term_admin")
+            grade = ClassGrade(name="小班", is_active=True)
+            session.add(grade)
             session.commit()
+            grade_id = grade.id
 
         import api.classrooms as classrooms_module
 
@@ -105,6 +112,7 @@ class TestClassroomsApi:
             json={
                 "name": "向日葵班",
                 "capacity": 20,
+                "grade_id": grade_id,
             },
         )
 
@@ -116,11 +124,16 @@ class TestClassroomsApi:
         assert detail_res.json()["semester"] == 2
         assert "下學期" in detail_res.json()["semester_label"]
 
-    def test_same_classroom_name_is_allowed_in_different_semesters(self, client_with_db):
+    def test_same_classroom_name_is_allowed_in_different_semesters(
+        self, client_with_db
+    ):
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_term_duplicate")
+            grade = ClassGrade(name="小班", is_active=True)
+            session.add(grade)
             session.commit()
+            grade_id = grade.id
 
         login_res = _login(client, "classroom_term_duplicate")
         assert login_res.status_code == 200
@@ -132,6 +145,7 @@ class TestClassroomsApi:
                 "capacity": 20,
                 "school_year": 114,
                 "semester": 1,
+                "grade_id": grade_id,
             },
         )
         assert first_res.status_code == 201
@@ -143,6 +157,7 @@ class TestClassroomsApi:
                 "capacity": 20,
                 "school_year": 114,
                 "semester": 2,
+                "grade_id": grade_id,
             },
         )
         assert second_res.status_code == 201
@@ -154,6 +169,7 @@ class TestClassroomsApi:
                 "capacity": 20,
                 "school_year": 114,
                 "semester": 2,
+                "grade_id": grade_id,
             },
         )
         assert same_term_res.status_code == 400
@@ -163,21 +179,61 @@ class TestClassroomsApi:
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_term_filter")
-            first_term = Classroom(name="海豚班", capacity=20, school_year=114, semester=1, is_active=True)
-            second_term = Classroom(name="海豚班", capacity=20, school_year=114, semester=2, is_active=True)
-            session.add_all([
-                first_term,
-                second_term,
-                Classroom(name="星星班", capacity=20, school_year=113, semester=2, is_active=True),
-            ])
+            first_term = Classroom(
+                name="海豚班", capacity=20, school_year=114, semester=1, is_active=True
+            )
+            second_term = Classroom(
+                name="海豚班", capacity=20, school_year=114, semester=2, is_active=True
+            )
+            session.add_all(
+                [
+                    first_term,
+                    second_term,
+                    Classroom(
+                        name="星星班",
+                        capacity=20,
+                        school_year=113,
+                        semester=2,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.flush()
-            session.add_all([
-                Student(student_id="S001", name="小安", classroom_id=second_term.id, is_active=True),
-                Student(student_id="S002", name="小寶", classroom_id=second_term.id, is_active=True),
-                Student(student_id="S003", name="小晴", classroom_id=second_term.id, is_active=True),
-                Student(student_id="S004", name="小涵", classroom_id=second_term.id, is_active=True),
-                Student(student_id="S005", name="已畢業", classroom_id=second_term.id, is_active=False, status="已畢業"),
-            ])
+            session.add_all(
+                [
+                    Student(
+                        student_id="S001",
+                        name="小安",
+                        classroom_id=second_term.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S002",
+                        name="小寶",
+                        classroom_id=second_term.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S003",
+                        name="小晴",
+                        classroom_id=second_term.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S004",
+                        name="小涵",
+                        classroom_id=second_term.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S005",
+                        name="已畢業",
+                        classroom_id=second_term.id,
+                        is_active=False,
+                        status="已畢業",
+                    ),
+                ]
+            )
             session.commit()
 
         login_res = _login(client, "classroom_term_filter")
@@ -190,7 +246,11 @@ class TestClassroomsApi:
         assert names == ["海豚班"]
         assert res.json()[0]["semester_label"] == "114學年度下學期"
         assert res.json()[0]["current_count"] == 4
-        assert [student["name"] for student in res.json()[0]["student_preview"]] == ["小安", "小寶", "小晴"]
+        assert [student["name"] for student in res.json()[0]["student_preview"]] == [
+            "小安",
+            "小寶",
+            "小晴",
+        ]
         assert res.json()[0]["has_more_students"] is True
 
     def test_clone_term_copies_classrooms_into_target_term(self, client_with_db):
@@ -201,28 +261,30 @@ class TestClassroomsApi:
             teacher = _create_teacher(session, "T201", "張老師")
             session.add(grade)
             session.flush()
-            session.add_all([
-                Classroom(
-                    name="海豚班",
-                    class_code="DOL-01",
-                    grade_id=grade.id,
-                    capacity=22,
-                    head_teacher_id=teacher.id,
-                    school_year=114,
-                    semester=1,
-                    is_active=True,
-                ),
-                Classroom(
-                    name="星星班",
-                    class_code="STA-01",
-                    grade_id=grade.id,
-                    capacity=20,
-                    head_teacher_id=teacher.id,
-                    school_year=114,
-                    semester=1,
-                    is_active=True,
-                ),
-            ])
+            session.add_all(
+                [
+                    Classroom(
+                        name="海豚班",
+                        class_code="DOL-01",
+                        grade_id=grade.id,
+                        capacity=22,
+                        head_teacher_id=teacher.id,
+                        school_year=114,
+                        semester=1,
+                        is_active=True,
+                    ),
+                    Classroom(
+                        name="星星班",
+                        class_code="STA-01",
+                        grade_id=grade.id,
+                        capacity=20,
+                        head_teacher_id=teacher.id,
+                        school_year=114,
+                        semester=1,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.commit()
 
         login_res = _login(client, "classroom_clone_admin")
@@ -242,7 +304,9 @@ class TestClassroomsApi:
         assert clone_res.status_code == 201
         assert clone_res.json()["created_count"] == 2
 
-        target_res = client.get("/api/classrooms", params={"school_year": 114, "semester": 2})
+        target_res = client.get(
+            "/api/classrooms", params={"school_year": 114, "semester": 2}
+        )
         assert target_res.status_code == 200
         assert {item["name"] for item in target_res.json()} == {"海豚班", "星星班"}
         assert all(item["semester"] == 2 for item in target_res.json())
@@ -251,10 +315,24 @@ class TestClassroomsApi:
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_clone_conflict")
-            session.add_all([
-                Classroom(name="海豚班", capacity=20, school_year=114, semester=1, is_active=True),
-                Classroom(name="海豚班", capacity=20, school_year=114, semester=2, is_active=True),
-            ])
+            session.add_all(
+                [
+                    Classroom(
+                        name="海豚班",
+                        capacity=20,
+                        school_year=114,
+                        semester=1,
+                        is_active=True,
+                    ),
+                    Classroom(
+                        name="海豚班",
+                        capacity=20,
+                        school_year=114,
+                        semester=2,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.commit()
 
         login_res = _login(client, "classroom_clone_conflict")
@@ -274,7 +352,9 @@ class TestClassroomsApi:
         assert clone_res.status_code == 409
         assert "已存在" in clone_res.json()["detail"]
 
-    def test_promote_academic_year_uses_grade_sort_order_for_promotion(self, client_with_db):
+    def test_promote_academic_year_uses_grade_sort_order_for_promotion(
+        self, client_with_db
+    ):
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_promote_admin")
@@ -298,10 +378,22 @@ class TestClassroomsApi:
             )
             session.add(source)
             session.flush()
-            session.add_all([
-                Student(student_id="S101", name="小明", classroom_id=source.id, is_active=True),
-                Student(student_id="S102", name="小美", classroom_id=source.id, is_active=True),
-            ])
+            session.add_all(
+                [
+                    Student(
+                        student_id="S101",
+                        name="小明",
+                        classroom_id=source.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S102",
+                        name="小美",
+                        classroom_id=source.id,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.commit()
             source_id = source.id
             target_grade_id = grade_middle.id
@@ -330,7 +422,9 @@ class TestClassroomsApi:
         assert promote_res.json()["created_count"] == 1
         assert promote_res.json()["moved_student_count"] == 2
 
-        target_res = client.get("/api/classrooms", params={"school_year": 115, "semester": 1})
+        target_res = client.get(
+            "/api/classrooms", params={"school_year": 115, "semester": 1}
+        )
         assert target_res.status_code == 200
         assert target_res.json()[0]["name"] == "海洋探索班"
         assert target_res.json()[0]["grade_id"] == target_grade_id
@@ -343,7 +437,9 @@ class TestClassroomsApi:
             assert len({student.classroom_id for student in moved_students}) == 1
             assert moved_students[0].classroom_id != source_id
 
-    def test_promote_academic_year_does_not_advance_grade_between_semesters_in_same_school_year(self, client_with_db):
+    def test_promote_academic_year_does_not_advance_grade_between_semesters_in_same_school_year(
+        self, client_with_db
+    ):
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_same_year_no_jump")
@@ -362,7 +458,14 @@ class TestClassroomsApi:
             )
             session.add(source)
             session.flush()
-            session.add(Student(student_id="S111", name="小宇", classroom_id=source.id, is_active=True))
+            session.add(
+                Student(
+                    student_id="S111",
+                    name="小宇",
+                    classroom_id=source.id,
+                    is_active=True,
+                )
+            )
             session.commit()
             source_id = source.id
 
@@ -389,11 +492,15 @@ class TestClassroomsApi:
         assert promote_res.json()["created_count"] == 1
         assert promote_res.json()["graduated_count"] == 0
 
-        target_res = client.get("/api/classrooms", params={"school_year": 114, "semester": 2})
+        target_res = client.get(
+            "/api/classrooms", params={"school_year": 114, "semester": 2}
+        )
         assert target_res.status_code == 200
         assert target_res.json()[0]["grade_name"] == "大班"
 
-    def test_promote_academic_year_graduates_students_when_no_next_grade(self, client_with_db):
+    def test_promote_academic_year_graduates_students_when_no_next_grade(
+        self, client_with_db
+    ):
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_promote_grade_required")
@@ -410,10 +517,22 @@ class TestClassroomsApi:
             )
             session.add(classroom)
             session.flush()
-            session.add_all([
-                Student(student_id="S201", name="小杰", classroom_id=classroom.id, is_active=True),
-                Student(student_id="S202", name="小安", classroom_id=classroom.id, is_active=True),
-            ])
+            session.add_all(
+                [
+                    Student(
+                        student_id="S201",
+                        name="小杰",
+                        classroom_id=classroom.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S202",
+                        name="小安",
+                        classroom_id=classroom.id,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.commit()
             classroom_id = classroom.id
 
@@ -439,17 +558,26 @@ class TestClassroomsApi:
         assert promote_res.json()["created_count"] == 0
         assert promote_res.json()["graduated_count"] == 2
 
-        target_res = client.get("/api/classrooms", params={"school_year": 115, "semester": 1})
+        target_res = client.get(
+            "/api/classrooms", params={"school_year": 115, "semester": 1}
+        )
         assert target_res.status_code == 200
         assert target_res.json() == []
 
         with session_factory() as session:
-            graduated_students = session.query(Student).order_by(Student.student_id).all()
+            graduated_students = (
+                session.query(Student).order_by(Student.student_id).all()
+            )
             assert all(student.is_active is False for student in graduated_students)
             assert all(student.status == "已畢業" for student in graduated_students)
-            assert all(student.graduation_date.isoformat() == "2026-08-01" for student in graduated_students)
+            assert all(
+                student.graduation_date.isoformat() == "2026-08-01"
+                for student in graduated_students
+            )
 
-    def test_promote_academic_year_reuses_inactive_target_classroom_with_same_name(self, client_with_db):
+    def test_promote_academic_year_reuses_inactive_target_classroom_with_same_name(
+        self, client_with_db
+    ):
         client, session_factory = client_with_db
         with session_factory() as session:
             _create_user(session, "classroom_promote_reuse_inactive")
@@ -480,7 +608,14 @@ class TestClassroomsApi:
             )
             session.add_all([source, inactive_target])
             session.flush()
-            session.add(Student(student_id="S301", name="小晴", classroom_id=source.id, is_active=True))
+            session.add(
+                Student(
+                    student_id="S301",
+                    name="小晴",
+                    classroom_id=source.id,
+                    is_active=True,
+                )
+            )
             session.commit()
             source_id = source.id
             reused_target_id = inactive_target.id
@@ -510,14 +645,45 @@ class TestClassroomsApi:
         assert promote_res.json()["moved_student_count"] == 1
 
         with session_factory() as session:
-            target = session.query(Classroom).filter(Classroom.id == reused_target_id).first()
+            target = (
+                session.query(Classroom)
+                .filter(Classroom.id == reused_target_id)
+                .first()
+            )
             assert target is not None
             assert target.is_active is True
             assert target.class_code == "SUN-01"
             assert target.capacity == 25
             assert target.head_teacher_id == teacher_id
-            moved_student = session.query(Student).filter(Student.student_id == "S301").first()
+            moved_student = (
+                session.query(Student).filter(Student.student_id == "S301").first()
+            )
             assert moved_student.classroom_id == reused_target_id
+
+    def test_create_rejects_missing_grade_id(self, client_with_db):
+        """grade_id 為必填：缺漏會導致該班無法掛入「在籍統計」（SQL JOIN ClassGrade）。"""
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _create_user(session, "classroom_grade_required")
+            session.commit()
+
+        login_res = _login(client, "classroom_grade_required")
+        assert login_res.status_code == 200
+
+        res = client.post(
+            "/api/classrooms",
+            json={
+                "name": "缺年級班",
+                "capacity": 20,
+            },
+        )
+
+        assert res.status_code == 422
+        body = res.json()
+        assert any(
+            err.get("loc", [])[-1] == "grade_id" and err.get("type") == "missing"
+            for err in body.get("detail", [])
+        )
 
     def test_create_rejects_duplicate_teacher_roles(self, client_with_db):
         client, session_factory = client_with_db
@@ -626,7 +792,11 @@ class TestClassroomsApi:
         detail_with_history = detail_with_history_res.json()
         assert detail_with_history["current_count"] == 0
         assert len(detail_with_history["students"]) == 1
-        inactive_student = next(student for student in detail_with_history["students"] if student["student_id"] == "S002")
+        inactive_student = next(
+            student
+            for student in detail_with_history["students"]
+            if student["student_id"] == "S002"
+        )
         assert inactive_student["parent_phone"] == "0912000111"
         assert inactive_student["status"] == "已畢業"
         assert inactive_student["is_active"] is False
@@ -646,10 +816,14 @@ class TestClassroomsApi:
         assert "在學學生" in blocked_delete_res.json()["detail"]
 
         with session_factory() as session:
-            student = session.query(Student).filter(
-                Student.classroom_id == classroom_id,
-                Student.is_active == True,
-            ).first()
+            student = (
+                session.query(Student)
+                .filter(
+                    Student.classroom_id == classroom_id,
+                    Student.is_active == True,
+                )
+                .first()
+            )
             student.is_active = False
             session.commit()
 
