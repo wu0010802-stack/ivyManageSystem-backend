@@ -125,6 +125,14 @@ def approve_punch_correction(
                 status_code=400, detail=f"此申請已{status_label}，無法再次審核"
             )
 
+        # ── 自我核准防護（F-015）────────────────────────────────────────────
+        # 僅在 approver 確實擁有 employee_id 且與申請人相同時才拒絕。
+        # 無 employee_id 的帳號（如純管理員）本身無法提出補打卡申請，
+        # 不構成自我核准風險。對齊 leaves.py:1014 / overtimes.py:1078 idiom。
+        approver_eid = current_user.get("employee_id")
+        if approver_eid and correction.employee_id == approver_eid:
+            raise HTTPException(status_code=403, detail="不可自我核准補打卡申請")
+
         # ── 角色資格檢查 ──────────────────────────────────────────────────────
         submitter_role = _get_submitter_role(correction.employee_id, session)
         approver_role = current_user.get("role", "")

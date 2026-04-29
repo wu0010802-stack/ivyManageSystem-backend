@@ -330,9 +330,7 @@ def bind_first_child(
         if binding is None:
             session.rollback()
             _record_bind_failure(line_user_id)
-            raise HTTPException(
-                status_code=400, detail="綁定碼無效、已使用或已過期"
-            )
+            raise HTTPException(status_code=400, detail="綁定碼無效、已使用或已過期")
 
         # 防同 LINE userId 重複建：若已有 parent User，僅補綁這筆 Guardian.user_id
         existing_user = (
@@ -348,13 +346,27 @@ def bind_first_child(
         # 第二階段：把 used_by_user_id 落印 + 設 Guardian.user_id
         binding.used_by_user_id = user.id
         guardian = (
-            session.query(Guardian)
-            .filter(Guardian.id == binding.guardian_id)
-            .first()
+            session.query(Guardian).filter(Guardian.id == binding.guardian_id).first()
         )
         if guardian is None or guardian.deleted_at is not None:
             session.rollback()
             raise HTTPException(status_code=400, detail="此綁定碼對應的監護人已不存在")
+        # ── 防綁定覆寫（F-001）─────────────────────────────────────────────
+        # 若 Guardian 已被另一位 parent User 綁定，即使持碼者取得了仍未過期
+        # 的綁定碼也不可覆寫，以阻擋「碼外洩 → 持外部 LINE 帳號搶綁 → 奪取
+        # 他人 PII 並把原家長踢出」這條威脅鏈（對齊 bind-additional 既有
+        # 守衛 idiom）。
+        if guardian.user_id and guardian.user_id != user.id:
+            logger.warning(
+                "[parent-bind] 拒絕覆寫：guardian_id=%s 已被 user_id=%s 綁定，"
+                "拒絕 line_user_id=%s（user_id=%s）的綁定請求；綁定碼可能外洩",
+                guardian.id,
+                guardian.user_id,
+                line_user_id,
+                user.id,
+            )
+            session.rollback()
+            raise HTTPException(status_code=400, detail="此監護人已綁定其他家長帳號")
         guardian.user_id = user.id
         user.last_login = _now()
         session.commit()
@@ -397,16 +409,14 @@ def bind_additional_child(
     code_hash = _hash_code(payload.code)
     session = get_session()
     try:
-        binding = _claim_binding_code_atomic(session, code_hash, claimer_user_id=user_id)
+        binding = _claim_binding_code_atomic(
+            session, code_hash, claimer_user_id=user_id
+        )
         if binding is None:
             session.rollback()
-            raise HTTPException(
-                status_code=400, detail="綁定碼無效、已使用或已過期"
-            )
+            raise HTTPException(status_code=400, detail="綁定碼無效、已使用或已過期")
         guardian = (
-            session.query(Guardian)
-            .filter(Guardian.id == binding.guardian_id)
-            .first()
+            session.query(Guardian).filter(Guardian.id == binding.guardian_id).first()
         )
         if guardian is None or guardian.deleted_at is not None:
             session.rollback()
@@ -414,9 +424,7 @@ def bind_additional_child(
         if guardian.user_id and guardian.user_id != user_id:
             # 該 Guardian 已被別的 parent User 認領 → 即使取得了 code 也擋
             session.rollback()
-            raise HTTPException(
-                status_code=400, detail="此監護人已綁定其他家長帳號"
-            )
+            raise HTTPException(status_code=400, detail="此監護人已綁定其他家長帳號")
         guardian.user_id = user_id
         session.commit()
 
@@ -425,7 +433,11 @@ def bind_additional_child(
             guardian.id,
             user_id,
         )
-        return {"status": "ok", "guardian_id": guardian.id, "student_id": guardian.student_id}
+        return {
+            "status": "ok",
+            "guardian_id": guardian.id,
+            "student_id": guardian.student_id,
+        }
     finally:
         session.close()
 
