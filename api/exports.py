@@ -867,6 +867,15 @@ def export_employee_attendance(
     month: int = Query(..., ge=1, le=12),
 ):
     """匯出指定員工的個人出勤月報 Excel（逐日打卡明細）"""
+    # F-032：非 admin/hr 不可下載他人逐日打卡 + 請假 + 加班明細。
+    # ATTENDANCE_READ 是寬權限（supervisor / 自訂出勤助理皆持有），
+    # 此處需以角色守衛收斂為「admin/hr 或 self」。沿用 salary_access helper：
+    # 名雖含 salary，但其角色語義（FULL_SALARY_ROLES = admin/hr）正好對應
+    # 出勤匯出的 owner-or-admin 守衛需求，避免重複 helper。
+    from utils.salary_access import enforce_self_or_full_salary
+
+    enforce_self_or_full_salary(current_user, employee_id)
+
     session = get_session()
     try:
         # 1. 員工基本資料
