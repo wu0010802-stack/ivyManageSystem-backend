@@ -138,7 +138,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：`bind` 缺少 `if guardian.user_id and guardian.user_id != user.id: 拒絕` 守衛；`bind-additional` 在同一檔 line 414 已有這層檢查，bind 漏掉。
 - **建議修法**：在 `bind` line 358 之前加上等價於 `bind-additional` line 414 的檢查：若 `guardian.user_id` 非空且不屬於即將綁定的 user，rollback 並 400/409 拒絕；同時記錄 audit log（綁定碼可能外洩）。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit a33373d1) — bind 補上 guardian.user_id 已被他人綁定的守衛，rollback + 400 + logger.warning（對齊 bind-additional idiom）；新增 tests/test_parent_bind_takeover_guard.py
 
 ### F-002 [Low] parent_portal/fees: `GET /fees/records/{record_id}/payments` 404 vs 403 可枚舉費用記錄存在性
 
@@ -284,7 +284,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   ```
   並比照 leaves/overtimes 補測試（`tests/test_punch_corrections_self_approve.py`）。長期建議抽出 `utils/approval_helpers.py:require_not_self_approval(current_user, submitter_employee_id, action="...")` 共用 helper，避免日後新增審核端點再次漏寫。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit a33373d1) — approve 在存在性檢查後、角色資格檢查前補上 approver_eid != correction.employee_id 自我守衛（對齊 leaves.py:1014 / overtimes.py:1078 idiom）；新增 tests/test_punch_correction_self_approve_guard.py
 
 ### F-016 [Medium] bonus_preview: `GET /bonus-preview/dashboard` 與 `POST /bonus-impact-preview` 以 `STUDENTS_READ`/`STUDENTS_WRITE` 控管，但回傳每位教師估算節慶獎金金額
 
