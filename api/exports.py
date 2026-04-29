@@ -240,6 +240,7 @@ def export_employees(
 
 @router.get("/students")
 def export_students(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
@@ -250,6 +251,15 @@ def export_students(
             session.query(Student).order_by(Student.student_id).yield_per(500)
         )
         classrooms = _id_name_map(session, Classroom)
+        # F-033：學生名冊含全校生日 / 家長電話 / 地址等 PII，必須留稽核軌跡。
+        # AuditMiddleware 只審計 POST/PUT/DELETE，GET 匯出需顯式呼叫此 helper。
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="student",
+            summary=f"匯出學生名冊（{len(students)} 筆，含家長電話/地址/生日）",
+            changes={"count": len(students)},
+        )
 
         wb = Workbook()
         ws = _safe_ws(wb)
@@ -307,6 +317,7 @@ def export_students(
 
 @router.get("/attendance")
 def export_attendance(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
     year: int = Query(...),
@@ -326,6 +337,15 @@ def export_attendance(
             .yield_per(500)
         )
         emp_map = {e.id: e for e in employees}
+        # F-033：全校月度出勤彙總含全員姓名 + 遲到/早退/缺打卡統計，
+        # 屬人事敏感資料，須留稽核軌跡。
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="attendance",
+            summary=f"匯出 {year}年{month}月 出勤月報（{len(employees)} 人）",
+            changes={"count": len(employees), "year": year, "month": month},
+        )
 
         # 1. 計算當月應出勤天數（排除週末與國定假日）
         holiday_dates = {
@@ -496,6 +516,7 @@ EVENT_TYPE_LABELS = {
 
 @router.get("/calendar")
 def export_calendar(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
     year: int = Query(...),
@@ -506,6 +527,13 @@ def export_calendar(
     try:
         feed = build_admin_calendar_feed(session, year, month)
         events = feed["events"]
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="calendar",
+            summary=f"匯出 {year}年{month}月 行事曆（{len(events)} 筆）",
+            changes={"count": len(events), "year": year, "month": month},
+        )
 
         wb = Workbook()
         ws = _safe_ws(wb)
@@ -559,6 +587,7 @@ def _approval_label(is_approved):
 
 @router.get("/leaves")
 def export_leaves(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
     year: int = Query(...),
@@ -578,6 +607,13 @@ def export_leaves(
             .all()
         )
         emp_map = _id_name_map(session, Employee)
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="leave",
+            summary=f"匯出 {year}年{month}月 請假記錄（{len(leaves)} 筆）",
+            changes={"count": len(leaves), "year": year, "month": month},
+        )
 
         wb = Workbook()
         ws = _safe_ws(wb)
@@ -627,6 +663,7 @@ def export_leaves(
 
 @router.get("/overtimes")
 def export_overtimes(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_READ)),
     year: int = Query(...),
@@ -658,6 +695,21 @@ def export_overtimes(
             .all()
         )
         emp_map = _id_name_map(session, Employee)
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="overtime",
+            summary=(
+                f"匯出 {year}年{month}月 加班記錄（{len(overtimes)} 筆，"
+                f"{'含金額' if can_see_pay else '金額遮罩'}）"
+            ),
+            changes={
+                "count": len(overtimes),
+                "year": year,
+                "month": month,
+                "include_overtime_pay": bool(can_see_pay),
+            },
+        )
 
         wb = Workbook()
         ws = _safe_ws(wb)
@@ -711,6 +763,7 @@ def export_overtimes(
 
 @router.get("/holidays")
 def export_holidays(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
     year: int = Query(..., description="要匯出的年份"),
@@ -727,6 +780,13 @@ def export_holidays(
             )
             .order_by(Holiday.date)
             .all()
+        )
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="holiday",
+            summary=f"匯出 {year}年 國定假日清單（{len(holidays)} 筆）",
+            changes={"count": len(holidays), "year": year},
         )
 
         wb = Workbook()
@@ -763,6 +823,7 @@ def export_holidays(
 
 @router.get("/shifts")
 def export_shifts(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
     week_start: str = Query(..., description="週起始日 YYYY-MM-DD（週一）"),
@@ -787,6 +848,18 @@ def export_shifts(
             .filter(ShiftAssignment.week_start_date == week_date)
             .order_by(Employee.employee_id)
             .all()
+        )
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="shift_assignment",
+            summary=(
+                f"匯出排班表 週起 {week_date.isoformat()}（{len(assignments)} 筆）"
+            ),
+            changes={
+                "count": len(assignments),
+                "week_start": week_date.isoformat(),
+            },
         )
 
         week_end = week_date + timedelta(days=6)
@@ -860,6 +933,7 @@ def _calc_work_hours(att) -> float | None:
 
 @router.get("/employee-attendance")
 def export_employee_attendance(
+    request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
     employee_id: int = Query(...),
@@ -882,6 +956,24 @@ def export_employee_attendance(
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
         if not emp:
             raise HTTPException(status_code=404, detail=EMPLOYEE_DOES_NOT_EXIST)
+        # F-033：個人逐日打卡 + 請假 + 加班明細屬高敏感（同事行程可被反查），
+        # 留稽核軌跡讓 SOC 可追蹤誰下載了誰的月報。entity_id 帶上 employee_id
+        # 方便事後 filter。
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="attendance",
+            entity_id=str(employee_id),
+            summary=(
+                f"匯出 {emp.name}（{emp.employee_id}） {year}年{month}月 個人出勤月報"
+            ),
+            changes={
+                "employee_id": employee_id,
+                "employee_code": emp.employee_id,
+                "year": year,
+                "month": month,
+            },
+        )
 
         job_title_name = ""
         if emp.job_title_id:

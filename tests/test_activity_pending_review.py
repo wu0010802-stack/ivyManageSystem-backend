@@ -229,7 +229,12 @@ class TestPublicRegisterMatching:
             assert forbidden not in body, f"response leaked {forbidden}"
 
     def test_soft_dedup_blocks_duplicate_pending_same_phone(self, pending_client):
-        """同 parent_phone + 同學期已有 pending 時，第二筆應被擋下。"""
+        """同 parent_phone + 同學期已有 pending 時，第二筆不應落 DB（soft dedup）。
+
+        F-030 修補後，未驗證身分（with_student=False → unmatched）的潛在攻擊者
+        路徑改回 silent-success（201 + 中性訊息）以避免存在性 oracle，但 dedup
+        保證 DB 仍只有一筆 pending（不能讓攻擊者 / 錯字家長堆出大量 pending）。
+        """
         client, sf = pending_client
         with sf() as s:
             _seed_base(s, with_student=False)
@@ -239,12 +244,16 @@ class TestPublicRegisterMatching:
             json=_public_register_payload(),
         )
         assert r1.status_code == 201
-        # 改個名字但用同手機 → 應被 soft dedup 擋下
+        # 改個名字但用同手機 → 觸發 pending_dup soft-dedup。
+        # 未驗證身分 → silent-success（201），DB 不應多寫一筆。
         r2 = client.post(
             "/api/activity/public/register",
             json=_public_register_payload(name="王大明"),
         )
-        assert r2.status_code == 400
+        assert r2.status_code == 201
+        with sf() as s:
+            count = s.query(ActivityRegistration).count()
+        assert count == 1, f"soft dedup 應保留只有 1 筆，實際 {count}"
 
 
 class TestPublicQueryPrivacy:

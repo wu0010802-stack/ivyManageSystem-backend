@@ -24,6 +24,10 @@ from models.database import (
 from utils.auth import require_staff_permission
 from utils.error_messages import ANNOUNCEMENT_NOT_FOUND
 from utils.permissions import Permission
+from utils.portfolio_access import (
+    accessible_classroom_ids,
+    is_unrestricted,
+)
 
 
 class _TagStripper(HTMLParser):
@@ -436,6 +440,74 @@ def _validate_recipient_targets_exist(
             )
 
 
+def _validate_recipient_audience_scope(
+    session, recipients: list[ParentRecipientItem], current_user: dict
+) -> None:
+    """F-045：受眾範圍守衛——非 admin/hr/supervisor 僅能對自己班的學生/家長發訊。
+
+    ANNOUNCEMENTS_WRITE 在預設配置下只給 admin/supervisor，但業主可自訂角色把這個
+    bit 授給「公關/行政助理」。一旦這類非 unrestricted caller 持有此權限，就能
+    透過 scope=guardian/student/classroom + 任意 id 對任何家長發訊（社交工程攻擊面）。
+    本 helper 對非 unrestricted caller 強制：
+      - scope='all'：拒絕（會打到全校家長，僅 admin/supervisor 可用）
+      - scope='classroom' / 'student' / 'guardian'：必須落在 caller 的
+        accessible_classroom_ids 範圍內
+
+    admin / hr / supervisor（is_unrestricted）不受此限制，與其他 admin 工具一致。
+    """
+    if is_unrestricted(current_user):
+        return
+
+    allowed_classrooms = set(accessible_classroom_ids(session, current_user))
+
+    # scope='all' 會繞過受眾範圍；非 unrestricted caller 一律拒
+    if any(r.scope == "all" for r in recipients):
+        raise HTTPException(
+            status_code=403,
+            detail="僅 admin/supervisor 可對全校家長發送公告",
+        )
+
+    classroom_ids = {r.classroom_id for r in recipients if r.scope == "classroom"}
+    out_of_scope_classrooms = classroom_ids - allowed_classrooms
+    if out_of_scope_classrooms:
+        raise HTTPException(
+            status_code=403,
+            detail="無權對非自己班級的家長發送公告",
+        )
+
+    student_ids = {r.student_id for r in recipients if r.scope == "student"}
+    if student_ids:
+        rows = (
+            session.query(Student.id, Student.classroom_id)
+            .filter(Student.id.in_(student_ids))
+            .all()
+        )
+        for sid, cid in rows:
+            if cid is None or cid not in allowed_classrooms:
+                raise HTTPException(
+                    status_code=403,
+                    detail="無權對非自己班級的學生家長發送公告",
+                )
+
+    guardian_ids = {r.guardian_id for r in recipients if r.scope == "guardian"}
+    if guardian_ids:
+        rows = (
+            session.query(Guardian.id, Student.classroom_id)
+            .join(Student, Student.id == Guardian.student_id)
+            .filter(
+                Guardian.id.in_(guardian_ids),
+                Guardian.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for gid, cid in rows:
+            if cid is None or cid not in allowed_classrooms:
+                raise HTTPException(
+                    status_code=403,
+                    detail="無權對非自己班級的家長發送公告",
+                )
+
+
 # ── LINE 推播（Phase 4） ──────────────────────────────────────────────────
 
 # 由 main.py 注入的 LineService singleton；未注入時 push 變 no-op
@@ -558,13 +630,15 @@ def replace_parent_recipients(
     - 含 scope='all' 即可讓所有家長看到（其他項目可同時並存，但 'all'
       已涵蓋；前端不應同時送 'all' + 其他 scope，後端不強擋以保留彈性）
     """
-    if not payload.recipients:
-        return _replace_recipients_impl(announcement_id, [])
-    return _replace_recipients_impl(announcement_id, payload.recipients)
+    return _replace_recipients_impl(
+        announcement_id, payload.recipients or [], current_user
+    )
 
 
 def _replace_recipients_impl(
-    announcement_id: int, recipients: list[ParentRecipientItem]
+    announcement_id: int,
+    recipients: list[ParentRecipientItem],
+    current_user: dict,
 ) -> dict:
     session = get_session()
     try:
@@ -577,6 +651,8 @@ def _replace_recipients_impl(
             raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
 
         _validate_recipient_targets_exist(session, recipients)
+        # F-045：受眾範圍守衛（非 admin/hr/supervisor 僅能對自己班發訊）
+        _validate_recipient_audience_scope(session, recipients, current_user)
 
         # replace-all：先清舊
         session.query(AnnouncementParentRecipient).filter(

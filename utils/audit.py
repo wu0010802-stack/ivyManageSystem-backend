@@ -105,6 +105,10 @@ ENTITY_LABELS = {
     "parent_medication_order": "家長用藥單",
     "parent_event_ack": "事件簽收",
     "parent_notification_pref": "家長通知偏好",
+    # F-033：匯出端點顯式 audit 用
+    "shift_assignment": "排班",
+    "holiday": "國定假日",
+    "gov_report": "政府申報",
 }
 
 ACTION_LABELS = {

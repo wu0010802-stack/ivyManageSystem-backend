@@ -454,12 +454,33 @@ async def public_register(
             "waitlisted": False,
             "waitlist_courses": [],
         }
+    # F-030：silent-success（與 honeypot 路徑一致）的中性回應，
+    # 攻擊者無法從重複/驗證失敗中分辨存在性。
+    _silent_success_response = {
+        "message": "報名資料已送出，校方將於 1-2 個工作天確認後主動與您聯繫。",
+        "id": 0,
+        "waitlisted": False,
+        "waitlist_courses": [],
+    }
+
     session = get_session()
     try:
         _check_registration_open(session)
 
         # 決定學期（未傳則用當前）
         sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
+
+        # F-030：先做三欄靜默比對，再決定重複報名訊息要 raise 400（已驗身分的家長）
+        # 還是 silent-success（未通過比對的潛在 enumeration probe）。
+        # 舊實作把 existing/pending_dup 兩支 SELECT 放在 _match_student_with_parent_phone
+        # 之前 + 命中即 raise 400 → 未登入攻擊者可用任意 (student_name, birthday) /
+        # parent_phone 做存在性 oracle。改為先驗身分後再分流，攻擊者只看到統一的
+        # silent-success 回應，無法區分「該學生有有效報名」、「該電話有 pending」、
+        # 「真正的新報名」三種情況。
+        matched_student_id, matched_classroom_id = _match_student_with_parent_phone(
+            session, body.name, body.birthday, body.parent_phone
+        )
+        is_matched_for_dup_check = bool(matched_student_id and matched_classroom_id)
 
         # 重複報名防護（同學期內同學生不可重複）
         existing = (
@@ -474,9 +495,14 @@ async def public_register(
             .first()
         )
         if existing:
-            raise HTTPException(
-                status_code=400, detail="此學生本學期已有有效報名，請使用修改功能"
-            )
+            if is_matched_for_dup_check:
+                # 已驗證身分的家長：保留明確 UX，方便他們改用「修改功能」
+                raise HTTPException(
+                    status_code=400,
+                    detail="此學生本學期已有有效報名，請使用修改功能",
+                )
+            # 未驗證身分（含枚舉攻擊者）：silent-success，不寫 DB、不洩漏存在性
+            return _silent_success_response
 
         # Soft dedup：同 parent_phone + 學期若已有 pending 筆，擋重複送件
         # （避免家長錯字重送產生一堆 pending）
@@ -492,15 +518,13 @@ async def public_register(
             .first()
         )
         if pending_dup:
-            raise HTTPException(
-                status_code=400,
-                detail="您的報名仍在確認中，如需補件請直接聯繫校方",
-            )
-
-        # 三欄靜默比對：name + birthday + parent_phone
-        matched_student_id, matched_classroom_id = _match_student_with_parent_phone(
-            session, body.name, body.birthday, body.parent_phone
-        )
+            if is_matched_for_dup_check:
+                raise HTTPException(
+                    status_code=400,
+                    detail="您的報名仍在確認中，如需補件請直接聯繫校方",
+                )
+            # 未驗證身分：silent-success（同樣保留 soft-dedup：DB 不再多寫一筆）
+            return _silent_success_response
 
         # 班級來源：匹配成功以 Student.classroom 為準（覆蓋家長自選），
         # 失敗則保留家長輸入字串作為審核參考。
@@ -613,13 +637,18 @@ async def public_register(
         except IntegrityError as ie:
             # partial unique index `uq_activity_regs_student_term_active` 攔到並發雙寫：
             # 應用層 `existing` SELECT 與 INSERT 之間若有第二個請求穿插，DB 層才能擋下。
+            # F-030：與 in-Python existing/pending_dup 檢查同樣分流——已驗證身分的家長
+            # 看到 400 明確訊息；未驗證身分（潛在攻擊者）一律 silent-success，不再
+            # 透過 race-condition 路徑洩漏存在性 oracle。
             session.rollback()
             msg_lower = str(getattr(ie, "orig", ie)).lower()
             if "uq_activity_regs_student_term_active" in msg_lower:
-                raise HTTPException(
-                    status_code=400,
-                    detail="此學生本學期已有有效報名，請使用修改功能",
-                )
+                if is_matched:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="此學生本學期已有有效報名，請使用修改功能",
+                    )
+                return _silent_success_response
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         logger.info(

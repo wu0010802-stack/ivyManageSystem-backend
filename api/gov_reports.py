@@ -15,7 +15,7 @@ from io import BytesIO
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -23,6 +23,7 @@ from sqlalchemy import or_, and_
 
 from models.database import get_session, Employee, SalaryRecord
 from services.salary.insurance_salary import resolve_insurance_salary_raw
+from utils.audit import write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
@@ -307,6 +308,7 @@ def _ins_calc(emp: Employee):
 
 @router.get("/labor-insurance")
 def export_labor_insurance(
+    request: Request,
     year: int = Query(..., ge=2000, le=2100, description="申報年份"),
     month: int = Query(..., ge=1, le=12, description="申報月份"),
     fmt: str = Query("xlsx", description="xlsx（Excel）或 txt（純文字）"),
@@ -388,6 +390,27 @@ def export_labor_insurance(
         month,
         len(rows),
         current_user.get("username", ""),
+    )
+    # F-033：政府申報含全員 id_number（身分證），須留稽核軌跡。
+    # is_full_id_number=True 用於 SOC 告警（身分證匯出永遠完整不遮罩）。
+    write_explicit_audit(
+        request,
+        action="EXPORT",
+        entity_type="gov_report",
+        summary=(
+            f"匯出勞保申報 {year}年{month}月（{len(rows)} 人，"
+            f"format={fmt}{'，force' if force else ''}）"
+        ),
+        changes={
+            "report": "labor-insurance",
+            "count": len(rows),
+            "year": year,
+            "month": month,
+            "format": fmt,
+            "is_full_id_number": True,
+            "force": bool(force),
+            "force_reason": force_reason if force else None,
+        },
     )
 
     if fmt == "txt":
@@ -492,6 +515,7 @@ def _labor_txt(rows, year, month, employer_name, employer_code):
 
 @router.get("/health-insurance")
 def export_health_insurance(
+    request: Request,
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     employer_name: str = Query("（請填入投保單位名稱）"),
@@ -569,6 +593,24 @@ def export_health_insurance(
         month,
         len(rows),
         current_user.get("username", ""),
+    )
+    write_explicit_audit(
+        request,
+        action="EXPORT",
+        entity_type="gov_report",
+        summary=(
+            f"匯出健保被保險人名冊 {year}年{month}月（{len(rows)} 人"
+            f"{'，force' if force else ''}）"
+        ),
+        changes={
+            "report": "health-insurance",
+            "count": len(rows),
+            "year": year,
+            "month": month,
+            "is_full_id_number": True,
+            "force": bool(force),
+            "force_reason": force_reason if force else None,
+        },
     )
 
     wb = Workbook()
@@ -653,6 +695,7 @@ def _estimate_withholding(annual_gross: float) -> int:
 
 @router.get("/withholding")
 def export_withholding(
+    request: Request,
     year: int = Query(..., ge=2000, le=2100),
     employer_name: str = Query("（請填入扣繳義務人名稱）"),
     employer_id: str = Query("（請填入統一編號）"),
@@ -736,6 +779,23 @@ def export_withholding(
         len(rows),
         current_user.get("username", ""),
     )
+    write_explicit_audit(
+        request,
+        action="EXPORT",
+        entity_type="gov_report",
+        summary=(
+            f"匯出扣繳憑單 {year}年（{len(rows)} 人，含全年所得 + 身分證"
+            f"{'，force' if force else ''}）"
+        ),
+        changes={
+            "report": "withholding",
+            "count": len(rows),
+            "year": year,
+            "is_full_id_number": True,
+            "force": bool(force),
+            "force_reason": force_reason if force else None,
+        },
+    )
 
     wb = Workbook()
     ws = SafeWorksheet(wb.active)
@@ -800,6 +860,7 @@ def export_withholding(
 
 @router.get("/pension")
 def export_pension(
+    request: Request,
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     employer_name: str = Query("（請填入雇主名稱）"),
@@ -868,6 +929,24 @@ def export_pension(
         month,
         len(rows),
         current_user.get("username", ""),
+    )
+    write_explicit_audit(
+        request,
+        action="EXPORT",
+        entity_type="gov_report",
+        summary=(
+            f"匯出勞退月提繳明細 {year}年{month}月（{len(rows)} 人"
+            f"{'，force' if force else ''}）"
+        ),
+        changes={
+            "report": "pension",
+            "count": len(rows),
+            "year": year,
+            "month": month,
+            "is_full_id_number": True,
+            "force": bool(force),
+            "force_reason": force_reason if force else None,
+        },
     )
 
     wb = Workbook()

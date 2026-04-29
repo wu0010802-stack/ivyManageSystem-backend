@@ -455,9 +455,19 @@ def _check_substitute_leave_conflict(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
 ) -> None:
-    """代理人不可在相同時段有待審或已核准的請假或加班記錄（V14）。"""
+    """代理人不可在相同時段有待審或已核准的請假或加班記錄（V14）。
+
+    F-005：detail 採 generic 訊息，不再揭露代理人的請假/加班區間與審核狀態。
+    舊實作回傳「代理人在 {start_date} ~ {end_date} 已有{待審核|已核准}請假記錄」
+    讓員工 A 可用 substitute_employee_id=B + 不同日期反覆探測 B 的請假/加班行事曆
+    （二分搜尋還原整段排程）。改為單一中性訊息後，攻擊者無法從 409 detail 推回
+    代理人的具體日期或審批狀態。管理端（api/leaves.py 核准路徑）也會走此 helper，
+    一併收斂訊息（避免維護兩套 detail）。
+    """
     if substitute_employee_id is None:
         return
+
+    _GENERIC_DETAIL = "代理人於該期間已有其他請假/加班，無法擔任代理人，請改選其他人選"
 
     # ── 檢查請假衝突 ────────────────────────────────────────────────────
     leave_conflict = _find_overlapping_leave(
@@ -470,14 +480,7 @@ def _check_substitute_leave_conflict(
         include_pending=True,
     )
     if leave_conflict:
-        status_label = "待審核" if leave_conflict.is_approved is None else "已核准"
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"代理人在 {leave_conflict.start_date} ~ {leave_conflict.end_date} "
-                f"已有{status_label}請假記錄，請改派其他代理人"
-            ),
-        )
+        raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
 
     # ── 檢查加班衝突（V14）──────────────────────────────────────────────
     # 代理人若有與請假時段重疊的待審/已核准加班記錄，同樣不適合擔任代理人
@@ -492,14 +495,7 @@ def _check_substitute_leave_conflict(
         .first()
     )
     if ot_conflict:
-        ot_status = "待審核" if ot_conflict.is_approved is None else "已核准"
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"代理人在 {ot_conflict.overtime_date} 有{ot_status}加班記錄，"
-                "代理人當日已安排加班，請改派其他代理人"
-            ),
-        )
+        raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
 
 
 # ============ Routes ============
