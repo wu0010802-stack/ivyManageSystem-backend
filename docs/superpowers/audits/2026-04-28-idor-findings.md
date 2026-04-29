@@ -294,7 +294,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：兩端點為了讓 supervisor 評估「招生變動 → 獎金影響」與「全校達成率」，把獎金金額納入 response，但 perm 只用 `STUDENTS_READ`/`STUDENTS_WRITE`，未要求同時持 `SALARY_READ`。預期 supervisor 看「自己 + 自班教師」沒問題，但 response 未限縮班級或 employee_id 範圍。
 - **建議修法**：（1）若維持給 supervisor 用，把 response 中各員工 `estimated_bonus` / `base_amount` 用 mask（例：四捨五入到千、或以 `<3000`/`3000-5000`/`5000+` 區間取代具體數字）。（2）或要求 perm 加上 `SALARY_READ`，使僅 admin/hr/被明確授權者可看細節；supervisor 仍可用班級總計版本（`estimated_total_bonus` + 達成率，不含個別員工金額）。建議 (1)：保留 supervisor 用以評估招生決策的 UX，又不洩漏個別員工估算金額。
 - **是否需新測試**：no（Medium；列為 Phase 2 優先處理）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 571f1179) — bonus_preview dashboard / impact-preview 對非 admin/hr caller 將 current_bonus / projected_bonus / change / estimated_bonus / base_amount / estimated_total_bonus 遮罩為 None；改 Pydantic schema 為 Optional[int]；新增 tests/test_pii_masking_authz.py:TestF016_BonusPreview
 
 ### F-017 [Medium] employees: `GET /employees` 與 `GET /employees/{id}` 回傳 `base_salary` / `hourly_rate` 給僅持 `EMPLOYEES_READ` 之自訂角色（無 `SALARY_READ`）
 
@@ -304,7 +304,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：`_format_employee_response` 只區分「`SALARY_WRITE` → 銀行/身分證遮罩」一條規則，沒有第二層「`SALARY_READ` → 薪資金額遮罩」。背後假設「能看員工的就能看薪資」，但 EMPLOYEES_READ 與 SALARY_READ 為獨立 bit，配置上可被拆開。
 - **建議修法**：在 `_format_employee_response` 多接受 `can_view_salary` 參數，由 caller 用 `has_permission(perms, Permission.SALARY_READ)` 判斷；若 `can_view_salary=False`，把 `base_salary` / `hourly_rate` / `insurance_salary_level` / `pension_self_rate` 改為 `None` 或 `"***"`。同時更新 `_format_employee_response` 文件註記「薪資欄位遮罩規則：需 SALARY_READ」。亦可一併把 `hire_date` 之外的 PII（phone/address/emergency_contact_*）對「沒有自己 employee_id 對映」的查詢者遮罩，但這超出 Threat a 範圍，建議拆 finding 處理。
 - **是否需新測試**：no（Medium；現行預設角色不會觸發；列為 Phase 2 與自訂角色 RBAC 改造一併處理）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 571f1179) — `_format_employee_response` 接受 `can_view_salary` 參數；list/detail per-row 用 `can_view_salary_of(current_user, emp.id)` 判定（admin/hr 全可、其他僅 self）；非該角色 base_salary / hourly_rate / insurance_salary_level / pension_self_rate 設 None；新增 tests/test_pii_masking_authz.py:TestF017_EmployeeListDetail
 
 ### F-018 [High] students/classrooms: `GET /students` / `GET /students/{id}` / `GET /students/{id}/profile` / `GET /classrooms/{id}` 在 `STUDENTS_READ` / `CLASSROOMS_READ` 下回傳 `allergy` / `medication` / `special_needs`，繞過 `STUDENTS_HEALTH_READ` 與 `STUDENTS_SPECIAL_NEEDS_READ`
 
@@ -433,7 +433,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：`registrations.py` GET 端點直接 dump 整個 ORM row 到 response，未區分基本資料（`student_name` / `class_name` / `course_count` 等運維所需）與聯絡 PII（`parent_phone` / `email` / `birthday`）。無 viewer-side 欄位 mask、亦未檢查呼叫者是否同時持 `GUARDIANS_READ` / `STUDENTS_READ`。
 - **建議修法**：（1）在 list / detail / pending response 組裝處接受 `can_view_pii` 參數（caller 用 `has_permission(perms, Permission.GUARDIANS_READ)` 與 `STUDENTS_READ` 任一判斷），無權者把 `parent_phone` / `birthday` / `email` 改為 `None` 或 `"***"`；`student_id` / `classroom_id` 對非 STUDENTS_READ 也建議遮蔽。（2）或要求端點 perm 為 `ACTIVITY_READ + GUARDIANS_READ`，但會影響既有「活動行政」角色職責，需業主決策。建議 (1)，與 F-017 改造一致並可共享 helper。
 - **是否需新測試**：no（Medium；現行預設角色不會觸發；列為 Phase 2 與 F-017 自訂角色 RBAC 改造一併處理）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 571f1179) — list / detail / pending 三端點對缺 STUDENTS_READ 角色將 birthday / student_id / classroom_id 設 None；對缺 GUARDIANS_READ 角色將 parent_phone / email 設 None；由 `utils/portfolio_access.can_view_student_pii` / `can_view_guardian_pii` 統一判定；新增 tests/test_pii_masking_authz.py:TestF026_RegistrationsList
 
 ### F-027 [Medium] activity/registrations: `GET /students/search` 僅以 `ACTIVITY_WRITE` 守門，回傳全校在校生 `student_id` 學號 / `birthday` / `parent_phone`，繞過 `STUDENTS_READ`
 
@@ -443,7 +443,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：endpoint 為了讓後台「待審核 → 手動 match」流程能搜學生，把學生搜尋 colocate 在 activity router 內，僅以 ACTIVITY_WRITE 守門，未要求同時持 STUDENTS_READ。亦未對非 admin/hr/supervisor 強制最小關鍵字長度（≥2 已有，但 phone like `09` 即可命中大量學生）或限縮為僅匹配 pending registration 上下文（要求帶 `registration_id` 才回傳）。
 - **建議修法**：（1）perm gate 改為 `ACTIVITY_WRITE + STUDENTS_READ`（`require_staff_permissions_all` helper）；（2）或要求 query 必須帶 `registration_id`，handler 校驗該 reg 為 pending 且呼叫者具 ACTIVITY_WRITE 才開放；（3）response 對非 STUDENTS_READ 角色把 `birthday` / `parent_phone` mask 為 `None`，僅回 `id` / `student_id` / `name` / `classroom_name` 供 match。建議 (1) 最小改動。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 571f1179) — endpoint 進入後 inline 檢查 `can_view_student_pii(current_user)`，缺 STUDENTS_READ 直接 403；保留 ACTIVITY_WRITE 為 base perm；新增 tests/test_pii_masking_authz.py:TestF027_RegistrationsStudentsSearch
 
 ### F-028 [Low] activity/pos: `GET /pos/outstanding-by-student` / `GET /pos/recent-transactions` 在 `ACTIVITY_READ` 下回傳全校學生 `student_name` / `birthday` / `class_name`
 
@@ -456,7 +456,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：POS 端點以 `ACTIVITY_READ` 為單一閘門，未疊加 `STUDENTS_READ` 或欄位遮罩。設計上假設操作者同時為老闆/會計（同時持兩個 perm），未防範自訂 RBAC 拆分。
 - **建議修法**：與 F-026 共用 viewer-side 欄位 mask helper。對非 STUDENTS_READ 角色：`outstanding-by-student` 將 `birthday` 改為 `None`（保留 `student_name` + `class_name` 供櫃檯叫號識別）；`semester-reconciliation` 同理；`recent-transactions` 已較少敏感欄位，可保留。或把這三個端點 perm gate 升為 `ACTIVITY_READ + STUDENTS_READ`，逼業主明確授權。
 - **是否需新測試**：no（Low；列為 Phase 2 與 F-017/F-026 同步處理）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 571f1179) — `outstanding-by-student` 對缺 STUDENTS_READ 角色將 group `birthday` 設 None（保留 student_name / class_name 為 POS 必要欄）；`recent-transactions` 經驗證 response 不含 birthday，無須改造；`semester-reconciliation` 屬本批次外，未調整；新增 tests/test_pii_masking_authz.py:TestF028_POSOutstanding
 
 ### F-029 [Low] activity/public: `POST /public/update` 換手機號 409 `此手機號碼已被其他報名使用` 形成 phone enumeration oracle
 
