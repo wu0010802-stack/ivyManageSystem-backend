@@ -377,7 +377,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   1. list / summary / export：對非 admin/hr/supervisor，以 `accessible_classroom_ids` 限縮 `classroom_id` / `from_classroom_id` / `to_classroom_id`（任一在 allowed 即可）；帶了不允許的 classroom_id 回 403。
   2. POST / PUT / DELETE：取出 log 後 `assert_student_access(session, current_user, log.student_id)`。
 - **是否需新測試**：no（Medium；列為 Phase 2 與 F-019/F-020/F-021 同步處理）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — list / summary / export 對非 admin/hr/supervisor 套 `student_ids_in_scope`；POST 改為 `assert_student_access`；PUT/DELETE 取出 log 後追加 `assert_student_access`；新增 tests/test_class_scope_extensions.py:TestF022_StudentChangeLogs
 
 ### F-023 [Medium] student_incidents/assessments: list 端點 `student_id` 與 `classroom_id` 都未帶時跳過 `_require_classroom_access`，回傳全校事件／評量
 
@@ -398,7 +398,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   ```
   保留現有 `if student_id` / `if classroom_id` 分支的 helper 呼叫做雙重防線。incidents 與 assessments 共用同一個 helper（`utils/portfolio_access.py:accessible_classroom_ids`）即可。
 - **是否需新測試**：no（Medium；結合 F-024 一起測）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — list 入口在 student_id / classroom_id 皆未帶時，對非 `is_unrestricted` caller 自動以 `student_ids_in_scope` 限縮；保留既有 `_require_classroom_access` 雙重防線；新增 tests/test_class_scope_extensions.py:TestF023_IncidentsAssessmentsList
 
 ### F-024 [Medium] students/records: `GET /students/records` 時間軸無 viewer-side 班級過濾，回傳全校事件＋評量＋異動
 
@@ -410,7 +410,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   1. `list_timeline` 加 `accessible_classroom_ids: list[int] | None` 參數（None=全放行 admin）；內部 `_fetch_incidents` / `_fetch_assessments` 透過 `Student.classroom_id.in_(allowed)`、`_fetch_change_logs` 透過 `StudentChangeLog.classroom_id.in_(allowed)` 過濾。
   2. `GET /students/records` endpoint 在進入 service 前 `from utils.portfolio_access import is_unrestricted, accessible_classroom_ids; allowed = None if is_unrestricted(current_user) else accessible_classroom_ids(session, current_user)`，傳給 service。
 - **是否需新測試**：no（Medium）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — `services/student_records_timeline.list_timeline` 增加 `current_user: Optional[dict]=None` 參數（不破壞既有 caller），內部以 `student_ids_in_scope` 套到三類 `_fetch_*` 子查詢；endpoint 將 `current_user` 透傳；新增 tests/test_class_scope_extensions.py:TestF024_StudentsRecordsTimeline
 
 ### F-025 [Medium] students: `GET /students/{student_id}/guardians` 缺班級 scope，可跨班讀家長聯絡資料
 
@@ -420,7 +420,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
 - **根因**：endpoint 僅 `require_staff_permission(GUARDIANS_READ)`，缺 `assert_student_access` 或 `accessible_classroom_ids` 過濾；同 pattern 已在 F-019/F-022 出現。
 - **建議修法**：在 endpoint 入口加 `assert_student_access(session, current_user, student_id)`；或將 `GUARDIANS_READ` 視為 admin-only 並收歸 supervisor 角色（依業主 policy 二擇一）。
 - **是否需新測試**：yes
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — endpoint 入口 `assert_student_access(session, current_user, student_id)`；學生不存在 → 404、跨班 → 403；新增 tests/test_class_scope_extensions.py:TestF025_GuardiansList
 
 ### F-026 [Medium] activity/registrations: `GET /registrations` / `/{id}` / `/pending` 在 `ACTIVITY_READ` 下回傳 `parent_phone` / `birthday` / `email` / `student_id` / `classroom_id`，繞過 `GUARDIANS_READ` / `STUDENTS_READ`
 
@@ -561,7 +561,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   2. **班級 scope 收斂**：對非 admin/hr/supervisor 強制走 `accessible_classroom_ids`，限縮 `classroom_name` filter；帶不在 allowed 內的 classroom 回 403。
   建議 (1)：(2) 因 list 端點以 `classroom_name` 字串過濾（非 FK），實作較複雜；(1) 一行改動且更明確。
 - **是否需新測試**：no（Medium；列為 Phase 2 與 F-017 / F-026 / F-027 自訂角色 RBAC 改造一併處理）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed — 採班級 scope 收斂：非 `is_unrestricted` caller 必須帶 `student_id` 並通過 `assert_student_access`；不帶 student_id 全校列出一律 403；新增 tests/test_class_scope_extensions.py:TestF034_FeesRecords
 
 ### F-035 [Low] audit-logs: `GET /audit-logs/export` 自身未呼叫 `write_explicit_audit`，匯出全系統操作軌跡的事件本身無痕
 
