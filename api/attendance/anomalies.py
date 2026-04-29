@@ -21,6 +21,7 @@ from sqlalchemy import or_
 from models.database import get_session, Employee, Attendance, SalaryRecord
 from services.salary.utils import calc_daily_salary
 from utils.auth import require_staff_permission
+from utils.attendance_guards import assert_no_self_in_batch
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,16 @@ def batch_confirm_anomalies(
             .filter(Attendance.id.in_(data.attendance_ids))
             .all()
         }
+
+        # 自我守衛（F-042）：批次內含 caller 自己的 attendance → 整批 403。
+        # 與 F-041 互為旁路：F-041 直接寫 attendance 欄位，F-042 改 confirmed_action
+        # 為 admin_waive 同樣會抹掉本人扣款，必須擋。
+        # 採「整批拒絕」而非 partial-succeed，與 F-046 bulk upload 一致。
+        assert_no_self_in_batch(
+            current_user,
+            [a.employee_id for a in att_map.values()],
+            detail="不可批次確認自己的考勤異常",
+        )
 
         # 封存守衛：admin_waive 會改變薪資扣款結果（薪資端視為不扣），
         # 已封存月份不可被改寫；admin_accept 雖不改薪資結果，但仍代表

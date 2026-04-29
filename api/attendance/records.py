@@ -14,6 +14,7 @@ from models.database import get_session, Employee, Attendance, SalaryRecord
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import _get_finalized_salary_record
+from utils.attendance_guards import require_not_self_attendance
 from ._shared import AttendanceRecordUpdate
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,10 @@ async def create_or_update_attendance_record(
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
 ):
     """新增或更新單筆考勤記錄"""
+    # 自我守衛（F-041）：caller 不可寫自己的考勤紀錄；對齊
+    # api/overtimes.py:1078-1079、api/leaves.py:1014-1018 既有 idiom。
+    require_not_self_attendance(current_user, record.employee_id)
+
     session = get_session()
     try:
         employee = (
@@ -374,6 +379,9 @@ async def delete_single_attendance_record(
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
 ):
     """刪除單筆考勤記錄"""
+    # 自我守衛（F-041）：caller 不可刪自己的考勤紀錄。
+    require_not_self_attendance(current_user, employee_id)
+
     session = get_session()
     try:
         attendance_date = datetime.strptime(date, "%Y-%m-%d").date()
@@ -419,6 +427,9 @@ def delete_single_attendance(
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
 ):
     """刪除單筆考勤記錄"""
+    # 自我守衛（F-041）：caller 不可刪自己的考勤紀錄。
+    require_not_self_attendance(current_user, employee_id)
+
     session = get_session()
     try:
         try:

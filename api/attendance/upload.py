@@ -22,6 +22,7 @@ from models.database import (
     DailyShift,
 )
 from utils.auth import require_staff_permission
+from utils.attendance_guards import assert_no_self_in_batch
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
@@ -198,6 +199,13 @@ async def upload_attendance(
                             pass
 
                 _assert_upload_months_not_finalized(session, _pre_emp_ids, _pre_dates)
+
+                # 自我守衛（F-046）：bulk upload 含 caller 自己列 → 整批 403。
+                assert_no_self_in_batch(
+                    current_user,
+                    _pre_emp_ids,
+                    detail="不可上傳含自己的考勤紀錄",
+                )
 
                 # 累積實際被異動的 (emp_id, year, month),供 commit 後批次標 stale
                 _affected_months: set = set()
@@ -603,6 +611,13 @@ async def upload_attendance(
                     session, _legacy_emp_ids, _legacy_dates
                 )
 
+                # 自我守衛（F-046）：legacy 路徑也適用。
+                assert_no_self_in_batch(
+                    current_user,
+                    _legacy_emp_ids,
+                    detail="不可上傳含自己的考勤紀錄",
+                )
+
                 # 累積實際被異動的 (emp_id, year, month),供 commit 後批次標 stale
                 _legacy_affected_months: set = set()
 
@@ -777,6 +792,9 @@ async def upload_attendance(
                 "anomalies": anomaly_data[:20],
             }
 
+    except HTTPException:
+        # 自我守衛、封存守衛等業務錯誤需保留原 status code，別被 500 蓋掉
+        raise
     except Exception as e:
         raise_safe_500(e, context="解析失敗")
     finally:
@@ -820,6 +838,13 @@ async def upload_attendance_csv(
                 pass
 
         _assert_upload_months_not_finalized(session, _csv_emp_ids, _csv_dates)
+
+        # 自我守衛（F-046）：CSV 路徑同樣禁止 caller 上傳自己。
+        assert_no_self_in_batch(
+            current_user,
+            _csv_emp_ids,
+            detail="不可上傳含自己的考勤紀錄",
+        )
 
         # 累積實際被異動的 (emp_id, year, month),供 commit 後批次標 stale
         _csv_affected_months: set = set()
@@ -1013,6 +1038,10 @@ async def upload_attendance_csv(
             "results": results,
         }
 
+    except HTTPException:
+        # 自我守衛、封存守衛等業務錯誤需保留原 status code，別被 500 蓋掉
+        session.rollback()
+        raise
     except Exception as e:
         session.rollback()
         raise_safe_500(e, context="匯入失敗")
