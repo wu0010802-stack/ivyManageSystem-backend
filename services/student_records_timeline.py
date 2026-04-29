@@ -72,6 +72,7 @@ def _fetch_incidents(
     classroom_id: Optional[int],
     date_from: Optional[date],
     date_to: Optional[date],
+    scope_ids: Optional[list[int]] = None,
 ) -> list[StudentIncident]:
     q = session.query(StudentIncident)
     if student_id:
@@ -80,6 +81,8 @@ def _fetch_incidents(
         q = q.join(Student, StudentIncident.student_id == Student.id).filter(
             Student.classroom_id == classroom_id
         )
+    if scope_ids is not None:
+        q = q.filter(StudentIncident.student_id.in_(scope_ids))
     if date_from:
         q = q.filter(
             StudentIncident.occurred_at >= datetime.combine(date_from, time.min)
@@ -96,6 +99,7 @@ def _fetch_assessments(
     classroom_id: Optional[int],
     date_from: Optional[date],
     date_to: Optional[date],
+    scope_ids: Optional[list[int]] = None,
 ) -> list[StudentAssessment]:
     q = session.query(StudentAssessment)
     if student_id:
@@ -104,6 +108,8 @@ def _fetch_assessments(
         q = q.join(Student, StudentAssessment.student_id == Student.id).filter(
             Student.classroom_id == classroom_id
         )
+    if scope_ids is not None:
+        q = q.filter(StudentAssessment.student_id.in_(scope_ids))
     if date_from:
         q = q.filter(StudentAssessment.assessment_date >= date_from)
     if date_to:
@@ -120,12 +126,15 @@ def _fetch_change_logs(
     date_to: Optional[date],
     school_year: Optional[int],
     semester: Optional[int],
+    scope_ids: Optional[list[int]] = None,
 ) -> list[StudentChangeLog]:
     q = session.query(StudentChangeLog)
     if student_id:
         q = q.filter(StudentChangeLog.student_id == student_id)
     if classroom_id:
         q = q.filter(StudentChangeLog.classroom_id == classroom_id)
+    if scope_ids is not None:
+        q = q.filter(StudentChangeLog.student_id.in_(scope_ids))
     if date_from:
         q = q.filter(StudentChangeLog.event_date >= date_from)
     if date_to:
@@ -222,6 +231,7 @@ def list_timeline(
     semester: Optional[int] = None,
     page: int = 1,
     page_size: int = 20,
+    current_user: Optional[dict] = None,
 ) -> dict[str, Any]:
     """跨三模型的學生紀錄時間軸。
 
@@ -234,6 +244,9 @@ def list_timeline(
     student_id, date_from, date_to : 一般過濾條件
     school_year, semester : **僅影響 change_log**（事件/評量沒有此欄位）。
     page, page_size : 分頁（合併後切片）。
+    current_user : dict | None
+        F-024：viewer-side 班級 scope 過濾。None=不做（給內部資料任務／既有測試）；
+        dict=以 `student_ids_in_scope` 限縮三類查詢；admin/hr/supervisor 不受限。
 
     Returns
     -------
@@ -244,6 +257,22 @@ def list_timeline(
     else:
         enabled = {t for t in types if t in RECORD_TYPES}
 
+    # F-024：viewer-side 班級 scope 過濾（None=不做；admin 角色 scope=None）
+    scope_ids: Optional[list[int]] = None
+    if current_user is not None:
+        # 延遲匯入避免 service 對 utils 形成循環依賴
+        from utils.portfolio_access import is_unrestricted, student_ids_in_scope
+
+        if not is_unrestricted(current_user):
+            scope_ids = student_ids_in_scope(session, current_user)
+            if not scope_ids:
+                return {
+                    "items": [],
+                    "total": 0,
+                    "page": page,
+                    "page_size": page_size,
+                }
+
     items: list[dict[str, Any]] = []
 
     if "incident" in enabled:
@@ -253,6 +282,7 @@ def list_timeline(
             classroom_id=classroom_id,
             date_from=date_from,
             date_to=date_to,
+            scope_ids=scope_ids,
         ):
             items.append(_build_incident_item(inc))
 
@@ -263,6 +293,7 @@ def list_timeline(
             classroom_id=classroom_id,
             date_from=date_from,
             date_to=date_to,
+            scope_ids=scope_ids,
         ):
             items.append(_build_assessment_item(asm))
 
@@ -275,6 +306,7 @@ def list_timeline(
             date_to=date_to,
             school_year=school_year,
             semester=semester,
+            scope_ids=scope_ids,
         ):
             items.append(_build_change_log_item(log))
 

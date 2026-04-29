@@ -24,6 +24,7 @@ from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_adjustment_reason, require_finance_approve
 from utils.permissions import Permission
+from utils.portfolio_access import assert_student_access, is_unrestricted
 
 logger = logging.getLogger(__name__)
 
@@ -409,13 +410,23 @@ def list_fee_records(
     student_id: Optional[int] = Query(None, gt=0),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
     """查詢費用記錄（支援分頁）。
 
     student_id：指定學生 ID 時，僅回傳該學生的費用紀錄（跨學期）。
     """
     with session_scope() as session:
+        # F-034：班級 scope 守衛 — 非 admin/hr/supervisor caller 必須帶
+        # student_id 並通過 assert_student_access；不帶 student_id 全校列出
+        # 一律拒絕，避免「自訂財務角色」拿全校學生繳費明細。
+        if not is_unrestricted(current_user):
+            if student_id is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="非管理角色不得列出全校繳費紀錄，請指定 student_id",
+                )
+            assert_student_access(session, current_user, student_id)
         q = _apply_fee_record_filters(
             session.query(StudentFeeRecord),
             period=period,

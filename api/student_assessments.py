@@ -14,6 +14,7 @@ from models.database import session_scope, Student, StudentAssessment, Classroom
 from utils.auth import require_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
+from utils.portfolio_access import is_unrestricted, student_ids_in_scope
 from utils.record_formatters import assessment_to_dict
 from utils.validators import validate_assessment_fields
 
@@ -93,6 +94,14 @@ async def list_assessments(
         query = session.query(StudentAssessment, Student).join(
             Student, StudentAssessment.student_id == Student.id
         )
+
+        # F-023：student_id / classroom_id 都未帶時，非 is_unrestricted caller
+        # 自動限縮至自己班級的學生（雙重防線：保留下方既有 helper 呼叫）
+        if not student_id and not classroom_id and not is_unrestricted(current_user):
+            scope = student_ids_in_scope(session, current_user)
+            if not scope:
+                return {"total": 0, "items": []}
+            query = query.filter(StudentAssessment.student_id.in_(scope))
 
         if student_id:
             # NV2：對非特權角色（admin/hr/supervisor）驗證學生屬於可存取的班級；

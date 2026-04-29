@@ -18,6 +18,10 @@ from models.student_log import StudentChangeLog, CHANGE_LOG_REASON_OPTIONS, EVEN
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.portfolio_access import (
+    assert_student_access,
+    student_ids_in_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +194,18 @@ async def get_change_logs_summary(
                     StudentChangeLog.to_classroom_id == classroom_id,
                 )
             )
+        # F-022：非 admin/hr/supervisor 一律以 student_ids_in_scope 限縮
+        scope = student_ids_in_scope(session, current_user)
+        if scope is not None:
+            if not scope:
+                return {
+                    "school_year": resolved_year,
+                    "semester": resolved_semester,
+                    "classroom_id": classroom_id,
+                    "summary": {et: 0 for et in EVENT_TYPES},
+                    "total": 0,
+                }
+            query = query.filter(StudentChangeLog.student_id.in_(scope))
 
         logs = query.all()
         summary = {et: 0 for et in EVENT_TYPES}
@@ -244,6 +260,20 @@ async def get_change_logs(
             )
         if student_id:
             query = query.filter(StudentChangeLog.student_id == student_id)
+        # F-022：非 admin/hr/supervisor 一律以 student_ids_in_scope 限縮
+        scope = student_ids_in_scope(session, current_user)
+        if scope is not None:
+            if not scope:
+                return {
+                    "items": [],
+                    "total": 0,
+                    "page": page,
+                    "page_size": page_size,
+                    "school_year": resolved_year,
+                    "semester": resolved_semester,
+                    "classroom_id": classroom_id,
+                }
+            query = query.filter(StudentChangeLog.student_id.in_(scope))
 
         total = query.count()
         logs = (
@@ -350,6 +380,39 @@ def export_change_logs(
             )
         if student_id:
             query = query.filter(StudentChangeLog.student_id == student_id)
+        # F-022：非 admin/hr/supervisor 一律以 student_ids_in_scope 限縮
+        scope = student_ids_in_scope(session, current_user)
+        if scope is not None:
+            if not scope:
+                buf = io.StringIO()
+                buf.write("﻿")
+                writer = csv.writer(buf)
+                writer.writerow(
+                    [
+                        "異動日期",
+                        "學生姓名",
+                        "學生編號",
+                        "異動類型",
+                        "現班",
+                        "原班",
+                        "新班",
+                        "原因",
+                        "備註",
+                        "建立時間",
+                    ]
+                )
+                filename = (
+                    f"student_change_logs_"
+                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                )
+                return StreamingResponse(
+                    iter([buf.getvalue()]),
+                    media_type="text/csv; charset=utf-8",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"'
+                    },
+                )
+            query = query.filter(StudentChangeLog.student_id.in_(scope))
 
         total = query.count()
         if total > EXPORT_MAX_ROWS:
@@ -458,9 +521,8 @@ async def create_change_log(
     """
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == item.student_id).first()
-        if not student:
-            raise HTTPException(status_code=404, detail="找不到學生")
+        # F-022：直接 assert_student_access — 學生不存在 → 404；無權 → 403
+        student = assert_student_access(session, current_user, item.student_id)
 
         event_date = datetime.strptime(item.event_date, "%Y-%m-%d").date()
         if event_date > date.today():
@@ -518,6 +580,8 @@ async def update_change_log(
         )
         if not log:
             raise HTTPException(status_code=404, detail="找不到異動紀錄")
+        # F-022：先檢查 caller 是否可存取對應學生（跨班禁止）
+        assert_student_access(session, current_user, log.student_id)
         if (log.source or "manual") == "lifecycle":
             raise HTTPException(
                 status_code=403,
@@ -558,6 +622,8 @@ async def delete_change_log(
         )
         if not log:
             raise HTTPException(status_code=404, detail="找不到異動紀錄")
+        # F-022：先檢查 caller 是否可存取對應學生（跨班禁止）
+        assert_student_access(session, current_user, log.student_id)
         if (log.source or "manual") == "lifecycle":
             raise HTTPException(
                 status_code=403,

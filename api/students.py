@@ -23,7 +23,7 @@ from utils.academic import resolve_current_academic_term, resolve_academic_term_
 from utils.auth import require_staff_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
-from utils.portfolio_access import mask_student_health_fields
+from utils.portfolio_access import assert_student_access, mask_student_health_fields
 
 logger = logging.getLogger(__name__)
 
@@ -473,6 +473,7 @@ async def get_student_records_timeline(
             semester=semester,
             page=page,
             page_size=page_size,
+            current_user=current_user,  # F-024：viewer-side 班級 scope
         )
     finally:
         session.close()
@@ -1013,8 +1014,8 @@ async def list_guardians(
 ):
     session = get_session()
     try:
-        if not session.query(Student.id).filter(Student.id == student_id).first():
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # F-025：班級 scope 守衛 — 教師 / 自訂角色不可跨班讀家長 PII
+        assert_student_access(session, current_user, student_id)
         rows = (
             session.query(Guardian)
             .filter(
