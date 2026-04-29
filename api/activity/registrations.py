@@ -34,6 +34,7 @@ from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
 from utils.rate_limit import SlidingWindowLimiter
 from utils.finance_guards import (
     FINANCE_APPROVAL_THRESHOLD,
@@ -710,17 +711,22 @@ class RegistrationRematchRequest(BaseModel):
 
 def _serialize_pending_item(
     r: ActivityRegistration,
+    *,
+    can_see_student_pii: bool = True,
+    can_see_guardian_pii: bool = True,
 ) -> dict:
+    """F-026：對缺 STUDENTS_READ 遮罩 birthday / classroom_id；對缺 GUARDIANS_READ
+    遮罩 parent_phone / email。"""
     return {
         "id": r.id,
         "student_name": r.student_name,
-        "birthday": r.birthday,
+        "birthday": r.birthday if can_see_student_pii else None,
         "class_name": r.class_name,
-        "classroom_id": r.classroom_id,
-        "parent_phone": r.parent_phone,
+        "classroom_id": r.classroom_id if can_see_student_pii else None,
+        "parent_phone": r.parent_phone if can_see_guardian_pii else None,
         "match_status": r.match_status,
         "pending_review": r.pending_review,
-        "email": r.email,
+        "email": r.email if can_see_guardian_pii else None,
         "school_year": r.school_year,
         "semester": r.semester,
         "remark": r.remark or "",
@@ -790,8 +796,18 @@ async def list_pending_registrations(
             .limit(limit)
             .all()
         )
+        # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII 欄位
+        can_see_student = can_view_student_pii(current_user)
+        can_see_guardian = can_view_guardian_pii(current_user)
         return {
-            "items": [_serialize_pending_item(r) for r in rows],
+            "items": [
+                _serialize_pending_item(
+                    r,
+                    can_see_student_pii=can_see_student,
+                    can_see_guardian_pii=can_see_guardian,
+                )
+                for r in rows
+            ],
             "total": total,
             "skip": skip,
             "limit": limit,
@@ -809,7 +825,16 @@ async def admin_search_students(
     limit: int = Query(20, ge=1, le=50),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
-    """後台審核用：依姓名/學號/家長手機模糊搜尋在籍學生。"""
+    """後台審核用：依姓名/學號/家長手機模糊搜尋在籍學生。
+
+    F-027：搜尋結果含 student_id（學號）/ birthday / parent_phone 等學生 PII，
+    必須額外要求 STUDENTS_READ 權限；缺則 403（不採欄位遮罩，因搜尋結果無
+    PII 即無辨識力）。
+    """
+    # F-027：缺 STUDENTS_READ 直接 403（避免「ACTIVITY_WRITE 拉學生目錄」側信道）
+    if not can_view_student_pii(current_user):
+        raise HTTPException(status_code=403, detail="缺少學生資料讀取權限")
+
     from models.database import Student, Classroom
     from sqlalchemy import or_
 
@@ -1386,6 +1411,10 @@ async def get_registrations(
             supply_count_map = dict(_supply_count)
             supply_amount_map = dict(_supply_amount)
 
+        # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII
+        can_see_student = can_view_student_pii(current_user)
+        can_see_guardian = can_view_guardian_pii(current_user)
+
         items = []
         for r in regs:
             paid_amount = r.paid_amount or 0
@@ -1396,15 +1425,15 @@ async def get_registrations(
                 {
                     "id": r.id,
                     "student_name": r.student_name,
-                    "student_id": r.student_id,
-                    "birthday": r.birthday,
+                    "student_id": r.student_id if can_see_student else None,
+                    "birthday": r.birthday if can_see_student else None,
                     "class_name": r.class_name,
-                    "classroom_id": r.classroom_id,
-                    "parent_phone": r.parent_phone,
+                    "classroom_id": r.classroom_id if can_see_student else None,
+                    "parent_phone": r.parent_phone if can_see_guardian else None,
                     "match_status": r.match_status,
                     "pending_review": r.pending_review,
                     "is_active": r.is_active,
-                    "email": r.email,
+                    "email": r.email if can_see_guardian else None,
                     "is_paid": r.is_paid,
                     "paid_amount": paid_amount,
                     "total_amount": total_amount,
@@ -1514,19 +1543,22 @@ async def get_registration_detail(
         total_amount += sum(s["price"] for s in supplies)
         paid_amount = reg.paid_amount or 0
 
+        # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII
+        can_see_student = can_view_student_pii(current_user)
+        can_see_guardian = can_view_guardian_pii(current_user)
         return {
             "id": reg.id,
             "student_name": reg.student_name,
-            "student_id": reg.student_id,
-            "birthday": reg.birthday,
+            "student_id": reg.student_id if can_see_student else None,
+            "birthday": reg.birthday if can_see_student else None,
             "class_name": reg.class_name,
-            "classroom_id": reg.classroom_id,
-            "parent_phone": reg.parent_phone,
+            "classroom_id": reg.classroom_id if can_see_student else None,
+            "parent_phone": reg.parent_phone if can_see_guardian else None,
             "match_status": reg.match_status,
             "pending_review": reg.pending_review,
             "reviewed_by": reg.reviewed_by,
             "reviewed_at": reg.reviewed_at.isoformat() if reg.reviewed_at else None,
-            "email": reg.email,
+            "email": reg.email if can_see_guardian else None,
             "is_paid": reg.is_paid,
             "paid_amount": paid_amount,
             "payment_status": _derive_payment_status(paid_amount, total_amount),

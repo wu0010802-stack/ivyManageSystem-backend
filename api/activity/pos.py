@@ -36,6 +36,7 @@ from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
+from utils.portfolio_access import can_view_student_pii
 from utils.rate_limit import SlidingWindowLimiter
 
 from ._shared import (
@@ -372,6 +373,10 @@ async def outstanding_by_student(
             key = (reg.student_name, reg.birthday or "")
             groups[key].append(reg)
 
+        # F-028：缺 STUDENTS_READ 角色遮罩 birthday（保留 student_name / class_name
+        # 為 POS 必要欄）
+        can_see_student = can_view_student_pii(current_user)
+
         result_groups = []
         for (student_name, birthday), group_regs in groups.items():
             registrations_payload = []
@@ -399,9 +404,11 @@ async def outstanding_by_student(
             class_name = group_regs[-1].class_name or ""
             result_groups.append(
                 {
+                    # student_key 含 birthday 用於前端聚合鍵；非 STUDENTS_READ 持有者
+                    # 雖看不到 birthday 欄位本身，但 key 仍以 student_name 為主可用。
                     "student_key": f"{student_name}|{birthday}",
                     "student_name": student_name,
-                    "birthday": birthday or "",
+                    "birthday": (birthday or "") if can_see_student else None,
                     "class_name": class_name,
                     "group_owed_total": group_total,
                     "registrations": registrations_payload,

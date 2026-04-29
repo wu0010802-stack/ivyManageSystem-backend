@@ -17,6 +17,7 @@ from utils.error_messages import EMPLOYEE_NOT_FOUND
 from utils.finance_guards import require_not_self_edit
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
+from utils.salary_access import can_view_salary_of
 from utils.validators import parse_optional_date
 
 logger = logging.getLogger(__name__)
@@ -41,10 +42,18 @@ def _format_employee_response(
     emp,
     can_view_full_account: bool,
     *,
+    can_view_salary: bool = True,
     resign_fields: bool = False,
     classroom_name: str | None = None,
 ) -> dict:
-    """共用員工響應格式化，避免 GET /employees 與 GET /employees/{id} 重複組裝相同欄位。"""
+    """共用員工響應格式化，避免 GET /employees 與 GET /employees/{id} 重複組裝相同欄位。
+
+    遮罩規則：
+    - can_view_full_account（需 SALARY_WRITE）：bank_code / bank_account /
+      bank_account_name / id_number 全顯示，否則遮罩字串
+    - can_view_salary（需 admin/hr 或 self；F-017）：base_salary / hourly_rate /
+      insurance_salary_level / pension_self_rate 顯示，否則 None
+    """
     display_title = emp.job_title_rel.name if emp.job_title_rel else emp.title
     data = {
         "id": emp.id,
@@ -60,8 +69,9 @@ def _format_employee_response(
         "supervisor_role": emp.supervisor_role,
         "bonus_grade": getattr(emp, "bonus_grade", None),
         "classroom_id": emp.classroom_id,
-        "base_salary": emp.base_salary,
-        "hourly_rate": emp.hourly_rate,
+        # F-017：薪資金額欄位需 admin/hr 或 self 才顯示
+        "base_salary": emp.base_salary if can_view_salary else None,
+        "hourly_rate": emp.hourly_rate if can_view_salary else None,
         "bank_code": emp.bank_code if can_view_full_account else None,
         "bank_account": (
             emp.bank_account
@@ -69,8 +79,10 @@ def _format_employee_response(
             else mask_bank_account(emp.bank_account)
         ),
         "bank_account_name": emp.bank_account_name if can_view_full_account else None,
-        "insurance_salary_level": emp.insurance_salary_level,
-        "pension_self_rate": emp.pension_self_rate,
+        "insurance_salary_level": (
+            emp.insurance_salary_level if can_view_salary else None
+        ),
+        "pension_self_rate": emp.pension_self_rate if can_view_salary else None,
         "work_start_time": emp.work_start_time,
         "work_end_time": emp.work_end_time,
         "is_active": emp.is_active,
@@ -184,9 +196,14 @@ def get_employees(
 
         result = []
         for emp in employees:
+            # F-017：per-row 判斷可看薪資（admin/hr 一律可；其他角色僅自己）
+            can_view_salary = can_view_salary_of(current_user, emp.id)
             result.append(
                 _format_employee_response(
-                    emp, can_view_full_account, resign_fields=True
+                    emp,
+                    can_view_full_account,
+                    can_view_salary=can_view_salary,
+                    resign_fields=True,
                 )
             )
         return result
@@ -280,9 +297,12 @@ async def get_employee(
                     else classroom.name
                 )
 
+        # F-017：admin/hr 一律可看；其他角色僅看自己
+        can_view_salary = can_view_salary_of(current_user, employee.id)
         return _format_employee_response(
             employee,
             can_view_full_account,
+            can_view_salary=can_view_salary,
             resign_fields=True,
             classroom_name=classroom_name,
         )

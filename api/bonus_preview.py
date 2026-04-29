@@ -22,6 +22,7 @@ from services.salary.utils import get_bonus_distribution_month
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
+from utils.salary_access import has_full_salary_view
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,10 @@ class TeacherImpact(BaseModel):
     employee_id: int
     name: str
     role: str
-    current_bonus: int
-    projected_bonus: int
-    change: int
+    # 金額欄位：對非 admin/hr caller 遮罩為 None（F-016）
+    current_bonus: Optional[int] = None
+    projected_bonus: Optional[int] = None
+    change: Optional[int] = None
     current_enrollment: int
     projected_enrollment: int
     target_enrollment: int
@@ -74,9 +76,10 @@ class SchoolWideImpact(BaseModel):
     employee_id: int
     name: str
     category: str
-    current_bonus: int
-    projected_bonus: int
-    change: int
+    # 金額欄位：對非 admin/hr caller 遮罩為 None（F-016）
+    current_bonus: Optional[int] = None
+    projected_bonus: Optional[int] = None
+    change: Optional[int] = None
 
 
 class BonusImpactResponse(BaseModel):
@@ -91,8 +94,9 @@ class DashboardTeacher(BaseModel):
     employee_id: int
     name: str
     role: str
-    estimated_bonus: int
-    base_amount: int
+    # 金額欄位：對非 admin/hr caller 遮罩為 None（F-016）
+    estimated_bonus: Optional[int] = None
+    base_amount: Optional[int] = None
 
 
 class DashboardClassroom(BaseModel):
@@ -110,7 +114,8 @@ class DashboardSchoolWide(BaseModel):
     total_enrollment: int
     total_target: int
     achievement_rate: float
-    estimated_total_bonus: int
+    # 金額欄位：對非 admin/hr caller 遮罩為 None（F-016）
+    estimated_total_bonus: Optional[int] = None
 
 
 class BonusDashboardResponse(BaseModel):
@@ -184,9 +189,15 @@ def _compute_all_bonus(session, engine, year, month, cls_count_map, school_total
 @router.post("/bonus-impact-preview", response_model=BonusImpactResponse)
 def preview_bonus_impact(
     req: BonusImpactRequest,
-    _: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
-    """預覽學生異動對節慶獎金的影響（before/after diff）。"""
+    """預覽學生異動對節慶獎金的影響（before/after diff）。
+
+    F-016：對非 admin/hr caller 遮罩 current_bonus / projected_bonus / change
+    金額（保留 employee_id / name / role / enrollment 等運維所需欄位）。
+    """
+    # F-016：非 admin/hr 不可看逐員獎金金額（即使持 STUDENTS_WRITE）
+    can_view_amount = has_full_salary_view(current_user)
     from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
 
     engine = (
@@ -290,9 +301,9 @@ def preview_bonus_impact(
                         employee_id=cur["employee_id"],
                         name=cur.get("name", ""),
                         role=cur.get("category", ""),
-                        current_bonus=cur_bonus,
-                        projected_bonus=proj_bonus,
-                        change=proj_bonus - cur_bonus,
+                        current_bonus=cur_bonus if can_view_amount else None,
+                        projected_bonus=proj_bonus if can_view_amount else None,
+                        change=(proj_bonus - cur_bonus) if can_view_amount else None,
                         current_enrollment=cur_enrollment,
                         projected_enrollment=proj_enrollment,
                         target_enrollment=cur.get("targetEnrollment", 0),
@@ -315,9 +326,9 @@ def preview_bonus_impact(
                         employee_id=cur["employee_id"],
                         name=cur.get("name", ""),
                         category=cat,
-                        current_bonus=cur_bonus,
-                        projected_bonus=proj_bonus,
-                        change=proj_bonus - cur_bonus,
+                        current_bonus=cur_bonus if can_view_amount else None,
+                        projected_bonus=proj_bonus if can_view_amount else None,
+                        change=(proj_bonus - cur_bonus) if can_view_amount else None,
                     )
                 )
 
@@ -341,11 +352,17 @@ def preview_bonus_impact(
 
 @router.get("/bonus-preview/dashboard", response_model=BonusDashboardResponse)
 def get_bonus_dashboard(
-    _: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
     year: Optional[int] = Query(None, ge=2000, le=2100),
     month: Optional[int] = Query(None, ge=1, le=12),
 ):
-    """獎金達成儀表板：各班在籍 vs 目標、達成率、預估獎金。"""
+    """獎金達成儀表板：各班在籍 vs 目標、達成率、預估獎金。
+
+    F-016：對非 admin/hr caller 遮罩 estimated_bonus / base_amount /
+    estimated_total_bonus 金額（保留班級在籍/目標/達成率，供主管評估招生）。
+    """
+    # F-016：非 admin/hr 不可看逐員獎金金額（即使持 STUDENTS_READ）
+    can_view_amount = has_full_salary_view(current_user)
     from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
 
     engine = (
@@ -432,8 +449,12 @@ def get_bonus_dashboard(
                             employee_id=t["employee_id"],
                             name=t.get("name", ""),
                             role=role_label,
-                            estimated_bonus=t.get("festivalBonus", 0),
-                            base_amount=t.get("bonusBase", 0),
+                            estimated_bonus=(
+                                t.get("festivalBonus", 0) if can_view_amount else None
+                            ),
+                            base_amount=(
+                                t.get("bonusBase", 0) if can_view_amount else None
+                            ),
                         )
                     )
 
@@ -462,7 +483,7 @@ def get_bonus_dashboard(
                 total_enrollment=school_total,
                 total_target=school_wide_target,
                 achievement_rate=round(school_rate, 4),
-                estimated_total_bonus=total_bonus,
+                estimated_total_bonus=total_bonus if can_view_amount else None,
             ),
             classrooms=classrooms_data,
         )

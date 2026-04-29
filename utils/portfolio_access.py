@@ -107,6 +107,24 @@ def can_view_student_special_needs(current_user: dict) -> bool:
     return has_perm(current_user, Permission.STUDENTS_SPECIAL_NEEDS_READ)
 
 
+def can_view_student_pii(current_user: dict) -> bool:
+    """Caller 是否可看學生 PII（生日、學號、班級分配）。需 STUDENTS_READ。
+
+    用於跨 router 的次要端點（例：activity/registrations、activity/pos）對學生 PII
+    遮罩判斷，避免「ACTIVITY_READ 等次要 perm 拿到學生 PII」型 IDOR
+    （F-026 / F-027 / F-028）。
+    """
+    return has_perm(current_user, Permission.STUDENTS_READ)
+
+
+def can_view_guardian_pii(current_user: dict) -> bool:
+    """Caller 是否可看家長聯絡 PII（電話、Email）。需 GUARDIANS_READ。
+
+    用於 activity/registrations 等次要 router 對家長聯絡資料遮罩判斷
+    （F-026）。"""
+    return has_perm(current_user, Permission.GUARDIANS_READ)
+
+
 def mask_student_health_fields(
     student_dict: dict[str, Any], current_user: dict
 ) -> dict[str, Any]:
