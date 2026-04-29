@@ -8,13 +8,13 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc
 from typing import Optional
 
 from models.database import get_session, AuditLog
-from utils.audit import ACTION_LABELS, ENTITY_LABELS
+from utils.audit import ACTION_LABELS, ENTITY_LABELS, write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
@@ -140,6 +140,7 @@ def get_audit_logs_meta(
 
 @router.get("/audit-logs/export")
 def export_audit_logs(
+    request: Request,
     entity_type: Optional[str] = None,
     action: Optional[str] = None,
     username: Optional[str] = None,
@@ -170,6 +171,31 @@ def export_audit_logs(
             )
 
         items = q.order_by(desc(AuditLog.created_at)).all()
+
+        # F-035：匯出全系統審計軌跡屬高敏感讀取，事件本身需顯式留稽核軌跡
+        # （AuditMiddleware 只審計 POST/PUT/PATCH/DELETE，GET 匯出需手動補）
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="audit_log",
+            summary=(
+                f"匯出操作審計紀錄（{len(items)} 筆，篩選："
+                f"entity_type={entity_type or '*'}, action={action or '*'}, "
+                f"username={username or '*'}）"
+            ),
+            changes={
+                "count": len(items),
+                "filters": {
+                    "entity_type": entity_type,
+                    "action": action,
+                    "username": username,
+                    "entity_id": entity_id,
+                    "ip_address": ip_address,
+                    "start_at": start_at.isoformat() if start_at else None,
+                    "end_at": end_at.isoformat() if end_at else None,
+                },
+            },
+        )
 
         buf = io.StringIO()
         # Excel 開 UTF-8 CSV 需要 BOM

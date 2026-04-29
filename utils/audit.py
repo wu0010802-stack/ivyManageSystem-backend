@@ -109,6 +109,8 @@ ENTITY_LABELS = {
     "shift_assignment": "排班",
     "holiday": "國定假日",
     "gov_report": "政府申報",
+    # F-035：audit-logs 自身匯出（meta-audit）
+    "audit_log": "操作紀錄",
 }
 
 ACTION_LABELS = {

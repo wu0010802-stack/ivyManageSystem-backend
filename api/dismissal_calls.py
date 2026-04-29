@@ -11,7 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from models.database import (
-    get_session, Student, Classroom, User, Employee,
+    get_session,
+    Student,
+    Classroom,
+    User,
+    Employee,
 )
 from models.dismissal import StudentDismissalCall
 from utils.auth import require_staff_permission, get_current_user
@@ -23,7 +27,7 @@ router = APIRouter(prefix="/api/dismissal-calls", tags=["dismissal-calls"])
 
 # 日期邊界常數（每日查詢範圍）
 _DAY_START = time(0, 0, 0)
-_DAY_END   = time(23, 59, 59)
+_DAY_END = time(23, 59, 59)
 
 _line_service = None
 
@@ -36,6 +40,7 @@ def init_dismissal_line_service(line_service) -> None:
 # ---------------------------------------------------------------------------
 # Pydantic Schemas
 # ---------------------------------------------------------------------------
+
 
 class DismissalCallCreate(BaseModel):
     student_id: int
@@ -64,6 +69,7 @@ class DismissalCallOut(BaseModel):
 # 輔助函式
 # ---------------------------------------------------------------------------
 
+
 def _dt(value) -> str | None:
     """將 datetime 轉為 ISO 字串，None 值回傳 None。"""
     return value.isoformat() if value else None
@@ -88,17 +94,24 @@ def _call_base_dict(call: StudentDismissalCall, student, classroom) -> dict:
 def _build_call_out(call: StudentDismissalCall, session) -> dict:
     """將單筆 ORM 物件組成 API 回傳 dict（用於單筆操作）。"""
     student = session.query(Student).filter(Student.id == call.student_id).first()
-    classroom = session.query(Classroom).filter(Classroom.id == call.classroom_id).first()
+    classroom = (
+        session.query(Classroom).filter(Classroom.id == call.classroom_id).first()
+    )
     requester = session.query(User).filter(User.id == call.requested_by_user_id).first()
 
     # 取得請求者的員工姓名（若有），否則用 username
     if requester:
-        emp = session.query(Employee).filter(Employee.id == requester.employee_id).first()
+        emp = (
+            session.query(Employee).filter(Employee.id == requester.employee_id).first()
+        )
         requester_name = emp.name if emp else requester.username
     else:
         requester_name = "未知"
 
-    return {**_call_base_dict(call, student, classroom), "requested_by_name": requester_name}
+    return {
+        **_call_base_dict(call, student, classroom),
+        "requested_by_name": requester_name,
+    }
 
 
 def _build_calls_out_bulk(calls: list, session) -> list[dict]:
@@ -110,12 +123,21 @@ def _build_calls_out_bulk(calls: list, session) -> list[dict]:
     classroom_ids = {c.classroom_id for c in calls}
     user_ids = {c.requested_by_user_id for c in calls if c.requested_by_user_id}
 
-    students = {s.id: s for s in session.query(Student).filter(Student.id.in_(student_ids)).all()}
-    classrooms = {c.id: c for c in session.query(Classroom).filter(Classroom.id.in_(classroom_ids)).all()}
+    students = {
+        s.id: s
+        for s in session.query(Student).filter(Student.id.in_(student_ids)).all()
+    }
+    classrooms = {
+        c.id: c
+        for c in session.query(Classroom).filter(Classroom.id.in_(classroom_ids)).all()
+    }
     users = {u.id: u for u in session.query(User).filter(User.id.in_(user_ids)).all()}
 
     employee_ids = {u.employee_id for u in users.values() if u.employee_id}
-    employees = {e.id: e for e in session.query(Employee).filter(Employee.id.in_(employee_ids)).all()}
+    employees = {
+        e.id: e
+        for e in session.query(Employee).filter(Employee.id.in_(employee_ids)).all()
+    }
 
     result = []
     for call in calls:
@@ -124,13 +146,19 @@ def _build_calls_out_bulk(calls: list, session) -> list[dict]:
         user = users.get(call.requested_by_user_id)
         emp = employees.get(user.employee_id) if user and user.employee_id else None
         requester_name = emp.name if emp else (user.username if user else "未知")
-        result.append({**_call_base_dict(call, student, classroom), "requested_by_name": requester_name})
+        result.append(
+            {
+                **_call_base_dict(call, student, classroom),
+                "requested_by_name": requester_name,
+            }
+        )
     return result
 
 
 def _get_manager():
     """延遲 import manager，避免循環 import。"""
     from api.dismissal_ws import manager
+
     return manager
 
 
@@ -138,7 +166,10 @@ def _get_manager():
 # Endpoints
 # ---------------------------------------------------------------------------
 
-def _db_create_dismissal_call(body: DismissalCallCreate, user_id: int) -> tuple[dict, int]:
+
+def _db_create_dismissal_call(
+    body: DismissalCallCreate, user_id: int
+) -> tuple[dict, int]:
     """同步 DB 操作：建立接送通知，回傳 (out_dict, classroom_id)。"""
     session = get_session()
     try:
@@ -148,10 +179,14 @@ def _db_create_dismissal_call(body: DismissalCallCreate, user_id: int) -> tuple[
         if student.classroom_id != body.classroom_id:
             raise HTTPException(status_code=400, detail="學生不屬於指定班級")
 
-        existing = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.student_id == body.student_id,
-            StudentDismissalCall.status.in_(["pending", "acknowledged"]),
-        ).first()
+        existing = (
+            session.query(StudentDismissalCall)
+            .filter(
+                StudentDismissalCall.student_id == body.student_id,
+                StudentDismissalCall.status.in_(["pending", "acknowledged"]),
+            )
+            .first()
+        )
         if existing:
             raise HTTPException(
                 status_code=409,
@@ -177,7 +212,10 @@ def _db_create_dismissal_call(body: DismissalCallCreate, user_id: int) -> tuple[
         out = _build_call_out(call, session)
         logger.info(
             "接送通知建立：學生 %s (ID: %d)，班級 ID: %d，通知 ID: %d",
-            out["student_name"], body.student_id, body.classroom_id, call.id,
+            out["student_name"],
+            body.student_id,
+            body.classroom_id,
+            call.id,
         )
         return out, body.classroom_id
     finally:
@@ -192,13 +230,18 @@ async def create_dismissal_call(
     """建立接送通知。同一學生若已有 pending/acknowledged 通知則拋 409。"""
     user_id = current_user.get("user_id")
     loop = asyncio.get_running_loop()
-    out, classroom_id = await loop.run_in_executor(None, _db_create_dismissal_call, body, user_id)
+    out, classroom_id = await loop.run_in_executor(
+        None, _db_create_dismissal_call, body, user_id
+    )
 
     # WebSocket 廣播
-    await _get_manager().broadcast(classroom_id, {
-        "type": "dismissal_call_created",
-        "payload": out,
-    })
+    await _get_manager().broadcast(
+        classroom_id,
+        {
+            "type": "dismissal_call_created",
+            "payload": out,
+        },
+    )
 
     # LINE 群組推播
     if _line_service is not None:
@@ -215,7 +258,9 @@ async def create_dismissal_call(
 @router.get("")
 def list_dismissal_calls(
     target_date: Optional[str] = Query(None, description="YYYY-MM-DD，預設今日"),
-    status: Optional[str] = Query(None, description="pending/acknowledged/completed/cancelled"),
+    status: Optional[str] = Query(
+        None, description="pending/acknowledged/completed/cancelled"
+    ),
     classroom_id: Optional[int] = Query(None),
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
@@ -226,7 +271,9 @@ def list_dismissal_calls(
             try:
                 target = datetime.strptime(target_date, "%Y-%m-%d").date()
             except ValueError:
-                raise HTTPException(status_code=400, detail="日期格式錯誤，應為 YYYY-MM-DD")
+                raise HTTPException(
+                    status_code=400, detail="日期格式錯誤，應為 YYYY-MM-DD"
+                )
         else:
             target = date.today()
 
@@ -252,19 +299,43 @@ def list_dismissal_calls(
         session.close()
 
 
-def _db_cancel_dismissal_call(call_id: int) -> tuple[dict, int]:
-    """同步 DB 操作：取消接送通知，回傳 (out_dict, classroom_id)。"""
+# F-044：取消接送通知需限制 caller 身分。預設 require_staff_permission 已擋
+# teacher/parent；剩 admin/hr/supervisor 與其他自訂角色。但業務上「取消他人
+# 已發起的接送通知」會直接影響線下接送流程（家長到校門/司機正在前往時被
+# 改寫狀態），故僅原建立者或管理角色（admin/hr/supervisor）可取消，其他持
+# STUDENTS_WRITE 的自訂角色不得跨人取消。
+_CANCEL_OVERRIDE_ROLES = {"admin", "hr", "supervisor"}
+
+
+def _db_cancel_dismissal_call(call_id: int, current_user: dict) -> tuple[dict, int]:
+    """同步 DB 操作：取消接送通知，回傳 (out_dict, classroom_id)。
+
+    僅當 caller 為原建立者，或角色為 admin/hr/supervisor 時放行，否則 403。
+    """
     session = get_session()
     try:
-        call = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.id == call_id
-        ).first()
+        call = (
+            session.query(StudentDismissalCall)
+            .filter(StudentDismissalCall.id == call_id)
+            .first()
+        )
         if not call:
             raise HTTPException(status_code=404, detail="找不到通知")
         if call.status not in ("pending", "acknowledged"):
             raise HTTPException(
                 status_code=422,
                 detail=f"狀態為 {call.status} 的通知無法取消",
+            )
+
+        # F-044 守衛：只有原建立者 / admin / hr / supervisor 可取消
+        caller_id = current_user.get("user_id")
+        caller_role = current_user.get("role") or ""
+        is_originator = caller_id is not None and call.requested_by_user_id == caller_id
+        is_override_role = caller_role in _CANCEL_OVERRIDE_ROLES
+        if not (is_originator or is_override_role):
+            raise HTTPException(
+                status_code=403,
+                detail="僅原建立者或管理角色可取消此接送通知",
             )
 
         classroom_id = call.classroom_id
@@ -275,7 +346,12 @@ def _db_cancel_dismissal_call(call_id: int) -> tuple[dict, int]:
             session.rollback()
             raise e
         out = _build_call_out(call, session)
-        logger.info("接送通知已取消：ID %d", call_id)
+        logger.info(
+            "接送通知已取消：ID %d，by user_id=%s role=%s",
+            call_id,
+            caller_id,
+            caller_role,
+        )
         return out, classroom_id
     finally:
         session.close()
@@ -286,12 +362,20 @@ async def cancel_dismissal_call(
     call_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
-    """取消接送通知（僅 pending/acknowledged 狀態可取消）。"""
-    loop = asyncio.get_running_loop()
-    out, classroom_id = await loop.run_in_executor(None, _db_cancel_dismissal_call, call_id)
+    """取消接送通知（僅 pending/acknowledged 狀態可取消）。
 
-    await _get_manager().broadcast(classroom_id, {
-        "type": "dismissal_call_cancelled",
-        "payload": out,
-    })
+    F-044：僅原建立者或 admin/hr/supervisor 可取消，避免他人改寫線下流程。
+    """
+    loop = asyncio.get_running_loop()
+    out, classroom_id = await loop.run_in_executor(
+        None, _db_cancel_dismissal_call, call_id, current_user
+    )
+
+    await _get_manager().broadcast(
+        classroom_id,
+        {
+            "type": "dismissal_call_cancelled",
+            "payload": out,
+        },
+    )
     return out
