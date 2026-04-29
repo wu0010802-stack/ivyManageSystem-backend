@@ -515,7 +515,7 @@ Phase 2 plan 路徑（待撰寫）：`docs/superpowers/plans/2026-04-XX-idor-fix
   ```
   或直接調用 `_enforce_self_or_full_salary` 等價的 attendance 版 helper（建議在 `utils/idor_guards.py` 抽 `assert_self_or_attendance_admin`）。Phase 2 一併修。
 - **是否需新測試**：yes（`tests/security/test_idor_employee_financial.py` 或新建 `test_idor_admin_endpoints.py`：建立 teacher/supervisor 帳號（含 ATTENDANCE_READ），用其 token 呼叫他人 `employee_id` 預期 403；同帳號自身 employee_id 預期 200；admin/hr 預期 200）
-- **修補狀態**：⏳ Pending
+- **修補狀態**：✅ Fixed (commit 0da643f7)
 
 ### F-033 [Medium] exports/gov_reports: GET 匯出（students / attendance / leaves / overtimes / shifts / employee-attendance / 政府申報四端點）未呼叫 `write_explicit_audit`，PII 與身分證匯出無稽核軌跡
 
