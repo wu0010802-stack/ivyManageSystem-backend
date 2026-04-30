@@ -1,0 +1,11 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - heading "義華幼兒園" [level=1] [ref=e6]
+      - paragraph [ref=e7]: 管理系統
+    - generic [ref=e8]:
+      - textbox "帳號" [ref=e14]
+      - textbox "密碼" [ref=e20]
+      - button "登入" [ref=e23] [cursor=pointer]:
+        - generic [ref=e24]: 登入
+  - status "頁面載入中"

@@ -1,0 +1,6 @@
+- main [ref=e4]:
+  - generic [ref=e6]:
+    - heading "完成家長帳號綁定" [level=2] [ref=e7]
+    - paragraph [ref=e8]: 請輸入園所提供的「家長綁定碼」（8 位英數字）。 碼僅為一次性使用，如過期或已用過，請聯絡園所重新發放。
+    - textbox "例：ABCD1234" [ref=e10]
+    - button "送出" [ref=e11] [cursor=pointer]
