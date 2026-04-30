@@ -41,6 +41,10 @@ ENTITY_PATTERNS = [
     (r"/api/overtimes", "overtime"),
     (r"/api/salaries", "salary"),
     (r"/api/salary", "salary"),
+    # 學費 / 退款。endpoint 已寫 audit_summary，但缺此規則整段被 middleware 略過。
+    # 與 /api/activity 拆 entity_type 不同，學費業務只有單一 fee 類型，所以 /api/fees/items
+    # 與 /api/fees/records/.../pay|refund 全部映射為 fee；前端可在 changes 細分動作。
+    (r"/api/fees", "fee"),
     (r"/api/config/titles", "job_title"),
     (r"/api/config/deduction-types", "deduction_type"),
     (r"/api/config/bonus-types", "bonus_type"),
@@ -50,6 +54,12 @@ ENTITY_PATTERNS = [
     (r"/api/calendar", "calendar"),
     (r"/api/schedule", "schedule"),
     (r"/api/portal/swap", "shift_swap"),
+    # 教師入口：請假/加班/附件/代理人回覆。映射到與管理端一致的 leave/overtime
+    # entity_type，前端篩 leave 時可同時看到「教師送出/管理員核准」整條軌跡。
+    # 排在 /api/portal/swap 之後是因為 swap 規則更具體；放這裡與其他 portal 子路由共置。
+    (r"/api/portal/my-leaves", "leave"),
+    (r"/api/portal/my-overtimes", "overtime"),
+    (r"/api/portal/my-leave-attachments", "leave"),
     # 才藝系統：細粒度分類，POS 日結必須排在 /api/activity/pos 之前（first match wins）
     (r"/api/activity/pos/daily-close", "activity_daily_close"),
     (r"/api/activity/pos", "activity_pos"),
@@ -92,6 +102,7 @@ ENTITY_LABELS = {
     "shift_swap": "換班",
     "deduction_type": "扣款類型",
     "bonus_type": "獎金類型",
+    "fee": "學費",
     "activity_registration": "才藝報名",
     "activity_course": "才藝課程",
     "activity_supply": "才藝教具",
@@ -205,6 +216,64 @@ def _schedule_audit_write(payload: dict) -> None:
     task = loop.create_task(asyncio.to_thread(_write_audit_sync, payload))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+def write_audit_in_session(
+    session,
+    request: Request,
+    *,
+    action: str,
+    entity_type: str,
+    summary: str,
+    entity_id: str | int | None = None,
+    changes: dict | None = None,
+) -> None:
+    """同交易內寫入 AuditLog，避免金流類操作的 audit 丟失。
+
+    Why: AuditMiddleware 是 fire-and-forget 背景寫入，threadpool 故障/DB 連線中斷時
+    AuditLog 會丟失，但主資料已 commit。金流（學費 pay/refund、薪資手動調整等）
+    要求「主交易成功 ⇔ 必有稽核軌跡」，故改在同交易寫入：audit 失敗整個 rollback。
+
+    使用方式：
+        with session_scope() as session:
+            ...金流操作...
+            write_audit_in_session(
+                session, request,
+                action="UPDATE", entity_type="fee", summary="...",
+                entity_id=str(record_id), changes={...},
+            )
+        # session_scope 一次 commit；audit 與金流變動共生死
+
+    呼叫此 helper 後會設置 request.state.audit_skip = True，避免 middleware 二次寫入。
+    """
+    user_id, username = _extract_user_from_header(request)
+    ip = request.client.host if request.client else None
+
+    changes_json = None
+    if changes is not None:
+        try:
+            changes_json = json.dumps(changes, ensure_ascii=False, default=str)
+            if len(changes_json) > 64 * 1024:
+                changes_json = json.dumps(
+                    {"_truncated": True, "size": len(changes_json)}
+                )
+        except (TypeError, ValueError) as e:
+            logger.warning(f"In-session audit changes serialize failed: {e}")
+
+    log = AuditLog(
+        user_id=user_id,
+        username=username or "anonymous",
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id) if entity_id is not None else None,
+        summary=summary,
+        changes=changes_json,
+        ip_address=ip,
+        created_at=datetime.now(),
+    )
+    session.add(log)
+    # 防止 AuditMiddleware 在 response 階段重複寫入同一筆稽核
+    request.state.audit_skip = True
 
 
 def write_explicit_audit(

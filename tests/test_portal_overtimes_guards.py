@@ -78,7 +78,7 @@ class TestPortalCreateOvertimeGuards:
                 "api.overtimes._check_overtime_type_calendar"
             ),
         ):
-            portal_ot.create_my_overtime(data=data, current_user=current_user)
+            portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
 
         assert mock_monthly.called, "月上限檢查未被呼叫"
         # 第一個位置參數應是 session,第二個是 emp.id,第三個是 overtime_date
@@ -113,7 +113,7 @@ class TestPortalCreateOvertimeGuards:
                 "api.overtimes._check_overtime_type_calendar"
             ) as mock_cal,
         ):
-            portal_ot.create_my_overtime(data=data, current_user=current_user)
+            portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
 
         assert mock_cal.called, "國定假日類型檢查未被呼叫"
 
@@ -144,7 +144,7 @@ class TestPortalCreateOvertimeGuards:
             ),
         ):
             with pytest.raises(HTTPException) as exc:
-                portal_ot.create_my_overtime(data=data, current_user=current_user)
+                portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
         assert exc.value.status_code == 400
         assert "46" in exc.value.detail
 
@@ -177,6 +177,6 @@ class TestPortalCreateOvertimeGuards:
             ),
         ):
             with pytest.raises(HTTPException) as exc:
-                portal_ot.create_my_overtime(data=data, current_user=current_user)
+                portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
         assert exc.value.status_code == 400
         assert "holiday" in exc.value.detail

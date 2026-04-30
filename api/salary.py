@@ -511,6 +511,61 @@ def get_salary_calc_job(
     return payload
 
 
+@router.get("/salaries/logic")
+def get_salary_logic(
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+):
+    """傾印目前的薪資計算邏輯與所有參數設定（DB 設定 + Engine runtime + 公式）。
+
+    Why: 給薪資頁的「薪資邏輯」分頁顯示。資料純為設定/常數類，不含任何個人薪資；
+    SALARY_READ 即可讀。原本只在 dev router 提供 (`/api/dev/salary-logic`)，
+    導致 staging / production / 未設 ENV 一律 404。
+    """
+    from services.salary_logic_info import build_salary_logic_info
+
+    if not _salary_engine:
+        raise HTTPException(status_code=503, detail="薪資引擎尚未初始化")
+    session = get_session()
+    try:
+        return build_salary_logic_info(session, _salary_engine)
+    finally:
+        session.close()
+
+
+@router.get("/salaries/employee-salary-debug")
+def get_employee_salary_debug(
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+    employee_id: int = Query(..., ge=1),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+):
+    """模擬計算單一員工指定月份的薪資並回傳完整明細（不寫入 DB）。
+
+    Why: 「薪資試算」分頁右側需要顯示 DB 實際資料的逐項拆解（出勤、扣款、節慶獎金、
+    勞健保、會議等）。此端點只讀 DB 不套覆蓋。原本只在 dev router 提供且權限為
+    SETTINGS_READ，正式環境 404。改用 SALARY_READ + self-or-full 守衛，與其他薪資
+    讀取端點一致；非全員視野的角色只能查自己。
+    """
+    if not _salary_engine:
+        raise HTTPException(status_code=503, detail="薪資引擎尚未初始化")
+
+    _enforce_self_or_full_salary(current_user, employee_id)
+
+    session = get_session()
+    try:
+        emp = session.query(Employee).get(employee_id)
+        if not emp:
+            raise HTTPException(status_code=404, detail=f"員工 id={employee_id} 不存在")
+        if emp.employee_type == "hourly":
+            raise HTTPException(
+                status_code=422,
+                detail="時薪制員工請使用正式薪資計算流程，debug 端點僅支援月薪正職員工",
+            )
+        return build_salary_debug_snapshot(session, _salary_engine, emp, year, month)
+    finally:
+        session.close()
+
+
 @router.get("/salaries/festival-bonus")
 def get_festival_bonus(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),

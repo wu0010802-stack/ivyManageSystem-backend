@@ -66,21 +66,22 @@ class TestPortalCreateLeaveCompensatoryQuota:
             p.start()
         try:
             with (
-                patch.object(
-                    portal_lv, "_check_compensatory_quota"
-                ) as mock_comp,
+                patch.object(portal_lv, "_check_compensatory_quota") as mock_comp,
                 patch.object(portal_lv, "_check_quota") as mock_quota,
             ):
                 # _check_compensatory_quota 通過 → 後續 add/commit
                 try:
                     portal_lv.create_my_leave(
                         data=self._build_payload(),
+                        request=MagicMock(),
                         current_user={"username": "teacher", "employee_id": 10},
                     )
                 except Exception:
                     # 後續 ORM/commit 可能失敗,但配額分流必須先發生
                     pass
-            assert mock_comp.called, "portal 對 compensatory 未呼叫 _check_compensatory_quota"
+            assert (
+                mock_comp.called
+            ), "portal 對 compensatory 未呼叫 _check_compensatory_quota"
             assert not mock_quota.called, "portal 對 compensatory 不應再走 _check_quota"
         finally:
             for p in patches:
@@ -100,16 +101,13 @@ class TestPortalCreateLeaveCompensatoryQuota:
             p.start()
         try:
             with (
-                patch(
-                    "api.leaves_quota._get_approved_hours_in_year", return_value=0.0
-                ),
-                patch(
-                    "api.leaves_quota._get_pending_hours_in_year", return_value=0.0
-                ),
+                patch("api.leaves_quota._get_approved_hours_in_year", return_value=0.0),
+                patch("api.leaves_quota._get_pending_hours_in_year", return_value=0.0),
             ):
                 with pytest.raises(HTTPException) as exc:
                     portal_lv.create_my_leave(
                         data=self._build_payload(),
+                        request=MagicMock(),
                         current_user={"username": "teacher", "employee_id": 10},
                     )
             assert exc.value.status_code == 400

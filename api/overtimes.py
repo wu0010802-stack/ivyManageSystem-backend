@@ -11,7 +11,7 @@ from typing import Optional, List
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.rate_limit import SlidingWindowLimiter
@@ -753,6 +753,7 @@ def get_overtimes(
 @router.post("/overtimes", status_code=201)
 def create_overtime(
     data: OvertimeCreate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
     """新增加班記錄（自動計算加班費）"""
@@ -817,6 +818,25 @@ def create_overtime(
         )
         session.add(ot)
         session.commit()
+
+        request.state.audit_entity_id = str(ot.id)
+        request.state.audit_summary = (
+            f"管理端建立加班：employee_id={data.employee_id} "
+            f"{data.overtime_type} {data.overtime_date}（{data.hours}h）"
+        )
+        request.state.audit_changes = {
+            "action": "overtime_create",
+            "overtime_id": ot.id,
+            "employee_id": data.employee_id,
+            "overtime_date": data.overtime_date.isoformat(),
+            "overtime_type": data.overtime_type,
+            "hours": data.hours,
+            "start_time": data.start_time,
+            "end_time": data.end_time,
+            "use_comp_leave": data.use_comp_leave,
+            "overtime_pay": pay,
+            "reason": data.reason,
+        }
         return {"message": "加班記錄已新增", "id": ot.id, "overtime_pay": pay}
     except HTTPException:
         raise
@@ -831,6 +851,7 @@ def create_overtime(
 def update_overtime(
     overtime_id: int,
     data: OvertimeUpdate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
     """更新加班記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
@@ -844,9 +865,22 @@ def update_overtime(
         if not ot:
             raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
 
-        # 記錄修改前的核准狀態（供後續稽核退審判斷）
+        # 記錄修改前的核准狀態（供後續稽核退審判斷）+ before snapshot 供 audit_changes
         was_approved = ot.is_approved == True
         original_month = (ot.overtime_date.year, ot.overtime_date.month)
+        before_snapshot = {
+            "overtime_date": ot.overtime_date.isoformat(),
+            "overtime_type": getattr(ot, "overtime_type", None),
+            "hours": getattr(ot, "hours", None),
+            "start_time": (
+                str(ot.start_time) if getattr(ot, "start_time", None) else None
+            ),
+            "end_time": str(ot.end_time) if getattr(ot, "end_time", None) else None,
+            "use_comp_leave": getattr(ot, "use_comp_leave", None),
+            "overtime_pay": getattr(ot, "overtime_pay", None),
+            "is_approved": ot.is_approved,
+            "reason": getattr(ot, "reason", None),
+        }
 
         # 先計算更新後的日期與時間（供重疊檢查使用）
         check_date = data.overtime_date or ot.overtime_date
@@ -967,6 +1001,41 @@ def update_overtime(
 
         session.commit()
 
+        after_snapshot = {
+            "overtime_date": ot.overtime_date.isoformat(),
+            "overtime_type": getattr(ot, "overtime_type", None),
+            "hours": getattr(ot, "hours", None),
+            "start_time": (
+                str(ot.start_time) if getattr(ot, "start_time", None) else None
+            ),
+            "end_time": str(ot.end_time) if getattr(ot, "end_time", None) else None,
+            "use_comp_leave": getattr(ot, "use_comp_leave", None),
+            "overtime_pay": getattr(ot, "overtime_pay", None),
+            "is_approved": ot.is_approved,
+            "reason": getattr(ot, "reason", None),
+        }
+        diff = {
+            k: {"before": before_snapshot[k], "after": after_snapshot[k]}
+            for k in before_snapshot
+            if before_snapshot[k] != after_snapshot[k]
+        }
+        request.state.audit_entity_id = str(overtime_id)
+        request.state.audit_summary = (
+            f"管理端修改加班 #{overtime_id}（employee_id={ot.employee_id}）"
+            + ("；自動退回待審" if was_approved else "")
+        )
+        request.state.audit_changes = {
+            "action": "overtime_update",
+            "overtime_id": overtime_id,
+            "employee_id": ot.employee_id,
+            "was_approved": was_approved,
+            "reset_to_pending": was_approved,
+            "diff": diff,
+            "recalculation_months": [
+                f"{y}-{m:02d}" for (y, m) in sorted(recalculation_months)
+            ],
+        }
+
         msg = "加班記錄已更新"
         if was_approved:
             msg += "；原核准狀態已自動退回「待審核」，請重新送審"
@@ -1007,6 +1076,7 @@ def update_overtime(
 @router.delete("/overtimes/{overtime_id}")
 def delete_overtime(
     overtime_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
     """刪除加班記錄"""
@@ -1022,11 +1092,37 @@ def delete_overtime(
         was_approved = ot.is_approved is True
         overtime_month = (ot.overtime_date.year, ot.overtime_date.month)
         employee_id = ot.employee_id
+        # 預先 snapshot：刪除後 ot 物件被 expunge，audit 必須在這裡備份
+        deleted_snapshot = {
+            "overtime_id": overtime_id,
+            "employee_id": employee_id,
+            "overtime_date": ot.overtime_date.isoformat(),
+            "overtime_type": getattr(ot, "overtime_type", None),
+            "hours": getattr(ot, "hours", None),
+            "use_comp_leave": getattr(ot, "use_comp_leave", None),
+            "overtime_pay": getattr(ot, "overtime_pay", None),
+            "is_approved": ot.is_approved,
+            "reason": getattr(ot, "reason", None),
+        }
         if was_approved:
             _check_salary_month_not_finalized(session, employee_id, ot.overtime_date)
             _revoke_comp_leave_grant(session, ot)
         session.delete(ot)
         session.commit()
+
+        request.state.audit_entity_id = str(overtime_id)
+        request.state.audit_summary = (
+            f"管理端刪除加班 #{overtime_id}（employee_id={employee_id}）"
+            + ("；已核准 → 觸發補休/薪資重算" if was_approved else "")
+        )
+        request.state.audit_changes = {
+            "action": "overtime_delete",
+            "deleted": deleted_snapshot,
+            "was_approved": was_approved,
+            "overtime_month": f"{overtime_month[0]}-{overtime_month[1]:02d}",
+            "triggered_salary_recalc": was_approved,
+        }
+
         result = {"message": "加班記錄已刪除"}
         if was_approved:
             try:
@@ -1054,6 +1150,7 @@ def delete_overtime(
 @router.put("/overtimes/{overtime_id}/approve")
 def approve_overtime(
     overtime_id: int,
+    request: Request,
     approved: bool = True,
     approved_by: str = "管理員",
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
@@ -1160,10 +1257,40 @@ def approve_overtime(
             _grant_comp_leave_quota(session, ot, result)
 
         action = "approved" if approved else "rejected"
-        _write_approval_log(
+        approval_log_row = _write_approval_log(
             "overtime", overtime_id, action, current_user, None, session
         )
         session.commit()
+
+        # 高風險：已核准 → 駁回 顯式標記，AuditLogView 可篩
+        is_reject_of_approved = was_approved and not approved
+        risk_tags = []
+        if is_reject_of_approved:
+            risk_tags.append("reject_of_approved")
+        request.state.audit_entity_id = str(overtime_id)
+        request.state.audit_summary = (
+            f"{'核准' if approved else '駁回'}加班 #{overtime_id}"
+            f"（employee_id={ot.employee_id}）"
+            + (f"｜⚠ {','.join(risk_tags)}" if risk_tags else "")
+        )
+        request.state.audit_changes = {
+            "action": "overtime_approve",
+            "overtime_id": overtime_id,
+            "employee_id": ot.employee_id,
+            "decision": "approved" if approved else "rejected",
+            "before": {"is_approved": (True if was_approved else None)},
+            "after": {
+                "is_approved": ot.is_approved,
+                "approved_by": ot.approved_by,
+            },
+            "approval_log_id": approval_log_row.id if approval_log_row else None,
+            "is_reject_of_approved": is_reject_of_approved,
+            "use_comp_leave": getattr(ot, "use_comp_leave", None),
+            "hours": getattr(ot, "hours", None),
+            "overtime_pay": getattr(ot, "overtime_pay", None),
+            "comp_leave_granted": getattr(ot, "comp_leave_granted", None),
+            "risk_tags": risk_tags,
+        }
 
         _notify_and_recalc_overtime(session, ot, approved, was_approved, result)
 
@@ -1180,6 +1307,7 @@ def approve_overtime(
 @router.post("/overtimes/batch-approve")
 def batch_approve_overtimes(
     data: OvertimeBatchApproveRequest,
+    request: Request,
     _rl=Depends(_batch_approve_limiter),
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
@@ -1303,10 +1431,19 @@ def batch_approve_overtimes(
                     _grant_comp_leave_quota(session, ot, {})
 
                 action = "approved" if data.approved else "rejected"
-                _write_approval_log(
+                approval_log_row = _write_approval_log(
                     "overtime", ot_id, action, current_user, None, session
                 )
-                changes.append((ot_id, ot, was_approved))
+                is_reject_of_approved = was_approved and not data.approved
+                changes.append(
+                    (
+                        ot_id,
+                        ot,
+                        was_approved,
+                        is_reject_of_approved,
+                        approval_log_row.id if approval_log_row else None,
+                    )
+                )
             except Exception as e:
                 session.rollback()
                 failed.append({"id": ot_id, "reason": str(e)})
@@ -1317,7 +1454,7 @@ def batch_approve_overtimes(
         if changes:
             try:
                 session.commit()
-                for ot_id, ot, was_approved in changes:
+                for ot_id, ot, was_approved, _ir, _alog in changes:
                     succeeded.append(ot_id)
                     if (data.approved or was_approved) and _salary_engine is not None:
                         try:
@@ -1347,8 +1484,31 @@ def batch_approve_overtimes(
                                 session.rollback()
             except Exception as e:
                 session.rollback()
-                for ot_id, _, _ in changes:
+                for ot_id, *_ in changes:
                     failed.append({"id": ot_id, "reason": f"統一提交失敗：{e}"})
+
+        # AuditLog changes：批次操作彙整成單筆 audit 摘要
+        request.state.audit_summary = (
+            f"批次{'核准' if data.approved else '駁回'}加班 "
+            f"成功 {len(succeeded)}/失敗 {len(failed)}（請求 {len(data.ids)} 筆）"
+        )
+        request.state.audit_changes = {
+            "action": "overtime_batch_approve",
+            "decision": "approved" if data.approved else "rejected",
+            "requested_ids": data.ids,
+            "succeeded_ids": list(succeeded),
+            "failed": failed,
+            "approval_log_ids": [
+                {
+                    "overtime_id": _id,
+                    "employee_id": _ot.employee_id,
+                    "is_reject_of_approved": _ir,
+                    "approval_log_id": _alog,
+                }
+                for _id, _ot, _wa, _ir, _alog in changes
+            ],
+            "high_risk_count": sum(1 for _id, _ot, _wa, _ir, _alog in changes if _ir),
+        }
     finally:
         session.close()
 

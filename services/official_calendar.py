@@ -5,12 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import date, datetime
+import ssl
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import requests
 from requests import Response
-from requests.exceptions import RequestException
+from requests.adapters import HTTPAdapter
 from sqlalchemy import or_
 
 from models.database import Holiday, OfficialCalendarSync, SchoolEvent, WorkdayOverride
@@ -19,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 OFFICIAL_CALENDAR_DATASET_URL = "https://data.gov.tw/api/v2/rest/dataset/14718"
 OFFICIAL_SOURCE = "dgpa"
+DGPA_HOST_PREFIX = "https://www.dgpa.gov.tw"
+
+# 快取新鮮窗：頁面讀取若 last_synced_at 在此期間內即直接走快取，不打上游
+# 排程每日 sync 一次，所以 24h 是預設安全值（排程未啟用時也不會比舊行為差）
+_FRESH_CACHE_WINDOW = timedelta(hours=24)
 
 EVENT_TYPE_LABELS = {
     "meeting": "會議",
@@ -28,12 +34,80 @@ EVENT_TYPE_LABELS = {
     "makeup_workday": "補班日",
 }
 
+_FRIENDLY_SYNC_WARNING = "官方日曆暫時無法同步，目前顯示本地快取資料"
+_FRIENDLY_SYNC_WARNING_NO_CACHE = "官方日曆暫時無法同步，請稍後再試或聯絡管理員"
+
+
+class _DgpaSSLAdapter(HTTPAdapter):
+    """針對 www.dgpa.gov.tw 的 TLS adapter。
+
+    保留 CA 與 hostname 驗證，僅關閉 OpenSSL X509 strict flag，
+    避開政府站常見的 Missing Subject Key Identifier 之類嚴格憑證錯誤。
+    """
+
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        kwargs["ssl_context"] = ctx
+        return super().proxy_manager_for(*args, **kwargs)
+
+
+def _create_official_session() -> requests.Session:
+    session = requests.Session()
+    session.mount(DGPA_HOST_PREFIX, _DgpaSSLAdapter())
+    return session
+
 
 def _request_with_optional_ssl_fallback(url: str) -> Response:
-    # 原先 SSL 失敗會降級為 verify=False，已移除：MITM 風險 > 容錯收益
-    resp = requests.get(url, timeout=30)
+    # 不啟用 verify=False；DGPA 主機走 _DgpaSSLAdapter 放寬 X509 strict flag，
+    # 其他主機維持嚴格驗證。函式名保留是為了避免改動外部 import。
+    with _create_official_session() as session:
+        resp = session.get(url, timeout=30)
     resp.raise_for_status()
     return resp
+
+
+def _select_official_distribution(distribution: list[dict], minguo_year: int) -> dict:
+    """從 data.gov.tw 回傳的 distribution 清單中挑出官方標準 CSV。
+
+    篩選順序：
+    1. 描述以 `{minguo_year}年` 開頭。
+    2. 排除 Google 專用版本 / 非標準下載連結（Google Calendar URL 等）。
+    3. 多筆候選時依 resourceQualityCheckTime 取最新。
+    """
+    prefix = f"{minguo_year}年"
+    candidates: list[dict] = []
+    for item in distribution:
+        desc = str(item.get("resourceDescription") or "")
+        url = str(item.get("resourceDownloadUrl") or "")
+        if not desc.startswith(prefix):
+            continue
+        if not url:
+            continue
+        lowered_desc = desc.lower()
+        lowered_url = url.lower()
+        if "google" in lowered_desc or "google" in lowered_url:
+            continue
+        if "calendar.google" in lowered_url:
+            continue
+        candidates.append(item)
+    if not candidates:
+        raise ValueError(f"找不到 {minguo_year + 1911} 年官方辦公日曆資料")
+    candidates.sort(
+        key=lambda x: str(x.get("resourceQualityCheckTime") or ""),
+        reverse=True,
+    )
+    return candidates[0]
 
 
 def _get_resource_metadata(year: int) -> dict[str, str]:
@@ -41,16 +115,12 @@ def _get_resource_metadata(year: int) -> dict[str, str]:
     resp = requests.get(OFFICIAL_CALENDAR_DATASET_URL, timeout=20)
     resp.raise_for_status()
     distribution = resp.json()["result"]["distribution"]
-    prefix = f"{minguo_year}年"
-    for item in distribution:
-        desc = str(item.get("resourceDescription") or "")
-        if desc.startswith(prefix):
-            return {
-                "download_url": item["resourceDownloadUrl"],
-                "modified_at": item.get("resourceQualityCheckTime") or "",
-                "description": desc,
-            }
-    raise ValueError(f"找不到 {year} 年官方辦公日曆資料")
+    item = _select_official_distribution(distribution, minguo_year)
+    return {
+        "download_url": item["resourceDownloadUrl"],
+        "modified_at": item.get("resourceQualityCheckTime") or "",
+        "description": str(item.get("resourceDescription") or ""),
+    }
 
 
 def _parse_official_calendar_csv(
@@ -205,7 +275,21 @@ def _has_official_cache(session, year: int) -> bool:
     )
 
 
-def ensure_official_calendar_synced(session, year: int) -> dict[str, Any]:
+def _is_cache_fresh(sync: OfficialCalendarSync | None) -> bool:
+    if not sync or not sync.last_synced_at or sync.last_error:
+        return False
+    return datetime.now() - sync.last_synced_at < _FRESH_CACHE_WINDOW
+
+
+def ensure_official_calendar_synced(
+    session, year: int, *, force: bool = False
+) -> dict[str, Any]:
+    """確保 ``year`` 年官方日曆已同步並回傳目前狀態。
+
+    - ``force=False``（預設，頁面 feed 用）：若 24h 內已成功同步且本地快取存在，
+      直接回快取狀態，不打 data.gov.tw 與 dgpa；冷啟動或快取過期才嘗試上游。
+    - ``force=True``（背景排程或一次性指令用）：強制嘗試與上游比對版本並 upsert。
+    """
     sync = (
         session.query(OfficialCalendarSync)
         .filter(
@@ -221,17 +305,26 @@ def ensure_official_calendar_synced(session, year: int) -> dict[str, Any]:
 
     cache_available = _has_official_cache(session, year)
 
+    if not force and cache_available and _is_cache_fresh(sync):
+        return {
+            "status": "synced",
+            "warning": None,
+            "used_cache": False,
+            "last_synced_at": sync.last_synced_at.isoformat(),
+        }
+
     try:
         resource = _get_resource_metadata(year)
     except Exception as exc:
         message = (
-            f"官方日曆同步失敗，{year} 年目前使用本地快取"
+            _FRIENDLY_SYNC_WARNING
             if cache_available
-            else f"官方日曆同步失敗：{exc}"
+            else _FRIENDLY_SYNC_WARNING_NO_CACHE
         )
         sync.used_cache = cache_available
         sync.last_error = str(exc)
         session.commit()
+        logger.exception("官方日曆 metadata 取得失敗：year=%s", year)
         return {
             "status": "cached" if cache_available else "warning",
             "warning": message,
@@ -243,6 +336,10 @@ def ensure_official_calendar_synced(session, year: int) -> dict[str, Any]:
 
     is_stale = not sync.is_synced or sync.source_modified_at != resource["modified_at"]
     if not is_stale:
+        sync.last_error = None
+        sync.used_cache = False
+        sync.last_synced_at = datetime.now()
+        session.commit()
         return {
             "status": "synced",
             "warning": None,
@@ -283,13 +380,13 @@ def ensure_official_calendar_synced(session, year: int) -> dict[str, Any]:
             sync.used_cache = cache_available
             sync.last_error = str(exc)
             session.commit()
-        logger.warning("官方日曆同步失敗：year=%s error=%s", year, exc)
+        logger.exception("官方日曆同步失敗：year=%s", year)
         return {
             "status": "cached" if cache_available else "warning",
             "warning": (
-                f"官方日曆同步失敗，{year} 年目前使用本地快取"
+                _FRIENDLY_SYNC_WARNING
                 if cache_available
-                else f"官方日曆同步失敗：{exc}"
+                else _FRIENDLY_SYNC_WARNING_NO_CACHE
             ),
             "used_cache": cache_available,
             "last_synced_at": (

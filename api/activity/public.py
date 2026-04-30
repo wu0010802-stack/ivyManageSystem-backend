@@ -73,6 +73,7 @@ from ._shared import (
     _match_student_with_parent_phone,
     _normalize_phone,
     _public_etag_response,
+    _resolve_class_field_state,
     TAIPEI_TZ,
 )
 from utils.academic import resolve_academic_term_filters
@@ -413,6 +414,15 @@ async def public_query_registration(
         total_amount += sum(rs.price_snapshot for rs, sp in rs_rows)
         paid_amount = reg.paid_amount or 0
 
+        # field_state：給前端決定哪些欄位可編，不洩漏 student_id/classroom_id/match_status raw 值。
+        # 與 /public/update 用同一個 helper，避免「前端顯示可改 → 後端仍覆寫」的 UX 不一致。
+        cls_state = _resolve_class_field_state(session, reg)
+        field_state = {
+            "class_source": cls_state["class_source"],
+            "class_editable": cls_state["class_editable"],
+            "review_state": cls_state["review_state"],
+        }
+
         return {
             "id": reg.id,
             "name": reg.student_name,
@@ -425,6 +435,7 @@ async def public_query_registration(
             "remark": reg.remark or "",
             "courses": courses,
             "supplies": [sp.name for rs, sp in rs_rows],
+            "field_state": field_state,
         }
     finally:
         session.close()
@@ -725,22 +736,14 @@ async def public_update_registration(
                 detail="查無對應報名，請確認三項資料是否與報名時一致",
             )
 
-        # 匹配成功後的報名，班級由系統維護（Student.classroom），家長輸入班級僅供參考
-        if reg.classroom_id:
-            real_classroom = (
-                session.query(Classroom)
-                .filter(
-                    Classroom.id == reg.classroom_id,
-                    Classroom.is_active.is_(True),
-                )
-                .first()
-            )
-            # 若班級仍存在且啟用，覆蓋為真實班級；否則 fallback 到家長輸入
-            classroom_name_to_store = (
-                real_classroom.name if real_classroom else body.class_
-            )
+        # 匹配成功後的報名，班級由系統維護（Student.classroom），家長輸入班級僅供參考。
+        # 與 /public/query 共用 _resolve_class_field_state，確保前端 class_editable=false 時
+        # 後端必然會覆寫成系統班名，不會出現「前端鎖住但後端用家長輸入」的不一致。
+        cls_state = _resolve_class_field_state(session, reg)
+        if cls_state["real_classroom_name"]:
+            classroom_name_to_store = cls_state["real_classroom_name"]
         else:
-            # 仍處於 pending 的報名，允許家長透過更新修正資料（會重跑比對）
+            # pending 或 classroom_id 已停用 → 允許家長透過更新修正
             classroom_name_to_store = body.class_
 
         course_names = [item.name for item in body.courses]

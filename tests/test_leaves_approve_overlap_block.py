@@ -91,6 +91,7 @@ class TestSingleApproveOverlapBlock:
         try:
             with pytest.raises(HTTPException) as exc:
                 approve_leave(
+                    request=MagicMock(),
                     leave_id=leave.id,
                     data=ApproveRequest(approved=True),
                     current_user={"username": "admin", "role": "supervisor"},
@@ -117,6 +118,7 @@ class TestSingleApproveOverlapBlock:
             p.start()
         try:
             result = approve_leave(
+                request=MagicMock(),
                 leave_id=leave.id,
                 data=ApproveRequest(
                     approved=True,
@@ -145,6 +147,7 @@ class TestSingleApproveOverlapBlock:
             p.start()
         try:
             result = approve_leave(
+                request=MagicMock(),
                 leave_id=leave.id,
                 data=ApproveRequest(approved=True),
                 current_user={"username": "admin", "role": "supervisor"},
@@ -214,6 +217,7 @@ class TestBatchApproveOverlapBlock:
         try:
             req = LeaveBatchApproveRequest(ids=[1, 2], approved=True)
             result = batch_approve_leaves(
+                request=MagicMock(),
                 data=req,
                 _rl=None,
                 current_user={"username": "admin", "role": "supervisor"},

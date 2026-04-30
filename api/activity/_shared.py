@@ -647,6 +647,46 @@ def _require_active_classroom(session, classroom_name: str):
     return c
 
 
+def _resolve_class_field_state(session, reg) -> dict:
+    """為公開頁回傳「班級欄位 UI 狀態」與真實班級名（若已比對）。
+
+    供 /public/query 與 /public/update 共用，確保前端鎖定條件
+    與後端覆寫條件完全一致；避免「前端顯示可改 → 後端覆寫成系統班級」的
+    UX 不一致。
+
+    隱私契約：回傳值僅含 UI 用 hint（class_source/class_editable/review_state），
+    絕不外洩 student_id / classroom_id / match_status raw 值。
+
+    回傳 dict：
+    - class_source: 'student_record'（已比對且班級啟用）| 'submitted'（家長自填）
+    - class_editable: 是否可由家長修改（pending 才可編，已比對為唯讀）
+    - review_state: 'confirmed'（已比對）| 'school_review'（待校方審核）
+    - real_classroom_name: 已比對且班級啟用時的真實班名，否則 None
+    """
+    if reg.classroom_id:
+        real = (
+            session.query(Classroom)
+            .filter(
+                Classroom.id == reg.classroom_id,
+                Classroom.is_active.is_(True),
+            )
+            .first()
+        )
+        if real:
+            return {
+                "class_source": "student_record",
+                "class_editable": False,
+                "review_state": "confirmed",
+                "real_classroom_name": real.name,
+            }
+    return {
+        "class_source": "submitted",
+        "class_editable": True,
+        "review_state": "school_review",
+        "real_classroom_name": None,
+    }
+
+
 def _invalidate_activity_dashboard_caches(
     session, *, summary_only: bool = False
 ) -> None:

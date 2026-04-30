@@ -13,7 +13,7 @@ from io import BytesIO
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.rate_limit import SlidingWindowLimiter
@@ -652,6 +652,7 @@ def get_leaves(
 @router.post("/leaves", status_code=201)
 def create_leave(
     data: LeaveCreate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """新增請假記錄"""
@@ -735,6 +736,28 @@ def create_leave(
         )
         session.add(leave)
         session.commit()
+
+        request.state.audit_entity_id = str(leave.id)
+        request.state.audit_summary = (
+            f"管理端建立請假：employee_id={data.employee_id} "
+            f"{data.leave_type} {data.start_date}~{data.end_date}（{data.leave_hours}h）"
+        )
+        request.state.audit_changes = {
+            "action": "leave_create",
+            "leave_id": leave.id,
+            "employee_id": data.employee_id,
+            "leave_type": data.leave_type,
+            "start_date": data.start_date.isoformat(),
+            "end_date": data.end_date.isoformat(),
+            "start_time": str(data.start_time) if data.start_time else None,
+            "end_time": str(data.end_time) if data.end_time else None,
+            "leave_hours": data.leave_hours,
+            "is_deductible": effective_ratio > 0,
+            "deduction_ratio": effective_ratio,
+            "deduction_ratio_overridden": data.deduction_ratio is not None,
+            "is_hospitalized": bool(data.is_hospitalized),
+            "reason": data.reason,
+        }
         return {"message": "請假記錄已新增", "id": leave.id}
     except HTTPException:
         raise
@@ -749,6 +772,7 @@ def create_leave(
 def update_leave(
     leave_id: int,
     data: LeaveUpdate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """更新請假記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
@@ -758,9 +782,26 @@ def update_leave(
         if not leave:
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
-        # 在 setattr 套用新日期前，捕捉原始狀態
+        # 在 setattr 套用新日期前，捕捉原始狀態（同時供 audit_changes 留下完整 before）
         was_approved = leave.is_approved == True
         orig_month = (leave.start_date.year, leave.start_date.month)
+        # 用 getattr 容忍部分欄位缺失（SQLAlchemy 物件正常情況下都有；測試 fake 物件較寬鬆）
+        before_snapshot = {
+            "leave_type": getattr(leave, "leave_type", None),
+            "start_date": leave.start_date.isoformat(),
+            "end_date": leave.end_date.isoformat(),
+            "start_time": (
+                str(leave.start_time) if getattr(leave, "start_time", None) else None
+            ),
+            "end_time": (
+                str(leave.end_time) if getattr(leave, "end_time", None) else None
+            ),
+            "leave_hours": getattr(leave, "leave_hours", None),
+            "is_approved": leave.is_approved,
+            "is_hospitalized": bool(getattr(leave, "is_hospitalized", False)),
+            "deduction_ratio": getattr(leave, "deduction_ratio", None),
+            "reason": getattr(leave, "reason", None),
+        }
 
         # 計算更新後的日期 / 時間（未傳入的欄位沿用原值）
         new_start = data.start_date or leave.start_date
@@ -844,6 +885,42 @@ def update_leave(
         _apply_leave_update_and_revoke(leave, data, current_user, leave_id)
         session.commit()
 
+        after_snapshot = {
+            "leave_type": getattr(leave, "leave_type", None),
+            "start_date": leave.start_date.isoformat(),
+            "end_date": leave.end_date.isoformat(),
+            "start_time": (
+                str(leave.start_time) if getattr(leave, "start_time", None) else None
+            ),
+            "end_time": (
+                str(leave.end_time) if getattr(leave, "end_time", None) else None
+            ),
+            "leave_hours": getattr(leave, "leave_hours", None),
+            "is_approved": leave.is_approved,
+            "is_hospitalized": bool(getattr(leave, "is_hospitalized", False)),
+            "deduction_ratio": getattr(leave, "deduction_ratio", None),
+            "reason": getattr(leave, "reason", None),
+        }
+        diff = {
+            k: {"before": before_snapshot[k], "after": after_snapshot[k]}
+            for k in before_snapshot
+            if before_snapshot[k] != after_snapshot[k]
+        }
+        request.state.audit_entity_id = str(leave_id)
+        request.state.audit_summary = (
+            f"管理端修改請假 #{leave_id}（employee_id={leave.employee_id}）"
+            + ("；自動退回待審" if was_approved else "")
+        )
+        request.state.audit_changes = {
+            "action": "leave_update",
+            "leave_id": leave_id,
+            "employee_id": leave.employee_id,
+            "was_approved": was_approved,
+            "reset_to_pending": was_approved,
+            "diff": diff,
+            "orig_month": f"{orig_month[0]}-{orig_month[1]:02d}",
+        }
+
         result = {"message": "請假記錄已更新"}
         if was_approved:
             result["message"] += "；原核准狀態已自動退回「待審核」，請重新送審"
@@ -902,6 +979,7 @@ def update_leave(
 @router.delete("/leaves/{leave_id}")
 def delete_leave(
     leave_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """刪除請假記錄"""
@@ -915,11 +993,36 @@ def delete_leave(
         was_approved = leave.is_approved is True
         leave_month = (leave.start_date.year, leave.start_date.month)
         emp_id = leave.employee_id
+        # 預先 snapshot：刪除後 leave 物件被 expunge，audit_changes 必須在這裡備份
+        deleted_snapshot = {
+            "leave_id": leave_id,
+            "employee_id": emp_id,
+            "leave_type": leave.leave_type,
+            "start_date": leave.start_date.isoformat(),
+            "end_date": leave.end_date.isoformat(),
+            "leave_hours": leave.leave_hours,
+            "is_approved": leave.is_approved,
+            "deduction_ratio": leave.deduction_ratio,
+            "reason": leave.reason,
+        }
         if was_approved:
             _check_salary_months_not_finalized(session, emp_id, {leave_month})
 
         session.delete(leave)
         session.commit()
+
+        request.state.audit_entity_id = str(leave_id)
+        request.state.audit_summary = (
+            f"管理端刪除請假 #{leave_id}（employee_id={emp_id}）"
+            + ("；已核准 → 觸發薪資重算" if was_approved else "")
+        )
+        request.state.audit_changes = {
+            "action": "leave_delete",
+            "deleted": deleted_snapshot,
+            "was_approved": was_approved,
+            "leave_month": f"{leave_month[0]}-{leave_month[1]:02d}",
+            "triggered_salary_recalc": was_approved,
+        }
 
         result = {"message": "請假記錄已刪除"}
         # 刪除已核准假單後補算薪資，撤銷原扣款
@@ -991,6 +1094,7 @@ class LeaveBatchApproveRequest(BaseModel):
 def approve_leave(
     leave_id: int,
     data: ApproveRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
     """核准/駁回請假。駁回時 rejection_reason 為必填。"""
@@ -1028,7 +1132,25 @@ def approve_leave(
         # 核准/駁回狀態是否實質變動；True→False、False→True、None→True 都屬於
         # 會影響 SalaryRecord 扣款的轉換，必須觸發封存守衛與薪資重算。
         was_approved = leave.is_approved is True
+        was_pending = leave.is_approved is None
+        was_rejected = leave.is_approved is False
         approval_changed = was_approved != data.approved
+        # 整單 snapshot 用於 audit_changes 的 before/after
+        leave_snapshot_before = {
+            "is_approved": leave.is_approved,
+            "leave_type": leave.leave_type,
+            "leave_hours": leave.leave_hours,
+            "deduction_ratio": leave.deduction_ratio,
+            "approved_by": leave.approved_by,
+            "rejection_reason": leave.rejection_reason,
+            "substitute_status": leave.substitute_status,
+        }
+        # ⚠ 高風險事件偵測：對「已核准 → 修改」這條軌跡留下顯式旗標，
+        # 方便前端 AuditLogView 篩出來作為高風險事件。
+        is_reject_of_approved = was_approved and not data.approved
+        # employee_id 也先抓出來；後面 commit + LINE 推播後 leave 物件還可用，
+        # 但提前抓出減少耦合
+        leave_employee_id = leave.employee_id
 
         # ── 提早取得薪資鎖（封存守衛 + commit + 重算共用同一鎖窗）─────────────
         # Why: 原流程「_check_finalized → commit leave → process_salary_calculation」
@@ -1224,10 +1346,49 @@ def approve_leave(
             approval_comment = (
                 f"{approval_comment}\n{warning}" if approval_comment else warning
             )
-        _write_approval_log(
+        approval_log_row = _write_approval_log(
             "leave", leave_id, action, current_user, approval_comment, session
         )
         session.commit()
+
+        # AuditLog changes：留下完整的 before/after + ApprovalLog 連結
+        # 並用 high_risk 旗標標出「force_overlap」「reject of approved」「force_without_substitute」
+        request.state.audit_entity_id = str(leave_id)
+        action_label = "核准" if data.approved else "駁回"
+        risk_tags = []
+        if data.force_overlap:
+            risk_tags.append("force_overlap")
+        if data.force_without_substitute:
+            risk_tags.append("force_without_substitute")
+        if is_reject_of_approved:
+            risk_tags.append("reject_of_approved")
+        request.state.audit_summary = (
+            f"{action_label}請假 #{leave_id}（employee_id={leave_employee_id}）"
+            + (f"｜⚠ {','.join(risk_tags)}" if risk_tags else "")
+        )
+        request.state.audit_changes = {
+            "action": "leave_approve",
+            "leave_id": leave_id,
+            "employee_id": leave_employee_id,
+            "decision": "approved" if data.approved else "rejected",
+            "before": leave_snapshot_before,
+            "after": {
+                "is_approved": leave.is_approved,
+                "approved_by": leave.approved_by,
+                "rejection_reason": leave.rejection_reason,
+                "deduction_ratio": leave.deduction_ratio,
+                "substitute_status": leave.substitute_status,
+            },
+            "approval_log_id": approval_log_row.id if approval_log_row else None,
+            "approval_changed": approval_changed,
+            "is_reject_of_approved": is_reject_of_approved,
+            "force_overlap": data.force_overlap,
+            "force_overlap_reason": data.force_overlap_reason,
+            "force_without_substitute": data.force_without_substitute,
+            "rejection_reason": data.rejection_reason,
+            "warning": warning,
+            "risk_tags": risk_tags,
+        }
 
         result = {"message": "已核准" if data.approved else "已駁回"}
         if warning:
@@ -1324,6 +1485,7 @@ def approve_leave(
 @router.post("/leaves/batch-approve")
 def batch_approve_leaves(
     data: LeaveBatchApproveRequest,
+    request: Request,
     _rl=Depends(_batch_approve_limiter),
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
@@ -1391,6 +1553,8 @@ def batch_approve_leaves(
                 # 核准/駁回狀態是否實質變動（影響 SalaryRecord）
                 was_approved = leave.is_approved is True
                 approval_changed = was_approved != data.approved
+                # 高風險：對「已核准 → 駁回」批次操作要顯式標記
+                is_reject_of_approved = was_approved and not data.approved
 
                 if data.approved:
                     try:
@@ -1505,7 +1669,7 @@ def batch_approve_leaves(
                     else None
                 )
                 action = "approved" if data.approved else "rejected"
-                _write_approval_log(
+                approval_log_row = _write_approval_log(
                     "leave",
                     leave_id,
                     action,
@@ -1513,7 +1677,15 @@ def batch_approve_leaves(
                     data.rejection_reason if not data.approved else None,
                     session,
                 )
-                changes.append((leave_id, leave, approval_changed))
+                changes.append(
+                    (
+                        leave_id,
+                        leave,
+                        approval_changed,
+                        is_reject_of_approved,
+                        approval_log_row.id if approval_log_row else None,
+                    )
+                )
             except Exception as e:
                 session.rollback()
                 failed.append({"id": leave_id, "reason": str(e)})
@@ -1529,7 +1701,9 @@ def batch_approve_leaves(
                 _line_user_map: dict = {}
                 _emp_name_map: dict = {}
                 if _line_service is not None:
-                    change_emp_ids = list({lv.employee_id for _, lv, _ in changes})
+                    change_emp_ids = list(
+                        {lv.employee_id for _, lv, _, _, _ in changes}
+                    )
                     for u in (
                         session.query(User)
                         .filter(User.employee_id.in_(change_emp_ids))
@@ -1543,7 +1717,13 @@ def batch_approve_leaves(
                     ):
                         _emp_name_map[e.id] = e.name
 
-                for leave_id, leave, approval_changed in changes:
+                for (
+                    leave_id,
+                    leave,
+                    approval_changed,
+                    _is_reject_of_approved,
+                    _approval_log_id,
+                ) in changes:
                     succeeded.append(leave_id)
 
                     # 個人 LINE 推播（審核結果）
@@ -1613,8 +1793,32 @@ def batch_approve_leaves(
                                 session.rollback()
             except Exception as e:
                 session.rollback()
-                for leave_id, _, _ in changes:
+                for leave_id, *_ in changes:
                     failed.append({"id": leave_id, "reason": f"統一提交失敗：{e}"})
+
+        # AuditLog changes：批次操作彙整為單筆 audit，列出受影響的 leave_id 與每筆 ApprovalLog 連結
+        request.state.audit_summary = (
+            f"批次{'核准' if data.approved else '駁回'}請假 "
+            f"成功 {len(succeeded)}/失敗 {len(failed)}（請求 {len(data.ids)} 筆）"
+        )
+        request.state.audit_changes = {
+            "action": "leave_batch_approve",
+            "decision": "approved" if data.approved else "rejected",
+            "rejection_reason": data.rejection_reason,
+            "requested_ids": data.ids,
+            "succeeded_ids": list(succeeded),
+            "failed": failed,
+            "approval_log_ids": [
+                {
+                    "leave_id": _lid,
+                    "employee_id": _lv.employee_id,
+                    "is_reject_of_approved": _ir,
+                    "approval_log_id": _alog,
+                }
+                for _lid, _lv, _ac, _ir, _alog in changes
+            ],
+            "high_risk_count": sum(1 for _lid, _lv, _ac, _ir, _alog in changes if _ir),
+        }
     finally:
         session.close()
 

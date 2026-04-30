@@ -1,3 +1,4 @@
+from unittest.mock import MagicMock
 """SQLite 整合測試:批次核准遇到「同批兩張同員工同時段」的 in-batch 重疊。
 
 P2-5 補丁驗證:
@@ -131,6 +132,7 @@ def test_in_batch_same_employee_same_period_blocks_second(
 
     req = LeaveBatchApproveRequest(ids=[id_a, id_b], approved=True)
     result = batch_approve_leaves(
+        request=MagicMock(),
         data=req,
         _rl=None,
         current_user={"username": "supervisor", "role": "supervisor"},

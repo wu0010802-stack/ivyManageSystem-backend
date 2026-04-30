@@ -21,6 +21,7 @@ from models.fees import (
     StudentFeeRefund,
 )
 from services.report_cache_service import report_cache_service
+from utils.audit import write_audit_in_session
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_adjustment_reason, require_finance_approve
 from utils.permissions import Permission
@@ -255,6 +256,7 @@ def create_fee_item(
 def update_fee_item(
     item_id: int,
     payload: FeeItemUpdate,
+    request: Request,
     _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """更新費用項目"""
@@ -263,11 +265,26 @@ def update_fee_item(
         if not item:
             raise HTTPException(status_code=404, detail="費用項目不存在")
 
-        if payload.name is not None:
+        # 預先 snapshot 舊值，方便組 audit_changes diff
+        before = {
+            "name": item.name,
+            "amount": item.amount,
+            "classroom_id": item.classroom_id,
+            "period": item.period,
+            "is_active": item.is_active,
+        }
+        diff = {}
+
+        if payload.name is not None and payload.name != item.name:
+            diff["name"] = {"before": item.name, "after": payload.name}
             item.name = payload.name
-        if payload.amount is not None:
+        if payload.amount is not None and payload.amount != item.amount:
+            diff["amount"] = {"before": item.amount, "after": payload.amount}
             item.amount = payload.amount
-        if payload.classroom_id is not None:
+        if (
+            payload.classroom_id is not None
+            and payload.classroom_id != item.classroom_id
+        ):
             cls = (
                 session.query(Classroom)
                 .filter(Classroom.id == payload.classroom_id)
@@ -275,15 +292,44 @@ def update_fee_item(
             )
             if not cls:
                 raise HTTPException(status_code=404, detail="班級不存在")
+            diff["classroom_id"] = {
+                "before": item.classroom_id,
+                "after": payload.classroom_id,
+            }
             item.classroom_id = payload.classroom_id
-        if payload.period is not None:
+        if payload.period is not None and payload.period != item.period:
+            diff["period"] = {"before": item.period, "after": payload.period}
             item.period = payload.period
-        if payload.is_active is not None:
+        if payload.is_active is not None and payload.is_active != item.is_active:
+            diff["is_active"] = {"before": item.is_active, "after": payload.is_active}
             item.is_active = payload.is_active
 
         item.updated_at = datetime.now()
 
-    logger.info("更新費用項目 id=%s", item_id)
+        # 統計受影響的學生費用紀錄數，amount 異動時揭露衝擊面積
+        affected_records = 0
+        if "amount" in diff:
+            affected_records = (
+                session.query(StudentFeeRecord)
+                .filter(StudentFeeRecord.fee_item_id == item_id)
+                .count()
+            )
+
+        request.state.audit_entity_id = str(item_id)
+        request.state.audit_summary = f"更新費用項目 #{item_id}（{item.name}）" + (
+            f"：金額 {diff['amount']['before']} → {diff['amount']['after']}"
+            if "amount" in diff
+            else ""
+        )
+        request.state.audit_changes = {
+            "action": "fee_item_update",
+            "item_id": item_id,
+            "before": before,
+            "diff": diff,
+            "affected_fee_records": affected_records,
+        }
+
+    logger.info("更新費用項目 id=%s diff=%s", item_id, list(diff.keys()))
     return {"ok": True}
 
 
@@ -324,6 +370,7 @@ def delete_fee_item(
 @router.post("/generate")
 def generate_fee_records(
     payload: GenerateRequest,
+    request: Request,
     _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """批次為指定班級或全校的在校學生產生費用記錄"""
@@ -385,6 +432,30 @@ def generate_fee_records(
 
         if new_records:
             session.bulk_insert_mappings(StudentFeeRecord, new_records)
+
+        # 結構化 diff：批次操作通常一次掃整班，必須留下「誰、何時、產了多少筆」軌跡
+        # 學生 id 列表只取前 50 個避免 changes 撐爆 64KB 上限（middleware 會 truncate）
+        sampled_student_ids = [
+            s.id for s, _c in students if s.id not in existing_student_ids
+        ][:50]
+        request.state.audit_entity_id = str(payload.fee_item_id)
+        request.state.audit_summary = (
+            f"批次產生費用記錄：{fee_item.name}（{fee_item.period}）"
+            f" 新建 {created} 筆、跳過 {skipped} 筆"
+        )
+        request.state.audit_changes = {
+            "action": "fee_generate_records",
+            "fee_item_id": payload.fee_item_id,
+            "fee_item_name": fee_item.name,
+            "amount_due": fee_item.amount,
+            "period": fee_item.period,
+            "scope_classroom_id": payload.classroom_id or fee_item.classroom_id,
+            "candidate_count": len(students),
+            "created": created,
+            "skipped": skipped,
+            "sampled_student_ids": sampled_student_ids,
+            "sampled_student_ids_truncated": created > len(sampled_student_ids),
+        }
 
     logger.info(
         "批次產生費用記錄 fee_item_id=%s 新建=%s 跳過=%s",
@@ -617,14 +688,6 @@ def pay_fee_record(
 
         student_name = record.student_name
 
-        # 把金額變動塞進 AuditMiddleware 的 summary（含前後值，不會被 body mask 掉）
-        request.state.audit_summary = (
-            f"繳費登記 {record.period or ''} {student_name}: "
-            f"NT${previous_paid} → NT${amount_paid}（本次 +NT${delta}）"
-            f"（{payload.payment_method}，by {operator}）"
-        )
-        request.state.audit_entity_id = record_id
-
         # DB 層 UNIQUE 攔下並發同 key 的第二筆：轉為 replay
         # 和前置檢查共用 _assert_pay_payload_matches，不可放寬檢查力道
         try:
@@ -659,6 +722,40 @@ def pay_fee_record(
                             "idempotent_replay": True,
                         }
             raise
+
+        # 同交易 outbox：AuditLog 必須與金流變動共生死。
+        # Why: 過去走 middleware fire-and-forget；threadpool/DB 短路時 audit 會丟，
+        # 但學費紀錄已 commit。改寫在此 session 後，audit 失敗整個 rollback。
+        write_audit_in_session(
+            session,
+            request,
+            action="UPDATE",
+            entity_type="fee",
+            entity_id=record_id,
+            summary=(
+                f"繳費登記 {record.period or ''} {student_name}: "
+                f"NT${previous_paid} → NT${amount_paid}（本次 +NT${delta}）"
+                f"（{payload.payment_method}，by {operator}）"
+            ),
+            changes={
+                "action": "fee_pay",
+                "record_id": record_id,
+                "student_id": record.student_id,
+                "student_name": student_name,
+                "period": record.period,
+                "fee_item_id": record.fee_item_id,
+                "previous_paid": previous_paid,
+                "new_paid": amount_paid,
+                "delta": delta,
+                "amount_due": record.amount_due,
+                "status_after": record.status,
+                "payment_method": payload.payment_method,
+                "payment_date": payload.payment_date.isoformat(),
+                "payment_id": payment.id if delta > 0 else None,
+                "idempotency_key": payload.idempotency_key,
+                "operator": operator,
+            },
+        )
 
     # session_scope commit 後失效報表快取
     _invalidate_finance_summary_cache()
@@ -864,11 +961,6 @@ def refund_fee_record(
             record.status = "paid"
         record.updated_at = datetime.now()
 
-        request.state.audit_summary = (
-            f"學費退款 {record.period or ''} {record.student_name}: "
-            f"NT${payload.amount}（{payload.reason}，by {operator}）"
-        )
-        request.state.audit_entity_id = record_id
         new_paid = record.amount_paid
         new_status = record.status
         student_name_snapshot = record.student_name
@@ -913,6 +1005,37 @@ def refund_fee_record(
                             "idempotent_replay": True,
                         }
             raise
+
+        # 同交易 outbox：退款的 AuditLog 必須與 StudentFeeRefund 共生死
+        write_audit_in_session(
+            session,
+            request,
+            action="UPDATE",
+            entity_type="fee",
+            entity_id=record_id,
+            summary=(
+                f"學費退款 {record.period or ''} {student_name_snapshot}: "
+                f"NT${payload.amount}（{payload.reason}，by {operator}）"
+            ),
+            changes={
+                "action": "fee_refund",
+                "record_id": record_id,
+                "student_id": record.student_id,
+                "student_name": student_name_snapshot,
+                "period": record.period,
+                "fee_item_id": record.fee_item_id,
+                "paid_before": paid,
+                "refund_amount": payload.amount,
+                "paid_after": new_paid,
+                "amount_due": record.amount_due,
+                "status_after": new_status,
+                "reason": payload.reason,
+                "refund_id": refund.id,
+                "cumulative_refund_after": cumulative_refund,
+                "idempotency_key": payload.idempotency_key,
+                "operator": operator,
+            },
+        )
 
     # session_scope commit 後失效報表快取
     _invalidate_finance_summary_cache()

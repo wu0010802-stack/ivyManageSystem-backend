@@ -95,6 +95,7 @@ class TestUpdateOvertimeDateSync:
         try:
             data = OvertimeUpdate(overtime_date=date(2026, 3, 22))
             update_overtime(
+                request=MagicMock(),
                 overtime_id=ot.id,
                 data=data,
                 current_user={"username": "admin"},
@@ -128,6 +129,7 @@ class TestUpdateOvertimeDateSync:
         try:
             data = OvertimeUpdate(overtime_date=date(2026, 3, 22))
             update_overtime(
+                request=MagicMock(),
                 overtime_id=ot.id,
                 data=data,
                 current_user={"username": "admin"},
@@ -159,6 +161,7 @@ class TestUpdateOvertimeDateSync:
         try:
             data = OvertimeUpdate(start_time="19:00")
             update_overtime(
+                request=MagicMock(),
                 overtime_id=ot.id,
                 data=data,
                 current_user={"username": "admin"},
@@ -187,6 +190,7 @@ class TestUpdateOvertimeDateSync:
         try:
             data = OvertimeUpdate(overtime_date=date(2026, 3, 22))
             update_overtime(
+                request=MagicMock(),
                 overtime_id=ot.id,
                 data=data,
                 current_user={"username": "admin"},

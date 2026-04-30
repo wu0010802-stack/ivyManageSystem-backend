@@ -25,6 +25,7 @@ from utils.audit import (
     _parse_entity_type,
     _schedule_audit_write,
     _write_audit_sync,
+    write_audit_in_session,
     write_explicit_audit,
 )
 
@@ -276,3 +277,129 @@ class TestActivityEntityTypeMapping:
         }
         missing = required - ENTITY_LABELS.keys()
         assert not missing, f"缺少中文 label 的 entity_type：{missing}"
+
+
+class TestFeesAndPortalEntityTypeMapping:
+    """金流與教師入口端點必須被 AuditMiddleware 覆蓋。
+
+    Why: 過去 ENTITY_PATTERNS 漏掉 /api/fees 與 /api/portal/my-{leaves,overtimes}，
+    這些路徑即使 endpoint 已寫 audit_summary，也因為 _parse_entity_type 回 None 整個
+    被 middleware 略過，AuditLog 完全沒留痕跡。
+    """
+
+    @pytest.mark.parametrize(
+        "path,expected_entity",
+        [
+            # 學費：/api/fees 各層級必須一致映射為 fee
+            ("/api/fees/items", "fee"),
+            ("/api/fees/items/5", "fee"),
+            ("/api/fees/generate", "fee"),
+            ("/api/fees/records/42/pay", "fee"),
+            ("/api/fees/records/42/refund", "fee"),
+            # 教師入口：請假相關全部映射為 leave，與管理端 /api/leaves 同類
+            ("/api/portal/my-leaves", "leave"),
+            ("/api/portal/my-leaves/77", "leave"),
+            ("/api/portal/my-leaves/77/attachments", "leave"),
+            ("/api/portal/my-leaves/77/attachments/foo.pdf", "leave"),
+            ("/api/portal/my-leaves/77/substitute-respond", "leave"),
+            # 教師入口：加班同類映射為 overtime
+            ("/api/portal/my-overtimes", "overtime"),
+            ("/api/portal/my-overtimes/3", "overtime"),
+            # /api/portal/swap 已有規則，回歸不被新規則錯誤吞掉
+            ("/api/portal/swap/1", "shift_swap"),
+        ],
+    )
+    def test_entity_type_for_path(self, path, expected_entity):
+        assert _parse_entity_type(path) == expected_entity
+
+    def test_fee_has_chinese_label(self):
+        """fee entity_type 必須在 ENTITY_LABELS 有對應中文。"""
+        assert "fee" in ENTITY_LABELS, "新增 fee entity_type 必須補中文 label"
+
+
+class TestWriteAuditInSession:
+    """write_audit_in_session：金流類操作的 audit 必須與主交易共生死。"""
+
+    def _make_request(self):
+        from starlette.requests import Request
+
+        scope = {
+            "type": "http",
+            "method": "PUT",
+            "path": "/api/fees/records/1/pay",
+            "headers": [],
+            "query_string": b"",
+            "client": ("10.0.0.5", 9000),
+        }
+        req = Request(scope)
+        # state 在中介層才會自動建立；測試裡手動賦予
+        req.scope["state"] = {}
+        return req
+
+    def test_audit_row_committed_with_main_transaction(self, sqlite_engine):
+        """同 session 寫入並 commit 後，AuditLog row 應落地。"""
+        _, session_factory = sqlite_engine
+        request = self._make_request()
+
+        with session_factory() as session:
+            write_audit_in_session(
+                session,
+                request,
+                action="UPDATE",
+                entity_type="fee",
+                summary="同交易稽核：學費繳費登記",
+                entity_id=42,
+                changes={"action": "fee_pay", "delta": 1000},
+            )
+            session.commit()
+
+        with session_factory() as s:
+            logs = s.query(AuditLog).all()
+
+        assert len(logs) == 1
+        log = logs[0]
+        assert log.action == "UPDATE"
+        assert log.entity_type == "fee"
+        assert log.entity_id == "42"
+        assert "學費繳費登記" in log.summary
+        assert "fee_pay" in (log.changes or "")
+
+    def test_audit_row_rolled_back_with_main_transaction(self, sqlite_engine):
+        """主交易 rollback 時，audit row 也必須一起消失（不像背景寫入永遠落地）。"""
+        _, session_factory = sqlite_engine
+        request = self._make_request()
+
+        with session_factory() as session:
+            write_audit_in_session(
+                session,
+                request,
+                action="UPDATE",
+                entity_type="fee",
+                summary="rollback 測試",
+                entity_id=99,
+            )
+            session.rollback()
+
+        with session_factory() as s:
+            logs = s.query(AuditLog).all()
+
+        # 主交易 rollback → audit 也消失，符合「金流成功 ⇔ audit 存在」契約
+        assert len(logs) == 0
+
+    def test_sets_audit_skip_to_avoid_double_write(self, sqlite_engine):
+        """呼叫後 request.state.audit_skip 應為 True，避免 middleware 二次寫入。"""
+        _, session_factory = sqlite_engine
+        request = self._make_request()
+
+        with session_factory() as session:
+            write_audit_in_session(
+                session,
+                request,
+                action="UPDATE",
+                entity_type="fee",
+                summary="skip flag 測試",
+            )
+            session.commit()
+
+        # request.state.audit_skip 透過 starlette 的 State proxy 讀取
+        assert getattr(request.state, "audit_skip", False) is True

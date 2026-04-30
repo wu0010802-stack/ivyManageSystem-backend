@@ -11,7 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from utils.errors import raise_safe_500
 from utils.rate_limit import SlidingWindowLimiter
 
@@ -195,6 +195,7 @@ def get_my_leaves(
 @router.post("/my-leaves", status_code=201)
 def create_my_leave(
     data: LeaveCreatePortal,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """提交請假申請"""
@@ -346,6 +347,33 @@ def create_my_leave(
         session.add(leave)
         session.commit()
 
+        leave_type_label = LEAVE_TYPE_LABELS.get(data.leave_type, data.leave_type)
+        request.state.audit_entity_id = str(leave.id)
+        request.state.audit_summary = (
+            f"教師送出請假申請：{emp.name} {leave_type_label} "
+            f"{data.start_date}~{data.end_date}（{data.leave_hours}h）"
+        )
+        request.state.audit_changes = {
+            "action": "portal_create_leave",
+            "employee_id": emp.id,
+            "employee_name": emp.name,
+            "leave_id": leave.id,
+            "leave_type": data.leave_type,
+            "leave_type_label": leave_type_label,
+            "start_date": data.start_date.isoformat(),
+            "end_date": data.end_date.isoformat(),
+            "start_time": data.start_time,
+            "end_time": data.end_time,
+            "leave_hours": data.leave_hours,
+            "is_deductible": effective_ratio > 0,
+            "deduction_ratio": effective_ratio,
+            "substitute_employee_id": data.substitute_employee_id,
+            "substitute_status": substitute_status,
+            "source_overtime_id": (
+                data.source_overtime_id if data.leave_type == "compensatory" else None
+            ),
+        }
+
         # LINE 通知（fire-and-forget，失敗不影響申請）
         if _line_service:
             try:
@@ -375,6 +403,7 @@ def create_my_leave(
 @router.post("/my-leaves/{leave_id}/attachments")
 async def upload_leave_attachments(
     leave_id: int,
+    request: Request,
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user),
     _rl: None = Depends(_attach_upload_limiter.as_dependency()),
@@ -429,6 +458,19 @@ async def upload_leave_attachments(
         all_paths = existing + saved
         leave.attachment_paths = json.dumps(all_paths)
         session.commit()
+
+        request.state.audit_entity_id = str(leave_id)
+        request.state.audit_summary = (
+            f"教師上傳假單附件：{emp.name} 假單 #{leave_id} 共 {len(saved)} 個檔案"
+        )
+        request.state.audit_changes = {
+            "action": "portal_upload_leave_attachments",
+            "employee_id": emp.id,
+            "leave_id": leave_id,
+            "uploaded_count": len(saved),
+            "uploaded_filenames": saved,
+            "total_attachments": len(all_paths),
+        }
         return {"message": f"已上傳 {len(saved)} 個附件", "attachments": all_paths}
     except HTTPException:
         raise
@@ -443,6 +485,7 @@ async def upload_leave_attachments(
 def delete_leave_attachment(
     leave_id: int,
     filename: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """刪除個人假單附件"""
@@ -473,6 +516,18 @@ def delete_leave_attachment(
         paths.remove(filename)
         leave.attachment_paths = json.dumps(paths) if paths else None
         session.commit()
+
+        request.state.audit_entity_id = str(leave_id)
+        request.state.audit_summary = (
+            f"教師刪除假單附件：{emp.name} 假單 #{leave_id} 檔案 {filename}"
+        )
+        request.state.audit_changes = {
+            "action": "portal_delete_leave_attachment",
+            "employee_id": emp.id,
+            "leave_id": leave_id,
+            "filename": filename,
+            "remaining_attachments": len(paths),
+        }
         return {"message": "附件已刪除"}
     except HTTPException:
         raise
@@ -702,6 +757,7 @@ def get_my_quotas(
 def substitute_respond(
     leave_id: int,
     data: SubstituteRespond,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """代理人接受或拒絕代理請求（僅被指定人可操作）"""
@@ -723,12 +779,28 @@ def substitute_respond(
                 status_code=409, detail="此代理請求已回應過，無法重複操作"
             )
 
+        old_status = leave.substitute_status
         leave.substitute_status = "accepted" if data.action == "accept" else "rejected"
         leave.substitute_responded_at = datetime.now()
         leave.substitute_remark = data.remark
         session.commit()
 
         action_label = "接受" if data.action == "accept" else "拒絕"
+        request.state.audit_entity_id = str(leave_id)
+        request.state.audit_summary = (
+            f"代理人{action_label}代理請求：{emp.name} → 假單 #{leave_id} "
+            f"（申請人 employee_id={leave.employee_id}）"
+        )
+        request.state.audit_changes = {
+            "action": "portal_substitute_respond",
+            "decision": data.action,
+            "leave_id": leave_id,
+            "substitute_employee_id": emp.id,
+            "leave_owner_employee_id": leave.employee_id,
+            "substitute_status_before": old_status,
+            "substitute_status_after": leave.substitute_status,
+            "remark": data.remark,
+        }
         return {"message": f"已{action_label}代理請求"}
     except HTTPException:
         raise

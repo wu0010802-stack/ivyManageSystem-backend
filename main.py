@@ -299,6 +299,20 @@ async def app_lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("安全支援表 GC 排程啟動失敗: %s", e)
 
+    # 官方日曆每日同步：需要 OFFICIAL_CALENDAR_SYNC_ENABLED=1；建議僅單一 worker 啟用
+    official_calendar_task = None
+    official_calendar_stop_event: asyncio.Event | None = None
+    try:
+        from services import official_calendar_scheduler as _oc_sched
+
+        if _oc_sched.scheduler_enabled():
+            official_calendar_stop_event = asyncio.Event()
+            official_calendar_task = asyncio.create_task(
+                _oc_sched.run_official_calendar_scheduler(official_calendar_stop_event)
+            )
+    except Exception as e:
+        logger.warning("官方日曆排程啟動失敗: %s", e)
+
     try:
         yield
     finally:
@@ -361,6 +375,17 @@ async def app_lifespan(app_instance: FastAPI):
                 security_gc_task.cancel()
                 try:
                     await security_gc_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if official_calendar_task is not None:
+            if official_calendar_stop_event is not None:
+                official_calendar_stop_event.set()
+            try:
+                await asyncio.wait_for(official_calendar_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                official_calendar_task.cancel()
+                try:
+                    await official_calendar_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源

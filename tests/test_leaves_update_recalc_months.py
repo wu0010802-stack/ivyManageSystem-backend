@@ -80,6 +80,7 @@ class TestUpdateLeaveCrossMonthRecalc:
         try:
             data = LeaveUpdate(start_date=date(2026, 4, 15), end_date=date(2026, 4, 15))
             update_leave(
+                request=MagicMock(),
                 leave_id=leave.id,
                 data=data,
                 current_user={"username": "admin"},
@@ -111,6 +112,7 @@ class TestUpdateLeaveCrossMonthRecalc:
         try:
             data = LeaveUpdate(start_date=date(2026, 3, 16), end_date=date(2026, 3, 16))
             update_leave(
+                request=MagicMock(),
                 leave_id=leave.id,
                 data=data,
                 current_user={"username": "admin"},

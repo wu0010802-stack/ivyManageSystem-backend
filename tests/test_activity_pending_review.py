@@ -291,6 +291,88 @@ class TestPublicQueryPrivacy:
         assert res.status_code == 404
         assert "請確認" in res.json()["detail"]
 
+    def test_query_field_state_confirmed_for_matched_registration(self, pending_client):
+        """匹配成功的報名 → field_state 顯示班級唯讀 + 已確認。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)
+        r1 = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        assert r1.status_code == 201
+
+        res = client.get(
+            "/api/activity/public/query",
+            params={
+                "name": "王小明",
+                "birthday": "2020-05-10",
+                "parent_phone": "0912345678",
+            },
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert "field_state" in body
+        fs = body["field_state"]
+        assert fs == {
+            "class_source": "student_record",
+            "class_editable": False,
+            "review_state": "confirmed",
+        }
+
+    def test_query_field_state_review_for_pending_registration(self, pending_client):
+        """待審核（未比對成功）的報名 → field_state 顯示班級可編 + 校方審核中。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)  # 無學生 → pending
+        r1 = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        assert r1.status_code == 201
+
+        res = client.get(
+            "/api/activity/public/query",
+            params={
+                "name": "王小明",
+                "birthday": "2020-05-10",
+                "parent_phone": "0912345678",
+            },
+        )
+        assert res.status_code == 200
+        body = res.json()
+        fs = body["field_state"]
+        assert fs == {
+            "class_source": "submitted",
+            "class_editable": True,
+            "review_state": "school_review",
+        }
+
+    def test_query_response_does_not_leak_match_internals(self, pending_client):
+        """隱私契約：query 回傳即使新增 field_state，也不能洩漏 student_id 等 raw 欄位。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)
+        r1 = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        assert r1.status_code == 201
+
+        res = client.get(
+            "/api/activity/public/query",
+            params={
+                "name": "王小明",
+                "birthday": "2020-05-10",
+                "parent_phone": "0912345678",
+            },
+        )
+        body = res.json()
+        for forbidden in (
+            "match_status",
+            "pending_review",
+            "student_id",
+            "classroom_id",
+        ):
+            assert forbidden not in body, f"query response leaked {forbidden}"
+
 
 class TestAdminApprovalWorkflow:
     def test_pending_list_returns_only_pending_rows(self, pending_client):

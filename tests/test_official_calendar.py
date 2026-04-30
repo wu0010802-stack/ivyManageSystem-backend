@@ -64,7 +64,9 @@ def official_calendar_env(tmp_path):
     engine.dispose()
 
 
-def _create_user(session, username: str, permissions: int, password: str = "TempPass123") -> User:
+def _create_user(
+    session, username: str, permissions: int, password: str = "TempPass123"
+) -> User:
     user = User(
         username=username,
         password_hash=hash_password(password),
@@ -79,7 +81,9 @@ def _create_user(session, username: str, permissions: int, password: str = "Temp
 
 
 def _login(client: TestClient, username: str, password: str = "TempPass123"):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 class TestOfficialCalendarParser:
@@ -92,7 +96,9 @@ class TestOfficialCalendarParser:
 20251004,六,2,中秋節
 """
 
-        holidays, makeup_days = official_calendar_module._parse_official_calendar_csv(csv_text)
+        holidays, makeup_days = official_calendar_module._parse_official_calendar_csv(
+            csv_text
+        )
 
         assert [item["date"].isoformat() for item in holidays] == [
             "2025-01-27",
@@ -104,38 +110,74 @@ class TestOfficialCalendarParser:
             "和平紀念日",
             "中秋節",
         ]
-        assert makeup_days == [{
-            "date": date(2025, 2, 8),
-            "name": "補班日",
-            "description": "補行上班",
-        }]
+        assert makeup_days == [
+            {
+                "date": date(2025, 2, 8),
+                "name": "補班日",
+                "description": "補行上班",
+            }
+        ]
 
 
 class TestOfficialCalendarSync:
-    def test_sync_upserts_holidays_and_makeup_days(self, official_calendar_env, monkeypatch):
+    def test_sync_upserts_holidays_and_makeup_days(
+        self, official_calendar_env, monkeypatch
+    ):
         _, session_factory = official_calendar_env
         monkeypatch.setattr(
             official_calendar_module,
             "_get_resource_metadata",
-            lambda year: {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+            lambda year: {
+                "download_url": "https://example.com/2026.csv",
+                "modified_at": "v1",
+                "description": "115年",
+            },
         )
         monkeypatch.setattr(
             official_calendar_module,
             "_fetch_official_calendar_entries",
             lambda year: (
-                [{"date": date(2026, 2, 27), "name": "二二八補假", "description": "和平紀念日補假"}],
-                [{"date": date(2026, 2, 7), "name": "補班日", "description": "補行上班"}],
-                {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+                [
+                    {
+                        "date": date(2026, 2, 27),
+                        "name": "二二八補假",
+                        "description": "和平紀念日補假",
+                    }
+                ],
+                [
+                    {
+                        "date": date(2026, 2, 7),
+                        "name": "補班日",
+                        "description": "補行上班",
+                    }
+                ],
+                {
+                    "download_url": "https://example.com/2026.csv",
+                    "modified_at": "v1",
+                    "description": "115年",
+                },
             ),
         )
 
         with session_factory() as session:
-            result = official_calendar_module.ensure_official_calendar_synced(session, 2026)
+            result = official_calendar_module.ensure_official_calendar_synced(
+                session, 2026
+            )
 
             assert result["status"] == "synced"
-            holiday = session.query(Holiday).filter(Holiday.date == date(2026, 2, 27)).one()
-            makeup = session.query(WorkdayOverride).filter(WorkdayOverride.date == date(2026, 2, 7)).one()
-            sync = session.query(OfficialCalendarSync).filter(OfficialCalendarSync.sync_year == 2026).one()
+            holiday = (
+                session.query(Holiday).filter(Holiday.date == date(2026, 2, 27)).one()
+            )
+            makeup = (
+                session.query(WorkdayOverride)
+                .filter(WorkdayOverride.date == date(2026, 2, 7))
+                .one()
+            )
+            sync = (
+                session.query(OfficialCalendarSync)
+                .filter(OfficialCalendarSync.sync_year == 2026)
+                .one()
+            )
 
             assert holiday.source == official_calendar_module.OFFICIAL_SOURCE
             assert holiday.source_year == 2026
@@ -144,61 +186,106 @@ class TestOfficialCalendarSync:
             assert sync.is_synced is True
             assert sync.source_modified_at == "v1"
 
-    def test_resync_deactivates_removed_official_entries(self, official_calendar_env, monkeypatch):
+    def test_resync_deactivates_removed_official_entries(
+        self, official_calendar_env, monkeypatch
+    ):
         _, session_factory = official_calendar_env
         metadata = {"modified_at": "v1"}
         payload = {
-            "holidays": [{"date": date(2026, 2, 27), "name": "舊補假", "description": "舊資料"}],
-            "makeup_days": [{"date": date(2026, 2, 7), "name": "補班日", "description": "舊資料"}],
+            "holidays": [
+                {"date": date(2026, 2, 27), "name": "舊補假", "description": "舊資料"}
+            ],
+            "makeup_days": [
+                {"date": date(2026, 2, 7), "name": "補班日", "description": "舊資料"}
+            ],
         }
 
         monkeypatch.setattr(
             official_calendar_module,
             "_get_resource_metadata",
-            lambda year: {"download_url": "https://example.com/2026.csv", "modified_at": metadata["modified_at"], "description": "115年"},
+            lambda year: {
+                "download_url": "https://example.com/2026.csv",
+                "modified_at": metadata["modified_at"],
+                "description": "115年",
+            },
         )
 
         def fake_fetch(_year):
             return (
                 payload["holidays"],
                 payload["makeup_days"],
-                {"download_url": "https://example.com/2026.csv", "modified_at": metadata["modified_at"], "description": "115年"},
+                {
+                    "download_url": "https://example.com/2026.csv",
+                    "modified_at": metadata["modified_at"],
+                    "description": "115年",
+                },
             )
 
-        monkeypatch.setattr(official_calendar_module, "_fetch_official_calendar_entries", fake_fetch)
+        monkeypatch.setattr(
+            official_calendar_module, "_fetch_official_calendar_entries", fake_fetch
+        )
 
         with session_factory() as session:
             official_calendar_module.ensure_official_calendar_synced(session, 2026)
 
             metadata["modified_at"] = "v2"
-            payload["holidays"] = [{"date": date(2026, 10, 1), "name": "新假日", "description": "新版資料"}]
+            payload["holidays"] = [
+                {"date": date(2026, 10, 1), "name": "新假日", "description": "新版資料"}
+            ]
             payload["makeup_days"] = []
 
-            result = official_calendar_module.ensure_official_calendar_synced(session, 2026)
+            # 改 force=True 模擬背景排程強制比對；頁面 feed 預設不打上游
+            result = official_calendar_module.ensure_official_calendar_synced(
+                session, 2026, force=True
+            )
 
             assert result["status"] == "synced"
-            old_holiday = session.query(Holiday).filter(Holiday.date == date(2026, 2, 27)).one()
-            new_holiday = session.query(Holiday).filter(Holiday.date == date(2026, 10, 1)).one()
-            old_makeup = session.query(WorkdayOverride).filter(WorkdayOverride.date == date(2026, 2, 7)).one()
+            old_holiday = (
+                session.query(Holiday).filter(Holiday.date == date(2026, 2, 27)).one()
+            )
+            new_holiday = (
+                session.query(Holiday).filter(Holiday.date == date(2026, 10, 1)).one()
+            )
+            old_makeup = (
+                session.query(WorkdayOverride)
+                .filter(WorkdayOverride.date == date(2026, 2, 7))
+                .one()
+            )
 
             assert old_holiday.is_active is False
             assert new_holiday.is_active is True
             assert old_makeup.is_active is False
 
-    def test_sync_reuses_existing_manual_holiday_on_same_date(self, official_calendar_env, monkeypatch):
+    def test_sync_reuses_existing_manual_holiday_on_same_date(
+        self, official_calendar_env, monkeypatch
+    ):
         _, session_factory = official_calendar_env
         monkeypatch.setattr(
             official_calendar_module,
             "_get_resource_metadata",
-            lambda year: {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+            lambda year: {
+                "download_url": "https://example.com/2026.csv",
+                "modified_at": "v1",
+                "description": "115年",
+            },
         )
         monkeypatch.setattr(
             official_calendar_module,
             "_fetch_official_calendar_entries",
             lambda year: (
-                [{"date": date(2026, 1, 1), "name": "開國紀念日", "description": "開國紀念日"}],
+                [
+                    {
+                        "date": date(2026, 1, 1),
+                        "name": "開國紀念日",
+                        "description": "開國紀念日",
+                    }
+                ],
                 [],
-                {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+                {
+                    "download_url": "https://example.com/2026.csv",
+                    "modified_at": "v1",
+                    "description": "115年",
+                },
             ),
         )
 
@@ -215,16 +302,22 @@ class TestOfficialCalendarSync:
             )
             session.commit()
 
-            result = official_calendar_module.ensure_official_calendar_synced(session, 2026)
+            result = official_calendar_module.ensure_official_calendar_synced(
+                session, 2026
+            )
 
             assert result["status"] == "synced"
-            holidays = session.query(Holiday).filter(Holiday.date == date(2026, 1, 1)).all()
+            holidays = (
+                session.query(Holiday).filter(Holiday.date == date(2026, 1, 1)).all()
+            )
             assert len(holidays) == 1
             assert holidays[0].name == "開國紀念日"
             assert holidays[0].source == official_calendar_module.OFFICIAL_SOURCE
             assert holidays[0].source_year == 2026
 
-    def test_sync_failure_without_cache_returns_warning(self, official_calendar_env, monkeypatch):
+    def test_sync_failure_without_cache_returns_warning(
+        self, official_calendar_env, monkeypatch
+    ):
         _, session_factory = official_calendar_env
         monkeypatch.setattr(
             official_calendar_module,
@@ -233,26 +326,54 @@ class TestOfficialCalendarSync:
         )
 
         with session_factory() as session:
-            result = official_calendar_module.ensure_official_calendar_synced(session, 2026)
+            result = official_calendar_module.ensure_official_calendar_synced(
+                session, 2026
+            )
 
             assert result["status"] == "warning"
             assert result["used_cache"] is False
-            assert "official source offline" in result["warning"]
+            # 友善訊息：UI 不再洩露原始錯誤；完整錯誤入 sync.last_error 與 log
+            assert (
+                result["warning"]
+                == official_calendar_module._FRIENDLY_SYNC_WARNING_NO_CACHE
+            )
+            sync = (
+                session.query(official_calendar_module.OfficialCalendarSync)
+                .filter(official_calendar_module.OfficialCalendarSync.sync_year == 2026)
+                .one()
+            )
+            assert "official source offline" in (sync.last_error or "")
 
-    def test_sync_failure_uses_local_cache_when_available(self, official_calendar_env, monkeypatch):
+    def test_sync_failure_uses_local_cache_when_available(
+        self, official_calendar_env, monkeypatch
+    ):
         _, session_factory = official_calendar_env
         monkeypatch.setattr(
             official_calendar_module,
             "_get_resource_metadata",
-            lambda year: {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+            lambda year: {
+                "download_url": "https://example.com/2026.csv",
+                "modified_at": "v1",
+                "description": "115年",
+            },
         )
         monkeypatch.setattr(
             official_calendar_module,
             "_fetch_official_calendar_entries",
             lambda year: (
-                [{"date": date(2026, 2, 27), "name": "二二八補假", "description": "和平紀念日補假"}],
+                [
+                    {
+                        "date": date(2026, 2, 27),
+                        "name": "二二八補假",
+                        "description": "和平紀念日補假",
+                    }
+                ],
                 [],
-                {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+                {
+                    "download_url": "https://example.com/2026.csv",
+                    "modified_at": "v1",
+                    "description": "115年",
+                },
             ),
         )
 
@@ -265,8 +386,12 @@ class TestOfficialCalendarSync:
             lambda year: (_ for _ in ()).throw(RuntimeError("temporary timeout")),
         )
 
+        # 用 force=True 模擬背景排程強制比對；這是上游同步失敗的真正路徑。
+        # 頁面 feed 預設不打上游，cache 新鮮即直接回 synced。
         with session_factory() as session:
-            result = official_calendar_module.ensure_official_calendar_synced(session, 2026)
+            result = official_calendar_module.ensure_official_calendar_synced(
+                session, 2026, force=True
+            )
 
             assert result["status"] == "cached"
             assert result["used_cache"] is True
@@ -274,7 +399,9 @@ class TestOfficialCalendarSync:
 
 
 class TestCalendarFeedApi:
-    def test_calendar_feed_auto_syncs_and_returns_read_only_official_events(self, official_calendar_env, monkeypatch):
+    def test_calendar_feed_auto_syncs_and_returns_read_only_official_events(
+        self, official_calendar_env, monkeypatch
+    ):
         client, session_factory = official_calendar_env
         with session_factory() as session:
             _create_user(session, "calendar_admin", Permission.CALENDAR)
@@ -291,15 +418,35 @@ class TestCalendarFeedApi:
         monkeypatch.setattr(
             official_calendar_module,
             "_get_resource_metadata",
-            lambda year: {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+            lambda year: {
+                "download_url": "https://example.com/2026.csv",
+                "modified_at": "v1",
+                "description": "115年",
+            },
         )
         monkeypatch.setattr(
             official_calendar_module,
             "_fetch_official_calendar_entries",
             lambda year: (
-                [{"date": date(2026, 2, 27), "name": "二二八補假", "description": "和平紀念日補假"}],
-                [{"date": date(2026, 2, 7), "name": "補班日", "description": "補行上班"}],
-                {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+                [
+                    {
+                        "date": date(2026, 2, 27),
+                        "name": "二二八補假",
+                        "description": "和平紀念日補假",
+                    }
+                ],
+                [
+                    {
+                        "date": date(2026, 2, 7),
+                        "name": "補班日",
+                        "description": "補行上班",
+                    }
+                ],
+                {
+                    "download_url": "https://example.com/2026.csv",
+                    "modified_at": "v1",
+                    "description": "115年",
+                },
             ),
         )
 
@@ -313,9 +460,15 @@ class TestCalendarFeedApi:
         assert data["official_sync"]["status"] == "synced"
         assert len(data["events"]) == 3
 
-        holiday_event = next(item for item in data["events"] if item["official_kind"] == "holiday")
-        makeup_event = next(item for item in data["events"] if item["official_kind"] == "makeup_workday")
-        manual_event = next(item for item in data["events"] if item["official_kind"] is None)
+        holiday_event = next(
+            item for item in data["events"] if item["official_kind"] == "holiday"
+        )
+        makeup_event = next(
+            item for item in data["events"] if item["official_kind"] == "makeup_workday"
+        )
+        manual_event = next(
+            item for item in data["events"] if item["official_kind"] is None
+        )
 
         assert holiday_event["is_official"] is True
         assert holiday_event["is_read_only"] is True
@@ -326,10 +479,20 @@ class TestCalendarFeedApi:
         assert manual_event["is_read_only"] is False
 
         with session_factory() as session:
-            assert session.query(Holiday).filter(Holiday.date == date(2026, 2, 27)).count() == 1
-            assert session.query(WorkdayOverride).filter(WorkdayOverride.date == date(2026, 2, 7)).count() == 1
+            assert (
+                session.query(Holiday).filter(Holiday.date == date(2026, 2, 27)).count()
+                == 1
+            )
+            assert (
+                session.query(WorkdayOverride)
+                .filter(WorkdayOverride.date == date(2026, 2, 7))
+                .count()
+                == 1
+            )
 
-    def test_portal_calendar_uses_same_merged_feed(self, official_calendar_env, monkeypatch):
+    def test_portal_calendar_uses_same_merged_feed(
+        self, official_calendar_env, monkeypatch
+    ):
         client, session_factory = official_calendar_env
         with session_factory() as session:
             _create_user(session, "portal_teacher", 0)
@@ -346,15 +509,35 @@ class TestCalendarFeedApi:
         monkeypatch.setattr(
             official_calendar_module,
             "_get_resource_metadata",
-            lambda year: {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+            lambda year: {
+                "download_url": "https://example.com/2026.csv",
+                "modified_at": "v1",
+                "description": "115年",
+            },
         )
         monkeypatch.setattr(
             official_calendar_module,
             "_fetch_official_calendar_entries",
             lambda year: (
-                [{"date": date(2026, 2, 27), "name": "二二八補假", "description": "和平紀念日補假"}],
-                [{"date": date(2026, 2, 7), "name": "補班日", "description": "補行上班"}],
-                {"download_url": "https://example.com/2026.csv", "modified_at": "v1", "description": "115年"},
+                [
+                    {
+                        "date": date(2026, 2, 27),
+                        "name": "二二八補假",
+                        "description": "和平紀念日補假",
+                    }
+                ],
+                [
+                    {
+                        "date": date(2026, 2, 7),
+                        "name": "補班日",
+                        "description": "補行上班",
+                    }
+                ],
+                {
+                    "download_url": "https://example.com/2026.csv",
+                    "modified_at": "v1",
+                    "description": "115年",
+                },
             ),
         )
 
@@ -369,18 +552,27 @@ class TestCalendarFeedApi:
         assert len(data["events"]) == 3
         assert any(item["official_kind"] == "holiday" for item in data["events"])
         assert any(item["official_kind"] == "makeup_workday" for item in data["events"])
-        assert any(item["official_kind"] is None and item["title"] == "親師座談" for item in data["events"])
+        assert any(
+            item["official_kind"] is None and item["title"] == "親師座談"
+            for item in data["events"]
+        )
 
 
 class TestWorkingDayRules:
-    def test_get_working_days_counts_makeup_saturday_and_excludes_weekday_holiday(self, official_calendar_env):
+    def test_get_working_days_counts_makeup_saturday_and_excludes_weekday_holiday(
+        self, official_calendar_env
+    ):
         _, session_factory = official_calendar_env
 
         with session_factory() as session:
             session.add(Holiday(date=date(2026, 2, 27), name="補假", is_active=True))
-            session.add(WorkdayOverride(date=date(2026, 2, 7), name="補班日", is_active=True))
+            session.add(
+                WorkdayOverride(date=date(2026, 2, 7), name="補班日", is_active=True)
+            )
             session.commit()
 
-            baseline = sum(1 for day in range(1, 29) if date(2026, 2, day).weekday() < 5)
+            baseline = sum(
+                1 for day in range(1, 29) if date(2026, 2, day).weekday() < 5
+            )
 
             assert get_working_days(2026, 2, session=session) == baseline

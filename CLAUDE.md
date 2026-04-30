@@ -100,47 +100,6 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 
 ---
 
-### Git Commit 規範
-
-使用 Conventional Commits 格式：
-
-```
-<type>: <簡短描述（繁體中文）>
-
-<選填：詳細說明，包含 why 而非只有 what>
-```
-
-| Type | 用途 |
-|------|------|
-| `feat` | 新功能 |
-| `fix` | Bug 修正 |
-| `refactor` | 重構（不改行為） |
-| `test` | 新增或修改測試 |
-| `docs` | 文件更新 |
-| `chore` | 維護性雜項 |
-
-**原則：**
-- 一個 commit 只做一件事；修 bug 與補測試分成兩個 commit
-- Commit message 說明「為什麼」，程式碼本身說明「做了什麼」
-- 不 commit `.env`、`__pycache__`、`.pyc`
-
----
-
-### 程式碼品質規範
-
-**通用：**
-- 函式單一職責：超過 40 行考慮拆分
-- 禁止魔法數字：薪資計算常數（如 `MONTHLY_BASE_DAYS = 30`）統一定義在模組頂部
-- 不重複邏輯：相同計算出現兩次就提取成函式
-
-**後端：**
-- 所有對外輸入必須過 Pydantic 驗證（含 `ge`/`le` 邊界）
-- 所有路由必須有 `require_permission()` 守衛
-- 不使用 `print()`，一律 `logger = logging.getLogger(__name__)`
-- 新路由若需要 `SalaryEngine` / `InsuranceService`，必須透過 `init_*_services()` 注入，不直接 import
-
----
-
 ## 服務模組
 
 ### services/analytics/
