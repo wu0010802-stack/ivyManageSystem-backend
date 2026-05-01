@@ -1,21 +1,20 @@
 """Migration 測試：auto_approve_pending_student_leaves。
 
-這個測試確認 migration upgrade 能：
-- 把 pending 紀錄轉 approved
-- 對工作日 upsert attendance（排除 weekend / holiday，含 makeup workday）
-- 衝突時保留原 recorded_by
+直接 import migration module 並呼叫 upgrade() against 一個 test connection。
+這樣可以實測 migration code 本身（含 holidays / workday_overrides 邏輯），
+而非平行重做一份簡化版。
 
-不直接呼叫 alembic（避免環境設定複雜），改 import migration 的 upgrade
-邏輯函式重用測試。如果 migration 未把核心邏輯抽出可呼叫的函式，可以
-改用 alembic 直接跑（用 tmp_path 上的 sqlite + alembic env override）。
+Reference: tests/test_recruitment_ivykids_migration.py
 """
 
+import importlib.util
 import os
 import sys
-from datetime import date, datetime
+from datetime import date
+from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -24,91 +23,38 @@ import models.base as base_module
 from models.database import (
     Base,
     Classroom,
+    Holiday,
     Student,
     StudentAttendance,
     StudentLeaveRequest,
     User,
+    WorkdayOverride,
+)
+
+MIGRATION_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "alembic"
+    / "versions"
+    / "20260502_9e4549832715_auto_approve_pending_student_leaves.py"
 )
 
 
-def _exec_migration_upgrade(bind):
-    """Inline 執行 migration upgrade 邏輯（避免依賴 alembic env）。"""
-    from datetime import timedelta as _td
+def _load_migration():
+    spec = importlib.util.spec_from_file_location("auto_approve_mig", MIGRATION_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
-    from sqlalchemy import inspect as _inspect
 
-    inspector = _inspect(bind)
-    if "student_leave_requests" not in inspector.get_table_names():
-        return
+class _AlembicOpStub:
+    """讓 migration 內 `op.get_bind()` 在測試環境下回傳 test connection。"""
 
-    pending_rows = bind.execute(
-        text(
-            "SELECT id, student_id, leave_type, start_date, end_date "
-            "FROM student_leave_requests WHERE status = 'pending'"
-        )
-    ).fetchall()
-    if not pending_rows:
-        return
+    def __init__(self, bind):
+        self._bind = bind
 
-    now = datetime.now()
-    for row in pending_rows:
-        leave_id = row[0]
-        student_id = row[1]
-        leave_type = row[2]
-        start_d = (
-            row[3] if isinstance(row[3], date) else date.fromisoformat(str(row[3]))
-        )
-        end_d = row[4] if isinstance(row[4], date) else date.fromisoformat(str(row[4]))
-
-        cur = start_d
-        while cur <= end_d:
-            if cur.weekday() < 5:  # 簡化：只測 weekday filter，不依賴 holidays 表
-                existing = bind.execute(
-                    text(
-                        "SELECT id, recorded_by FROM student_attendances "
-                        "WHERE student_id = :sid AND date = :d"
-                    ),
-                    {"sid": student_id, "d": cur},
-                ).fetchone()
-                remark = f"家長申請#{leave_id}"
-                if existing is None:
-                    bind.execute(
-                        text(
-                            "INSERT INTO student_attendances "
-                            "(student_id, date, status, remark, recorded_by, created_at, updated_at) "
-                            "VALUES (:sid, :d, :st, :rm, NULL, :now, :now)"
-                        ),
-                        {
-                            "sid": student_id,
-                            "d": cur,
-                            "st": leave_type,
-                            "rm": remark,
-                            "now": now,
-                        },
-                    )
-                else:
-                    bind.execute(
-                        text(
-                            "UPDATE student_attendances SET status = :st, remark = :rm, updated_at = :now "
-                            "WHERE id = :aid"
-                        ),
-                        {
-                            "st": leave_type,
-                            "rm": remark,
-                            "now": now,
-                            "aid": existing[0],
-                        },
-                    )
-            cur += _td(days=1)
-
-        bind.execute(
-            text(
-                "UPDATE student_leave_requests SET status = 'approved', "
-                "reviewed_at = :now, reviewed_by = NULL, updated_at = :now "
-                "WHERE id = :lid"
-            ),
-            {"now": now, "lid": leave_id},
-        )
+    def get_bind(self):
+        return self._bind
 
 
 @pytest.fixture
@@ -123,14 +69,25 @@ def db(tmp_path):
     base_module._engine = engine
     base_module._SessionFactory = Session
     Base.metadata.create_all(engine)
+    migration = _load_migration()
     s = Session()
-    yield engine, s
+    yield engine, s, migration
     s.close()
     base_module._engine, base_module._SessionFactory = old_engine, old_factory
     engine.dispose()
 
 
-def _setup(s):
+def _run_upgrade(engine, migration, monkeypatch):
+    """以 test connection 呼叫 migration.upgrade()。"""
+    with engine.begin() as conn:
+        stub = _AlembicOpStub(conn)
+        # migration 內呼叫 op.get_bind()，把 op 換成 stub。
+        # `inspect(bind)` 會自然走 SQLAlchemy 對 connection 的支援。
+        monkeypatch.setattr(migration, "op", stub)
+        migration.upgrade()
+
+
+def _setup_family(s):
     classroom = Classroom(name="A", is_active=True)
     s.add(classroom)
     s.flush()
@@ -146,9 +103,9 @@ def _setup(s):
     return student, user
 
 
-def test_migration_converts_pending_and_writes_attendance(db):
-    engine, s = db
-    student, user = _setup(s)
+def test_migration_converts_pending_and_writes_attendance(db, monkeypatch):
+    engine, s, migration = db
+    student, user = _setup_family(s)
     leave = StudentLeaveRequest(
         student_id=student.id,
         applicant_user_id=user.id,
@@ -161,10 +118,8 @@ def test_migration_converts_pending_and_writes_attendance(db):
     s.commit()
     leave_id = leave.id
 
-    with engine.begin() as conn:
-        _exec_migration_upgrade(conn)
+    _run_upgrade(engine, migration, monkeypatch)
 
-    # 重新讀
     s.expire_all()
     rec = s.query(StudentLeaveRequest).filter_by(id=leave_id).one()
     assert rec.status == "approved"
@@ -184,9 +139,9 @@ def test_migration_converts_pending_and_writes_attendance(db):
         assert a.remark == f"家長申請#{leave_id}"
 
 
-def test_migration_skips_weekend(db):
-    engine, s = db
-    student, user = _setup(s)
+def test_migration_skips_weekend(db, monkeypatch):
+    engine, s, migration = db
+    student, user = _setup_family(s)
     leave = StudentLeaveRequest(
         student_id=student.id,
         applicant_user_id=user.id,
@@ -198,17 +153,70 @@ def test_migration_skips_weekend(db):
     s.add(leave)
     s.commit()
 
-    with engine.begin() as conn:
-        _exec_migration_upgrade(conn)
+    _run_upgrade(engine, migration, monkeypatch)
 
     s.expire_all()
     atts = s.query(StudentAttendance).filter_by(student_id=student.id).all()
     assert atts == []
 
 
-def test_migration_preserves_existing_recorded_by(db):
-    engine, s = db
-    student, user = _setup(s)
+def test_migration_skips_holiday(db, monkeypatch):
+    """holiday filter 實測 — migration 應跳過 active holiday。"""
+    engine, s, migration = db
+    student, user = _setup_family(s)
+    s.add(Holiday(date=date(2026, 5, 4), name="補放假", is_active=True))
+    leave = StudentLeaveRequest(
+        student_id=student.id,
+        applicant_user_id=user.id,
+        leave_type="病假",
+        start_date=date(2026, 5, 4),  # 週一但被設為 holiday
+        end_date=date(2026, 5, 5),  # 週二一般工作日
+        status="pending",
+    )
+    s.add(leave)
+    s.commit()
+
+    _run_upgrade(engine, migration, monkeypatch)
+
+    s.expire_all()
+    atts = (
+        s.query(StudentAttendance)
+        .filter_by(student_id=student.id)
+        .order_by(StudentAttendance.date)
+        .all()
+    )
+    # 只應有 5/5（5/4 是 holiday）
+    assert len(atts) == 1
+    assert atts[0].date == date(2026, 5, 5)
+
+
+def test_migration_includes_makeup_workday(db, monkeypatch):
+    """makeup workday filter 實測 — migration 應把 makeup 當應到日。"""
+    engine, s, migration = db
+    student, user = _setup_family(s)
+    s.add(WorkdayOverride(date=date(2026, 5, 9), name="補上班日", is_active=True))
+    leave = StudentLeaveRequest(
+        student_id=student.id,
+        applicant_user_id=user.id,
+        leave_type="事假",
+        start_date=date(2026, 5, 9),  # 週六，但被設為 makeup workday
+        end_date=date(2026, 5, 9),
+        status="pending",
+    )
+    s.add(leave)
+    s.commit()
+
+    _run_upgrade(engine, migration, monkeypatch)
+
+    s.expire_all()
+    atts = s.query(StudentAttendance).filter_by(student_id=student.id).all()
+    assert len(atts) == 1
+    assert atts[0].date == date(2026, 5, 9)
+
+
+def test_migration_preserves_existing_recorded_by(db, monkeypatch):
+    engine, s, migration = db
+    student, user = _setup_family(s)
     teacher = User(
         username="t",
         password_hash="!",
@@ -239,8 +247,7 @@ def test_migration_preserves_existing_recorded_by(db):
     s.commit()
     leave_id = leave.id
 
-    with engine.begin() as conn:
-        _exec_migration_upgrade(conn)
+    _run_upgrade(engine, migration, monkeypatch)
 
     s.expire_all()
     rec = (
@@ -253,13 +260,11 @@ def test_migration_preserves_existing_recorded_by(db):
     assert rec.recorded_by == teacher.id  # 保留
 
 
-def test_migration_no_pending_is_safe(db):
-    engine, s = db
-    _setup(s)
+def test_migration_no_pending_is_safe(db, monkeypatch):
+    engine, s, migration = db
+    _setup_family(s)
     s.commit()
 
-    with engine.begin() as conn:
-        _exec_migration_upgrade(conn)  # 沒 pending → 直接 return，不爆
+    _run_upgrade(engine, migration, monkeypatch)  # 沒 pending → early return
 
-    # 沒做任何事
     assert s.query(StudentLeaveRequest).count() == 0
