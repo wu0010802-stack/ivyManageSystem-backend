@@ -79,6 +79,7 @@ ENTITY_PATTERNS = [
     (r"/api/parent/medication-orders", "parent_medication_order"),
     (r"/api/parent/events/.+/ack", "parent_event_ack"),
     (r"/api/parent/notifications", "parent_notification_pref"),
+    (r"/api/parent/student-leaves", "parent_leave"),
     (r"/api/portal/parent-messages", "parent_message"),
 ]
 
@@ -119,6 +120,7 @@ ENTITY_LABELS = {
     "parent_medication_order": "家長用藥單",
     "parent_event_ack": "事件簽收",
     "parent_notification_pref": "家長通知偏好",
+    "parent_leave": "家長學生請假",
     # F-033：匯出端點顯式 audit 用
     "shift_assignment": "排班",
     "holiday": "國定假日",
