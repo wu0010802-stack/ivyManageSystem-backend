@@ -136,22 +136,23 @@ def test_revert_only_removes_own_remark(session):
     session.add(leave)
     session.flush()
     apply_attendance_for_leave(session, leave)
-    # 額外塞一筆 leave 範圍外的教師手寫紀錄（不該被清）
-    # 5/6（週三）在 leave 範圍 5/4~5/5 之外，不會觸發 UNIQUE 衝突
-    session.add(
-        StudentAttendance(
-            student_id=student.id,
-            date=date(2026, 5, 6),
-            status="病假",
-            remark="教師手寫",
-            recorded_by=None,
-        )
+    session.flush()
+
+    # 模擬教師事後在範圍內把其中一天改寫為自己的紀錄（remark 不再是「家長申請#<id>」）
+    overridden = (
+        session.query(StudentAttendance)
+        .filter_by(student_id=student.id, date=date(2026, 5, 4))
+        .one()
     )
+    overridden.remark = "教師手寫"
     session.flush()
 
     affected = revert_attendance_for_leave(session, leave)
     session.flush()
-    assert affected == 2  # 5/4、5/5 兩天都是 leave 寫的
+
+    # revert 應只清 5/5（remark 仍吻合）；5/4 已被教師覆寫 remark，保留
+    assert affected == 1
     remaining = session.query(StudentAttendance).filter_by(student_id=student.id).all()
-    # 5/6 教師手寫的紀錄應保留
-    assert any(r.remark == "教師手寫" for r in remaining)
+    assert len(remaining) == 1
+    assert remaining[0].date == date(2026, 5, 4)
+    assert remaining[0].remark == "教師手寫"
