@@ -62,7 +62,12 @@ class TestValidateInsuranceSalary:
                 hourly_rate=0,
             )
         assert exc.value.status_code == 400
-        assert "第 14 條" in exc.value.detail or "低於" in exc.value.detail
+        detail = exc.value.detail
+        assert detail["code"] == "INSURANCE_BELOW_BASE"
+        assert detail["context"]["kind"] == "below_monthly_wage"
+        assert detail["context"]["base"] == 37160.0
+        assert detail["context"]["current"] == 33000.0
+        assert detail["context"]["suggested"] == 37160.0
 
     def test_any_insurance_below_minimum_wage_raises(self):
         """投保薪資 < 基本工資 → 拒絕（極端 data entry 錯誤，如陳益超 5000）"""

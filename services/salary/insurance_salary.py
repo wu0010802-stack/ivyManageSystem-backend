@@ -57,10 +57,19 @@ def validate_insurance_salary(
     if ins < MINIMUM_MONTHLY_WAGE:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"投保薪資 NT${ins:.0f} 低於法定基本工資 NT${MINIMUM_MONTHLY_WAGE:.0f}"
-                "（勞保條例第 14 條）"
-            ),
+            detail={
+                "code": "INSURANCE_BELOW_BASE",
+                "message": (
+                    f"投保薪資 NT${ins:.0f} 低於法定基本工資 NT${MINIMUM_MONTHLY_WAGE:.0f}"
+                    "（勞保條例第 14 條）"
+                ),
+                "context": {
+                    "kind": "below_minimum_wage",
+                    "base": MINIMUM_MONTHLY_WAGE,
+                    "current": ins,
+                    "suggested": MINIMUM_MONTHLY_WAGE,
+                },
+            },
         )
 
     if employee_type == "regular":
@@ -68,11 +77,20 @@ def validate_insurance_salary(
         if base > 0 and ins < base:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"投保薪資 NT${ins:.0f} 低於月薪 NT${base:.0f}，"
-                    "違反勞保條例第 14 條（投保薪資不得低於實際工資）；"
-                    "勞保局查核可處短繳差額 2-4 倍罰鍰"
-                ),
+                detail={
+                    "code": "INSURANCE_BELOW_BASE",
+                    "message": (
+                        f"投保薪資 NT${ins:.0f} 低於月薪 NT${base:.0f}，"
+                        "違反勞保條例第 14 條（投保薪資不得低於實際工資）；"
+                        "勞保局查核可處短繳差額 2-4 倍罰鍰"
+                    ),
+                    "context": {
+                        "kind": "below_monthly_wage",
+                        "base": base,
+                        "current": ins,
+                        "suggested": base,
+                    },
+                },
             )
     elif employee_type == "hourly":
         rate = float(hourly_rate or 0)
@@ -81,9 +99,18 @@ def validate_insurance_salary(
             if ins < est_monthly:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        f"投保薪資 NT${ins:.0f} 低於時薪估算月薪 "
-                        f"NT${est_monthly:.0f}（時薪 NT${rate:.0f} × {ESTIMATED_MONTHLY_HOURS}h），"
-                        "違反勞保條例第 14 條"
-                    ),
+                    detail={
+                        "code": "INSURANCE_BELOW_BASE",
+                        "message": (
+                            f"投保薪資 NT${ins:.0f} 低於估算月工資 NT${est_monthly:.0f}"
+                            f"（時薪 NT${rate:.0f} × {ESTIMATED_MONTHLY_HOURS} 小時），"
+                            "違反勞保條例第 14 條"
+                        ),
+                        "context": {
+                            "kind": "below_hourly_estimated",
+                            "base": est_monthly,
+                            "current": ins,
+                            "suggested": est_monthly,
+                        },
+                    },
                 )
