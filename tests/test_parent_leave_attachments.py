@@ -2,8 +2,8 @@
 
 涵蓋：
 - POST /api/parent/student-leaves/{id}/attachments：上傳成功 / IDOR 拒絕 / 副檔名拒絕 /
-  非 pending 拒絕
-- DELETE 同上：軟刪 / 非 pending 拒絕
+  非 approved+future 拒絕
+- DELETE 同上：軟刪 / 非 approved+future 拒絕
 """
 
 import io

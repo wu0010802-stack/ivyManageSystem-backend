@@ -248,8 +248,8 @@ async def upload_leave_attachment(
 ):
     """為已建立的請假申請上傳佐證檔案（診斷證明、活動行程等）。
 
-    僅在 status='pending' 時允許上傳，避免家長 approved/rejected 後改證據；
-    若需補件，請新申請。
+    僅在 status='approved' 且 start_date > 今天時允許上傳；請假已開始或已取消後
+    不再受理變更。若需補件，請聯絡老師。
     """
     user_id = current_user["user_id"]
 
@@ -330,7 +330,7 @@ def delete_leave_attachment(
     request: Request,
     current_user: dict = Depends(require_parent_role()),
 ):
-    """軟刪除請假附件；同樣僅 pending 階段可刪。"""
+    """軟刪除請假附件；同樣僅 status='approved' 且 start_date > 今天時可刪。"""
     user_id = current_user["user_id"]
     session = get_session()
     try:
