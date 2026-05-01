@@ -136,7 +136,10 @@ class TestEmployeeSelfEdit:
             json={"base_salary": 99999},
         )
         assert res.status_code == 403
-        assert "金流敏感" in res.json()["detail"]
+        detail = res.json()["detail"]
+        assert detail["code"] == "SELF_FINANCE_EDIT_FORBIDDEN"
+        assert "不得修改自己" in detail["message"]
+        assert "base_salary" in detail["context"]["fields"]
 
     def test_employee_can_edit_own_non_sensitive_fields(self, antitheft_client):
         """員工可改自己非敏感欄位（如通訊地址/姓名）— 守衛不影響一般資料維護。"""
@@ -211,7 +214,10 @@ class TestEmployeeSelfEdit:
             assert (
                 res.status_code == 403
             ), f"field={field} 應被守衛攔下，實際 {res.status_code}"
-            assert "金流敏感" in res.json()["detail"]
+            detail = res.json()["detail"]
+            assert detail["code"] == "SELF_FINANCE_EDIT_FORBIDDEN"
+            assert "不得修改自己" in detail["message"]
+            assert field in detail["context"]["fields"]
 
 
 # ══════════════════════════════════════════════════════════════════════

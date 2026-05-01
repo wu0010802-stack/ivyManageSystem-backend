@@ -99,10 +99,14 @@ def require_not_self_edit(
         return
     raise HTTPException(
         status_code=403,
-        detail=(
-            f"不得修改自己的金流敏感欄位（{', '.join(sorted(touched))}），"
-            f"請由主管或 HR 代為處理"
-        ),
+        detail={
+            "code": "SELF_FINANCE_EDIT_FORBIDDEN",
+            "message": (
+                f"不得修改自己的金流敏感欄位（{', '.join(sorted(touched))}），"
+                f"請由主管或 HR 代為處理"
+            ),
+            "context": {"fields": sorted(touched)},
+        },
     )
 
 
