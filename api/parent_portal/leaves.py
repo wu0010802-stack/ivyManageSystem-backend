@@ -1,15 +1,16 @@
-"""api/parent_portal/leaves.py — 家長端學生請假申請。
+"""api/parent_portal/leaves.py — 家長端學生請假申請（自動核准）。
 
-- POST /api/parent/student-leaves（建立 pending 申請）
+- POST /api/parent/student-leaves（提交即 status=approved 並寫 attendance）
 - GET  /api/parent/student-leaves（列出家長所有小孩的申請）
 - GET  /api/parent/student-leaves/{id}
-- POST /api/parent/student-leaves/{id}/cancel（僅 pending 可 cancel）
+- POST /api/parent/student-leaves/{id}/cancel（僅 status=approved 且
+  start_date > today 可取消，並反向清除 attendance）
 
 期間規則：
 - start_date 不可早於今天前 30 天，不可晚於今天後 60 天
 - end_date 必 >= start_date
-- 同一 student 在 start_date..end_date 區間內若有 pending/approved 重疊
-  → 400（避免家長重複送、避免 approve 後雙寫 attendance）
+- 同一 student 在 start_date..end_date 區間內若有 approved 重疊
+  → 400（避免 attendance 寫入衝突）
 """
 
 import logging
@@ -30,10 +31,7 @@ from models.database import (
 )
 from models.portfolio import ATTACHMENT_OWNER_STUDENT_LEAVE
 from models.student_leave import LEAVE_TYPES
-from services.student_leave_service import (
-    apply_attendance_for_leave,
-    is_remark_owned_by_leave,
-)
+from services.student_leave_service import apply_attendance_for_leave
 from utils.auth import require_parent_role
 from utils.file_upload import (
     read_upload_with_size_check,
@@ -103,7 +101,7 @@ def _check_overlap(session, student_id: int, start: date, end: date) -> None:
     if overlap is not None:
         raise HTTPException(
             status_code=400,
-            detail="此期間已有其他申請（pending/approved），請先處理或調整日期",
+            detail="此期間已有其他已成立的請假，請調整日期或聯絡老師",
         )
 
 
@@ -282,10 +280,11 @@ async def upload_leave_attachment(
         )
         if item is None or item.student_id not in owned_student_ids:
             raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        if item.status != "pending":
+        today = date.today()
+        if not (item.status == "approved" and item.start_date > today):
             raise HTTPException(
                 status_code=400,
-                detail=f"狀態為 {item.status}，無法再上傳附件；請新建一筆申請",
+                detail="請假已成立或已開始，無法新增/刪除附件",
             )
 
         storage = get_portfolio_storage()
@@ -343,9 +342,11 @@ def delete_leave_attachment(
         )
         if item is None or item.student_id not in owned_student_ids:
             raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        if item.status != "pending":
+        today = date.today()
+        if not (item.status == "approved" and item.start_date > today):
             raise HTTPException(
-                status_code=400, detail=f"狀態為 {item.status}，無法刪除附件"
+                status_code=400,
+                detail="請假已成立或已開始，無法新增/刪除附件",
             )
 
         att = (

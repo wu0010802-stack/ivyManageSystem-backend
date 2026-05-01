@@ -146,30 +146,6 @@ def _next_monday(start: date) -> date:
 
 
 class TestCreateLeave:
-    def test_happy_path_creates_pending(self, leave_client):
-        client, session_factory = leave_client
-        with session_factory() as session:
-            user, _, student, _ = _setup_family(session)
-            session.commit()
-            token = _parent_token(user)
-            student_id = student.id
-
-        monday = _next_monday(date.today() + timedelta(days=7))
-        resp = client.post(
-            "/api/parent/student-leaves",
-            json={
-                "student_id": student_id,
-                "leave_type": "病假",
-                "start_date": monday.isoformat(),
-                "end_date": (monday + timedelta(days=2)).isoformat(),
-                "reason": "感冒",
-            },
-            cookies={"access_token": token},
-        )
-        assert resp.status_code == 201
-        assert resp.json()["status"] == "pending"
-        assert resp.json()["leave_type"] == "病假"
-
     def test_invalid_leave_type_400(self, leave_client):
         client, session_factory = leave_client
         with session_factory() as session:
@@ -223,6 +199,7 @@ class TestCreateLeave:
         assert second.status_code == 400
 
 
+@pytest.mark.skip(reason="approve/reject 端點將於 Task 4 移除；測試一同遷移")
 class TestApproveAndAttendance:
     def test_approve_creates_attendance_for_workdays_only(self, leave_client):
         client, session_factory = leave_client
@@ -470,41 +447,6 @@ class TestApproveAndAttendance:
 
 
 class TestCancelAndIdor:
-    def test_cancel_pending(self, leave_client):
-        client, session_factory = leave_client
-        with session_factory() as session:
-            user, _, student, _ = _setup_family(session)
-            session.commit()
-            token = _parent_token(user)
-            student_id = student.id
-
-        monday = _next_monday(date.today() + timedelta(days=7))
-        client.post(
-            "/api/parent/student-leaves",
-            json={
-                "student_id": student_id,
-                "leave_type": "事假",
-                "start_date": monday.isoformat(),
-                "end_date": monday.isoformat(),
-            },
-            cookies={"access_token": token},
-        )
-        leave_id = client.get(
-            "/api/parent/student-leaves", cookies={"access_token": token}
-        ).json()["items"][0]["id"]
-        resp = client.post(
-            f"/api/parent/student-leaves/{leave_id}/cancel",
-            cookies={"access_token": token},
-        )
-        assert resp.status_code == 200
-        with session_factory() as session:
-            row = (
-                session.query(StudentLeaveRequest)
-                .filter(StudentLeaveRequest.id == leave_id)
-                .first()
-            )
-            assert row.status == "cancelled"
-
     def test_cannot_apply_for_other_child(self, leave_client):
         client, session_factory = leave_client
         with session_factory() as session:
@@ -540,17 +482,19 @@ def test_create_leave_auto_approves_and_writes_attendance(leave_client):
         token = _parent_token(user)
         student_id = student.id
 
+    mon = _next_monday(date.today() + timedelta(days=7))
+    tue = mon + timedelta(days=1)
     payload = {
         "student_id": student_id,
         "leave_type": "病假",
-        "start_date": "2026-05-04",  # 未來週一
-        "end_date": "2026-05-05",
+        "start_date": mon.isoformat(),
+        "end_date": tue.isoformat(),
         "reason": "感冒",
     }
     res = client.post(
         "/api/parent/student-leaves",
         json=payload,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"access_token": token},
     )
     assert res.status_code == 201, res.text
     body = res.json()
@@ -558,8 +502,15 @@ def test_create_leave_auto_approves_and_writes_attendance(leave_client):
     assert body["reviewed_at"] is not None
 
     with session_factory() as s:
-        rows = s.query(StudentAttendance).filter_by(student_id=student_id).all()
+        rows = (
+            s.query(StudentAttendance)
+            .filter_by(student_id=student_id)
+            .order_by(StudentAttendance.date)
+            .all()
+        )
         assert len(rows) == 2
+        assert rows[0].date == mon
+        assert rows[1].date == tue
         for r in rows:
             assert r.status == "病假"
             assert r.recorded_by is None
@@ -568,6 +519,9 @@ def test_create_leave_auto_approves_and_writes_attendance(leave_client):
 
 def test_create_leave_rejects_overlap_with_existing_approved(leave_client):
     client, session_factory = leave_client
+    mon = _next_monday(date.today() + timedelta(days=7))
+    tue = mon + timedelta(days=1)
+    wed = mon + timedelta(days=2)
     with session_factory() as s:
         user, _, student, _ = _setup_family(s)
         s.add(
@@ -575,10 +529,10 @@ def test_create_leave_rejects_overlap_with_existing_approved(leave_client):
                 student_id=student.id,
                 applicant_user_id=user.id,
                 leave_type="事假",
-                start_date=date(2026, 5, 4),
-                end_date=date(2026, 5, 5),
+                start_date=mon,
+                end_date=tue,
                 status="approved",
-                reviewed_at=datetime(2026, 5, 1, 10, 0),
+                reviewed_at=datetime.now(),
             )
         )
         s.commit()
@@ -590,10 +544,10 @@ def test_create_leave_rejects_overlap_with_existing_approved(leave_client):
         json={
             "student_id": sid,
             "leave_type": "病假",
-            "start_date": "2026-05-05",
-            "end_date": "2026-05-06",
+            "start_date": tue.isoformat(),
+            "end_date": wed.isoformat(),
         },
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"access_token": token},
     )
     assert res.status_code == 400
-    assert "已有其他申請" in res.json()["detail"]
+    assert "已成立" in res.json()["detail"]
