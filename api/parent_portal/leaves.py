@@ -157,6 +157,7 @@ def _serialize(
 @router.post("", status_code=201)
 def create_leave(
     payload: CreateLeaveRequest,
+    request: Request,
     current_user: dict = Depends(require_parent_role()),
 ):
     user_id = current_user["user_id"]
@@ -194,6 +195,18 @@ def create_leave(
         apply_attendance_for_leave(session, item, recorded_by=None)
         session.commit()
         session.refresh(item)
+        request.state.audit_entity_id = str(item.id)
+        request.state.audit_summary = (
+            f"家長提交請假：leave_id={item.id} student_id={item.student_id} "
+            f"period={item.start_date}~{item.end_date} type={item.leave_type}"
+        )
+        logger.info(
+            "家長提交請假：leave_id=%d student_id=%d parent_user=%d type=%s",
+            item.id,
+            item.student_id,
+            user_id,
+            item.leave_type,
+        )
         return _serialize(item)
     finally:
         session.close()
