@@ -79,6 +79,10 @@ class TestValidateInsuranceSalary:
                 hourly_rate=0,
             )
         assert exc.value.status_code == 400
+        detail = exc.value.detail
+        assert detail["code"] == "INSURANCE_BELOW_BASE"
+        assert detail["context"]["kind"] == "below_minimum_wage"
+        assert detail["context"]["suggested"] == MINIMUM_MONTHLY_WAGE
 
     def test_hourly_insurance_below_estimated_monthly_raises(self):
         """時薪 200 × 176 = 35200，投保只有 30000 → 低報"""
@@ -90,6 +94,11 @@ class TestValidateInsuranceSalary:
                 hourly_rate=200,
             )
         assert exc.value.status_code == 400
+        detail = exc.value.detail
+        assert detail["code"] == "INSURANCE_BELOW_BASE"
+        assert detail["context"]["kind"] == "below_hourly_estimated"
+        assert detail["context"]["base"] == 200 * ESTIMATED_MONTHLY_HOURS
+        assert detail["context"]["suggested"] == 200 * ESTIMATED_MONTHLY_HOURS
 
     def test_hourly_insurance_above_estimated_passes(self):
         validate_insurance_salary(
