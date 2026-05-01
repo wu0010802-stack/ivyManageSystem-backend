@@ -199,253 +199,6 @@ class TestCreateLeave:
         assert second.status_code == 400
 
 
-@pytest.mark.skip(reason="approve/reject 端點將於 Task 4 移除；測試一同遷移")
-class TestApproveAndAttendance:
-    def test_approve_creates_attendance_for_workdays_only(self, leave_client):
-        client, session_factory = leave_client
-        with session_factory() as session:
-            parent_user, _, student, _ = _setup_family(session)
-            admin = _create_admin(session)
-            session.commit()
-            parent_token = _parent_token(parent_user)
-            admin_token = _admin_token(admin)
-            student_id = student.id
-            admin_id = admin.id
-
-        # 申請 2026-04-22 (三) ~ 2026-04-26 (日) 5 天，週末應排除 → 3 個工作日
-        # 但需確認 2026-04-22~26 區間沒落在 today-30 之外（今天 2026-04-25）
-        resp = client.post(
-            "/api/parent/student-leaves",
-            json={
-                "student_id": student_id,
-                "leave_type": "病假",
-                "start_date": "2026-04-22",
-                "end_date": "2026-04-26",
-                "reason": "感冒",
-            },
-            cookies={"access_token": parent_token},
-        )
-        assert resp.status_code == 201
-        leave_id = resp.json()["id"]
-
-        approve = client.post(
-            f"/api/student-leaves/{leave_id}/approve",
-            json={"review_note": "OK"},
-            cookies={"access_token": admin_token},
-        )
-        assert approve.status_code == 200
-        assert approve.json()["affected_days"] == 3  # 三、四、五
-
-        with session_factory() as session:
-            attendances = (
-                session.query(StudentAttendance)
-                .filter(StudentAttendance.student_id == student_id)
-                .order_by(StudentAttendance.date.asc())
-                .all()
-            )
-            assert len(attendances) == 3
-            for a in attendances:
-                assert a.status == "病假"
-                assert a.remark == f"家長申請#{leave_id}"
-                assert a.recorded_by == admin_id
-
-    def test_approve_overrides_existing_attendance(self, leave_client):
-        client, session_factory = leave_client
-        with session_factory() as session:
-            parent_user, _, student, _ = _setup_family(session)
-            admin = _create_admin(session)
-            # 預先寫一筆當日「出席」紀錄，模擬老師已點名
-            session.add(
-                StudentAttendance(
-                    student_id=student.id,
-                    date=date(2026, 4, 22),
-                    status="出席",
-                    remark="老師原本紀錄",
-                    recorded_by=admin.id,
-                )
-            )
-            session.commit()
-            parent_token = _parent_token(parent_user)
-            admin_token = _admin_token(admin)
-            student_id = student.id
-
-        client.post(
-            "/api/parent/student-leaves",
-            json={
-                "student_id": student_id,
-                "leave_type": "事假",
-                "start_date": "2026-04-22",
-                "end_date": "2026-04-22",
-            },
-            cookies={"access_token": parent_token},
-        )
-        leave = client.get(
-            "/api/parent/student-leaves", cookies={"access_token": parent_token}
-        ).json()["items"][0]
-        leave_id = leave["id"]
-
-        client.post(
-            f"/api/student-leaves/{leave_id}/approve",
-            cookies={"access_token": admin_token},
-        )
-        with session_factory() as session:
-            row = (
-                session.query(StudentAttendance)
-                .filter(
-                    StudentAttendance.student_id == student_id,
-                    StudentAttendance.date == date(2026, 4, 22),
-                )
-                .first()
-            )
-            assert row.status == "事假"
-            assert row.remark == f"家長申請#{leave_id}"
-
-    def test_reject_after_approve_reverts_attendance(self, leave_client):
-        client, session_factory = leave_client
-        with session_factory() as session:
-            parent_user, _, student, _ = _setup_family(session)
-            admin = _create_admin(session)
-            # 老師原本沒紀錄
-            session.commit()
-            parent_token = _parent_token(parent_user)
-            admin_token = _admin_token(admin)
-            student_id = student.id
-
-        client.post(
-            "/api/parent/student-leaves",
-            json={
-                "student_id": student_id,
-                "leave_type": "病假",
-                "start_date": "2026-04-22",
-                "end_date": "2026-04-22",
-            },
-            cookies={"access_token": parent_token},
-        )
-        leave = client.get(
-            "/api/parent/student-leaves", cookies={"access_token": parent_token}
-        ).json()["items"][0]
-        leave_id = leave["id"]
-
-        client.post(
-            f"/api/student-leaves/{leave_id}/approve",
-            cookies={"access_token": admin_token},
-        )
-        with session_factory() as session:
-            assert (
-                session.query(StudentAttendance)
-                .filter(StudentAttendance.student_id == student_id)
-                .count()
-                == 1
-            )
-
-        client.post(
-            f"/api/student-leaves/{leave_id}/reject",
-            json={"review_note": "改判"},
-            cookies={"access_token": admin_token},
-        )
-        with session_factory() as session:
-            assert (
-                session.query(StudentAttendance)
-                .filter(StudentAttendance.student_id == student_id)
-                .count()
-                == 0
-            )
-
-    def test_reject_only_clears_remark_owned_by_leave(self, leave_client):
-        """approve 後，若教師後手新增了一筆同日獨立紀錄（remark 不同），
-        reject 反向清除時不可誤殺。"""
-        client, session_factory = leave_client
-        with session_factory() as session:
-            parent_user, _, student, _ = _setup_family(session)
-            admin = _create_admin(session)
-            session.commit()
-            parent_token = _parent_token(parent_user)
-            admin_token = _admin_token(admin)
-            student_id = student.id
-
-        # approve 一個 4-22 ~ 4-22 的請假
-        client.post(
-            "/api/parent/student-leaves",
-            json={
-                "student_id": student_id,
-                "leave_type": "病假",
-                "start_date": "2026-04-22",
-                "end_date": "2026-04-22",
-            },
-            cookies={"access_token": parent_token},
-        )
-        leave_id = client.get(
-            "/api/parent/student-leaves", cookies={"access_token": parent_token}
-        ).json()["items"][0]["id"]
-        client.post(
-            f"/api/student-leaves/{leave_id}/approve",
-            cookies={"access_token": admin_token},
-        )
-
-        # 教師後手把 attendance.remark 改成自己的紀錄（模擬：覆寫了 remark）
-        with session_factory() as session:
-            row = (
-                session.query(StudentAttendance)
-                .filter(
-                    StudentAttendance.student_id == student_id,
-                    StudentAttendance.date == date(2026, 4, 22),
-                )
-                .first()
-            )
-            row.remark = "教師獨立判斷"
-            session.commit()
-
-        # reject：因 remark 已不再吻合，應該保留該紀錄
-        client.post(
-            f"/api/student-leaves/{leave_id}/reject",
-            cookies={"access_token": admin_token},
-        )
-        with session_factory() as session:
-            assert (
-                session.query(StudentAttendance)
-                .filter(StudentAttendance.student_id == student_id)
-                .count()
-                == 1
-            )
-
-    def test_holiday_excluded_from_attendance(self, leave_client):
-        client, session_factory = leave_client
-        with session_factory() as session:
-            parent_user, _, student, _ = _setup_family(session)
-            admin = _create_admin(session)
-            # 2026-04-23 設為國定假日
-            session.add(
-                Holiday(date=date(2026, 4, 23), name="假設國定假日", is_active=True)
-            )
-            session.commit()
-            parent_token = _parent_token(parent_user)
-            admin_token = _admin_token(admin)
-            student_id = student.id
-
-        client.post(
-            "/api/parent/student-leaves",
-            json={
-                "student_id": student_id,
-                "leave_type": "病假",
-                "start_date": "2026-04-22",
-                "end_date": "2026-04-24",
-            },
-            cookies={"access_token": parent_token},
-        )
-        leave_id = client.get(
-            "/api/parent/student-leaves", cookies={"access_token": parent_token}
-        ).json()["items"][0]["id"]
-        approve = client.post(
-            f"/api/student-leaves/{leave_id}/approve",
-            cookies={"access_token": admin_token},
-        )
-        # 4-22(三) + 4-24(五) = 2 天；4-23 為假日排除
-        assert approve.json()["affected_days"] == 2
-        with session_factory() as session:
-            dates = sorted(r.date for r in session.query(StudentAttendance).all())
-            assert dates == [date(2026, 4, 22), date(2026, 4, 24)]
-
-
 class TestCancelAndIdor:
     def test_cannot_apply_for_other_child(self, leave_client):
         client, session_factory = leave_client
@@ -609,3 +362,64 @@ def test_cancel_only_allowed_for_future_start_date(leave_client):
         assert rec.status == "cancelled"
         atts = s.query(StudentAttendance).filter_by(student_id=rec.student_id).all()
         assert atts == []
+
+
+def test_teacher_approve_endpoint_removed(leave_client):
+    client, session_factory = leave_client
+    with session_factory() as s:
+        admin = _create_admin(s)
+        s.commit()
+        token = create_access_token(
+            {
+                "user_id": admin.id,
+                "employee_id": None,
+                "role": "admin",
+                "name": admin.username,
+                "permissions": -1,
+                "token_version": admin.token_version,
+            }
+        )
+    # endpoint 不存在應回 404 或 405
+    r = client.post(
+        "/api/student-leaves/1/approve",
+        cookies={"access_token": token},
+    )
+    assert r.status_code in (404, 405)
+
+
+def test_teacher_list_default_returns_approved(leave_client):
+    client, session_factory = leave_client
+    with session_factory() as s:
+        admin = _create_admin(s)
+        user, _, student, _ = _setup_family(s)
+        s.add(
+            StudentLeaveRequest(
+                student_id=student.id,
+                applicant_user_id=user.id,
+                leave_type="病假",
+                start_date=date.today() + timedelta(days=3),
+                end_date=date.today() + timedelta(days=3),
+                status="approved",
+                reviewed_at=datetime.now(),
+            )
+        )
+        s.commit()
+        token = create_access_token(
+            {
+                "user_id": admin.id,
+                "employee_id": None,
+                "role": "admin",
+                "name": admin.username,
+                "permissions": -1,
+                "token_version": admin.token_version,
+            }
+        )
+
+    r = client.get(
+        "/api/student-leaves",
+        cookies={"access_token": token},
+    )
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 1
+    assert items[0]["status"] == "approved"

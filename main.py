@@ -85,10 +85,7 @@ from api.parent_portal import (
     admin_router as parent_admin_router,
     init_parent_line_service,
 )
-from api.student_leaves import (
-    router as student_leaves_router,
-    init_student_leaves_line_service,
-)
+from api.student_leaves import router as student_leaves_router
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -484,7 +481,6 @@ init_webhook_service(line_service)
 init_gov_report_services(insurance_service)
 init_bonus_preview_services(salary_engine)
 init_parent_line_service(line_login_service)
-init_student_leaves_line_service(line_service)
 
 # Ensure data directories exist
 os.makedirs("data", exist_ok=True)

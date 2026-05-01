@@ -4,7 +4,7 @@
 - F-018：students / classrooms / profile 端點下，未授權者讀健康欄位被遮罩
 - F-019：student_communications CRUD 全部接班級 scope
 - F-020：student_attendance batch / by-student / monthly / export / list 接班級 scope
-- F-021：student_leaves approve / reject 接班級 scope
+- F-021：student_leaves list 接班級 scope（approve/reject 已於 Task 4 移除）
 
 依 tests/test_portfolio_batch_a.py 與 tests/test_student_record_access_control.py
 的 fixture 模式實作（SQLite in-memory + FastAPI TestClient）。
@@ -39,7 +39,6 @@ from models.database import (
     Employee,
     Student,
     StudentAttendance,
-    StudentLeaveRequest,
     User,
 )
 from models.student_log import ParentCommunicationLog
@@ -748,92 +747,11 @@ class TestF020AttendanceScope:
 
 
 # ---------------------------------------------------------------------------
-# F-021 student_leaves approve / reject
+# F-021 student_leaves list（approve/reject 已於 Task 4 移除，僅保留 list scope）
 # ---------------------------------------------------------------------------
 
 
-class TestF021LeavesApproveReject:
-    def _seed_leave(self, session, student_id: int, applicant_user_id: int) -> int:
-        leave = StudentLeaveRequest(
-            student_id=student_id,
-            applicant_user_id=applicant_user_id,
-            leave_type="病假",
-            start_date=date(2026, 4, 20),
-            end_date=date(2026, 4, 20),
-            reason="感冒",
-            status="pending",
-        )
-        session.add(leave)
-        session.commit()
-        session.refresh(leave)
-        return leave.id
-
-    def test_teacher_cannot_approve_other_class_leave(self, idor_app):
-        client, factory = idor_app
-        with factory() as s:
-            seed = _seed_two_classrooms(s)
-            tA = _create_user(
-                s,
-                username="lv_tA",
-                password="Pass1234",
-                role="staff",
-                permissions=_BASIC_PERMS,
-                employee=seed["emp_a"],
-            )
-            # 假申請屬於 B 班學生
-            applicant = _create_user(
-                s,
-                username="parent_b",
-                password="Pass1234",
-                role="parent",
-                permissions=0,
-                employee=None,
-            )
-            st_b_id = seed["st_b"].id
-            leave_id = self._seed_leave(s, st_b_id, applicant.id)
-        assert _login(client, "lv_tA", "Pass1234").status_code == 200
-        r = client.post(f"/api/student-leaves/{leave_id}/approve", json={})
-        assert r.status_code == 403, r.text
-        # 校驗 status 未被改 / attendance 未被寫
-        with factory() as s:
-            lv = (
-                s.query(StudentLeaveRequest)
-                .filter(StudentLeaveRequest.id == leave_id)
-                .first()
-            )
-            assert lv.status == "pending"
-            cnt = (
-                s.query(StudentAttendance)
-                .filter(StudentAttendance.student_id == st_b_id)
-                .count()
-            )
-            assert cnt == 0
-
-    def test_teacher_cannot_reject_other_class_leave(self, idor_app):
-        client, factory = idor_app
-        with factory() as s:
-            seed = _seed_two_classrooms(s)
-            _create_user(
-                s,
-                username="lv_tA_rej",
-                password="Pass1234",
-                role="staff",
-                permissions=_BASIC_PERMS,
-                employee=seed["emp_a"],
-            )
-            applicant = _create_user(
-                s,
-                username="parent_b_rej",
-                password="Pass1234",
-                role="parent",
-                permissions=0,
-                employee=None,
-            )
-            leave_id = self._seed_leave(s, seed["st_b"].id, applicant.id)
-        assert _login(client, "lv_tA_rej", "Pass1234").status_code == 200
-        r = client.post(f"/api/student-leaves/{leave_id}/reject", json={})
-        assert r.status_code == 403, r.text
-
+class TestF021LeavesList:
     def test_teacher_cannot_list_other_classroom_leaves(self, idor_app):
         client, factory = idor_app
         with factory() as s:
@@ -851,53 +769,3 @@ class TestF021LeavesApproveReject:
         assert _login(client, "lv_tA_list", "Pass1234").status_code == 200
         r = client.get(f"/api/student-leaves?classroom_id={other_cls}")
         assert r.status_code == 403, r.text
-
-    def test_teacher_can_approve_own_class_leave(self, idor_app):
-        client, factory = idor_app
-        with factory() as s:
-            seed = _seed_two_classrooms(s)
-            _create_user(
-                s,
-                username="lv_tA_own",
-                password="Pass1234",
-                role="staff",
-                permissions=_BASIC_PERMS,
-                employee=seed["emp_a"],
-            )
-            applicant = _create_user(
-                s,
-                username="parent_a_own",
-                password="Pass1234",
-                role="parent",
-                permissions=0,
-                employee=None,
-            )
-            leave_id = self._seed_leave(s, seed["st_a"].id, applicant.id)
-        assert _login(client, "lv_tA_own", "Pass1234").status_code == 200
-        r = client.post(f"/api/student-leaves/{leave_id}/approve", json={})
-        assert r.status_code == 200, r.text
-
-    def test_admin_unrestricted_leave_approve(self, idor_app):
-        client, factory = idor_app
-        with factory() as s:
-            seed = _seed_two_classrooms(s)
-            _create_user(
-                s,
-                username="lv_admin",
-                password="Pass1234",
-                role="admin",
-                permissions=int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE),
-                employee=None,
-            )
-            applicant = _create_user(
-                s,
-                username="parent_admin",
-                password="Pass1234",
-                role="parent",
-                permissions=0,
-                employee=None,
-            )
-            leave_id = self._seed_leave(s, seed["st_b"].id, applicant.id)
-        assert _login(client, "lv_admin", "Pass1234").status_code == 200
-        r = client.post(f"/api/student-leaves/{leave_id}/approve", json={})
-        assert r.status_code == 200, r.text
