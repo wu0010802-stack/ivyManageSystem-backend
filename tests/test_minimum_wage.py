@@ -25,9 +25,13 @@ class TestValidateMinimumWage:
     def test_regular_below_minimum_raises(self):
         """月薪低於基本工資 → 400"""
         with pytest.raises(HTTPException) as exc:
-            validate_minimum_wage("regular", MINIMUM_MONTHLY_WAGE - 1, 0)
+            validate_minimum_wage("regular", 25000.0, 0)
         assert exc.value.status_code == 400
-        assert "基本工資" in exc.value.detail
+        detail = exc.value.detail
+        assert detail["code"] == "BELOW_MINIMUM_WAGE"
+        assert detail["context"]["employee_type"] == "regular"
+        assert detail["context"]["minimum"] == MINIMUM_MONTHLY_WAGE
+        assert detail["context"]["current"] == 25000.0
 
     def test_regular_zero_base_is_allowed(self):
         """底薪為 0 表示尚未設定，不檢查（允許建立員工後再補）"""
@@ -39,9 +43,13 @@ class TestValidateMinimumWage:
     def test_hourly_below_minimum_raises(self):
         """時薪低於基本工資 → 400"""
         with pytest.raises(HTTPException) as exc:
-            validate_minimum_wage("hourly", 0, MINIMUM_HOURLY_WAGE - 1)
+            validate_minimum_wage("hourly", 0, 150.0)
         assert exc.value.status_code == 400
-        assert "基本工資" in exc.value.detail
+        detail = exc.value.detail
+        assert detail["code"] == "BELOW_MINIMUM_WAGE"
+        assert detail["context"]["employee_type"] == "hourly"
+        assert detail["context"]["minimum"] == MINIMUM_HOURLY_WAGE
+        assert detail["context"]["current"] == 150.0
 
     def test_hourly_zero_rate_is_allowed(self):
         """時薪為 0 表示尚未設定，不檢查"""

@@ -25,17 +25,33 @@ def validate_minimum_wage(
         if base_salary and base_salary < MINIMUM_MONTHLY_WAGE:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"月薪 NT${base_salary:.0f} 低於法定基本工資 "
-                    f"NT${MINIMUM_MONTHLY_WAGE:.0f}（勞基法第 21 條）"
-                ),
+                detail={
+                    "code": "BELOW_MINIMUM_WAGE",
+                    "message": (
+                        f"月薪 NT${base_salary:.0f} 低於法定基本工資 "
+                        f"NT${MINIMUM_MONTHLY_WAGE:.0f}（勞基法第 21 條）"
+                    ),
+                    "context": {
+                        "employee_type": "regular",
+                        "minimum": MINIMUM_MONTHLY_WAGE,
+                        "current": base_salary,
+                    },
+                },
             )
     elif employee_type == "hourly":
         if hourly_rate and hourly_rate < MINIMUM_HOURLY_WAGE:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"時薪 NT${hourly_rate:.0f} 低於法定基本工資 "
-                    f"NT${MINIMUM_HOURLY_WAGE:.0f}（勞基法第 21 條）"
-                ),
+                detail={
+                    "code": "BELOW_MINIMUM_WAGE",
+                    "message": (
+                        f"時薪 NT${hourly_rate:.0f} 低於法定基本工資 "
+                        f"NT${MINIMUM_HOURLY_WAGE:.0f}（勞基法第 21 條）"
+                    ),
+                    "context": {
+                        "employee_type": "hourly",
+                        "minimum": MINIMUM_HOURLY_WAGE,
+                        "current": hourly_rate,
+                    },
+                },
             )
