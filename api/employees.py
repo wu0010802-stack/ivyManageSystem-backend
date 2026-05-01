@@ -325,7 +325,14 @@ async def create_employee(
             .first()
         )
         if existing:
-            raise HTTPException(status_code=400, detail="工號已存在")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "EMPLOYEE_ID_DUPLICATE",
+                    "message": f"員工編號 {emp.employee_id} 已存在，請改用其他編號",
+                    "context": {"employee_id": emp.employee_id},
+                },
+            )
 
         emp_data = emp.model_dump()
         # 處理日期欄位
