@@ -31,6 +31,7 @@ from models.database import (
 from models.portfolio import ATTACHMENT_OWNER_STUDENT_LEAVE
 from models.student_leave import LEAVE_TYPES
 from services.student_leave_service import (
+    apply_attendance_for_leave,
     is_remark_owned_by_leave,
 )
 from utils.auth import require_parent_role
@@ -93,7 +94,7 @@ def _check_overlap(session, student_id: int, start: date, end: date) -> None:
         session.query(StudentLeaveRequest)
         .filter(
             StudentLeaveRequest.student_id == student_id,
-            StudentLeaveRequest.status.in_(("pending", "approved")),
+            StudentLeaveRequest.status == "approved",
             StudentLeaveRequest.start_date <= end,
             StudentLeaveRequest.end_date >= start,
         )
@@ -183,9 +184,13 @@ def create_leave(
             start_date=payload.start_date,
             end_date=payload.end_date,
             reason=(payload.reason or "").strip() or None,
-            status="pending",
+            status="approved",
+            reviewed_at=datetime.now(),
+            reviewed_by=None,
         )
         session.add(item)
+        session.flush()
+        apply_attendance_for_leave(session, item, recorded_by=None)
         session.commit()
         session.refresh(item)
         return _serialize(item)
