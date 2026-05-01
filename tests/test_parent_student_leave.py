@@ -18,14 +18,11 @@ from api.student_leaves import router as student_leaves_router
 from models.database import (
     Base,
     Classroom,
-    Employee,
     Guardian,
-    Holiday,
     Student,
     StudentAttendance,
     StudentLeaveRequest,
     User,
-    WorkdayOverride,
 )
 from utils.auth import create_access_token, hash_password
 
