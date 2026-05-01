@@ -17,9 +17,9 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Iterable
 
-from services.workday_rules import classify_day
+from models.database import StudentAttendance, StudentLeaveRequest
+from services.workday_rules import classify_day, load_day_rule_maps
 
 REMARK_PREFIX = "家長申請#"
 
@@ -67,16 +67,10 @@ def is_remark_owned_by_leave(remark: str | None, leave_id: int) -> bool:
     return remark.strip() == make_remark(leave_id)
 
 
-from typing import Optional  # noqa: E402
-
-from models.database import StudentAttendance, StudentLeaveRequest  # noqa: E402
-from services.workday_rules import load_day_rule_maps  # noqa: E402
-
-
 def apply_attendance_for_leave(
     session,
     leave: StudentLeaveRequest,
-    recorded_by: Optional[int] = None,
+    recorded_by: int | None = None,
 ) -> int:
     """在當前 session（caller 開的 transaction）upsert StudentAttendance。
 
