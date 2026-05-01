@@ -379,6 +379,7 @@ def delete_leave_attachment(
 @router.post("/{leave_id}/cancel")
 def cancel_leave(
     leave_id: int,
+    request: Request,
     current_user: dict = Depends(require_parent_role()),
 ):
     """僅 status='approved' 且 start_date > today 可取消，並反向清除 attendance。"""
@@ -401,10 +402,21 @@ def cancel_leave(
             )
         if item.start_date <= today:
             raise HTTPException(status_code=400, detail="請假期間已開始，無法取消")
-        revert_attendance_for_leave(session, item)
+        affected = revert_attendance_for_leave(session, item)
         item.status = "cancelled"
         item.updated_at = datetime.now()
         session.commit()
+        request.state.audit_entity_id = str(item.id)
+        request.state.audit_summary = (
+            f"家長取消請假：leave_id={item.id} "
+            f"period={item.start_date}~{item.end_date} reverted_attendance={affected}"
+        )
+        logger.info(
+            "家長取消請假：leave_id=%d reverted_attendance=%d parent_user=%d",
+            item.id,
+            affected,
+            user_id,
+        )
         return {"status": "ok"}
     finally:
         session.close()
