@@ -66,13 +66,13 @@ def upgrade() -> None:
         # 載入區間內 holiday / makeup
         holiday_dates = bind.execute(
             sa.text(
-                "SELECT date FROM holidays WHERE date >= :s AND date <= :e AND is_active = 1"
+                "SELECT date FROM holidays WHERE date >= :s AND date <= :e AND is_active"
             ),
             {"s": start_d, "e": end_d},
         ).fetchall()
         makeup_dates = bind.execute(
             sa.text(
-                "SELECT date FROM workday_overrides WHERE date >= :s AND date <= :e AND is_active = 1"
+                "SELECT date FROM workday_overrides WHERE date >= :s AND date <= :e AND is_active"
             ),
             {"s": start_d, "e": end_d},
         ).fetchall()
