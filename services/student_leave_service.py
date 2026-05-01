@@ -65,3 +65,75 @@ def is_remark_owned_by_leave(remark: str | None, leave_id: int) -> bool:
     if not remark:
         return False
     return remark.strip() == make_remark(leave_id)
+
+
+from typing import Optional  # noqa: E402
+
+from models.database import StudentAttendance, StudentLeaveRequest  # noqa: E402
+from services.workday_rules import load_day_rule_maps  # noqa: E402
+
+
+def apply_attendance_for_leave(
+    session,
+    leave: StudentLeaveRequest,
+    recorded_by: Optional[int] = None,
+) -> int:
+    """在當前 session（caller 開的 transaction）upsert StudentAttendance。
+
+    對 compute_attendance_dates 回傳的每個應到日：
+    - 若該日無紀錄 → 建立 status=leave_type, remark=家長申請#<id>, recorded_by=傳入值（預設 None）
+    - 若該日已有紀錄 → 覆蓋 status / remark；保留原 recorded_by 不變
+    回傳實際被建立或覆蓋的天數。
+    """
+    holiday_map, makeup_map = load_day_rule_maps(
+        session, leave.start_date, leave.end_date
+    )
+    dates = compute_attendance_dates(
+        leave.start_date, leave.end_date, holiday_map, makeup_map
+    )
+    new_remark = make_remark(leave.id)
+    affected = 0
+    for d in dates:
+        existing = (
+            session.query(StudentAttendance)
+            .filter(
+                StudentAttendance.student_id == leave.student_id,
+                StudentAttendance.date == d,
+            )
+            .first()
+        )
+        if existing is None:
+            session.add(
+                StudentAttendance(
+                    student_id=leave.student_id,
+                    date=d,
+                    status=leave.leave_type,
+                    remark=new_remark,
+                    recorded_by=recorded_by,
+                )
+            )
+        else:
+            existing.status = leave.leave_type
+            existing.remark = new_remark
+            # recorded_by 不覆蓋（保留原作者）
+        affected += 1
+    return affected
+
+
+def revert_attendance_for_leave(session, leave: StudentLeaveRequest) -> int:
+    """反向清除：僅刪除 remark 吻合的紀錄（保留教師後手紀錄）。"""
+    rows = (
+        session.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id == leave.student_id,
+            StudentAttendance.date >= leave.start_date,
+            StudentAttendance.date <= leave.end_date,
+        )
+        .all()
+    )
+    affected = 0
+    for r in rows:
+        if is_remark_owned_by_leave(r.remark, leave.id):
+            session.delete(r)
+            affected += 1
+    return affected
