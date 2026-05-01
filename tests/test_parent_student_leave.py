@@ -361,6 +361,18 @@ def test_cancel_only_allowed_for_future_start_date(leave_client):
         assert atts == []
 
 
+def test_router_only_exposes_list_get(leave_client):
+    """OpenAPI 契約測試：student-leaves router 只剩 GET，移除後不再有 approve/reject。"""
+    client, _ = leave_client
+    spec = client.get("/openapi.json").json()
+    paths = {
+        p: sorted(meta.keys())
+        for p, meta in spec["paths"].items()
+        if "/student-leaves" in p and not p.startswith("/api/parent")
+    }
+    assert paths == {"/api/student-leaves": ["get"]}, f"unexpected paths: {paths}"
+
+
 def test_teacher_approve_endpoint_removed(leave_client):
     client, session_factory = leave_client
     with session_factory() as s:

@@ -5,7 +5,6 @@
 - GET /api/student-leaves：列出班級 scope 內的請假紀錄（預設 status=approved）
 """
 
-import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,8 +13,6 @@ from models.database import Student, StudentLeaveRequest, get_session
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/student-leaves", tags=["student-leaves"])
 

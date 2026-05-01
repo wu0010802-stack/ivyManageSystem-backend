@@ -39,6 +39,7 @@ from models.database import (
     Employee,
     Student,
     StudentAttendance,
+    StudentLeaveRequest,
     User,
 )
 from models.student_log import ParentCommunicationLog
@@ -769,3 +770,90 @@ class TestF021LeavesList:
         assert _login(client, "lv_tA_list", "Pass1234").status_code == 200
         r = client.get(f"/api/student-leaves?classroom_id={other_cls}")
         assert r.status_code == 403, r.text
+
+    def test_teacher_list_no_filter_only_own_class(self, idor_app):
+        """無 classroom_id 參數時，教師應只看到自己班的請假。"""
+        client, factory = idor_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            user_a = _create_user(
+                s,
+                username="lv_tA_nofilter",
+                password="Pass1234",
+                role="staff",
+                permissions=_BASIC_PERMS,
+                employee=seed["emp_a"],
+            )
+            st_a_id = seed["st_a"].id
+            st_b_id = seed["st_b"].id
+            # A 班學生 approved leave
+            leave_a = StudentLeaveRequest(
+                student_id=st_a_id,
+                applicant_user_id=user_a.id,
+                leave_type="病假",
+                start_date=date.today() + timedelta(days=1),
+                end_date=date.today() + timedelta(days=1),
+                status="approved",
+            )
+            # B 班學生 approved leave
+            leave_b = StudentLeaveRequest(
+                student_id=st_b_id,
+                applicant_user_id=user_a.id,
+                leave_type="事假",
+                start_date=date.today() + timedelta(days=2),
+                end_date=date.today() + timedelta(days=2),
+                status="approved",
+            )
+            s.add_all([leave_a, leave_b])
+            s.commit()
+            leave_a_id = leave_a.id
+        assert _login(client, "lv_tA_nofilter", "Pass1234").status_code == 200
+        r = client.get("/api/student-leaves")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        ids = [item["id"] for item in items]
+        assert leave_a_id in ids, "A 班請假應出現在結果中"
+        assert all(
+            item["student_id"] == st_a_id for item in items
+        ), "結果應僅含 A 班學生，不應含 B 班"
+
+    def test_admin_unrestricted_list_all(self, idor_app):
+        """admin（is_unrestricted）無 classroom_id 應可看全部請假。"""
+        client, factory = idor_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            admin = _create_user(
+                s,
+                username="lv_adm_all",
+                password="Pass1234",
+                role="admin",
+                permissions=-1,
+                employee=None,
+            )
+            leave_a = StudentLeaveRequest(
+                student_id=seed["st_a"].id,
+                applicant_user_id=admin.id,
+                leave_type="病假",
+                start_date=date.today() + timedelta(days=1),
+                end_date=date.today() + timedelta(days=1),
+                status="approved",
+            )
+            leave_b = StudentLeaveRequest(
+                student_id=seed["st_b"].id,
+                applicant_user_id=admin.id,
+                leave_type="事假",
+                start_date=date.today() + timedelta(days=2),
+                end_date=date.today() + timedelta(days=2),
+                status="approved",
+            )
+            s.add_all([leave_a, leave_b])
+            s.commit()
+            leave_a_id = leave_a.id
+            leave_b_id = leave_b.id
+        assert _login(client, "lv_adm_all", "Pass1234").status_code == 200
+        r = client.get("/api/student-leaves")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        ids = [item["id"] for item in items]
+        assert leave_a_id in ids, "admin 應能看到 A 班請假"
+        assert leave_b_id in ids, "admin 應能看到 B 班請假"
