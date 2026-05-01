@@ -70,6 +70,9 @@ ENTITY_PATTERNS = [
     (r"/api/activity/inquiries", "activity_inquiry"),
     (r"/api/activity/sessions", "activity_session"),
     (r"/api/activity/settings", "activity_settings"),
+    # 家長公開頁修改：歸到 activity_registration 與管理端同類，後台「修改」軌跡可一起篩。
+    # endpoint 內透過 request.state.audit_entity_id/audit_changes 帶出 reg.id 與 diff。
+    (r"/api/activity/public/update", "activity_registration"),
     # 家長入口 2.0 — 家園溝通平台
     # first-match：events/.+/ack 必須排在 messages / medication-orders 之前不衝突，但都不衝突，順序自由
     (r"/api/parent/messages", "parent_message"),

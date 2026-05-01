@@ -74,6 +74,9 @@ from ._shared import (
     _normalize_phone,
     _public_etag_response,
     _resolve_class_field_state,
+    _build_public_query_payload,
+    _generate_query_token,
+    _hash_query_token,
     TAIPEI_TZ,
 )
 from utils.academic import resolve_academic_term_filters
@@ -341,102 +344,63 @@ async def public_query_registration(
                 detail="查無對應報名，請確認三項資料是否與報名時一致",
             )
 
-        rc_rows = (
-            session.query(RegistrationCourse, ActivityCourse)
-            .join(ActivityCourse, RegistrationCourse.course_id == ActivityCourse.id)
-            .filter(RegistrationCourse.registration_id == reg.id)
-            .all()
+        return _build_public_query_payload(session, reg)
+    finally:
+        session.close()
+
+
+class _PublicQueryByTokenPayload(BaseModel):
+    """以查詢碼 + 家長手機查詢報名（Phase 3）。
+
+    威脅模型：token 是 convenience layer（家長拿到後免記憶/換手機後仍能查），
+    不是 security layer。phone 仍是必要第二因素，避免 token 從家長 LINE 截圖
+    被轉傳後直接被陌生人讀取資料。
+
+    schema 故意不設 min_length — 422 與 404 的 status code 差異會洩漏「token 是否
+    合法格式」的 oracle。攻擊者就算送 1 char token，後端 hash 也比不上，回統一 404。
+    max_length 保留是為防 DoS 級超長 payload。
+    """
+
+    token: str = Field(..., min_length=1, max_length=256)
+    parent_phone: str = Field(..., min_length=8, max_length=30)
+
+
+@router.post("/public/query-by-token")
+async def public_query_by_token(
+    body: _PublicQueryByTokenPayload,
+    _: None = Depends(_public_query_limiter),
+):
+    """前台：以查詢碼（明文 token）+ 家長手機查詢報名資料（Phase 3）。
+
+    與三欄查詢（/public/query）並存：既有報名沒有 token，沿用三欄；新報名 register
+    response 拿到的 token 走此端點。POST 而非 GET — 避免 token 進 access log /
+    瀏覽器歷史 / referer。
+
+    不符一律回 404 同訊息（與 /public/query 隱私契約一致），不洩漏「token 不存在」
+    與「token 對 phone 錯」的差別。
+
+    LOW-3 一致性：成功與失敗 path 都加入隨機延遲，壓低時序差。
+    """
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+    session = get_session()
+    try:
+        token_hash = _hash_query_token(body.token)
+        reg = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.query_token_hash == token_hash,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
         )
-
-        # 一次查出所有候補課程的排位（window function，避免 N+1）
-        waitlist_course_ids = [ac.id for rc, ac in rc_rows if rc.status == "waitlist"]
-        waitlist_position_map: dict[int, int] = {}
-        if waitlist_course_ids:
-            stmt = (
-                session.query(
-                    RegistrationCourse.registration_id,
-                    RegistrationCourse.course_id,
-                    func.row_number()
-                    .over(
-                        partition_by=RegistrationCourse.course_id,
-                        order_by=RegistrationCourse.id,
-                    )
-                    .label("position"),
-                )
-                .join(
-                    ActivityRegistration,
-                    RegistrationCourse.registration_id == ActivityRegistration.id,
-                )
-                .filter(
-                    RegistrationCourse.course_id.in_(waitlist_course_ids),
-                    RegistrationCourse.status == "waitlist",
-                    ActivityRegistration.is_active.is_(True),
-                )
-                .subquery()
+        if reg is None or _normalize_phone(reg.parent_phone) != _normalize_phone(
+            body.parent_phone
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="查無對應報名，請確認查詢碼與手機號碼是否正確",
             )
-            waitlist_rows = (
-                session.query(stmt).filter(stmt.c.registration_id == reg.id).all()
-            )
-            waitlist_position_map = {
-                row.course_id: row.position for row in waitlist_rows
-            }
-
-        courses = []
-        for rc, ac in rc_rows:
-            waitlist_position = None
-            if rc.status == "waitlist":
-                waitlist_position = waitlist_position_map.get(ac.id)
-            courses.append(
-                {
-                    "name": ac.name,
-                    "course_id": ac.id,
-                    "price": rc.price_snapshot,
-                    "status": rc.status,
-                    "waitlist_position": waitlist_position,
-                    # 候補升正式待確認資訊（僅 promoted_pending 有效）
-                    "confirm_deadline": (
-                        rc.confirm_deadline.isoformat()
-                        if rc.status == "promoted_pending" and rc.confirm_deadline
-                        else None
-                    ),
-                }
-            )
-
-        rs_rows = (
-            session.query(RegistrationSupply, ActivitySupply)
-            .join(ActivitySupply, RegistrationSupply.supply_id == ActivitySupply.id)
-            .filter(RegistrationSupply.registration_id == reg.id)
-            .all()
-        )
-        supplies = [{"name": sp.name, "price": rs.price_snapshot} for rs, sp in rs_rows]
-
-        total_amount = sum(c["price"] for c in courses if c["status"] == "enrolled")
-        total_amount += sum(rs.price_snapshot for rs, sp in rs_rows)
-        paid_amount = reg.paid_amount or 0
-
-        # field_state：給前端決定哪些欄位可編，不洩漏 student_id/classroom_id/match_status raw 值。
-        # 與 /public/update 用同一個 helper，避免「前端顯示可改 → 後端仍覆寫」的 UX 不一致。
-        cls_state = _resolve_class_field_state(session, reg)
-        field_state = {
-            "class_source": cls_state["class_source"],
-            "class_editable": cls_state["class_editable"],
-            "review_state": cls_state["review_state"],
-        }
-
-        return {
-            "id": reg.id,
-            "name": reg.student_name,
-            "birthday": reg.birthday,
-            "class_name": reg.class_name,
-            "is_paid": reg.is_paid,
-            "paid_amount": paid_amount,
-            "total_amount": total_amount,
-            "payment_status": _derive_payment_status(paid_amount, total_amount),
-            "remark": reg.remark or "",
-            "courses": courses,
-            "supplies": [sp.name for rs, sp in rs_rows],
-            "field_state": field_state,
-        }
+        return _build_public_query_payload(session, reg)
     finally:
         session.close()
 
@@ -453,6 +417,11 @@ async def public_register(
 
     LOW-4：honeypot + 時序檢查若命中 → silent reject（回偽裝成功訊息、不寫 DB）。
     """
+    # Phase 3：silent path 也要回 query_token shape，否則攻擊者可從「response 有沒有
+    # query_token 欄位」反推這次提交是真的成功還是 silent-reject，F-030 的 oracle 又回來。
+    # silent path 的 token 是「即拋型」— 不寫 DB，家長拿去查也會 404（與真正失敗一致）。
+    _silent_query_token = _generate_query_token()
+
     if should_silent_reject_bot(body.hp, body.ts):
         logger.warning(
             "public_register silent-reject (honeypot/ts) name=%r phone=%r",
@@ -464,6 +433,7 @@ async def public_register(
             "id": 0,
             "waitlisted": False,
             "waitlist_courses": [],
+            "query_token": _silent_query_token,
         }
     # F-030：silent-success（與 honeypot 路徑一致）的中性回應，
     # 攻擊者無法從重複/驗證失敗中分辨存在性。
@@ -472,6 +442,7 @@ async def public_register(
         "id": 0,
         "waitlisted": False,
         "waitlist_courses": [],
+        "query_token": _silent_query_token,
     }
 
     session = get_session()
@@ -622,6 +593,8 @@ async def public_register(
 
         is_matched = bool(matched_student_id and matched_classroom_id)
 
+        # Phase 3：產明文 query token，hash 寫進 DB；明文只在這次 response 回給家長一次
+        plaintext_token = _generate_query_token()
         reg = ActivityRegistration(
             student_name=body.name,
             birthday=body.birthday,
@@ -634,6 +607,7 @@ async def public_register(
             remark=(body.remark or "").strip(),
             pending_review=not is_matched,
             match_status="matched" if is_matched else "pending",
+            query_token_hash=_hash_query_token(plaintext_token),
         )
         session.add(reg)
         session.flush()
@@ -681,6 +655,8 @@ async def public_register(
             "id": reg.id,
             "waitlisted": has_waitlist,
             "waitlist_courses": waitlist_course_names,
+            # 明文 token 只在這次 response 回；DB 只存 hash，後續再也拿不到
+            "query_token": plaintext_token,
         }
     except HTTPException:
         session.rollback()
@@ -696,6 +672,7 @@ async def public_register(
 @router.post("/public/update")
 async def public_update_registration(
     body: PublicUpdatePayload,
+    request: Request,
     _: None = Depends(_public_register_limiter),
 ):
     """前台：依 id 更新報名資料（班級/課程/用品）
@@ -709,6 +686,13 @@ async def public_update_registration(
     - 若家長把已被點名的課程移除 → 同步清該 reg 在那些課程的 ActivityAttendance
       （與 withdraw_course 一致），避免出席統計納入退課孤兒。
     - 同步 is_paid 旗標（與後台共用 _compute_is_paid，total=0 時一律未結清）。
+
+    樂觀鎖（if_unmodified_since）：選填字段，由 /public/query 拿到的 updated_at 字串。
+    若提供且與 reg.updated_at 不符（家長打開舊頁、校方已調整資料）→ 409 STALE，
+    避免家長覆寫校方修改。沒帶 token 沿用舊行為（向後相容）。
+
+    回傳：與 /public/query 同 schema 的完整 registration（含 field_state、
+    新 updated_at），前端不需再呼叫一次 /public/query 取最新資料。
     """
     session = get_session()
     try:
@@ -735,6 +719,38 @@ async def public_update_registration(
                 status_code=403,
                 detail="查無對應報名，請確認三項資料是否與報名時一致",
             )
+
+        # 樂觀鎖檢查：token 為不透明字串（前端原樣回拋），只做相等比較，
+        # 不 parse datetime — 避免 TZ/microsecond precision 邊界問題。
+        if body.if_unmodified_since is not None:
+            current_token = reg.updated_at.isoformat() if reg.updated_at else None
+            if current_token != body.if_unmodified_since:
+                raise HTTPException(
+                    status_code=409,
+                    detail=("資料已被校方更新，請重新整理頁面確認最新狀態後再儲存。"),
+                )
+
+        # 為 audit / RegistrationChange 軌跡保留舊值（在任何寫入前快照）。
+        # 課程/用品 diff 只比 name（不含 status）— 避免「候補升正式 / 重存」這類
+        # status 轉態被誤讀成「家長退課再加課」。狀態變動由 RegistrationChange
+        # description 補述，audit log 看 name 集合的進出即可。
+        old_class_name = reg.class_name
+        old_parent_phone = reg.parent_phone
+        old_remark = reg.remark or ""
+        old_course_names = sorted(
+            n
+            for (n,) in session.query(ActivityCourse.name)
+            .join(RegistrationCourse, RegistrationCourse.course_id == ActivityCourse.id)
+            .filter(RegistrationCourse.registration_id == reg.id)
+            .all()
+        )
+        old_supply_names = sorted(
+            n
+            for (n,) in session.query(ActivitySupply.name)
+            .join(RegistrationSupply, RegistrationSupply.supply_id == ActivitySupply.id)
+            .filter(RegistrationSupply.registration_id == reg.id)
+            .all()
+        )
 
         # 匹配成功後的報名，班級由系統維護（Student.classroom），家長輸入班級僅供參考。
         # 與 /public/query 共用 _resolve_class_field_state，確保前端 class_editable=false 時
@@ -940,15 +956,77 @@ async def public_update_registration(
             )
         reg.is_paid = _compute_is_paid(reg.paid_amount or 0, new_total)
 
+        # 顯式 bump updated_at：SQLAlchemy onupdate 只有 row 真有 dirty 欄位才觸發；
+        # 家長若只改課程不改其他欄位，updated_at 不會自動推進，舊 token 還能再用一次。
+        # 強制設值是樂觀鎖正確性的兜底（必須在 commit 前）。
+        reg.updated_at = datetime.now()
+
+        # 組裝新舊 diff（兩層稽核 — AuditMiddleware 系統層 + RegistrationChange 業務層）
+        new_course_names = sorted(
+            n
+            for (n,) in session.query(ActivityCourse.name)
+            .join(RegistrationCourse, RegistrationCourse.course_id == ActivityCourse.id)
+            .filter(RegistrationCourse.registration_id == reg.id)
+            .all()
+        )
+        new_supply_names = sorted(
+            n
+            for (n,) in session.query(ActivitySupply.name)
+            .join(RegistrationSupply, RegistrationSupply.supply_id == ActivitySupply.id)
+            .filter(RegistrationSupply.registration_id == reg.id)
+            .all()
+        )
+
+        diff: dict = {}
+        if old_class_name != reg.class_name:
+            diff["class_name"] = {"old": old_class_name, "new": reg.class_name}
+        if old_parent_phone != reg.parent_phone:
+            # 隱私：手機號只記「有更動」，不在 audit 還原舊號全文，避免落 audit 表後變成洩漏點
+            diff["parent_phone_changed"] = True
+        if old_remark != (reg.remark or ""):
+            diff["remark"] = {"old": old_remark, "new": reg.remark or ""}
+        if old_course_names != new_course_names:
+            diff["courses"] = {"old": old_course_names, "new": new_course_names}
+        if old_supply_names != new_supply_names:
+            diff["supplies"] = {"old": old_supply_names, "new": new_supply_names}
+
+        # AuditMiddleware 系統層稽核：透過 request.state 帶出 entity_id 與 changes
+        request.state.audit_entity_id = str(reg.id)
+        request.state.audit_changes = diff
+
+        # RegistrationChange 業務層稽核：後台「異動紀錄」分頁需用此來源（與既有寫入點同層）
+        if diff:
+            change_summary_parts = []
+            if "class_name" in diff:
+                change_summary_parts.append(
+                    f"班級：{diff['class_name']['old']} → {diff['class_name']['new']}"
+                )
+            if "courses" in diff:
+                change_summary_parts.append("課程異動")
+            if "supplies" in diff:
+                change_summary_parts.append("用品異動")
+            if "parent_phone_changed" in diff:
+                change_summary_parts.append("家長電話異動")
+            if "remark" in diff:
+                change_summary_parts.append("備註異動")
+            activity_service.log_change(
+                session,
+                reg.id,
+                reg.student_name,
+                "家長公開頁修改",
+                "；".join(change_summary_parts) or "（無欄位變更）",
+                "家長（公開頁）",
+            )
+
+        # 在 commit 前 flush 一次，讓 builder 看到最新 RegistrationCourse/Supply
+        session.flush()
+        response_payload = _build_public_query_payload(session, reg)
+        response_payload["message"] = "資料更新成功！"
+
         session.commit()
         _invalidate_activity_dashboard_caches(session)
         logger.info("前台更新報名：id=%s student=%s", reg.id, reg.student_name)
-        return {
-            "message": "資料更新成功！",
-            "total_amount": new_total,
-            "paid_amount": reg.paid_amount or 0,
-            "payment_status": _derive_payment_status(reg.paid_amount or 0, new_total),
-        }
+        return response_payload
     except HTTPException:
         session.rollback()
         raise

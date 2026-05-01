@@ -255,9 +255,10 @@ class TestActivityEntityTypeMapping:
             # POS：daily-close 必須先於 pos 被匹配到（first match wins）
             ("/api/activity/pos/daily-close/2026-04-21", "activity_daily_close"),
             ("/api/activity/pos/checkout", "activity_pos"),
-            # public 路徑目前刻意不進 audit
+            # public 路徑：register 仍刻意不進 audit（家長報名屬一般使用者行為，不需稽核）；
+            # update 進 audit 與管理端同類，後台「修改」軌跡可一起篩（Phase 2 2026-05-01 接入）
             ("/api/activity/public/register", None),
-            ("/api/activity/public/update", None),
+            ("/api/activity/public/update", "activity_registration"),
         ],
     )
     def test_entity_type_for_path(self, path, expected_entity):

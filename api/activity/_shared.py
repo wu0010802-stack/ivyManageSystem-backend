@@ -3,9 +3,11 @@ api/activity/_shared.py — 才藝系統共用 schemas、helpers、常數
 """
 
 import hashlib
+import hmac
 import json
 import re
 import logging
+import secrets as _secrets_module
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Literal
@@ -31,7 +33,7 @@ from models.database import (
     ActivityAttendance,
 )
 from services.activity_service import activity_service
-from utils.auth import require_staff_permission
+from utils.auth import require_staff_permission, JWT_SECRET_KEY
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -536,6 +538,9 @@ class PublicUpdatePayload(BaseModel):
     courses: list[PublicCourseItem] = Field(..., max_length=20)
     supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
     remark: str = ""
+    # 選填：樂觀鎖 token，由 /public/query 回傳的 updated_at（ISO 字串）。
+    # 提供時若與 reg.updated_at 不符即拒；不提供則沿用舊行為（向後相容）。
+    if_unmodified_since: Optional[str] = Field(None, max_length=64)
 
     @field_validator("birthday")
     @classmethod
@@ -645,6 +650,144 @@ def _require_active_classroom(session, classroom_name: str):
     if not c:
         raise _invalid_class()
     return c
+
+
+# ── Phase 3 公開查詢碼（query token） ──────────────────────────────────────
+# 設計：
+# - 明文 token = 32-char URL-safe（secrets.token_urlsafe(24)）
+# - DB 只存 HMAC-SHA256(JWT_SECRET_KEY, domain || token) 的 hex digest
+# - 只在 register response 一次性回明文 token 給家長；後續再也拿不到
+# - reject pending 時 rotate（指向新 hash）
+# - threat model：token 是 convenience layer，不是 security layer；phone 仍是必要第二因素
+# - server secret 沿用 JWT_SECRET_KEY（dev 重啟會 invalidate 所有 token，已有 warning）
+_ACTIVITY_TOKEN_DOMAIN = b"activity_query_token:v1"
+
+
+def _generate_query_token() -> str:
+    """產生公開查詢碼明文（32-char URL-safe）。
+
+    僅在 register 真實成功 / reject rotate 當下回給呼叫端。
+    silent-success path 用同函式產一個「假」token（不寫 DB），維持 response shape
+    一致避免 F-030 enumeration oracle。
+    """
+    return _secrets_module.token_urlsafe(24)
+
+
+def _hash_query_token(token: str) -> str:
+    """HMAC-SHA256(JWT_SECRET_KEY, domain || token) → hex digest（64 chars）。
+
+    domain salt（_ACTIVITY_TOKEN_DOMAIN）做用途隔離 — 即使 JWT_SECRET_KEY 被
+    其他模組借用，產生的 hash 不會撞號。
+    """
+    msg = _ACTIVITY_TOKEN_DOMAIN + token.encode("utf-8")
+    key = (JWT_SECRET_KEY or "").encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _build_public_query_payload(session, reg) -> dict:
+    """組裝 /public/query 與 /public/update 共用的 response payload。
+
+    Why: /public/update 修改後若再讓前端打一次 /public/query 取最新資料，
+    會多一次 round-trip + 中間又被改的 race window。改成 update 端點在 commit 前
+    用同一個 helper 直接組 response，前端只要 hydrate 一次。
+    隱私契約沿用 query 版本：不洩漏 student_id / classroom_id / match_status raw 值。
+
+    回傳 dict 含 updated_at（ISO string，不透明字串），供前端作為樂觀鎖 token
+    回傳給 /public/update 的 if_unmodified_since。
+    """
+    rc_rows = (
+        session.query(RegistrationCourse, ActivityCourse)
+        .join(ActivityCourse, RegistrationCourse.course_id == ActivityCourse.id)
+        .filter(RegistrationCourse.registration_id == reg.id)
+        .all()
+    )
+
+    # 一次查出所有候補課程的排位（window function，避免 N+1）
+    waitlist_course_ids = [ac.id for rc, ac in rc_rows if rc.status == "waitlist"]
+    waitlist_position_map: dict = {}
+    if waitlist_course_ids:
+        stmt = (
+            session.query(
+                RegistrationCourse.registration_id,
+                RegistrationCourse.course_id,
+                func.row_number()
+                .over(
+                    partition_by=RegistrationCourse.course_id,
+                    order_by=RegistrationCourse.id,
+                )
+                .label("position"),
+            )
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.course_id.in_(waitlist_course_ids),
+                RegistrationCourse.status == "waitlist",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .subquery()
+        )
+        waitlist_rows = (
+            session.query(stmt).filter(stmt.c.registration_id == reg.id).all()
+        )
+        waitlist_position_map = {row.course_id: row.position for row in waitlist_rows}
+
+    courses = []
+    for rc, ac in rc_rows:
+        waitlist_position = None
+        if rc.status == "waitlist":
+            waitlist_position = waitlist_position_map.get(ac.id)
+        courses.append(
+            {
+                "name": ac.name,
+                "course_id": ac.id,
+                "price": rc.price_snapshot,
+                "status": rc.status,
+                "waitlist_position": waitlist_position,
+                "confirm_deadline": (
+                    rc.confirm_deadline.isoformat()
+                    if rc.status == "promoted_pending" and rc.confirm_deadline
+                    else None
+                ),
+            }
+        )
+
+    rs_rows = (
+        session.query(RegistrationSupply, ActivitySupply)
+        .join(ActivitySupply, RegistrationSupply.supply_id == ActivitySupply.id)
+        .filter(RegistrationSupply.registration_id == reg.id)
+        .all()
+    )
+
+    total_amount = sum(c["price"] for c in courses if c["status"] == "enrolled")
+    total_amount += sum(rs.price_snapshot for rs, sp in rs_rows)
+    paid_amount = reg.paid_amount or 0
+
+    cls_state = _resolve_class_field_state(session, reg)
+    field_state = {
+        "class_source": cls_state["class_source"],
+        "class_editable": cls_state["class_editable"],
+        "review_state": cls_state["review_state"],
+    }
+
+    return {
+        "id": reg.id,
+        "name": reg.student_name,
+        "birthday": reg.birthday,
+        "class_name": reg.class_name,
+        "is_paid": reg.is_paid,
+        "paid_amount": paid_amount,
+        "total_amount": total_amount,
+        "payment_status": _derive_payment_status(paid_amount, total_amount),
+        "remark": reg.remark or "",
+        "courses": courses,
+        "supplies": [sp.name for rs, sp in rs_rows],
+        "field_state": field_state,
+        # 樂觀鎖 token：前端持有，回傳給 /public/update 的 if_unmodified_since。
+        # 後端原樣字串比較，不 parse；/public/update 結尾顯式 bump 確保 row 一定 dirty。
+        "updated_at": reg.updated_at.isoformat() if reg.updated_at else None,
+    }
 
 
 def _resolve_class_field_state(session, reg) -> dict:

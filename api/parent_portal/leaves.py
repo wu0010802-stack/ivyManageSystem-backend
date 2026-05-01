@@ -12,26 +12,43 @@
   → 400（避免家長重複送、避免 approve 後雙寫 attendance）
 """
 
+import logging
+import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_
 
 from models.database import (
+    Attachment,
     Guardian,
     StudentLeaveRequest,
     StudentAttendance,
     get_session,
 )
+from models.portfolio import ATTACHMENT_OWNER_STUDENT_LEAVE
 from models.student_leave import LEAVE_TYPES
 from services.student_leave_service import (
     is_remark_owned_by_leave,
 )
 from utils.auth import require_parent_role
+from utils.file_upload import (
+    read_upload_with_size_check,
+    validate_file_signature,
+)
+from utils.portfolio_storage import (
+    heic_supported,
+    is_heic_extension,
+)
 
 from ._shared import _assert_student_owned, _get_parent_student_ids
+
+logger = logging.getLogger(__name__)
+
+# 病假診斷證明 / 事假佐證附件白名單
+_PARENT_LEAVE_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".pdf"}
 
 router = APIRouter(prefix="/student-leaves", tags=["parent-leaves"])
 
@@ -89,7 +106,36 @@ def _check_overlap(session, student_id: int, start: date, end: date) -> None:
         )
 
 
-def _serialize(item: StudentLeaveRequest) -> dict:
+def _attachment_to_dict(att: Attachment) -> dict:
+    return {
+        "id": att.id,
+        "storage_key": att.storage_key,
+        "display_key": att.display_key,
+        "thumb_key": att.thumb_key,
+        "original_filename": att.original_filename,
+        "mime_type": att.mime_type,
+        "size_bytes": att.size_bytes,
+        "uploaded_at": att.created_at.isoformat() if att.created_at else None,
+    }
+
+
+def _load_leave_attachments(session, leave_id: int) -> list[dict]:
+    rows = (
+        session.query(Attachment)
+        .filter(
+            Attachment.owner_type == ATTACHMENT_OWNER_STUDENT_LEAVE,
+            Attachment.owner_id == leave_id,
+            Attachment.deleted_at.is_(None),
+        )
+        .order_by(Attachment.id.asc())
+        .all()
+    )
+    return [_attachment_to_dict(a) for a in rows]
+
+
+def _serialize(
+    item: StudentLeaveRequest, attachments: Optional[list[dict]] = None
+) -> dict:
     return {
         "id": item.id,
         "student_id": item.student_id,
@@ -101,6 +147,8 @@ def _serialize(item: StudentLeaveRequest) -> dict:
         "review_note": item.review_note,
         "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
         "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        "attachments": attachments if attachments is not None else [],
     }
 
 
@@ -182,7 +230,139 @@ def get_leave(
         )
         if item is None or item.student_id not in owned_student_ids:
             raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        return _serialize(item)
+        attachments = _load_leave_attachments(session, item.id)
+        return _serialize(item, attachments)
+    finally:
+        session.close()
+
+
+@router.post("/{leave_id}/attachments", status_code=201)
+async def upload_leave_attachment(
+    leave_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_parent_role()),
+):
+    """為已建立的請假申請上傳佐證檔案（診斷證明、活動行程等）。
+
+    僅在 status='pending' 時允許上傳，避免家長 approved/rejected 後改證據；
+    若需補件，請新申請。
+    """
+    user_id = current_user["user_id"]
+
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in _PARENT_LEAVE_ALLOWED_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支援的檔案格式：{ext or '未知'}；接受 JPG/PNG/HEIC/PDF",
+        )
+    if is_heic_extension(ext) and not heic_supported():
+        raise HTTPException(
+            status_code=400,
+            detail="伺服器未安裝 HEIC 解碼套件，請改傳 JPG/PNG",
+        )
+    content = await read_upload_with_size_check(file, extension=ext)
+    validate_file_signature(content, ext)
+
+    from utils.portfolio_storage import get_portfolio_storage
+
+    session = get_session()
+    try:
+        _, owned_student_ids = _get_parent_student_ids(session, user_id)
+        item = (
+            session.query(StudentLeaveRequest)
+            .filter(StudentLeaveRequest.id == leave_id)
+            .first()
+        )
+        if item is None or item.student_id not in owned_student_ids:
+            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        if item.status != "pending":
+            raise HTTPException(
+                status_code=400,
+                detail=f"狀態為 {item.status}，無法再上傳附件；請新建一筆申請",
+            )
+
+        storage = get_portfolio_storage()
+        stored = storage.put_attachment(content, ext)
+
+        att = Attachment(
+            owner_type=ATTACHMENT_OWNER_STUDENT_LEAVE,
+            owner_id=item.id,
+            storage_key=stored.storage_key,
+            display_key=stored.display_key,
+            thumb_key=stored.thumb_key,
+            original_filename=filename,
+            mime_type=stored.mime_type,
+            size_bytes=len(content),
+            uploaded_by=user_id,
+        )
+        session.add(att)
+        session.flush()
+        session.refresh(att)
+        session.commit()
+
+        request.state.audit_entity_id = str(item.id)
+        request.state.audit_summary = (
+            f"家長上傳請假附件：leave_id={item.id} "
+            f"attachment_id={att.id} filename={filename} size={len(content)}B"
+        )
+        logger.info(
+            "家長上傳請假附件：leave_id=%d attachment_id=%d size=%d parent_user=%d",
+            item.id,
+            att.id,
+            len(content),
+            user_id,
+        )
+        return _attachment_to_dict(att)
+    finally:
+        session.close()
+
+
+@router.delete("/{leave_id}/attachments/{attachment_id}")
+def delete_leave_attachment(
+    leave_id: int,
+    attachment_id: int,
+    request: Request,
+    current_user: dict = Depends(require_parent_role()),
+):
+    """軟刪除請假附件；同樣僅 pending 階段可刪。"""
+    user_id = current_user["user_id"]
+    session = get_session()
+    try:
+        _, owned_student_ids = _get_parent_student_ids(session, user_id)
+        item = (
+            session.query(StudentLeaveRequest)
+            .filter(StudentLeaveRequest.id == leave_id)
+            .first()
+        )
+        if item is None or item.student_id not in owned_student_ids:
+            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        if item.status != "pending":
+            raise HTTPException(
+                status_code=400, detail=f"狀態為 {item.status}，無法刪除附件"
+            )
+
+        att = (
+            session.query(Attachment)
+            .filter(
+                Attachment.id == attachment_id,
+                Attachment.owner_type == ATTACHMENT_OWNER_STUDENT_LEAVE,
+                Attachment.owner_id == item.id,
+                Attachment.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if not att:
+            raise HTTPException(status_code=404, detail="附件不存在")
+        att.deleted_at = datetime.now()
+        session.commit()
+
+        request.state.audit_entity_id = str(item.id)
+        request.state.audit_summary = (
+            f"家長刪除請假附件：leave_id={item.id} attachment_id={att.id}"
+        )
+        return {"status": "ok"}
     finally:
         session.close()
 

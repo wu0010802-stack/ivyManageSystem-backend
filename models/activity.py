@@ -136,6 +136,12 @@ class ActivityRegistration(Base):
     reviewed_by = Column(String(100), nullable=True, comment="最後審核處理者帳號")
     reviewed_at = Column(DateTime, nullable=True, comment="最後審核處理時間")
 
+    # Phase 3 公開查詢碼：HMAC-SHA256 hex digest（64 chars）。明文 token 只在 register
+    # response 回一次，後續再也拿不到；reject 時會 rotate（指向新 hash）。
+    query_token_hash = Column(
+        String(64), nullable=True, comment="公開查詢碼 hash（HMAC-SHA256）"
+    )
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -155,6 +161,7 @@ class ActivityRegistration(Base):
         Index("ix_activity_regs_pending_review", "pending_review", "is_active"),
         Index("ix_activity_regs_classroom_id", "classroom_id"),
         Index("ix_activity_regs_match_status", "match_status"),
+        Index("ix_activity_regs_query_token_hash", "query_token_hash"),
         # 防併發重複報名：同家長同學生同學期只允許一筆 is_active=TRUE 的報名。
         # 應用層 /public/register 有先 SELECT 再 INSERT 的檢查，但無鎖、無 unique，
         # 兩筆同時進來會雙寫。partial unique index 讓 DB 層攔下第二筆。

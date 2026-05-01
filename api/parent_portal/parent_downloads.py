@@ -19,6 +19,7 @@ from models.database import (
     EventAcknowledgment,
     ParentMessage,
     ParentMessageThread,
+    StudentLeaveRequest,
     StudentMedicationOrder,
     get_session,
 )
@@ -26,6 +27,7 @@ from models.portfolio import (
     ATTACHMENT_OWNER_EVENT_ACK,
     ATTACHMENT_OWNER_MEDICATION_ORDER,
     ATTACHMENT_OWNER_MESSAGE,
+    ATTACHMENT_OWNER_STUDENT_LEAVE,
 )
 from utils.auth import require_parent_role
 from utils.portfolio_storage import get_portfolio_storage
@@ -75,6 +77,16 @@ def _resolve_student_id_for_parent(session, owner_type: str, owner_id: int) -> i
         if not thread:
             raise HTTPException(status_code=404, detail="訊息對應的 thread 不存在")
         return thread.student_id
+
+    if owner_type == ATTACHMENT_OWNER_STUDENT_LEAVE:
+        lr = (
+            session.query(StudentLeaveRequest)
+            .filter(StudentLeaveRequest.id == owner_id)
+            .first()
+        )
+        if not lr:
+            raise HTTPException(status_code=404, detail="對應的請假申請不存在")
+        return lr.student_id
 
     raise HTTPException(status_code=400, detail=f"不支援的 owner_type：{owner_type}")
 

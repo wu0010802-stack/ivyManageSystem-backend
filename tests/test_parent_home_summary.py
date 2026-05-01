@@ -211,6 +211,9 @@ class TestHomeSummaryBasics:
         assert "unread_announcements" in s
         assert "fees" in s
         assert "pending_event_acks" in s
+        assert "unread_messages" in s
+        assert "pending_activity_promotions" in s
+        assert "recent_leave_reviews" in s
 
     def test_no_children_returns_empty_lists(self, home_client):
         client, session_factory = home_client
@@ -227,6 +230,8 @@ class TestHomeSummaryBasics:
         assert data["summary"]["fees"]["outstanding"] == 0
         assert data["summary"]["unread_announcements"] == 0
         assert data["summary"]["pending_event_acks"] == 0
+        assert data["summary"]["pending_activity_promotions"] == 0
+        assert data["summary"]["recent_leave_reviews"] == 0
 
 
 class TestFeesAggregation:
@@ -342,6 +347,216 @@ class TestPendingEventAcks:
 
         resp = client.get("/api/parent/home/summary", cookies={"access_token": token})
         assert resp.json()["summary"]["pending_event_acks"] == 0
+
+
+class TestActivityPromotionAndLeaveReviewCounts:
+    def test_promoted_pending_counted_as_pending_promotion(self, home_client):
+        """RegistrationCourse status='promoted_pending' 計入 pending_activity_promotions。"""
+        from models.activity import (
+            ActivityCourse,
+            ActivityRegistration,
+            RegistrationCourse,
+        )
+
+        client, session_factory = home_client
+        with session_factory() as session:
+            user = _make_parent(session)
+            classroom = _make_classroom(session)
+            student = _add_child(session, user, name="小明", classroom=classroom)
+
+            course = ActivityCourse(
+                name="繪畫A",
+                school_year=115,
+                semester=1,
+                price=1000,
+                is_active=True,
+                allow_waitlist=True,
+            )
+            session.add(course)
+            session.flush()
+
+            reg = ActivityRegistration(
+                student_name=student.name,
+                student_id=student.id,
+                school_year=115,
+                semester=1,
+                paid_amount=0,
+                is_active=True,
+            )
+            session.add(reg)
+            session.flush()
+
+            # 一筆 enrolled（不該被計）+ 一筆 promoted_pending（要被計）
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="enrolled",
+                )
+            )
+            course2 = ActivityCourse(
+                name="繪畫B",
+                school_year=115,
+                semester=1,
+                price=1000,
+                is_active=True,
+                allow_waitlist=True,
+            )
+            session.add(course2)
+            session.flush()
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course2.id,
+                    status="promoted_pending",
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get("/api/parent/home/summary", cookies={"access_token": token})
+        assert resp.status_code == 200
+        assert resp.json()["summary"]["pending_activity_promotions"] == 1
+
+    def test_recent_leave_review_counted(self, home_client):
+        """最近 7 天內 reviewed 的請假計入 recent_leave_reviews。"""
+        from models.student_leave import StudentLeaveRequest
+
+        client, session_factory = home_client
+        with session_factory() as session:
+            user = _make_parent(session)
+            classroom = _make_classroom(session)
+            student = _add_child(session, user, name="小明", classroom=classroom)
+
+            # 已批准（最近）— 計入
+            session.add(
+                StudentLeaveRequest(
+                    student_id=student.id,
+                    applicant_user_id=user.id,
+                    leave_type="病假",
+                    start_date=date.today(),
+                    end_date=date.today(),
+                    status="approved",
+                    reviewed_at=datetime.now() - timedelta(days=1),
+                )
+            )
+            # 還在 pending — 不計入
+            session.add(
+                StudentLeaveRequest(
+                    student_id=student.id,
+                    applicant_user_id=user.id,
+                    leave_type="事假",
+                    start_date=date.today() + timedelta(days=2),
+                    end_date=date.today() + timedelta(days=2),
+                    status="pending",
+                )
+            )
+            # 8 天前 reviewed — 過期不計入
+            session.add(
+                StudentLeaveRequest(
+                    student_id=student.id,
+                    applicant_user_id=user.id,
+                    leave_type="病假",
+                    start_date=date.today() - timedelta(days=10),
+                    end_date=date.today() - timedelta(days=10),
+                    status="approved",
+                    reviewed_at=datetime.now() - timedelta(days=8),
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get("/api/parent/home/summary", cookies={"access_token": token})
+        assert resp.status_code == 200
+        assert resp.json()["summary"]["recent_leave_reviews"] == 1
+
+
+class TestTodayStatus:
+    def test_today_status_no_children_returns_empty(self, home_client):
+        client, session_factory = home_client
+        with session_factory() as session:
+            user = _make_parent(session)
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get(
+            "/api/parent/home/today-status", cookies={"access_token": token}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["children"] == []
+        assert "date" in data
+
+    def test_today_status_aggregates_attendance_leave_medication_dismissal(
+        self, home_client
+    ):
+        from models.classroom import StudentAttendance
+        from models.dismissal import StudentDismissalCall
+        from models.portfolio import StudentMedicationOrder
+        from models.student_leave import StudentLeaveRequest
+
+        client, session_factory = home_client
+        with session_factory() as session:
+            user = _make_parent(session)
+            classroom = _make_classroom(session)
+            student = _add_child(session, user, name="小明", classroom=classroom)
+
+            # 今日出席
+            session.add(
+                StudentAttendance(
+                    student_id=student.id, date=date.today(), status="出席"
+                )
+            )
+            # 今日是 approved 請假範圍內
+            session.add(
+                StudentLeaveRequest(
+                    student_id=student.id,
+                    applicant_user_id=user.id,
+                    leave_type="病假",
+                    start_date=date.today(),
+                    end_date=date.today(),
+                    status="approved",
+                    reviewed_at=datetime.now(),
+                )
+            )
+            # 今日有用藥單
+            session.add(
+                StudentMedicationOrder(
+                    student_id=student.id,
+                    order_date=date.today(),
+                    medication_name="退燒藥",
+                    dose="1 顆",
+                    time_slots=["08:30"],
+                    source="parent",
+                )
+            )
+            # 今日 pending 接送
+            session.add(
+                StudentDismissalCall(
+                    student_id=student.id,
+                    classroom_id=classroom.id,
+                    requested_by_user_id=user.id,
+                    status="pending",
+                    requested_at=datetime.now(),
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get(
+            "/api/parent/home/today-status", cookies={"access_token": token}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["children"]) == 1
+        c = data["children"][0]
+        assert c["name"] == "小明"
+        assert c["attendance"]["status"] == "出席"
+        assert c["leave"]["type"] == "病假"
+        assert c["leave"]["status"] == "approved"
+        assert c["medication"]["has_order"] is True
+        assert c["medication"]["order_count"] == 1
+        assert c["dismissal"]["status"] == "pending"
 
 
 class TestRoleIsolation:

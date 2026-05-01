@@ -975,6 +975,10 @@ async def reject_registration(
         reg.is_active = False
         reg.match_status = "rejected"
         reg.pending_review = False
+        # Phase 3：null 掉查詢碼 hash — 即使後續有人手動把 is_active 改回 True,
+        # 舊 token 也無法用來打 /public/query-by-token（hash 比對不上 None）。
+        # rejected 的 reg 沒有新 token 要發給誰，直接 invalidate 即可。
+        reg.query_token_hash = None
         reg.reviewed_by = current_user.get("username")
         reg.reviewed_at = datetime.now()
         reason = body.reason  # validator 已保證非空且已 strip
