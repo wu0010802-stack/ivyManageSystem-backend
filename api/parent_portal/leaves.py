@@ -31,7 +31,10 @@ from models.database import (
 )
 from models.portfolio import ATTACHMENT_OWNER_STUDENT_LEAVE
 from models.student_leave import LEAVE_TYPES
-from services.student_leave_service import apply_attendance_for_leave
+from services.student_leave_service import (
+    apply_attendance_for_leave,
+    revert_attendance_for_leave,
+)
 from utils.auth import require_parent_role
 from utils.file_upload import (
     read_upload_with_size_check,
@@ -378,11 +381,12 @@ def cancel_leave(
     leave_id: int,
     current_user: dict = Depends(require_parent_role()),
 ):
-    """僅 status=='pending' 可取消（approved 後須由教師反向處理）。"""
+    """僅 status='approved' 且 start_date > today 可取消，並反向清除 attendance。"""
     user_id = current_user["user_id"]
+    today = date.today()
     session = get_session()
     try:
-        # F-004：同 GET，「申請不存在」與「不屬於本家庭」collapse 為單一 403。
+        # F-004：「申請不存在」與「不屬於本家庭」collapse 為單一 403。
         _, owned_student_ids = _get_parent_student_ids(session, user_id)
         item = (
             session.query(StudentLeaveRequest)
@@ -391,10 +395,13 @@ def cancel_leave(
         )
         if item is None or item.student_id not in owned_student_ids:
             raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        if item.status != "pending":
+        if item.status != "approved":
             raise HTTPException(
                 status_code=400, detail=f"狀態為 {item.status}，無法取消"
             )
+        if item.start_date <= today:
+            raise HTTPException(status_code=400, detail="請假期間已開始，無法取消")
+        revert_attendance_for_leave(session, item)
         item.status = "cancelled"
         item.updated_at = datetime.now()
         session.commit()

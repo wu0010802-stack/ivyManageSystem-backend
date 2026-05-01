@@ -551,3 +551,61 @@ def test_create_leave_rejects_overlap_with_existing_approved(leave_client):
     )
     assert res.status_code == 400
     assert "已成立" in res.json()["detail"]
+
+
+def test_cancel_only_allowed_for_future_start_date(leave_client):
+    client, session_factory = leave_client
+    today = date.today()
+    with session_factory() as s:
+        user, _, student, _ = _setup_family(s)
+        # 已開始（今日）的不可 cancel
+        past = StudentLeaveRequest(
+            student_id=student.id,
+            applicant_user_id=user.id,
+            leave_type="病假",
+            start_date=today,
+            end_date=today,
+            status="approved",
+            reviewed_at=datetime.now(),
+        )
+        # 未來的可 cancel
+        future = StudentLeaveRequest(
+            student_id=student.id,
+            applicant_user_id=user.id,
+            leave_type="事假",
+            start_date=today + timedelta(days=3),
+            end_date=today + timedelta(days=4),
+            status="approved",
+            reviewed_at=datetime.now(),
+        )
+        s.add_all([past, future])
+        s.commit()
+        token = _parent_token(user)
+        past_id, future_id = past.id, future.id
+
+    # 已開始 → 400
+    r1 = client.post(
+        f"/api/parent/student-leaves/{past_id}/cancel",
+        cookies={"access_token": token},
+    )
+    assert r1.status_code == 400
+    detail = r1.json()["detail"]
+    assert "已開始" in detail or "無法取消" in detail
+
+    # 未來 → 200，且 attendance 反向清除
+    with session_factory() as s:
+        from services.student_leave_service import apply_attendance_for_leave
+
+        leave = s.query(StudentLeaveRequest).filter_by(id=future_id).one()
+        apply_attendance_for_leave(s, leave)
+        s.commit()
+    r2 = client.post(
+        f"/api/parent/student-leaves/{future_id}/cancel",
+        cookies={"access_token": token},
+    )
+    assert r2.status_code == 200
+    with session_factory() as s:
+        rec = s.query(StudentLeaveRequest).filter_by(id=future_id).one()
+        assert rec.status == "cancelled"
+        atts = s.query(StudentAttendance).filter_by(student_id=rec.student_id).all()
+        assert atts == []
