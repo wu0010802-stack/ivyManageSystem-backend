@@ -1,7 +1,7 @@
 """Shared dashboard / notification query service."""
 
 from calendar import monthrange
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from cachetools import TTLCache
 from sqlalchemy import and_, case, func
@@ -14,11 +14,13 @@ from models.database import (
     SchoolEvent,
     Student,
     StudentAttendance,
+    StudentLeaveRequest,
 )
 from services.activity_service import activity_service
 from services.report_cache_service import report_cache_service
 from services.student_attendance_report import build_attendance_summary
 from utils.permissions import Permission, has_permission
+from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
 
 EVENT_TYPE_LABELS = {
     "meeting": "會議",
@@ -274,6 +276,30 @@ class DashboardQueryService:
 
         return sections
 
+    def _count_recent_parent_leaves(
+        self, session, current_user: dict | None, *, days: int = 7
+    ) -> int:
+        """近 `days` 天內家長提交的請假數（班級 scope）。
+
+        計算 status approved/cancelled 且 created_at 在最近 N 天內的紀錄。
+        班級 scope：非 admin 只看自己可存取的班級。
+        """
+        since = datetime.now() - timedelta(days=days)
+        q = (
+            session.query(StudentLeaveRequest.id)
+            .join(Student, Student.id == StudentLeaveRequest.student_id)
+            .filter(
+                StudentLeaveRequest.created_at >= since,
+                StudentLeaveRequest.status.in_(("approved", "cancelled")),
+            )
+        )
+        if current_user is not None and not is_unrestricted(current_user):
+            allowed = accessible_classroom_ids(session, current_user)
+            if not allowed:
+                return 0
+            q = q.filter(Student.classroom_id.in_(allowed))
+        return q.count()
+
     def build_today_medication_summary(
         self,
         session,
@@ -416,6 +442,19 @@ class DashboardQueryService:
             graduation_preview = self.build_graduation_preview(session)
             if graduation_preview:
                 reminders.append(graduation_preview)
+
+        if has_permission(user_permissions, Permission.STUDENTS_READ):
+            recent_count = self._count_recent_parent_leaves(session, current_user)
+            if recent_count > 0:
+                action_items.append(
+                    {
+                        "type": "student_leave_recent",
+                        "title": "家長新提交請假",
+                        "count": recent_count,
+                        "route": "/student-leaves",
+                        "priority": self._priority_for_count(recent_count),
+                    }
+                )
 
         # 今日待辦用藥（依班級 scope 過濾，teacher 僅看自己班）
         if has_permission(user_permissions, Permission.STUDENTS_HEALTH_READ):
