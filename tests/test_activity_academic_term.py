@@ -524,8 +524,23 @@ class TestPublicRegisterAutoLinksStudent:
         other_sem = 2 if sem == 1 else 1
         with sf() as s:
             _admin(s)
+            classroom = Classroom(
+                name="海豚班", is_active=True, school_year=sy, semester=sem
+            )
+            s.add(classroom)
+            s.flush()
+            # F-030：未驗證身分（unmatched）的重複送件會走 silent-success（201、不寫 DB）。
+            # 這個測試是要驗「同學期 dedup 觸發明確 400」，所以要 seed 對應 Student 讓
+            # parent_phone 比對到，走「matched 家長」分流。
             s.add(
-                Classroom(name="海豚班", is_active=True, school_year=sy, semester=sem)
+                Student(
+                    student_id="S001",
+                    name="王小明",
+                    birthday=date(2020, 1, 1),
+                    classroom_id=classroom.id,
+                    parent_phone="0912345678",
+                    is_active=True,
+                )
             )
             s.add(
                 ActivityCourse(
@@ -563,7 +578,7 @@ class TestPublicRegisterAutoLinksStudent:
         r1 = client.post("/api/activity/public/register", json=payload)
         assert r1.status_code == 201
 
-        # 同學期再報 → 400（同 phone 的 soft dedup 會在 409/400 區間；同名+生日也擋）
+        # 同學期再報 → 400（matched 家長走明確 dedup 訊息；同名+生日同學期已存在）
         r2 = client.post("/api/activity/public/register", json=payload)
         assert r2.status_code == 400
 

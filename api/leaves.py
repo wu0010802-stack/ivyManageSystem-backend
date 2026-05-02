@@ -1724,8 +1724,6 @@ def batch_approve_leaves(
                     _is_reject_of_approved,
                     _approval_log_id,
                 ) in changes:
-                    succeeded.append(leave_id)
-
                     # 個人 LINE 推播（審核結果）
                     if _line_service is not None:
                         try:
@@ -1747,6 +1745,10 @@ def batch_approve_leaves(
                             )
 
                     # approve 或 reject-of-approved 都需重算薪資
+                    # Why: succeeded 必須等到「假單狀態 commit + 薪資重算成功」兩步都 OK
+                    # 才寫入；不然會出現「假單已核准但薪資仍是舊值」的中間狀態，
+                    # 呼叫端誤以為一切就緒並進 finalize，把錯薪資封存。
+                    recalc_failed = False
                     if approval_changed and _salary_engine is not None:
                         emp_id = leave.employee_id
                         months: set = set()
@@ -1765,6 +1767,7 @@ def batch_approve_leaves(
                                     emp_id, yr, mo
                                 )
                         except Exception as se:
+                            recalc_failed = True
                             logger.error(
                                 "批次審核後薪資重算失敗（假單 #%d）：%s", leave_id, se
                             )
@@ -1791,6 +1794,18 @@ def batch_approve_leaves(
                                     exc_info=True,
                                 )
                                 session.rollback()
+                            failed.append(
+                                {
+                                    "id": leave_id,
+                                    "reason": (
+                                        "假單已審核但薪資重算失敗，已標 stale，"
+                                        "請手動前往薪資頁面重新計算"
+                                    ),
+                                }
+                            )
+
+                    if not recalc_failed:
+                        succeeded.append(leave_id)
             except Exception as e:
                 session.rollback()
                 for leave_id, *_ in changes:

@@ -269,6 +269,89 @@ class TestBatchApproveLeaveRecalcFailureMarksStale:
         rec = _get_record(sf, emp_id)
         assert rec.needs_recalc is True
 
+    def test_batch_approve_recalc_failure_excludes_from_succeeded(self, stale_client):
+        """重算失敗的假單不可留在 succeeded[];應改進 failed[] 提示人工處理。
+
+        Why: 舊版 succeeded.append() 在 recalc try 之前無條件執行,呼叫端
+        以為一切就緒並進 finalize,把錯薪資封存。對齊 single-leave 路徑
+        在重算失敗時讓使用者明確知道有人工處理項。
+        """
+        client, sf = stale_client
+        emp_id = _seed_employee(sf, "員工A", "A001")
+        _seed_salary_record(sf, emp_id, needs_recalc=False)
+        with sf() as session:
+            leave = LeaveRecord(
+                employee_id=emp_id,
+                leave_type="事假",
+                start_date=datetime(2026, 3, 10),
+                end_date=datetime(2026, 3, 10),
+                leave_hours=8,
+                reason="test",
+                is_approved=None,
+            )
+            session.add(leave)
+            session.commit()
+            leave_id = leave.id
+        _admin_login(client, sf)
+
+        broken_engine = MagicMock()
+        broken_engine.process_salary_calculation.side_effect = RuntimeError("模擬")
+        old = leaves_module._salary_engine
+        leaves_module._salary_engine = broken_engine
+        try:
+            res = client.post(
+                "/api/leaves/batch-approve",
+                json={"ids": [leave_id], "approved": True},
+            )
+        finally:
+            leaves_module._salary_engine = old
+
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert (
+            leave_id not in body["succeeded"]
+        ), f"重算失敗的假單不應在 succeeded[]:{body}"
+        assert any(
+            item["id"] == leave_id for item in body["failed"]
+        ), f"重算失敗的假單應在 failed[] 並附原因:{body}"
+
+    def test_batch_approve_recalc_success_keeps_succeeded(self, stale_client):
+        """recalc 成功時必須留在 succeeded[],不能被新流程誤殺。"""
+        client, sf = stale_client
+        emp_id = _seed_employee(sf, "員工A", "A001")
+        _seed_salary_record(sf, emp_id, needs_recalc=False)
+        with sf() as session:
+            leave = LeaveRecord(
+                employee_id=emp_id,
+                leave_type="事假",
+                start_date=datetime(2026, 3, 10),
+                end_date=datetime(2026, 3, 10),
+                leave_hours=8,
+                reason="test",
+                is_approved=None,
+            )
+            session.add(leave)
+            session.commit()
+            leave_id = leave.id
+        _admin_login(client, sf)
+
+        ok_engine = MagicMock()
+        ok_engine.process_salary_calculation.return_value = None
+        old = leaves_module._salary_engine
+        leaves_module._salary_engine = ok_engine
+        try:
+            res = client.post(
+                "/api/leaves/batch-approve",
+                json={"ids": [leave_id], "approved": True},
+            )
+        finally:
+            leaves_module._salary_engine = old
+
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert leave_id in body["succeeded"], body
+        assert all(item["id"] != leave_id for item in body["failed"]), body
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P1.4 會議 CRUD → 標 stale

@@ -275,8 +275,10 @@ def get_finance_summary_detail(
 ):
     """單月收支明細：學費 / 才藝 / 薪資三來源原始交易列表（下鑽用）。
 
-    F-031：薪資逐員金額（gross/net/employer_benefit/real_cost）屬 SALARY_READ 範疇，
-    REPORTS 持有者若非 admin/hr 不可下鑽到逐員實發；此處依角色層遮罩 salary[] 欄位。
+    F-031：薪資逐員金額（gross/net/festival/overtime/employer_benefit/real_cost）
+    屬 SALARY_READ 範疇；REPORTS 持有者若非 admin/hr 不可下鑽到逐員實發/獎金，
+    此處依角色層遮罩 salary[] 欄位。festival_bonus / overtime_bonus 同樣屬個薪敏感
+    （可推回個人總所得），必須一併遮罩。
     """
     from utils.salary_access import has_full_salary_view, mask_dict_fields
 
@@ -287,7 +289,14 @@ def get_finance_summary_detail(
             result["salary"] = [
                 mask_dict_fields(
                     r,
-                    ("gross_salary", "net_salary", "employer_benefit", "real_cost"),
+                    (
+                        "gross_salary",
+                        "net_salary",
+                        "festival_bonus",
+                        "overtime_bonus",
+                        "employer_benefit",
+                        "real_cost",
+                    ),
                     placeholder=None,
                 )
                 for r in result.get("salary", [])

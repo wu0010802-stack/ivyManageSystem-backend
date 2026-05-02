@@ -163,14 +163,19 @@ class TestEmployeeSelfEdit:
         assert res.status_code == 200
 
     def test_pure_admin_without_employee_id_can_edit_salary(self, antitheft_client):
-        """純管理員（employee_id=None）本身無員工身份，不受自改守衛限制。"""
+        """純管理員（employee_id=None）本身無員工身份，不受自改守衛限制。
+
+        2026-05-02 起金額類欄位（base_salary 等）需 adjustment_reason；
+        delta>1000 還需 ACTIVITY_PAYMENT_APPROVE。pure admin 持 -1 全權，
+        滿足條件後 200。
+        """
         client, sf = antitheft_client
         with sf() as s:
             emp = _make_employee(s, name="員工乙", base_salary=30000)
             _make_user(
                 s,
                 username="pure_admin",
-                permissions=-1,  # 全部權限
+                permissions=-1,  # 全部權限（含 ACTIVITY_PAYMENT_APPROVE）
                 employee_id=None,
             )
             s.commit()
@@ -179,7 +184,7 @@ class TestEmployeeSelfEdit:
         assert _login(client, "pure_admin").status_code == 200
         res = client.put(
             f"/api/employees/{emp_id}",
-            json={"base_salary": 40000},
+            json={"base_salary": 40000, "adjustment_reason": "年度調薪 2026"},
         )
         assert res.status_code == 200
 
