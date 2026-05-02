@@ -58,6 +58,7 @@ from api.dismissal_calls import (
     init_dismissal_line_service,
 )
 from api.dismissal_ws import ws_router as dismissal_ws_router
+from api.contact_book_ws import ws_router as contact_book_ws_router
 from api.line_webhook import router as line_webhook_router, init_webhook_service
 from api.gov_reports import router as gov_reports_router, init_gov_report_services
 from api.fees import router as fees_router
@@ -534,6 +535,7 @@ app.include_router(approval_settings_router)
 app.include_router(activity_router)
 app.include_router(dismissal_calls_router)
 app.include_router(dismissal_ws_router)  # WebSocket（路徑已含 /ws/...）
+app.include_router(contact_book_ws_router)  # 聯絡簿 WebSocket（教師 + 家長 channel）
 app.include_router(line_webhook_router)
 app.include_router(gov_reports_router)
 app.include_router(fees_router)

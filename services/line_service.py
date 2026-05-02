@@ -638,6 +638,30 @@ class LineService:
         body += "\n請開啟家長 App 完成簽閱。"
         self._push_to_user(line_user_id, body)
 
+    def notify_parent_contact_book_published(
+        self,
+        line_user_id: str,
+        student_name: str,
+        log_date: date,
+        teacher_note_preview: Optional[str] = None,
+        photo_count: int = 0,
+    ) -> None:
+        """每日聯絡簿發布通知（家長端個人推播）。"""
+        body = (
+            f"【今日聯絡簿】\n"
+            f"學生：{student_name}\n"
+            f"日期：{log_date.isoformat()}"
+        )
+        if teacher_note_preview:
+            snippet = teacher_note_preview.strip()
+            if len(snippet) > 60:
+                snippet = snippet[:60] + "…"
+            body += f"\n老師留言：{snippet}"
+        if photo_count > 0:
+            body += f"\n附 {photo_count} 張照片"
+        body += "\n請開啟家長 App 查看完整內容。"
+        self._push_to_user(line_user_id, body)
+
     def handle_webhook_message(
         self,
         line_user_id: str,
