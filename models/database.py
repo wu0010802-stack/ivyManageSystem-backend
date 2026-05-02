@@ -115,6 +115,11 @@ from models.parent_message import (
     ParentMessageThread,
 )
 from models.parent_notification import ParentNotificationPreference
+from models.contact_book import (
+    StudentContactBookEntry,
+    StudentContactBookAck,
+    StudentContactBookReply,
+)
 
 __all__ = [
     # base

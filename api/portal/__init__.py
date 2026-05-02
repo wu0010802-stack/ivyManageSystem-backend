@@ -25,6 +25,10 @@ from .assessments import router as assessments_router
 from .student_attendance import router as student_attendance_router
 from .dismissal_calls import router as dismissal_calls_router
 from .activity import router as activity_router
+from .contact_book import (
+    init_contact_book_line_service,
+    router as contact_book_router,
+)
 from .parent_messages import (
     router as parent_messages_router,
     init_parent_messages_line_service,
@@ -53,6 +57,7 @@ router.include_router(student_attendance_router, tags=["portal-student-attendanc
 router.include_router(dismissal_calls_router, tags=["portal-dismissal-calls"])
 router.include_router(activity_router, tags=["portal-activity"])
 router.include_router(parent_messages_router, tags=["portal-parent-messages"])
+router.include_router(contact_book_router, tags=["portal-contact-book"])
 
 
 def init_portal_notify_services(line_service):
@@ -60,3 +65,4 @@ def init_portal_notify_services(line_service):
     init_leave_notify(line_service)
     init_overtime_notify(line_service)
     init_parent_messages_line_service(line_service)
+    init_contact_book_line_service(line_service)

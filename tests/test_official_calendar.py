@@ -453,6 +453,13 @@ class TestCalendarFeedApi:
         login_res = _login(client, "calendar_admin")
         assert login_res.status_code == 200
 
+        # 前景 feed 已不打上游（避免 DGPA 阻塞使用者）；
+        # 由背景排程或這裡的 force sync 先把 cache 灌好，feed 再讀本地 cache。
+        with session_factory() as session:
+            official_calendar_module.ensure_official_calendar_synced(
+                session, 2026, force=True
+            )
+
         res = client.get("/api/events/calendar-feed", params={"year": 2026, "month": 2})
         assert res.status_code == 200
 
@@ -543,6 +550,12 @@ class TestCalendarFeedApi:
 
         login_res = _login(client, "portal_teacher")
         assert login_res.status_code == 200
+
+        # 前景 feed 已不打上游；先 force sync 灌 cache，portal feed 再讀本地 cache。
+        with session_factory() as session:
+            official_calendar_module.ensure_official_calendar_synced(
+                session, 2026, force=True
+            )
 
         res = client.get("/api/portal/calendar", params={"year": 2026, "month": 2})
         assert res.status_code == 200

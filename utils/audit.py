@@ -80,7 +80,9 @@ ENTITY_PATTERNS = [
     (r"/api/parent/events/.+/ack", "parent_event_ack"),
     (r"/api/parent/notifications", "parent_notification_pref"),
     (r"/api/parent/student-leaves", "parent_leave"),
+    (r"/api/parent/contact-book", "contact_book_entry"),
     (r"/api/portal/parent-messages", "parent_message"),
+    (r"/api/portal/contact-book", "contact_book_entry"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -121,6 +123,7 @@ ENTITY_LABELS = {
     "parent_event_ack": "事件簽收",
     "parent_notification_pref": "家長通知偏好",
     "parent_leave": "家長學生請假",
+    "contact_book_entry": "聯絡簿",
     # F-033：匯出端點顯式 audit 用
     "shift_assignment": "排班",
     "holiday": "國定假日",

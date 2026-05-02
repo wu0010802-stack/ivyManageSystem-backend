@@ -420,6 +420,8 @@ def _seed_salary_record(s):
         salary_year=2026,
         salary_month=4,
         gross_salary=42000,
+        festival_bonus=8000,
+        overtime_bonus=3000,
         labor_insurance_employer=2500,
         health_insurance_employer=1400,
         pension_employer=1800,
@@ -454,7 +456,14 @@ class TestF031_FinanceSummary:
         assert "salary" in data
         assert len(data["salary"]) >= 1
         for row in data["salary"]:
-            for k in ("gross_salary", "net_salary", "employer_benefit", "real_cost"):
+            for k in (
+                "gross_salary",
+                "net_salary",
+                "festival_bonus",
+                "overtime_bonus",
+                "employer_benefit",
+                "real_cost",
+            ):
                 assert row.get(k) is None, f"{k} 應被遮罩，實際 {row.get(k)}"
 
     def test_supervisor_export_sheet5_masked(self, field_leak_client):
@@ -504,7 +513,14 @@ class TestF031_FinanceSummary:
         assert res.status_code == 200, res.text
         data = res.json()
         for row in data["salary"]:
-            for k in ("gross_salary", "net_salary", "employer_benefit", "real_cost"):
+            for k in (
+                "gross_salary",
+                "net_salary",
+                "festival_bonus",
+                "overtime_bonus",
+                "employer_benefit",
+                "real_cost",
+            ):
                 assert row.get(k) is None, f"自訂角色仍應被遮罩，{k}={row.get(k)}"
 
     def test_hr_detail_unmasked(self, field_leak_client):

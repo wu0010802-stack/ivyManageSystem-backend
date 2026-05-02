@@ -29,6 +29,7 @@ PARENT_NOTIFICATION_EVENT_TYPES = (
     "fee_due",  # 學費到期
     "leave_result",  # 學生請假審核結果
     "attendance_alert",  # 出席異常
+    "contact_book_published",  # 每日聯絡簿發布（v3.1）
 )
 
 PARENT_NOTIFICATION_CHANNELS = ("line",)  # v1 只支援 LINE

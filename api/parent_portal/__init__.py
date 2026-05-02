@@ -21,6 +21,7 @@ from .announcements import router as announcements_router
 from .attendance import router as attendance_router
 from .binding_admin import router as binding_admin_router
 from .calendar import router as calendar_router
+from .contact_book import router as contact_book_router
 from .events import router as events_router
 from .fees import router as fees_router
 from .home import router as home_router
@@ -55,6 +56,7 @@ parent_router.include_router(messages_router)
 parent_router.include_router(notifications_router)
 parent_router.include_router(parent_downloads_router)
 parent_router.include_router(calendar_router)
+parent_router.include_router(contact_book_router)
 
 
 # 行政端綁定碼 router（前綴 /api/guardians，需 GUARDIANS_WRITE）

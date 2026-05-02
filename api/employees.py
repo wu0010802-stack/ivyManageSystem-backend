@@ -14,7 +14,11 @@ from sqlalchemy.orm import joinedload
 from models.database import get_session, session_scope, Employee, Classroom, JobTitle
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
-from utils.finance_guards import require_not_self_edit
+from utils.finance_guards import (
+    require_adjustment_reason,
+    require_finance_approve,
+    require_not_self_edit,
+)
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
 from utils.salary_access import can_view_salary_of
@@ -166,6 +170,9 @@ class EmployeeUpdate(BaseModel):
     address: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
+    # 修改薪資金額欄位（base_salary / hourly_rate / insurance_salary_level）時必填，
+    # 與 salary manual-adjust 同流程：留檔備查 + 大額時觸發 require_finance_approve。
+    adjustment_reason: Optional[str] = Field(None, max_length=200)
 
 
 class OffboardRequest(BaseModel):
@@ -390,6 +397,16 @@ async def create_employee(
 
 _EMPLOYEE_SENSITIVE_FIELDS = {"id_number", "bank_account", "password_hash"}
 
+# 員工檔上「直接金額」性質的薪資欄位：被改動時觸發 manual-adjust 流程
+# （adjustment_reason 必填 + delta 合計超過閾值要金流簽核）。
+# 不含 hire_date / job_title_id / classroom_id 等「間接」欄位 — 那些雖然
+# 影響計薪，但由 require_not_self_edit 與封存月份守衛把關，不必走金流簽核。
+_EMPLOYEE_SALARY_AMOUNT_FIELDS = (
+    "base_salary",
+    "hourly_rate",
+    "insurance_salary_level",
+)
+
 
 @router.put("/employees/{employee_id}")
 async def update_employee(
@@ -407,9 +424,38 @@ async def update_employee(
 
         update_data = emp.model_dump(exclude_unset=True)
 
+        # adjustment_reason 不是 ORM 欄位；先剝出來，後續判定金流欄位是否被異動時使用。
+        raw_adjustment_reason = update_data.pop("adjustment_reason", None)
+
         # ── A 錢守衛：員工不得修改「自己」帳號的金流敏感欄位（底薪/時薪/投保級距等）
         # 純管理員（無 employee_id）不會被擋；一般 HR/主管改「他人」資料不受影響。
         require_not_self_edit(current_user, employee_id, update_data.keys())
+
+        # ── A 錢守衛：修改他人薪資金額欄位需 (1) 有原因留檔 (2) 變動超閾值要金流簽核
+        # Why: 沒這道守衛時 EMPLOYEES_WRITE 持有者可直接改 base_salary，
+        # 等同繞過 salary manual-adjust 的 reason / 金額上限 / 簽核流程，
+        # 之後薪資重算就會把惡意金額落入正式薪資。對齊 manual-adjust 用合計門檻
+        # （封死「拆欄各 999」繞過路徑）。
+        amount_changes = []  # [(field, old, new)]
+        amount_delta_sum = 0
+        for field_name in _EMPLOYEE_SALARY_AMOUNT_FIELDS:
+            if field_name not in update_data or update_data[field_name] is None:
+                continue
+            old_val = float(getattr(db_employee, field_name) or 0)
+            new_val = float(update_data[field_name])
+            if old_val == new_val:
+                continue
+            amount_changes.append((field_name, old_val, new_val))
+            amount_delta_sum += abs(new_val - old_val)
+
+        adjustment_reason_clean: Optional[str] = None
+        if amount_changes:
+            adjustment_reason_clean = require_adjustment_reason(raw_adjustment_reason)
+            require_finance_approve(
+                int(amount_delta_sum),
+                current_user,
+                action_label="員工檔薪資欄位調整總額",
+            )
 
         # 擷取 before 值（含可能被 side effect 異動的欄位），供 audit diff 使用。
         # title 不在 update_data 中，但 job_title_id 變動時會同步 db_employee.title，
@@ -494,7 +540,12 @@ async def update_employee(
             else:
                 diff[k] = {"before": old_val, "after": new_val}
         if diff:
-            request.state.audit_changes = diff
+            audit_payload: dict = {"diff": diff}
+            if amount_changes:
+                audit_payload["adjustment_reason"] = adjustment_reason_clean
+                audit_payload["amount_delta_sum"] = int(amount_delta_sum)
+                audit_payload["amount_fields"] = [f for f, _, _ in amount_changes]
+            request.state.audit_changes = audit_payload
 
         return {"message": "員工資料更新成功", "id": db_employee.id}
     except HTTPException:

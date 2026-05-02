@@ -281,6 +281,57 @@ def _is_cache_fresh(sync: OfficialCalendarSync | None) -> bool:
     return datetime.now() - sync.last_synced_at < _FRESH_CACHE_WINDOW
 
 
+def get_cached_official_sync_status(session, year: int) -> dict[str, Any]:
+    """純讀本地快取，不打上游。前景 feed 用，避免阻塞使用者操作。
+
+    回傳 shape 與 ``ensure_official_calendar_synced`` 一致：
+    - 快取新鮮：``status="synced"``
+    - 快取存在但過期：``status="cached"`` + warning（提醒排程未跟上）
+    - 完全無快取：``status="warning"`` + warning（提示需先 force sync）
+
+    冷啟動 / 排程未啟用時這裡只會回 warning，使用者仍可看到（可能空的）feed，
+    不會被 DGPA 網路或 TLS 故障拖住請求。實際對上游同步交給
+    ``services/official_calendar_scheduler``（背景每日 force sync）或
+    管理員手動觸發 ``ensure_official_calendar_synced(force=True)``。
+    """
+    sync = (
+        session.query(OfficialCalendarSync)
+        .filter(
+            OfficialCalendarSync.sync_year == year,
+            OfficialCalendarSync.source == OFFICIAL_SOURCE,
+        )
+        .first()
+    )
+    cache_available = _has_official_cache(session, year)
+    last_synced_iso = (
+        sync.last_synced_at.isoformat() if sync and sync.last_synced_at else None
+    )
+
+    if not cache_available:
+        return {
+            "status": "warning",
+            "warning": _FRIENDLY_SYNC_WARNING_NO_CACHE,
+            "used_cache": False,
+            "last_synced_at": last_synced_iso,
+        }
+
+    if _is_cache_fresh(sync):
+        return {
+            "status": "synced",
+            "warning": None,
+            "used_cache": False,
+            "last_synced_at": last_synced_iso,
+        }
+
+    # 快取存在但過期或上次同步留有 last_error：仍顯示舊資料 + 警告
+    return {
+        "status": "cached",
+        "warning": _FRIENDLY_SYNC_WARNING,
+        "used_cache": True,
+        "last_synced_at": last_synced_iso,
+    }
+
+
 def ensure_official_calendar_synced(
     session, year: int, *, force: bool = False
 ) -> dict[str, Any]:
@@ -438,7 +489,9 @@ def _official_item_to_feed_dict(
 
 
 def build_admin_calendar_feed(session, year: int, month: int) -> dict[str, Any]:
-    sync_info = ensure_official_calendar_synced(session, year)
+    # 前景只讀本地快取，不打上游；DGPA TLS / timeout 故障不拖慢使用者操作。
+    # 上游 freshness 由 official_calendar_scheduler 背景排程維護。
+    sync_info = get_cached_official_sync_status(session, year)
 
     import calendar as cal_module
 
