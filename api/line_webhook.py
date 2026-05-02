@@ -73,8 +73,19 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
         event_type = event.get("type")
         source = event.get("source", {})
         source_user_id = source.get("userId", "")
+        source_group_id = source.get("groupId", "")
+        source_room_id = source.get("roomId", "")
         reply_token = event.get("replyToken", "")
         webhook_event_id = event.get("webhookEventId", "")
+
+        if source_group_id or source_room_id:
+            logger.info(
+                "LINE webhook source: type=%s groupId=%s roomId=%s userId=%s",
+                event_type,
+                source_group_id or "-",
+                source_room_id or "-",
+                source_user_id or "-",
+            )
 
         # 去重：webhookEventId UNIQUE 已處理過則跳過
         if _line_service and webhook_event_id:
@@ -144,6 +155,19 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
             data = postback.get("data", "")
             if source_user_id and data and _line_service:
                 _dispatch_postback(source_user_id, data, reply_token)
+
+        elif event_type == "join":
+            # Bot 被邀請進群組或聊天室：回覆該群組/聊天室 ID，
+            # 方便管理員複製到「系統設定 > LINE 設定 > Target ID」。
+            target_label = "群組" if source_group_id else "聊天室"
+            target_id = source_group_id or source_room_id
+            if _line_service and target_id and reply_token:
+                _line_service._reply(
+                    reply_token,
+                    f"本{target_label} ID 是：\n{target_id}\n\n"
+                    "請複製此 ID 至「系統設定 > LINE 設定 > Target ID」"
+                    "並儲存，即可開始接收行政通知（請假/加班/薪資/接送）。",
+                )
 
         else:
             logger.debug("LINE webhook 收到未處理事件類型: %s", event_type)
