@@ -313,3 +313,50 @@ def test_multi_device_family_isolation(parent_client):
         cookies={"parent_refresh_token": raw_B},
     )
     assert r3.status_code == 200
+
+
+def test_logout_revokes_current_family_only(parent_client):
+    """logout 應 revoke 當前 family + 清 cookie；其他裝置 family 不受影響。"""
+    client, session_factory = parent_client
+    access_A, refresh_A = _login(client, session_factory, "token-AAAAAA", "U_A")
+
+    # 第二裝置（family B）
+    from api.parent_portal.auth import _gen_refresh_raw, _hash_refresh
+    import uuid
+
+    with session_factory() as s:
+        u = s.query(User).filter(User.line_user_id == "U_A").first()
+        raw_B = _gen_refresh_raw()
+        row_B = ParentRefreshToken(
+            user_id=u.id,
+            family_id=str(uuid.uuid4()),
+            token_hash=_hash_refresh(raw_B),
+            expires_at=datetime.now() + timedelta(days=30),
+        )
+        s.add(row_B)
+        s.commit()
+        family_B = row_B.family_id
+
+    # 登出（帶 access_A + refresh_A）
+    r = client.post(
+        "/api/parent/auth/logout",
+        cookies={"access_token": access_A, "parent_refresh_token": refresh_A},
+    )
+    assert r.status_code == 204
+
+    # family A 全 revoked、family B 不變
+    with session_factory() as s:
+        rows = s.query(ParentRefreshToken).all()
+        for row in rows:
+            if row.family_id == family_B:
+                assert row.revoked_at is None
+            else:
+                assert row.revoked_at is not None
+
+    # cookie 已清（response 寫了清除指令；測試端 cookies jar 可能仍保留舊值
+    # 因此用 family B 的 raw 跨裝置去 refresh 應仍 OK）
+    r2 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": raw_B},
+    )
+    assert r2.status_code == 200

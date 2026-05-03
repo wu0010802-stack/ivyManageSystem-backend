@@ -530,22 +530,43 @@ def bind_additional_child(
 
 @router.post("/logout", status_code=204)
 def parent_logout(
+    request: Request,
     response: Response,
     current_user: dict = Depends(require_parent_role()),
 ):
-    """登出：清 cookie + bump token_version 使所有現有 token 立即失效。"""
+    """登出：清 cookie + bump token_version + 撤銷當前 refresh family。"""
     user_id = current_user["user_id"]
+    raw_refresh = request.cookies.get(_REFRESH_COOKIE)
+
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
         if user:
             user.token_version = (user.token_version or 0) + 1
-            session.commit()
+
+        if raw_refresh:
+            token_hash = _hash_refresh(raw_refresh)
+            row = (
+                session.query(ParentRefreshToken)
+                .filter(ParentRefreshToken.token_hash == token_hash)
+                .first()
+            )
+            if row is not None and row.revoked_at is None:
+                session.query(ParentRefreshToken).filter(
+                    ParentRefreshToken.family_id == row.family_id,
+                    ParentRefreshToken.revoked_at.is_(None),
+                ).update(
+                    {"revoked_at": _now()},
+                    synchronize_session=False,
+                )
+
+        session.commit()
     finally:
         session.close()
 
     clear_access_token_cookie(response)
     _clear_bind_token_cookie(response)
+    _clear_refresh_cookie(response)
     return Response(status_code=204)
 
 
