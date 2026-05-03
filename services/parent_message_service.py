@@ -207,3 +207,27 @@ def count_unread_for_parent(session, *, parent_user_id: int) -> int:
             q = q.filter(ParentMessage.created_at > cutoff)
         total += q.count()
     return total
+
+
+def count_unread_for_teacher(session, *, teacher_user_id: int) -> int:
+    """教師未讀訊息數：所有 thread 中 sender_role='parent' 且 created_at > teacher_last_read_at。"""
+    threads = (
+        session.query(ParentMessageThread)
+        .filter(
+            ParentMessageThread.teacher_user_id == teacher_user_id,
+            ParentMessageThread.deleted_at.is_(None),
+        )
+        .all()
+    )
+    total = 0
+    for t in threads:
+        cutoff = t.teacher_last_read_at
+        q = session.query(ParentMessage).filter(
+            ParentMessage.thread_id == t.id,
+            ParentMessage.sender_role == "parent",
+            ParentMessage.deleted_at.is_(None),
+        )
+        if cutoff is not None:
+            q = q.filter(ParentMessage.created_at > cutoff)
+        total += q.count()
+    return total

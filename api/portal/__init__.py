@@ -29,6 +29,9 @@ from .contact_book import (
     init_contact_book_line_service,
     router as contact_book_router,
 )
+from .contact_book_templates import router as contact_book_templates_router
+from .home import router as home_router
+from .medications import router as medications_router
 from .parent_messages import (
     router as parent_messages_router,
     init_parent_messages_line_service,
@@ -58,6 +61,11 @@ router.include_router(dismissal_calls_router, tags=["portal-dismissal-calls"])
 router.include_router(activity_router, tags=["portal-activity"])
 router.include_router(parent_messages_router, tags=["portal-parent-messages"])
 router.include_router(contact_book_router, tags=["portal-contact-book"])
+router.include_router(
+    contact_book_templates_router, tags=["portal-contact-book-templates"]
+)
+router.include_router(home_router, tags=["portal-home"])
+router.include_router(medications_router, tags=["portal-medications"])
 
 
 def init_portal_notify_services(line_service):

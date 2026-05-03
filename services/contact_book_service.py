@@ -147,6 +147,114 @@ def publish_entry(
     return entry
 
 
+# 範本可套用欄位清單（與 ContactBookTemplate.fields 對應）
+TEMPLATE_FILLABLE_FIELDS = (
+    "mood",
+    "meal_lunch",
+    "meal_snack",
+    "nap_minutes",
+    "bowel",
+    "temperature_c",
+    "teacher_note",
+    "learning_highlight",
+)
+
+
+def apply_template_fields(
+    entry: StudentContactBookEntry,
+    template_fields: dict,
+    *,
+    only_fill_blank: bool = True,
+) -> list[str]:
+    """把 template_fields 套用到 entry。
+
+    only_fill_blank=True：僅填入「entry 為 None」的欄位（不蓋已填值，避免破壞）。
+    only_fill_blank=False：強制覆蓋（含 None → None）。
+
+    回傳：實際被修改的欄位名稱清單。
+    """
+    if not template_fields:
+        return []
+    changed: list[str] = []
+    for field in TEMPLATE_FILLABLE_FIELDS:
+        if field not in template_fields:
+            continue
+        new_val = template_fields[field]
+        if only_fill_blank:
+            cur_val = getattr(entry, field, None)
+            if cur_val not in (None, ""):
+                continue
+            if new_val in (None, ""):
+                continue
+        setattr(entry, field, new_val)
+        changed.append(field)
+    return changed
+
+
+def copy_yesterday_to_today(
+    session: Session,
+    *,
+    classroom_id: int,
+    target_date,
+    created_by_employee_id: int | None = None,
+) -> int:
+    """把昨日該班所有 entry 的欄位複製為當日草稿。
+
+    - 已存在當日 entry 的學生 skip（避免覆蓋既有資料）
+    - 從 yesterday(target_date - 1) 取每位學生最後一筆 entry，欄位整段複製
+    - 不複製 published_at / version（一律 NEW 草稿）
+    回傳：新建的 entry 數量。
+    """
+    from datetime import timedelta
+
+    yesterday = target_date - timedelta(days=1)
+    yesterday_entries = (
+        session.query(StudentContactBookEntry)
+        .filter(
+            StudentContactBookEntry.classroom_id == classroom_id,
+            StudentContactBookEntry.log_date == yesterday,
+            StudentContactBookEntry.deleted_at.is_(None),
+        )
+        .all()
+    )
+    if not yesterday_entries:
+        return 0
+
+    existing_today_student_ids = {
+        sid
+        for (sid,) in session.query(StudentContactBookEntry.student_id)
+        .filter(
+            StudentContactBookEntry.classroom_id == classroom_id,
+            StudentContactBookEntry.log_date == target_date,
+            StudentContactBookEntry.deleted_at.is_(None),
+        )
+        .all()
+    }
+
+    created = 0
+    for src in yesterday_entries:
+        if src.student_id in existing_today_student_ids:
+            continue
+        new_entry = StudentContactBookEntry(
+            student_id=src.student_id,
+            classroom_id=classroom_id,
+            log_date=target_date,
+            mood=src.mood,
+            meal_lunch=src.meal_lunch,
+            meal_snack=src.meal_snack,
+            nap_minutes=src.nap_minutes,
+            bowel=src.bowel,
+            temperature_c=src.temperature_c,
+            teacher_note=src.teacher_note,
+            learning_highlight=src.learning_highlight,
+            created_by_employee_id=created_by_employee_id,
+        )
+        session.add(new_entry)
+        created += 1
+    session.flush()
+    return created
+
+
 def compute_class_completion(
     session: Session,
     *,

@@ -465,6 +465,118 @@ class TestUnreadCount:
         assert n == 0
 
 
+class TestTeacherUnreadCount:
+    """教師端跨 thread 未讀總數（家長 → 教師方向）。"""
+
+    def test_teacher_unread_zero_when_no_thread(self, msg_client):
+        client, sf = msg_client
+        with sf() as session:
+            _, teacher, emp, _, _ = _seed(session)
+            session.commit()
+            t_tk = _teacher_token(teacher, emp.id)
+        n = client.get(
+            "/api/portal/parent-messages/unread-count",
+            cookies={"access_token": t_tk},
+        ).json()["unread_count"]
+        assert n == 0
+
+    def test_teacher_unread_increments_on_parent_reply(self, msg_client):
+        client, sf = msg_client
+        with sf() as session:
+            parent, teacher, emp, student, _ = _seed(session)
+            session.commit()
+            t_tk = _teacher_token(teacher, emp.id)
+            p_tk = _parent_token(parent)
+            sid, pid = student.id, parent.id
+        # 教師發起 thread
+        client.post(
+            "/api/portal/parent-messages/threads",
+            json={"student_id": sid, "parent_user_id": pid, "body": "通知"},
+            cookies={"access_token": t_tk},
+        )
+        with sf() as session:
+            tid = session.query(ParentMessageThread).first().id
+        # 家長回覆兩則
+        client.post(
+            f"/api/parent/messages/threads/{tid}/messages",
+            json={"body": "好"},
+            cookies={"access_token": p_tk},
+        )
+        client.post(
+            f"/api/parent/messages/threads/{tid}/messages",
+            json={"body": "謝謝"},
+            cookies={"access_token": p_tk},
+        )
+        # 教師查詢未讀
+        n = client.get(
+            "/api/portal/parent-messages/unread-count",
+            cookies={"access_token": t_tk},
+        ).json()["unread_count"]
+        assert n == 2
+
+    def test_teacher_mark_read_zeros_unread(self, msg_client):
+        client, sf = msg_client
+        with sf() as session:
+            parent, teacher, emp, student, _ = _seed(session)
+            session.commit()
+            t_tk = _teacher_token(teacher, emp.id)
+            p_tk = _parent_token(parent)
+            sid, pid = student.id, parent.id
+        client.post(
+            "/api/portal/parent-messages/threads",
+            json={"student_id": sid, "parent_user_id": pid, "body": "通知"},
+            cookies={"access_token": t_tk},
+        )
+        with sf() as session:
+            tid = session.query(ParentMessageThread).first().id
+        client.post(
+            f"/api/parent/messages/threads/{tid}/messages",
+            json={"body": "回覆"},
+            cookies={"access_token": p_tk},
+        )
+        # 教師標已讀
+        client.post(
+            f"/api/portal/parent-messages/threads/{tid}/read",
+            cookies={"access_token": t_tk},
+        )
+        n = client.get(
+            "/api/portal/parent-messages/unread-count",
+            cookies={"access_token": t_tk},
+        ).json()["unread_count"]
+        assert n == 0
+
+    def test_teacher_own_messages_dont_count(self, msg_client):
+        client, sf = msg_client
+        with sf() as session:
+            parent, teacher, emp, student, _ = _seed(session)
+            session.commit()
+            t_tk = _teacher_token(teacher, emp.id)
+            sid, pid = student.id, parent.id
+        # 教師連發 3 則
+        client.post(
+            "/api/portal/parent-messages/threads",
+            json={"student_id": sid, "parent_user_id": pid, "body": "1"},
+            cookies={"access_token": t_tk},
+        )
+        with sf() as session:
+            tid = session.query(ParentMessageThread).first().id
+        client.post(
+            f"/api/portal/parent-messages/threads/{tid}/messages",
+            json={"body": "2"},
+            cookies={"access_token": t_tk},
+        )
+        client.post(
+            f"/api/portal/parent-messages/threads/{tid}/messages",
+            json={"body": "3"},
+            cookies={"access_token": t_tk},
+        )
+        n = client.get(
+            "/api/portal/parent-messages/unread-count",
+            cookies={"access_token": t_tk},
+        ).json()["unread_count"]
+        assert n == 0
+
+
 # ════════════════════════════════════════════════════════════════════════
 # Thread 列表 + 訊息列表
 # ════════════════════════════════════════════════════════════════════════

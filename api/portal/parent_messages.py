@@ -38,6 +38,7 @@ from services.parent_message_service import (
     assert_teacher_is_homeroom,
     assert_thread_participant,
     can_recall,
+    count_unread_for_teacher,
     get_or_create_thread,
     mark_read,
 )
@@ -238,6 +239,22 @@ def _get_thread_for_teacher(
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────
+
+
+@router.get("/unread-count")
+def get_teacher_unread_count(
+    request: Request,
+    current_user: dict = Depends(require_permission(Permission.PARENT_MESSAGES_WRITE)),
+):
+    """教師端家長訊息未讀總數（跨所有 thread）。"""
+    user_id = current_user["user_id"]
+    session = get_session()
+    try:
+        count = count_unread_for_teacher(session, teacher_user_id=user_id)
+        request.state.audit_skip = True
+        return {"unread_count": count}
+    finally:
+        session.close()
 
 
 @router.get("/threads")

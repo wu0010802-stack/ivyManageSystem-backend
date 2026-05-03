@@ -35,8 +35,14 @@ from models.database import (
     StudentContactBookEntry,
     get_session,
 )
+from models.contact_book import ContactBookTemplate
 from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK
-from services.contact_book_service import compute_class_completion, publish_entry
+from services.contact_book_service import (
+    apply_template_fields,
+    compute_class_completion,
+    copy_yesterday_to_today,
+    publish_entry,
+)
 from utils.auth import require_permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.permissions import Permission
@@ -81,6 +87,21 @@ class ContactBookBatchPayload(BaseModel):
     classroom_id: int = Field(..., gt=0)
     log_date: date
     items: list[ContactBookBatchItem] = Field(..., min_length=1, max_length=100)
+
+
+class CopyYesterdayPayload(BaseModel):
+    classroom_id: int = Field(..., gt=0)
+    target_date: date
+
+
+class ApplyTemplatePayload(BaseModel):
+    template_id: int = Field(..., gt=0)
+    entry_ids: list[int] = Field(..., min_length=1, max_length=100)
+    only_fill_blank: bool = True
+
+
+class BatchPublishPayload(BaseModel):
+    entry_ids: list[int] = Field(..., min_length=1, max_length=100)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -467,6 +488,225 @@ async def upload_photo(
             ),
             "original_filename": att.original_filename,
         }
+    finally:
+        session.close()
+
+
+@router.get("/unpublished")
+def list_unpublished(
+    classroom_id: int = Query(..., gt=0),
+    log_date: date = Query(...),
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
+):
+    """列某班某日未發布草稿（含學生姓名），便於批次發布。"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        if current_user.get("role") == "teacher":
+            _assert_classroom_owned(session, emp.id, classroom_id)
+
+        entries = (
+            session.query(StudentContactBookEntry)
+            .filter(
+                StudentContactBookEntry.classroom_id == classroom_id,
+                StudentContactBookEntry.log_date == log_date,
+                StudentContactBookEntry.deleted_at.is_(None),
+                StudentContactBookEntry.published_at.is_(None),
+            )
+            .all()
+        )
+        if not entries:
+            return {
+                "classroom_id": classroom_id,
+                "log_date": log_date.isoformat(),
+                "items": [],
+            }
+        student_ids = [e.student_id for e in entries]
+        students = {
+            s.id: s
+            for s in session.query(Student).filter(Student.id.in_(student_ids)).all()
+        }
+        items = [
+            {
+                "id": e.id,
+                "student_id": e.student_id,
+                "student_name": (
+                    students.get(e.student_id).name
+                    if students.get(e.student_id)
+                    else None
+                ),
+                "version": e.version,
+                "updated_at": e.updated_at.isoformat() if e.updated_at else None,
+            }
+            for e in entries
+        ]
+        return {
+            "classroom_id": classroom_id,
+            "log_date": log_date.isoformat(),
+            "items": items,
+        }
+    finally:
+        session.close()
+
+
+@router.post("/copy-from-yesterday")
+def copy_from_yesterday(
+    payload: CopyYesterdayPayload,
+    request: Request,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_WRITE)),
+):
+    """把昨日該班所有 entry 欄位複製為今日草稿。已存在當日 entry 的學生 skip。"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        if current_user.get("role") == "teacher":
+            _assert_classroom_owned(session, emp.id, payload.classroom_id)
+
+        created = copy_yesterday_to_today(
+            session,
+            classroom_id=payload.classroom_id,
+            target_date=payload.target_date,
+            created_by_employee_id=emp.id,
+        )
+        session.commit()
+
+        request.state.audit_entity_id = str(payload.classroom_id)
+        request.state.audit_summary = (
+            f"教師複製昨日聯絡簿：classroom={payload.classroom_id} "
+            f"target_date={payload.target_date} created={created}"
+        )
+        return {
+            "classroom_id": payload.classroom_id,
+            "target_date": payload.target_date.isoformat(),
+            "created": created,
+        }
+    finally:
+        session.close()
+
+
+@router.post("/apply-template")
+def apply_template(
+    payload: ApplyTemplatePayload,
+    request: Request,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_WRITE)),
+):
+    """把範本欄位套用到指定 entry 列表。預設只填空欄位（不蓋已填值）。"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        # 取範本（personal 範本只允許 owner 用；shared 全員可用）
+        tpl = (
+            session.query(ContactBookTemplate)
+            .filter(
+                ContactBookTemplate.id == payload.template_id,
+                ContactBookTemplate.is_archived.is_(False),
+            )
+            .first()
+        )
+        if not tpl:
+            raise HTTPException(status_code=404, detail="範本不存在")
+        if tpl.scope == "personal" and tpl.owner_user_id != current_user.get("user_id"):
+            raise HTTPException(status_code=403, detail="無權使用此個人範本")
+
+        entries = (
+            session.query(StudentContactBookEntry)
+            .filter(
+                StudentContactBookEntry.id.in_(payload.entry_ids),
+                StudentContactBookEntry.deleted_at.is_(None),
+            )
+            .all()
+        )
+        if not entries:
+            raise HTTPException(status_code=404, detail="找不到對應 entry")
+
+        # 班級守衛：所有 entry 必須屬於教師管轄
+        if current_user.get("role") == "teacher":
+            classroom_ids = {e.classroom_id for e in entries}
+            for cid in classroom_ids:
+                _assert_classroom_owned(session, emp.id, cid)
+
+        # 已發布 entry 不允許套範本（避免擾動家長已看到的內容）
+        already_published = [e.id for e in entries if e.published_at is not None]
+        if already_published:
+            raise HTTPException(
+                status_code=400,
+                detail=f"已發布的聯絡簿不可套用範本：{already_published}",
+            )
+
+        applied: list[dict] = []
+        for e in entries:
+            changed = apply_template_fields(
+                e,
+                tpl.fields or {},
+                only_fill_blank=payload.only_fill_blank,
+            )
+            if changed:
+                e.version = (e.version or 1) + 1
+                applied.append(
+                    {"entry_id": e.id, "changed_fields": changed, "version": e.version}
+                )
+            else:
+                applied.append(
+                    {"entry_id": e.id, "changed_fields": [], "version": e.version}
+                )
+        session.commit()
+
+        request.state.audit_entity_id = str(tpl.id)
+        request.state.audit_summary = (
+            f"教師套用範本：template={tpl.id} entries={len(entries)} "
+            f"only_fill_blank={payload.only_fill_blank}"
+        )
+        return {"template_id": tpl.id, "results": applied}
+    finally:
+        session.close()
+
+
+@router.post("/batch-publish")
+def batch_publish(
+    payload: BatchPublishPayload,
+    request: Request,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_WRITE)),
+):
+    """一鍵批次發布草稿。逐筆呼叫 publish_entry，回傳每筆成功 / 失敗。"""
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        entries = (
+            session.query(StudentContactBookEntry)
+            .filter(
+                StudentContactBookEntry.id.in_(payload.entry_ids),
+                StudentContactBookEntry.deleted_at.is_(None),
+            )
+            .all()
+        )
+        if not entries:
+            raise HTTPException(status_code=404, detail="找不到對應 entry")
+
+        # 班級守衛
+        if current_user.get("role") == "teacher":
+            classroom_ids = {e.classroom_id for e in entries}
+            for cid in classroom_ids:
+                _assert_classroom_owned(session, emp.id, cid)
+
+        results: list[dict] = []
+        success_ids: list[int] = []
+        for entry in entries:
+            try:
+                publish_entry(session, entry_id=entry.id, line_service=_line_service)
+                success_ids.append(entry.id)
+                results.append({"entry_id": entry.id, "status": "ok"})
+            except Exception as exc:
+                logger.warning("batch_publish 單筆失敗 entry=%d: %s", entry.id, exc)
+                results.append(
+                    {"entry_id": entry.id, "status": "error", "message": str(exc)}
+                )
+        session.commit()
+
+        request.state.audit_entity_id = ",".join(map(str, success_ids))
+        request.state.audit_summary = (
+            f"教師批次發布聯絡簿：success={len(success_ids)}/{len(entries)}"
+        )
+        return {"results": results, "success_count": len(success_ids)}
     finally:
         session.close()
 
