@@ -66,6 +66,5 @@ class ClassHubTodayResponse(BaseModel):
     classroom_name: str
     fetched_at: datetime
     sticky_next: Optional[ClassHubStickyTask] = None
-    weekly_assessment_due: int = 0
     counts: ClassHubCounts
     slots: list[ClassHubSlotData]
