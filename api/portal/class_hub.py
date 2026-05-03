@@ -21,6 +21,7 @@ from services.portal_class_hub_service import (
     resolve_teacher_classroom,
 )
 from utils.auth import get_current_user
+from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,12 @@ def get_class_hub_today(
     now = datetime.now()
     employee_id = current_user.get("employee_id")
 
+    # 權限遮罩；-1 (或全位元) 表示管理員擁有全部權限
+    perms = int(current_user.get("permissions", 0) or 0)
+
+    def has(p: int) -> bool:
+        return perms < 0 or (perms & p) != 0
+
     # 無 employee_id 或無班級 → 空殼
     classroom = (
         resolve_teacher_classroom(sess, employee_id=employee_id)
@@ -116,17 +123,31 @@ def get_class_hub_today(
             ],
         )
 
-    # 蒐集各類待辦
-    attn_pending = count_attendance_pending(
-        sess, classroom_id=classroom.id, today=today
+    # 蒐集各類待辦（依權限過濾）
+    attn_pending = (
+        count_attendance_pending(sess, classroom_id=classroom.id, today=today)
+        if has(Permission.STUDENTS_READ)
+        else 0
     )
-    medications = list_pending_medications(sess, classroom_id=classroom.id, today=today)
-    obs_pending = count_observation_pending(
-        sess, classroom_id=classroom.id, today=today
+    medications = (
+        list_pending_medications(sess, classroom_id=classroom.id, today=today)
+        if has(Permission.STUDENTS_HEALTH_READ)
+        else []
     )
-    incidents = count_incidents_today(sess, classroom_id=classroom.id, today=today)
-    contact_pending = count_contact_book_pending(
-        sess, classroom_id=classroom.id, today=today
+    obs_pending = (
+        count_observation_pending(sess, classroom_id=classroom.id, today=today)
+        if has(Permission.PORTFOLIO_READ)
+        else 0
+    )
+    incidents = (
+        count_incidents_today(sess, classroom_id=classroom.id, today=today)
+        if has(Permission.STUDENTS_READ)
+        else 0
+    )
+    contact_pending = (
+        count_contact_book_pending(sess, classroom_id=classroom.id, today=today)
+        if has(Permission.PORTFOLIO_READ)
+        else 0
     )
 
     counts = ClassHubCounts(
@@ -182,14 +203,15 @@ def get_class_hub_today(
             )
         )
 
-    # 事件紀錄 → 上午（含「+ 新增」入口，count 即使為 0 也顯示）
-    slot_tasks["forenoon"].append(
-        ClassHubTask(
-            kind="incident",
-            count=incidents,
-            action_mode="inline_button",
+    # 事件紀錄 → 上午（含「+ 新增」入口，count 即使為 0 也顯示；需 STUDENTS_READ）
+    if has(Permission.STUDENTS_READ):
+        slot_tasks["forenoon"].append(
+            ClassHubTask(
+                kind="incident",
+                count=incidents,
+                action_mode="inline_button",
+            )
         )
-    )
 
     # 聯絡簿 → 下午
     if contact_pending > 0:

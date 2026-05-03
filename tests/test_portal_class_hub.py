@@ -806,7 +806,9 @@ class TestClassHubTodayEndpoint:
         sess.flush()
         u = _create_user(sess, employee_id=emp.id, username="t2")
         sess.commit()
-        token = create_access_token({"sub": u.username, "employee_id": emp.id})
+        token = create_access_token(
+            {"sub": u.username, "employee_id": emp.id, "permissions": -1}
+        )
         resp = c.get(
             "/api/portal/class-hub/today",
             headers={"Authorization": f"Bearer {token}"},
@@ -875,7 +877,9 @@ class TestClassHubTodayEndpoint:
             )
         )
         sess.commit()
-        token = create_access_token({"sub": u.username, "employee_id": emp.id})
+        token = create_access_token(
+            {"sub": u.username, "employee_id": emp.id, "permissions": -1}
+        )
         resp = c.get(
             "/api/portal/class-hub/today",
             headers={"Authorization": f"Bearer {token}"},
@@ -897,3 +901,130 @@ class TestClassHubTodayEndpoint:
             assert body["sticky_next"]["deep_link"].startswith(
                 "/portal/class-hub?sheet=medication&id="
             )
+
+    def test_no_health_perm_hides_medication(self, hub_client):
+        from models.portfolio import StudentMedicationOrder, StudentMedicationLog
+
+        c, sess = hub_client
+        room = Classroom(name="P班", is_active=True)
+        sess.add(room)
+        sess.flush()
+        s = Student(
+            student_id="P1",
+            name="p1",
+            classroom_id=room.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        sess.flush()
+        emp = Employee(
+            name="老師P", is_active=True, classroom_id=room.id, employee_id="EP"
+        )
+        sess.add(emp)
+        sess.flush()
+        # Build a User with only STUDENTS_READ — explicitly NO STUDENTS_HEALTH_READ
+        from utils.permissions import Permission
+
+        u = User(
+            username="p",
+            password_hash="x",
+            role="teacher",
+            employee_id=emp.id,
+            is_active=True,
+            permissions=int(Permission.STUDENTS_READ),
+        )
+        sess.add(u)
+        sess.flush()
+        # Create medication for today
+        order = StudentMedicationOrder(
+            student_id=s.id,
+            order_date=date.today(),
+            medication_name="退燒藥",
+            dose="5ml",
+            time_slots=["10:00"],
+        )
+        sess.add(order)
+        sess.flush()
+        sess.add(
+            StudentMedicationLog(
+                order_id=order.id,
+                scheduled_time="10:00",
+                administered_at=None,
+                skipped=False,
+            )
+        )
+        sess.commit()
+        token = create_access_token(
+            {
+                "sub": u.username,
+                "employee_id": emp.id,
+                "permissions": int(Permission.STUDENTS_READ),
+            }
+        )
+        resp = c.get(
+            "/api/portal/class-hub/today",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # medications hidden
+        assert body["counts"]["medications_pending"] == 0
+        all_kinds = {t["kind"] for slot in body["slots"] for t in slot["tasks"]}
+        assert "medication" not in all_kinds
+        assert body["sticky_next"] is None  # no sticky from medications
+
+    def test_no_portfolio_perm_hides_observation_and_contact_book(self, hub_client):
+        c, sess = hub_client
+        room = Classroom(name="Q班", is_active=True)
+        sess.add(room)
+        sess.flush()
+        s = Student(
+            student_id="Q1",
+            name="q1",
+            classroom_id=room.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        sess.flush()
+        emp = Employee(
+            name="老師Q", is_active=True, classroom_id=room.id, employee_id="EQ"
+        )
+        sess.add(emp)
+        sess.flush()
+        from utils.permissions import Permission
+
+        # STUDENTS_READ + STUDENTS_HEALTH_READ but NO PORTFOLIO_READ
+        u_perms = int(Permission.STUDENTS_READ | Permission.STUDENTS_HEALTH_READ)
+        u = User(
+            username="q",
+            password_hash="x",
+            role="teacher",
+            employee_id=emp.id,
+            is_active=True,
+            permissions=u_perms,
+        )
+        sess.add(u)
+        sess.commit()
+        token = create_access_token(
+            {
+                "sub": u.username,
+                "employee_id": emp.id,
+                "permissions": u_perms,
+            }
+        )
+        resp = c.get(
+            "/api/portal/class-hub/today",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["counts"]["observations_pending"] == 0
+        assert body["counts"]["contact_books_pending"] == 0
+        all_kinds = {t["kind"] for slot in body["slots"] for t in slot["tasks"]}
+        assert "observation" not in all_kinds
+        assert "contact_book" not in all_kinds
+        # attendance + incident still present (STUDENTS_READ granted)
+        # Even if attendance count is 0 (no students yet), incident inline_button stays
+        assert "incident" in all_kinds
