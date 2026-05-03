@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Literal, Optional
 
+from sqlalchemy.orm import Session
+from models.database import Employee, Classroom
+
 SlotId = Literal["morning", "forenoon", "noon", "afternoon"]
 
 
@@ -41,3 +44,20 @@ def pick_sticky_next(candidates: list[dict], now: datetime) -> Optional[dict]:
     if not future:
         return None
     return min(future, key=lambda c: c["due_at"])
+
+
+def resolve_teacher_classroom(
+    sess: Session, *, employee_id: int
+) -> Optional[Classroom]:
+    """以教師 employee_id 反查目前指派的 active 班級（若無則 None）。
+
+    沿用既有 portal 慣例：以 Employee.classroom_id 為主鍵；若教師同時是副班導
+    需擴充時，請改成查 ClassroomTeacherAssignment（v2）。
+    """
+    emp = sess.get(Employee, employee_id)
+    if not emp or not emp.classroom_id:
+        return None
+    c = sess.get(Classroom, emp.classroom_id)
+    if not c or not c.is_active:
+        return None
+    return c

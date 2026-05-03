@@ -57,3 +57,63 @@ class TestPickStickyNext:
 
     def test_returns_none_when_empty(self):
         assert pick_sticky_next([], datetime(2026, 5, 3, 10, 0)) is None
+
+
+import models.base as base_module  # noqa: F401  (ensure mappers registered)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from models.database import Base, Classroom, Employee, Student, User
+from models.classroom import LIFECYCLE_ACTIVE
+from services.portal_class_hub_service import resolve_teacher_classroom
+
+
+@pytest.fixture
+def in_mem_session(tmp_path):
+    db_path = tmp_path / "hub.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    sf = sessionmaker(bind=engine)
+    Base.metadata.create_all(engine)
+    sess = sf()
+    yield sess
+    sess.close()
+    engine.dispose()
+
+
+class TestResolveTeacherClassroom:
+    def test_returns_none_when_no_classroom(self, in_mem_session):
+        sess = in_mem_session
+        emp = Employee(employee_id="T001", name="老師A", is_active=True)
+        sess.add(emp)
+        sess.flush()
+        assert resolve_teacher_classroom(sess, employee_id=emp.id) is None
+
+    def test_returns_active_classroom_when_assigned(self, in_mem_session):
+        sess = in_mem_session
+        c = Classroom(name="A班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        emp = Employee(
+            employee_id="T002", name="老師B", is_active=True, classroom_id=c.id
+        )
+        sess.add(emp)
+        sess.flush()
+        result = resolve_teacher_classroom(sess, employee_id=emp.id)
+        assert result is not None
+        assert result.id == c.id
+
+    def test_returns_none_when_classroom_inactive(self, in_mem_session):
+        sess = in_mem_session
+        c = Classroom(name="C班", is_active=False)
+        sess.add(c)
+        sess.flush()
+        emp = Employee(
+            employee_id="T003", name="老師C", is_active=True, classroom_id=c.id
+        )
+        sess.add(emp)
+        sess.flush()
+        assert resolve_teacher_classroom(sess, employee_id=emp.id) is None
+
+    def test_returns_none_when_employee_missing(self, in_mem_session):
+        assert resolve_teacher_classroom(in_mem_session, employee_id=99999) is None
