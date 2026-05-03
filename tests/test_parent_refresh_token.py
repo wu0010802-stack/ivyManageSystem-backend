@@ -141,3 +141,175 @@ def test_refresh_rotates_token_and_old_token_fails(parent_client):
         cookies={"parent_refresh_token": old_refresh},
     )
     assert resp2.status_code == 401
+
+
+def test_refresh_reuse_outside_race_window_revokes_family(parent_client):
+    """超過 5 秒後拿 used token → 整 family revoke、token_version bump。"""
+    client, session_factory = parent_client
+    _, old_refresh = _login(client, session_factory, "token-AAAAAA", "U_A")
+
+    # 第一次 rotation 成功，得到 new1
+    r1 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert r1.status_code == 200
+    new1 = r1.cookies["parent_refresh_token"]
+
+    # 等 6 秒（避開 race window），用 old_refresh 再 refresh → reuse
+    time.sleep(6)
+    r2 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert r2.status_code == 401
+
+    # family 全 revoked、token_version 升
+    with session_factory() as s:
+        rows = s.query(ParentRefreshToken).all()
+        assert all(r.revoked_at is not None for r in rows)
+        user = s.query(User).filter(User.line_user_id == "U_A").first()
+        assert user.token_version == 1
+
+    # 連 new1 也用不了
+    r3 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": new1},
+    )
+    assert r3.status_code == 401
+
+
+def test_refresh_race_within_window_returns_409(parent_client):
+    """5 秒內 race：第二個請求收 409，不誤觸 reuse。"""
+    client, session_factory = parent_client
+    _, old_refresh = _login(client, session_factory, "token-AAAAAA", "U_A")
+
+    r1 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert r1.status_code == 200
+
+    # 立刻（< 5s）再用 old_refresh
+    r2 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert r2.status_code == 409
+
+    # family 不應被 revoke
+    with session_factory() as s:
+        revoked = (
+            s.query(ParentRefreshToken)
+            .filter(ParentRefreshToken.revoked_at.isnot(None))
+            .count()
+        )
+        assert revoked == 0
+
+
+def test_refresh_missing_cookie_returns_401(parent_client):
+    client, _ = parent_client
+    r = client.post("/api/parent/auth/refresh")
+    assert r.status_code == 401
+
+
+def test_refresh_unknown_token_returns_401(parent_client):
+    client, _ = parent_client
+    r = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": "never-issued-by-server"},
+    )
+    assert r.status_code == 401
+
+
+def test_refresh_expired_token_returns_401(parent_client):
+    client, session_factory = parent_client
+    _, old_refresh = _login(client, session_factory, "token-AAAAAA", "U_A")
+    # 直接 SQL 把 expires_at 推到過去
+    with session_factory() as s:
+        row = s.query(ParentRefreshToken).first()
+        row.expires_at = datetime.now() - timedelta(hours=1)
+        s.commit()
+    r = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert r.status_code == 401
+
+
+def test_refresh_revoked_token_returns_401(parent_client):
+    client, session_factory = parent_client
+    _, old_refresh = _login(client, session_factory, "token-AAAAAA", "U_A")
+    with session_factory() as s:
+        row = s.query(ParentRefreshToken).first()
+        row.revoked_at = datetime.now()
+        s.commit()
+    r = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert r.status_code == 401
+
+
+def test_refresh_disabled_user_returns_401(parent_client):
+    client, session_factory = parent_client
+    _, old_refresh = _login(client, session_factory, "token-AAAAAA", "U_A")
+    with session_factory() as s:
+        u = s.query(User).filter(User.line_user_id == "U_A").first()
+        u.is_active = False
+        s.commit()
+    r = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert r.status_code == 401
+
+
+def test_multi_device_family_isolation(parent_client):
+    """裝置 A reuse 觸發後，裝置 B 的 family 不受影響。"""
+    client, session_factory = parent_client
+
+    # 裝置 A 登入（會發 family A）
+    _, refresh_A = _login(client, session_factory, "token-AAAAAA", "U_A")
+
+    # 同 user 模擬第二裝置：直接呼叫 issue_refresh_token 寫一筆新 family
+    from api.parent_portal.auth import (
+        _issue_refresh_token,
+        _gen_refresh_raw,
+        _hash_refresh,
+    )
+    import uuid
+
+    with session_factory() as s:
+        u = s.query(User).filter(User.line_user_id == "U_A").first()
+        raw_B = _gen_refresh_raw()
+        row_B = ParentRefreshToken(
+            user_id=u.id,
+            family_id=str(uuid.uuid4()),
+            token_hash=_hash_refresh(raw_B),
+            expires_at=datetime.now() + timedelta(days=30),
+        )
+        s.add(row_B)
+        s.commit()
+
+    # 把 family A 的 refresh 用一次（rotation），然後等 6s 再 reuse
+    r1 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": refresh_A},
+    )
+    assert r1.status_code == 200
+    time.sleep(6)
+    r2 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": refresh_A},
+    )
+    assert r2.status_code == 401  # reuse 觸發
+
+    # ⚠ family A 被 revoke + user.token_version+=1，但 family B 也仍在 DB
+    # 不過實際上 token_version bump 後，access token 全廢；refresh token 本身
+    # 不檢查 token_version。所以 family B 的 refresh 仍可用：
+    r3 = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": raw_B},
+    )
+    assert r3.status_code == 200
