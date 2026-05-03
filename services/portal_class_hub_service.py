@@ -72,9 +72,8 @@ def count_attendance_pending(
 ) -> int:
     """今日尚未點名的學生數。
 
-    判定條件（任一即視為待辦）：
-      - 今日無 StudentAttendance row
-      - 今日有 row 但 status IS None
+    判定條件：班上 active 學生中，今日無 StudentAttendance row 者。
+    （`StudentAttendance.status` 為 NOT NULL default '出席'，故有 row 即視為已點名。）
     """
     students = (
         sess.query(Student)
@@ -98,9 +97,4 @@ def count_attendance_pending(
     )
     rec_map = {r.student_id: r for r in records}
 
-    pending = 0
-    for s in students:
-        r = rec_map.get(s.id)
-        if r is None or r.status is None:
-            pending += 1
-    return pending
+    return sum(1 for s in students if s.id not in rec_map)
