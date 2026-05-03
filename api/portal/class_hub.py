@@ -28,8 +28,7 @@ class ClassHubTaskSample(BaseModel):
 
 class ClassHubTask(BaseModel):
     kind: Literal[
-        "attendance_in",
-        "attendance_out",
+        "attendance",
         "medication",
         "observation",
         "incident",
@@ -47,8 +46,7 @@ class ClassHubSlotData(BaseModel):
 
 
 class ClassHubCounts(BaseModel):
-    attendance_check_in_pending: int = 0
-    attendance_check_out_pending: int = 0
+    attendance_pending: int = 0
     medications_pending: int = 0
     observations_pending: int = 0
     incidents_today: int = 0
