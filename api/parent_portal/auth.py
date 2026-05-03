@@ -547,3 +547,103 @@ def parent_logout(
     clear_access_token_cookie(response)
     _clear_bind_token_cookie(response)
     return Response(status_code=204)
+
+
+@router.post("/refresh")
+def parent_refresh(request: Request, response: Response):
+    """以家長 refresh token 換發新 access + 新 refresh（rotation）。
+
+    狀態碼：
+    - 200：rotation 成功
+    - 401：cookie 缺、token 不存在、過期、family revoked、超出 race window 的 reuse
+    - 409：5 秒內同 token 並發 race（前端應重打原請求）
+    """
+    raw = request.cookies.get(_REFRESH_COOKIE)
+    if not raw:
+        raise HTTPException(status_code=401, detail="未提供 refresh token")
+    token_hash = _hash_refresh(raw)
+
+    session = get_session()
+    try:
+        # postgres FOR UPDATE；sqlite no-op 但測試覆蓋夠
+        row = (
+            session.query(ParentRefreshToken)
+            .filter(ParentRefreshToken.token_hash == token_hash)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=401, detail="refresh token 不存在")
+        if row.revoked_at is not None:
+            raise HTTPException(status_code=401, detail="refresh token 已撤銷")
+        if row.expires_at < _now():
+            raise HTTPException(status_code=401, detail="refresh token 已過期")
+
+        if row.used_at is not None:
+            # race window 容忍：5 秒內視為合法雙請求
+            elapsed = (_now() - row.used_at).total_seconds()
+            if 0 <= elapsed <= _REFRESH_RACE_TOLERANCE_SECONDS:
+                logger.debug(
+                    "[parent-refresh] race-tolerated user_id=%s family_id=%s elapsed=%.2fs",
+                    row.user_id,
+                    row.family_id,
+                    elapsed,
+                )
+                # 不撤、不發新 token；前端應重打原請求
+                raise HTTPException(
+                    status_code=409, detail="rotation in progress, please retry"
+                )
+            # 超過 race window 仍拿 used token 來 refresh → reuse → 撤整個 family
+            session.query(ParentRefreshToken).filter(
+                ParentRefreshToken.family_id == row.family_id,
+                ParentRefreshToken.revoked_at.is_(None),
+            ).update(
+                {"revoked_at": _now()},
+                synchronize_session=False,
+            )
+            user = session.query(User).filter(User.id == row.user_id).first()
+            if user is not None:
+                user.token_version = (user.token_version or 0) + 1
+            session.commit()
+            logger.warning(
+                "[parent-refresh] REUSE detected user_id=%s family_id=%s",
+                row.user_id,
+                row.family_id,
+            )
+            raise HTTPException(
+                status_code=401, detail="refresh token 重用，整批已撤銷"
+            )
+
+        # 正常 rotation
+        user = (
+            session.query(User)
+            .filter(User.id == row.user_id, User.is_active == True)  # noqa: E712
+            .first()
+        )
+        if user is None:
+            raise HTTPException(status_code=401, detail="使用者已停用")
+
+        row.used_at = _now()
+        new_row = _issue_refresh_token(
+            session,
+            response,
+            user_id=user.id,
+            family_id=row.family_id,
+            parent_token_id=row.id,
+            user_agent=request.headers.get("user-agent"),
+            ip=request.client.host if request.client else None,
+        )
+        user.last_login = _now()
+        _issue_access_token(response, user)
+        session.commit()
+
+        return {
+            "status": "ok",
+            "user": {
+                "user_id": user.id,
+                "name": user.username,
+                "role": "parent",
+            },
+        }
+    finally:
+        session.close()
