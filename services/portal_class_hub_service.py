@@ -161,3 +161,38 @@ def list_pending_medications(
             }
         )
     return out
+
+
+def count_observation_pending(
+    sess: Session,
+    *,
+    classroom_id: int,
+    today: date_cls,
+) -> int:
+    """今日尚未填觀察的學生數。
+
+    判定：班上 active 學生中，無 StudentObservation row（observation_date == today,
+    deleted_at IS NULL）的學生數。一個學生可能有多筆觀察 → 用 distinct student_id。
+    """
+    students = (
+        sess.query(Student)
+        .filter(
+            Student.classroom_id == classroom_id,
+            Student.is_active.is_(True),
+        )
+        .all()
+    )
+    if not students:
+        return 0
+    sids = [s.id for s in students]
+    recorded_sids = {
+        r.student_id
+        for r in sess.query(StudentObservation.student_id)
+        .filter(
+            StudentObservation.student_id.in_(sids),
+            StudentObservation.observation_date == today,
+            StudentObservation.deleted_at.is_(None),
+        )
+        .distinct()
+    }
+    return sum(1 for s in students if s.id not in recorded_sids)

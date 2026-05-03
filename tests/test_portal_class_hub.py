@@ -403,3 +403,113 @@ class TestListPendingMedications:
         assert len(result) == 3
         due_times = [r["due_at"] for r in result]
         assert due_times == sorted(due_times)
+
+
+# ---------------------------------------------------------------------------
+# Helper 5b: count_observation_pending
+# ---------------------------------------------------------------------------
+from datetime import datetime as _dt
+
+
+class TestCountObservationPending:
+    def test_no_records_means_all_pending(self, in_mem_session):
+        from services.portal_class_hub_service import count_observation_pending
+
+        sess = in_mem_session
+        c = Classroom(name="O班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        for i in range(3):
+            sess.add(
+                Student(
+                    student_id=f"O{i+1}",
+                    name=f"obs{i+1}",
+                    classroom_id=c.id,
+                    is_active=True,
+                    lifecycle_status=LIFECYCLE_ACTIVE,
+                )
+            )
+        sess.flush()
+        assert (
+            count_observation_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 3
+        )
+
+    def test_one_recorded_per_student(self, in_mem_session):
+        from services.portal_class_hub_service import count_observation_pending
+        from models.portfolio import StudentObservation
+
+        sess = in_mem_session
+        c = Classroom(name="O2班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        students = []
+        for i in range(3):
+            s = Student(
+                student_id=f"P{i+1}",
+                name=f"p{i+1}",
+                classroom_id=c.id,
+                is_active=True,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+            sess.add(s)
+            students.append(s)
+        sess.flush()
+        # student[0] 有 2 筆觀察、student[1] 有 1 筆、student[2] 無
+        sess.add(
+            StudentObservation(
+                student_id=students[0].id,
+                observation_date=date(2026, 5, 4),
+                narrative="obs A1",
+            )
+        )
+        sess.add(
+            StudentObservation(
+                student_id=students[0].id,
+                observation_date=date(2026, 5, 4),
+                narrative="obs A2",
+            )
+        )
+        sess.add(
+            StudentObservation(
+                student_id=students[1].id,
+                observation_date=date(2026, 5, 4),
+                narrative="obs B",
+            )
+        )
+        sess.flush()
+        assert (
+            count_observation_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 1
+        )  # 只剩 student[2]
+
+    def test_deleted_observation_still_pending(self, in_mem_session):
+        from services.portal_class_hub_service import count_observation_pending
+        from models.portfolio import StudentObservation
+
+        sess = in_mem_session
+        c = Classroom(name="O3班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        s = Student(
+            student_id="D1",
+            name="deleted-obs-stu",
+            classroom_id=c.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        sess.flush()
+        sess.add(
+            StudentObservation(
+                student_id=s.id,
+                observation_date=date(2026, 5, 4),
+                narrative="will be soft-deleted",
+                deleted_at=_dt(2026, 5, 4, 10, 0),
+            )
+        )
+        sess.flush()
+        assert (
+            count_observation_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 1
+        )
