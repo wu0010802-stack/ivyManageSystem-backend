@@ -25,6 +25,7 @@
 
 import hashlib
 import logging
+import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from time import time as _time
@@ -41,6 +42,7 @@ from api.auth import (
 from models.database import (
     Guardian,
     GuardianBindingCode,
+    ParentRefreshToken,
     User,
     get_session,
 )
@@ -90,6 +92,76 @@ _BIND_TOKEN_TTL_MINUTES = 5
 _BIND_FAIL_THRESHOLD = 5
 _BIND_FAIL_LOCKOUT = 900  # 15 分鐘
 _bind_failures: dict[str, list[float]] = defaultdict(list)
+
+# ── refresh token ────────────────────────────────────────────────────────
+_REFRESH_COOKIE = "parent_refresh_token"
+_REFRESH_COOKIE_PATH = "/api/parent/auth"
+_REFRESH_TTL_DAYS = 30
+_REFRESH_RACE_TOLERANCE_SECONDS = 5  # 同 token 雙請求 race 容忍窗
+
+
+def _hash_refresh(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _gen_refresh_raw() -> str:
+    # 384-bit 隨機，base64url 約 64 字
+    return secrets.token_urlsafe(48)
+
+
+def _set_refresh_cookie(response: Response, raw: str) -> None:
+    response.set_cookie(
+        key=_REFRESH_COOKIE,
+        value=raw,
+        httponly=True,
+        samesite=get_cookie_samesite(),
+        secure=get_cookie_secure(),
+        path=_REFRESH_COOKIE_PATH,
+        max_age=_REFRESH_TTL_DAYS * 24 * 3600,
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=_REFRESH_COOKIE,
+        httponly=True,
+        samesite=get_cookie_samesite(),
+        secure=get_cookie_secure(),
+        path=_REFRESH_COOKIE_PATH,
+    )
+
+
+def _issue_refresh_token(
+    session,
+    response: Response,
+    *,
+    user_id: int,
+    family_id: str | None = None,
+    parent_token_id: int | None = None,
+    user_agent: str | None = None,
+    ip: str | None = None,
+) -> ParentRefreshToken:
+    """寫一筆 ParentRefreshToken + 在 response 上 Set-Cookie。
+
+    family_id=None → 視為新裝置，產生新 family_id。
+    回傳 ORM 物件（caller 可進一步 commit / refresh）。
+    """
+    import uuid
+
+    raw = _gen_refresh_raw()
+    row = ParentRefreshToken(
+        user_id=user_id,
+        family_id=family_id or str(uuid.uuid4()),
+        token_hash=_hash_refresh(raw),
+        parent_token_id=parent_token_id,
+        expires_at=_now() + timedelta(days=_REFRESH_TTL_DAYS),
+        user_agent=(user_agent or "")[:255] or None,
+        ip=(ip or "")[:45] or None,
+    )
+    session.add(row)
+    session.flush()
+    _set_refresh_cookie(response, raw)
+    return row
 
 
 def _set_bind_token_cookie(response: Response, token: str) -> None:
