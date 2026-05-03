@@ -1,7 +1,7 @@
 """教師工作台彙整 endpoint。"""
 
 import logging
-from datetime import datetime
+from datetime import datetime, date as date_cls
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends
@@ -9,6 +9,17 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from models.database import get_session
+from services.portal_class_hub_service import (
+    SLOT_DEFINITIONS,
+    classify_time_to_slot,
+    count_attendance_pending,
+    count_contact_book_pending,
+    count_incidents_today,
+    count_observation_pending,
+    list_pending_medications,
+    pick_sticky_next,
+    resolve_teacher_classroom,
+)
 from utils.auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -82,21 +93,8 @@ def get_class_hub_today(
 
     若教師沒有指派班級，回傳 classroom_id=0 的空殼結構（前端顯示空狀態）。
     """
-    from datetime import datetime as datetime_cls, date as date_cls
-    from services.portal_class_hub_service import (
-        SLOT_DEFINITIONS,
-        classify_time_to_slot,
-        count_attendance_pending,
-        count_contact_book_pending,
-        count_incidents_today,
-        count_observation_pending,
-        list_pending_medications,
-        pick_sticky_next,
-        resolve_teacher_classroom,
-    )
-
     today = date_cls.today()
-    now = datetime_cls.now()
+    now = datetime.now()
     employee_id = current_user.get("employee_id")
 
     # 無 employee_id 或無班級 → 空殼
@@ -208,7 +206,7 @@ def get_class_hub_today(
         for sd in SLOT_DEFINITIONS
     ]
 
-    # sticky_next：把所有有 due_at 的待辦丟進去挑最近的
+    # sticky_next：v1 僅 medication 有 due_at；其他類型若未來加入排程時間，於此擴充。
     sticky_candidates = [
         {
             "kind": "medication",

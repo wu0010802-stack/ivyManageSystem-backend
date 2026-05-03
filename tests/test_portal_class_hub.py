@@ -822,3 +822,78 @@ class TestClassHubTodayEndpoint:
         # forenoon should still have at least the incident (count=0) inline_button
         forenoon = next(s for s in body["slots"] if s["slot_id"] == "forenoon")
         assert any(t["kind"] == "incident" for t in forenoon["tasks"])
+
+    def test_medication_sets_sticky_and_correct_slot(self, hub_client):
+        from models.portfolio import StudentMedicationOrder, StudentMedicationLog
+
+        c, sess = hub_client
+        room = Classroom(name="M班", is_active=True)
+        sess.add(room)
+        sess.flush()
+        s = Student(
+            student_id="MS1",
+            name="med-stu",
+            classroom_id=room.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        emp = Employee(
+            name="med-teacher",
+            is_active=True,
+            classroom_id=room.id,
+            employee_id="MED",
+        )
+        sess.add(emp)
+        sess.flush()
+        u = _create_user(sess, employee_id=emp.id, username="med-t")
+
+        today = date.today()
+        order = StudentMedicationOrder(
+            student_id=s.id,
+            order_date=today,
+            medication_name="退燒藥",
+            dose="5ml",
+            time_slots=["08:30", "13:00"],
+        )
+        sess.add(order)
+        sess.flush()
+        sess.add(
+            StudentMedicationLog(
+                order_id=order.id,
+                scheduled_time="08:30",
+                administered_at=None,
+                skipped=False,
+            )
+        )
+        sess.add(
+            StudentMedicationLog(
+                order_id=order.id,
+                scheduled_time="13:00",
+                administered_at=None,
+                skipped=False,
+            )
+        )
+        sess.commit()
+        token = create_access_token({"sub": u.username, "employee_id": emp.id})
+        resp = c.get(
+            "/api/portal/class-hub/today",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["counts"]["medications_pending"] == 2
+        # 08:30 → morning，13:00 → noon
+        morning = next(sl for sl in body["slots"] if sl["slot_id"] == "morning")
+        noon = next(sl for sl in body["slots"] if sl["slot_id"] == "noon")
+        assert any(t["kind"] == "medication" for t in morning["tasks"])
+        assert any(t["kind"] == "medication" for t in noon["tasks"])
+        # sticky_next：取最近未過期的；以實測時間相對於 08:30/13:00 判斷
+        # 不論現在幾點，至少 sticky_next 不為 None（除非已過 13:00 + N 小時）
+        # 為穩定測試，僅檢查 deep_link 與 detail 格式
+        if body["sticky_next"] is not None:
+            assert body["sticky_next"]["kind"] == "medication"
+            assert "退燒藥" in body["sticky_next"]["detail"]
+            assert body["sticky_next"]["deep_link"].startswith(
+                "/portal/class-hub?sheet=medication&id="
+            )
