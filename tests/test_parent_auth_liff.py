@@ -146,7 +146,8 @@ def _seed_binding_code(
         guardian_id=guardian.id,
         code_hash=hashlib.sha256(plain_code.encode()).hexdigest(),
         expires_at=(
-            datetime.now() - timedelta(hours=1) if expired
+            datetime.now() - timedelta(hours=1)
+            if expired
             else datetime.now() + timedelta(hours=24)
         ),
         used_at=datetime.now() if used else None,
@@ -158,7 +159,9 @@ def _seed_binding_code(
     return code
 
 
-def _create_admin_user(session, *, username: str = "admin", password: str = "Passw0rd!") -> User:
+def _create_admin_user(
+    session, *, username: str = "admin", password: str = "Passw0rd!"
+) -> User:
     user = User(
         employee_id=None,
         username=username,
@@ -267,6 +270,19 @@ class TestLiffLogin:
         assert data["status"] == "ok"
         assert data["user"]["role"] == "parent"
         assert "access_token" in resp.cookies
+        # 同時應發 refresh token cookie（30 天免重登）
+        assert "parent_refresh_token" in resp.cookies
+        # DB 應寫一筆未用未過期的 refresh token row
+        from models.database import ParentRefreshToken
+
+        with session_factory() as session:
+            row = session.query(ParentRefreshToken).first()
+            assert row is not None
+            assert row.user_id is not None
+            assert row.used_at is None
+            assert row.revoked_at is None
+            assert row.family_id  # uuid 字串
+            assert row.parent_token_id is None  # 新 family 起點
 
 
 # ── 行政發碼 + LIFF bind 完整流程 ─────────────────────────────────────
@@ -285,7 +301,9 @@ class TestAdminBindingCodeAndParentBind:
             guardian_id = guardian.id
 
         # 行政以 admin 身分發碼
-        admin_cookie = {"access_token": _admin_token(_get(session_factory, User, admin_id))}
+        admin_cookie = {
+            "access_token": _admin_token(_get(session_factory, User, admin_id))
+        }
         admin_resp = client.post(
             f"/api/guardians/{guardian_id}/binding-code",
             cookies=admin_cookie,
@@ -316,6 +334,14 @@ class TestAdminBindingCodeAndParentBind:
         assert bind_resp.status_code == 200
         assert bind_resp.json()["user"]["role"] == "parent"
         assert "access_token" in bind_resp.cookies
+        assert "parent_refresh_token" in bind_resp.cookies
+        from models.database import ParentRefreshToken
+
+        with session_factory() as session:
+            tokens = session.query(ParentRefreshToken).all()
+            assert len(tokens) == 1
+            assert tokens[0].used_at is None
+            assert tokens[0].parent_token_id is None
 
         # DB 結果：Guardian.user_id 設好、binding 已用、AuditLog 落筆
         with session_factory() as session:
@@ -324,15 +350,19 @@ class TestAdminBindingCodeAndParentBind:
             stored = session.query(GuardianBindingCode).first()
             assert stored.used_at is not None
             assert stored.used_by_user_id == g.user_id
-            audits = session.query(AuditLog).filter(
-                AuditLog.entity_type == "guardian_binding"
-            ).all()
+            audits = (
+                session.query(AuditLog)
+                .filter(AuditLog.entity_type == "guardian_binding")
+                .all()
+            )
             assert len(audits) == 1
 
     def test_invalid_code_400(self, parent_client):
         client, _, _ = parent_client
         # 先 LIFF 拿 bind_token
-        client.post("/api/parent/auth/liff-login", json={"id_token": "token-new-parent"})
+        client.post(
+            "/api/parent/auth/liff-login", json={"id_token": "token-new-parent"}
+        )
         resp = client.post(
             "/api/parent/auth/bind",
             json={"code": "WRONGCOD"},
@@ -354,7 +384,9 @@ class TestAdminBindingCodeAndParentBind:
             )
             session.commit()
 
-        client.post("/api/parent/auth/liff-login", json={"id_token": "token-new-parent"})
+        client.post(
+            "/api/parent/auth/liff-login", json={"id_token": "token-new-parent"}
+        )
         resp = client.post("/api/parent/auth/bind", json={"code": "USED1234"})
         assert resp.status_code == 400
 
@@ -373,7 +405,9 @@ class TestAdminBindingCodeAndParentBind:
             )
             session.commit()
 
-        client.post("/api/parent/auth/liff-login", json={"id_token": "token-new-parent"})
+        client.post(
+            "/api/parent/auth/liff-login", json={"id_token": "token-new-parent"}
+        )
         resp = client.post("/api/parent/auth/bind", json={"code": "EXPI1234"})
         assert resp.status_code == 400
 
@@ -400,9 +434,7 @@ class TestBindAdditional:
             # 第二個小孩 + 對應綁定碼
             student2 = _create_student(session, "老二")
             g2 = _create_guardian(session, student2, "父親")
-            _seed_binding_code(
-                session, g2, plain_code="SECOND12", created_by=admin.id
-            )
+            _seed_binding_code(session, g2, plain_code="SECOND12", created_by=admin.id)
             session.commit()
             parent_user_id = parent_user.id
             g2_id = g2.id
@@ -428,9 +460,7 @@ class TestBindAdditional:
             g = session.query(Guardian).filter(Guardian.id == g2_id).first()
             assert g.user_id == parent_user_id
 
-    def test_cannot_claim_guardian_already_bound_to_another_user(
-        self, parent_client
-    ):
+    def test_cannot_claim_guardian_already_bound_to_another_user(self, parent_client):
         client, session_factory, _ = parent_client
         with session_factory() as session:
             admin = _create_admin_user(session)
