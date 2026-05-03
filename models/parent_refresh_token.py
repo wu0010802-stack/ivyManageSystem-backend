@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -26,7 +27,7 @@ from models.base import Base
 class ParentRefreshToken(Base):
     __tablename__ = "parent_refresh_tokens"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(
         BigInteger,
         ForeignKey("users.id", ondelete="CASCADE"),

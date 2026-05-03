@@ -362,6 +362,13 @@ def liff_login(
         )
         if user and user.role == "parent":
             _issue_access_token(response, user)
+            _issue_refresh_token(
+                session,
+                response,
+                user_id=user.id,
+                user_agent=request.headers.get("user-agent"),
+                ip=request.client.host if request.client else None,
+            )
             user.last_login = _now()
             session.commit()
             return {

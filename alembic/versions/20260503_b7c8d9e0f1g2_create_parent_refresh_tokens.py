@@ -34,7 +34,7 @@ def upgrade() -> None:
 
     op.create_table(
         "parent_refresh_tokens",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column(
             "user_id",
             sa.BigInteger,
@@ -51,7 +51,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "parent_token_id",
-            sa.BigInteger,
+            sa.Integer,
             sa.ForeignKey("parent_refresh_tokens.id", ondelete="SET NULL"),
             nullable=True,
         ),
