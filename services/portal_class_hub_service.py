@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, date as date_cls
 from typing import Literal, Optional
 
 from sqlalchemy.orm import Session
-from models.database import Employee, Classroom
+from models.database import Employee, Classroom, Student
+from models.classroom import StudentAttendance
 
 SlotId = Literal["morning", "forenoon", "noon", "afternoon"]
 
@@ -61,3 +62,45 @@ def resolve_teacher_classroom(
     if not c or not c.is_active:
         return None
     return c
+
+
+def count_attendance_pending(
+    sess: Session,
+    *,
+    classroom_id: int,
+    today: date_cls,
+) -> int:
+    """今日尚未點名的學生數。
+
+    判定條件（任一即視為待辦）：
+      - 今日無 StudentAttendance row
+      - 今日有 row 但 status IS None
+    """
+    students = (
+        sess.query(Student)
+        .filter(
+            Student.classroom_id == classroom_id,
+            Student.is_active.is_(True),
+        )
+        .all()
+    )
+    if not students:
+        return 0
+
+    sids = [s.id for s in students]
+    records = (
+        sess.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id.in_(sids),
+            StudentAttendance.date == today,
+        )
+        .all()
+    )
+    rec_map = {r.student_id: r for r in records}
+
+    pending = 0
+    for s in students:
+        r = rec_map.get(s.id)
+        if r is None or r.status is None:
+            pending += 1
+    return pending

@@ -117,3 +117,123 @@ class TestResolveTeacherClassroom:
 
     def test_returns_none_when_employee_missing(self, in_mem_session):
         assert resolve_teacher_classroom(in_mem_session, employee_id=99999) is None
+
+
+from datetime import date
+from services.portal_class_hub_service import count_attendance_pending
+
+
+class TestCountAttendancePending:
+    def test_no_records_means_all_pending(self, in_mem_session):
+        sess = in_mem_session
+        c = Classroom(name="A班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        for i in range(3):
+            sess.add(
+                Student(
+                    student_id=f"S{i+1}",
+                    name=f"小{i+1}",
+                    classroom_id=c.id,
+                    is_active=True,
+                    lifecycle_status=LIFECYCLE_ACTIVE,
+                )
+            )
+        sess.flush()
+        assert (
+            count_attendance_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 3
+        )
+
+    def test_some_marked_some_pending(self, in_mem_session):
+        from models.classroom import StudentAttendance
+
+        sess = in_mem_session
+        c = Classroom(name="B班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        students = []
+        for i in range(3):
+            s = Student(
+                student_id=f"M{i+1}",
+                name=f"中{i+1}",
+                classroom_id=c.id,
+                is_active=True,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+            sess.add(s)
+            students.append(s)
+        sess.flush()
+        # 第 1 位已點名（出席）；第 2、3 位無 row
+        sess.add(
+            StudentAttendance(
+                student_id=students[0].id,
+                date=date(2026, 5, 4),
+                status="出席",
+            )
+        )
+        sess.flush()
+        assert (
+            count_attendance_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 2
+        )  # students[1] + students[2] (both no row)
+
+    def test_inactive_students_excluded(self, in_mem_session):
+        sess = in_mem_session
+        c = Classroom(name="C班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        sess.add(
+            Student(
+                student_id="A1",
+                name="active",
+                classroom_id=c.id,
+                is_active=True,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+        )
+        sess.add(
+            Student(
+                student_id="I1",
+                name="inactive",
+                classroom_id=c.id,
+                is_active=False,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+        )
+        sess.flush()
+        # 只有 active 學生計入 → 1
+        assert (
+            count_attendance_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 1
+        )
+
+    def test_other_dates_not_counted(self, in_mem_session):
+        from models.classroom import StudentAttendance
+
+        sess = in_mem_session
+        c = Classroom(name="D班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        s = Student(
+            student_id="X1",
+            name="x",
+            classroom_id=c.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        sess.flush()
+        # 昨天有點名，今天無
+        sess.add(
+            StudentAttendance(
+                student_id=s.id,
+                date=date(2026, 5, 3),
+                status="出席",
+            )
+        )
+        sess.flush()
+        assert (
+            count_attendance_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 1
+        )
