@@ -448,6 +448,13 @@ def bind_first_child(
             raise HTTPException(status_code=400, detail="此監護人已綁定其他家長帳號")
         guardian.user_id = user.id
         user.last_login = _now()
+        _issue_refresh_token(
+            session,
+            response,
+            user_id=user.id,
+            user_agent=request.headers.get("user-agent"),
+            ip=request.client.host if request.client else None,
+        )
         session.commit()
         session.refresh(user)
 

@@ -334,6 +334,14 @@ class TestAdminBindingCodeAndParentBind:
         assert bind_resp.status_code == 200
         assert bind_resp.json()["user"]["role"] == "parent"
         assert "access_token" in bind_resp.cookies
+        assert "parent_refresh_token" in bind_resp.cookies
+        from models.database import ParentRefreshToken
+
+        with session_factory() as session:
+            tokens = session.query(ParentRefreshToken).all()
+            assert len(tokens) == 1
+            assert tokens[0].used_at is None
+            assert tokens[0].parent_token_id is None
 
         # DB 結果：Guardian.user_id 設好、binding 已用、AuditLog 落筆
         with session_factory() as session:
