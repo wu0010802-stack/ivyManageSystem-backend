@@ -513,3 +513,105 @@ class TestCountObservationPending:
             count_observation_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
             == 1
         )
+
+
+# ---------------------------------------------------------------------------
+# Helper 5c: count_incidents_today
+# ---------------------------------------------------------------------------
+from models.classroom import StudentIncident
+
+
+class TestCountIncidentsToday:
+    def test_counts_only_today(self, in_mem_session):
+        from services.portal_class_hub_service import count_incidents_today
+
+        sess = in_mem_session
+        c = Classroom(name="I班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        s = Student(
+            student_id="X",
+            name="x",
+            classroom_id=c.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        sess.flush()
+        # 2 today + 1 yesterday
+        sess.add(
+            StudentIncident(
+                student_id=s.id,
+                incident_type="意外受傷",
+                occurred_at=_dt(2026, 5, 4, 9, 0),
+                description="early today",
+            )
+        )
+        sess.add(
+            StudentIncident(
+                student_id=s.id,
+                incident_type="行為觀察",
+                occurred_at=_dt(2026, 5, 4, 23, 30),
+                description="late today",
+            )
+        )
+        sess.add(
+            StudentIncident(
+                student_id=s.id,
+                incident_type="意外受傷",
+                occurred_at=_dt(2026, 5, 3, 15, 0),
+                description="yesterday",
+            )
+        )
+        sess.flush()
+        assert (
+            count_incidents_today(sess, classroom_id=c.id, today=date(2026, 5, 4)) == 2
+        )
+
+    def test_filters_by_classroom(self, in_mem_session):
+        from services.portal_class_hub_service import count_incidents_today
+
+        sess = in_mem_session
+        c1 = Classroom(name="C1", is_active=True)
+        c2 = Classroom(name="C2", is_active=True)
+        sess.add_all([c1, c2])
+        sess.flush()
+        s1 = Student(
+            student_id="S1",
+            name="s1",
+            classroom_id=c1.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        s2 = Student(
+            student_id="S2",
+            name="s2",
+            classroom_id=c2.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add_all([s1, s2])
+        sess.flush()
+        sess.add(
+            StudentIncident(
+                student_id=s1.id,
+                incident_type="意外受傷",
+                occurred_at=_dt(2026, 5, 4, 9, 0),
+                description="c1 incident",
+            )
+        )
+        sess.add(
+            StudentIncident(
+                student_id=s2.id,
+                incident_type="意外受傷",
+                occurred_at=_dt(2026, 5, 4, 9, 0),
+                description="c2 incident",
+            )
+        )
+        sess.flush()
+        assert (
+            count_incidents_today(sess, classroom_id=c1.id, today=date(2026, 5, 4)) == 1
+        )
+        assert (
+            count_incidents_today(sess, classroom_id=c2.id, today=date(2026, 5, 4)) == 1
+        )

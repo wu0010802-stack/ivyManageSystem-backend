@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, date as date_cls
+from datetime import datetime, time, timedelta, date as date_cls
 from typing import Literal, Optional
 
 from sqlalchemy.orm import Session
@@ -196,3 +196,25 @@ def count_observation_pending(
         .distinct()
     }
     return sum(1 for s in students if s.id not in recorded_sids)
+
+
+def count_incidents_today(
+    sess: Session,
+    *,
+    classroom_id: int,
+    today: date_cls,
+) -> int:
+    """今日已建立的事件紀錄數（incident.occurred_at 落在 today 的 24h 內，且學生屬於該班且 active）。"""
+    start = datetime.combine(today, datetime.min.time())
+    end = start + timedelta(days=1)
+    return (
+        sess.query(StudentIncident)
+        .join(Student, StudentIncident.student_id == Student.id)
+        .filter(
+            Student.classroom_id == classroom_id,
+            Student.is_active.is_(True),
+            StudentIncident.occurred_at >= start,
+            StudentIncident.occurred_at < end,
+        )
+        .count()
+    )
