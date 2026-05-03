@@ -8,7 +8,13 @@ from typing import Literal, Optional
 
 from sqlalchemy.orm import Session
 from models.database import Employee, Classroom, Student
-from models.classroom import StudentAttendance
+from models.classroom import StudentAttendance, StudentIncident
+from models.portfolio import (
+    StudentMedicationOrder,
+    StudentMedicationLog,
+    StudentObservation,
+)
+from models.contact_book import StudentContactBookEntry
 
 SlotId = Literal["morning", "forenoon", "noon", "afternoon"]
 
@@ -98,3 +104,60 @@ def count_attendance_pending(
     rec_map = {r.student_id: r for r in records}
 
     return sum(1 for s in students if s.id not in rec_map)
+
+
+def list_pending_medications(
+    sess: Session,
+    *,
+    classroom_id: int,
+    today: date_cls,
+) -> list[dict]:
+    """回傳今日尚未執行的用藥（每筆 log 一個 dict），依 due_at ASC 排序。
+
+    每筆 dict 結構：
+      - 'id': StudentMedicationLog.id
+      - 'order_id': order id
+      - 'student_id', 'student_name'
+      - 'detail': "<medication_name> <dose>"  (e.g. "退燒藥 5ml")
+      - 'due_at': datetime — today + scheduled_time
+
+    Pending 條件：log.administered_at IS NULL AND log.skipped IS False AND log.correction_of IS NULL，
+    且 order.order_date == today，且 student.classroom_id == classroom_id 且 student.is_active。
+    """
+    rows = (
+        sess.query(
+            StudentMedicationLog,
+            StudentMedicationOrder,
+            Student,
+        )
+        .join(
+            StudentMedicationOrder,
+            StudentMedicationLog.order_id == StudentMedicationOrder.id,
+        )
+        .join(Student, StudentMedicationOrder.student_id == Student.id)
+        .filter(
+            StudentMedicationOrder.order_date == today,
+            Student.classroom_id == classroom_id,
+            Student.is_active.is_(True),
+            StudentMedicationLog.administered_at.is_(None),
+            StudentMedicationLog.skipped.is_(False),
+            StudentMedicationLog.correction_of.is_(None),
+        )
+        .order_by(StudentMedicationLog.scheduled_time)
+        .all()
+    )
+    out: list[dict] = []
+    for log, order, student in rows:
+        hh, mm = map(int, log.scheduled_time.split(":"))
+        due = datetime.combine(today, datetime.min.time()).replace(hour=hh, minute=mm)
+        out.append(
+            {
+                "id": log.id,
+                "order_id": order.id,
+                "student_id": student.id,
+                "student_name": student.name,
+                "detail": f"{order.medication_name} {order.dose}",
+                "due_at": due,
+            }
+        )
+    return out

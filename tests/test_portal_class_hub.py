@@ -237,3 +237,169 @@ class TestCountAttendancePending:
             count_attendance_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
             == 1
         )
+
+
+# ---------------------------------------------------------------------------
+# Helper 5a: list_pending_medications
+# ---------------------------------------------------------------------------
+from services.portal_class_hub_service import list_pending_medications
+from models.portfolio import StudentMedicationOrder, StudentMedicationLog
+
+
+class TestListPendingMedications:
+    def _make_classroom_student(self, sess, prefix="MED"):
+        c = Classroom(name=f"{prefix}班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        s = Student(
+            student_id=f"{prefix}001",
+            name=f"{prefix}學生",
+            classroom_id=c.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        sess.flush()
+        return c, s
+
+    def test_returns_empty_when_no_orders(self, in_mem_session):
+        sess = in_mem_session
+        c, _s = self._make_classroom_student(sess)
+        result = list_pending_medications(
+            sess, classroom_id=c.id, today=date(2026, 5, 3)
+        )
+        assert result == []
+
+    def test_returns_only_today_orders(self, in_mem_session):
+        sess = in_mem_session
+        c, s = self._make_classroom_student(sess, prefix="TOD")
+        today = date(2026, 5, 3)
+        yesterday = date(2026, 5, 2)
+        # Yesterday's order + pending log — should NOT appear
+        yesterday_order = StudentMedicationOrder(
+            student_id=s.id,
+            order_date=yesterday,
+            medication_name="感冒藥",
+            dose="1顆",
+            time_slots=["09:00"],
+        )
+        sess.add(yesterday_order)
+        sess.flush()
+        yesterday_log = StudentMedicationLog(
+            order_id=yesterday_order.id,
+            scheduled_time="09:00",
+            administered_at=None,
+            skipped=False,
+            correction_of=None,
+        )
+        sess.add(yesterday_log)
+        # Today's order + pending log — should appear
+        today_order = StudentMedicationOrder(
+            student_id=s.id,
+            order_date=today,
+            medication_name="退燒藥",
+            dose="5ml",
+            time_slots=["10:00"],
+        )
+        sess.add(today_order)
+        sess.flush()
+        today_log = StudentMedicationLog(
+            order_id=today_order.id,
+            scheduled_time="10:00",
+            administered_at=None,
+            skipped=False,
+            correction_of=None,
+        )
+        sess.add(today_log)
+        sess.flush()
+        result = list_pending_medications(sess, classroom_id=c.id, today=today)
+        assert len(result) == 1
+        assert result[0]["detail"] == "退燒藥 5ml"
+
+    def test_skipped_and_administered_excluded(self, in_mem_session):
+        from datetime import datetime as dt
+
+        sess = in_mem_session
+        c, s = self._make_classroom_student(sess, prefix="SKP")
+        today = date(2026, 5, 3)
+        order = StudentMedicationOrder(
+            student_id=s.id,
+            order_date=today,
+            medication_name="維他命",
+            dose="1顆",
+            time_slots=["08:00", "12:00", "15:00"],
+        )
+        sess.add(order)
+        sess.flush()
+        # pending log (should appear)
+        log_pending = StudentMedicationLog(
+            order_id=order.id,
+            scheduled_time="08:00",
+            administered_at=None,
+            skipped=False,
+            correction_of=None,
+        )
+        # administered log (should NOT appear)
+        log_administered = StudentMedicationLog(
+            order_id=order.id,
+            scheduled_time="12:00",
+            administered_at=dt(2026, 5, 3, 12, 5),
+            skipped=False,
+            correction_of=None,
+        )
+        # skipped log (should NOT appear)
+        log_skipped = StudentMedicationLog(
+            order_id=order.id,
+            scheduled_time="15:00",
+            administered_at=None,
+            skipped=True,
+            correction_of=None,
+        )
+        sess.add_all([log_pending, log_administered, log_skipped])
+        sess.flush()
+        result = list_pending_medications(sess, classroom_id=c.id, today=today)
+        assert len(result) == 1
+        assert result[0]["id"] == log_pending.id
+
+    def test_sorted_by_scheduled_time(self, in_mem_session):
+        sess = in_mem_session
+        c, s = self._make_classroom_student(sess, prefix="SRT")
+        today = date(2026, 5, 3)
+        order = StudentMedicationOrder(
+            student_id=s.id,
+            order_date=today,
+            medication_name="止咳糖漿",
+            dose="10ml",
+            time_slots=["14:00", "08:30", "11:00"],
+        )
+        sess.add(order)
+        sess.flush()
+        logs = [
+            StudentMedicationLog(
+                order_id=order.id,
+                scheduled_time="14:00",
+                administered_at=None,
+                skipped=False,
+                correction_of=None,
+            ),
+            StudentMedicationLog(
+                order_id=order.id,
+                scheduled_time="08:30",
+                administered_at=None,
+                skipped=False,
+                correction_of=None,
+            ),
+            StudentMedicationLog(
+                order_id=order.id,
+                scheduled_time="11:00",
+                administered_at=None,
+                skipped=False,
+                correction_of=None,
+            ),
+        ]
+        sess.add_all(logs)
+        sess.flush()
+        result = list_pending_medications(sess, classroom_id=c.id, today=today)
+        assert len(result) == 3
+        due_times = [r["due_at"] for r in result]
+        assert due_times == sorted(due_times)
