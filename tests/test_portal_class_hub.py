@@ -712,3 +712,113 @@ class TestCountContactBookPending:
             count_contact_book_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
             == 0
         )
+
+
+# ---------------------------------------------------------------------------
+# 整合測試：GET /api/portal/class-hub/today
+# ---------------------------------------------------------------------------
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from api.portal import router as portal_router
+from utils.auth import create_access_token
+
+
+@pytest.fixture
+def hub_client(in_mem_session):
+    """整合測試 client：把 SQLite session 注入 FastAPI。"""
+    sess = in_mem_session
+    app = FastAPI()
+    app.include_router(portal_router)
+    from models.database import get_session as real_get_session
+
+    def override():
+        try:
+            yield sess
+        finally:
+            pass
+
+    app.dependency_overrides[real_get_session] = override
+    return TestClient(app), sess
+
+
+def _create_user(sess, *, employee_id, username, role="teacher"):
+    u = User(
+        username=username,
+        password_hash="x",
+        role=role,
+        employee_id=employee_id,
+        is_active=True,
+    )
+    sess.add(u)
+    sess.flush()
+    return u
+
+
+class TestClassHubTodayEndpoint:
+    def test_no_classroom_returns_empty_shell(self, hub_client):
+        c, sess = hub_client
+        emp = Employee(name="無班老師", is_active=True, employee_id="E0")
+        sess.add(emp)
+        sess.flush()
+        u = _create_user(sess, employee_id=emp.id, username="t1")
+        sess.commit()
+        token = create_access_token({"sub": u.username, "employee_id": emp.id})
+        resp = c.get(
+            "/api/portal/class-hub/today",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["classroom_id"] == 0
+        assert body["classroom_name"] == ""
+        assert body["counts"]["attendance_pending"] == 0
+        assert body["counts"]["medications_pending"] == 0
+        assert len(body["slots"]) == 4
+        assert {s["slot_id"] for s in body["slots"]} == {
+            "morning",
+            "forenoon",
+            "noon",
+            "afternoon",
+        }
+        assert all(s["tasks"] == [] for s in body["slots"])
+        assert body["sticky_next"] is None
+
+    def test_with_classroom_attendance_only(self, hub_client):
+        c, sess = hub_client
+        room = Classroom(name="C班", is_active=True)
+        sess.add(room)
+        sess.flush()
+        for i in range(3):
+            sess.add(
+                Student(
+                    student_id=f"H{i+1}",
+                    name=f"happy{i+1}",
+                    classroom_id=room.id,
+                    is_active=True,
+                    lifecycle_status=LIFECYCLE_ACTIVE,
+                )
+            )
+        emp = Employee(
+            name="班導", is_active=True, classroom_id=room.id, employee_id="E1"
+        )
+        sess.add(emp)
+        sess.flush()
+        u = _create_user(sess, employee_id=emp.id, username="t2")
+        sess.commit()
+        token = create_access_token({"sub": u.username, "employee_id": emp.id})
+        resp = c.get(
+            "/api/portal/class-hub/today",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["classroom_id"] == room.id
+        assert body["classroom_name"] == "C班"
+        assert body["counts"]["attendance_pending"] == 3
+        morning = next(s for s in body["slots"] if s["slot_id"] == "morning")
+        kinds = {t["kind"] for t in morning["tasks"]}
+        assert "attendance" in kinds
+        # forenoon should still have at least the incident (count=0) inline_button
+        forenoon = next(s for s in body["slots"] if s["slot_id"] == "forenoon")
+        assert any(t["kind"] == "incident" for t in forenoon["tasks"])
