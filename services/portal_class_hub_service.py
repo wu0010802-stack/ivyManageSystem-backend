@@ -218,3 +218,38 @@ def count_incidents_today(
         )
         .count()
     )
+
+
+def count_contact_book_pending(
+    sess: Session,
+    *,
+    classroom_id: int,
+    today: date_cls,
+) -> int:
+    """今日尚未填聯絡簿的學生數。
+
+    判定：班上 active 學生中，無 StudentContactBookEntry（log_date == today,
+    deleted_at IS NULL）的學生數。Draft（published_at IS NULL）視為已填。
+    """
+    students = (
+        sess.query(Student)
+        .filter(
+            Student.classroom_id == classroom_id,
+            Student.is_active.is_(True),
+        )
+        .all()
+    )
+    if not students:
+        return 0
+    sids = [s.id for s in students]
+    filled_sids = {
+        r.student_id
+        for r in sess.query(StudentContactBookEntry.student_id)
+        .filter(
+            StudentContactBookEntry.student_id.in_(sids),
+            StudentContactBookEntry.log_date == today,
+            StudentContactBookEntry.deleted_at.is_(None),
+        )
+        .distinct()
+    }
+    return sum(1 for s in students if s.id not in filled_sids)

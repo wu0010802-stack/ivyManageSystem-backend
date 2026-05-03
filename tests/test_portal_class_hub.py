@@ -615,3 +615,100 @@ class TestCountIncidentsToday:
         assert (
             count_incidents_today(sess, classroom_id=c2.id, today=date(2026, 5, 4)) == 1
         )
+
+
+# ---------------------------------------------------------------------------
+# Helper 5d: count_contact_book_pending
+# ---------------------------------------------------------------------------
+
+
+class TestCountContactBookPending:
+    def test_no_entries_all_pending(self, in_mem_session):
+        from services.portal_class_hub_service import count_contact_book_pending
+
+        sess = in_mem_session
+        c = Classroom(name="CB", is_active=True)
+        sess.add(c)
+        sess.flush()
+        for i in range(2):
+            sess.add(
+                Student(
+                    student_id=f"CB{i+1}",
+                    name=f"cb{i+1}",
+                    classroom_id=c.id,
+                    is_active=True,
+                    lifecycle_status=LIFECYCLE_ACTIVE,
+                )
+            )
+        sess.flush()
+        assert (
+            count_contact_book_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 2
+        )
+
+    def test_some_filled_some_not(self, in_mem_session):
+        from services.portal_class_hub_service import count_contact_book_pending
+        from models.contact_book import StudentContactBookEntry
+
+        sess = in_mem_session
+        c = Classroom(name="CB2", is_active=True)
+        sess.add(c)
+        sess.flush()
+        students = []
+        for i in range(3):
+            s = Student(
+                student_id=f"E{i+1}",
+                name=f"e{i+1}",
+                classroom_id=c.id,
+                is_active=True,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+            sess.add(s)
+            students.append(s)
+        sess.flush()
+        sess.add(
+            StudentContactBookEntry(
+                student_id=students[0].id,
+                classroom_id=c.id,
+                log_date=date(2026, 5, 4),
+                teacher_note="filled",
+                published_at=_dt(2026, 5, 4, 17, 0),
+            )
+        )
+        sess.flush()
+        assert (
+            count_contact_book_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 2
+        )
+
+    def test_draft_counts_as_filled(self, in_mem_session):
+        from services.portal_class_hub_service import count_contact_book_pending
+        from models.contact_book import StudentContactBookEntry
+
+        sess = in_mem_session
+        c = Classroom(name="CB3", is_active=True)
+        sess.add(c)
+        sess.flush()
+        s = Student(
+            student_id="D2",
+            name="draft-stu",
+            classroom_id=c.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+        sess.add(s)
+        sess.flush()
+        sess.add(
+            StudentContactBookEntry(
+                student_id=s.id,
+                classroom_id=c.id,
+                log_date=date(2026, 5, 4),
+                teacher_note="draft",
+                published_at=None,
+            )
+        )
+        sess.flush()
+        assert (
+            count_contact_book_pending(sess, classroom_id=c.id, today=date(2026, 5, 4))
+            == 0
+        )
