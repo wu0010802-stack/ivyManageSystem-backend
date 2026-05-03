@@ -164,6 +164,20 @@ def _issue_refresh_token(
     return row
 
 
+def gc_expired_refresh_tokens(session, *, retention_days: int = 7) -> int:
+    """刪除 expires_at < now - retention_days 的 token row；回傳刪除筆數。
+
+    保留 retention_days 天供事後稽核。caller 負責 commit。
+    """
+    cutoff = _now() - timedelta(days=retention_days)
+    result = session.execute(
+        ParentRefreshToken.__table__.delete().where(
+            ParentRefreshToken.expires_at < cutoff
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 def _set_bind_token_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=_BIND_TOKEN_COOKIE,

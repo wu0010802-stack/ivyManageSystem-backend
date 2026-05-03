@@ -360,3 +360,37 @@ def test_logout_revokes_current_family_only(parent_client):
         cookies={"parent_refresh_token": raw_B},
     )
     assert r2.status_code == 200
+
+
+def test_gc_purges_tokens_expired_more_than_7_days(parent_client):
+    from api.parent_portal.auth import gc_expired_refresh_tokens
+
+    client, session_factory = parent_client
+    _, _ = _login(client, session_factory, "token-AAAAAA", "U_A")
+
+    with session_factory() as s:
+        rows = s.query(ParentRefreshToken).all()
+        # 標一筆 8 天前過期、另一筆 1 天前過期
+        rows[0].expires_at = datetime.now() - timedelta(days=8)
+        s.commit()
+        # 再造一筆剛過期的（保留窗內）
+        from api.parent_portal.auth import _gen_refresh_raw, _hash_refresh
+        import uuid
+
+        s.add(
+            ParentRefreshToken(
+                user_id=rows[0].user_id,
+                family_id=str(uuid.uuid4()),
+                token_hash=_hash_refresh(_gen_refresh_raw()),
+                expires_at=datetime.now() - timedelta(days=1),
+            )
+        )
+        s.commit()
+
+    # 跑 GC
+    with session_factory() as s:
+        n = gc_expired_refresh_tokens(s, retention_days=7)
+        s.commit()
+        assert n == 1  # 只清 8 天前那筆
+        remaining = s.query(ParentRefreshToken).count()
+        assert remaining == 1
