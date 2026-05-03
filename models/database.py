@@ -31,6 +31,7 @@ from models.classroom import (
 )
 from models.guardian import Guardian
 from models.parent_binding import GuardianBindingCode
+from models.parent_refresh_token import ParentRefreshToken  # noqa: F401
 from models.student_leave import StudentLeaveRequest
 from models.attendance import Attendance, AttendanceStatus
 from models.shift import ShiftType, ShiftAssignment, DailyShift, ShiftSwapRequest
