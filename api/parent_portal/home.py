@@ -23,7 +23,11 @@ from utils.auth import require_parent_role
 
 from services.parent_message_service import count_unread_for_parent
 
-from ._shared import _get_parent_student_ids, _get_parent_user
+from ._shared import (
+    _get_parent_student_ids,
+    _get_parent_user,
+    resolve_parent_display_name,
+)
 from .announcements import count_unread_for_user as count_unread_announcements
 from .events import count_pending_acks_for_user as count_pending_event_acks
 from .fees import compute_fees_summary
@@ -92,7 +96,7 @@ def home_summary(current_user: dict = Depends(require_parent_role())):
         user = _get_parent_user(session, current_user)
         me = {
             "user_id": user.id,
-            "name": user.username,
+            "name": resolve_parent_display_name(session, user),
             "line_user_id": user.line_user_id,
             "role": "parent",
             "can_push": user.line_follow_confirmed_at is not None,

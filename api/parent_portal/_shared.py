@@ -49,3 +49,35 @@ def _assert_student_owned(session, user_id: int, student_id: int) -> None:
     _, student_ids = _get_parent_student_ids(session, user_id)
     if student_id not in student_ids:
         raise HTTPException(status_code=403, detail="此學生不屬於您")
+
+
+_DEFAULT_PARENT_DISPLAY_NAME = "家長"
+
+
+def resolve_parent_display_name(session, user: User) -> str:
+    """家長 hero / 問候語顯示名解析。
+
+    優先序：
+        1. user.display_name —— LIFF 登入時寫入的 LINE displayName（個人化最強）
+        2. Guardian.is_primary=True 的 Guardian.name —— 行政建檔的真實姓名
+        3. 最早一筆 Guardian.name —— 至少有名字
+        4. "家長" —— 全 fallback
+
+    絕不回傳 user.username，那是 `parent_line_<line_user_id>` 內部識別碼。
+    """
+    if user.display_name and user.display_name.strip():
+        return user.display_name.strip()
+
+    rows = (
+        session.query(Guardian.name, Guardian.is_primary, Guardian.created_at)
+        .filter(
+            Guardian.user_id == user.id,
+            Guardian.deleted_at.is_(None),
+        )
+        .order_by(Guardian.is_primary.desc(), Guardian.created_at.asc())
+        .all()
+    )
+    for name, _is_primary, _created in rows:
+        if name and name.strip():
+            return name.strip()
+    return _DEFAULT_PARENT_DISPLAY_NAME

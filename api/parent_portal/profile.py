@@ -18,7 +18,11 @@ from models.database import (
 from models.portfolio import StudentAllergy
 from utils.auth import require_parent_role
 
-from ._shared import _assert_student_owned, _get_parent_user
+from ._shared import (
+    _assert_student_owned,
+    _get_parent_user,
+    resolve_parent_display_name,
+)
 
 router = APIRouter(tags=["parent-profile"])
 
@@ -30,7 +34,7 @@ def get_me(current_user: dict = Depends(require_parent_role())):
         user = _get_parent_user(session, current_user)
         return {
             "user_id": user.id,
-            "name": user.username,
+            "name": resolve_parent_display_name(session, user),
             "line_user_id": user.line_user_id,
             "role": "parent",
             "can_push": user.line_follow_confirmed_at is not None,

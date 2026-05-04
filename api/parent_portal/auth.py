@@ -61,6 +61,8 @@ from utils.cookie import (
     set_access_token_cookie,
 )
 
+from ._shared import resolve_parent_display_name
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["parent-auth"])
@@ -252,12 +254,22 @@ def _issue_access_token(response: Response, user: User) -> str:
     return token
 
 
-def _issue_bind_temp_token(response: Response, line_user_id: str) -> str:
-    """5 分鐘 temp_token，scope='bind'。"""
+def _issue_bind_temp_token(
+    response: Response,
+    line_user_id: str,
+    display_name: Optional[str] = None,
+) -> str:
+    """5 分鐘 temp_token，scope='bind'。
+
+    display_name 帶 LINE id_token payload['name']，供 /bind 建立 User 時直接寫入；
+    temp_token 只能用來換綁定（不能讀其他 user 資料），夾帶 displayName 不增加風險。
+    """
     payload = {
         "scope": "bind",
         "line_user_id": line_user_id,
     }
+    if display_name:
+        payload["display_name"] = display_name
     token = create_access_token(
         payload, expires_delta=timedelta(minutes=_BIND_TOKEN_TTL_MINUTES)
     )
@@ -265,8 +277,8 @@ def _issue_bind_temp_token(response: Response, line_user_id: str) -> str:
     return token
 
 
-def _decode_bind_temp_token(request: Request) -> str:
-    """從 cookie 解 temp_token，回傳 line_user_id；無/過期/scope 不符 → 401。"""
+def _decode_bind_temp_token(request: Request) -> tuple[str, Optional[str]]:
+    """從 cookie 解 temp_token，回傳 (line_user_id, display_name)；無/過期/scope 不符 → 401。"""
     token = request.cookies.get(_BIND_TOKEN_COOKIE)
     if not token:
         raise HTTPException(status_code=401, detail="未提供綁定臨時 Token")
@@ -276,7 +288,7 @@ def _decode_bind_temp_token(request: Request) -> str:
     line_user_id = payload.get("line_user_id")
     if not line_user_id:
         raise HTTPException(status_code=401, detail="Token 缺少 line_user_id")
-    return line_user_id
+    return line_user_id, payload.get("display_name")
 
 
 def _claim_binding_code_atomic(
@@ -321,8 +333,14 @@ def _username_for_line(line_user_id: str) -> str:
     return f"parent_line_{line_user_id}"
 
 
-def _create_parent_user(session, line_user_id: str) -> User:
-    """建立 role='parent' User。password_hash 寫入永不匹配的 sentinel。"""
+def _create_parent_user(
+    session, line_user_id: str, display_name: Optional[str] = None
+) -> User:
+    """建立 role='parent' User。password_hash 寫入永不匹配的 sentinel。
+
+    display_name 為 LINE id_token payload['name']（LINE 個人檔案暱稱）；
+    後續 home_summary / profile 等端點以此作為家長 hero 顯示名。
+    """
     user = User(
         employee_id=None,
         username=_username_for_line(line_user_id),
@@ -332,11 +350,26 @@ def _create_parent_user(session, line_user_id: str) -> User:
         is_active=True,
         must_change_password=False,
         line_user_id=line_user_id,
+        display_name=_clean_display_name(display_name),
         token_version=0,
     )
     session.add(user)
     session.flush()
     return user
+
+
+def _clean_display_name(raw: Optional[str]) -> Optional[str]:
+    """LINE displayName 可能含前後空白、過長或空字串，正規化後存入。
+
+    - None / 全空白 → None
+    - 截至 100 字元（與欄位上限對齊）
+    """
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    return cleaned[:100]
 
 
 # ── Pydantic ────────────────────────────────────────────────────────────
@@ -366,6 +399,7 @@ def liff_login(
     service = _get_line_login_service()
     line_payload = service.verify_id_token(payload.id_token)
     line_user_id = line_payload["sub"]
+    line_display_name = _clean_display_name(line_payload.get("name"))
 
     session = get_session()
     try:
@@ -375,6 +409,10 @@ def liff_login(
             .first()
         )
         if user and user.role == "parent":
+            # 既有家長 user：若尚未寫過 display_name 或 LINE 暱稱有變則同步更新；
+            # 不直接覆寫使用者已自定的名（目前無自定 UI，未來預留）
+            if line_display_name and user.display_name != line_display_name:
+                user.display_name = line_display_name
             _issue_access_token(response, user)
             _issue_refresh_token(
                 session,
@@ -384,22 +422,23 @@ def liff_login(
                 ip=request.client.host if request.client else None,
             )
             user.last_login = _now()
+            display_name = resolve_parent_display_name(session, user)
             session.commit()
             return {
                 "status": "ok",
                 "user": {
                     "user_id": user.id,
-                    "name": user.username,
+                    "name": display_name,
                     "role": "parent",
                 },
             }
 
         # 沒有對應家長帳號：發臨時 token，引導去 bind
-        _issue_bind_temp_token(response, line_user_id)
+        _issue_bind_temp_token(response, line_user_id, line_display_name)
         return {
             "status": "need_binding",
             "line_user_id": line_user_id,
-            "name_hint": line_payload.get("name"),
+            "name_hint": line_display_name,
         }
     finally:
         session.close()
@@ -412,7 +451,7 @@ def bind_first_child(
     response: Response,
 ):
     """以綁定碼完成首次帳號綁定（建立 parent User 並掛 Guardian.user_id）。"""
-    line_user_id = _decode_bind_temp_token(request)
+    line_user_id, line_display_name = _decode_bind_temp_token(request)
     _check_bind_lockout(line_user_id)
 
     code_hash = _hash_code(payload.code)
@@ -433,8 +472,12 @@ def bind_first_child(
         )
         if existing_user:
             user = existing_user
+            if line_display_name and user.display_name != line_display_name:
+                user.display_name = line_display_name
         else:
-            user = _create_parent_user(session, line_user_id)
+            user = _create_parent_user(
+                session, line_user_id, display_name=line_display_name
+            )
 
         # 第二階段：把 used_by_user_id 落印 + 設 Guardian.user_id
         binding.used_by_user_id = user.id
@@ -486,7 +529,7 @@ def bind_first_child(
             "status": "ok",
             "user": {
                 "user_id": user.id,
-                "name": user.username,
+                "name": resolve_parent_display_name(session, user),
                 "role": "parent",
             },
         }
@@ -670,13 +713,14 @@ def parent_refresh(request: Request, response: Response):
         )
         user.last_login = _now()
         _issue_access_token(response, user)
+        display_name = resolve_parent_display_name(session, user)
         session.commit()
 
         return {
             "status": "ok",
             "user": {
                 "user_id": user.id,
-                "name": user.username,
+                "name": display_name,
                 "role": "parent",
             },
         }

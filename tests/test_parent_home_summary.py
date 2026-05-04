@@ -204,7 +204,10 @@ class TestHomeSummaryBasics:
         data = resp.json()
         assert set(data.keys()) == {"me", "children", "summary"}
         assert data["me"]["role"] == "parent"
-        assert data["me"]["name"].startswith("parent_line_")
+        # me.name 走 resolve_parent_display_name：display_name 為 None →
+        # fallback Guardian.name (fixture 設 "父親")。絕不可回 username 內部碼。
+        assert not data["me"]["name"].startswith("parent_line_")
+        assert data["me"]["name"] == "父親"
         assert len(data["children"]) == 1
         assert data["children"][0]["name"] == "小明"
         s = data["summary"]
