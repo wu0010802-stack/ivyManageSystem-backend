@@ -62,9 +62,13 @@ def get_engine():
             if _is_remote_db(DATABASE_URL):
                 connect_args["sslmode"] = "require"
             connect_args["options"] = "-c statement_timeout=30000"
+            # Why: Supabase Session Mode pooler 硬上限 15 clients；即便切到
+            # Transaction Mode（port 6543），單 pod 仍應節制連線以免多副本互搶。
+            # 5 base + 5 overflow = 10/pod，3 副本約 30 條，遠低於 Transaction
+            # Mode 的容量上限，也不會把 Session Mode 撐爆。
             kwargs = dict(
-                pool_size=20,
-                max_overflow=40,
+                pool_size=5,
+                max_overflow=5,
                 pool_pre_ping=True,
                 pool_recycle=1800,  # 30 分鐘回收連線，避免 server 端斷線
                 pool_timeout=15,
