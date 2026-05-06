@@ -258,10 +258,34 @@ def copy_yesterday_to_today(
 def compute_class_completion(
     session: Session,
     *,
+    classroom_id,
+    log_date,
+) -> dict:
+    """回傳該班該日聯絡簿完成度：roster 數 / 草稿數 / 已發布數。
+
+    支援 int 或 list[int]：
+    - int → 原 dict 結構（向後相容）
+    - list[int] → dict[int, dict]
+    - 空 list → {}
+    """
+    if isinstance(classroom_id, list):
+        if not classroom_id:
+            return {}
+        return _compute_class_completion_batch(
+            session, classroom_ids=classroom_id, log_date=log_date
+        )
+    return _compute_class_completion_single(
+        session, classroom_id=classroom_id, log_date=log_date
+    )
+
+
+def _compute_class_completion_single(
+    session: Session,
+    *,
     classroom_id: int,
     log_date,
 ) -> dict:
-    """回傳該班該日聯絡簿完成度：roster 數 / 草稿數 / 已發布數。"""
+    """單班實作（原 compute_class_completion body）。"""
     roster = (
         session.query(Student)
         .filter(
@@ -287,3 +311,53 @@ def compute_class_completion(
         "published": published,
         "missing": max(roster - draft - published, 0),
     }
+
+
+def _compute_class_completion_batch(
+    session: Session,
+    *,
+    classroom_ids: list,
+    log_date,
+) -> dict:
+    """多班 batch 實作：2 個 GROUP BY query 取代 N*2 個 query。
+
+    Strategy:
+      1. 一次 IN+GROUP BY 取所有班級 roster (Student count by classroom_id)
+      2. 一次 IN 取所有 entries，Python 端按 classroom_id 分組
+      3. Python 端組裝成 dict[classroom_id, dict]
+    """
+    from sqlalchemy import func
+
+    rosters = dict(
+        session.query(Student.classroom_id, func.count(Student.id))
+        .filter(
+            Student.classroom_id.in_(classroom_ids),
+            Student.is_active.is_(True),
+        )
+        .group_by(Student.classroom_id)
+        .all()
+    )
+
+    entries = (
+        session.query(StudentContactBookEntry)
+        .filter(
+            StudentContactBookEntry.classroom_id.in_(classroom_ids),
+            StudentContactBookEntry.log_date == log_date,
+            StudentContactBookEntry.deleted_at.is_(None),
+        )
+        .all()
+    )
+
+    result = {}
+    for cid in classroom_ids:
+        roster = rosters.get(cid, 0)
+        cid_entries = [e for e in entries if e.classroom_id == cid]
+        draft = sum(1 for e in cid_entries if e.published_at is None)
+        published = sum(1 for e in cid_entries if e.published_at is not None)
+        result[cid] = {
+            "roster": roster,
+            "draft": draft,
+            "published": published,
+            "missing": max(roster - draft - published, 0),
+        }
+    return result

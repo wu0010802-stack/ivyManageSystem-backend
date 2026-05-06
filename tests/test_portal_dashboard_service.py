@@ -181,3 +181,33 @@ class TestBatchSignature:
         assert (
             has_attendance_today(db_session, classroom_id=[], today=date.today()) == {}
         )
+
+
+from services.contact_book_service import compute_class_completion
+
+
+class TestContactBookCompletionBatch:
+    def test_int_returns_dict_with_roster_keys(self, db_session, two_classrooms):
+        c1, _ = two_classrooms
+        result = compute_class_completion(
+            db_session, classroom_id=c1.id, log_date=date.today()
+        )
+        assert isinstance(result, dict)
+        assert "roster" in result
+        assert "draft" in result
+        assert "published" in result
+
+    def test_list_returns_dict_of_dicts(self, db_session, two_classrooms):
+        c1, c2 = two_classrooms
+        result = compute_class_completion(
+            db_session, classroom_id=[c1.id, c2.id], log_date=date.today()
+        )
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {c1.id, c2.id}
+        assert all(isinstance(v, dict) and "roster" in v for v in result.values())
+
+    def test_empty_list_returns_empty_dict(self, db_session):
+        result = compute_class_completion(
+            db_session, classroom_id=[], log_date=date.today()
+        )
+        assert result == {}
