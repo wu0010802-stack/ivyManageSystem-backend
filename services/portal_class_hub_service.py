@@ -58,16 +58,39 @@ def resolve_teacher_classroom(
 ) -> Optional[Classroom]:
     """以教師 employee_id 反查目前指派的 active 班級（若無則 None）。
 
-    沿用既有 portal 慣例：以 Employee.classroom_id 為主鍵；若教師同時是副班導
-    需擴充時，請改成查 ClassroomTeacherAssignment（v2）。
+    走 Classroom 三個 teacher 欄位反查（head/assistant/art），與 portal 其他端點
+    `_get_teacher_classroom_ids` 一致；不再讀 `Employee.classroom_id`，避免該欄位
+    殘留指向舊班造成跨班 PII 外洩。多班時優先序：head > assistant > art，同優先
+    序內取 id 最小。
     """
-    emp = sess.get(Employee, employee_id)
-    if not emp or not emp.classroom_id:
+    if not employee_id:
         return None
-    c = sess.get(Classroom, emp.classroom_id)
-    if not c or not c.is_active:
-        return None
-    return c
+    head = (
+        sess.query(Classroom)
+        .filter(Classroom.is_active.is_(True), Classroom.head_teacher_id == employee_id)
+        .order_by(Classroom.id)
+        .first()
+    )
+    if head:
+        return head
+    assistant = (
+        sess.query(Classroom)
+        .filter(
+            Classroom.is_active.is_(True),
+            Classroom.assistant_teacher_id == employee_id,
+        )
+        .order_by(Classroom.id)
+        .first()
+    )
+    if assistant:
+        return assistant
+    art = (
+        sess.query(Classroom)
+        .filter(Classroom.is_active.is_(True), Classroom.art_teacher_id == employee_id)
+        .order_by(Classroom.id)
+        .first()
+    )
+    return art
 
 
 def count_attendance_pending(
