@@ -262,7 +262,7 @@ def _parse_receipt_response_from_record(
 def _find_idempotent_hit(
     session, idempotency_key: str
 ) -> Optional[ActivityPaymentRecord]:
-    """查詢相同 idempotency_key 的紀錄。
+    """查詢相同 idempotency_key 的「有效」紀錄（排除已 voided）。
 
     Why: DB 層 UniqueConstraint 已將 idempotency_key 設為永久全域唯一。
     過去這個 helper 額外用 10 分鐘視窗過濾，導致兩個衝突：
@@ -270,12 +270,34 @@ def _find_idempotent_hit(
         IntegrityError → catch 再查一次仍找不到 → 客戶端 500
     (2) window 內同 key 重送但應視為重試也 OK，但 window 邏輯本身是冗餘
     改為全域查詢：DB 語意（永久唯一）與 replay 語意一致，同 key 永遠回同結果。
+
+    Spec C5：voided 紀錄不可被當作 replay 結果回傳，否則客戶端會誤以為交易仍生效
+    （例：員工收 NT$5000 → 主管 void → 客戶端網路重試同 key → 若回 200 + 原 receipt
+    則員工誤認已收，該筆永久漏收）。本 helper 過濾 voided；handler 端配合用
+    `_has_any_record_for_key()` 偵測「key 命中但全 voided」的情境並回 409。
     """
     return (
         session.query(ActivityPaymentRecord)
-        .filter(ActivityPaymentRecord.idempotency_key == idempotency_key)
+        .filter(
+            ActivityPaymentRecord.idempotency_key == idempotency_key,
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
         .order_by(ActivityPaymentRecord.id.asc())
         .first()
+    )
+
+
+def _has_any_record_for_key(session, idempotency_key: str) -> bool:
+    """檢查是否存在任何使用此 idempotency_key 的紀錄（含 voided）。
+
+    搭配 `_find_idempotent_hit`：當有效 hit 為 None 但本 helper 回 True 時，
+    代表 key 命中但全 voided → handler 回 409 拒絕 replay。
+    """
+    return (
+        session.query(ActivityPaymentRecord.id)
+        .filter(ActivityPaymentRecord.idempotency_key == idempotency_key)
+        .first()
+        is not None
     )
 
 
@@ -480,6 +502,21 @@ async def pos_checkout(
                         operator,
                     )
                     return replay
+            elif _has_any_record_for_key(session, body.idempotency_key):
+                # spec C5：key 存在但所有對應紀錄都被 voided；不可 replay 已作廢交易
+                # 必須回 409 並要求換 key 重送，避免客戶端誤判已收款
+                logger.warning(
+                    "POS checkout idempotent key reused after void: key=%s operator=%s",
+                    body.idempotency_key,
+                    operator,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "idempotency_key 已被使用且關聯紀錄已作廢；"
+                        "若需重收同筆，請使用新的 idempotency_key 重送"
+                    ),
+                )
 
         # ── 已簽核日守衛：拒絕 payment_date 落在已 daily-close 的日期 ──
         # Why: snapshot 已凍結，補寫會讓 reconciliation 與實際 DB 永久失準。
@@ -672,6 +709,21 @@ async def pos_checkout(
                             operator,
                         )
                         return replay
+                # spec C5：voided 過濾後 None 但 UNIQUE 衝突 → key 命中但全 voided
+                # 不可繼續 replay；回 409 同前置守衛語意
+                if _has_any_record_for_key(session, body.idempotency_key):
+                    logger.warning(
+                        "POS checkout UNIQUE conflict on voided key: key=%s operator=%s",
+                        body.idempotency_key,
+                        operator,
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "idempotency_key 已被使用且關聯紀錄已作廢；"
+                            "若需重收同筆，請使用新的 idempotency_key 重送"
+                        ),
+                    )
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         # 金流變動影響 /finance-summary 報表快取（TTL 30 分），同步失效
