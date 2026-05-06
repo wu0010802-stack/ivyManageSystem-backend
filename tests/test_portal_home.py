@@ -294,6 +294,61 @@ def home_client(tmp_path):
     engine.dispose()
 
 
+def _seed_teacher_with_n_classrooms(
+    sf, n: int = 4, students_per_class: int = 5
+) -> dict:
+    """造一位帶 n 個班的教師（query count regression test 用）。"""
+    perm = int(
+        Permission.DASHBOARD.value
+        | Permission.PORTFOLIO_READ.value
+        | Permission.PORTFOLIO_WRITE.value
+        | Permission.PARENT_MESSAGES_WRITE.value
+    )
+    with sf() as session:
+        emp = Employee(
+            employee_id="E_QC", name="多班老師", is_active=True, base_salary=30000
+        )
+        session.add(emp)
+        session.flush()
+        classroom_ids = []
+        for c_idx in range(n):
+            classroom = Classroom(
+                name=f"班{c_idx}", is_active=True, head_teacher_id=emp.id
+            )
+            session.add(classroom)
+            session.flush()
+            classroom_ids.append(classroom.id)
+            for s_idx in range(students_per_class):
+                session.add(
+                    Student(
+                        student_id=f"S_QC_{c_idx}_{s_idx}",
+                        name=f"學生{c_idx}-{s_idx}",
+                        classroom_id=classroom.id,
+                        is_active=True,
+                        lifecycle_status=LIFECYCLE_ACTIVE,
+                    )
+                )
+        u = User(
+            username="t_qc",
+            password_hash="!",
+            role="teacher",
+            employee_id=emp.id,
+            permissions=perm,
+            is_active=True,
+            token_version=0,
+        )
+        session.add(u)
+        session.commit()
+        return {
+            "user_id": u.id,
+            "username": u.username,
+            "token_version": u.token_version or 0,
+            "employee_id": emp.id,
+            "permissions": perm,
+            "classroom_ids": classroom_ids,
+        }
+
+
 def _seed_teacher(sf) -> dict:
     """造一位班導 + 3 個學生班，回傳 primitive 值（避免 DetachedInstance）。"""
     perm = int(
@@ -398,3 +453,27 @@ class TestHomeSummary:
         card = rsp.json()["classrooms"][0]
         assert len(card["upcoming_birthdays_7d"]) == 1
         assert card["upcoming_birthdays_7d"][0]["days_until"] == 3
+
+    def test_classroom_cards_query_count_under_baseline(
+        self, home_client, query_counter
+    ):
+        """4 班 _classroom_card 不應 N+1（baseline ~32-40 → batch 後 ≤ 14）。"""
+        client, sf = home_client
+        seed = _seed_teacher_with_n_classrooms(sf, n=4, students_per_class=5)
+        tk = _token(seed)
+
+        # 從 sessionmaker 拿 engine
+        engine = sf.kw["bind"] if hasattr(sf, "kw") else sf().get_bind()
+
+        with query_counter(engine) as counter:
+            rsp = client.get(
+                "/api/portal/home/summary",
+                cookies={"access_token": tk},
+            )
+
+        assert rsp.status_code == 200, rsp.text
+        assert len(rsp.json()["classrooms"]) == 4
+        assert counter.count <= 14, (
+            f"query count regressed: {counter.count} (baseline ~32-40, target <=14). "
+            f"Last 5 statements: {counter.statements[-5:]}"
+        )
