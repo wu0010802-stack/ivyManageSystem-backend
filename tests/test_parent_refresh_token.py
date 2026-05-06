@@ -362,6 +362,111 @@ def test_logout_revokes_current_family_only(parent_client):
     assert r2.status_code == 200
 
 
+def test_bind_first_child_existing_user_revokes_old_refresh_family(parent_client):
+    """回歸：bind_first_child 走 existing_user 分支時，必須撤銷既有 refresh family。
+
+    情境：parent User 因 is_active=False 被 liff-login 略過 → 拿到 bind temp token →
+    bind 時 existing_user 命中 → 不能在沒撤銷舊 family 的情況下發新 family。
+    """
+    import uuid
+    import hashlib
+    from models.database import (
+        Guardian,
+        GuardianBindingCode,
+        Student as StudentModel,
+    )
+
+    client, session_factory = parent_client
+
+    # 預備：parent user（is_active=False，使 liff-login 走 need_binding）+ 舊 family
+    line_user_id = "U_A"
+    plain_code = "OLDDEV01"
+    with session_factory() as s:
+        user = User(
+            employee_id=None,
+            username=f"parent_line_{line_user_id}",
+            password_hash="!LINE_ONLY",
+            role="parent",
+            permissions=0,
+            is_active=False,
+            must_change_password=False,
+            line_user_id=line_user_id,
+            token_version=0,
+        )
+        s.add(user)
+        s.flush()
+
+        # 舊 family（模擬舊裝置仍持有的 refresh token）
+        from api.parent_portal.auth import _gen_refresh_raw, _hash_refresh
+
+        old_family = str(uuid.uuid4())
+        old_row = ParentRefreshToken(
+            user_id=user.id,
+            family_id=old_family,
+            token_hash=_hash_refresh(_gen_refresh_raw()),
+            expires_at=datetime.now() + timedelta(days=30),
+        )
+        s.add(old_row)
+
+        # Guardian + binding code 供 bind 使用
+        student = StudentModel(student_id="S_BIND", name="bind-stu", is_active=True)
+        s.add(student)
+        s.flush()
+        guardian = Guardian(
+            student_id=student.id,
+            name="家長X",
+            phone="0911000000",
+            relation="母親",
+            is_primary=True,
+        )
+        s.add(guardian)
+        s.flush()
+        code = GuardianBindingCode(
+            guardian_id=guardian.id,
+            code_hash=hashlib.sha256(plain_code.encode()).hexdigest(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            used_at=None,
+            used_by_user_id=None,
+            created_by=user.id,
+        )
+        s.add(code)
+        s.commit()
+        user_id = user.id
+
+    # liff-login → need_binding（因 is_active=False 被排除）
+    liff_resp = client.post(
+        "/api/parent/auth/liff-login", json={"id_token": "token-AAAAAA"}
+    )
+    assert liff_resp.status_code == 200, liff_resp.text
+    assert liff_resp.json()["status"] == "need_binding"
+
+    # bind → existing_user 分支
+    bind_resp = client.post("/api/parent/auth/bind", json={"code": plain_code})
+    assert bind_resp.status_code == 200, bind_resp.text
+
+    # 舊 family 應被撤銷
+    with session_factory() as s:
+        old_after = (
+            s.query(ParentRefreshToken)
+            .filter(ParentRefreshToken.family_id == old_family)
+            .all()
+        )
+        assert old_after, "舊 family row 應仍存在"
+        assert all(r.revoked_at is not None for r in old_after), "舊 family 必須被撤銷"
+
+        # 新 family 應已發出且未撤
+        active = (
+            s.query(ParentRefreshToken)
+            .filter(
+                ParentRefreshToken.user_id == user_id,
+                ParentRefreshToken.revoked_at.is_(None),
+            )
+            .all()
+        )
+        assert len(active) == 1, f"應僅一條新 family active，實得 {len(active)}"
+        assert active[0].family_id != old_family
+
+
 def test_gc_purges_tokens_expired_more_than_7_days(parent_client):
     from api.parent_portal.auth import gc_expired_refresh_tokens
 
@@ -394,3 +499,48 @@ def test_gc_purges_tokens_expired_more_than_7_days(parent_client):
         assert n == 1  # 只清 8 天前那筆
         remaining = s.query(ParentRefreshToken).count()
         assert remaining == 1
+
+
+def test_gc_purges_revoked_tokens_after_retention(parent_client):
+    """回歸：被撤銷（revoked_at）超出保留窗的 row 也要被 GC，避免 reuse 攻擊
+    導致 table 堆到自然過期才清。"""
+    from api.parent_portal.auth import (
+        gc_expired_refresh_tokens,
+        _gen_refresh_raw,
+        _hash_refresh,
+    )
+    import uuid
+
+    client, session_factory = parent_client
+    _, _ = _login(client, session_factory, "token-AAAAAA", "U_A")
+
+    with session_factory() as s:
+        u = s.query(User).filter(User.line_user_id == "U_A").first()
+        # 8 天前被撤銷、但仍未自然過期（30 天）
+        revoked_old = ParentRefreshToken(
+            user_id=u.id,
+            family_id=str(uuid.uuid4()),
+            token_hash=_hash_refresh(_gen_refresh_raw()),
+            expires_at=datetime.now() + timedelta(days=22),  # 仍未到自然過期
+            revoked_at=datetime.now() - timedelta(days=8),
+        )
+        # 1 天前被撤銷（保留窗內，不該被刪）
+        revoked_recent = ParentRefreshToken(
+            user_id=u.id,
+            family_id=str(uuid.uuid4()),
+            token_hash=_hash_refresh(_gen_refresh_raw()),
+            expires_at=datetime.now() + timedelta(days=29),
+            revoked_at=datetime.now() - timedelta(days=1),
+        )
+        s.add_all([revoked_old, revoked_recent])
+        s.commit()
+        revoked_old_id = revoked_old.id
+        revoked_recent_id = revoked_recent.id
+
+    with session_factory() as s:
+        n = gc_expired_refresh_tokens(s, retention_days=7)
+        s.commit()
+        assert n == 1  # 只刪 8 天前撤銷那筆
+        ids = {r.id for r in s.query(ParentRefreshToken).all()}
+        assert revoked_old_id not in ids
+        assert revoked_recent_id in ids

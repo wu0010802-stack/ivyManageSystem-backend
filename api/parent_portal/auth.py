@@ -167,14 +167,23 @@ def _issue_refresh_token(
 
 
 def gc_expired_refresh_tokens(session, *, retention_days: int = 7) -> int:
-    """刪除 expires_at < now - retention_days 的 token row；回傳刪除筆數。
+    """刪除 token row：保留窗 retention_days 天供事後稽核，超出即刪。
 
-    保留 retention_days 天供事後稽核。caller 負責 commit。
+    觸發條件（任一）：
+    - `expires_at < cutoff`：自然過期已超出保留窗
+    - `revoked_at < cutoff`：被 reuse 偵測或 logout 撤銷且超出保留窗
+      （否則 reuse 攻擊頻繁時 table 會堆積到自然過期那刻才清）
+
+    caller 負責 commit。
     """
     cutoff = _now() - timedelta(days=retention_days)
     result = session.execute(
         ParentRefreshToken.__table__.delete().where(
-            ParentRefreshToken.expires_at < cutoff
+            (ParentRefreshToken.expires_at < cutoff)
+            | (
+                (ParentRefreshToken.revoked_at.isnot(None))
+                & (ParentRefreshToken.revoked_at < cutoff)
+            )
         )
     )
     return int(result.rowcount or 0)
@@ -505,6 +514,14 @@ def bind_first_child(
             raise HTTPException(status_code=400, detail="此監護人已綁定其他家長帳號")
         guardian.user_id = user.id
         user.last_login = _now()
+        # 同 LINE userId 已有 parent User 但又走首綁流程時（例：補綁失誤後重新拿
+        # 首綁碼），舊裝置仍持有可旋轉的 refresh family。發新 family 前先撤銷舊 family，
+        # 避免同帳號同時持兩條 rotation 鏈、logout 撤不乾淨。
+        if existing_user is not None:
+            session.query(ParentRefreshToken).filter(
+                ParentRefreshToken.user_id == user.id,
+                ParentRefreshToken.revoked_at.is_(None),
+            ).update({"revoked_at": _now()}, synchronize_session=False)
         _issue_refresh_token(
             session,
             response,
