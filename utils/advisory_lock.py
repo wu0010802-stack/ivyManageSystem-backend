@@ -190,6 +190,50 @@ def acquire_salary_lock(
     )
 
 
+def _key_for_activity_refund(registration_id: int) -> int:
+    """把 (activity_refund, registration_id) 雜湊成 63-bit int 作為 advisory lock key。
+
+    Why (spec C4): 才藝 POS 退費的累積簽核守衛在 `_lock_regs`（registrations 行級鎖）
+    之後才讀 prior_refund_map；理論上 FOR UPDATE 已序列化，但若 isolation 為
+    REPEATABLE READ 或 _lock_regs 因 dialect 降級為無鎖（SQLite 測試），同 reg
+    並發兩筆小額退費可能各自看到 prior=0 並通過閾值。Advisory lock 提供
+    defense-in-depth，明確序列化同 reg 的退費流程，commit/rollback 自動釋放。
+
+    namespace 與 salary lock 隔離：seed 字串前綴不同，雜湊空間不衝突。
+    """
+    seed = f"activity_refund|{registration_id}".encode()
+    raw = hashlib.md5(seed).digest()
+    return int.from_bytes(raw[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+
+
+def acquire_activity_refund_lock(session: Session, registration_id: int) -> None:
+    """為才藝 POS 退費取得 per-registration 的 advisory lock（spec C4）。
+
+    呼叫時機：pos_checkout 處理 refund items 時，每個 registration_id 取一次鎖；
+    優先順序在 `_lock_regs`（registrations FOR UPDATE）之前，避免 deadlock。
+
+    PG：`pg_advisory_xact_lock(key)`，commit/rollback 時自動釋放
+    SQLite/其他：no-op（測試降級）；上線環境必為 PostgreSQL，故無實效退化
+    """
+    if not _is_postgres(session):
+        logger.debug(
+            "acquire_activity_refund_lock no-op (non-postgres): reg=%s",
+            registration_id,
+        )
+        return
+    key = _key_for_activity_refund(registration_id)
+    try:
+        session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
+    except OperationalError as exc:
+        logger.error(
+            "acquire_activity_refund_lock failed: reg=%s err=%s",
+            registration_id,
+            exc,
+        )
+        raise
+    logger.debug("acquire_activity_refund_lock: reg=%s key=%d", registration_id, key)
+
+
 @contextmanager
 def try_salary_lock(
     session: Session,

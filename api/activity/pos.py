@@ -33,6 +33,7 @@ from models.database import (
 )
 from services.activity_service import activity_service
 from services.report_cache_service import report_cache_service
+from utils.advisory_lock import acquire_activity_refund_lock
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -533,6 +534,15 @@ async def pos_checkout(
         reg_ids = [item.registration_id for item in body.items]
         if len(set(reg_ids)) != len(reg_ids):
             raise HTTPException(status_code=400, detail="結帳項目含重複的報名 ID")
+
+        # ── spec C4：退費 advisory lock（在 _lock_regs 之前取鎖）─────────
+        # Why: 同 reg 並發兩筆小額退費可能各自看到 prior_refund_map=舊值
+        # 並通過累積閾值；advisory lock 強制序列化同 reg 的退費流程，
+        # commit/rollback 自動釋放。只在 refund 路徑需要（payment 路徑由
+        # _lock_regs 行級鎖即足）。多 item 按 reg_id 升冪取鎖避免 deadlock。
+        if body.type == "refund":
+            for rid in sorted(set(reg_ids)):
+                acquire_activity_refund_lock(session, rid)
 
         # ── 行級鎖住所有要修改的 registrations ──────────────────
         regs = _lock_regs(session, reg_ids)
