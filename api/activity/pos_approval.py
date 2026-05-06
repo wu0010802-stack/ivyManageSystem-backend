@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func
 
 from models.database import (
@@ -57,32 +57,44 @@ class DailyCloseCreate(BaseModel):
 
 
 _UNLOCK_REASON_MIN_LENGTH = 10
+_ADMIN_OVERRIDE_REASON_MIN_LENGTH = 30
 
 
 class DailyCloseUnlock(BaseModel):
-    """解鎖日結簽核的請求；reason 必填且 ≥ _UNLOCK_REASON_MIN_LENGTH 字。
+    """解鎖日結簽核的請求。
 
-    Why: 解鎖會刪除 snapshot，後續可重簽不同金額；若無原因紀錄，同一個高權限者
-    可進出簽核狀態無痕修改帳。原因會與「原 snapshot 摘要」一起寫入 ApprovalLog
-    與 audit_changes，便於事後追蹤。
+    一般 4-eye 路徑：reason ≥ 10 字 + 解鎖人 ≠ 原簽核人（handler 守衛）。
+    Admin override 路徑：is_admin_override=True + reason ≥ 30 字 + role='admin'（handler 守衛）。
+
+    Why: 原設計只擋 reason 長度，未限制「自簽自解」循環；spec C2 收緊。
     """
 
-    reason: str = Field(
-        ...,
-        min_length=_UNLOCK_REASON_MIN_LENGTH,
-        max_length=500,
-        description=f"解鎖原因（≥ {_UNLOCK_REASON_MIN_LENGTH} 字）",
+    reason: str = Field(..., max_length=500)
+    is_admin_override: bool = Field(
+        False,
+        description=(
+            "管理員緊急 override：略過 4-eye 但 reason 須 ≥ "
+            f"{_ADMIN_OVERRIDE_REASON_MIN_LENGTH} 字"
+        ),
     )
 
-    @field_validator("reason")
-    @classmethod
-    def _validate_reason(cls, v: str) -> str:
-        cleaned = (v or "").strip()
-        if len(cleaned) < _UNLOCK_REASON_MIN_LENGTH:
-            raise ValueError(
-                f"解鎖原因需至少 {_UNLOCK_REASON_MIN_LENGTH} 個字，不可敷衍"
+    @model_validator(mode="after")
+    def _validate_reason_length(self):
+        cleaned = (self.reason or "").strip()
+        min_len = (
+            _ADMIN_OVERRIDE_REASON_MIN_LENGTH
+            if self.is_admin_override
+            else _UNLOCK_REASON_MIN_LENGTH
+        )
+        if len(cleaned) < min_len:
+            extra = (
+                "（admin override 須具體說明緊急情況）"
+                if self.is_admin_override
+                else ""
             )
-        return cleaned
+            raise ValueError(f"解鎖原因需至少 {min_len} 字{extra}")
+        self.reason = cleaned
+        return self
 
 
 # ── 內部輔助 ────────────────────────────────────────────────────────────
@@ -331,6 +343,28 @@ async def approve_daily_close(
         )
         session.commit()
         session.refresh(row)
+
+        # ── 軟提醒：簽核者 = 當日 POS 操作者 ─────────────────────
+        # Why (spec C2): 當日收銀者自簽會降低稽核獨立性；不擋送出，僅以 warnings 提示
+        operators_today = {
+            op
+            for (op,) in session.query(ActivityPaymentRecord.operator)
+            .filter(
+                ActivityPaymentRecord.payment_date == target,
+                ActivityPaymentRecord.voided_at.is_(None),
+            )
+            .distinct()
+            .all()
+            if op
+        }
+        warnings: list[str] = []
+        approver_name = current_user.get("username", "")
+        if approver_name and approver_name in operators_today:
+            warnings.append(
+                f"你（{approver_name}）是當日 POS 收銀者；"
+                "建議由其他簽核者覆核以強化稽核獨立性"
+            )
+
         logger.warning(
             "POS 日結簽核：date=%s approver=%s net=%d variance=%s",
             target.isoformat(),
@@ -352,7 +386,9 @@ async def approve_daily_close(
             "cash_variance": cash_variance,
             "note": body.note,
         }
-        return _serialize_close(row)
+        response = _serialize_close(row)
+        response["warnings"] = warnings
+        return response
     except HTTPException:
         session.rollback()
         raise
@@ -367,7 +403,7 @@ async def approve_daily_close(
 # ── 端點 3：解鎖重簽 ─────────────────────────────────────────────────
 
 
-@router.delete("/pos/daily-close/{date_str}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/pos/daily-close/{date_str}", status_code=200)
 async def unlock_daily_close(
     date_str: str,
     body: DailyCloseUnlock,
@@ -394,6 +430,26 @@ async def unlock_daily_close(
             raise HTTPException(status_code=404, detail="該日尚未簽核，無需解鎖")
 
         original_approver = row.approver_username
+
+        # ── 4-eye 守衛 ──────────────────────────────────────
+        # Admin override 路徑：必須 role='admin'（不論是否原簽核人）
+        # 一般路徑：解鎖人 ≠ 原簽核人
+        # Why: 同一人簽 → 解 → 改 → 重簽循環會無痕修帳；強制分離以保稽核獨立性
+        if body.is_admin_override:
+            if current_user.get("role") != "admin":
+                raise HTTPException(
+                    status_code=403,
+                    detail="僅 admin 角色可進行 override 解鎖；請改用一般 4-eye 流程",
+                )
+        elif current_user.get("username") == original_approver:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"解鎖人不可為原簽核人 {original_approver}；"
+                    "請由其他簽核權限者執行，或以 admin 身分 override"
+                ),
+            )
+
         original_at = (
             row.approved_at.isoformat(timespec="seconds") if row.approved_at else "?"
         )
@@ -412,12 +468,13 @@ async def unlock_daily_close(
             f"{snapshot_summary}；原因：{body.reason}"
         )
 
+        action_value = "admin_override" if body.is_admin_override else "cancelled"
         session.delete(row)
         session.add(
             ApprovalLog(
                 doc_type="activity_pos_daily",
                 doc_id=_doc_id_for(target),
-                action="cancelled",
+                action=action_value,
                 approver_username=current_user.get("username", ""),
                 approver_role=current_user.get("role"),
                 comment=comment,
@@ -450,8 +507,33 @@ async def unlock_daily_close(
             "original_net_total": original_net,
             "original_transaction_count": original_tx,
             "reason": body.reason,
+            "is_admin_override": body.is_admin_override,
         }
-        return None
+        # ── LINE 通知（best-effort；失敗不擋已 commit 的解鎖）─────────
+        # Why: 原簽核人需即時知悉自己簽過的日子被解鎖；無綁定則 silent，
+        # response.notification_delivered=false 提示解鎖人私下告知對方。
+        notification_delivered = False
+        try:
+            from api.activity._shared import get_line_service
+
+            _line_svc = get_line_service()
+            if _line_svc is not None:
+                notification_delivered = _line_svc.notify_pos_unlock_to_approver(
+                    target_date=target,
+                    original_approver=original_approver,
+                    unlocker=current_user.get("username", ""),
+                    is_override=body.is_admin_override,
+                    reason=body.reason,
+                )
+        except Exception:
+            logger.warning("LINE notify on POS unlock failed", exc_info=True)
+
+        return {
+            "close_date": target.isoformat(),
+            "unlocked_at": datetime.now().isoformat(timespec="seconds"),
+            "is_admin_override": body.is_admin_override,
+            "notification_delivered": notification_delivered,
+        }
     except HTTPException:
         session.rollback()
         raise
@@ -559,6 +641,73 @@ async def pos_reconciliation(
                 "net_total": agg_payment - agg_refund,
                 "variance_total": agg_variance if variance_has_value else None,
             },
+        }
+    finally:
+        session.close()
+
+
+# ── 端點 6：解鎖事件儀表板（spec C2）────────────────────
+
+
+def _doc_id_to_date(doc_id: int):
+    """將 ApprovalLog.doc_id（YYYYMMDD int）解回 date；解析失敗回 None。"""
+    s = str(doc_id)
+    if len(s) != 8:
+        return None
+    try:
+        return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+    except ValueError:
+        return None
+
+
+@router.get("/audit/pos-unlock-events")
+async def list_pos_unlock_events(
+    days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
+):
+    """列出近 N 天的 POS 日結解鎖事件（一般 4-eye + admin override）。
+
+    時間倒序，限 200 筆；ApprovalLog 為 source of truth。
+    供老闆/簽核者隨時查看異常解鎖記錄，補強稽核獨立性。
+    """
+    cutoff = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(days=days)
+    session = get_session()
+    try:
+        rows = (
+            session.query(ApprovalLog)
+            .filter(
+                ApprovalLog.doc_type == "activity_pos_daily",
+                ApprovalLog.action.in_(["cancelled", "admin_override"]),
+                ApprovalLog.created_at >= cutoff,
+            )
+            .order_by(ApprovalLog.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        events = []
+        for r in rows:
+            close_dt = _doc_id_to_date(r.doc_id)
+            events.append(
+                {
+                    "id": r.id,
+                    "close_date": close_dt.isoformat() if close_dt else None,
+                    "action": r.action,
+                    "unlocker_username": r.approver_username,
+                    "unlocker_role": r.approver_role,
+                    "comment": r.comment,
+                    "occurred_at": (
+                        r.created_at.isoformat(timespec="seconds")
+                        if r.created_at
+                        else None
+                    ),
+                }
+            )
+        return {
+            "days": days,
+            "count": len(events),
+            "events": events,
         }
     finally:
         session.close()

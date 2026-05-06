@@ -271,6 +271,56 @@ class LineService:
             logger.warning("LINE 個人推播失敗: %s", exc)
             return False
 
+    def notify_pos_unlock_to_approver(
+        self,
+        *,
+        target_date,
+        original_approver: str,
+        unlocker: str,
+        is_override: bool,
+        reason: str,
+    ) -> bool:
+        """通知原簽核人：他簽過的日結被解鎖。
+
+        Returns: True 若推播成功送出；False 若無 LINE 綁定或推播失敗。
+        Best-effort：呼叫端不應因 False 中止 unlock 流程。
+
+        Why (spec C2): 解鎖事件需即時告知原簽核人以強化稽核獨立性；
+        員工端 LINE 綁定屬另案，未綁則 silent fail，由 dashboard 補救。
+        """
+        if not self._enabled or not self._token:
+            return False
+        from models.base import _SessionFactory
+        from models.auth import User
+
+        if _SessionFactory is None:
+            return False
+        session = _SessionFactory()
+        try:
+            user = (
+                session.query(User)
+                .filter(
+                    User.username == original_approver,
+                    User.is_active.is_(True),
+                )
+                .first()
+            )
+            if not user or not user.line_user_id or not user.line_follow_confirmed_at:
+                return False
+
+            label = "管理員 override 解鎖" if is_override else "解鎖"
+            msg = (
+                f"📝 POS 日結{label}通知\n"
+                f"日期：{target_date.isoformat()}\n"
+                f"原簽核人：{original_approver}（您）\n"
+                f"解鎖人：{unlocker}\n"
+                f"原因：{reason}\n\n"
+                "請至後台確認異常稽核軌跡。"
+            )
+            return self._push_to_user(user.line_user_id, msg)
+        finally:
+            session.close()
+
     def _push_to_user_with_quick_reply(
         self, line_user_id: str, text: str, quick_reply: dict
     ) -> bool:
