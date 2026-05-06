@@ -83,41 +83,64 @@ def list_upcoming_graduates(session) -> list[Student]:
 
 
 def run_auto_graduation(effective_date: Optional[date] = None) -> dict:
-    """執行自動畢業；回傳統計摘要。可手動觸發（供測試 / CLI）。"""
+    """執行自動畢業；回傳統計摘要。可手動觸發（供測試 / CLI）。
+
+    多 worker 啟用時用 advisory lock 保證同一 effective_date 只有一個 worker 真正執行；
+    其他 worker 取不到鎖即略過（回傳 skipped 標記，不算失敗）。
+    """
+    from utils.advisory_lock import try_scheduler_lock
+
     effective_date = effective_date or graduation_date_for_year(_today_taipei().year)
     session = get_session()
     succeeded = 0
     failed: list[dict] = []
     try:
-        candidates = list_upcoming_graduates(session)
-        logger.info("自動畢業：找到畢業候選 %s 位", len(candidates))
-        for student in candidates:
-            try:
-                lifecycle_transition(
-                    session,
-                    student,
-                    to_status=LIFECYCLE_GRADUATED,
-                    effective_date=effective_date,
-                    reason="正常畢業",
-                    notes=f"系統自動畢業（{effective_date.isoformat()}）",
-                    recorded_by=None,
+        with try_scheduler_lock(
+            session,
+            scheduler_name="auto_graduation",
+            run_key=effective_date.isoformat(),
+        ) as acquired:
+            if not acquired:
+                logger.info(
+                    "自動畢業：已有其他 worker 在執行 effective_date=%s，本次略過",
+                    effective_date.isoformat(),
                 )
-                # 同步後端副作用（才藝報名軟刪、接送通知取消）
+                return {
+                    "effective_date": effective_date.isoformat(),
+                    "succeeded": 0,
+                    "failed": [],
+                    "total_candidates": 0,
+                    "skipped": True,
+                }
+            candidates = list_upcoming_graduates(session)
+            logger.info("自動畢業：找到畢業候選 %s 位", len(candidates))
+            for student in candidates:
                 try:
-                    from api.activity._shared import (
-                        sync_registrations_on_student_deactivate,
+                    lifecycle_transition(
+                        session,
+                        student,
+                        to_status=LIFECYCLE_GRADUATED,
+                        effective_date=effective_date,
+                        reason="正常畢業",
+                        notes=f"系統自動畢業（{effective_date.isoformat()}）",
+                        recorded_by=None,
                     )
+                    # 同步後端副作用（才藝報名軟刪、接送通知取消）
+                    try:
+                        from api.activity._shared import (
+                            sync_registrations_on_student_deactivate,
+                        )
 
-                    sync_registrations_on_student_deactivate(session, student.id)
-                except Exception:
-                    logger.exception(
-                        "自動畢業同步才藝報名失敗 student_id=%s", student.id
-                    )
-                succeeded += 1
-            except LifecycleTransitionError as exc:
-                failed.append({"student_id": student.id, "reason": str(exc)})
-                logger.warning("自動畢業略過 student_id=%s：%s", student.id, exc)
-        session.commit()
+                        sync_registrations_on_student_deactivate(session, student.id)
+                    except Exception:
+                        logger.exception(
+                            "自動畢業同步才藝報名失敗 student_id=%s", student.id
+                        )
+                    succeeded += 1
+                except LifecycleTransitionError as exc:
+                    failed.append({"student_id": student.id, "reason": str(exc)})
+                    logger.warning("自動畢業略過 student_id=%s：%s", student.id, exc)
+            session.commit()
     except Exception:
         session.rollback()
         logger.exception("自動畢業執行失敗")

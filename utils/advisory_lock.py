@@ -46,6 +46,40 @@ logger = logging.getLogger(__name__)
 # 各業務域的 lock namespace，避免不同業務 key 碰撞
 _NAMESPACE_SALARY = 0x5341_4C00  # 'SAL\0'
 _NAMESPACE_SALARY_MONTH = 0x5341_4C4D  # 'SALM'
+_NAMESPACE_SCHEDULER = 0x5343_4844  # 'SCHD'
+
+
+@contextmanager
+def try_scheduler_lock(
+    session: Session, *, scheduler_name: str, run_key: str
+) -> Iterator[bool]:
+    """非阻塞 advisory lock — 用於排程 job 的「同日同名」互斥。
+
+    多 worker 部署時，每個 worker 自啟 scheduler；以本鎖確保某個
+    `(scheduler_name, run_key)` 組合在當前 transaction 期間僅被一個 worker
+    取得。caller 應在取得鎖後完成業務寫入並 commit；交易結束時鎖自動釋放。
+
+    yield True  → 已取得鎖
+    yield False → 已被其他 worker 持有，呼叫端應略過本次
+    """
+    if not _is_postgres(session):
+        # SQLite 測試環境視為單寫入者，直接 yield True
+        yield True
+        return
+    seed = f"scheduler|{scheduler_name}|{run_key}".encode()
+    raw = hashlib.md5(seed).digest()
+    key = int.from_bytes(raw[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+    row = session.execute(
+        text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key}
+    ).scalar()
+    acquired = bool(row)
+    if not acquired:
+        logger.info(
+            "scheduler_lock busy, skipping: name=%s key=%s",
+            scheduler_name,
+            run_key,
+        )
+    yield acquired
 
 
 def _is_postgres(session: Session) -> bool:

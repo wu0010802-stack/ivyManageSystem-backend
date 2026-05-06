@@ -67,18 +67,45 @@ def run_medication_reminder(effective_date: Optional[date] = None) -> dict:
     """執行一次「今日用藥提醒」。
 
     目前行為：
+    - 多 worker 互斥：advisory lock 保證同日只觸發一次（取不到鎖直接略過）
     - 掃描今日 orders，log 總數
     - invalidate dashboard_query_service 的 notification 快取（若有現成 API）
     - 之後如要接 LINE 推播 / webhook，這裡加
 
-    回傳：{"date": ..., "order_count": ...}
+    回傳：{"date": ..., "order_count": ...}（取不到鎖時 skipped=True）
     """
+    from utils.advisory_lock import try_scheduler_lock
+
     today = effective_date or _now_taipei().date()
-    try:
-        order_count = count_today_medication_orders(today)
-    except Exception:
-        logger.exception("用藥提醒查詢失敗")
-        return {"date": today.isoformat(), "order_count": -1, "error": True}
+    with session_scope() as session:
+        with try_scheduler_lock(
+            session,
+            scheduler_name="medication_reminder",
+            run_key=today.isoformat(),
+        ) as acquired:
+            if not acquired:
+                logger.info(
+                    "用藥提醒：已有其他 worker 在執行 date=%s，本次略過",
+                    today.isoformat(),
+                )
+                return {
+                    "date": today.isoformat(),
+                    "order_count": 0,
+                    "skipped": True,
+                }
+            try:
+                order_count = (
+                    session.query(StudentMedicationOrder)
+                    .filter(StudentMedicationOrder.order_date == today)
+                    .count()
+                )
+            except Exception:
+                logger.exception("用藥提醒查詢失敗")
+                return {
+                    "date": today.isoformat(),
+                    "order_count": -1,
+                    "error": True,
+                }
 
     # 嘗試 invalidate notification cache（若服務尚未初始化則略過）
     try:
