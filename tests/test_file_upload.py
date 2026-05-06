@@ -13,21 +13,21 @@ from fastapi import HTTPException
 
 from utils.file_upload import validate_file_signature
 
-
 # ── 測試用 magic bytes 資料 ────────────────────────────────────────────────
 
-JPEG_BYTES  = b"\xff\xd8\xff\xe0" + b"\x00" * 100
-PNG_BYTES   = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-GIF_BYTES   = b"GIF89a" + b"\x00" * 100
-PDF_BYTES   = b"%PDF-1.7" + b"\x00" * 100
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+GIF_BYTES = b"GIF89a" + b"\x00" * 100
+PDF_BYTES = b"%PDF-1.7" + b"\x00" * 100
 # HEIC/HEIF: ISO base media format — "ftyp" 位於 offset 4，brand "heic" 於 offset 8
-HEIC_BYTES  = b"\x00\x00\x00\x1c" + b"ftyp" + b"heic" + b"\x00" * 100
-XLSX_BYTES  = b"PK\x03\x04" + b"\x00" * 100
-XLS_BYTES   = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 100
+HEIC_BYTES = b"\x00\x00\x00\x1c" + b"ftyp" + b"heic" + b"\x00" * 100
+XLSX_BYTES = b"PK\x03\x04" + b"\x00" * 100
+XLS_BYTES = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 100
 BOGUS_BYTES = b"\x00\x01\x02\x03" * 30
 
 
 # ── 合法格式：應通過驗證 ───────────────────────────────────────────────────
+
 
 class TestValidFileSignatures:
     def test_jpeg_jpg(self):
@@ -75,6 +75,7 @@ class TestValidFileSignatures:
 
 # ── 非法格式：內容與副檔名不符 → HTTPException(400) ─────────────────────────
 
+
 class TestSignatureMismatch:
     def test_jpeg_content_with_png_ext(self):
         with pytest.raises(HTTPException) as exc:
@@ -115,6 +116,7 @@ class TestSignatureMismatch:
 
 # ── 內容長度不足：應視為不符 → HTTPException(400) ────────────────────────────
 
+
 class TestInsufficientContent:
     def test_empty_content_with_jpg(self):
         with pytest.raises(HTTPException) as exc:
@@ -136,3 +138,59 @@ class TestInsufficientContent:
     def test_empty_content_csv_passes(self):
         """CSV 無 magic bytes 定義，空內容也應通過"""
         validate_file_signature(b"", ".csv")
+
+
+# ── read_upload_with_size_check：chunked 早停 ─────────────────────────────────
+
+import asyncio
+
+from utils.file_upload import (
+    MAX_UPLOAD_SIZE,
+    MAX_VIDEO_UPLOAD_SIZE,
+    read_upload_with_size_check,
+)
+
+
+class _FakeUpload:
+    """模擬 UploadFile.read(chunk_size) 行為，並追蹤實際讀取量。"""
+
+    def __init__(self, total_size: int, chunk_size: int = 64 * 1024):
+        self._remaining = total_size
+        self._chunk_size = chunk_size
+        self.bytes_read = 0
+
+    async def read(self, n: int = -1) -> bytes:
+        if self._remaining <= 0:
+            return b""
+        size = self._remaining if n < 0 else min(n, self._remaining)
+        self._remaining -= size
+        self.bytes_read += size
+        return b"\x00" * size
+
+
+class TestReadUploadChunked:
+    def test_returns_full_content_under_limit(self):
+        f = _FakeUpload(total_size=1024)
+        out = asyncio.run(read_upload_with_size_check(f))
+        assert len(out) == 1024
+        assert f.bytes_read == 1024
+
+    def test_aborts_early_when_exceeds_default_limit(self):
+        """1.1 GB body 應在略超過 10MB 後立即中止，而非先全載入。"""
+        f = _FakeUpload(total_size=1100 * 1024 * 1024)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(read_upload_with_size_check(f))
+        assert exc.value.status_code == 400
+        # 早停：實際讀取量不應超過 limit + 1 個 chunk
+        assert f.bytes_read <= MAX_UPLOAD_SIZE + 64 * 1024
+
+    def test_video_extension_uses_video_limit(self):
+        f = _FakeUpload(total_size=20 * 1024 * 1024)
+        out = asyncio.run(read_upload_with_size_check(f, extension=".mp4"))
+        assert len(out) == 20 * 1024 * 1024
+
+    def test_aborts_early_when_exceeds_video_limit(self):
+        f = _FakeUpload(total_size=200 * 1024 * 1024)
+        with pytest.raises(HTTPException):
+            asyncio.run(read_upload_with_size_check(f, extension=".mp4"))
+        assert f.bytes_read <= MAX_VIDEO_UPLOAD_SIZE + 64 * 1024
