@@ -601,8 +601,8 @@ class TestContactBookListQueryCount:
         assert sum(1 for it in body["items"] if it["entry"]) == 15  # 全部有 entry
 
         # 目前 _load_photos 在迴圈每個 entry 各發一次 query → baseline ~17-20
-        # Task 3B.3 批次修補後應降至 ≤ 8
-        assert counter.count <= 8, (
-            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 8). "
+        # Task 3B.3 批次修補後應降至 ≤ 9（photos 改 IN clause；auth+emp+classroom+roster+entries+photos+completion×2 共 9）
+        assert counter.count <= 9, (
+            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 9). "
             f"Last 5 statements: {counter.statements[-5:]}"
         )
