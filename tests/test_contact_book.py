@@ -525,3 +525,84 @@ class TestParentIDOR:
             headers={"Authorization": f"Bearer {token_a}"},
         )
         assert r3.status_code == 403
+
+
+class TestContactBookListQueryCount:
+    """Phase 3 N+1 regression test：list endpoint 不應每 entry 一次 photos query。"""
+
+    def test_30_student_list_under_baseline(self, app_clients):
+        """15 student 班級 + 15 entry + 各 1 photo，baseline ~17-20 query → 目標 ≤ 8。"""
+        from datetime import date as _date
+
+        from models.database import StudentContactBookEntry
+        from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK, Attachment
+        from tests.conftest import QueryCounter
+
+        client, sf, _ = app_clients
+
+        with sf() as session:
+            classroom = _make_classroom(session, name="N+1 測試班")
+            emp, user = _make_teacher(session, classroom.id)
+            _set_classroom_teacher(session, classroom, emp)
+            session.commit()
+            cid = classroom.id
+
+            # 建 15 個學生（不需家長）
+            for i in range(15):
+                session.add(
+                    Student(
+                        student_id=f"S_QC_{i:03d}",
+                        name=f"學生{i:03d}",
+                        classroom_id=cid,
+                        is_active=True,
+                    )
+                )
+            session.commit()
+
+            today = _date.today()
+
+            # 每個學生建一筆 entry + 1 張 photo
+            students = session.query(Student).filter(Student.classroom_id == cid).all()
+            for s in students:
+                e = StudentContactBookEntry(
+                    student_id=s.id,
+                    classroom_id=cid,
+                    log_date=today,
+                    published_at=None,
+                    version=1,
+                )
+                session.add(e)
+                session.flush()
+                session.add(
+                    Attachment(
+                        owner_type=ATTACHMENT_OWNER_CONTACT_BOOK,
+                        owner_id=e.id,
+                        storage_key=f"test/{s.id}/photo.jpg",
+                        original_filename="photo.jpg",
+                        mime_type="image/jpeg",
+                        size_bytes=1024,
+                    )
+                )
+            session.commit()
+
+            tk = _teacher_token(user, emp)
+            engine = session.get_bind()
+
+        # 計算 list endpoint 發出的 query 數
+        with QueryCounter(engine) as counter:
+            resp = client.get(
+                f"/api/portal/contact-book?classroom_id={cid}&log_date={today.isoformat()}",
+                cookies={"access_token": tk},
+            )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["items"]) == 15  # 15 students
+        assert sum(1 for it in body["items"] if it["entry"]) == 15  # 全部有 entry
+
+        # 目前 _load_photos 在迴圈每個 entry 各發一次 query → baseline ~17-20
+        # Task 3B.3 批次修補後應降至 ≤ 8
+        assert counter.count <= 8, (
+            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 8). "
+            f"Last 5 statements: {counter.statements[-5:]}"
+        )
