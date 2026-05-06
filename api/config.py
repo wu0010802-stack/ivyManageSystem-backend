@@ -131,7 +131,9 @@ class AttendancePolicyUpdate(BaseModel):
 
     default_work_start: Optional[str] = None
     default_work_end: Optional[str] = None
-    festival_bonus_months: Optional[int] = Field(None, ge=0)
+    # le=24:節慶獎金資格門檻單位為月,實務常見 3~6 個月;設上限避免極端值
+    # (例如 999 讓全員失格、或被誤設成 0 讓新進員工立即合格)
+    festival_bonus_months: Optional[int] = Field(None, ge=0, le=24)
 
 
 class BonusConfigUpdate(BaseModel):
