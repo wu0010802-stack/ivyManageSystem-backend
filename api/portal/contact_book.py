@@ -368,12 +368,15 @@ def update_entry(
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
         if expected_version is not None and entry.version != expected_version:
+            # 衝突：回 409 + 完整 current_entry payload，前端可局部寫回不必整撈
+            current_photos = _load_photos(session, entry.id)
             raise HTTPException(
                 status_code=409,
                 detail={
                     "code": "VERSION_CONFLICT",
                     "message": "聯絡簿已被他人更新，請重新整理後再編輯",
                     "current_version": entry.version,
+                    "current_entry": _entry_to_dict(entry, current_photos),
                 },
             )
 

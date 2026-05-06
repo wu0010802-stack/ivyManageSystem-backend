@@ -606,3 +606,65 @@ class TestContactBookListQueryCount:
             f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 9). "
             f"Last 5 statements: {counter.statements[-5:]}"
         )
+
+
+class TestUpdateEntryConflictPayload:
+    """Phase 3B.4：409 衝突 response 應含 current_entry 完整 payload。"""
+
+    def test_409_returns_current_entry_in_detail(self, app_clients):
+        client, sf, _ = app_clients
+        with sf() as s:
+            classroom = _make_classroom(s, "衝突測試班")
+            emp, user = _make_teacher(s, classroom.id)
+            _set_classroom_teacher(s, classroom, emp)
+            child = Student(
+                student_id="S_CFL_01",
+                name="衝突測試學生",
+                classroom_id=classroom.id,
+                is_active=True,
+            )
+            s.add(child)
+            s.flush()
+            entry = StudentContactBookEntry(
+                student_id=child.id,
+                classroom_id=classroom.id,
+                log_date=date(2026, 5, 6),
+                mood="happy",
+                teacher_note="原始留言",
+                version=1,
+                created_by_employee_id=emp.id,
+            )
+            s.add(entry)
+            s.commit()
+            entry_id = entry.id
+            token = _teacher_token(user, emp)
+
+        # 用過期 version（If-Match: "0"）嘗試更新 → 應 409
+        resp = client.put(
+            f"/api/portal/contact-book/{entry_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "If-Match": '"0"',  # 過期版本
+            },
+            json={"mood": "sad", "teacher_note": "新留言"},
+        )
+        assert resp.status_code == 409, resp.text
+        body = resp.json()
+        detail = body["detail"]
+
+        # detail 應為 dict（非 string）
+        assert isinstance(
+            detail, dict
+        ), f"detail 應為 dict，實際為 {type(detail)}: {detail}"
+        # 含既有欄位
+        assert detail.get("code") == "VERSION_CONFLICT"
+        assert "message" in detail
+        # 新增：含完整 current_entry
+        assert "current_entry" in detail, f"detail 缺 current_entry：{detail}"
+
+        current = detail["current_entry"]
+        assert current["id"] == entry_id
+        assert current["mood"] == "happy"  # 仍是原值（PUT 失敗未提交）
+        assert current["teacher_note"] == "原始留言"
+        assert current["version"] == 1
+        assert "photos" in current  # photos key 存在（可能空 list）
