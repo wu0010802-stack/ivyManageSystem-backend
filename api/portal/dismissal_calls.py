@@ -4,12 +4,12 @@ api/portal/dismissal_calls.py — 教師 portal 接送通知 HTTP endpoints
 
 import asyncio
 import logging
-from datetime import datetime, date, timezone
+from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from models.database import get_session, Classroom, Student
-from models.dismissal import StudentDismissalCall
+from models.dismissal import StudentDismissalCall, _now_taipei_naive, _TAIPEI_TZ
 from utils.auth import require_permission
 from utils.permissions import Permission
 from api.dismissal_calls import _call_base_dict, _DAY_START, _DAY_END
@@ -166,7 +166,7 @@ def _db_transition_call(
         classroom_id = call.classroom_id
         call.status = new_status
         setattr(call, by_field, emp.id)
-        setattr(call, at_field, datetime.now(timezone.utc))
+        setattr(call, at_field, _now_taipei_naive())
         try:
             session.commit()
         except Exception as e:
