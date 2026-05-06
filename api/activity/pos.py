@@ -66,7 +66,10 @@ _MAX_TENDERED = 9_999_999
 # 單次結帳總額上限 NT$1,000,000 — 避免前端繞過大額確認造成誤輸入巨額
 _MAX_CHECKOUT_TOTAL = 1_000_000
 
-# 冪等 key 有效視窗（秒）：此期間內同 key 視為重試
+# 冪等 key 為全域 UNIQUE（DB 約束 uq_activity_payment_records_idk）；
+# 同 key 永遠 replay 同結果。Why: 過去用 10 分鐘 window 過濾 helper 查詢，
+# 與 DB UNIQUE 不一致導致 race（window 外重送會 INSERT 失敗 500）；
+# 現移除 window，純依 DB 約束。常數保留供未來監控查詢使用。
 _IDEMPOTENCY_WINDOW_SECONDS = 600
 
 # 冪等 key 格式：POS-IDK-<32 字元英數>
@@ -99,7 +102,10 @@ class POSCheckoutItem(BaseModel):
 
 class POSCheckoutRequest(BaseModel):
     items: List[POSCheckoutItem] = Field(..., min_length=1, max_length=10)
-    payment_method: Literal["現金", "轉帳", "其他"] = "現金"
+    payment_method: Literal["現金"] = Field(
+        "現金",
+        description="目前 POS 僅支援現金；payment_method 欄位保留供未來擴充",
+    )
     payment_date: date
     tendered: Optional[int] = Field(
         None,
@@ -135,8 +141,6 @@ class POSCheckoutRequest(BaseModel):
 
 
 # ── 常數 ─────────────────────────────────────────────────────────────────
-
-_VALID_METHODS = {"現金", "轉帳", "其他"}
 
 
 def _make_receipt_no() -> str:
@@ -450,9 +454,11 @@ async def pos_checkout(
     任何一筆驗證或寫入失敗，整批 rollback，保證帳務一致性。
     支援 idempotency_key 冪等重試。
     """
-    if body.payment_method not in _VALID_METHODS:
+    # Schema Literal 已收口；此處為 fallback 守衛，避免未來改 Literal 時漏改 router
+    if body.payment_method != "現金":
         raise HTTPException(
-            status_code=400, detail=f"不支援的付款方式：{body.payment_method}"
+            status_code=400,
+            detail="目前 POS 僅支援現金交易",
         )
 
     operator = (current_user.get("username") or "").strip()

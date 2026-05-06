@@ -204,7 +204,7 @@ class TestPOSRefundCumulative:
                 "items": [{"registration_id": reg_id, "amount": 400}],
                 "payment_method": "現金",
                 "payment_date": today,
-                "notes": "第一次小額退費測試",
+                "notes": "第一次小額退費測試（家長申請）",
             },
         )
         assert res1.status_code == 201, res1.text
@@ -217,7 +217,7 @@ class TestPOSRefundCumulative:
                 "items": [{"registration_id": reg_id, "amount": 400}],
                 "payment_method": "現金",
                 "payment_date": today,
-                "notes": "第二次小額退費測試",
+                "notes": "第二次小額退費測試（家長申請）",
             },
         )
         assert res2.status_code == 201, res2.text
@@ -230,7 +230,7 @@ class TestPOSRefundCumulative:
                 "items": [{"registration_id": reg_id, "amount": 400}],
                 "payment_method": "現金",
                 "payment_date": today,
-                "notes": "第三次小額退費觸發累積",
+                "notes": "第三次小額退費觸發累積門檻（測試）",
             },
         )
         assert res3.status_code == 403
@@ -262,7 +262,7 @@ class TestPOSRefundCumulative:
                     "items": [{"registration_id": reg_id, "amount": 400}],
                     "payment_method": "現金",
                     "payment_date": today,
-                    "notes": "簽核權限者連續退費",
+                    "notes": "簽核權限者連續退費（測試案例）",
                 },
             )
             assert res.status_code == 201
@@ -304,7 +304,7 @@ class TestPOSRefundCumulative:
                 "items": [{"registration_id": reg_id, "amount": 500}],
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
-                "notes": "voided 已排除測試",
+                "notes": "voided 已排除測試（測試案例）",
             },
         )
         assert res.status_code == 201, res.text
@@ -344,7 +344,7 @@ class TestRefundCheckOrderAfterLock:
                 "amount": 500,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "在門檻內單筆退費",
+                "notes": "在門檻內單筆退費（家長申請辦理）",
             },
         )
         assert res.status_code == 201, res.text
@@ -430,7 +430,7 @@ class TestBatchMarkPaidGuards:
             json={
                 "ids": ids,
                 "is_paid": True,
-                "reason": "期末批次補繳測試（無簽核權限）",
+                "reason": "期末批次補繳測試（無簽核權限的櫃台）",
             },
         )
         assert res.status_code == 403
@@ -470,7 +470,7 @@ class TestBatchMarkPaidGuards:
             json={
                 "ids": ids,
                 "is_paid": True,
-                "reason": "期末已收齊現金，老闆確認補齊",
+                "reason": "期末已收齊現金，老闆確認補齊測試",
             },
         )
         assert res.status_code == 200, res.text
@@ -512,7 +512,7 @@ class TestBatchMarkPaidGuards:
             json={
                 "ids": ids,
                 "is_paid": True,
-                "reason": "小額補齊測試（門檻內）",
+                "reason": "小額補齊測試（在門檻內，家長同意）",
             },
         )
         assert res.status_code == 200, res.text

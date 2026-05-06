@@ -353,7 +353,7 @@ class TestRefundRequirements:
                 "amount": 2000,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "大額退費需簽核",
+                "notes": "大額退費需簽核（家長申請退費）",
             },
         )
         assert res.status_code == 403
@@ -379,7 +379,7 @@ class TestRefundRequirements:
                 "amount": 500,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "小額退費不需簽核",
+                "notes": "小額退費不需簽核（家長申請退費）",
             },
         )
         assert res.status_code == 201, res.text
@@ -405,7 +405,7 @@ class TestRefundRequirements:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "type": "refund",
-                "notes": "POS 大額退費需簽核",
+                "notes": "POS 大額退費需簽核（家長申請）",
             },
         )
         assert res.status_code == 403
@@ -460,7 +460,7 @@ class TestUpdatePaymentConfirmAmount:
             json={
                 "is_paid": False,
                 "confirm_refund_amount": 5000,
-                "refund_reason": "無簽核權限嘗試大額沖帳",
+                "refund_reason": "無簽核權限嘗試大額沖帳（測試）",
             },
         )
         assert res.status_code == 403

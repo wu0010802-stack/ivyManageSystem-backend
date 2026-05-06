@@ -1618,8 +1618,8 @@ async def update_payment(
                             status_code=400,
                             detail=(
                                 f"標記已繳費需補齊 NT${shortfall} 欠費，"
-                                "請於 payment_method 填入實際收款方式"
-                                "（如：現金/轉帳/其他），不接受系統補齊"
+                                "請於 payment_method 填入「現金」"
+                                "（目前才藝僅收現金），不接受系統補齊"
                             ),
                         )
                     if method_cleaned == SYSTEM_RECONCILE_METHOD:

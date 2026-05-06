@@ -298,7 +298,7 @@ class TestPOSCheckoutAtomicity:
             assert reg.paid_amount == 500  # 未變動
 
     def test_refund_reduces_paid_amount(self, pos_client):
-        """POS 退費必填 notes（原因 ≥ 5 字），500 小額不需簽核權限即可執行。"""
+        """POS 退費必填 notes（原因 ≥ 15 字），500 小額不需簽核權限即可執行。"""
         client, sf = pos_client
         with sf() as s:
             _create_admin(s)
@@ -315,7 +315,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "type": "refund",
-                "notes": "客戶退課抵減",
+                "notes": "客戶退課抵減（家長要求調整退款）",
             },
         )
         assert res.status_code == 201
@@ -327,28 +327,10 @@ class TestPOSCheckoutAtomicity:
             reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
             assert reg.paid_amount == 1500
 
-    def test_change_ignored_for_transfer(self, pos_client):
-        client, sf = pos_client
-        with sf() as s:
-            _create_admin(s)
-            reg = _setup_reg(s, student_name="王小明")
-            s.commit()
-            reg_id = reg.id
-
-        assert _login(client).status_code == 200
-        res = client.post(
-            "/api/activity/pos/checkout",
-            json={
-                "items": [{"registration_id": reg_id, "amount": 2000}],
-                "payment_method": "轉帳",
-                "payment_date": date.today().isoformat(),
-                "tendered": 5000,
-            },
-        )
-        assert res.status_code == 201
-        data = res.json()
-        assert data["change"] is None
-        assert data["tendered"] is None
+    # test_change_ignored_for_transfer — 已刪除（2026-05-06）
+    # 才藝 POS 改為僅收現金（spec C1），轉帳 method 在 schema 層即被 422 拒絕，
+    # 此測試的「轉帳付款 + tendered/change=None」前提不再可達；
+    # 等價的「現金 + tendered → 有 change」覆蓋已存在於其他測試。
 
     def test_tendered_less_than_total_rejected(self, pos_client):
         client, sf = pos_client

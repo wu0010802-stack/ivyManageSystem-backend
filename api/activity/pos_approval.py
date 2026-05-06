@@ -41,6 +41,10 @@ _RECONCILIATION_MAX_DAYS = 92
 # payment_method 為 NULL 的紀錄會歸類為「未指定」，真正的現金類別才走此 key
 _CASH_METHOD_KEY = "現金"
 
+# 簽核時必填現金盤點的門檻：當日預期現金 ≥ NT$3,000 才強制
+# Why: 小金額日子強迫盤點會造成操作疲勞；大金額日子要求對齊抽屜現金以避免盲簽
+_CASH_COUNT_REQUIRED_THRESHOLD = 3000
+
 
 # ── Pydantic schemas ────────────────────────────────────────────────────
 
@@ -280,6 +284,20 @@ async def approve_daily_close(
         snap = compute_daily_snapshot(session, target)
         by_method_net = snap["by_method_net"]
         cash_snapshot = int(by_method_net.get(_CASH_METHOD_KEY, 0))
+
+        # 盤點門檻守衛：預期現金 ≥ 3,000 必填 actual_cash_count
+        # Why: 小金額日子免盤點降低操作疲勞；大金額日子強迫對齊以避免簽核盲簽
+        if (
+            cash_snapshot >= _CASH_COUNT_REQUIRED_THRESHOLD
+            and body.actual_cash_count is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"當日預期現金 NT${cash_snapshot:,} ≥ "
+                    f"NT${_CASH_COUNT_REQUIRED_THRESHOLD:,}，必須填寫實際現金盤點金額"
+                ),
+            )
 
         cash_variance = None
         if body.actual_cash_count is not None:

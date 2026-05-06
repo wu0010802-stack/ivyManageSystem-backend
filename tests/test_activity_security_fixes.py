@@ -210,7 +210,7 @@ class TestRefundExceedsPaid:
                 "amount": 600,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "退費原因：超額測試",
+                "notes": "退費原因：超額測試需家長同意辦理",
             },
         )
         assert res.status_code == 400
@@ -238,7 +238,7 @@ class TestRefundExceedsPaid:
                 "amount": 500,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "客戶取消報名退回",
+                "notes": "客戶取消報名退回（家長申請辦理）",
             },
         )
         assert res.status_code in (200, 201), res.text

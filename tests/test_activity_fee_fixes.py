@@ -225,7 +225,10 @@ class TestMarkUnpaidWritesRefund:
         # 缺 confirm_refund_amount 應被擋下
         res_no_confirm = client.put(
             f"/api/activity/registrations/{reg_id}/payment",
-            json={"is_paid": False, "refund_reason": "客戶取消報名"},
+            json={
+                "is_paid": False,
+                "refund_reason": "客戶取消報名（家長申請辦理退款）",
+            },
         )
         assert res_no_confirm.status_code == 400
 
@@ -235,7 +238,7 @@ class TestMarkUnpaidWritesRefund:
             json={
                 "is_paid": False,
                 "confirm_refund_amount": 900,
-                "refund_reason": "客戶取消報名",
+                "refund_reason": "客戶取消報名（家長申請辦理退款）",
             },
         )
         assert res_bad_amount.status_code == 400
@@ -246,7 +249,7 @@ class TestMarkUnpaidWritesRefund:
             json={
                 "is_paid": False,
                 "confirm_refund_amount": 1000,
-                "refund_reason": "客戶取消報名（一年級轉班）",
+                "refund_reason": "客戶取消報名（一年級轉班，家長同意）",
             },
         )
         assert res.status_code == 200
@@ -334,7 +337,9 @@ class TestMarkUnpaidWritesRefund:
         assert res.status_code == 400, res.text
         assert "payment_method" in res.json()["detail"]
 
-        # 2) method 填「系統補齊」→ 400（明確拒絕）
+        # 2) method 填「系統補齊」→ 422（POS cash-only 之後 schema 層即拒絕，
+        #    早於原本的業務層 400；testing intent 不變：「系統補齊」不可作為
+        #    payment_method 被會計用來把欠費直接轉成系統補齊收入流水）
         res = client.put(
             f"/api/activity/registrations/{reg_id}/payment",
             json={
@@ -343,8 +348,8 @@ class TestMarkUnpaidWritesRefund:
                 "payment_reason": "後台對帳補齊",
             },
         )
-        assert res.status_code == 400, res.text
-        assert "系統補齊" in res.json()["detail"]
+        assert res.status_code == 422, res.text
+        assert "payment_method" in res.text  # Pydantic literal_error loc
 
         # 3) reason 太短 → 400
         res = client.put(
@@ -439,7 +444,7 @@ class TestAddPaymentIdempotency:
                 "amount": 500,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "超退測試用原因",
+                "notes": "超退測試用原因（家長申請退費）",
             },
         )
         assert res.status_code == 400
@@ -505,7 +510,7 @@ class TestWithdrawAndDeleteGuards:
 
         res = client.delete(
             f"/api/activity/registrations/{reg_id}"
-            "?force_refund=true&refund_reason=測試刪除沖帳"
+            "?force_refund=true&refund_reason=測試刪除沖帳（家長申請辦理退費）"
         )
         assert res.status_code == 200
 
@@ -562,7 +567,7 @@ class TestWithdrawAndDeleteGuards:
 
         res = client.delete(
             f"/api/activity/registrations/{reg_id}/courses/{course_id}"
-            "?force_refund=true&refund_reason=測試退課沖帳"
+            "?force_refund=true&refund_reason=測試退課沖帳（家長申請辦理退費）"
         )
         assert res.status_code == 200
         data = res.json()
@@ -762,7 +767,7 @@ class TestDailyCloseGuard:
             json={
                 "is_paid": False,
                 "confirm_refund_amount": 1000,
-                "refund_reason": "測試簽核日守衛",
+                "refund_reason": "測試簽核日守衛（家長申請退費）",
             },
         )
         assert res.status_code == 400
@@ -942,7 +947,7 @@ class TestRemoveSupplyGuards:
 
         res = client.delete(
             f"/api/activity/registrations/{reg_id}/supplies/{supply_record_id}"
-            "?force_refund=true&refund_reason=測試移除用品沖帳"
+            "?force_refund=true&refund_reason=測試移除用品沖帳（家長已同意辦理）"
         )
         assert res.status_code == 200
         data = res.json()
@@ -1103,7 +1108,7 @@ class TestAddOutstandingAmount:
 # 修正後：與正式退費端點（POST /payments、PUT /payment）同一套守衛。
 
 
-_REFUND_REASON_OK = "課程取消主管核准退款"  # ≥ 5 字
+_REFUND_REASON_OK = "課程取消主管核准退款（家長申請）"  # ≥ 15 字
 
 
 class TestForceRefundReasonAndApprovalGuards:
@@ -1119,8 +1124,11 @@ class TestForceRefundReasonAndApprovalGuards:
         with sf() as s:
             _create_admin(s)
             reg = _setup_reg(
-                s, course_price=500, supply_price=500,
-                paid_amount=1000, is_paid=True,
+                s,
+                course_price=500,
+                supply_price=500,
+                paid_amount=1000,
+                is_paid=True,
             )
             s.commit()
             reg_id = reg.id
@@ -1143,8 +1151,11 @@ class TestForceRefundReasonAndApprovalGuards:
         with sf() as s:
             _create_admin(s)
             reg = _setup_reg(
-                s, course_price=500, supply_price=500,
-                paid_amount=1000, is_paid=True,
+                s,
+                course_price=500,
+                supply_price=500,
+                paid_amount=1000,
+                is_paid=True,
             )
             s.commit()
             reg_id = reg.id
@@ -1157,7 +1168,7 @@ class TestForceRefundReasonAndApprovalGuards:
 
         res = client.delete(
             f"/api/activity/registrations/{reg_id}/supplies/{rs_id}"
-            "?force_refund=true&refund_reason=abc"  # 3 字 < 5
+            "?force_refund=true&refund_reason=abc"  # 3 字 < 15
         )
         assert res.status_code == 400, res.text
 
@@ -1173,8 +1184,11 @@ class TestForceRefundReasonAndApprovalGuards:
                 permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
             )
             reg = _setup_reg(
-                s, course_price=500, supply_price=1500,
-                paid_amount=2000, is_paid=True,
+                s,
+                course_price=500,
+                supply_price=1500,
+                paid_amount=2000,
+                is_paid=True,
             )
             s.commit()
             reg_id = reg.id
@@ -1215,8 +1229,11 @@ class TestForceRefundReasonAndApprovalGuards:
         with sf() as s:
             _create_admin(s)
             reg = _setup_reg(
-                s, course_price=500, supply_price=500,
-                paid_amount=1000, is_paid=True,
+                s,
+                course_price=500,
+                supply_price=500,
+                paid_amount=1000,
+                is_paid=True,
             )
             s.commit()
             reg_id = reg.id
@@ -1277,7 +1294,10 @@ class TestForceRefundReasonAndApprovalGuards:
                 permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
             )
             reg = _setup_reg(
-                s, course_price=2000, paid_amount=2000, is_paid=True,
+                s,
+                course_price=2000,
+                paid_amount=2000,
+                is_paid=True,
             )
             s.commit()
             reg_id = reg.id
@@ -1348,9 +1368,7 @@ class TestForceRefundReasonAndApprovalGuards:
             reg_id = reg.id
         assert _login(client).status_code == 200
 
-        res = client.delete(
-            f"/api/activity/registrations/{reg_id}?force_refund=true"
-        )
+        res = client.delete(f"/api/activity/registrations/{reg_id}?force_refund=true")
         assert res.status_code == 400, res.text
 
     def test_delete_registration_force_refund_large_amount_without_approve_403(
@@ -1378,9 +1396,7 @@ class TestForceRefundReasonAndApprovalGuards:
             reg = s.query(ActivityRegistration).get(reg_id)
             assert reg.is_active is True, "403 後報名不應被刪"
 
-    def test_delete_registration_force_refund_writes_reason_to_notes(
-        self, fee_client
-    ):
+    def test_delete_registration_force_refund_writes_reason_to_notes(self, fee_client):
         client, sf = fee_client
         with sf() as s:
             _create_admin(s)
