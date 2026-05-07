@@ -524,7 +524,7 @@ class TestActivityRefundCumulative:
                 "amount": 400,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
-                "notes": "累積 900 未過閾值",
+                "notes": "累積 900 未過閾值之單筆退費",
             },
         )
         assert res.status_code in (200, 201), res.text

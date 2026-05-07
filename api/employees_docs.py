@@ -389,6 +389,12 @@ def create_contract(
     end_d = parse_optional_date(payload.end_date)
     if end_d and end_d < start_d:
         raise HTTPException(status_code=400, detail="end_date 不可早於 start_date")
+    # F-014：寫入端點 return 也需依薪資存取權遮蔽 salary_at_contract，否則
+    # supervisor（持 EMPLOYEES_WRITE 但不在 FULL_SALARY_ROLES）可透過 create/update
+    # 端點看到他人合約簽訂月薪。
+    from utils.salary_access import can_view_salary_of
+
+    mask_salary = not can_view_salary_of(current_user, employee_id)
     try:
         with session_scope() as session:
             _ensure_employee(session, employee_id)
@@ -398,7 +404,7 @@ def create_contract(
             row = EmployeeContract(employee_id=employee_id, **data)
             session.add(row)
             session.flush()
-            return _contract_to_dict(row)
+            return _contract_to_dict(row, mask_salary=mask_salary)
     except HTTPException:
         raise
     except Exception as e:
@@ -412,6 +418,10 @@ def update_contract(
     payload: ContractUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
+    # F-014：寫入端點 return 同樣依薪資存取權遮蔽（見 create_contract 註解）。
+    from utils.salary_access import can_view_salary_of
+
+    mask_salary = not can_view_salary_of(current_user, employee_id)
     with session_scope() as session:
         row = (
             session.query(EmployeeContract)
@@ -447,7 +457,7 @@ def update_contract(
         for k, v in data.items():
             setattr(row, k, v)
         session.flush()
-        return _contract_to_dict(row)
+        return _contract_to_dict(row, mask_salary=mask_salary)
 
 
 @router.delete("/employees/{employee_id}/contracts/{contract_id}")

@@ -27,6 +27,7 @@ from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
 from utils.storage import get_storage_path
+from services.salary.utils import lock_and_premark_stale
 from ._shared import AttendanceUploadRequest
 from .records import _assert_upload_months_not_finalized
 
@@ -60,20 +61,23 @@ def _mark_attendance_upload_stale(session, affected_months: set) -> None:
 
     Why: 考勤改動會影響遲到/早退/缺打卡/曠職基準等扣款來源,薪資若已算過必須
     標 stale 避免後續 finalize 把舊薪資封存。
+
+    使用 lock_and_premark_stale 同時取 advisory lock + pre-mark stale,
+    封住「來源 mark_stale → caller commit 之間 finalize 搶先」的 race。
     """
     if not affected_months:
         return
-    from services.salary.utils import mark_salary_stale
-
+    by_emp: dict[int, set[tuple[int, int]]] = {}
     for emp_id, yr, mo in affected_months:
+        by_emp.setdefault(emp_id, set()).add((yr, mo))
+    for emp_id, months in by_emp.items():
         try:
-            mark_salary_stale(session, emp_id, yr, mo)
+            lock_and_premark_stale(session, emp_id, months)
         except Exception:
             logger.warning(
-                "考勤匯入標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+                "考勤匯入標記 SalaryRecord stale 失敗 emp=%d months=%s",
                 emp_id,
-                yr,
-                mo,
+                months,
                 exc_info=True,
             )
 
@@ -779,9 +783,8 @@ async def upload_attendance(
             finally:
                 session.close()
 
-            anomaly_df.to_excel("output/anomaly_report.xlsx", index=False)
-            summary_df.to_excel("output/attendance_summary.xlsx", index=False)
-
+            # 不再寫全域 output/*.xlsx：下載端點 /attendance/anomaly-report 已改為
+            # 依 (year, month) 即時從 DB 重算（避免共享檔案造成資料外洩 / 拿到舊批次）。
             summary_data = summary_df.to_dict("records")
             anomaly_data = anomaly_df.to_dict("records")
 

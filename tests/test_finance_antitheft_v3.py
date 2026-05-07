@@ -308,7 +308,10 @@ class TestUpdatePaymentMarkPaidGuard:
         assert res.status_code == 400
         assert "payment_method" in res.json()["detail"]
 
-    def test_system_reconcile_method_rejected_400(self, v3_client):
+    def test_system_reconcile_method_rejected_422(self, v3_client):
+        # POS cash-only 之後，schema 層 Literal['現金'] 直接擋下「系統補齊」
+        # 等任何非現金值；原本業務層的 400 守衛不再被觸達。
+        # testing intent 不變：「系統補齊」不可作為 payment_method。
         client, sf = v3_client
         with sf() as s:
             reg_id = _seed_unpaid_registration(s, course_price=500)
@@ -330,8 +333,8 @@ class TestUpdatePaymentMarkPaidGuard:
                 "payment_reason": "後台對帳補齊",
             },
         )
-        assert res.status_code == 400
-        assert "系統補齊" in res.json()["detail"]
+        assert res.status_code == 422
+        assert "payment_method" in res.text  # Pydantic literal_error loc
 
     def test_large_shortfall_without_approve_rejected_403(self, v3_client):
         """shortfall > FINANCE_APPROVAL_THRESHOLD（1000）時要求金流簽核"""
@@ -351,7 +354,7 @@ class TestUpdatePaymentMarkPaidGuard:
             json={
                 "is_paid": True,
                 "payment_method": "現金",
-                "payment_reason": "家長現金繳清",
+                "payment_reason": "家長現金繳清（測試補齊欠費案例）",
             },
         )
         assert res.status_code == 403
@@ -376,7 +379,7 @@ class TestUpdatePaymentMarkPaidGuard:
             json={
                 "is_paid": True,
                 "payment_method": "現金",
-                "payment_reason": "家長已現金繳清",
+                "payment_reason": "家長已現金繳清（測試補齊欠費案例）",
             },
         )
         assert res.status_code == 200, res.text
@@ -755,7 +758,7 @@ class TestStudentDeactivateRefundGuard:
                 s,
                 username="stu_writer",
                 permissions=Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
-                role="staff",
+                role="admin",
             )
             s.commit()
             student_id = st.id

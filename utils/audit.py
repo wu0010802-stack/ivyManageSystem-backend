@@ -49,6 +49,10 @@ ENTITY_PATTERNS = [
     (r"/api/config/deduction-types", "deduction_type"),
     (r"/api/config/bonus-types", "bonus_type"),
     (r"/api/config", "config"),
+    # 審核流程設定（多層 ApprovalPolicy）。policy 自身 INSERT/UPDATE/DELETE
+    # 必須留 audit，否則 admin 可「改規則 → 自批 → 改回」全程零稽核。
+    # Refs: 邏輯漏洞 audit 2026-05-07 P0 (#13)。
+    (r"/api/approval-settings", "approval_policy"),
     (r"/api/meetings", "meeting"),
     (r"/api/announcements", "announcement"),
     (r"/api/calendar", "calendar"),
@@ -130,6 +134,8 @@ ENTITY_LABELS = {
     "gov_report": "政府申報",
     # F-035：audit-logs 自身匯出（meta-audit）
     "audit_log": "操作紀錄",
+    # 審核流程設定（policy 自身異動稽核）
+    "approval_policy": "審核流程設定",
 }
 
 ACTION_LABELS = {
@@ -137,6 +143,10 @@ ACTION_LABELS = {
     "UPDATE": "修改",
     "DELETE": "刪除",
     "EXPORT": "匯出",
+    # 失敗的寫入嘗試（401/403）— audit P1 補登攻擊偵測
+    "BLOCKED_CREATE": "拒絕新增",
+    "BLOCKED_UPDATE": "拒絕修改",
+    "BLOCKED_DELETE": "拒絕刪除",
 }
 
 
@@ -354,8 +364,16 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # Execute the actual request
         response = await call_next(request)
 
-        # Only log successful requests
-        if not (200 <= response.status_code < 300):
+        status = response.status_code
+        # 2xx：原本就 audit 的成功路徑（CREATE/UPDATE/DELETE）
+        # 401/403：失敗的寫入嘗試（攻擊偵測：未登入越權、越權嘗試）→ audit
+        #          以 BLOCKED_<METHOD> 標記，AuditLogView 可篩
+        # 其他 4xx/5xx（400/404/409/422/5xx）：通常使用者輸入錯誤或 internal
+        #          錯誤（自有 log），不 audit 避免量爆
+        # Refs: 邏輯漏洞 audit 2026-05-07 P1。
+        is_success = 200 <= status < 300
+        is_auth_block = status in (401, 403)
+        if not (is_success or is_auth_block):
             return response
 
         # 若 endpoint 已設定跳過標記，直接略過
@@ -368,9 +386,17 @@ class AuditMiddleware(BaseHTTPMiddleware):
             entity_id = getattr(
                 request.state, "audit_entity_id", None
             ) or _parse_entity_id(path)
-            summary = getattr(request.state, "audit_summary", None) or _build_summary(
-                method, path, entity_type
-            )
+            base_action = METHOD_ACTION_MAP[method]
+            action = base_action if is_success else f"BLOCKED_{base_action}"
+            if is_auth_block:
+                summary = (
+                    getattr(request.state, "audit_summary", None)
+                    or f"⚠ 拒絕 {method} {path} → {status}"
+                )
+            else:
+                summary = getattr(
+                    request.state, "audit_summary", None
+                ) or _build_summary(method, path, entity_type)
             ip = request.client.host if request.client else None
 
             changes_raw = getattr(request.state, "audit_changes", None)
@@ -391,7 +417,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
             payload = dict(
                 user_id=user_id,
                 username=username or "anonymous",
-                action=METHOD_ACTION_MAP[method],
+                action=action,
                 entity_type=entity_type,
                 entity_id=entity_id,
                 summary=summary,

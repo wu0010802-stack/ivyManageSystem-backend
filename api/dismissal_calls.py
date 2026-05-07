@@ -4,7 +4,7 @@ api/dismissal_calls.py — 管理端接送通知 HTTP endpoints
 
 import asyncio
 import logging
-from datetime import datetime, date, time, timezone
+from datetime import datetime, date, time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,7 +17,7 @@ from models.database import (
     User,
     Employee,
 )
-from models.dismissal import StudentDismissalCall
+from models.dismissal import StudentDismissalCall, _now_taipei_naive, _TAIPEI_TZ
 from utils.auth import require_staff_permission, get_current_user
 from utils.permissions import Permission
 
@@ -199,7 +199,7 @@ def _db_create_dismissal_call(
             requested_by_user_id=user_id,
             note=body.note,
             status="pending",
-            requested_at=datetime.now(timezone.utc),
+            requested_at=_now_taipei_naive(),
         )
         session.add(call)
         try:
@@ -275,7 +275,7 @@ def list_dismissal_calls(
                     status_code=400, detail="日期格式錯誤，應為 YYYY-MM-DD"
                 )
         else:
-            target = date.today()
+            target = datetime.now(_TAIPEI_TZ).date()
 
         day_start = datetime.combine(target, _DAY_START)
         day_end = datetime.combine(target, _DAY_END)

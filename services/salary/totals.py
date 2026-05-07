@@ -39,6 +39,11 @@ def recompute_record_totals(record):
         + (record.absence_deduction or 0)
         + (record.other_deduction or 0)
     )
+    # ⚠ bonus_amount 為「顯示用聚合」(festival + overtime + supervisor_dividend)。
+    # supervisor_dividend 已包在 gross_salary 中（line 26），因此 bonus_amount **不可**
+    # 被當作「另行轉帳金額」使用，否則主管紅利會雙付。實際另行轉帳列只取 festival +
+    # overtime（見 services/salary/salary_slip.py 既有實作）；前端目前未消費此欄位，
+    # 加此註解避免未來誤用。
     record.bonus_amount = round(
         (record.festival_bonus or 0)
         + (record.overtime_bonus or 0)

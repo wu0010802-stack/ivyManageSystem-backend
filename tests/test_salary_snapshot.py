@@ -500,14 +500,9 @@ class TestLazyTrigger:
         _seed_employee_and_record(sf, name="A", month=3)
         _seed_admin_and_login(sf, client)
 
-        class FakeDate(date):
-            @classmethod
-            def today(cls):
-                return date(2026, 4, 5)
-
         # 2026/4 還沒有任何 SalaryRecord → 觸發 /records 時會檢查 2026/3 快照
         salary_module._snapshot_lazy_guard.clear()
-        monkeypatch.setattr(salary_module, "date", FakeDate)
+        monkeypatch.setattr(salary_module, "_today_taipei", lambda: date(2026, 4, 5))
 
         res = client.get("/api/salaries/records?year=2026&month=4")
         assert res.status_code == 200
@@ -525,13 +520,8 @@ class TestLazyTrigger:
         _seed_employee_and_record(sf, name="A", month=3)
         _seed_admin_and_login(sf, client)
 
-        class FakeDate(date):
-            @classmethod
-            def today(cls):
-                return date(2026, 4, 5)
-
         salary_module._snapshot_lazy_guard.clear()
-        monkeypatch.setattr(salary_module, "date", FakeDate)
+        monkeypatch.setattr(salary_module, "_today_taipei", lambda: date(2026, 4, 5))
 
         client.get("/api/salaries/records?year=2026&month=4")
         client.get("/api/salaries/records?year=2026&month=4")

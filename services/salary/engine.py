@@ -255,6 +255,11 @@ class SalaryEngine:
         # 重算歷史月份時用來序列化 engine 設定切換,避免兩個並發請求互相
         # 蓋掉對方剛 swap 進來的設定;使用 RLock 讓同一執行緒可重入。
         self._config_swap_lock = threading.RLock()
+        # config_for_month snapshot cache：(year, month) → snapshot dict
+        # 同一個歷史月份的設定不會變動（除非 admin 寫入 PUT，會 invalidate），
+        # 因此把第一次 _apply_configs_for_month 的結果快取，後續 swap 直接 restore。
+        # 取代 audit A.P0.1：避免每次 with config_for_month 都跑 5-6 次 DB query。
+        self._month_config_cache: dict[tuple[int, int], dict] = {}
         # 可被覆蓋的設定 - 節慶獎金（深拷貝，避免測試修改巢狀 dict 時汙染常數）
         self._bonus_base = {k: dict(v) for k, v in FESTIVAL_BONUS_BASE.items()}
         self._target_enrollment = {k: dict(v) for k, v in TARGET_ENROLLMENT.items()}
@@ -273,6 +278,8 @@ class SalaryEngine:
         self._school_wide_target = 160
         # 職位標準底薪（key: 'driver'/'head_teacher_b'/… → float）
         self._position_salary_standards: dict = {}
+        # 職稱→節慶獎金等級對應（DB 載入後覆蓋；初始為 hardcode POSITION_GRADE_MAP 副本）
+        self._position_grade_map: dict = dict(POSITION_GRADE_MAP)
         # 園務會議設定
         self._meeting_absence_penalty = DEFAULT_MEETING_ABSENCE_PENALTY
         self._meeting_hours = DEFAULT_MEETING_HOURS
@@ -313,6 +320,9 @@ class SalaryEngine:
             "target_enrollment": copy.deepcopy(self._target_enrollment),
             "overtime_target": copy.deepcopy(self._overtime_target),
             "attendance_policy": dict(self._attendance_policy),
+            "meeting_hours": self._meeting_hours,
+            "meeting_absence_penalty": self._meeting_absence_penalty,
+            "position_grade_map": dict(self._position_grade_map),
             # InsuranceService 的 instance 屬性
             "insurance": {
                 "labor_rate": self.insurance_service.labor_rate,
@@ -324,6 +334,11 @@ class SalaryEngine:
                 "health_employer_ratio": self.insurance_service.health_employer_ratio,
                 "pension_employer_rate": self.insurance_service.pension_employer_rate,
                 "average_dependents": self.insurance_service.average_dependents,
+                "labor_max_insured": self.insurance_service.labor_max_insured,
+                "health_max_insured": self.insurance_service.health_max_insured,
+                "pension_max_insured": self.insurance_service.pension_max_insured,
+                "table": copy.deepcopy(self.insurance_service.table),
+                "brackets_year": self.insurance_service.brackets_year,
             },
         }
 
@@ -340,6 +355,18 @@ class SalaryEngine:
         self._target_enrollment = snapshot["target_enrollment"]
         self._overtime_target = snapshot["overtime_target"]
         self._attendance_policy = snapshot["attendance_policy"]
+        # 園規常數（KeyError 防禦：舊 snapshot 沒這兩個 key 時退回現值）
+        if "meeting_hours" in snapshot:
+            self._meeting_hours = snapshot["meeting_hours"]
+        if "meeting_absence_penalty" in snapshot:
+            self._meeting_absence_penalty = snapshot["meeting_absence_penalty"]
+        # 職稱→等級對應（同步注入給 festival module cache，否則切換歷史月期間
+        # festival.py 仍用上層 caller 留下的 map，造成 grade 判定錯亂）
+        if "position_grade_map" in snapshot:
+            self._position_grade_map = snapshot["position_grade_map"]
+            from services.salary import festival as _festival
+
+            _festival.set_active_grade_map(self._position_grade_map)
         for k, v in snapshot["insurance"].items():
             setattr(self.insurance_service, k, v)
 
@@ -350,6 +377,21 @@ class SalaryEngine:
         Why created_at: BonusConfig / InsuranceRate 沒有 effective_date 欄位,
         AttendancePolicy 雖有但歷史資料未必填;以 created_at 推估等同「設定上線當下生效」,
         對純歷史重算來說與直觀預期一致(改設定當天才會影響當月以後計算)。
+
+        Why NOT filter is_active: 歷史 config 改版後舊版本通常會被設為
+        is_active=False（見 test_swap_uses_version_active_at_month_end），但
+        歷史月份重算仍須能找到「該月當下生效」的版本。一律過濾 is_active=True
+        會讓所有歷史月份都拿到目前最新版本，破壞歷史對帳。
+
+        留意攻擊面：admin 持 SALARY_WRITE 可建惡意金額且 is_active=False 的
+        BonusConfig/InsuranceRate，等歷史補算被 id desc 撿到。緩解：
+        (a) BonusConfig / InsuranceRate / AttendancePolicy 的 INSERT/UPDATE
+            必須走 finance_approve + audit（目前 api/config.py / api/insurance.py
+            缺此守衛，待補）；
+        (b) 上線一筆 needs_recalc 全標守衛（變更設定即時 mark_stale）。
+        Refs: 邏輯漏洞 audit 2026-05-07 P0 (#10) — 由衝突回歸測試
+        test_swap_uses_version_active_at_month_end 重新評估後決議：原建議
+        is_active filter 不採用，改走守衛+稽核路線。
         """
         last_day = calendar.monthrange(year, month)[1]
         cutoff = datetime(year, month, last_day, 23, 59, 59)
@@ -362,6 +404,74 @@ class SalaryEngine:
         if row is None:
             row = session.query(model).order_by(model.id.asc()).first()
         return row
+
+    def _apply_bonus_record_locked(self, bonus) -> None:
+        """把 BonusConfig record 套用到 engine state；caller 必須持 _config_swap_lock。
+
+        Why: config_for_month 與 _load_config_from_db_locked 兩處需做同樣 DB→state 對應；
+            抽出共用函式後新增 bonus 欄位只改一處，避免「忘了某 key 在另一處被重建抹掉」
+            的歷史 bug（art_teacher 基數曾因此被歸零）。
+        """
+        self._bonus_config_id = bonus.id
+        # art_teacher 基數來自 bonus.art_teacher_festival（NULL → 模組預設 2000）；
+        # 必須在 _bonus_base 內保留 art_teacher key，否則 festival.py 取不到會回 0
+        art_base = bonus.art_teacher_festival
+        if art_base is None:
+            art_base = FESTIVAL_BONUS_BASE["art_teacher"]["A"]
+        self._bonus_base = {
+            "head_teacher": {
+                "A": bonus.head_teacher_ab,
+                "B": bonus.head_teacher_ab,
+                "C": bonus.head_teacher_c,
+            },
+            "assistant_teacher": {
+                "A": bonus.assistant_teacher_ab,
+                "B": bonus.assistant_teacher_ab,
+                "C": bonus.assistant_teacher_c,
+            },
+            "art_teacher": {
+                "A": art_base,
+                "B": art_base,
+                "C": art_base,
+            },
+        }
+        # 園規常數（NULL → 模組預設）
+        if bonus.meeting_default_hours is not None:
+            self._meeting_hours = float(bonus.meeting_default_hours)
+        if bonus.meeting_absence_penalty is not None:
+            self._meeting_absence_penalty = int(bonus.meeting_absence_penalty)
+        self._supervisor_festival_bonus = {
+            "園長": bonus.principal_festival,
+            "主任": bonus.director_festival,
+            "組長": bonus.leader_festival,
+        }
+        self._office_festival_bonus_base = {
+            "司機": bonus.driver_festival,
+            "美編": bonus.designer_festival,
+            "行政": bonus.admin_festival,
+        }
+        self._supervisor_dividend = {
+            "園長": bonus.principal_dividend,
+            "主任": bonus.director_dividend,
+            "組長": bonus.leader_dividend,
+            "副組長": bonus.vice_leader_dividend,
+        }
+        self._overtime_per_person = {
+            "head_teacher": {
+                "大班": bonus.overtime_head_normal,
+                "中班": bonus.overtime_head_normal,
+                "小班": bonus.overtime_head_normal,
+                "幼幼班": bonus.overtime_head_baby,
+            },
+            "assistant_teacher": {
+                "大班": bonus.overtime_assistant_normal,
+                "中班": bonus.overtime_assistant_normal,
+                "小班": bonus.overtime_assistant_normal,
+                "幼幼班": bonus.overtime_assistant_baby,
+            },
+        }
+        if bonus.school_wide_target:
+            self._school_wide_target = bonus.school_wide_target
 
     def _apply_configs_for_month(self, session, year: int, month: int) -> None:
         """以 (year, month) 對應的歷史版本覆寫 engine state(in-place)。"""
@@ -376,6 +486,11 @@ class SalaryEngine:
         if rate is not None:
             self.insurance_service.update_rates_from_db(rate)
 
+        # 歷史月份重算：以該月份所屬年度載入級距表（避免用今年級距算去年薪資）
+        self.insurance_service.load_brackets_from_db(year)
+        # 職稱→等級 grade_map 不分年度，呼叫 load 補上 module-level cache
+        self._load_grade_map_from_db(session)
+
         policy = self._select_active_at(session, AttendancePolicy, year, month)
         if policy is not None:
             self._attendance_policy_id = policy.id
@@ -385,51 +500,7 @@ class SalaryEngine:
 
         bonus = self._select_active_at(session, DBBonusConfig, year, month)
         if bonus is not None:
-            self._bonus_config_id = bonus.id
-            self._bonus_base = {
-                "head_teacher": {
-                    "A": bonus.head_teacher_ab,
-                    "B": bonus.head_teacher_ab,
-                    "C": bonus.head_teacher_c,
-                },
-                "assistant_teacher": {
-                    "A": bonus.assistant_teacher_ab,
-                    "B": bonus.assistant_teacher_ab,
-                    "C": bonus.assistant_teacher_c,
-                },
-            }
-            self._supervisor_festival_bonus = {
-                "園長": bonus.principal_festival,
-                "主任": bonus.director_festival,
-                "組長": bonus.leader_festival,
-            }
-            self._office_festival_bonus_base = {
-                "司機": bonus.driver_festival,
-                "美編": bonus.designer_festival,
-                "行政": bonus.admin_festival,
-            }
-            self._supervisor_dividend = {
-                "園長": bonus.principal_dividend,
-                "主任": bonus.director_dividend,
-                "組長": bonus.leader_dividend,
-                "副組長": bonus.vice_leader_dividend,
-            }
-            self._overtime_per_person = {
-                "head_teacher": {
-                    "大班": bonus.overtime_head_normal,
-                    "中班": bonus.overtime_head_normal,
-                    "小班": bonus.overtime_head_normal,
-                    "幼幼班": bonus.overtime_head_baby,
-                },
-                "assistant_teacher": {
-                    "大班": bonus.overtime_assistant_normal,
-                    "中班": bonus.overtime_assistant_normal,
-                    "小班": bonus.overtime_assistant_normal,
-                    "幼幼班": bonus.overtime_assistant_baby,
-                },
-            }
-            if bonus.school_wide_target:
-                self._school_wide_target = bonus.school_wide_target
+            self._apply_bonus_record_locked(bonus)
 
             # 年級目標:綁定到 bonus.id 的版本目標 + NULL fallback
             null_targets = {
@@ -467,17 +538,83 @@ class SalaryEngine:
         - 取 _config_swap_lock 序列化,避免兩個並發 calc 把對方的 swap 蓋掉
         - 失敗(任何例外)時也會 restore,保持 engine 狀態一致
         - 同 thread 可重入(RLock),內層 context 一樣會 swap & restore
+
+        效能：同一 (year, month) 第一次 swap 後其 snapshot 進入 _month_config_cache，
+        後續 swap 直接 restore（避免 5-6 次 DB query）。設定異動時由 load_config_from_db /
+        invalidate_month_config_cache 清空。Audit A.P0.1。
         """
         with self._config_swap_lock:
-            snapshot = self._snapshot_config_state()
+            outer_snapshot = self._snapshot_config_state()
             try:
-                self._apply_configs_for_month(session, year, month)
+                cached = self._month_config_cache.get((year, month))
+                if cached is not None:
+                    self._restore_config_state(cached)
+                else:
+                    self._apply_configs_for_month(session, year, month)
+                    self._month_config_cache[(year, month)] = (
+                        self._snapshot_config_state()
+                    )
                 yield
             finally:
-                self._restore_config_state(snapshot)
+                self._restore_config_state(outer_snapshot)
 
     def load_config_from_db(self):
-        """從資料庫載入設定"""
+        """從資料庫載入設定。
+
+        必須與 config_for_month 共用 _config_swap_lock,否則:
+          T1 進 config_for_month → snapshot OLD,apply 該月歷史設定,yield
+          T2 PUT /api/config/* → load_config_from_db 寫入 NEW
+          T1 finally → _restore_config_state(OLD) 會把 NEW 整個蓋掉
+          → engine 卡在 OLD,直到下次有人觸發 reload 才恢復
+        拿同一把 RLock 後,T2 必須等 T1 restore 完才能寫入,reload 永不被覆蓋。
+        """
+        with self._config_swap_lock:
+            self._load_config_from_db_locked()
+            # 設定異動：清空所有歷史月份 snapshot cache，下次 config_for_month
+            # 會以新版設定重新建立。Audit A.P0.1。
+            self._month_config_cache.clear()
+
+    def invalidate_month_config_cache(self) -> None:
+        """外部呼叫端可主動清空 (year, month) snapshot cache。
+
+        典型場景：新增 / 修改 / 失效 BonusConfig / InsuranceRate / AttendancePolicy /
+        GradeTarget 後（避免 cache 拿到舊版設定）。注意 load_config_from_db 已自動
+        清除，此 helper 給「未走 load_config_from_db 但仍想保險」的路徑備用。
+        """
+        with self._config_swap_lock:
+            self._month_config_cache.clear()
+
+    def _load_grade_map_from_db(self, session) -> None:
+        """從 job_titles.bonus_grade 載入「職稱→等級」對應，更新 self._position_grade_map
+        並注入到 festival.py module-level cache。
+
+        失敗策略：DB 表不存在/欄位未 migrate → 沿用 hardcode POSITION_GRADE_MAP。
+        """
+        from services.salary import festival as _festival
+
+        try:
+            from models.database import JobTitle
+
+            rows = (
+                session.query(JobTitle.name, JobTitle.bonus_grade)
+                .filter(JobTitle.bonus_grade.isnot(None))
+                .all()
+            )
+            if rows:
+                self._position_grade_map = {name: grade for name, grade in rows}
+                _festival.set_active_grade_map(self._position_grade_map)
+                return
+        except Exception:
+            logger.warning(
+                "_load_grade_map_from_db 失敗，沿用 hardcode POSITION_GRADE_MAP",
+                exc_info=True,
+            )
+        # DB 無資料或讀取失敗：fallback 到 hardcode
+        self._position_grade_map = dict(POSITION_GRADE_MAP)
+        _festival.set_active_grade_map(self._position_grade_map)
+
+    def _load_config_from_db_locked(self):
+        """實際的 DB 讀取 + state 寫入；caller 必須持有 _config_swap_lock。"""
         try:
             session = _get_db_session()
             from models.database import (
@@ -496,6 +633,12 @@ class SalaryEngine:
             )
             if insurance_rate is not None:
                 self.insurance_service.update_rates_from_db(insurance_rate)
+
+            # 載入勞健保級距表（DB 來源優先；若該年無資料 fallback 到最近一年或 hardcode）
+            self.insurance_service.load_brackets_from_db()
+
+            # 載入職稱→節慶獎金等級 grade_map（job_titles.bonus_grade）
+            self._load_grade_map_from_db(session)
 
             # 載入考勤政策（依 id desc 取最新 active，與 InsuranceRate 一致；
             # 即使資料庫意外殘留多筆 is_active=true 也能穩定選到最新版本）
@@ -523,58 +666,7 @@ class SalaryEngine:
                 .first()
             )
             if bonus:
-                self._bonus_config_id = bonus.id  # 記錄版本 ID
-                # 更新獎金基數
-                self._bonus_base = {
-                    "head_teacher": {
-                        "A": bonus.head_teacher_ab,
-                        "B": bonus.head_teacher_ab,
-                        "C": bonus.head_teacher_c,
-                    },
-                    "assistant_teacher": {
-                        "A": bonus.assistant_teacher_ab,
-                        "B": bonus.assistant_teacher_ab,
-                        "C": bonus.assistant_teacher_c,
-                    },
-                }
-                # 更新主管節慶獎金
-                self._supervisor_festival_bonus = {
-                    "園長": bonus.principal_festival,
-                    "主任": bonus.director_festival,
-                    "組長": bonus.leader_festival,
-                }
-                # 更新司機/美編/行政節慶獎金
-                self._office_festival_bonus_base = {
-                    "司機": bonus.driver_festival,
-                    "美編": bonus.designer_festival,
-                    "行政": bonus.admin_festival,
-                }
-                # 更新主管紅利
-                self._supervisor_dividend = {
-                    "園長": bonus.principal_dividend,
-                    "主任": bonus.director_dividend,
-                    "組長": bonus.leader_dividend,
-                    "副組長": bonus.vice_leader_dividend,
-                }
-                # 更新超額獎金每人金額
-                self._overtime_per_person = {
-                    "head_teacher": {
-                        "大班": bonus.overtime_head_normal,
-                        "中班": bonus.overtime_head_normal,
-                        "小班": bonus.overtime_head_normal,
-                        "幼幼班": bonus.overtime_head_baby,
-                    },
-                    "assistant_teacher": {
-                        "大班": bonus.overtime_assistant_normal,
-                        "中班": bonus.overtime_assistant_normal,
-                        "小班": bonus.overtime_assistant_normal,
-                        "幼幼班": bonus.overtime_assistant_baby,
-                    },
-                }
-
-                # 更新全校目標人數
-                if bonus.school_wide_target:
-                    self._school_wide_target = bonus.school_wide_target
+                self._apply_bonus_record_locked(bonus)
 
             # 載入年級目標：合併 NULL（舊資料）與版本特定目標
             null_targets = {
@@ -647,10 +739,19 @@ class SalaryEngine:
             logger.warning("SalaryEngine: 從資料庫載入設定失敗，使用預設值: %s", e)
 
     def set_bonus_config(self, bonus_config: dict):
-        """設定獎金參數（從前端傳入）"""
+        """設定獎金參數（從前端傳入）。
+
+        與 load_config_from_db 同樣會大批寫入受 _config_swap_lock 保護的屬性,
+        必須拿同一把鎖,避免被 config_for_month 的 restore 覆蓋。
+        """
         if not bonus_config:
             return
 
+        with self._config_swap_lock:
+            self._apply_bonus_config_locked(bonus_config)
+
+    def _apply_bonus_config_locked(self, bonus_config: dict):
+        """實際的設定寫入；caller 必須持有 _config_swap_lock。"""
         # 更新獎金基數
         if "bonusBase" in bonus_config and bonus_config["bonusBase"]:
             bb = bonus_config["bonusBase"]
@@ -1058,6 +1159,8 @@ class SalaryEngine:
         employee_id: int,
         reference_date: date,
         classroom_count_map: dict | None = None,
+        assistant_to_classes_map: dict | None = None,
+        art_to_classes_map: dict | None = None,
     ) -> Optional[dict]:
         """從 DB 班級資料建構帶班獎金計算上下文。
 
@@ -1065,6 +1168,10 @@ class SalaryEngine:
                               明細頁與正式計算必須用同一日期，否則在籍人數
                               會以「今天」漂移，明細對不上已計算的薪資記錄。
         classroom_count_map:  可傳入預先批次查詢的 {classroom_id: int}，避免 N+1。
+        assistant_to_classes_map / art_to_classes_map: 預先建好的 emp_id → list[Classroom]
+                              副班導/美師 shared_classes 反查表（audit B.P0.2）。
+                              若任一 supplied 則 shared_classes 從 map 讀取，跳過
+                              session.query(DBClassroom)。
         """
         if not classroom:
             return None
@@ -1116,17 +1223,27 @@ class SalaryEngine:
             shared_filter = DBClassroom.art_teacher_id == employee_id
 
         if shared_filter is not None:
-            # is_active 過濾與 process_bulk_salary_calculation 預載一致（line 2093），
-            # 否則同一員工在單筆與批次路徑會得到不同的 is_shared_assistant 判斷。
-            shared_classes = (
-                session.query(DBClassroom)
-                .options(joinedload(DBClassroom.grade))
-                .filter(
-                    shared_filter,
-                    DBClassroom.is_active == True,
+            # 預載 map（audit B.P0.2）優先：避免 session.query(DBClassroom) per-emp。
+            preloaded: list | None = None
+            if role == "assistant_teacher" and assistant_to_classes_map is not None:
+                preloaded = assistant_to_classes_map.get(employee_id, [])
+            elif role == "art_teacher" and art_to_classes_map is not None:
+                preloaded = art_to_classes_map.get(employee_id, [])
+
+            if preloaded is not None:
+                shared_classes = preloaded
+            else:
+                # is_active 過濾與 process_bulk_salary_calculation 預載一致（line 2093），
+                # 否則同一員工在單筆與批次路徑會得到不同的 is_shared_assistant 判斷。
+                shared_classes = (
+                    session.query(DBClassroom)
+                    .options(joinedload(DBClassroom.grade))
+                    .filter(
+                        shared_filter,
+                        DBClassroom.is_active == True,
+                    )
+                    .all()
                 )
-                .all()
-            )
             if len(shared_classes) >= 2:
                 if role == "assistant_teacher":
                     classroom_context["is_shared_assistant"] = True
@@ -1389,6 +1506,16 @@ class SalaryEngine:
             if birthday_val and birthday_val.month == month:
                 breakdown.birthday_bonus = 500
 
+        # skip_payroll_bonuses：業主指示「不發紅利/節慶/超額/生日禮金」
+        # （如總園長指示不薪轉、不作帳的特殊個案）。基本薪 + 勞健保仍正常計算。
+        # 放在最後一步：所有 override / 期間累積 / 全勤條件都已套用後再短路歸零，
+        # 避免漏蓋某條路徑導致仍發部分獎金。
+        if employee.get("skip_payroll_bonuses", False):
+            breakdown.festival_bonus = 0
+            breakdown.overtime_bonus = 0
+            breakdown.supervisor_dividend = 0
+            breakdown.birthday_bonus = 0
+
     def _calculate_deductions(
         self,
         breakdown,
@@ -1415,10 +1542,21 @@ class SalaryEngine:
         )
         if _ins_raw > 0:
             _ins_salary = self.insurance_service.get_bracket(_ins_raw)["amount"]
+            # 議題 B：三制度分項投保（NULL 沿用 _ins_salary）
+            labor_ins = employee.get("labor_insured_salary")
+            health_ins = employee.get("health_insured_salary")
+            pension_ins = employee.get("pension_insured_salary")
             insurance = self.insurance_service.calculate(
                 _ins_salary,
                 employee.get("dependents", 0),
                 pension_self_rate=pension_rate,
+                no_employment_insurance=bool(
+                    employee.get("no_employment_insurance", False)
+                ),
+                health_exempt=bool(employee.get("health_exempt", False)),
+                labor_insured=float(labor_ins) if labor_ins is not None else None,
+                health_insured=float(health_ins) if health_ins is not None else None,
+                pension_insured=float(pension_ins) if pension_ins is not None else None,
             )
             breakdown.labor_insurance = insurance.labor_employee
             breakdown.health_insurance = insurance.health_employee
@@ -1427,6 +1565,28 @@ class SalaryEngine:
             breakdown.labor_insurance_employer = insurance.labor_employer
             breakdown.health_insurance_employer = insurance.health_employer
             breakdown.pension_employer = insurance.pension_employer
+
+            # 季扣眷屬：1/4/7/10 月份額外扣「health_employee × extra_dependents_quarterly × 3」
+            # （業主實務：本人+1 月扣 / 第 2+ 名季扣 3 個月一次）
+            extra_q = int(employee.get("extra_dependents_quarterly", 0) or 0)
+            if (
+                extra_q > 0
+                and not employee.get("health_exempt", False)
+                and month in (1, 4, 7, 10)
+            ):
+                # 用「未含眷屬」的單口健保金額 × 季扣眷屬數 × 3 個月
+                # 議題 B：以 health_insured 為準（NULL 沿用 _ins_salary）
+                health_amount_for_quarterly = (
+                    float(health_ins) if health_ins is not None else _ins_salary
+                )
+                health_bracket_emp_base = self.insurance_service.get_bracket(
+                    min(
+                        health_amount_for_quarterly,
+                        self.insurance_service.health_max_insured,
+                    )
+                )["health_employee"]
+                quarterly_extra = round(health_bracket_emp_base * extra_q * 3)
+                breakdown.health_insurance += quarterly_extra
         elif employee.get("employee_type") == "hourly":
             logger.warning(
                 "時薪制員工 %s 未設定 insurance_salary_level，本月不計勞健保扣繳，"
@@ -1803,6 +1963,12 @@ class SalaryEngine:
                     classroom_count_map=(
                         _ctx.get("classroom_count_map") if _ctx else None
                     ),
+                    assistant_to_classes_map=(
+                        _ctx.get("assistant_to_classes_map") if _ctx else None
+                    ),
+                    art_to_classes_map=(
+                        _ctx.get("art_to_classes_map") if _ctx else None
+                    ),
                 )
                 current_enrollment = classroom_context.get("current_enrollment", 0)
                 bonus_result = self._calculate_classroom_bonus_result(
@@ -1898,20 +2064,25 @@ class SalaryEngine:
             overtime_bonus = int(breakdown.get("overtimeBonus") or 0)
             category = breakdown.get("category", "")
 
-            # 2) 會議缺席扣款
-            _, last_day = _cal.monthrange(year, month)
-            start_date = _date(year, month, 1)
-            end_date = _date(year, month, last_day)
-            absent_count = (
-                session.query(MeetingRecord)
-                .filter(
-                    MeetingRecord.employee_id == employee_id,
-                    MeetingRecord.meeting_date >= start_date,
-                    MeetingRecord.meeting_date <= end_date,
-                    MeetingRecord.attended == False,  # noqa: E712
+            # 2) 會議缺席扣款；批次路徑（API endpoint）會在 _ctx 預載
+            # `meeting_absent_count_map`（employee_id → count），取代逐員工查詢。
+            absent_map = (_ctx or {}).get("meeting_absent_count_map") if _ctx else None
+            if absent_map is not None:
+                absent_count = int(absent_map.get(employee_id, 0))
+            else:
+                _, last_day = _cal.monthrange(year, month)
+                start_date = _date(year, month, 1)
+                end_date = _date(year, month, last_day)
+                absent_count = (
+                    session.query(MeetingRecord)
+                    .filter(
+                        MeetingRecord.employee_id == employee_id,
+                        MeetingRecord.meeting_date >= start_date,
+                        MeetingRecord.meeting_date <= end_date,
+                        MeetingRecord.attended == False,  # noqa: E712
+                    )
+                    .count()
                 )
-                .count()
-            )
             meeting_absence_deduction = int(
                 absent_count * (self._meeting_absence_penalty or 0)
             )
@@ -1932,9 +2103,16 @@ class SalaryEngine:
         """依職位標準底薪決定員工底薪。
         有對應標準的職位直接回傳標準薪；無對應（園長、主任等特例）則回傳 emp.base_salary。
         時薪制（base_salary=0）永遠回傳 0。
+
+        2026-05-07 議題 A 選項 3：員工檔可設 `bypass_standard_base=True`，
+        強制使用個人 emp.base_salary（給有年資加給、合約底薪 > 職位標準的員工用），
+        不走下方分流。
         """
         raw = float(emp.base_salary or 0)
         if raw == 0 or not self._position_salary_standards:
+            return raw
+        # bypass_standard_base 旗標短路：直接信任員工檔個人底薪
+        if getattr(emp, "bypass_standard_base", False):
             return raw
 
         title = emp.job_title_rel.name if emp.job_title_rel else (emp.title or "")
@@ -2000,6 +2178,15 @@ class SalaryEngine:
             ),
             "dependents": emp.dependents,
             "pension_self_rate": emp.pension_self_rate or 0,
+            # 階段 2-C 特殊狀況欄位（getattr 防舊 schema 還沒套 migration 時 KeyError）
+            "no_employment_insurance": getattr(emp, "no_employment_insurance", False),
+            "health_exempt": getattr(emp, "health_exempt", False),
+            "skip_payroll_bonuses": getattr(emp, "skip_payroll_bonuses", False),
+            "extra_dependents_quarterly": getattr(emp, "extra_dependents_quarterly", 0),
+            # 議題 B 分項投保（NULL=沿用 insurance_salary_level）
+            "labor_insured_salary": getattr(emp, "labor_insured_salary", None),
+            "health_insured_salary": getattr(emp, "health_insured_salary", None),
+            "pension_insured_salary": getattr(emp, "pension_insured_salary", None),
             "hire_date": emp.hire_date,
             "resign_date": getattr(emp, "resign_date", None),
             "birthday": emp.birthday,
@@ -2395,10 +2582,24 @@ class SalaryEngine:
                 cache value 結構與 api/salary.py period-accrual 端點一致。
         """
         from .utils import get_distribution_period_months
+        from utils.academic import resolve_current_academic_term
 
         period_months = get_distribution_period_months(year, month)
         if not period_months:
             return None, None
+
+        # 預先把 period_months 收攏為唯一 term，避免單員工迴圈內每月各跑 1 次
+        # _resolve_classroom_for_employee_in_term（同 term 內班級不會變）。
+        # Audit A.P0.2：3 個 period 月通常 ≤ 2 個 term，從 6 query 砍到 1-2 query。
+        term_classroom_cache: dict[tuple[int, int], object] = {}
+        for y, m in period_months:
+            term_key = resolve_current_academic_term(date(y, m, 1))
+            if term_key not in term_classroom_cache:
+                term_classroom_cache[term_key] = (
+                    self._resolve_classroom_for_employee_in_term(
+                        session, emp.id, term_key[0], term_key[1]
+                    )
+                )
 
         festival_total = 0
         overtime_total = 0
@@ -2413,6 +2614,10 @@ class SalaryEngine:
                         ctx["school_active_students"] = cache["school_active"]
                     if "cls_count_map" in cache:
                         ctx["classroom_count_map"] = cache["cls_count_map"]
+                    if "meeting_absent_count_map" in cache:
+                        ctx["meeting_absent_count_map"] = cache[
+                            "meeting_absent_count_map"
+                        ]
                 # 依「該月份所對應的學期」反查班級，避免拿目前 classroom 套用在跨學期的舊月份。
                 # 若 cache 內預先放了該月解析好的 classroom，優先使用以節省查詢。
                 cached_classroom = (
@@ -2421,9 +2626,10 @@ class SalaryEngine:
                 if cached_classroom is not None:
                     ctx["classroom"] = cached_classroom
                 else:
-                    ctx["classroom"] = self._resolve_classroom_for_employee_in_month(
-                        session, emp.id, y, m
-                    )
+                    # 用本函式預先建好的 term-keyed cache
+                    ctx["classroom"] = term_classroom_cache[
+                        resolve_current_academic_term(date(y, m, 1))
+                    ]
                 # 期間累積每月用該月份對應的 BonusConfig/AttendancePolicy/InsuranceRate,
                 # 而非「目前最新」設定;與 _build_breakdown_for_month 同一語意,
                 # 但這裡是 per-iteration swap(因為要為每個歷史月份各自挑版本)。

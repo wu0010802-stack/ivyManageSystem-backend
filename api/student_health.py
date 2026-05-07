@@ -189,6 +189,28 @@ def _load_logs_for_order(session, order_id: int) -> list[StudentMedicationLog]:
     )
 
 
+def _load_logs_for_orders(
+    session, order_ids: list[int]
+) -> dict[int, list[StudentMedicationLog]]:
+    """批次取多 order 的 logs（order_id → list[log]）。Audit G.P0.5。"""
+    if not order_ids:
+        return {}
+    rows = (
+        session.query(StudentMedicationLog)
+        .filter(StudentMedicationLog.order_id.in_(order_ids))
+        .order_by(
+            StudentMedicationLog.order_id.asc(),
+            StudentMedicationLog.scheduled_time.asc(),
+            StudentMedicationLog.id.asc(),
+        )
+        .all()
+    )
+    out: dict[int, list[StudentMedicationLog]] = {oid: [] for oid in order_ids}
+    for log in rows:
+        out.setdefault(log.order_id, []).append(log)
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 過敏管理
 # ══════════════════════════════════════════════════════════════════════════
@@ -357,10 +379,8 @@ async def list_medication_orders(
                 StudentMedicationOrder.order_date.desc(),
                 StudentMedicationOrder.id.desc(),
             ).all()
-            items = []
-            for o in orders:
-                logs = _load_logs_for_order(session, o.id)
-                items.append(_order_to_dict(o, logs))
+            logs_map = _load_logs_for_orders(session, [o.id for o in orders])
+            items = [_order_to_dict(o, logs_map.get(o.id, [])) for o in orders]
             return {"items": items, "total": len(items)}
     except HTTPException:
         raise

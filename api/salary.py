@@ -6,6 +6,16 @@ import io
 import logging
 import threading
 from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
+
+_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _today_taipei() -> date:
+    """以台灣時間取今日。獨立 helper 方便測試 monkeypatch。"""
+    return datetime.now(_TAIPEI_TZ).date()
+
+
 from typing import Optional
 
 from cachetools import TTLCache
@@ -49,7 +59,7 @@ from fastapi import BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import joinedload
 import calendar as _cal
 
@@ -58,6 +68,7 @@ from models.database import (
     get_session,
     Employee,
     Classroom,
+    MeetingRecord,
     SalaryRecord,
     SalarySnapshot,
     Attendance,
@@ -164,7 +175,9 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
     """
     if bg is None:
         return
-    today = date.today()
+    # 用台灣日；UTC 主機在台北時間每月 1 日 00:00-08:00，date.today() 仍為上月 31 日，
+    # 會讓 _previous_month 回到上上月，補拍對象錯。
+    today = _today_taipei()
     year, month = _previous_month(today)
     key = f"{today.isoformat()}:{year}-{month:02d}"
     with _snapshot_lazy_lock:
@@ -677,20 +690,54 @@ def get_festival_bonus_period_accrual(
             .all()
         )
 
+        # 跨月共用：副班導 / 美師 → 班級清單映射，shared_classes 反查 O(1)
+        # （audit B.P0.2，避免 _build_classroom_context_from_db 在每員工各跑一次 query）。
+        all_active_classrooms = (
+            session.query(Classroom)
+            .options(joinedload(Classroom.grade))
+            .filter(Classroom.is_active == True)  # noqa: E712
+            .all()
+        )
+        classroom_map_shared = {c.id: c for c in all_active_classrooms}
+        assistant_to_classes_map: dict[int, list] = {}
+        art_to_classes_map: dict[int, list] = {}
+        for _c in all_active_classrooms:
+            if _c.assistant_teacher_id:
+                assistant_to_classes_map.setdefault(_c.assistant_teacher_id, []).append(
+                    _c
+                )
+            if _c.art_teacher_id:
+                art_to_classes_map.setdefault(_c.art_teacher_id, []).append(_c)
+
         monthly_ctx_cache: dict[tuple[int, int], dict] = {}
         for y, m in passed_months:
             _, last_day = _cal.monthrange(y, m)
             month_end = date(y, m, last_day)
+            month_start = date(y, m, 1)
+            # 預載當月會議缺席數（依 employee_id 分組），取代 calculate_period_accrual_row
+            # 在迴圈內每員工一次的 MeetingRecord.count() 查詢（B.P0.1）。
+            meeting_absent_rows = (
+                session.query(
+                    MeetingRecord.employee_id,
+                    func.count(MeetingRecord.id),
+                )
+                .filter(
+                    MeetingRecord.meeting_date >= month_start,
+                    MeetingRecord.meeting_date <= month_end,
+                    MeetingRecord.attended == False,  # noqa: E712
+                )
+                .group_by(MeetingRecord.employee_id)
+                .all()
+            )
+            meeting_absent_count_map = {
+                int(emp_id): int(cnt or 0) for emp_id, cnt in meeting_absent_rows
+            }
             monthly_ctx_cache[(y, m)] = {
                 "month_end": month_end,
                 "school_active": count_students_active_on(session, month_end),
                 "cls_count_map": classroom_student_count_map(session, month_end),
-                "classroom_map": {
-                    c.id: c
-                    for c in session.query(Classroom)
-                    .options(joinedload(Classroom.grade))
-                    .all()
-                },
+                "classroom_map": classroom_map_shared,
+                "meeting_absent_count_map": meeting_absent_count_map,
             }
 
         rows = []
@@ -708,6 +755,11 @@ def get_festival_bonus_period_accrual(
                     ),
                     "school_active_students": ctx_cache["school_active"],
                     "classroom_count_map": ctx_cache["cls_count_map"],
+                    "meeting_absent_count_map": ctx_cache.get(
+                        "meeting_absent_count_map", {}
+                    ),
+                    "assistant_to_classes_map": assistant_to_classes_map,
+                    "art_to_classes_map": art_to_classes_map,
                 }
                 try:
                     row = engine.calculate_period_accrual_row(
@@ -1025,15 +1077,10 @@ def manual_adjust_salary(
         if not changed_parts:
             raise HTTPException(status_code=400, detail="沒有實際變更")
 
-        # ── A 錢守衛：本次所有欄位 |delta| 合計 > FINANCE_APPROVAL_THRESHOLD 需金流簽核 ──
-        # Why: 舊版用「單欄位最大變動」作門檻，會計可一次調 N 欄各 999，總和達數千元
-        # 而仍各自低於門檻，繞過 ACTIVITY_PAYMENT_APPROVE。改用合計門檻封死拆欄路徑。
-        require_finance_approve(
-            total_abs_delta, current_user, action_label="薪資單欄位調整總額"
-        )
-
         # 連動：管理員只改 meeting_absence_deduction（未同時手動覆寫 festival_bonus）時，
         # festival_bonus 應跟著 raw 重算：raw = old_festival + old_meeting_absence。
+        # 此連動產生的 |delta| 也要納入 total_abs_delta，避免「降 meeting_absence 連動
+        # 推高 festival_bonus」拆兩動作繞過 FINANCE_APPROVAL_THRESHOLD。
         meeting_absence_in_payload = "meeting_absence_deduction" in payload
         festival_bonus_in_payload = "festival_bonus" in payload
         if meeting_absence_in_payload and not festival_bonus_in_payload:
@@ -1047,6 +1094,14 @@ def manual_adjust_salary(
                 )
                 # 連動寫入的 festival_bonus 也視為人工調整,同一原則保留不被重算覆寫
                 modified_fields.append("festival_bonus")
+                total_abs_delta += abs(recomputed_festival - old_festival_bonus)
+
+        # ── A 錢守衛：本次所有欄位 |delta| 合計（含 festival_bonus 連動）> 門檻需金流簽核 ──
+        # Why: 舊版用「單欄位最大變動」作門檻，會計可一次調 N 欄各 999，總和達數千元
+        # 而仍各自低於門檻，繞過 ACTIVITY_PAYMENT_APPROVE。改用合計門檻封死拆欄路徑。
+        require_finance_approve(
+            total_abs_delta, current_user, action_label="薪資單欄位調整總額"
+        )
 
         # 將本次寫過的欄位名稱合併進 manual_overrides;後續上游事件觸發的重算,
         # _fill_salary_record 會跳過清單內的欄位,避免覆寫人工調整。
@@ -1346,29 +1401,74 @@ def export_salary_slip(
 
 @router.get("/salaries/export-all")
 def export_all_salaries(
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     format: str = Query("xlsx", pattern="^(xlsx|pdf)$"),
+    include_pending: bool = Query(
+        False,
+        description="是否包含未封存或待重算（needs_recalc）薪資；預設 False 只匯出可信任的封存資料。",
+    ),
 ):
-    """匯出全部員工薪資（xlsx 或 pdf）僅限 admin/hr。"""
+    """匯出全部員工薪資（xlsx 或 pdf）僅限 admin/hr。
+
+    預設只匯出 is_finalized=True 且 needs_recalc=False 的薪資紀錄,避免會計把
+    草稿/測試重算的薪資輸出成正式薪資表造成 A 錢空間。需要含草稿時必須帶
+    include_pending=True,並寫入 explicit audit 留稽核軌跡。
+    """
+    from utils.audit import write_explicit_audit
+
     if current_user.get("role") not in FULL_SALARY_ROLES:
         raise HTTPException(
             status_code=403, detail="僅限系統管理員或人事主管匯出全員薪資"
         )
     with session_scope() as session:
-        records = (
+        base_query = (
             session.query(SalaryRecord, Employee)
             .join(Employee, SalaryRecord.employee_id == Employee.id)
             .filter(
                 SalaryRecord.salary_year == year, SalaryRecord.salary_month == month
             )
-            .order_by(Employee.name)
-            .all()
         )
+        if not include_pending:
+            base_query = base_query.filter(
+                SalaryRecord.is_finalized == True,  # noqa: E712
+                SalaryRecord.needs_recalc == False,  # noqa: E712
+            )
+        records = base_query.order_by(Employee.name).all()
 
         if not records:
-            raise HTTPException(status_code=404, detail="該月份無薪資記錄")
+            detail = (
+                "該月份無已封存且非待重算的薪資記錄；如需匯出草稿請加 include_pending=true"
+                if not include_pending
+                else "該月份無薪資記錄"
+            )
+            raise HTTPException(status_code=404, detail=detail)
+
+        # 顯式稽核：GET 匯出不會經 AuditMiddleware；薪資匯出涉及全員實發/扣繳
+        # 是高敏感度資料,必須留下「誰在何時匯出多少筆、是否含草稿」的軌跡。
+        pending_count = sum(
+            1 for rec, _ in records if (not rec.is_finalized) or rec.needs_recalc
+        )
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="salary",
+            summary=(
+                f"匯出全員薪資 {year}/{month:02d}（{format.upper()}，{len(records)} 筆"
+                + (f"，含草稿/待重算 {pending_count} 筆" if include_pending else "")
+                + "）"
+            ),
+            changes={
+                "year": year,
+                "month": month,
+                "format": format,
+                "include_pending": include_pending,
+                "count": len(records),
+                "pending_count": pending_count,
+            },
+        )
 
         if format == "pdf":
             from services.salary_slip import generate_salary_all_pdf

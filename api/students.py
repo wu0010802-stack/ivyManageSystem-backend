@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
@@ -23,7 +23,18 @@ from utils.academic import resolve_current_academic_term, resolve_academic_term_
 from utils.auth import require_staff_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
-from utils.portfolio_access import assert_student_access, mask_student_health_fields
+from utils.portfolio_access import (
+    accessible_classroom_ids,
+    assert_student_access,
+    is_unrestricted,
+    mask_student_health_fields,
+    require_unrestricted_role,
+)
+from models.classroom import (
+    LIFECYCLE_GRADUATED,
+    LIFECYCLE_TRANSFERRED,
+    LIFECYCLE_WITHDRAWN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +379,14 @@ async def get_students(
     is_active: Optional[bool] = Query(True),
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
-    """取得學生列表（分頁）。is_active=true 為在讀，is_active=false 為已離園"""
+    """取得學生列表（分頁）。is_active=true 為在讀，is_active=false 為已離園
+
+    Scope（audit 2026-05-07 P0 #1）：
+    - admin/hr/supervisor：看全園
+    - teacher：只看自己擔任導師的班級，且排除終態學生（graduated/withdrawn/
+      transferred）。要查歷史走 admin/hr/supervisor。
+    - 無班級的 teacher（純 art_teacher 等）→ 空清單
+    """
     session = get_session()
     try:
         q = session.query(Student).filter(Student.is_active == is_active)
@@ -390,6 +408,26 @@ async def get_students(
                     ),
                 ),
             )
+
+        # ── Scope 守衛 ────────────────────────────────────
+        # teacher 角色限定自己的班級且非終態；admin/hr/supervisor 不變
+        if not is_unrestricted(current_user):
+            allowed_classroom_ids = accessible_classroom_ids(session, current_user)
+            if not allowed_classroom_ids:
+                return {"items": [], "total": 0, "skip": skip, "limit": limit}
+            q = q.filter(
+                Student.classroom_id.in_(allowed_classroom_ids),
+                Student.lifecycle_status.notin_(
+                    [
+                        LIFECYCLE_GRADUATED,
+                        LIFECYCLE_WITHDRAWN,
+                        LIFECYCLE_TRANSFERRED,
+                    ]
+                ),
+            )
+            # teacher 帶 classroom_id 參數時也必須在自己班內
+            if classroom_id is not None and classroom_id not in allowed_classroom_ids:
+                return {"items": [], "total": 0, "skip": skip, "limit": limit}
 
         if classroom_id is not None:
             q = q.filter(Student.classroom_id == classroom_id)
@@ -484,12 +522,14 @@ async def get_student(
     student_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
-    """取得單一學生詳細資料"""
+    """取得單一學生詳細資料
+
+    Scope（audit 2026-05-07 P0 #2）：assert_student_access — admin/hr/supervisor
+    一律放行；teacher 只可看自己班且 lifecycle 非終態的學生。
+    """
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if not student:
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        student = assert_student_access(session, current_user, student_id)
         payload = {
             "id": student.id,
             "student_id": student.student_id,
@@ -569,9 +609,21 @@ async def create_student(
 async def update_student(
     student_id: int,
     item: StudentUpdate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
-    """更新學生資料"""
+    """更新學生資料
+
+    Scope（audit 2026-05-07 P0 #3）：限定 admin/hr/supervisor。teacher 即使有
+    STUDENTS_WRITE perm 也不可改學生主資料（家長姓名/電話/班級/緊急聯絡人等
+    敏感欄位）；班內小修改走 sub-resource 端點。
+
+    audit（2026-05-07 P1）：在 request.state.audit_changes 寫入 before/after diff，
+    讓 AuditMiddleware 把家長姓名/電話/地址/緊急聯絡人/班級等敏感欄位的具體
+    變動寫進 audit_logs。否則只剩動作標籤，無法事後溯回誰把家長電話從 A 改成 B。
+    """
+    require_unrestricted_role(current_user, action_label="修改學生主資料")
+
     session = get_session()
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
@@ -580,6 +632,13 @@ async def update_student(
 
         update_data = item.model_dump(exclude_unset=True)
         old_classroom_id = student.classroom_id
+
+        # 變更前 snapshot — 只取會被 update_data 影響的欄位，避免 dict 過大
+        before_snapshot = {
+            key: getattr(student, key, None)
+            for key in update_data.keys()
+            if hasattr(student, key)
+        }
 
         NULLABLE_FK_FIELDS = {"classroom_id"}
         for key, value in update_data.items():
@@ -600,6 +659,17 @@ async def update_student(
                     synced,
                 )
 
+        # 計算 diff：只收真有差異的欄位（避免 audit changes 充斥沒變動的列）
+        diff: dict = {}
+        for key in before_snapshot.keys():
+            old_val = before_snapshot.get(key)
+            new_val = getattr(student, key, None)
+            if old_val != new_val:
+                diff[key] = {"before": old_val, "after": new_val}
+        if diff:
+            request.state.audit_changes = diff
+        request.state.audit_entity_id = student.id
+
         session.commit()
         return {"message": "學生資料更新成功", "id": student.id}
     except HTTPException:
@@ -616,7 +686,11 @@ async def delete_student(
     student_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
-    """刪除學生（軟刪除）。同時取消該學生所有進行中的接送通知並推送 WS 事件。"""
+    """刪除學生（軟刪除）。同時取消該學生所有進行中的接送通知並推送 WS 事件。
+
+    Scope（audit 2026-05-07 P0 #3）：限定 admin/hr/supervisor。
+    """
+    require_unrestricted_role(current_user, action_label="刪除學生")
     session = get_session()
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
@@ -753,9 +827,21 @@ async def graduate_student(
 @router.post("/students/bulk-transfer")
 async def bulk_transfer_students(
     item: StudentBulkTransfer,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
-    """批次轉班。"""
+    """批次轉班。
+
+    Scope（audit 2026-05-07 P0 #4）：限定 admin/hr/supervisor。teacher 不可
+    把任何學生轉到任何班，包含自己班的學生（避免「擅自把學生踢到其他班」型
+    舞弊）。
+
+    audit（2026-05-07 P1）：在 request.state.audit_changes 寫入 student_ids
+    與 from→to classroom 摘要，讓 AuditMiddleware 把這次大規模轉班動作的
+    細節寫入 audit_logs（既有 StudentClassroomTransfer 是逐筆業務 audit，
+    本處再多一層整體動作軌跡，事後篩 entity_type=student 可一次撈到）。
+    """
+    require_unrestricted_role(current_user, action_label="批次轉班")
     session = get_session()
     try:
         if not item.student_ids:
@@ -795,6 +881,7 @@ async def bulk_transfer_students(
         now = datetime.now()
         moved_count = 0
         moved_student_ids: list[int] = []
+        per_student_changes: list[dict] = []
         for student in students:
             if student.classroom_id == item.target_classroom_id:
                 continue
@@ -806,6 +893,13 @@ async def bulk_transfer_students(
                     transferred_at=now,
                     transferred_by=operator_id,
                 )
+            )
+            per_student_changes.append(
+                {
+                    "student_id": student.id,
+                    "from_classroom_id": student.classroom_id,
+                    "to_classroom_id": item.target_classroom_id,
+                }
             )
             student.classroom_id = item.target_classroom_id
             moved_count += 1
@@ -826,6 +920,14 @@ async def bulk_transfer_students(
                     item.target_classroom_id,
                     activity_synced,
                 )
+
+        if per_student_changes:
+            request.state.audit_changes = {
+                "action": "bulk_transfer",
+                "target_classroom_id": item.target_classroom_id,
+                "moved_count": moved_count,
+                "transfers": per_student_changes,
+            }
 
         session.commit()
         logger.info(

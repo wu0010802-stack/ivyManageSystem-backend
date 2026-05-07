@@ -203,8 +203,13 @@ class TestActiveRegistrationUniqueIndex:
             )
             s.commit()  # 不應拋 IntegrityError
 
-    def test_public_register_second_submit_returns_400(self, client):
-        """應用層：家長連送兩次相同資料，第二次回 400 + 可辨識訊息。"""
+    def test_public_register_second_submit_silent_success_no_dup_row(self, client):
+        """應用層：家長連送兩次相同資料且未匹配學生身分時，第二次走 silent-success
+        （F-030 anti-enumeration），不再回 400；但 DB 仍只保留 1 筆，避免堆出大量重複報名。
+
+        已驗證身分（matched）的家長第二次仍會看到 400 明確訊息，由 F-030 covered tests
+        （test_misc_medium_authz）確認；此處覆蓋未驗證身分的 silent-success path。
+        """
         c, sf = client
         sy, sem = _seed_term()
         with sf() as s:
@@ -212,8 +217,14 @@ class TestActiveRegistrationUniqueIndex:
         r1 = c.post("/api/activity/public/register", json=_public_register_payload())
         assert r1.status_code == 201, r1.text
         r2 = c.post("/api/activity/public/register", json=_public_register_payload())
-        assert r2.status_code == 400
-        assert "已有有效報名" in r2.json()["detail"]
+        assert r2.status_code == 201
+        with sf() as s:
+            count = (
+                s.query(ActivityRegistration)
+                .filter(ActivityRegistration.is_active.is_(True))
+                .count()
+            )
+        assert count == 1, f"silent-success 應保留只有 1 筆，實際 {count}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

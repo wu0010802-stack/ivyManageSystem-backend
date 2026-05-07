@@ -89,34 +89,101 @@ class TestResolveTeacherClassroom:
         sess.flush()
         assert resolve_teacher_classroom(sess, employee_id=emp.id) is None
 
-    def test_returns_active_classroom_when_assigned(self, in_mem_session):
+    def test_returns_active_classroom_when_assigned_as_head(self, in_mem_session):
         sess = in_mem_session
-        c = Classroom(name="A班", is_active=True)
-        sess.add(c)
-        sess.flush()
-        emp = Employee(
-            employee_id="T002", name="老師B", is_active=True, classroom_id=c.id
-        )
+        emp = Employee(employee_id="T002", name="老師B", is_active=True)
         sess.add(emp)
+        sess.flush()
+        c = Classroom(name="A班", is_active=True, head_teacher_id=emp.id)
+        sess.add(c)
         sess.flush()
         result = resolve_teacher_classroom(sess, employee_id=emp.id)
         assert result is not None
         assert result.id == c.id
 
-    def test_returns_none_when_classroom_inactive(self, in_mem_session):
+    def test_returns_assistant_when_only_assistant(self, in_mem_session):
         sess = in_mem_session
-        c = Classroom(name="C班", is_active=False)
+        emp = Employee(employee_id="T002b", name="副班", is_active=True)
+        sess.add(emp)
+        sess.flush()
+        c = Classroom(name="B班", is_active=True, assistant_teacher_id=emp.id)
         sess.add(c)
         sess.flush()
-        emp = Employee(
-            employee_id="T003", name="老師C", is_active=True, classroom_id=c.id
-        )
+        result = resolve_teacher_classroom(sess, employee_id=emp.id)
+        assert result is not None
+        assert result.id == c.id
+
+    def test_head_priority_over_assistant(self, in_mem_session):
+        sess = in_mem_session
+        emp = Employee(employee_id="T002c", name="兼任", is_active=True)
         sess.add(emp)
+        sess.flush()
+        c_assist = Classroom(name="副班", is_active=True, assistant_teacher_id=emp.id)
+        c_head = Classroom(name="主班", is_active=True, head_teacher_id=emp.id)
+        sess.add_all([c_assist, c_head])
+        sess.flush()
+        result = resolve_teacher_classroom(sess, employee_id=emp.id)
+        assert result is not None
+        assert result.id == c_head.id
+
+    def test_returns_none_when_classroom_inactive(self, in_mem_session):
+        sess = in_mem_session
+        emp = Employee(employee_id="T003", name="老師C", is_active=True)
+        sess.add(emp)
+        sess.flush()
+        c = Classroom(name="C班", is_active=False, head_teacher_id=emp.id)
+        sess.add(c)
         sess.flush()
         assert resolve_teacher_classroom(sess, employee_id=emp.id) is None
 
     def test_returns_none_when_employee_missing(self, in_mem_session):
         assert resolve_teacher_classroom(in_mem_session, employee_id=99999) is None
+
+    def test_stale_employee_classroom_id_does_not_leak_other_class(
+        self, in_mem_session
+    ):
+        """回歸：Employee.classroom_id 殘留指向別班時，class-hub 必須以 Classroom
+        的 head/assistant/art 反查為準，不能回傳該舊班（IDOR）。"""
+        sess = in_mem_session
+        # 老師曾在「舊班」任教，Employee.classroom_id 殘留指向舊班
+        old_class = Classroom(name="舊班", is_active=True)
+        sess.add(old_class)
+        sess.flush()
+        emp = Employee(
+            employee_id="T-STALE",
+            name="調班老師",
+            is_active=True,
+            classroom_id=old_class.id,  # 殘留欄位
+        )
+        sess.add(emp)
+        sess.flush()
+        # 老師「目前」沒有任何班級任教（沒有 head/assistant/art 指向他）
+        result = resolve_teacher_classroom(sess, employee_id=emp.id)
+        assert result is None, "不能因 Employee.classroom_id 殘留就回傳舊班"
+
+    def test_stale_employee_classroom_id_resolves_to_current_class(
+        self, in_mem_session
+    ):
+        """回歸：教師調到新班時 (Classroom.head_teacher_id=新班)，即使
+        Employee.classroom_id 仍指向舊班，也應回傳新班。"""
+        sess = in_mem_session
+        old_class = Classroom(name="舊班", is_active=True)
+        sess.add(old_class)
+        sess.flush()
+        emp = Employee(
+            employee_id="T-MOVED",
+            name="調班老師",
+            is_active=True,
+            classroom_id=old_class.id,  # 殘留指向舊班
+        )
+        sess.add(emp)
+        sess.flush()
+        new_class = Classroom(name="新班", is_active=True, head_teacher_id=emp.id)
+        sess.add(new_class)
+        sess.flush()
+        result = resolve_teacher_classroom(sess, employee_id=emp.id)
+        assert result is not None
+        assert result.id == new_class.id, "應回傳當前任教的新班，非殘留欄位指的舊班"
 
 
 from datetime import date
@@ -799,10 +866,10 @@ class TestClassHubTodayEndpoint:
                     lifecycle_status=LIFECYCLE_ACTIVE,
                 )
             )
-        emp = Employee(
-            name="班導", is_active=True, classroom_id=room.id, employee_id="E1"
-        )
+        emp = Employee(name="班導", is_active=True, employee_id="E1")
         sess.add(emp)
+        sess.flush()
+        room.head_teacher_id = emp.id
         sess.flush()
         u = _create_user(sess, employee_id=emp.id, username="t2")
         sess.commit()
@@ -840,13 +907,10 @@ class TestClassHubTodayEndpoint:
             lifecycle_status=LIFECYCLE_ACTIVE,
         )
         sess.add(s)
-        emp = Employee(
-            name="med-teacher",
-            is_active=True,
-            classroom_id=room.id,
-            employee_id="MED",
-        )
+        emp = Employee(name="med-teacher", is_active=True, employee_id="MED")
         sess.add(emp)
+        sess.flush()
+        room.head_teacher_id = emp.id
         sess.flush()
         u = _create_user(sess, employee_id=emp.id, username="med-t")
 
@@ -918,10 +982,10 @@ class TestClassHubTodayEndpoint:
         )
         sess.add(s)
         sess.flush()
-        emp = Employee(
-            name="老師P", is_active=True, classroom_id=room.id, employee_id="EP"
-        )
+        emp = Employee(name="老師P", is_active=True, employee_id="EP")
         sess.add(emp)
+        sess.flush()
+        room.head_teacher_id = emp.id
         sess.flush()
         # Build a User with only STUDENTS_READ — explicitly NO STUDENTS_HEALTH_READ
         from utils.permissions import Permission
@@ -988,10 +1052,10 @@ class TestClassHubTodayEndpoint:
         )
         sess.add(s)
         sess.flush()
-        emp = Employee(
-            name="老師Q", is_active=True, classroom_id=room.id, employee_id="EQ"
-        )
+        emp = Employee(name="老師Q", is_active=True, employee_id="EQ")
         sess.add(emp)
+        sess.flush()
+        room.head_teacher_id = emp.id
         sess.flush()
         from utils.permissions import Permission
 

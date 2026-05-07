@@ -169,7 +169,9 @@ line_login_service = LineLoginService(
 
 def on_startup():
     run_alembic_upgrade()
-    run_startup_bootstrap(salary_engine, line_service)
+    run_startup_bootstrap(
+        salary_engine, line_service, insurance_service=insurance_service
+    )
     logger.info("Application started successfully.")
 
 
@@ -311,6 +313,24 @@ async def app_lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("官方日曆排程啟動失敗: %s", e)
 
+    # 才藝 POS paid_amount 對帳（spec H4）：需要 FINANCE_RECONCILIATION_ENABLED=1
+    # 每日 02:00 Asia/Taipei 掃 active registrations，若 paid_amount 與
+    # payment_records 淨額不一致即推 LINE 警示老闆
+    finance_reconciliation_task = None
+    finance_reconciliation_stop_event: asyncio.Event | None = None
+    try:
+        from services import finance_reconciliation_scheduler as _fr_sched
+
+        if _fr_sched.scheduler_enabled():
+            finance_reconciliation_stop_event = asyncio.Event()
+            finance_reconciliation_task = asyncio.create_task(
+                _fr_sched.run_finance_reconciliation_scheduler(
+                    finance_reconciliation_stop_event
+                )
+            )
+    except Exception as e:
+        logger.warning("對帳排程啟動失敗: %s", e)
+
     try:
         yield
     finally:
@@ -386,6 +406,17 @@ async def app_lifespan(app_instance: FastAPI):
                     await official_calendar_task
                 except (asyncio.CancelledError, Exception):
                     pass
+        if finance_reconciliation_task is not None:
+            if finance_reconciliation_stop_event is not None:
+                finance_reconciliation_stop_event.set()
+            try:
+                await asyncio.wait_for(finance_reconciliation_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                finance_reconciliation_task.cancel()
+                try:
+                    await finance_reconciliation_task
+                except (asyncio.CancelledError, Exception):
+                    pass
         # Graceful Shutdown：釋放資源
         logger.info("Application shutting down — releasing resources…")
         # 關閉所有 WebSocket 連線
@@ -394,22 +425,14 @@ async def app_lifespan(app_instance: FastAPI):
 
             for ws in list(ws_manager._admin_conns):
                 try:
-                    import asyncio
-
-                    asyncio.get_event_loop().run_until_complete(
-                        ws.close(code=1001, reason="Server shutting down")
-                    )
+                    await ws.close(code=1001, reason="Server shutting down")
                 except Exception:
                     pass
             ws_manager._admin_conns.clear()
             for classroom_conns in ws_manager._teacher_conns.values():
                 for ws in list(classroom_conns):
                     try:
-                        import asyncio
-
-                        asyncio.get_event_loop().run_until_complete(
-                            ws.close(code=1001, reason="Server shutting down")
-                        )
+                        await ws.close(code=1001, reason="Server shutting down")
                     except Exception:
                         pass
                 classroom_conns.clear()

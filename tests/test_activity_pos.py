@@ -298,7 +298,7 @@ class TestPOSCheckoutAtomicity:
             assert reg.paid_amount == 500  # 未變動
 
     def test_refund_reduces_paid_amount(self, pos_client):
-        """POS 退費必填 notes（原因 ≥ 5 字），500 小額不需簽核權限即可執行。"""
+        """POS 退費必填 notes（原因 ≥ 15 字），500 小額不需簽核權限即可執行。"""
         client, sf = pos_client
         with sf() as s:
             _create_admin(s)
@@ -315,7 +315,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "type": "refund",
-                "notes": "客戶退課抵減",
+                "notes": "客戶退課抵減（家長要求調整退款）",
             },
         )
         assert res.status_code == 201
@@ -327,28 +327,10 @@ class TestPOSCheckoutAtomicity:
             reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
             assert reg.paid_amount == 1500
 
-    def test_change_ignored_for_transfer(self, pos_client):
-        client, sf = pos_client
-        with sf() as s:
-            _create_admin(s)
-            reg = _setup_reg(s, student_name="王小明")
-            s.commit()
-            reg_id = reg.id
-
-        assert _login(client).status_code == 200
-        res = client.post(
-            "/api/activity/pos/checkout",
-            json={
-                "items": [{"registration_id": reg_id, "amount": 2000}],
-                "payment_method": "轉帳",
-                "payment_date": date.today().isoformat(),
-                "tendered": 5000,
-            },
-        )
-        assert res.status_code == 201
-        data = res.json()
-        assert data["change"] is None
-        assert data["tendered"] is None
+    # test_change_ignored_for_transfer — 已刪除（2026-05-06）
+    # 才藝 POS 改為僅收現金（spec C1），轉帳 method 在 schema 層即被 422 拒絕，
+    # 此測試的「轉帳付款 + tendered/change=None」前提不再可達；
+    # 等價的「現金 + tendered → 有 change」覆蓋已存在於其他測試。
 
     def test_tendered_less_than_total_rejected(self, pos_client):
         client, sf = pos_client
@@ -1388,26 +1370,32 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_a", permissions=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_b", permissions=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="I")
             _add_payment(
                 s, reg.id, type_="payment", amount=100, method="現金", day=target
             )
             s.commit()
-        assert _login(client).status_code == 200
+        # A 簽
+        assert _login(client, "approver_a").status_code == 200
         assert (
             client.post(
                 f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
             ).status_code
             == 201
         )
+        # B 解（4-eye）；reason 字數 ≥ 10
+        assert _login(client, "approver_b").status_code == 200
         res = client.request(
             "DELETE",
             f"/api/activity/pos/daily-close/{target.isoformat()}",
             json={"reason": "盤點後發現有漏記交易，需重簽"},
         )
-        assert res.status_code == 204
-        assert res.content == b""
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["close_date"] == target.isoformat()
+        assert body["is_admin_override"] is False
 
         with sf() as s:
             assert (
@@ -1426,10 +1414,11 @@ class TestPosDailyClose:
             )
             assert cancel_log.doc_id == int(target.strftime("%Y%m%d"))
             assert "解鎖" in (cancel_log.comment or "")
-            assert "原簽核人 pos_admin" in (cancel_log.comment or "")
+            assert "原簽核人 approver_a" in (cancel_log.comment or "")
             # 新增：comment 應包含原 snapshot 摘要與原因
             assert "snapshot" in (cancel_log.comment or "")
             assert "盤點後發現有漏記交易" in (cancel_log.comment or "")
+            assert cancel_log.approver_username == "approver_b"
 
     def test_unlock_without_reason_rejected_422(self, pos_client):
         """解鎖必填 reason ≥ 10 字（防止無稽核軌跡的解鎖重簽）。"""
@@ -1481,7 +1470,8 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_a", permissions=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_b", permissions=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="J")
             _add_payment(
                 s, reg.id, type_="payment", amount=1000, method="現金", day=target
@@ -1489,7 +1479,8 @@ class TestPosDailyClose:
             s.commit()
             reg_id = reg.id
 
-        assert _login(client).status_code == 200
+        # A 先簽
+        assert _login(client, "approver_a").status_code == 200
         first = client.post(
             f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
         )
@@ -1502,14 +1493,19 @@ class TestPosDailyClose:
             )
             s.commit()
 
+        # B 解（4-eye，解鎖人 ≠ 原簽核人）
+        assert _login(client, "approver_b").status_code == 200
         assert (
             client.request(
                 "DELETE",
                 f"/api/activity/pos/daily-close/{target.isoformat()}",
                 json={"reason": "補登新交易後需重簽以更新總額"},
             ).status_code
-            == 204
+            == 200
         )
+
+        # A 重新簽核（吃到新交易）
+        assert _login(client, "approver_a").status_code == 200
         second = client.post(
             f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
         )

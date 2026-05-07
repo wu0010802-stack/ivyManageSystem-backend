@@ -152,7 +152,7 @@ def batch_save_class_attendance(
                 status_code=403, detail=f"以下學生不屬於該班級：{unauthorized}"
             )
 
-        user_id = current_user.get("id")
+        user_id = current_user.get("user_id")
         existing = {
             r.student_id: r
             for r in session.query(StudentAttendance)

@@ -203,10 +203,49 @@ def mark_salary_stale(session, employee_id: int, year: int, month: int) -> bool:
         )
         .first()
     )
-    if rec is None or rec.is_finalized:
+    # 用 getattr 防禦:單元測試常以 SimpleNamespace 模擬 ORM 物件,有時缺欄位。
+    # 真實 SalaryRecord 必有 is_finalized 欄位,fallback 不會影響 production。
+    if rec is None or getattr(rec, "is_finalized", False):
         return False
     rec.needs_recalc = True
     return True
+
+
+def lock_and_premark_stale(
+    session, employee_id: int, months: set[tuple[int, int]]
+) -> None:
+    """為「上游異動 → 重算」流程同時取鎖並把對應月份預標 stale（同 transaction）。
+
+    Why（鎖延伸 + pre-mark-stale）:
+        上游路徑（請假/加班/考勤/會議/排班核准）原本流程是
+            check_finalized → 異動來源 → commit → process_salary_calculation
+        中間有兩個 race window:
+        1. check 與 commit 之間 → 由 acquire_salary_lock 在同 session 取鎖封住
+        2. commit（lock 釋放）與 engine 取鎖 之間 → finalize 可在此搶先封存
+           當下 needs_recalc 還是 False 的舊薪資
+
+        本 helper 同時做兩件事:
+        - acquire_salary_lock 取得 per-emp 鎖（caller 必須維持同一 session 直到 commit）
+        - mark_salary_stale 把每個受影響月份的 SalaryRecord 標 needs_recalc=True
+
+        commit 後即使 finalize 搶到鎖,也會看到 needs_recalc=True 而被擋下;
+        engine 後續開新 session 取鎖再做 process_salary_calculation 時會把 stale 重算清掉。
+
+    呼叫端責任：
+        - 必須在 caller 自己的 session 上呼叫,且後續同一 session commit
+        - lock 為 pg_advisory_xact_lock,在 commit/rollback 時自動釋放
+        - 已封存(is_finalized=True)的 record mark_salary_stale 會自然跳過
+
+    Args:
+        session: 與 leave/overtime/attendance 異動同一 session
+        employee_id: 員工 id
+        months: 受影響的 (year, month) 集合
+    """
+    from utils.advisory_lock import acquire_salary_lock
+
+    for year, month in sorted(months):
+        acquire_salary_lock(session, employee_id=employee_id, year=year, month=month)
+        mark_salary_stale(session, employee_id, year, month)
 
 
 def get_meeting_deduction_period_start(year: int, month: int) -> Optional[date]:

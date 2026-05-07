@@ -407,6 +407,89 @@ class TestF014_Contracts:
         assert len(rows) == 1
         assert rows[0]["salary_at_contract"] == 42000.0
 
+    def test_supervisor_create_contract_response_salary_masked(self, field_leak_client):
+        """回歸 F-014：supervisor（持 EMPLOYEES_WRITE 但非 admin/hr）建立他人合約時
+        response 不能回傳 salary_at_contract。"""
+        client, sf = field_leak_client
+        with sf() as s:
+            self_emp = _create_employee(s, "C_self_w", "本人")
+            other_emp = _create_employee(s, "C_other_w", "他人")
+            _create_user(
+                s,
+                username="sv_emp_writer",
+                role="supervisor",
+                permissions=int(Permission.EMPLOYEES_WRITE | Permission.EMPLOYEES_READ),
+                employee_id=self_emp.id,
+            )
+            s.commit()
+            other_id = other_emp.id
+
+        _login(client, "sv_emp_writer")
+        res = client.post(
+            f"/api/employees/{other_id}/contracts",
+            json={
+                "contract_type": "正式",
+                "start_date": "2024-01-01",
+                "salary_at_contract": 55000,
+            },
+        )
+        assert res.status_code == 201, res.text
+        assert res.json()["salary_at_contract"] is None
+
+    def test_supervisor_update_contract_response_salary_masked(self, field_leak_client):
+        """回歸 F-014：update 端點 response 同樣需遮蔽。"""
+        client, sf = field_leak_client
+        with sf() as s:
+            self_emp = _create_employee(s, "C_self_u", "本人")
+            other_emp = _create_employee(s, "C_other_u", "他人")
+            row = EmployeeContract(
+                employee_id=other_emp.id,
+                contract_type="正式",
+                start_date=date(2024, 1, 1),
+                salary_at_contract=42000.0,
+            )
+            s.add(row)
+            s.flush()
+            _create_user(
+                s,
+                username="sv_emp_updater",
+                role="supervisor",
+                permissions=int(Permission.EMPLOYEES_WRITE | Permission.EMPLOYEES_READ),
+                employee_id=self_emp.id,
+            )
+            s.commit()
+            other_id = other_emp.id
+            contract_id = row.id
+
+        _login(client, "sv_emp_updater")
+        res = client.put(
+            f"/api/employees/{other_id}/contracts/{contract_id}",
+            json={"contract_type": "續約"},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["salary_at_contract"] is None
+
+    def test_admin_create_contract_response_salary_present(self, field_leak_client):
+        """admin 建立他人合約時可看到 salary_at_contract。"""
+        client, sf = field_leak_client
+        with sf() as s:
+            other_emp = _create_employee(s, "C_other_adm", "他人")
+            _create_user(s, username="adm_w", role="admin", permissions=-1)
+            s.commit()
+            other_id = other_emp.id
+
+        _login(client, "adm_w")
+        res = client.post(
+            f"/api/employees/{other_id}/contracts",
+            json={
+                "contract_type": "正式",
+                "start_date": "2024-01-01",
+                "salary_at_contract": 55000,
+            },
+        )
+        assert res.status_code == 201, res.text
+        assert res.json()["salary_at_contract"] == 55000.0
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # F-031：GET /reports/finance-summary/detail|export

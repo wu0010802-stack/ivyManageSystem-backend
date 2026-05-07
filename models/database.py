@@ -53,6 +53,7 @@ from models.config import (
     AttendancePolicy,
     BonusConfig,
     GradeTarget,
+    InsuranceBracket,
     InsuranceRate,
     SystemConfig,
     PositionSalaryConfig,
@@ -88,6 +89,7 @@ from models.activity import (
     ActivitySession,
     ActivityAttendance,
     ActivityPosDailyClose,
+    ActivityPosDailyCloseHistory,
 )
 from models.dismissal import StudentDismissalCall
 from models.student_transfer import StudentClassroomTransfer
@@ -176,6 +178,7 @@ __all__ = [
     "AttendancePolicy",
     "BonusConfig",
     "GradeTarget",
+    "InsuranceBracket",
     "InsuranceRate",
     "SystemConfig",
     "PositionSalaryConfig",
@@ -215,6 +218,7 @@ __all__ = [
     "ActivitySession",
     "ActivityAttendance",
     "ActivityPosDailyClose",
+    "ActivityPosDailyCloseHistory",
     # dismissal
     "StudentDismissalCall",
     # student transfer history

@@ -45,8 +45,47 @@ def _load_line_config(line_service):
         session.close()
 
 
-def run_startup_bootstrap(salary_engine, line_service):
-    """執行啟動必要任務，不包含 schema/data migration。"""
+def _sync_insurance_service_from_db(insurance_service) -> None:
+    """讓 global insurance_service 啟動時也載入 DB 級距表 / 費率 / 上限。
+
+    main.py 內 SalaryEngine.insurance_service 與 module 級 insurance_service 是
+    兩個不同 instance（前者由 SalaryEngine.__init__ 自建，後者注入給 /api/insurance、
+    /api/salary）。若只 reload 前者，API 端取到的會是 hardcode 級距，與薪資計算不一致。
+    """
+    if insurance_service is None:
+        return
+    try:
+        insurance_service.load_brackets_from_db()
+    except Exception:
+        logger.warning("global insurance_service 載入級距表失敗", exc_info=True)
+    try:
+        from models.database import InsuranceRate
+
+        session = get_session()
+        try:
+            rate = (
+                session.query(InsuranceRate)
+                .filter(InsuranceRate.is_active == True)  # noqa: E712
+                .order_by(InsuranceRate.id.desc())
+                .first()
+            )
+            if rate is not None:
+                insurance_service.update_rates_from_db(rate)
+        finally:
+            session.close()
+    except Exception:
+        logger.warning(
+            "global insurance_service 同步 InsuranceRate 失敗", exc_info=True
+        )
+
+
+def run_startup_bootstrap(salary_engine, line_service, *, insurance_service=None):
+    """執行啟動必要任務，不包含 schema/data migration。
+
+    Args:
+        insurance_service: 可選的 global InsuranceService singleton；提供時會在
+            bootstrap 結尾同步其級距表與費率，避免 API 端與 SalaryEngine 不一致。
+    """
     from models.recruitment import (
         RecruitmentVisit,
         RecruitmentIvykidsRecord,
@@ -114,6 +153,7 @@ def run_startup_bootstrap(salary_engine, line_service):
     seed_approval_policies()
     seed_activity_settings()
     salary_engine.load_config_from_db()
+    _sync_insurance_service_from_db(insurance_service)
     _load_line_config(line_service)
     from api.recruitment import normalize_existing_months
 

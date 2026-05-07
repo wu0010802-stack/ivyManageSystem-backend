@@ -51,8 +51,8 @@ SYSTEM_RECONCILE_METHOD = "系統補齊"
 # POS checkout 與後台 /registrations/{id}/payments 共用，避免管理員透過後者繞過 POS 管制。
 PAYMENT_DATE_BACK_LIMIT_DAYS = 30
 
-# 退費必填原因最短字數（避免「.」或「退」等無意義敷衍）
-MIN_REFUND_REASON_LENGTH = 5
+# 退費必填原因最短字數（避免「客人退」等敷衍；15 字強迫填寫具體事由）
+MIN_REFUND_REASON_LENGTH = 15
 
 # 退費金額閾值：超過此金額的單筆退費必須具備 ACTIVITY_PAYMENT_APPROVE 權限
 # Why: 小額退費允許一線櫃檯彈性處理；大額退費強制雙簽以防內部舞弊
@@ -130,6 +130,39 @@ def require_approve_for_large_refund(
                 f"需由具備『才藝課收款簽核』權限者執行"
             ),
         )
+
+
+def require_approve_for_cumulative_refund(
+    session,
+    registration_id: int,
+    this_refund_amount: int,
+    current_user: dict,
+    *,
+    label: str,
+) -> None:
+    """以「該 reg 已存在 voided=NULL 的 refund 累積 + 本次」判斷是否跨閾值。
+
+    Why: 與 add_registration_payment / pos.refund 既有累積判斷對齊。
+    退課自動沖帳、刪除報名自動沖帳、標記未繳全額沖帳這三條 legacy 路徑只用
+    「本次金額」過 require_approve_for_large_refund，可拆單跨閾值繞過簽核
+    （reg 已退 NT$600 → 再退 NT$900 兩筆都 < NT$1000，但累積 NT$1500 應簽核）。
+
+    Refs: 邏輯漏洞 audit 2026-05-07 P0 (#8)。
+    """
+    from sqlalchemy import func
+    from models.database import ActivityPaymentRecord
+
+    prior = (
+        session.query(func.coalesce(func.sum(ActivityPaymentRecord.amount), 0))
+        .filter(
+            ActivityPaymentRecord.registration_id == registration_id,
+            ActivityPaymentRecord.type == "refund",
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
+        .scalar()
+    ) or 0
+    cumulative = int(prior) + int(this_refund_amount)
+    require_approve_for_large_refund(cumulative, current_user, label=label)
 
 
 def validate_payment_date(
@@ -261,12 +294,11 @@ class PaymentUpdate(BaseModel):
     # 與 ≥5 字原因；handler 端會檢查並在大額時要求 ACTIVITY_PAYMENT_APPROVE。
     # Why: 原設計 is_paid=True 直接寫一筆「系統補齊」payment 補上欠費，沒有 method/原因/
     # 簽核，會計可逐筆把欠費轉成收入流水。對齊 is_paid=False 路徑的嚴格度。
-    payment_method: Optional[str] = Field(
+    payment_method: Optional[Literal["現金"]] = Field(
         None,
-        max_length=20,
         description=(
-            "is_paid=True 補齊欠費時必填，必須為實際收款方式（如：現金/轉帳/其他），"
-            "不接受『系統補齊』；handler 端會驗證"
+            "is_paid=True 補齊欠費時必填，必須為「現金」"
+            "（目前才藝僅收現金），不接受『系統補齊』；handler 端會驗證"
         ),
     )
     payment_reason: Optional[str] = Field(
@@ -368,7 +400,10 @@ class AddPaymentRequest(BaseModel):
         description=f"金額（正整數，上限 NT${MAX_PAYMENT_AMOUNT:,}；type 決定方向）",
     )
     payment_date: date
-    payment_method: Literal["現金", "轉帳", "其他"] = "現金"
+    payment_method: Literal["現金"] = Field(
+        "現金",
+        description="目前才藝 POS 僅支援現金；保留欄位供未來擴充",
+    )
     notes: str = Field("", max_length=200)
 
     @model_validator(mode="after")
@@ -1035,7 +1070,8 @@ def compute_daily_snapshot(session, target_date: date) -> dict:
     """某日 POS 流水即時快照：payment_total / refund_total / net_total / transaction_count / by_method。
 
     供 POS daily-summary 端點與日結簽核共用，避免邏輯雙寫。
-    by_method 為 dict：{"現金": 1200, "轉帳": 500, ...}；method 為 NULL 者歸類為「未指定」。
+    by_method 為 dict：員工輸入只可能是「現金」（POS schema 收口）；
+    系統內部沖帳會出現「系統補齊」；method 為 NULL 者歸類為「未指定」（歷史資料）。
 
     Voided 紀錄（軟刪）一律排除，避免讓老闆簽核的總額包含已被作廢的交易。
     """

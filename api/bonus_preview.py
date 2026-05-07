@@ -132,17 +132,33 @@ class BonusDashboardResponse(BaseModel):
 
 
 def _compute_all_bonus(session, engine, year, month, cls_count_map, school_total):
-    """用指定的 count_map / school_total 計算全員獎金，回傳 list[dict]。"""
+    """用指定的 count_map / school_total 計算全員獎金，回傳 list[dict]。
+
+    Audit B.P0.2：預載 assistant_to_classes / art_to_classes，避免
+    _build_classroom_context_from_db 在每位帶班員工各跑一次 shared_classes
+    反查（ctx 內傳給 calculate_festival_bonus_breakdown）。
+    順帶 is_active=True 過濾，避免拉歷年舊班級（A.P1）。
+    """
     from models.database import Employee, Classroom
 
     _, month_last_day = calendar.monthrange(year, month)
     month_start = date(year, month, 1)
     month_end = date(year, month, month_last_day)
 
-    classroom_map = {
-        c.id: c
-        for c in session.query(Classroom).options(joinedload(Classroom.grade)).all()
-    }
+    all_active_classrooms = (
+        session.query(Classroom)
+        .options(joinedload(Classroom.grade))
+        .filter(Classroom.is_active == True)  # noqa: E712
+        .all()
+    )
+    classroom_map = {c.id: c for c in all_active_classrooms}
+    assistant_to_classes_map: dict[int, list] = {}
+    art_to_classes_map: dict[int, list] = {}
+    for _c in all_active_classrooms:
+        if _c.assistant_teacher_id:
+            assistant_to_classes_map.setdefault(_c.assistant_teacher_id, []).append(_c)
+        if _c.art_teacher_id:
+            art_to_classes_map.setdefault(_c.art_teacher_id, []).append(_c)
 
     employees = (
         session.query(Employee)
@@ -170,6 +186,8 @@ def _compute_all_bonus(session, engine, year, month, cls_count_map, school_total
             ),
             "school_active_students": school_total,
             "classroom_count_map": cls_count_map,
+            "assistant_to_classes_map": assistant_to_classes_map,
+            "art_to_classes_map": art_to_classes_map,
         }
         bonus_data = engine.calculate_festival_bonus_breakdown(
             emp.id, year, month, _ctx=ctx

@@ -93,6 +93,11 @@ _BIND_TOKEN_TTL_MINUTES = 5
 
 _BIND_FAIL_THRESHOLD = 5
 _BIND_FAIL_LOCKOUT = 900  # 15 分鐘
+_BIND_SCOPE = "parent_bind"
+
+# In-process dict 仍保留，作為「DB 失敗時的 fail-open 配套」與測試 fixture
+# reset target；正式擋線靠 DB-backed counter（multi-worker 安全）。
+# Refs: 邏輯漏洞 audit 2026-05-07 P0 #14。
 _bind_failures: dict[str, list[float]] = defaultdict(list)
 
 # ── refresh token ────────────────────────────────────────────────────────
@@ -167,14 +172,23 @@ def _issue_refresh_token(
 
 
 def gc_expired_refresh_tokens(session, *, retention_days: int = 7) -> int:
-    """刪除 expires_at < now - retention_days 的 token row；回傳刪除筆數。
+    """刪除 token row：保留窗 retention_days 天供事後稽核，超出即刪。
 
-    保留 retention_days 天供事後稽核。caller 負責 commit。
+    觸發條件（任一）：
+    - `expires_at < cutoff`：自然過期已超出保留窗
+    - `revoked_at < cutoff`：被 reuse 偵測或 logout 撤銷且超出保留窗
+      （否則 reuse 攻擊頻繁時 table 會堆積到自然過期那刻才清）
+
+    caller 負責 commit。
     """
     cutoff = _now() - timedelta(days=retention_days)
     result = session.execute(
         ParentRefreshToken.__table__.delete().where(
-            ParentRefreshToken.expires_at < cutoff
+            (ParentRefreshToken.expires_at < cutoff)
+            | (
+                (ParentRefreshToken.revoked_at.isnot(None))
+                & (ParentRefreshToken.revoked_at < cutoff)
+            )
         )
     )
     return int(result.rowcount or 0)
@@ -203,13 +217,22 @@ def _clear_bind_token_cookie(response: Response) -> None:
 
 
 def _check_bind_lockout(line_user_id: str) -> None:
-    """LIFF 已驗證的 line_user_id 為單位做失敗鎖；連 5 次失敗鎖 15 分鐘。"""
-    now = _time()
-    _bind_failures[line_user_id] = [
-        t for t in _bind_failures[line_user_id] if now - t < _BIND_FAIL_LOCKOUT
-    ]
-    if len(_bind_failures[line_user_id]) >= _BIND_FAIL_THRESHOLD:
-        logger.warning("家長綁定失敗次數過多，line_user_id=%s 已鎖", line_user_id)
+    """LIFF 已驗證的 line_user_id 為單位做失敗鎖；累積 5 次失敗鎖 15 分鐘。
+
+    走 DB-backed counter（rate_limit_buckets 表），multi-worker 一致。
+    DB 失敗時 fail-open（utils/rate_limit_db.py 內部 log 警告）。
+    """
+    from utils.rate_limit_db import count_recent_attempts
+
+    count = count_recent_attempts(
+        _BIND_SCOPE, line_user_id, within_seconds=_BIND_FAIL_LOCKOUT
+    )
+    if count >= _BIND_FAIL_THRESHOLD:
+        logger.warning(
+            "家長綁定失敗次數過多，line_user_id=%s 已鎖 (failures=%d)",
+            line_user_id,
+            count,
+        )
         raise HTTPException(
             status_code=429,
             detail="綁定失敗次數過多，請稍後再試",
@@ -217,11 +240,17 @@ def _check_bind_lockout(line_user_id: str) -> None:
 
 
 def _record_bind_failure(line_user_id: str) -> None:
-    _bind_failures[line_user_id].append(_time())
+    """記錄綁定失敗一次（DB-backed bucket）。"""
+    from utils.rate_limit_db import record_attempt
+
+    record_attempt(_BIND_SCOPE, line_user_id, window_seconds=_BIND_FAIL_LOCKOUT)
 
 
 def _clear_bind_failures(line_user_id: str) -> None:
-    _bind_failures[line_user_id] = []
+    """綁定成功後清除失敗計數（DB-backed bucket）。"""
+    from utils.rate_limit_db import clear_attempts
+
+    clear_attempts(_BIND_SCOPE, line_user_id)
 
 
 # ── 內部工具 ────────────────────────────────────────────────────────────
@@ -505,6 +534,14 @@ def bind_first_child(
             raise HTTPException(status_code=400, detail="此監護人已綁定其他家長帳號")
         guardian.user_id = user.id
         user.last_login = _now()
+        # 同 LINE userId 已有 parent User 但又走首綁流程時（例：補綁失誤後重新拿
+        # 首綁碼），舊裝置仍持有可旋轉的 refresh family。發新 family 前先撤銷舊 family，
+        # 避免同帳號同時持兩條 rotation 鏈、logout 撤不乾淨。
+        if existing_user is not None:
+            session.query(ParentRefreshToken).filter(
+                ParentRefreshToken.user_id == user.id,
+                ParentRefreshToken.revoked_at.is_(None),
+            ).update({"revoked_at": _now()}, synchronize_session=False)
         _issue_refresh_token(
             session,
             response,

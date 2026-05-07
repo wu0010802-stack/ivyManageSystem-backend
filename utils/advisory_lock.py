@@ -46,6 +46,40 @@ logger = logging.getLogger(__name__)
 # 各業務域的 lock namespace，避免不同業務 key 碰撞
 _NAMESPACE_SALARY = 0x5341_4C00  # 'SAL\0'
 _NAMESPACE_SALARY_MONTH = 0x5341_4C4D  # 'SALM'
+_NAMESPACE_SCHEDULER = 0x5343_4844  # 'SCHD'
+
+
+@contextmanager
+def try_scheduler_lock(
+    session: Session, *, scheduler_name: str, run_key: str
+) -> Iterator[bool]:
+    """非阻塞 advisory lock — 用於排程 job 的「同日同名」互斥。
+
+    多 worker 部署時，每個 worker 自啟 scheduler；以本鎖確保某個
+    `(scheduler_name, run_key)` 組合在當前 transaction 期間僅被一個 worker
+    取得。caller 應在取得鎖後完成業務寫入並 commit；交易結束時鎖自動釋放。
+
+    yield True  → 已取得鎖
+    yield False → 已被其他 worker 持有，呼叫端應略過本次
+    """
+    if not _is_postgres(session):
+        # SQLite 測試環境視為單寫入者，直接 yield True
+        yield True
+        return
+    seed = f"scheduler|{scheduler_name}|{run_key}".encode()
+    raw = hashlib.md5(seed).digest()
+    key = int.from_bytes(raw[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+    row = session.execute(
+        text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key}
+    ).scalar()
+    acquired = bool(row)
+    if not acquired:
+        logger.info(
+            "scheduler_lock busy, skipping: name=%s key=%s",
+            scheduler_name,
+            run_key,
+        )
+    yield acquired
 
 
 def _is_postgres(session: Session) -> bool:
@@ -154,6 +188,50 @@ def acquire_salary_lock(
         month,
         key,
     )
+
+
+def _key_for_activity_refund(registration_id: int) -> int:
+    """把 (activity_refund, registration_id) 雜湊成 63-bit int 作為 advisory lock key。
+
+    Why (spec C4): 才藝 POS 退費的累積簽核守衛在 `_lock_regs`（registrations 行級鎖）
+    之後才讀 prior_refund_map；理論上 FOR UPDATE 已序列化，但若 isolation 為
+    REPEATABLE READ 或 _lock_regs 因 dialect 降級為無鎖（SQLite 測試），同 reg
+    並發兩筆小額退費可能各自看到 prior=0 並通過閾值。Advisory lock 提供
+    defense-in-depth，明確序列化同 reg 的退費流程，commit/rollback 自動釋放。
+
+    namespace 與 salary lock 隔離：seed 字串前綴不同，雜湊空間不衝突。
+    """
+    seed = f"activity_refund|{registration_id}".encode()
+    raw = hashlib.md5(seed).digest()
+    return int.from_bytes(raw[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+
+
+def acquire_activity_refund_lock(session: Session, registration_id: int) -> None:
+    """為才藝 POS 退費取得 per-registration 的 advisory lock（spec C4）。
+
+    呼叫時機：pos_checkout 處理 refund items 時，每個 registration_id 取一次鎖；
+    優先順序在 `_lock_regs`（registrations FOR UPDATE）之前，避免 deadlock。
+
+    PG：`pg_advisory_xact_lock(key)`，commit/rollback 時自動釋放
+    SQLite/其他：no-op（測試降級）；上線環境必為 PostgreSQL，故無實效退化
+    """
+    if not _is_postgres(session):
+        logger.debug(
+            "acquire_activity_refund_lock no-op (non-postgres): reg=%s",
+            registration_id,
+        )
+        return
+    key = _key_for_activity_refund(registration_id)
+    try:
+        session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
+    except OperationalError as exc:
+        logger.error(
+            "acquire_activity_refund_lock failed: reg=%s err=%s",
+            registration_id,
+            exc,
+        )
+        raise
+    logger.debug("acquire_activity_refund_lock: reg=%s key=%d", registration_id, key)
 
 
 @contextmanager

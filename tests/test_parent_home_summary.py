@@ -21,6 +21,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
+from api.parent_portal import home as home_module
 from api.parent_portal import parent_router as parent_portal_router
 from models.database import (
     Announcement,
@@ -51,10 +52,12 @@ def home_client(tmp_path):
     base_module._engine = db_engine
     base_module._SessionFactory = session_factory
     Base.metadata.create_all(db_engine)
+    home_module._home_summary_cache.clear()
     app = FastAPI()
     app.include_router(parent_portal_router)
     with TestClient(app) as client:
         yield client, session_factory
+    home_module._home_summary_cache.clear()
     base_module._engine = old_engine
     base_module._SessionFactory = old_session_factory
     db_engine.dispose()

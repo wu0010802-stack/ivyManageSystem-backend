@@ -345,7 +345,11 @@ class ActivityPaymentRecord(Base):
     )
     amount = Column(Integer, nullable=False, comment="金額（永遠為正整數）")
     payment_date = Column(Date, nullable=False, comment="繳費/退費日期")
-    payment_method = Column(String(20), nullable=True, comment="現金/轉帳/其他")
+    payment_method = Column(
+        String(20),
+        nullable=True,
+        comment="目前才藝僅收『現金』；欄位保留 String(20) 供未來擴充",
+    )
     notes = Column(Text, nullable=True, comment="使用者備註（不含系統標記）")
     operator = Column(String(50), nullable=True, comment="操作人員帳號")
     # POS 冪等鍵：獨立欄位取代過去 LIKE '%[IDK:...]%' 掃 notes 的做法，走 index 快且不受備註污染
@@ -473,7 +477,13 @@ class ActivityPosDailyClose(Base):
     net_total = Column(Integer, nullable=False, default=0)
     transaction_count = Column(Integer, nullable=False, default=0)
     by_method_json = Column(
-        Text, nullable=False, default="{}", comment="分付款方式 JSON"
+        Text,
+        nullable=False,
+        default="{}",
+        comment=(
+            "分付款方式 JSON {method: net_amount}；"
+            "目前才藝僅有『現金』與系統內部『系統補齊』，保留結構供未來擴充"
+        ),
     )
 
     # 老闆盤點（可選；未填代表不作現金差異判斷）
@@ -484,3 +494,56 @@ class ActivityPosDailyClose(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ActivityPosDailyCloseHistory(Base):
+    """才藝課 POS 日結 unlock 歷史快照（spec H3）
+
+    Why: 原 ActivityPosDailyClose 採 hard delete 解鎖，by_method_json 完整快照
+    僅留在 ApprovalLog.comment 文字摘要，無結構化還原（例如要重建「當時轉帳
+    NT$X、現金 NT$Y」的拆分需手動解析 comment）。本歷史表把每次解鎖前的完整
+    snapshot 結構化保存，append-only 不刪不改，供未來稽核或重簽差異對比使用。
+
+    一次 close_date 可能多次簽核 + 解鎖循環 → 多筆歷史紀錄；
+    query 時通常依 (close_date, unlocked_at DESC) 排序。
+    """
+
+    __tablename__ = "activity_pos_daily_close_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    close_date = Column(Date, nullable=False, index=True, comment="原日結日期")
+    # 原簽核資訊（複製自 ActivityPosDailyClose）
+    approver_username = Column(String(50), nullable=False, comment="原簽核者帳號")
+    approver_role = Column(String(20), nullable=True, comment="原簽核者角色")
+    approved_at = Column(DateTime, nullable=False, comment="原簽核時間")
+    approve_note = Column(Text, nullable=True, comment="原簽核備註")
+    # snapshot 全文（完整保存）
+    payment_total = Column(Integer, nullable=False)
+    refund_total = Column(Integer, nullable=False)
+    net_total = Column(Integer, nullable=False)
+    transaction_count = Column(Integer, nullable=False)
+    by_method_json = Column(
+        Text,
+        nullable=False,
+        default="{}",
+        comment="原簽核當下 by_method JSON（結構化保存供日後稽核還原）",
+    )
+    actual_cash_count = Column(Integer, nullable=True)
+    cash_variance = Column(Integer, nullable=True)
+    # unlock 元資料
+    unlocked_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    unlocked_by = Column(String(50), nullable=False, comment="解鎖人帳號")
+    unlocked_by_role = Column(String(20), nullable=True, comment="解鎖人角色")
+    is_admin_override = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否為 admin override 路徑",
+    )
+    unlock_reason = Column(
+        Text, nullable=False, comment="解鎖原因（≥10 字一般 / ≥30 字 override）"
+    )
+
+    __table_args__ = (
+        Index("ix_pos_close_history_date_unlocked", "close_date", "unlocked_at"),
+    )

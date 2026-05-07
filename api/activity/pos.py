@@ -33,6 +33,7 @@ from models.database import (
 )
 from services.activity_service import activity_service
 from services.report_cache_service import report_cache_service
+from utils.advisory_lock import acquire_activity_refund_lock
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -66,7 +67,10 @@ _MAX_TENDERED = 9_999_999
 # 單次結帳總額上限 NT$1,000,000 — 避免前端繞過大額確認造成誤輸入巨額
 _MAX_CHECKOUT_TOTAL = 1_000_000
 
-# 冪等 key 有效視窗（秒）：此期間內同 key 視為重試
+# 冪等 key 為全域 UNIQUE（DB 約束 uq_activity_payment_records_idk）；
+# 同 key 永遠 replay 同結果。Why: 過去用 10 分鐘 window 過濾 helper 查詢，
+# 與 DB UNIQUE 不一致導致 race（window 外重送會 INSERT 失敗 500）；
+# 現移除 window，純依 DB 約束。常數保留供未來監控查詢使用。
 _IDEMPOTENCY_WINDOW_SECONDS = 600
 
 # 冪等 key 格式：POS-IDK-<32 字元英數>
@@ -74,6 +78,10 @@ _IDK_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 # 收據編號同日唯一檢查重試次數（uuid 碰撞極低，但保險起見）
 _RECEIPT_NO_RETRIES = 5
+
+# 現金累積警報門檻（spec H7）：當日預期現金 ≥ 此值時提示老闆「請存銀行」
+# Why: 櫃台抽屜累積過多現金被竊損失大；NT$30,000 是常見幼稚園單日上限參考
+_CASH_DEPOSIT_WARNING_THRESHOLD = 30_000
 
 # Rate limiter：同 IP 每分鐘最多 60 次 checkout（約 1 張/秒，足以應付連按）
 _pos_checkout_limiter = SlidingWindowLimiter(
@@ -99,7 +107,10 @@ class POSCheckoutItem(BaseModel):
 
 class POSCheckoutRequest(BaseModel):
     items: List[POSCheckoutItem] = Field(..., min_length=1, max_length=10)
-    payment_method: Literal["現金", "轉帳", "其他"] = "現金"
+    payment_method: Literal["現金"] = Field(
+        "現金",
+        description="目前 POS 僅支援現金；payment_method 欄位保留供未來擴充",
+    )
     payment_date: date
     tendered: Optional[int] = Field(
         None,
@@ -135,8 +146,6 @@ class POSCheckoutRequest(BaseModel):
 
 
 # ── 常數 ─────────────────────────────────────────────────────────────────
-
-_VALID_METHODS = {"現金", "轉帳", "其他"}
 
 
 def _make_receipt_no() -> str:
@@ -258,7 +267,7 @@ def _parse_receipt_response_from_record(
 def _find_idempotent_hit(
     session, idempotency_key: str
 ) -> Optional[ActivityPaymentRecord]:
-    """查詢相同 idempotency_key 的紀錄。
+    """查詢相同 idempotency_key 的「有效」紀錄（排除已 voided）。
 
     Why: DB 層 UniqueConstraint 已將 idempotency_key 設為永久全域唯一。
     過去這個 helper 額外用 10 分鐘視窗過濾，導致兩個衝突：
@@ -266,12 +275,34 @@ def _find_idempotent_hit(
         IntegrityError → catch 再查一次仍找不到 → 客戶端 500
     (2) window 內同 key 重送但應視為重試也 OK，但 window 邏輯本身是冗餘
     改為全域查詢：DB 語意（永久唯一）與 replay 語意一致，同 key 永遠回同結果。
+
+    Spec C5：voided 紀錄不可被當作 replay 結果回傳，否則客戶端會誤以為交易仍生效
+    （例：員工收 NT$5000 → 主管 void → 客戶端網路重試同 key → 若回 200 + 原 receipt
+    則員工誤認已收，該筆永久漏收）。本 helper 過濾 voided；handler 端配合用
+    `_has_any_record_for_key()` 偵測「key 命中但全 voided」的情境並回 409。
     """
     return (
         session.query(ActivityPaymentRecord)
-        .filter(ActivityPaymentRecord.idempotency_key == idempotency_key)
+        .filter(
+            ActivityPaymentRecord.idempotency_key == idempotency_key,
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
         .order_by(ActivityPaymentRecord.id.asc())
         .first()
+    )
+
+
+def _has_any_record_for_key(session, idempotency_key: str) -> bool:
+    """檢查是否存在任何使用此 idempotency_key 的紀錄（含 voided）。
+
+    搭配 `_find_idempotent_hit`：當有效 hit 為 None 但本 helper 回 True 時，
+    代表 key 命中但全 voided → handler 回 409 拒絕 replay。
+    """
+    return (
+        session.query(ActivityPaymentRecord.id)
+        .filter(ActivityPaymentRecord.idempotency_key == idempotency_key)
+        .first()
+        is not None
     )
 
 
@@ -450,9 +481,11 @@ async def pos_checkout(
     任何一筆驗證或寫入失敗，整批 rollback，保證帳務一致性。
     支援 idempotency_key 冪等重試。
     """
-    if body.payment_method not in _VALID_METHODS:
+    # Schema Literal 已收口；此處為 fallback 守衛，避免未來改 Literal 時漏改 router
+    if body.payment_method != "現金":
         raise HTTPException(
-            status_code=400, detail=f"不支援的付款方式：{body.payment_method}"
+            status_code=400,
+            detail="目前 POS 僅支援現金交易",
         )
 
     operator = (current_user.get("username") or "").strip()
@@ -474,6 +507,21 @@ async def pos_checkout(
                         operator,
                     )
                     return replay
+            elif _has_any_record_for_key(session, body.idempotency_key):
+                # spec C5：key 存在但所有對應紀錄都被 voided；不可 replay 已作廢交易
+                # 必須回 409 並要求換 key 重送，避免客戶端誤判已收款
+                logger.warning(
+                    "POS checkout idempotent key reused after void: key=%s operator=%s",
+                    body.idempotency_key,
+                    operator,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "idempotency_key 已被使用且關聯紀錄已作廢；"
+                        "若需重收同筆，請使用新的 idempotency_key 重送"
+                    ),
+                )
 
         # ── 已簽核日守衛：拒絕 payment_date 落在已 daily-close 的日期 ──
         # Why: snapshot 已凍結，補寫會讓 reconciliation 與實際 DB 永久失準。
@@ -490,6 +538,15 @@ async def pos_checkout(
         reg_ids = [item.registration_id for item in body.items]
         if len(set(reg_ids)) != len(reg_ids):
             raise HTTPException(status_code=400, detail="結帳項目含重複的報名 ID")
+
+        # ── spec C4：退費 advisory lock（在 _lock_regs 之前取鎖）─────────
+        # Why: 同 reg 並發兩筆小額退費可能各自看到 prior_refund_map=舊值
+        # 並通過累積閾值；advisory lock 強制序列化同 reg 的退費流程，
+        # commit/rollback 自動釋放。只在 refund 路徑需要（payment 路徑由
+        # _lock_regs 行級鎖即足）。多 item 按 reg_id 升冪取鎖避免 deadlock。
+        if body.type == "refund":
+            for rid in sorted(set(reg_ids)):
+                acquire_activity_refund_lock(session, rid)
 
         # ── 行級鎖住所有要修改的 registrations ──────────────────
         regs = _lock_regs(session, reg_ids)
@@ -666,6 +723,21 @@ async def pos_checkout(
                             operator,
                         )
                         return replay
+                # spec C5：voided 過濾後 None 但 UNIQUE 衝突 → key 命中但全 voided
+                # 不可繼續 replay；回 409 同前置守衛語意
+                if _has_any_record_for_key(session, body.idempotency_key):
+                    logger.warning(
+                        "POS checkout UNIQUE conflict on voided key: key=%s operator=%s",
+                        body.idempotency_key,
+                        operator,
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "idempotency_key 已被使用且關聯紀錄已作廢；"
+                            "若需重收同筆，請使用新的 idempotency_key 重送"
+                        ),
+                    )
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         # 金流變動影響 /finance-summary 報表快取（TTL 30 分），同步失效
@@ -747,6 +819,10 @@ async def pos_daily_summary(
     session = get_session()
     try:
         snap = compute_daily_snapshot(session, target_date)
+        # spec H7：現金累積警報。預期現金 ≥ 門檻時 cash_warning=True，
+        # 前端顯示橘色「請存銀行」提示，避免抽屜累積大量現金被竊
+        cash_in_drawer = int(snap["by_method_net"].get("現金", 0))
+        cash_warning = cash_in_drawer >= _CASH_DEPOSIT_WARNING_THRESHOLD
         # 保持既有 response 結構（不含 transaction_count / by_method_net）
         return {
             "date": snap["date"],
@@ -756,6 +832,9 @@ async def pos_daily_summary(
             "payment_count": snap["payment_count"],
             "refund_count": snap["refund_count"],
             "by_method": snap["by_method"],
+            "cash_in_drawer": cash_in_drawer,
+            "cash_warning": cash_warning,
+            "cash_warning_threshold": _CASH_DEPOSIT_WARNING_THRESHOLD,
         }
     finally:
         session.close()

@@ -62,6 +62,10 @@ _BONUS_FIELDS = [
     "overtime_assistant_normal",
     "overtime_assistant_baby",
     "school_wide_target",
+    # 階段 2-B（2026-05-07）：園規常數從 hardcode 搬到 BonusConfig
+    "meeting_default_hours",
+    "meeting_absence_penalty",
+    "art_teacher_festival",
 ]
 
 _ATTENDANCE_FIELDS = [
@@ -102,6 +106,20 @@ def _clear_cache(*keys):
         _cache.clear()
 
 
+def _trigger_engine_grade_reload() -> None:
+    """job_titles.bonus_grade 異動後讓 engine 重新載入 grade_map（即時生效）。
+
+    走 load_config_from_db 順帶把所有 config 都重新讀，足以涵蓋本次需求；
+    與 BonusConfig PATCH 流程一致，避免要等下次 server 重啟才生效。
+    """
+    if _salary_engine is not None:
+        try:
+            _salary_engine.load_config_from_db()
+        except Exception:
+            logger.warning("job_titles 異動後 reload engine 失敗", exc_info=True)
+    _clear_cache("titles")
+
+
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
@@ -131,7 +149,9 @@ class AttendancePolicyUpdate(BaseModel):
 
     default_work_start: Optional[str] = None
     default_work_end: Optional[str] = None
-    festival_bonus_months: Optional[int] = Field(None, ge=0)
+    # le=24:節慶獎金資格門檻單位為月,實務常見 3~6 個月;設上限避免極端值
+    # (例如 999 讓全員失格、或被誤設成 0 讓新進員工立即合格)
+    festival_bonus_months: Optional[int] = Field(None, ge=0, le=24)
 
 
 class BonusConfigUpdate(BaseModel):
@@ -157,6 +177,12 @@ class BonusConfigUpdate(BaseModel):
     overtime_assistant_normal: Optional[float] = Field(None, ge=0)
     overtime_assistant_baby: Optional[float] = Field(None, ge=0)
     school_wide_target: Optional[int] = Field(None, ge=0)
+    # 階段 2-B（2026-05-07）：園規常數
+    # 上限：每場會議計薪不超過勞基法每日加班上限（防誤輸 99）
+    meeting_default_hours: Optional[float] = Field(None, ge=0, le=12)
+    # 上限：缺席扣節慶獎金不應超過獎金本身常見上限（防扣到負值）
+    meeting_absence_penalty: Optional[int] = Field(None, ge=0, le=10000)
+    art_teacher_festival: Optional[float] = Field(None, ge=0)
 
 
 class GradeTargetUpdate(BaseModel):
@@ -187,6 +213,8 @@ class InsuranceRateUpdate(BaseModel):
 
 class JobTitleCreate(BaseModel):
     name: str
+    # 階段 2-D（2026-05-07）：節慶獎金等級對應從 hardcode 搬到 DB
+    bonus_grade: Optional[str] = Field(None, pattern="^[ABC]$")
 
 
 class DeductionTypeCreate(BaseModel):
@@ -629,9 +657,7 @@ def update_grade_target(
                     SalaryRecord.is_finalized != True,
                     SalaryRecord.bonus_config_id == active_bonus_id,
                 )
-                .update(
-                    {SalaryRecord.needs_recalc: True}, synchronize_session=False
-                )
+                .update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
             )
 
         session.commit()
@@ -727,13 +753,28 @@ def update_insurance_rates(
             old_rate.is_active = False
 
         session.add(new_rate)
+        # 保險費率改版會影響 labor / health / pension 各扣款 → 已算未封存
+        # 薪資若不重算，finalize 會以舊費率封存。標 needs_recalc 讓守衛擋下。
+        # 封存 (is_finalized=True) 的不動，維持結帳鎖定語意。
+        stale_marked = (
+            session.query(SalaryRecord)
+            .filter(SalaryRecord.is_finalized != True)
+            .update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
+        )
         session.commit()
+        if stale_marked:
+            logger.warning(
+                "勞健保費率更新後標記 %d 筆未封存薪資為 needs_recalc(新版本 id=%s)",
+                stale_marked,
+                new_rate.id,
+            )
         _salary_engine.load_config_from_db()
         _clear_cache("insurance_rates")
         return {
             "message": "勞健保費率更新成功",
             "version": new_rate.version,
             "id": new_rate.id,
+            "salary_records_marked_stale": stale_marked,
         }
     except Exception as e:
         session.rollback()
@@ -967,7 +1008,9 @@ def get_job_titles(
             .order_by(JobTitle.sort_order)
             .all()
         )
-        result = [{"id": t.id, "name": t.name} for t in titles]
+        result = [
+            {"id": t.id, "name": t.name, "bonus_grade": t.bonus_grade} for t in titles
+        ]
         _cache["titles"] = result
         return result
     finally:
@@ -985,14 +1028,20 @@ def create_job_title(
         if existing:
             if not existing.is_active:
                 existing.is_active = True
+                if title.bonus_grade is not None:
+                    existing.bonus_grade = title.bonus_grade
                 session.commit()
+                _trigger_engine_grade_reload()
                 return {"message": "Job title reactivated", "id": existing.id}
             raise HTTPException(status_code=400, detail="Job title already exists")
 
-        new_title = JobTitle(name=title.name, is_active=True)
+        new_title = JobTitle(
+            name=title.name, is_active=True, bonus_grade=title.bonus_grade
+        )
         session.add(new_title)
         session.commit()
         _clear_cache("titles")
+        _trigger_engine_grade_reload()
         return {"message": "Job title created", "id": new_title.id}
     except HTTPException:
         raise
@@ -1027,8 +1076,14 @@ def update_job_title(
         db_title.name = title.name
         # Ensure it's active if we are updating it
         db_title.is_active = True
+        # bonus_grade=None 視為「不變更」，要清空請另寫專屬 endpoint。
+        # Why: 整個 PUT 都用 JobTitleCreate model，前端常見只想改 name 不送 bonus_grade，
+        # 若把 None 當「設為 NULL」會造成意外覆蓋。
+        if title.bonus_grade is not None:
+            db_title.bonus_grade = title.bonus_grade
         session.commit()
         _clear_cache("titles")
+        _trigger_engine_grade_reload()
         return {"message": "Job title updated"}
     except HTTPException:
         raise
@@ -1254,9 +1309,29 @@ async def update_position_salary(
             )
             session.add(config)
 
+        # 職位標準底薪改版會影響薪資反查比對結果（_get_standard_salary）→
+        # 標所有未封存薪資 needs_recalc=True，避免 finalize 以舊標準封存。
+        # 封存 (is_finalized=True) 的不動，維持結帳鎖定語意。
+        stale_marked = (
+            session.query(SalaryRecord)
+            .filter(SalaryRecord.is_finalized != True)
+            .update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
+        )
         session.commit()
+        if stale_marked:
+            logger.warning(
+                "職位標準底薪設定更新後標記 %d 筆未封存薪資為 needs_recalc",
+                stale_marked,
+            )
+        # engine 載入時會 cache PositionSalaryConfig，需 reload 才能讓後續
+        # simulate / 重算讀到新版本（其餘 PUT /api/config/* 端點都已遵循）。
+        _salary_engine.load_config_from_db()
         logger.warning("職位標準底薪設定已更新，操作人：%s", operator)
-        return {"message": "職位標準底薪設定已更新", "version": config.version}
+        return {
+            "message": "職位標準底薪設定已更新",
+            "version": config.version,
+            "salary_records_marked_stale": stale_marked,
+        }
     except Exception as e:
         session.rollback()
         raise_safe_500(e)

@@ -17,12 +17,13 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import case, func
 
 from models.database import (
     ActivityPaymentRecord,
     ActivityPosDailyClose,
+    ActivityPosDailyCloseHistory,
     ApprovalLog,
     get_session,
 )
@@ -41,6 +42,10 @@ _RECONCILIATION_MAX_DAYS = 92
 # payment_method 為 NULL 的紀錄會歸類為「未指定」，真正的現金類別才走此 key
 _CASH_METHOD_KEY = "現金"
 
+# 簽核時必填現金盤點的門檻：當日預期現金 ≥ NT$3,000 才強制
+# Why: 小金額日子強迫盤點會造成操作疲勞；大金額日子要求對齊抽屜現金以避免盲簽
+_CASH_COUNT_REQUIRED_THRESHOLD = 3000
+
 
 # ── Pydantic schemas ────────────────────────────────────────────────────
 
@@ -53,32 +58,44 @@ class DailyCloseCreate(BaseModel):
 
 
 _UNLOCK_REASON_MIN_LENGTH = 10
+_ADMIN_OVERRIDE_REASON_MIN_LENGTH = 30
 
 
 class DailyCloseUnlock(BaseModel):
-    """解鎖日結簽核的請求；reason 必填且 ≥ _UNLOCK_REASON_MIN_LENGTH 字。
+    """解鎖日結簽核的請求。
 
-    Why: 解鎖會刪除 snapshot，後續可重簽不同金額；若無原因紀錄，同一個高權限者
-    可進出簽核狀態無痕修改帳。原因會與「原 snapshot 摘要」一起寫入 ApprovalLog
-    與 audit_changes，便於事後追蹤。
+    一般 4-eye 路徑：reason ≥ 10 字 + 解鎖人 ≠ 原簽核人（handler 守衛）。
+    Admin override 路徑：is_admin_override=True + reason ≥ 30 字 + role='admin'（handler 守衛）。
+
+    Why: 原設計只擋 reason 長度，未限制「自簽自解」循環；spec C2 收緊。
     """
 
-    reason: str = Field(
-        ...,
-        min_length=_UNLOCK_REASON_MIN_LENGTH,
-        max_length=500,
-        description=f"解鎖原因（≥ {_UNLOCK_REASON_MIN_LENGTH} 字）",
+    reason: str = Field(..., max_length=500)
+    is_admin_override: bool = Field(
+        False,
+        description=(
+            "管理員緊急 override：略過 4-eye 但 reason 須 ≥ "
+            f"{_ADMIN_OVERRIDE_REASON_MIN_LENGTH} 字"
+        ),
     )
 
-    @field_validator("reason")
-    @classmethod
-    def _validate_reason(cls, v: str) -> str:
-        cleaned = (v or "").strip()
-        if len(cleaned) < _UNLOCK_REASON_MIN_LENGTH:
-            raise ValueError(
-                f"解鎖原因需至少 {_UNLOCK_REASON_MIN_LENGTH} 個字，不可敷衍"
+    @model_validator(mode="after")
+    def _validate_reason_length(self):
+        cleaned = (self.reason or "").strip()
+        min_len = (
+            _ADMIN_OVERRIDE_REASON_MIN_LENGTH
+            if self.is_admin_override
+            else _UNLOCK_REASON_MIN_LENGTH
+        )
+        if len(cleaned) < min_len:
+            extra = (
+                "（admin override 須具體說明緊急情況）"
+                if self.is_admin_override
+                else ""
             )
-        return cleaned
+            raise ValueError(f"解鎖原因需至少 {min_len} 字{extra}")
+        self.reason = cleaned
+        return self
 
 
 # ── 內部輔助 ────────────────────────────────────────────────────────────
@@ -281,6 +298,20 @@ async def approve_daily_close(
         by_method_net = snap["by_method_net"]
         cash_snapshot = int(by_method_net.get(_CASH_METHOD_KEY, 0))
 
+        # 盤點門檻守衛：預期現金 ≥ 3,000 必填 actual_cash_count
+        # Why: 小金額日子免盤點降低操作疲勞；大金額日子強迫對齊以避免簽核盲簽
+        if (
+            cash_snapshot >= _CASH_COUNT_REQUIRED_THRESHOLD
+            and body.actual_cash_count is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"當日預期現金 NT${cash_snapshot:,} ≥ "
+                    f"NT${_CASH_COUNT_REQUIRED_THRESHOLD:,}，必須填寫實際現金盤點金額"
+                ),
+            )
+
         cash_variance = None
         if body.actual_cash_count is not None:
             cash_variance = body.actual_cash_count - cash_snapshot
@@ -313,6 +344,28 @@ async def approve_daily_close(
         )
         session.commit()
         session.refresh(row)
+
+        # ── 軟提醒：簽核者 = 當日 POS 操作者 ─────────────────────
+        # Why (spec C2): 當日收銀者自簽會降低稽核獨立性；不擋送出，僅以 warnings 提示
+        operators_today = {
+            op
+            for (op,) in session.query(ActivityPaymentRecord.operator)
+            .filter(
+                ActivityPaymentRecord.payment_date == target,
+                ActivityPaymentRecord.voided_at.is_(None),
+            )
+            .distinct()
+            .all()
+            if op
+        }
+        warnings: list[str] = []
+        approver_name = current_user.get("username", "")
+        if approver_name and approver_name in operators_today:
+            warnings.append(
+                f"你（{approver_name}）是當日 POS 收銀者；"
+                "建議由其他簽核者覆核以強化稽核獨立性"
+            )
+
         logger.warning(
             "POS 日結簽核：date=%s approver=%s net=%d variance=%s",
             target.isoformat(),
@@ -334,7 +387,9 @@ async def approve_daily_close(
             "cash_variance": cash_variance,
             "note": body.note,
         }
-        return _serialize_close(row)
+        response = _serialize_close(row)
+        response["warnings"] = warnings
+        return response
     except HTTPException:
         session.rollback()
         raise
@@ -349,7 +404,7 @@ async def approve_daily_close(
 # ── 端點 3：解鎖重簽 ─────────────────────────────────────────────────
 
 
-@router.delete("/pos/daily-close/{date_str}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/pos/daily-close/{date_str}", status_code=200)
 async def unlock_daily_close(
     date_str: str,
     body: DailyCloseUnlock,
@@ -376,6 +431,26 @@ async def unlock_daily_close(
             raise HTTPException(status_code=404, detail="該日尚未簽核，無需解鎖")
 
         original_approver = row.approver_username
+
+        # ── 4-eye 守衛 ──────────────────────────────────────
+        # Admin override 路徑：必須 role='admin'（不論是否原簽核人）
+        # 一般路徑：解鎖人 ≠ 原簽核人
+        # Why: 同一人簽 → 解 → 改 → 重簽循環會無痕修帳；強制分離以保稽核獨立性
+        if body.is_admin_override:
+            if current_user.get("role") != "admin":
+                raise HTTPException(
+                    status_code=403,
+                    detail="僅 admin 角色可進行 override 解鎖；請改用一般 4-eye 流程",
+                )
+        elif current_user.get("username") == original_approver:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"解鎖人不可為原簽核人 {original_approver}；"
+                    "請由其他簽核權限者執行，或以 admin 身分 override"
+                ),
+            )
+
         original_at = (
             row.approved_at.isoformat(timespec="seconds") if row.approved_at else "?"
         )
@@ -394,12 +469,39 @@ async def unlock_daily_close(
             f"{snapshot_summary}；原因：{body.reason}"
         )
 
+        action_value = "admin_override" if body.is_admin_override else "cancelled"
+
+        # spec H3：append-only 歷史快照（在 delete 前複製完整 snapshot）
+        # Why: ApprovalLog 只留 free text 摘要，by_method JSON 等結構化資料
+        # 會在 hard delete 時消失。本表保留每次 unlock 前的完整快照，供未來
+        # 稽核或重簽差異對比使用。
+        session.add(
+            ActivityPosDailyCloseHistory(
+                close_date=row.close_date,
+                approver_username=row.approver_username,
+                approver_role=None,  # 原 ActivityPosDailyClose 沒存 role；以後若需可從 ApprovalLog 推
+                approved_at=row.approved_at,
+                approve_note=row.note,
+                payment_total=row.payment_total,
+                refund_total=row.refund_total,
+                net_total=row.net_total,
+                transaction_count=row.transaction_count,
+                by_method_json=row.by_method_json or "{}",
+                actual_cash_count=row.actual_cash_count,
+                cash_variance=row.cash_variance,
+                unlocked_at=datetime.now(),
+                unlocked_by=current_user.get("username", ""),
+                unlocked_by_role=current_user.get("role"),
+                is_admin_override=body.is_admin_override,
+                unlock_reason=body.reason,
+            )
+        )
         session.delete(row)
         session.add(
             ApprovalLog(
                 doc_type="activity_pos_daily",
                 doc_id=_doc_id_for(target),
-                action="cancelled",
+                action=action_value,
                 approver_username=current_user.get("username", ""),
                 approver_role=current_user.get("role"),
                 comment=comment,
@@ -432,8 +534,60 @@ async def unlock_daily_close(
             "original_net_total": original_net,
             "original_transaction_count": original_tx,
             "reason": body.reason,
+            "is_admin_override": body.is_admin_override,
         }
-        return None
+        # ── LINE 通知（best-effort；失敗不擋已 commit 的解鎖）─────────
+        # Why: 原簽核人需即時知悉自己簽過的日子被解鎖；無綁定則 silent，
+        # response.notification_delivered=false 提示解鎖人私下告知對方。
+        notification_delivered = False
+        try:
+            from api.activity._shared import get_line_service
+
+            _line_svc = get_line_service()
+            if _line_svc is not None:
+                notification_delivered = _line_svc.notify_pos_unlock_to_approver(
+                    target_date=target,
+                    original_approver=original_approver,
+                    unlocker=current_user.get("username", ""),
+                    is_override=body.is_admin_override,
+                    reason=body.reason,
+                )
+        except Exception:
+            logger.warning("LINE notify on POS unlock failed", exc_info=True)
+
+        # ── live_diff 計算（spec H2）─────────────────────────────
+        # Why: 解鎖後實況（含補登/voided 變動後的最新 records）vs 原 snapshot
+        # 的差異，幫解鎖人即時掌握「為什麼帳變了」。本步驟在 commit 後計算
+        # 才能反映 commit 後的真相；計算失敗不擋已 commit 的解鎖。
+        live_diff = None
+        try:
+            live_snap = compute_daily_snapshot(session, target)
+            live_diff = {
+                "payment_total_diff": int(live_snap["payment_total"])
+                - original_payment,
+                "refund_total_diff": int(live_snap["refund_total"]) - original_refund,
+                "net_total_diff": int(live_snap["net"]) - original_net,
+                "transaction_count_diff": int(live_snap["transaction_count"])
+                - original_tx,
+                "live_payment_total": int(live_snap["payment_total"]),
+                "live_refund_total": int(live_snap["refund_total"]),
+                "live_net_total": int(live_snap["net"]),
+                "live_transaction_count": int(live_snap["transaction_count"]),
+                "original_payment_total": original_payment,
+                "original_refund_total": original_refund,
+                "original_net_total": original_net,
+                "original_transaction_count": original_tx,
+            }
+        except Exception:
+            logger.warning("compute_daily_snapshot failed during unlock", exc_info=True)
+
+        return {
+            "close_date": target.isoformat(),
+            "unlocked_at": datetime.now().isoformat(timespec="seconds"),
+            "is_admin_override": body.is_admin_override,
+            "notification_delivered": notification_delivered,
+            "live_diff": live_diff,
+        }
     except HTTPException:
         session.rollback()
         raise
@@ -541,6 +695,239 @@ async def pos_reconciliation(
                 "net_total": agg_payment - agg_refund,
                 "variance_total": agg_variance if variance_has_value else None,
             },
+        }
+    finally:
+        session.close()
+
+
+# ── 端點 6：解鎖事件儀表板（spec C2）────────────────────
+
+
+def _doc_id_to_date(doc_id: int):
+    """將 ApprovalLog.doc_id（YYYYMMDD int）解回 date；解析失敗回 None。"""
+    s = str(doc_id)
+    if len(s) != 8:
+        return None
+    try:
+        return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+    except ValueError:
+        return None
+
+
+@router.get("/audit/pos-unlock-events")
+async def list_pos_unlock_events(
+    days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
+):
+    """列出近 N 天的 POS 日結解鎖事件（一般 4-eye + admin override）。
+
+    時間倒序，限 200 筆；ApprovalLog 為 source of truth。
+    供老闆/簽核者隨時查看異常解鎖記錄，補強稽核獨立性。
+    """
+    cutoff = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(days=days)
+    session = get_session()
+    try:
+        rows = (
+            session.query(ApprovalLog)
+            .filter(
+                ApprovalLog.doc_type == "activity_pos_daily",
+                ApprovalLog.action.in_(["cancelled", "admin_override"]),
+                ApprovalLog.created_at >= cutoff,
+            )
+            .order_by(ApprovalLog.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        events = []
+        for r in rows:
+            close_dt = _doc_id_to_date(r.doc_id)
+            events.append(
+                {
+                    "id": r.id,
+                    "close_date": close_dt.isoformat() if close_dt else None,
+                    "action": r.action,
+                    "unlocker_username": r.approver_username,
+                    "unlocker_role": r.approver_role,
+                    "comment": r.comment,
+                    "occurred_at": (
+                        r.created_at.isoformat(timespec="seconds")
+                        if r.created_at
+                        else None
+                    ),
+                }
+            )
+        return {
+            "days": days,
+            "count": len(events),
+            "events": events,
+        }
+    finally:
+        session.close()
+
+
+# ── 端點 7：操作員活動稽核 dashboard（spec H1）─────────────────────
+
+
+_OPERATOR_ACTIVITY_LIMIT = 100
+
+
+@router.get("/audit/operator-activity")
+async def list_operator_activity(
+    days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
+):
+    """列出近 N 天每位 POS operator 的活動量（spec H1）。
+
+    Why: 業主政策要求每位員工以個人帳號操作 POS（避免共用帳號失去歸責性）。
+    本端點供老闆每月稽核哪些帳號操作量異常 — 共用帳號通常筆數高、個人帳號零，
+    視覺即可判斷誰沒落實規範。
+
+    JOIN User 表豐富 display_name / role / employee_id；無 User row 對應的
+    operator 字串以 user=null 回傳，前端以紅色標記提醒（已停用 / 共用殘留）。
+    voided 紀錄排除；按總筆數倒序，限 100 筆。
+    """
+    cutoff_date = (
+        datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(days=days)
+    ).date()
+    payment_count_expr = func.sum(
+        case((ActivityPaymentRecord.type == "payment", 1), else_=0)
+    )
+    refund_count_expr = func.sum(
+        case((ActivityPaymentRecord.type == "refund", 1), else_=0)
+    )
+    session = get_session()
+    try:
+        rows = (
+            session.query(
+                ActivityPaymentRecord.operator,
+                payment_count_expr.label("payment_count"),
+                refund_count_expr.label("refund_count"),
+                func.max(ActivityPaymentRecord.created_at).label("last_at"),
+            )
+            .filter(
+                ActivityPaymentRecord.payment_date >= cutoff_date,
+                ActivityPaymentRecord.voided_at.is_(None),
+                ActivityPaymentRecord.operator.isnot(None),
+                ActivityPaymentRecord.operator != "",
+            )
+            .group_by(ActivityPaymentRecord.operator)
+            .order_by((payment_count_expr + refund_count_expr).desc())
+            .limit(_OPERATOR_ACTIVITY_LIMIT)
+            .all()
+        )
+
+        if not rows:
+            return {"days": days, "count": 0, "operators": []}
+
+        from models.auth import User
+
+        usernames = [r.operator for r in rows]
+        users = session.query(User).filter(User.username.in_(usernames)).all()
+        user_by_name = {u.username: u for u in users}
+
+        operators = []
+        for r in rows:
+            u = user_by_name.get(r.operator)
+            payment_count = int(r.payment_count or 0)
+            refund_count = int(r.refund_count or 0)
+            operators.append(
+                {
+                    "operator": r.operator,
+                    "payment_count": payment_count,
+                    "refund_count": refund_count,
+                    "total_count": payment_count + refund_count,
+                    "last_activity_at": (
+                        r.last_at.isoformat(timespec="seconds") if r.last_at else None
+                    ),
+                    "user": (
+                        {
+                            "id": u.id,
+                            "display_name": u.display_name or u.username,
+                            "role": u.role,
+                            "employee_id": u.employee_id,
+                            "is_active": bool(u.is_active),
+                        }
+                        if u
+                        else None
+                    ),
+                }
+            )
+        return {"days": days, "count": len(operators), "operators": operators}
+    finally:
+        session.close()
+
+
+# ── 端點 8：日結歷史快照查詢（spec H3）──────────────────────────
+
+
+@router.get("/audit/pos-close-history")
+async def list_pos_close_history(
+    close_date: str = Query(..., description="YYYY-MM-DD"),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
+):
+    """列出指定 close_date 的所有解鎖歷史快照（spec H3）。
+
+    Why: ApprovalLog 只留 unlock 事件的文字摘要；本端點回傳結構化的歷史
+    snapshot（含 by_method JSON、現金盤點等），供老闆稽核「當時帳長什麼樣」。
+
+    回傳依 unlocked_at 倒序，限 50 筆（同一日多次解鎖循環極少超過此值）。
+    """
+    target = _parse_date(close_date)
+    session = get_session()
+    try:
+        rows = (
+            session.query(ActivityPosDailyCloseHistory)
+            .filter(ActivityPosDailyCloseHistory.close_date == target)
+            .order_by(ActivityPosDailyCloseHistory.unlocked_at.desc())
+            .limit(50)
+            .all()
+        )
+        snapshots = []
+        for r in rows:
+            try:
+                by_method = json.loads(r.by_method_json or "{}")
+            except (TypeError, ValueError):
+                by_method = {}
+            snapshots.append(
+                {
+                    "id": r.id,
+                    "close_date": r.close_date.isoformat(),
+                    "approver_username": r.approver_username,
+                    "approver_role": r.approver_role,
+                    "approved_at": (
+                        r.approved_at.isoformat(timespec="seconds")
+                        if r.approved_at
+                        else None
+                    ),
+                    "approve_note": r.approve_note,
+                    "payment_total": r.payment_total,
+                    "refund_total": r.refund_total,
+                    "net_total": r.net_total,
+                    "transaction_count": r.transaction_count,
+                    "by_method": by_method,
+                    "actual_cash_count": r.actual_cash_count,
+                    "cash_variance": r.cash_variance,
+                    "unlocked_at": (
+                        r.unlocked_at.isoformat(timespec="seconds")
+                        if r.unlocked_at
+                        else None
+                    ),
+                    "unlocked_by": r.unlocked_by,
+                    "unlocked_by_role": r.unlocked_by_role,
+                    "is_admin_override": bool(r.is_admin_override),
+                    "unlock_reason": r.unlock_reason,
+                }
+            )
+        return {
+            "close_date": target.isoformat(),
+            "count": len(snapshots),
+            "snapshots": snapshots,
         }
     finally:
         session.close()

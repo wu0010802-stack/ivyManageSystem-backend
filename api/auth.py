@@ -147,31 +147,44 @@ _IP_MAX_ATTEMPTS = 20  # 同 IP 視窗內最多嘗試次數
 _FAIL_THRESHOLD = 5  # 帳號連續失敗次數上限
 _FAIL_LOCKOUT = 900  # 帳號鎖定時間：15 分鐘
 
+# DB-backed counter scopes（rate_limit_buckets.bucket_key prefix）
+_IP_SCOPE = "login_ip"
+_ACCOUNT_SCOPE = "login_account"
+
+# In-process dict 仍保留，作為「DB 失敗時的 fail-open 配套」與測試 fixture
+# reset target；正式擋線靠 DB-backed counter（multi-worker 安全）。
+# Refs: 邏輯漏洞 audit 2026-05-07 P0 #14（user 拍板採 DB-backed 方案）。
 _ip_attempts: dict[str, list[float]] = defaultdict(list)
 _account_failures: dict[str, list[float]] = defaultdict(list)
 
 
 def _check_ip_rate_limit(ip: str) -> None:
-    """IP 層級滑動視窗限流：超出則拋 429。"""
-    now = time.time()
-    _ip_attempts[ip] = [t for t in _ip_attempts[ip] if now - t < _IP_WINDOW]
-    if len(_ip_attempts[ip]) >= _IP_MAX_ATTEMPTS:
-        logger.warning("IP 登入頻率超限: %s", ip)
+    """IP 層級滑動視窗限流：超出則拋 429。
+
+    走 DB-backed counter（rate_limit_buckets 表），多 worker 一致。
+    DB 失敗時 fail-open（utils/rate_limit_db.py 各 helper 內部 log 警告）。
+    """
+    from utils.rate_limit_db import count_recent_attempts, record_attempt
+
+    record_attempt(_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
+    count = count_recent_attempts(_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    if count > _IP_MAX_ATTEMPTS:
+        logger.warning("IP 登入頻率超限: %s (count=%d)", ip, count)
         raise HTTPException(status_code=429, detail="登入嘗試次數過多，請稍後再試")
-    _ip_attempts[ip].append(now)
 
 
 def _check_account_lockout(username: str) -> None:
-    """帳號層級失敗鎖定：連續失敗 _FAIL_THRESHOLD 次後拋 429，含剩餘解鎖時間。"""
-    now = time.time()
-    _account_failures[username] = [
-        t for t in _account_failures[username] if now - t < _FAIL_LOCKOUT
-    ]
-    if len(_account_failures[username]) >= _FAIL_THRESHOLD:
-        earliest = _account_failures[username][0]
-        remaining_sec = int(_FAIL_LOCKOUT - (now - earliest))
-        remaining_min = max(1, (remaining_sec + 59) // 60)
-        logger.warning("帳號已鎖定: %s（剩餘 %d 分鐘）", username, remaining_min)
+    """帳號層級失敗鎖定：累積失敗 _FAIL_THRESHOLD 次後拋 429。
+
+    走 DB-backed counter；多 worker 一致。失敗時 fail-open。
+    """
+    from utils.rate_limit_db import count_recent_attempts
+
+    count = count_recent_attempts(
+        _ACCOUNT_SCOPE, username, within_seconds=_FAIL_LOCKOUT
+    )
+    if count >= _FAIL_THRESHOLD:
+        logger.warning("帳號已鎖定: %s (failures=%d)", username, count)
         raise HTTPException(
             status_code=429,
             detail="密碼錯誤次數過多，帳號已暫時鎖定，請稍後再試",
@@ -179,13 +192,17 @@ def _check_account_lockout(username: str) -> None:
 
 
 def _record_login_failure(username: str) -> None:
-    """記錄帳號登入失敗一次。"""
-    _account_failures[username].append(time.time())
+    """記錄帳號登入失敗一次（DB-backed bucket）。"""
+    from utils.rate_limit_db import record_attempt
+
+    record_attempt(_ACCOUNT_SCOPE, username, window_seconds=_FAIL_LOCKOUT)
 
 
 def _clear_login_failures(username: str) -> None:
-    """登入成功後清除帳號的失敗記錄。"""
-    _account_failures[username] = []
+    """登入成功後清除帳號的失敗記錄（DB-backed bucket）。"""
+    from utils.rate_limit_db import clear_attempts
+
+    clear_attempts(_ACCOUNT_SCOPE, username)
 
 
 # ============ Pydantic Models ============

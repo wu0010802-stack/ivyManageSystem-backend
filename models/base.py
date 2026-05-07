@@ -38,6 +38,29 @@ if not DATABASE_URL:
     else:
         raise RuntimeError("DATABASE_URL 環境變數未設定，正式環境不允許啟動。")
 
+
+def _env_int(name: str, default: int) -> int:
+    """讀取 int 環境變數；無效或缺失時 fallback 到 default。"""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "環境變數 %s=%r 不是合法整數，回退使用預設 %s", name, raw, default
+        )
+        return default
+
+
+# 連線池參數可由 env 覆寫（audit J.P0.1）。
+# 預設值（5+5=10/pod）對 Supabase Session Mode 安全；單機開發或 Transaction
+# Mode 部署可調高（例：DB_POOL_SIZE=10 DB_POOL_MAX_OVERFLOW=20）。
+_DB_POOL_SIZE = _env_int("DB_POOL_SIZE", 5)
+_DB_POOL_MAX_OVERFLOW = _env_int("DB_POOL_MAX_OVERFLOW", 5)
+_DB_POOL_TIMEOUT = _env_int("DB_POOL_TIMEOUT", 15)
+_DB_POOL_RECYCLE = _env_int("DB_POOL_RECYCLE", 1800)
+
 _engine = None
 _SessionFactory = None
 
@@ -67,11 +90,11 @@ def get_engine():
             # 5 base + 5 overflow = 10/pod，3 副本約 30 條，遠低於 Transaction
             # Mode 的容量上限，也不會把 Session Mode 撐爆。
             kwargs = dict(
-                pool_size=5,
-                max_overflow=5,
+                pool_size=_DB_POOL_SIZE,
+                max_overflow=_DB_POOL_MAX_OVERFLOW,
                 pool_pre_ping=True,
-                pool_recycle=1800,  # 30 分鐘回收連線，避免 server 端斷線
-                pool_timeout=15,
+                pool_recycle=_DB_POOL_RECYCLE,  # 30 分鐘回收連線，避免 server 端斷線
+                pool_timeout=_DB_POOL_TIMEOUT,
                 echo=False,
                 connect_args=connect_args,
             )

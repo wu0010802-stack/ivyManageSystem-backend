@@ -14,6 +14,8 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Text,
+    UniqueConstraint,
+    Index,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -86,6 +88,23 @@ class BonusConfig(Base):
 
     school_wide_target = Column(Integer, default=160)
 
+    # 園規常數（NULL = 沿用程式預設）
+    meeting_default_hours = Column(
+        Float,
+        nullable=True,
+        comment="每場園務會議計幾小時加班費（業主實務 2 hr）",
+    )
+    meeting_absence_penalty = Column(
+        Integer,
+        nullable=True,
+        comment="缺席園務會議扣節慶獎金金額（預設 100 元）",
+    )
+    art_teacher_festival = Column(
+        Float,
+        nullable=True,
+        comment="美語/才藝教師節慶獎金基數（A/B/C 同值，預設 2000）",
+    )
+
     is_active = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.now)
@@ -145,10 +164,51 @@ class InsuranceRate(Base):
 
     average_dependents = Column(Float, default=0.56)
 
+    # 三制度最高投保上限（NULL = 沿用程式預設常數，避免舊資料破功）
+    labor_max_insured = Column(
+        Integer, nullable=True, comment="勞保（含就保）最高月投保薪資"
+    )
+    health_max_insured = Column(Integer, nullable=True, comment="健保最高月投保金額")
+    pension_max_insured = Column(Integer, nullable=True, comment="勞退最高月提繳工資")
+
     is_active = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class InsuranceBracket(Base):
+    """勞健保投保金額分級表（每年公告級距落地）
+
+    取代原本 hardcode 在 services/insurance_service.py 的 INSURANCE_TABLE_2026。
+    每年新公告級距時，行政只需新增 effective_year=新年度 的列即可，
+    無需改程式 + 重新部署。歷史月份重算可依 effective_year 取對應級距。
+    """
+
+    __tablename__ = "insurance_brackets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    effective_year = Column(
+        Integer,
+        nullable=False,
+        comment="適用年度（西元，與 InsuranceRate.rate_year 對齊）",
+    )
+    amount = Column(Integer, nullable=False, comment="投保金額")
+    labor_employee = Column(Integer, nullable=False, comment="勞保員工自付")
+    labor_employer = Column(Integer, nullable=False, comment="勞保雇主負擔")
+    health_employee = Column(Integer, nullable=False, comment="健保員工自付（單口）")
+    health_employer = Column(Integer, nullable=False, comment="健保雇主負擔")
+    pension = Column(Integer, nullable=False, comment="勞退雇主提繳（6%）")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=datetime.now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("effective_year", "amount", name="uq_bracket_year_amount"),
+        Index("ix_bracket_year_amount", "effective_year", "amount"),
+    )
 
 
 class PositionSalaryConfig(Base):

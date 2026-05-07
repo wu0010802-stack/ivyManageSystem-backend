@@ -68,6 +68,17 @@ def get_salary_preview(
             .first()
         )
 
+        # salary_status 與 LINE「我的薪資」對齊：草稿/重算中皆視為未定案,
+        # 不向員工顯示金額細節,避免引發薪資爭議（services/line_service.py:684-705）
+        if salary is None:
+            salary_status = "none"
+        elif not salary.is_finalized:
+            salary_status = "draft"
+        elif salary.needs_recalc:
+            salary_status = "recalc_pending"
+        else:
+            salary_status = "finalized"
+
         result = {
             "year": year,
             "month": month,
@@ -80,9 +91,10 @@ def get_salary_preview(
                 "leave_days": round(total_leave_hours / 8, 1),
             },
             "salary": None,
+            "salary_status": salary_status,
         }
 
-        if salary:
+        if salary and salary_status == "finalized":
             total_bonus = calculate_display_bonus_total(salary)
             result["salary"] = {
                 "base_salary": salary.base_salary,

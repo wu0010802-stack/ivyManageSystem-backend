@@ -118,7 +118,7 @@ def create_portal_incident(
                 action_taken=payload.action_taken,
                 parent_notified=payload.parent_notified,
                 parent_notified_at=datetime.now() if payload.parent_notified else None,
-                recorded_by=current_user.get("id"),
+                recorded_by=current_user.get("user_id"),
             )
             session.add(incident)
             session.flush()

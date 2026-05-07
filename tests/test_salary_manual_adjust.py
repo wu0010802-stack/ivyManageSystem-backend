@@ -200,6 +200,75 @@ class TestRecalculatePreservesHourlyTotal:
         assert res.status_code == 200
         assert res.json()["record"]["festival_bonus"] == 1900
 
+    def test_meeting_absence_connection_delta_counted_for_threshold(
+        self, salary_client
+    ):
+        """回歸：meeting_absence 連動的 festival_bonus 變動量也要納入 total_abs_delta，
+        否則會計可拆兩動作（降 meeting_absence → festival 連動推高）繞過 1000 元金流簽核。"""
+        client, sf = salary_client
+        # 種子：festival 600、meeting_absence 600（raw=1200）
+        with sf() as session:
+            emp = Employee(
+                employee_id="MABYP",
+                name="繞過測試",
+                base_salary=30000,
+                employee_type="regular",
+                is_active=True,
+            )
+            session.add(emp)
+            session.flush()
+            record = SalaryRecord(
+                employee_id=emp.id,
+                salary_year=2026,
+                salary_month=6,
+                base_salary=30000,
+                festival_bonus=600,
+                meeting_absence_deduction=600,
+                gross_salary=30000,
+                total_deduction=0,
+                net_salary=30000,
+                is_finalized=False,
+            )
+            session.add(record)
+            # 給「能 manual_adjust 但不具 ACTIVITY_PAYMENT_APPROVE」的角色
+            from utils.permissions import Permission
+
+            non_approve_perms = int(Permission.SALARY_WRITE | Permission.SALARY_READ)
+            user = User(
+                employee_id=None,
+                username="hr_no_approve",
+                password_hash=hash_password("HrPass1234"),
+                role="hr",
+                permissions=non_approve_perms,
+                is_active=True,
+                must_change_password=False,
+            )
+            session.add(user)
+            session.commit()
+            record_id = record.id
+
+        # 登入 hr_no_approve（無金流簽核）
+        res_login = client.post(
+            "/api/auth/login",
+            json={"username": "hr_no_approve", "password": "HrPass1234"},
+        )
+        assert res_login.status_code == 200, res_login.text
+
+        # 把 meeting_absence 降 600 → 0（payload |delta|=600，本身不超 1000；
+        # 但連動 festival 600→1200，連動 |delta|=600；總和 1200 > 1000 應觸發 403）
+        res = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={
+                "adjustment_reason": "嘗試以 meeting_absence 連動繞門檻",
+                "meeting_absence_deduction": 0,
+            },
+        )
+        assert res.status_code == 403, res.text
+        assert (
+            "金流簽核" in res.json()["detail"]
+            or "ACTIVITY_PAYMENT_APPROVE" in res.json()["detail"]
+        )
+
     def test_edit_both_festival_and_meeting_absence_no_auto_recompute(
         self, salary_client
     ):

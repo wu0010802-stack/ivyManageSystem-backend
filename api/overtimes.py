@@ -57,7 +57,10 @@ from utils.constants import (
 from utils.validators import validate_hhmm_format
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST, OVERTIME_RECORD_NOT_FOUND
 from utils.permissions import Permission
-from services.salary.utils import mark_salary_stale as _mark_salary_stale
+from services.salary.utils import (
+    lock_and_premark_stale,
+    mark_salary_stale as _mark_salary_stale,
+)
 from utils.approval_helpers import (
     _get_submitter_role,
     _check_approval_eligibility,
@@ -702,7 +705,7 @@ def get_overtimes(
         elif status == "rejected":
             q = q.filter(OvertimeRecord.is_approved == False)
 
-        records = q.order_by(OvertimeRecord.overtime_date.desc()).all()
+        records = q.order_by(OvertimeRecord.overtime_date.desc()).limit(5000).all()
 
         # 預先載入員工角色映射
         employee_ids = list({ot.employee_id for ot, _ in records})
@@ -962,6 +965,10 @@ def update_overtime(
                 _check_salary_month_not_finalized(
                     session, ot.employee_id, date(year, month, 1)
                 )
+            # commit→recalc 鎖延伸：取 per-emp salary lock 並 pre-mark stale,
+            # 封住 caller commit 與 engine 重新 acquire lock 之間 finalize 搶先封存舊薪資的 race。
+
+            lock_and_premark_stale(session, ot.employee_id, recalculation_months)
             _revoke_comp_leave_grant(session, ot)
 
         update_data = data.model_dump(exclude_unset=True)
@@ -1106,6 +1113,9 @@ def delete_overtime(
         }
         if was_approved:
             _check_salary_month_not_finalized(session, employee_id, ot.overtime_date)
+            # commit→recalc 鎖延伸 + pre-mark stale（同 update_overtime 註解）
+
+            lock_and_premark_stale(session, employee_id, {overtime_month})
             _revoke_comp_leave_grant(session, ot)
         session.delete(ot)
         session.commit()
@@ -1153,9 +1163,25 @@ def approve_overtime(
     request: Request,
     approved: bool = True,
     approved_by: str = "管理員",
+    rejection_reason: Optional[str] = None,
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
-    """核准/駁回加班；核准後自動重算該員工當月薪資，補休模式核准後自動累積配額"""
+    """核准/駁回加班；核准後自動重算該員工當月薪資，補休模式核准後自動累積配額。
+
+    audit P1（2026-05-07）：駁回（approved=False）必填 rejection_reason
+    （≥3 字），對齊 leaves / punch_corrections 既有要求；避免管理員惡意
+    零原因駁回他人加班費。reason 落 ApprovalLog.comment（OvertimeRecord
+    無 rejection_reason 欄位）。
+    """
+    # 駁回必填原因（schema 也驗一次，雙保險）
+    if not approved:
+        cleaned = (rejection_reason or "").strip()
+        if len(cleaned) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail="駁回時必須填寫原因（至少 3 個字）",
+            )
+
     session = get_session()
     try:
         # with_for_update() 鎖定加班記錄，防止並發核准觸發補休配額重複發放（Race Condition）
@@ -1168,6 +1194,11 @@ def approve_overtime(
         if not ot:
             raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
         was_approved = ot.is_approved is True
+
+        # 既有設計允許「已核准 → 駁回」的合法業務路徑（例如發現超時數需撤銷），
+        # 由 risk_tags="reject_of_approved" 在 audit_summary 打標記。撤回 audit
+        # 2026-05-07 P1 hard-block flip-flop 提案：業主業務模型即是「approver
+        # 可改判」，硬擋會破壞合法 TestApprovedOvertimeRollback 路徑。
 
         # ── 自我核准防護 ─────────────────────────────────────────────────────────
         # 僅在 approver 確實擁有 employee_id 且與申請人相同時才拒絕。
@@ -1188,20 +1219,16 @@ def approve_overtime(
             )
 
         if approved or was_approved:
-            # 提早取得薪資鎖,讓「封存守衛 → commit overtime → recalc」三步在
-            # 同一鎖窗內完成,避免 finalize 在 commit 與 recalc 之間搶先封存舊薪資。
-            # 與 leaves approve 同樣模式。
-            from utils.advisory_lock import (
-                acquire_salary_lock as _acquire_salary_lock,
-            )
-
-            _acquire_salary_lock(
-                session,
-                employee_id=ot.employee_id,
-                year=ot.overtime_date.year,
-                month=ot.overtime_date.month,
-            )
+            # 提早取得薪資鎖 + pre-mark stale,封住 commit→recalc 的兩個 race window。
+            # caller commit 釋放鎖後,即使 finalize 搶到鎖也會看到 needs_recalc=True 而被擋下;
+            # engine 之後在新 session 取鎖重算成功會把 stale 旗標清掉。
             _check_salary_month_not_finalized(session, ot.employee_id, ot.overtime_date)
+
+            lock_and_premark_stale(
+                session,
+                ot.employee_id,
+                {(ot.overtime_date.year, ot.overtime_date.month)},
+            )
         if not approved and was_approved:
             _revoke_comp_leave_grant(session, ot)
 
@@ -1249,6 +1276,11 @@ def approve_overtime(
 
         ot.is_approved = approved
         ot.approved_by = current_user.get("username", approved_by) if approved else None
+        # OvertimeRecord 無 rejection_reason 欄位（LeaveRecord 才有）；
+        # 駁回原因落 ApprovalLog.comment，與 _write_approval_log 同 transaction。
+        cleaned_reason: Optional[str] = None
+        if not approved:
+            cleaned_reason = (rejection_reason or "").strip() or None
 
         result = {"message": "已核准" if approved else "已駁回"}
 
@@ -1258,7 +1290,7 @@ def approve_overtime(
 
         action = "approved" if approved else "rejected"
         approval_log_row = _write_approval_log(
-            "overtime", overtime_id, action, current_user, None, session
+            "overtime", overtime_id, action, current_user, cleaned_reason, session
         )
         session.commit()
 
@@ -1372,6 +1404,14 @@ def batch_approve_overtimes(
                 if data.approved or was_approved:
                     _check_salary_month_not_finalized(
                         session, ot.employee_id, ot.overtime_date
+                    )
+                    # commit→recalc 鎖延伸：取 per-emp salary lock 並 pre-mark stale,
+                    # 統一 commit (line 1462) 後即使 finalize 搶到鎖也會被 stale 守衛擋下。
+
+                    lock_and_premark_stale(
+                        session,
+                        ot.employee_id,
+                        {(ot.overtime_date.year, ot.overtime_date.month)},
                     )
                 if not data.approved and was_approved:
                     _revoke_comp_leave_grant(session, ot)

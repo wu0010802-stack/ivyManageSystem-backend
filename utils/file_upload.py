@@ -71,21 +71,31 @@ def validate_file_signature(content: bytes, extension: str) -> None:
         )
 
 
+_UPLOAD_CHUNK_SIZE = 64 * 1024  # 64 KB
+
+
 async def read_upload_with_size_check(
     file: UploadFile,
     *,
     extension: str | None = None,
 ) -> bytes:
-    """讀取上傳檔案內容，超過 size limit 則回傳 400。
+    """以 chunked 方式讀取上傳內容，累計超過 size limit 立即中止避免 OOM。
 
     Args:
         file:      FastAPI UploadFile
         extension: 若提供，依副檔名套用對應 size limit（影片 50MB / 其他 10MB）
                    未提供時沿用 MAX_UPLOAD_SIZE (10MB)，維持舊呼叫者向後相容
     """
-    content = await file.read()
     limit = max_upload_size_for(extension) if extension else MAX_UPLOAD_SIZE
-    if len(content) > limit:
-        mb = limit // (1024 * 1024)
-        raise HTTPException(status_code=400, detail=f"檔案超過 {mb}MB 限制")
-    return content
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            mb = limit // (1024 * 1024)
+            raise HTTPException(status_code=400, detail=f"檔案超過 {mb}MB 限制")
+        chunks.append(chunk)
+    return b"".join(chunks)

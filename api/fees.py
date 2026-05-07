@@ -56,6 +56,12 @@ def _invalidate_finance_summary_cache() -> None:
 # 單筆費用金額上限（避免誤輸入或惡意輸入）
 MAX_FEE_AMOUNT = 999_999
 
+# 學費單筆繳款大額簽核閾值(NT$):本次入帳 delta 超過即需 ACTIVITY_PAYMENT_APPROVE。
+# 50000 涵蓋一般月費正常區間(月費 NT$10K~30K),學期/年費等大筆才需簽核;
+# 與 finance_guards.FINANCE_APPROVAL_THRESHOLD(NT$1000,薪資/退款用)區隔,
+# 避免日常收款 100% 觸發簽核堵死流程。閾值可依園所實際收費結構調整。
+FEE_PAYMENT_APPROVAL_THRESHOLD = 50_000
+
 
 class FeeItemCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
@@ -665,6 +671,17 @@ def pay_fee_record(
 
         delta = amount_paid - previous_paid
         operator = current_user.get("username", "") or "unknown"
+
+        # ── A 錢守衛:本次入帳 delta 超 FEE_PAYMENT_APPROVAL_THRESHOLD 需金流簽核 ──
+        # Why: 舊版 FEES_WRITE 即可登記 NT$999,999 為現金收入,財報直接受影響。
+        # 用本次 delta(非累計)判斷:讓常規月費可走、學期/年費等大筆需 approver。
+        if delta > 0:
+            require_finance_approve(
+                delta,
+                current_user,
+                threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
+                action_label="學費單筆繳款",
+            )
 
         # Append-only 流水：delta > 0 時才寫一筆（delta=0 只更新快照）
         if delta > 0:
