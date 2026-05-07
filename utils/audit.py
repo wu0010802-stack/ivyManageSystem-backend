@@ -49,6 +49,13 @@ ENTITY_PATTERNS = [
     (r"/api/config/deduction-types", "deduction_type"),
     (r"/api/config/bonus-types", "bonus_type"),
     (r"/api/config", "config"),
+    # 勞健保級距表（DB 化後 admin CRUD）。改級距金額會牽動全員保費；
+    # 端點本身有 has_finance_approve + reason ≥10 字守衛，但若不在 ENTITY_PATTERNS
+    # AuditMiddleware 不會落 audit_logs，等於只在 logger 留下 warning，事後溯源
+    # 無法用 audit-logs 篩選。Refs: 資安掃描 2026-05-07 P0。
+    # 範圍嚴格限定 /brackets — 不擴張到 /import / /calculate 等其他 insurance 端點
+    # （那些另有自身語意，不適合共用 insurance_bracket entity_type）。
+    (r"/api/insurance/brackets", "insurance_bracket"),
     # 審核流程設定（多層 ApprovalPolicy）。policy 自身 INSERT/UPDATE/DELETE
     # 必須留 audit，否則 admin 可「改規則 → 自批 → 改回」全程零稽核。
     # Refs: 邏輯漏洞 audit 2026-05-07 P0 (#13)。
@@ -136,6 +143,7 @@ ENTITY_LABELS = {
     "audit_log": "操作紀錄",
     # 審核流程設定（policy 自身異動稽核）
     "approval_policy": "審核流程設定",
+    "insurance_bracket": "勞健保級距",
 }
 
 ACTION_LABELS = {

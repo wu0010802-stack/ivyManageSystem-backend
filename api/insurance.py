@@ -6,7 +6,7 @@ import logging
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.finance_guards import has_finance_approve, require_adjustment_reason
@@ -196,6 +196,7 @@ async def list_brackets(
 @router.put("/insurance/brackets")
 async def upsert_brackets(
     payload: InsuranceBracketsBulkUpsert,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
 ):
     """新增/更新指定年度的整張級距表。
@@ -277,6 +278,18 @@ async def upsert_brackets(
         cleaned_reason,
     )
 
+    # AuditMiddleware 會把 entity_type=insurance_bracket / action=UPDATE 落 audit_logs
+    # changes 帶 effective_year / 上傳列數 / replace flag / 觸發 stale 數 / reason，
+    # 事後溯源用 audit-logs 篩 entity_type=insurance_bracket 即可看到完整異動軌跡。
+    request.state.audit_changes = {
+        "effective_year": payload.effective_year,
+        "upserted": upserted,
+        "replaced_existing": payload.replace_existing,
+        "stale_marked": stale_marked,
+        "reason": cleaned_reason,
+    }
+    request.state.audit_entity_id = payload.effective_year
+
     return {
         "message": "級距表已更新",
         "effective_year": payload.effective_year,
@@ -290,6 +303,7 @@ async def upsert_brackets(
 async def delete_bracket(
     bracket_id: int,
     payload: InsuranceBracketDeleteRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
 ):
     """刪除單一級距列（行政誤新增時的修正用）。
@@ -333,4 +347,12 @@ async def delete_bracket(
         current_user.get("username"),
         cleaned_reason,
     )
+    # AuditMiddleware 會把 entity_type=insurance_bracket / action=DELETE 落 audit_logs
+    request.state.audit_changes = {
+        "effective_year": year,
+        "amount": amount,
+        "stale_marked": stale_marked,
+        "reason": cleaned_reason,
+    }
+    request.state.audit_entity_id = bracket_id
     return {"message": "已刪除", "effective_year": year, "stale_marked": stale_marked}
