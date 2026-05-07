@@ -219,9 +219,23 @@ def approve_punch_correction(
         if correction.correction_type in ("punch_out", "both"):
             att.punch_out_time = correction.requested_punch_out
 
-        # 重算缺打卡旗標
-        att.is_missing_punch_in = att.punch_in_time is None
-        att.is_missing_punch_out = att.punch_out_time is None
+        # 依新 punch 時間整套重算 is_late/is_early_leave/late_minutes/
+        # early_leave_minutes/status/is_missing_*。否則舊的遲到/早退欄位殘留會被
+        # 薪資 engine（services/salary/engine.py:2099+）讀到，造成補卡通過卻仍
+        # 扣遲到金的真實漏帳（audit 2026-05-07 P0 #6）。
+        from utils.attendance_calc import apply_attendance_status
+
+        # 取員工排班時間（caller 已驗 employee 存在於 correction）
+        emp = (
+            session.query(Employee)
+            .filter(Employee.id == correction.employee_id)
+            .first()
+        )
+        apply_attendance_status(
+            att,
+            work_start_str=emp.work_start_time if emp else None,
+            work_end_str=emp.work_end_time if emp else None,
+        )
 
         # 更新申請狀態
         correction.is_approved = True
