@@ -1178,7 +1178,7 @@ class TestF029_PublicUpdatePhone:
         session.commit()
         return sy, sem
 
-    def test_change_to_already_used_phone_returns_409_generic_no_oracle(
+    def test_change_to_already_used_phone_returns_400_generic_no_oracle(
         self, activity_public_client
     ):
         client, sf = activity_public_client
@@ -1228,7 +1228,10 @@ class TestF029_PublicUpdatePhone:
                 "supplies": [],
             },
         )
-        assert r_upd.status_code == 409
+        # 資安掃描 2026-05-07 P1：原本回 409，但 status code 仍能讓攻擊者區分
+        # 「手機已存在」(409) 與「其他驗證錯誤」(400)。改回 400 與其他 validation
+        # 錯誤同 status code，並加 200-500ms jitter 壓低 timing oracle。
+        assert r_upd.status_code == 400
         # 必須是 generic message（不洩漏是否「已被其他報名使用」）
         detail = r_upd.json()["detail"]
         assert "已被其他報名使用" not in detail

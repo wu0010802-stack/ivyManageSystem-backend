@@ -325,7 +325,7 @@ class TestBirthdayRangeValidation:
 
 class TestPublicUpdatePhoneConflict:
     def test_cannot_change_to_phone_used_by_another_active_registration(self, client):
-        """若 new_parent_phone 已被同學期另一筆 active 報名使用 → 409。"""
+        """若 new_parent_phone 已被同學期另一筆 active 報名使用 → 400（資安 P1 2026-05-07 後）。"""
         c, sf = client
         sy, sem = _seed_term()
         with sf() as s:
@@ -370,6 +370,7 @@ class TestPublicUpdatePhoneConflict:
                 "supplies": [],
             },
         )
-        assert r_upd.status_code == 409
+        # 資安 P1 (2026-05-07)：409 → 400 與其他驗證錯誤同 status code。
+        assert r_upd.status_code == 400
         # F-029：detail 已改為 generic 不洩漏存在性，僅檢查 status 與通用字眼。
         assert "無法使用" in r_upd.json()["detail"]

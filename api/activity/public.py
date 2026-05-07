@@ -861,11 +861,15 @@ async def public_update_registration(
             )
             if conflict is not None:
                 # F-029：原訊息「此手機號碼已被其他報名使用」會形成 phone enumeration
-                # oracle，攻擊者可枚舉任意 09 開頭手機是否在系統內出現過。改用 generic
-                # 訊息避免 200 vs 409 status code 差異洩漏存在性（rate limit 仍由
-                # _public_register_limiter 控制 5/min/IP）。
+                # oracle，攻擊者可枚舉任意 09 開頭手機是否在系統內出現過。
+                # 資安 P1 (2026-05-07)：再進一步收緊
+                # - 409 → 400（與 Pydantic 驗證失敗同 status code，攻擊者無法用
+                #   status code 區分「手機已存在」與「其他驗證錯誤」）
+                # - 加入 200-500ms 隨機延遲（同 /public/query LOW-3 模式）壓低 timing oracle
+                # rate limit 仍由 _public_register_limiter 控制 5/min/IP。
+                await asyncio.sleep(random.uniform(0.2, 0.5))
                 raise HTTPException(
-                    status_code=409,
+                    status_code=400,
                     detail="此手機號碼無法使用，請聯繫校方協助處理",
                 )
             reg.parent_phone = body.new_parent_phone

@@ -520,7 +520,8 @@ class TestPhoneConflictCrossTerm:
                 "supplies": [],
             },
         )
-        assert res.status_code == 409
+        # 資安 P1 (2026-05-07)：409 → 400 與其他驗證錯誤同 status code。
+        assert res.status_code == 400
 
 
 # ═══════════════════════════════════════════════════════════════════════
