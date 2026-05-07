@@ -494,3 +494,56 @@ class ActivityPosDailyClose(Base):
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ActivityPosDailyCloseHistory(Base):
+    """才藝課 POS 日結 unlock 歷史快照（spec H3）
+
+    Why: 原 ActivityPosDailyClose 採 hard delete 解鎖，by_method_json 完整快照
+    僅留在 ApprovalLog.comment 文字摘要，無結構化還原（例如要重建「當時轉帳
+    NT$X、現金 NT$Y」的拆分需手動解析 comment）。本歷史表把每次解鎖前的完整
+    snapshot 結構化保存，append-only 不刪不改，供未來稽核或重簽差異對比使用。
+
+    一次 close_date 可能多次簽核 + 解鎖循環 → 多筆歷史紀錄；
+    query 時通常依 (close_date, unlocked_at DESC) 排序。
+    """
+
+    __tablename__ = "activity_pos_daily_close_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    close_date = Column(Date, nullable=False, index=True, comment="原日結日期")
+    # 原簽核資訊（複製自 ActivityPosDailyClose）
+    approver_username = Column(String(50), nullable=False, comment="原簽核者帳號")
+    approver_role = Column(String(20), nullable=True, comment="原簽核者角色")
+    approved_at = Column(DateTime, nullable=False, comment="原簽核時間")
+    approve_note = Column(Text, nullable=True, comment="原簽核備註")
+    # snapshot 全文（完整保存）
+    payment_total = Column(Integer, nullable=False)
+    refund_total = Column(Integer, nullable=False)
+    net_total = Column(Integer, nullable=False)
+    transaction_count = Column(Integer, nullable=False)
+    by_method_json = Column(
+        Text,
+        nullable=False,
+        default="{}",
+        comment="原簽核當下 by_method JSON（結構化保存供日後稽核還原）",
+    )
+    actual_cash_count = Column(Integer, nullable=True)
+    cash_variance = Column(Integer, nullable=True)
+    # unlock 元資料
+    unlocked_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    unlocked_by = Column(String(50), nullable=False, comment="解鎖人帳號")
+    unlocked_by_role = Column(String(20), nullable=True, comment="解鎖人角色")
+    is_admin_override = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否為 admin override 路徑",
+    )
+    unlock_reason = Column(
+        Text, nullable=False, comment="解鎖原因（≥10 字一般 / ≥30 字 override）"
+    )
+
+    __table_args__ = (
+        Index("ix_pos_close_history_date_unlocked", "close_date", "unlocked_at"),
+    )

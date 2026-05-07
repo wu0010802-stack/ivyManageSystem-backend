@@ -23,6 +23,7 @@ from sqlalchemy import case, func
 from models.database import (
     ActivityPaymentRecord,
     ActivityPosDailyClose,
+    ActivityPosDailyCloseHistory,
     ApprovalLog,
     get_session,
 )
@@ -469,6 +470,32 @@ async def unlock_daily_close(
         )
 
         action_value = "admin_override" if body.is_admin_override else "cancelled"
+
+        # spec H3：append-only 歷史快照（在 delete 前複製完整 snapshot）
+        # Why: ApprovalLog 只留 free text 摘要，by_method JSON 等結構化資料
+        # 會在 hard delete 時消失。本表保留每次 unlock 前的完整快照，供未來
+        # 稽核或重簽差異對比使用。
+        session.add(
+            ActivityPosDailyCloseHistory(
+                close_date=row.close_date,
+                approver_username=row.approver_username,
+                approver_role=None,  # 原 ActivityPosDailyClose 沒存 role；以後若需可從 ApprovalLog 推
+                approved_at=row.approved_at,
+                approve_note=row.note,
+                payment_total=row.payment_total,
+                refund_total=row.refund_total,
+                net_total=row.net_total,
+                transaction_count=row.transaction_count,
+                by_method_json=row.by_method_json or "{}",
+                actual_cash_count=row.actual_cash_count,
+                cash_variance=row.cash_variance,
+                unlocked_at=datetime.now(),
+                unlocked_by=current_user.get("username", ""),
+                unlocked_by_role=current_user.get("role"),
+                is_admin_override=body.is_admin_override,
+                unlock_reason=body.reason,
+            )
+        )
         session.delete(row)
         session.add(
             ApprovalLog(
@@ -830,5 +857,77 @@ async def list_operator_activity(
                 }
             )
         return {"days": days, "count": len(operators), "operators": operators}
+    finally:
+        session.close()
+
+
+# ── 端點 8：日結歷史快照查詢（spec H3）──────────────────────────
+
+
+@router.get("/audit/pos-close-history")
+async def list_pos_close_history(
+    close_date: str = Query(..., description="YYYY-MM-DD"),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
+):
+    """列出指定 close_date 的所有解鎖歷史快照（spec H3）。
+
+    Why: ApprovalLog 只留 unlock 事件的文字摘要；本端點回傳結構化的歷史
+    snapshot（含 by_method JSON、現金盤點等），供老闆稽核「當時帳長什麼樣」。
+
+    回傳依 unlocked_at 倒序，限 50 筆（同一日多次解鎖循環極少超過此值）。
+    """
+    target = _parse_date(close_date)
+    session = get_session()
+    try:
+        rows = (
+            session.query(ActivityPosDailyCloseHistory)
+            .filter(ActivityPosDailyCloseHistory.close_date == target)
+            .order_by(ActivityPosDailyCloseHistory.unlocked_at.desc())
+            .limit(50)
+            .all()
+        )
+        snapshots = []
+        for r in rows:
+            try:
+                by_method = json.loads(r.by_method_json or "{}")
+            except (TypeError, ValueError):
+                by_method = {}
+            snapshots.append(
+                {
+                    "id": r.id,
+                    "close_date": r.close_date.isoformat(),
+                    "approver_username": r.approver_username,
+                    "approver_role": r.approver_role,
+                    "approved_at": (
+                        r.approved_at.isoformat(timespec="seconds")
+                        if r.approved_at
+                        else None
+                    ),
+                    "approve_note": r.approve_note,
+                    "payment_total": r.payment_total,
+                    "refund_total": r.refund_total,
+                    "net_total": r.net_total,
+                    "transaction_count": r.transaction_count,
+                    "by_method": by_method,
+                    "actual_cash_count": r.actual_cash_count,
+                    "cash_variance": r.cash_variance,
+                    "unlocked_at": (
+                        r.unlocked_at.isoformat(timespec="seconds")
+                        if r.unlocked_at
+                        else None
+                    ),
+                    "unlocked_by": r.unlocked_by,
+                    "unlocked_by_role": r.unlocked_by_role,
+                    "is_admin_override": bool(r.is_admin_override),
+                    "unlock_reason": r.unlock_reason,
+                }
+            )
+        return {
+            "close_date": target.isoformat(),
+            "count": len(snapshots),
+            "snapshots": snapshots,
+        }
     finally:
         session.close()
