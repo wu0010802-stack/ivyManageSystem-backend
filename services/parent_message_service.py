@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from models.classroom import Classroom, Student
@@ -186,48 +187,52 @@ def mark_read(
 
 
 def count_unread_for_parent(session, *, parent_user_id: int) -> int:
-    """家長未讀訊息數：所有 thread 中 sender_role='teacher' 且 created_at > parent_last_read_at。"""
-    threads = (
-        session.query(ParentMessageThread)
+    """家長未讀訊息數：所有 thread 中 sender_role='teacher' 且 created_at > parent_last_read_at。
+
+    單一 JOIN query 取代「拉所有 thread → 每筆 thread 跑一次 count()」的 N+1。
+    """
+    count = (
+        session.query(func.count(ParentMessage.id))
+        .join(
+            ParentMessageThread,
+            ParentMessage.thread_id == ParentMessageThread.id,
+        )
         .filter(
             ParentMessageThread.parent_user_id == parent_user_id,
             ParentMessageThread.deleted_at.is_(None),
-        )
-        .all()
-    )
-    total = 0
-    for t in threads:
-        cutoff = t.parent_last_read_at
-        q = session.query(ParentMessage).filter(
-            ParentMessage.thread_id == t.id,
             ParentMessage.sender_role == "teacher",
             ParentMessage.deleted_at.is_(None),
+            or_(
+                ParentMessageThread.parent_last_read_at.is_(None),
+                ParentMessage.created_at > ParentMessageThread.parent_last_read_at,
+            ),
         )
-        if cutoff is not None:
-            q = q.filter(ParentMessage.created_at > cutoff)
-        total += q.count()
-    return total
+        .scalar()
+    )
+    return int(count or 0)
 
 
 def count_unread_for_teacher(session, *, teacher_user_id: int) -> int:
-    """教師未讀訊息數：所有 thread 中 sender_role='parent' 且 created_at > teacher_last_read_at。"""
-    threads = (
-        session.query(ParentMessageThread)
+    """教師未讀訊息數：所有 thread 中 sender_role='parent' 且 created_at > teacher_last_read_at。
+
+    單一 JOIN query 取代 N+1（同 count_unread_for_parent）。
+    """
+    count = (
+        session.query(func.count(ParentMessage.id))
+        .join(
+            ParentMessageThread,
+            ParentMessage.thread_id == ParentMessageThread.id,
+        )
         .filter(
             ParentMessageThread.teacher_user_id == teacher_user_id,
             ParentMessageThread.deleted_at.is_(None),
-        )
-        .all()
-    )
-    total = 0
-    for t in threads:
-        cutoff = t.teacher_last_read_at
-        q = session.query(ParentMessage).filter(
-            ParentMessage.thread_id == t.id,
             ParentMessage.sender_role == "parent",
             ParentMessage.deleted_at.is_(None),
+            or_(
+                ParentMessageThread.teacher_last_read_at.is_(None),
+                ParentMessage.created_at > ParentMessageThread.teacher_last_read_at,
+            ),
         )
-        if cutoff is not None:
-            q = q.filter(ParentMessage.created_at > cutoff)
-        total += q.count()
-    return total
+        .scalar()
+    )
+    return int(count or 0)

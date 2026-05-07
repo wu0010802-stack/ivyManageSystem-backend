@@ -7,10 +7,14 @@
 - announcements.count_unread_for_user
 - fees.compute_fees_summary
 - events.count_pending_acks_for_user
+
+Perf：home_summary 的 9 個內部 query 用 60s in-process TTLCache
+壓制；接受最多 60s 的陳舊（公告/未讀/繳費等顯示 count，業主可接受）。
 """
 
 from datetime import date, datetime, timedelta
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends
 
 from models.activity import ActivityRegistration, RegistrationCourse
@@ -33,6 +37,9 @@ from .events import count_pending_acks_for_user as count_pending_event_acks
 from .fees import compute_fees_summary
 
 router = APIRouter(prefix="/home", tags=["parent-home"])
+
+# user_id → (home_summary_payload)；60s TTL，maxsize=512（同時上線家長上限）
+_home_summary_cache: TTLCache = TTLCache(maxsize=512, ttl=60)
 
 
 def _count_pending_activity_promotions(session, student_ids: list[int]) -> int:
@@ -91,6 +98,10 @@ def home_summary(current_user: dict = Depends(require_parent_role())):
         - pending_event_acks: int
     """
     user_id = current_user["user_id"]
+    cached = _home_summary_cache.get(user_id)
+    if cached is not None:
+        return cached
+
     session = get_session()
     try:
         user = _get_parent_user(session, current_user)
@@ -133,7 +144,7 @@ def home_summary(current_user: dict = Depends(require_parent_role())):
         _, student_ids = _get_parent_student_ids(session, user_id)
         fees = compute_fees_summary(session, student_ids)
 
-        return {
+        result = {
             "me": me,
             "children": children,
             "summary": {
@@ -151,6 +162,8 @@ def home_summary(current_user: dict = Depends(require_parent_role())):
                 "recent_leave_reviews": _count_recent_leave_reviews(session, user_id),
             },
         }
+        _home_summary_cache[user_id] = result
+        return result
     finally:
         session.close()
 

@@ -22,6 +22,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 
 from models.database import (
     Attachment,
@@ -124,32 +125,20 @@ def _message_to_dict(msg: ParentMessage, attachments: list[Attachment]) -> dict:
     }
 
 
-def _thread_summary(
-    session, *, thread: ParentMessageThread, parent_user_id: int
+def _thread_summary_from_maps(
+    *,
+    thread: ParentMessageThread,
+    student: Optional[Student],
+    teacher: Optional[User],
+    last_message: Optional[ParentMessage],
+    unread_count: int,
 ) -> dict:
-    student = session.query(Student).filter(Student.id == thread.student_id).first()
-    teacher = session.query(User).filter(User.id == thread.teacher_user_id).first()
-    last = (
-        session.query(ParentMessage)
-        .filter(ParentMessage.thread_id == thread.id)
-        .order_by(ParentMessage.created_at.desc())
-        .first()
-    )
+    """Pure transformer：把預載的 student/teacher/last/unread map 拼成 thread dict。"""
     last_preview = None
-    if last and last.deleted_at is None:
-        last_preview = (last.body or "(附件)")[:60]
-    elif last and last.deleted_at is not None:
+    if last_message and last_message.deleted_at is None:
+        last_preview = (last_message.body or "(附件)")[:60]
+    elif last_message and last_message.deleted_at is not None:
         last_preview = "(已撤回)"
-
-    cutoff = thread.parent_last_read_at
-    unread_q = session.query(ParentMessage).filter(
-        ParentMessage.thread_id == thread.id,
-        ParentMessage.sender_role == "teacher",
-        ParentMessage.deleted_at.is_(None),
-    )
-    if cutoff is not None:
-        unread_q = unread_q.filter(ParentMessage.created_at > cutoff)
-    unread_count = unread_q.count()
 
     return {
         "id": thread.id,
@@ -163,6 +152,120 @@ def _thread_summary(
         "last_message_preview": last_preview,
         "unread_count": unread_count,
     }
+
+
+def _thread_summary(
+    session, *, thread: ParentMessageThread, parent_user_id: int
+) -> dict:
+    """單一 thread summary（給 get_thread 等 single-thread 呼叫）；list 端點走 batch 路徑。"""
+    student = session.query(Student).filter(Student.id == thread.student_id).first()
+    teacher = session.query(User).filter(User.id == thread.teacher_user_id).first()
+    last = (
+        session.query(ParentMessage)
+        .filter(ParentMessage.thread_id == thread.id)
+        .order_by(ParentMessage.created_at.desc())
+        .first()
+    )
+
+    cutoff = thread.parent_last_read_at
+    unread_q = session.query(ParentMessage).filter(
+        ParentMessage.thread_id == thread.id,
+        ParentMessage.sender_role == "teacher",
+        ParentMessage.deleted_at.is_(None),
+    )
+    if cutoff is not None:
+        unread_q = unread_q.filter(ParentMessage.created_at > cutoff)
+    unread_count = unread_q.count()
+
+    return _thread_summary_from_maps(
+        thread=thread,
+        student=student,
+        teacher=teacher,
+        last_message=last,
+        unread_count=unread_count,
+    )
+
+
+def _batch_thread_summaries(
+    session,
+    *,
+    threads: list[ParentMessageThread],
+) -> list[dict]:
+    """批次組裝 N 個 thread 的 summary，~5 個 SQL round-trip 取代 4N。"""
+    if not threads:
+        return []
+
+    thread_ids = [t.id for t in threads]
+    student_ids = list({t.student_id for t in threads if t.student_id})
+    teacher_ids = list({t.teacher_user_id for t in threads if t.teacher_user_id})
+
+    # 1) 學生
+    students_by_id: dict[int, Student] = {}
+    if student_ids:
+        students_by_id = {
+            s.id: s
+            for s in session.query(Student).filter(Student.id.in_(student_ids)).all()
+        }
+
+    # 2) 教師
+    teachers_by_id: dict[int, User] = {}
+    if teacher_ids:
+        teachers_by_id = {
+            u.id: u for u in session.query(User).filter(User.id.in_(teacher_ids)).all()
+        }
+
+    # 3) last message per thread：先以 (thread_id, max(created_at)) 取 key，再 join 撈完整 row
+    last_key_subq = (
+        session.query(
+            ParentMessage.thread_id.label("thread_id"),
+            func.max(ParentMessage.created_at).label("max_created_at"),
+        )
+        .filter(ParentMessage.thread_id.in_(thread_ids))
+        .group_by(ParentMessage.thread_id)
+        .subquery()
+    )
+    last_messages = (
+        session.query(ParentMessage)
+        .join(
+            last_key_subq,
+            (ParentMessage.thread_id == last_key_subq.c.thread_id)
+            & (ParentMessage.created_at == last_key_subq.c.max_created_at),
+        )
+        .all()
+    )
+    last_by_thread: dict[int, ParentMessage] = {m.thread_id: m for m in last_messages}
+
+    # 4) unread count per thread：GROUP BY 一次拿
+    unread_rows = (
+        session.query(ParentMessage.thread_id, func.count(ParentMessage.id))
+        .join(
+            ParentMessageThread,
+            ParentMessage.thread_id == ParentMessageThread.id,
+        )
+        .filter(
+            ParentMessage.thread_id.in_(thread_ids),
+            ParentMessage.sender_role == "teacher",
+            ParentMessage.deleted_at.is_(None),
+            or_(
+                ParentMessageThread.parent_last_read_at.is_(None),
+                ParentMessage.created_at > ParentMessageThread.parent_last_read_at,
+            ),
+        )
+        .group_by(ParentMessage.thread_id)
+        .all()
+    )
+    unread_by_thread: dict[int, int] = {tid: int(cnt or 0) for tid, cnt in unread_rows}
+
+    return [
+        _thread_summary_from_maps(
+            thread=t,
+            student=students_by_id.get(t.student_id),
+            teacher=teachers_by_id.get(t.teacher_user_id),
+            last_message=last_by_thread.get(t.id),
+            unread_count=unread_by_thread.get(t.id, 0),
+        )
+        for t in threads
+    ]
 
 
 def _get_thread_for_parent(
@@ -211,9 +314,7 @@ def list_threads(
         )
         has_more = len(threads) > limit
         page = threads[:limit]
-        items = [
-            _thread_summary(session, thread=t, parent_user_id=user_id) for t in page
-        ]
+        items = _batch_thread_summaries(session, threads=page)
         next_cursor = page[-1].id if has_more and page else None
         return {"items": items, "next_cursor": next_cursor}
     finally:
