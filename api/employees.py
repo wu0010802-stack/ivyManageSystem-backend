@@ -18,6 +18,7 @@ from models.database import (
     Classroom,
     JobTitle,
     SalaryRecord,
+    User,
 )
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
@@ -742,6 +743,31 @@ async def offboard_employee(
                     stale_marked,
                 )
 
+        # ── 撤離職員工的 User 帳號（audit 2026-05-07 P1）────────────────────
+        # 只動 Employee.is_active 不動 User → 離職員工的 cookie 仍有效，可繼續
+        # 呼叫 /api/exports/employee-attendance 下載自己出勤月報、合約金額（若曾
+        # 為 admin/hr/supervisor）。離職日 <= 今天時：
+        # - User.is_active = False（get_current_user 立刻 401）
+        # - User.token_version += 1（任何已簽發的 cookie 因版本不符立刻失效）
+        # 通知期（resign_d > today）保留 User active 直到當日 cron 自動轉。
+        revoked_user_count = 0
+        if resign_d <= today:
+            user = (
+                session.query(User)
+                .filter(User.employee_id == employee_id, User.is_active.is_(True))
+                .first()
+            )
+            if user is not None:
+                user.is_active = False
+                user.token_version = (user.token_version or 0) + 1
+                revoked_user_count = 1
+                logger.warning(
+                    "員工 %s 離職連帶撤 User 帳號：username=%s token_version 升至 %d",
+                    employee_id,
+                    user.username,
+                    user.token_version,
+                )
+
         logger.warning(
             "辦理離職：employee_id=%s name=%s resign_date=%s operator=%s",
             emp.employee_id,
@@ -757,6 +783,7 @@ async def offboard_employee(
             "resign_date": resign_d.isoformat(),
             "resign_reason": emp.resign_reason,
             "is_active": emp.is_active,
+            "user_account_revoked": revoked_user_count > 0,
         }
 
 
