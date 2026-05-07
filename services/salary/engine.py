@@ -2013,20 +2013,25 @@ class SalaryEngine:
             overtime_bonus = int(breakdown.get("overtimeBonus") or 0)
             category = breakdown.get("category", "")
 
-            # 2) 會議缺席扣款
-            _, last_day = _cal.monthrange(year, month)
-            start_date = _date(year, month, 1)
-            end_date = _date(year, month, last_day)
-            absent_count = (
-                session.query(MeetingRecord)
-                .filter(
-                    MeetingRecord.employee_id == employee_id,
-                    MeetingRecord.meeting_date >= start_date,
-                    MeetingRecord.meeting_date <= end_date,
-                    MeetingRecord.attended == False,  # noqa: E712
+            # 2) 會議缺席扣款；批次路徑（API endpoint）會在 _ctx 預載
+            # `meeting_absent_count_map`（employee_id → count），取代逐員工查詢。
+            absent_map = (_ctx or {}).get("meeting_absent_count_map") if _ctx else None
+            if absent_map is not None:
+                absent_count = int(absent_map.get(employee_id, 0))
+            else:
+                _, last_day = _cal.monthrange(year, month)
+                start_date = _date(year, month, 1)
+                end_date = _date(year, month, last_day)
+                absent_count = (
+                    session.query(MeetingRecord)
+                    .filter(
+                        MeetingRecord.employee_id == employee_id,
+                        MeetingRecord.meeting_date >= start_date,
+                        MeetingRecord.meeting_date <= end_date,
+                        MeetingRecord.attended == False,  # noqa: E712
+                    )
+                    .count()
                 )
-                .count()
-            )
             meeting_absence_deduction = int(
                 absent_count * (self._meeting_absence_penalty or 0)
             )

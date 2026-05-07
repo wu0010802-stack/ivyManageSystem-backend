@@ -59,7 +59,7 @@ from fastapi import BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import joinedload
 import calendar as _cal
 
@@ -68,6 +68,7 @@ from models.database import (
     get_session,
     Employee,
     Classroom,
+    MeetingRecord,
     SalaryRecord,
     SalarySnapshot,
     Attendance,
@@ -693,6 +694,25 @@ def get_festival_bonus_period_accrual(
         for y, m in passed_months:
             _, last_day = _cal.monthrange(y, m)
             month_end = date(y, m, last_day)
+            month_start = date(y, m, 1)
+            # 預載當月會議缺席數（依 employee_id 分組），取代 calculate_period_accrual_row
+            # 在迴圈內每員工一次的 MeetingRecord.count() 查詢（B.P0.1）。
+            meeting_absent_rows = (
+                session.query(
+                    MeetingRecord.employee_id,
+                    func.count(MeetingRecord.id),
+                )
+                .filter(
+                    MeetingRecord.meeting_date >= month_start,
+                    MeetingRecord.meeting_date <= month_end,
+                    MeetingRecord.attended == False,  # noqa: E712
+                )
+                .group_by(MeetingRecord.employee_id)
+                .all()
+            )
+            meeting_absent_count_map = {
+                int(emp_id): int(cnt or 0) for emp_id, cnt in meeting_absent_rows
+            }
             monthly_ctx_cache[(y, m)] = {
                 "month_end": month_end,
                 "school_active": count_students_active_on(session, month_end),
@@ -701,8 +721,10 @@ def get_festival_bonus_period_accrual(
                     c.id: c
                     for c in session.query(Classroom)
                     .options(joinedload(Classroom.grade))
+                    .filter(Classroom.is_active == True)  # noqa: E712
                     .all()
                 },
+                "meeting_absent_count_map": meeting_absent_count_map,
             }
 
         rows = []
@@ -720,6 +742,9 @@ def get_festival_bonus_period_accrual(
                     ),
                     "school_active_students": ctx_cache["school_active"],
                     "classroom_count_map": ctx_cache["cls_count_map"],
+                    "meeting_absent_count_map": ctx_cache.get(
+                        "meeting_absent_count_map", {}
+                    ),
                 }
                 try:
                     row = engine.calculate_period_accrual_row(
