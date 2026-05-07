@@ -77,6 +77,7 @@ from ._shared import (
     _build_public_query_payload,
     _generate_query_token,
     _hash_query_token,
+    is_query_token_expired,
     TAIPEI_TZ,
 )
 from utils.academic import resolve_academic_term_filters
@@ -393,8 +394,16 @@ async def public_query_by_token(
             )
             .first()
         )
-        if reg is None or _normalize_phone(reg.parent_phone) != _normalize_phone(
-            body.parent_phone
+        # 資安 P0 (2026-05-07)：查詢碼到期判定。issued_at 為 None（舊資料）或超過 TTL
+        # 一律回 404 同訊息（與 token 不存在 / phone 錯一致），不洩漏「token 過期」
+        # 與其他失敗的差別。家長過期後自然引導到 /public/query 三欄比對。
+        token_expired = reg is not None and is_query_token_expired(
+            reg.query_token_issued_at
+        )
+        if (
+            reg is None
+            or token_expired
+            or _normalize_phone(reg.parent_phone) != _normalize_phone(body.parent_phone)
         ):
             raise HTTPException(
                 status_code=404,
@@ -594,6 +603,7 @@ async def public_register(
         is_matched = bool(matched_student_id and matched_classroom_id)
 
         # Phase 3：產明文 query token，hash 寫進 DB；明文只在這次 response 回給家長一次
+        # 資安 P0 (2026-05-07)：同時記 issued_at，180 天後 token 自動失效
         plaintext_token = _generate_query_token()
         reg = ActivityRegistration(
             student_name=body.name,
@@ -608,6 +618,7 @@ async def public_register(
             pending_review=not is_matched,
             match_status="matched" if is_matched else "pending",
             query_token_hash=_hash_query_token(plaintext_token),
+            query_token_issued_at=datetime.now(),
         )
         session.add(reg)
         session.flush()

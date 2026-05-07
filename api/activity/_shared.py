@@ -5,6 +5,7 @@ api/activity/_shared.py — 才藝系統共用 schemas、helpers、常數
 import hashlib
 import hmac
 import json
+import os
 import re
 import logging
 import secrets as _secrets_module
@@ -695,7 +696,35 @@ def _require_active_classroom(session, classroom_name: str):
 # - reject pending 時 rotate（指向新 hash）
 # - threat model：token 是 convenience layer，不是 security layer；phone 仍是必要第二因素
 # - server secret 沿用 JWT_SECRET_KEY（dev 重啟會 invalidate 所有 token，已有 warning）
+# - 到期：query_token_issued_at + ACTIVITY_QUERY_TOKEN_TTL_DAYS（預設 180 天）。
+#   過期/未發 token 一律拒絕並引導改用 /public/query 三欄比對。Refs: 資安掃描 2026-05-07 P0。
 _ACTIVITY_TOKEN_DOMAIN = b"activity_query_token:v1"
+
+
+def _query_token_ttl_days() -> int:
+    """讀環境變數 ACTIVITY_QUERY_TOKEN_TTL_DAYS（預設 180 天）。
+
+    180 天涵蓋一個學期完整活動期 + 部分緩衝；業主可調為更短（例 90）強化。
+    invalid 值 fallback 預設值，不 raise（避免一個壞 env 卡住整個公開報名頁）。
+    """
+    raw = os.getenv("ACTIVITY_QUERY_TOKEN_TTL_DAYS", "180")
+    try:
+        v = int(raw)
+        return v if v > 0 else 180
+    except (TypeError, ValueError):
+        return 180
+
+
+def is_query_token_expired(issued_at) -> bool:
+    """判斷查詢碼是否已過期。
+
+    issued_at 為 None（舊資料未發 token / backfill 期）一律視為過期。
+    這樣攻擊者拿到舊 reg 的偽造 token 也無法用，必須走 /public/query 三欄比對。
+    """
+    if issued_at is None:
+        return True
+    ttl = timedelta(days=_query_token_ttl_days())
+    return datetime.now() - issued_at > ttl
 
 
 def _generate_query_token() -> str:

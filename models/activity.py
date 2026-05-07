@@ -142,6 +142,16 @@ class ActivityRegistration(Base):
         String(64), nullable=True, comment="公開查詢碼 hash（HMAC-SHA256）"
     )
 
+    # 資安掃描 2026-05-07 P0：查詢碼到期時間戳。設計：
+    # - register 寫入 query_token_hash 時同時記 issued_at = now()
+    # - public_query_by_token 比對時驗證 now - issued_at < TTL（env ACTIVITY_QUERY_TOKEN_TTL_DAYS，預設 180）
+    # - reject rotate 把 hash 設 None 時也清 issued_at
+    # 沒有此欄位則查詢碼永久有效，截圖外流/家長換手機後仍可查全家報名。
+    # 既有舊資料（未發 token 或 backfill 期）issued_at = NULL → 視為過期（強制走 /public/query）
+    query_token_issued_at = Column(
+        DateTime, nullable=True, comment="公開查詢碼簽發時間（過期判定用）"
+    )
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
