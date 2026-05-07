@@ -1,5 +1,8 @@
 """上傳檔案共用工具：大小限制、magic bytes 驗證與內容讀取。"""
 
+import os
+import re
+
 from fastapi import HTTPException, UploadFile
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB（預設 / 影像 / 文件）
@@ -99,3 +102,35 @@ async def read_upload_with_size_check(
             raise HTTPException(status_code=400, detail=f"檔案超過 {mb}MB 限制")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+# 資安掃描 2026-05-07 P1：原始 filename 可能含「雙副檔名」(payload.pdf.exe) 或路徑
+# 字元；雖 storage_key 用 UUID 不受影響，但 original_filename 會在 download
+# Content-Disposition 與 UI 顯示時被使用，留下被誤導執行 / 路徑穿越的可能性。
+# 一律 sanitize：strip 路徑成分、把所有內嵌 dot 換成底線、用驗證過的 ext 接尾。
+_FILENAME_UNSAFE_CHARS = re.compile(r"[\x00-\x1f<>:\"/\\|?*]")
+_MAX_BASENAME_LEN = 100
+
+
+def safe_attachment_filename(raw_name: str, validated_ext: str) -> str:
+    """產生安全的 original_filename。
+
+    - 跨平台剝除目錄成分（split on `/` 與 `\\`，避免 Windows 上傳路徑殘留）
+    - 控制字元 / 平台禁字 → 底線
+    - basename 內所有 `.` 都換成底線（避免 .exe.pdf 雙副檔名 / .htaccess 隱藏檔）
+    - 最終長度限制 100 字
+    - 用 validated_ext 接尾（呼叫端已對 ext 套白名單）
+
+    輸入空字串或全部被剝光時，回傳 `attachment<ext>`。
+    """
+    if not raw_name:
+        return f"attachment{validated_ext.lower()}"
+    # Windows 路徑用 \、Unix 用 /；Python os.path.basename 在 Unix 不切 \，手動處理
+    base = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+    stem, _ = os.path.splitext(base)
+    cleaned = _FILENAME_UNSAFE_CHARS.sub("_", stem)
+    cleaned = cleaned.replace(".", "_").strip("._-")
+    if not cleaned:
+        cleaned = "attachment"
+    cleaned = cleaned[:_MAX_BASENAME_LEN]
+    return f"{cleaned}{validated_ext.lower()}"

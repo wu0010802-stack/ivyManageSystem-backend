@@ -43,7 +43,11 @@ from services.parent_message_service import (
     mark_read,
 )
 from utils.auth import require_permission
-from utils.file_upload import read_upload_with_size_check, validate_file_signature
+from utils.file_upload import (
+    read_upload_with_size_check,
+    safe_attachment_filename,
+    validate_file_signature,
+)
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -525,7 +529,7 @@ async def attach_to_message(
             storage_key=stored.storage_key,
             display_key=stored.display_key,
             thumb_key=stored.thumb_key,
-            original_filename=filename,
+            original_filename=safe_attachment_filename(filename, ext),
             mime_type=stored.mime_type,
             size_bytes=len(content),
             uploaded_by=user_id,

@@ -44,7 +44,11 @@ from services.contact_book_service import (
     publish_entry,
 )
 from utils.auth import require_permission
-from utils.file_upload import read_upload_with_size_check, validate_file_signature
+from utils.file_upload import (
+    read_upload_with_size_check,
+    safe_attachment_filename,
+    validate_file_signature,
+)
 from utils.permissions import Permission
 from utils.portfolio_storage import heic_supported, is_heic_extension
 
@@ -485,7 +489,7 @@ async def upload_photo(
             storage_key=stored.storage_key,
             display_key=stored.display_key,
             thumb_key=stored.thumb_key,
-            original_filename=filename,
+            original_filename=safe_attachment_filename(filename, ext),
             mime_type=stored.mime_type,
             size_bytes=len(content),
             uploaded_by=current_user.get("user_id"),

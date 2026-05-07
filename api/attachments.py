@@ -41,6 +41,7 @@ from utils.errors import raise_safe_500
 from utils.file_upload import (
     max_upload_size_for,
     read_upload_with_size_check,
+    safe_attachment_filename,
     validate_file_signature,
 )
 from utils.permissions import Permission
@@ -176,7 +177,7 @@ async def upload_attachment(
                 storage_key=stored.storage_key,
                 display_key=stored.display_key,
                 thumb_key=stored.thumb_key,
-                original_filename=filename,
+                original_filename=safe_attachment_filename(filename, ext),
                 mime_type=stored.mime_type,
                 size_bytes=len(content),
                 uploaded_by=current_user.get("user_id"),
