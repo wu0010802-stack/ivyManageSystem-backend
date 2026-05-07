@@ -65,6 +65,14 @@ class InsuranceBracketsBulkUpsert(BaseModel):
         max_length=500,
         description="變更原因（≥10 字），落 audit；級距表異動牽動全員保費",
     )
+    # 資安掃描 2026-05-07 P2：當該年度已有封存月份時，預設拒絕改動。
+    # 二次審批：行政人員確認影響後重送 acknowledge_finalized_months=True 才放行。
+    # 已封存月份不會被重算（is_finalized=False 才標 stale），但中途異動會讓
+    # 半年報表跨段使用不同級距值，需業主明確同意。
+    acknowledge_finalized_months: bool = Field(
+        default=False,
+        description="該年度已有封存薪資月份時必須帶 True 才放行（二次審批）",
+    )
 
 
 class InsuranceBracketDeleteRequest(BaseModel):
@@ -73,6 +81,10 @@ class InsuranceBracketDeleteRequest(BaseModel):
         min_length=10,
         max_length=500,
         description="刪除原因（≥10 字），落 audit；級距表異動牽動全員保費",
+    )
+    acknowledge_finalized_months: bool = Field(
+        default=False,
+        description="該年度已有封存薪資月份時必須帶 True 才放行（二次審批）",
     )
 
 
@@ -96,6 +108,25 @@ def _bulk_mark_salary_stale_for_year(session, salary_year: int) -> int:
         .update({"needs_recalc": True}, synchronize_session=False)
     )
     return affected
+
+
+def _count_finalized_months_for_year(session, salary_year: int) -> int:
+    """數該年度已封存的（distinct）薪資月份數。
+
+    Why: 資安掃描 2026-05-07 P2 — 已封存月份不會被本次 stale 重算覆蓋，
+    但若同年中途改級距會造成半年報表跨段異質。改動時需業主二次確認。
+    """
+    from sqlalchemy import distinct, func
+
+    return (
+        session.query(func.count(distinct(SalaryRecord.salary_month)))
+        .filter(
+            SalaryRecord.salary_year == salary_year,
+            SalaryRecord.is_finalized.is_(True),
+        )
+        .scalar()
+        or 0
+    )
 
 
 # ============ Routes ============
@@ -225,6 +256,20 @@ async def upsert_brackets(
     cleaned_reason = require_adjustment_reason(payload.reason)
 
     with session_scope() as session:
+        # 資安掃描 2026-05-07 P2：該年度已有封存月份時要求二次確認
+        finalized_months = _count_finalized_months_for_year(
+            session, payload.effective_year
+        )
+        if finalized_months > 0 and not payload.acknowledge_finalized_months:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"該年度（{payload.effective_year}）已有 {finalized_months} 個"
+                    f"月份封存。封存月份不會被重算，但同年中途改級距會讓半年/年度"
+                    f"報表跨段不一致。如確認影響，請帶 acknowledge_finalized_months=True 重送。"
+                ),
+            )
+
         if payload.replace_existing:
             session.query(InsuranceBracket).filter(
                 InsuranceBracket.effective_year == payload.effective_year
@@ -286,6 +331,8 @@ async def upsert_brackets(
         "upserted": upserted,
         "replaced_existing": payload.replace_existing,
         "stale_marked": stale_marked,
+        "finalized_months_in_year": finalized_months,
+        "acknowledged_finalized": payload.acknowledge_finalized_months,
         "reason": cleaned_reason,
     }
     request.state.audit_entity_id = payload.effective_year
@@ -331,6 +378,17 @@ async def delete_bracket(
             raise HTTPException(status_code=404, detail="級距不存在")
         year = row.effective_year
         amount = row.amount
+        # 資安掃描 2026-05-07 P2：該年度已有封存月份時要求二次確認
+        finalized_months = _count_finalized_months_for_year(session, year)
+        if finalized_months > 0 and not payload.acknowledge_finalized_months:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"該年度（{year}）已有 {finalized_months} 個月份封存。"
+                    f"封存月份不會被重算，但同年中途刪級距會讓對應投保金額落入"
+                    f"fallback 區間。如確認影響，請帶 acknowledge_finalized_months=True 重送。"
+                ),
+            )
         session.delete(row)
         stale_marked = _bulk_mark_salary_stale_for_year(session, year)
 
@@ -352,6 +410,8 @@ async def delete_bracket(
         "effective_year": year,
         "amount": amount,
         "stale_marked": stale_marked,
+        "finalized_months_in_year": finalized_months,
+        "acknowledged_finalized": payload.acknowledge_finalized_months,
         "reason": cleaned_reason,
     }
     request.state.audit_entity_id = bracket_id

@@ -171,7 +171,9 @@ class TestUpsertBracketsGuards:
             s.commit()
 
         assert _login(client, "with_finance").status_code == 200
-        res = client.put("/api/insurance/brackets", json=_BRACKET_PAYLOAD)
+        # 資安掃描 2026-05-07 P2：該年度有封存月份，需 acknowledge_finalized_months=True
+        payload_with_ack = dict(_BRACKET_PAYLOAD, acknowledge_finalized_months=True)
+        res = client.put("/api/insurance/brackets", json=payload_with_ack)
         assert res.status_code == 200, res.text
         body = res.json()
         # 該年未封存 2 筆都應被標 stale；封存的 / 跨年的不動
@@ -265,3 +267,85 @@ class TestDeleteBracketGuards:
         # 沒帶 body
         res = client.request("DELETE", f"/api/insurance/brackets/{bid}")
         assert res.status_code == 422, res.text
+
+
+class TestFinalizedMonthsLock:
+    """資安掃描 2026-05-07 P2：該年度有封存月份時，PUT/DELETE 預設拒絕，需 ack。"""
+
+    def test_put_blocked_when_finalized_months_exist(self, insurance_client):
+        client, sf = insurance_client
+        with sf() as s:
+            _create_user(s, "fin_a", permissions=SALARY_PLUS_FINANCE)
+            _seed_salary_record(s, 10, 2026, 3, finalized=True)
+            _seed_salary_record(s, 11, 2026, 4, finalized=True)
+            s.commit()
+
+        assert _login(client, "fin_a").status_code == 200
+        # 沒帶 ack → 409
+        res = client.put("/api/insurance/brackets", json=_BRACKET_PAYLOAD)
+        assert res.status_code == 409, res.text
+        detail = res.json()["detail"]
+        assert "封存" in detail
+        assert "acknowledge_finalized_months" in detail
+
+    def test_put_succeeds_with_acknowledgement(self, insurance_client):
+        client, sf = insurance_client
+        with sf() as s:
+            _create_user(s, "fin_b", permissions=SALARY_PLUS_FINANCE)
+            _seed_salary_record(s, 12, 2026, 3, finalized=True)
+            s.commit()
+
+        assert _login(client, "fin_b").status_code == 200
+        payload = dict(_BRACKET_PAYLOAD, acknowledge_finalized_months=True)
+        res = client.put("/api/insurance/brackets", json=payload)
+        assert res.status_code == 200, res.text
+
+    def test_put_no_lock_when_no_finalized_months(self, insurance_client):
+        """該年沒有任何封存月份 → 不需要 ack。"""
+        client, sf = insurance_client
+        with sf() as s:
+            _create_user(s, "fin_c", permissions=SALARY_PLUS_FINANCE)
+            _seed_salary_record(s, 13, 2026, 5, finalized=False)
+            s.commit()
+
+        assert _login(client, "fin_c").status_code == 200
+        res = client.put("/api/insurance/brackets", json=_BRACKET_PAYLOAD)
+        assert res.status_code == 200, res.text
+
+    def test_delete_blocked_when_finalized_months_exist(self, insurance_client):
+        client, sf = insurance_client
+        with sf() as s:
+            _create_user(s, "fin_d", permissions=SALARY_PLUS_FINANCE)
+            b = _seed_bracket(s, year=2026, amount=30000)
+            _seed_salary_record(s, 14, 2026, 6, finalized=True)
+            s.commit()
+            bid = b.id
+
+        assert _login(client, "fin_d").status_code == 200
+        res = client.request(
+            "DELETE",
+            f"/api/insurance/brackets/{bid}",
+            json={"reason": "新年度政府公告刪除這級距列"},
+        )
+        assert res.status_code == 409, res.text
+        assert "封存" in res.json()["detail"]
+
+    def test_delete_succeeds_with_acknowledgement(self, insurance_client):
+        client, sf = insurance_client
+        with sf() as s:
+            _create_user(s, "fin_e", permissions=SALARY_PLUS_FINANCE)
+            b = _seed_bracket(s, year=2026, amount=30000)
+            _seed_salary_record(s, 15, 2026, 6, finalized=True)
+            s.commit()
+            bid = b.id
+
+        assert _login(client, "fin_e").status_code == 200
+        res = client.request(
+            "DELETE",
+            f"/api/insurance/brackets/{bid}",
+            json={
+                "reason": "新年度政府公告刪除這級距列",
+                "acknowledge_finalized_months": True,
+            },
+        )
+        assert res.status_code == 200, res.text
