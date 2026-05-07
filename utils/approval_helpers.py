@@ -1,5 +1,27 @@
-"""
-共用的審核 helper 函式，供 leaves、overtimes、punch_corrections 路由使用。
+"""共用的審核 helper 函式，供 leaves、overtimes、punch_corrections 路由使用。
+
+設計：「任一資格通過即結案」(OR 邏輯)
+========================================
+
+審核政策（ApprovalPolicy）的語意是「approver_roles CSV 內任一角色可核准
+即放行」，**非**多層 sequential ladder。例如政策
+``submitter_role=teacher, approver_roles=supervisor,hr,admin`` 表示
+supervisor / hr / admin 三者**任一人**核准就結案，不必依序經過。
+
+Refs: 邏輯漏洞 audit 2026-05-07 P0 #11 — audit reviewer 將「單關通過」
+標記為跳過 ladder，但業主於 2026-05-07 確認業務模型即為 OR 邏輯（非
+sequential），降為 P1 文件化即可，不動 schema / 邏輯。
+
+額外保留：admin 兜底
+- 政策未設定時，approver_role=admin 仍可通過（line 40-47），保證系統
+  在新 doc_type 上線初期不會死鎖；其餘角色未設政策一律拒絕。
+
+如果未來業主需要 sequential ladder（例：teacher 送 → supervisor 必先核 →
+admin 才能最終核），需要：
+1. ApprovalPolicy 加 stage / level 欄位
+2. ApprovalLog 累積判斷（看當前 stage 是否到位）
+3. 改 leaves.py / overtimes.py / punch_corrections.py 三條 approve 端點
+   的 finalize 條件（從「寫一筆 log 即結案」改成「最後一關才結案」）
 """
 
 import logging
