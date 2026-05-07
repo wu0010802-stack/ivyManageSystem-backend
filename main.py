@@ -172,7 +172,9 @@ def on_startup():
     run_startup_bootstrap(
         salary_engine, line_service, insurance_service=insurance_service
     )
-    logger.info("Application started successfully.")
+    # 資安掃描 2026-05-07 P1：啟動時 log env，取代 /health/ready 公開暴露
+    env_label = os.environ.get("ENV", "development").lower()
+    logger.info("Application started successfully (env=%s).", env_label)
 
 
 async def _activity_waitlist_sweeper():

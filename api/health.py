@@ -5,7 +5,6 @@ api/health.py — 健康檢查端點
 """
 
 import logging
-import os
 import time
 
 from fastapi import APIRouter
@@ -17,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/health", tags=["health"])
 
-_ENV = os.environ.get("ENV", "development").lower()
-
 
 @router.get("/live")
 async def liveness():
@@ -28,7 +25,12 @@ async def liveness():
 
 @router.get("/ready")
 async def readiness():
-    """Readiness probe — 確認 DB 連線池可用；同時回報 env 供 SRE 檢查（INFO-2）。"""
+    """Readiness probe — 確認 DB 連線池可用。
+
+    資安掃描 2026-05-07 P1：response 不再回傳 env 欄位（無認證端點，env 值
+    告訴攻擊者部署環境類型，協助針對性 payload）。SRE 改在啟動 log 一次性
+    確認；如需動態查詢可在 /health/live 用 X-Health-Token header 私有揭露。
+    """
     start = time.monotonic()
     try:
         engine = get_engine()
@@ -39,7 +41,6 @@ async def readiness():
             "status": "ok",
             "db": "connected",
             "latency_ms": elapsed_ms,
-            "env": _ENV,
         }
     except Exception as e:
         logger.error("Readiness check failed: %s", e, exc_info=True)
@@ -47,5 +48,5 @@ async def readiness():
 
         return JSONResponse(
             status_code=503,
-            content={"status": "unavailable", "db": "unavailable", "env": _ENV},
+            content={"status": "unavailable", "db": "unavailable"},
         )
