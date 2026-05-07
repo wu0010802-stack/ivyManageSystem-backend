@@ -301,7 +301,7 @@ async def batch_save_attendance(
     if invalid:
         raise HTTPException(status_code=400, detail=f"無效的出席狀態：{invalid}")
 
-    user_id = current_user.get("id")
+    user_id = current_user.get("user_id")
     session = get_session()
     try:
         # 班級 scope：批次內所有 student_id 必須通過存取檢查；任何一筆不通過整批 403

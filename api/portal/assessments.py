@@ -116,7 +116,7 @@ def create_portal_assessment(
                 content=payload.content,
                 suggestions=payload.suggestions,
                 assessment_date=payload.assessment_date,
-                recorded_by=current_user.get("id"),
+                recorded_by=current_user.get("user_id"),
             )
             session.add(assessment)
             session.flush()
