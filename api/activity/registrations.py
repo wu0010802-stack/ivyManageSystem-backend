@@ -69,6 +69,7 @@ from ._shared import (
     has_payment_approve,
     require_refund_reason,
     require_approve_for_large_refund,
+    require_approve_for_cumulative_refund,
     TAIPEI_TZ,
     get_line_service,
     today_taipei,
@@ -1678,8 +1679,14 @@ async def update_payment(
                     ),
                 )
             reason_cleaned = require_refund_reason(body.refund_reason)
-            # 大額沖帳需簽核權限
-            require_approve_for_large_refund(current_paid, current_user)
+            # 大額沖帳需簽核權限（以「該 reg 累積退費 + 本次」判斷，封拆單繞過）
+            require_approve_for_cumulative_refund(
+                session,
+                registration_id,
+                current_paid,
+                current_user,
+                label="標記未繳費自動沖帳累積退費總額",
+            )
             if current_paid > 0:
                 rec = ActivityPaymentRecord(
                     registration_id=registration_id,
@@ -2120,10 +2127,12 @@ async def remove_registration_supply(
         cleaned_reason: Optional[str] = None
         if preview_refund > 0 and force_refund:
             cleaned_reason = require_refund_reason(refund_reason)
-            require_approve_for_large_refund(
+            require_approve_for_cumulative_refund(
+                session,
+                registration_id,
                 preview_refund,
                 current_user,
-                label="移除用品自動沖帳金額",
+                label="移除用品自動沖帳累積退費總額",
             )
 
         session.delete(rs)
@@ -2289,13 +2298,23 @@ async def add_registration_payment(
     session = get_session()
     try:
         # ── 冪等性重送檢查（先於任何寫入） ────────────────────────
+        # 與 pos._find_idempotent_hit 對齊：排除 voided 紀錄。否則「key 命中但
+        # 全 voided」會被當作合法 replay 回 200，但 DB 並無新紀錄、paid_amount
+        # 反映 void 後（=0），員工以為已收實際永久漏收。Refs: 邏輯漏洞 audit
+        # 2026-05-07 P0 (#7)。
         if body.idempotency_key:
-            hit = (
-                session.query(ActivityPaymentRecord)
-                .filter(ActivityPaymentRecord.idempotency_key == body.idempotency_key)
-                .order_by(ActivityPaymentRecord.id.asc())
-                .first()
-            )
+            from .pos import _find_idempotent_hit, _has_any_record_for_key
+
+            hit = _find_idempotent_hit(session, body.idempotency_key)
+            if hit is None and _has_any_record_for_key(session, body.idempotency_key):
+                # key 已用於 voided 紀錄；不可重複 replay 也不可作為新交易 key
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "idempotency_key 對應的紀錄已被作廢；請改用新 key "
+                        "重新建立繳費/退費記錄"
+                    ),
+                )
             if hit is not None:
                 # 上下文一致才 replay；不一致視為 key 誤用
                 if (
@@ -2770,10 +2789,12 @@ async def withdraw_course(
         cleaned_reason: Optional[str] = None
         if preview_refund > 0 and force_refund:
             cleaned_reason = require_refund_reason(refund_reason)
-            require_approve_for_large_refund(
+            require_approve_for_cumulative_refund(
+                session,
+                registration_id,
                 preview_refund,
                 current_user,
-                label="退課自動沖帳金額",
+                label="退課自動沖帳累積退費總額",
             )
 
         session.delete(rc)
@@ -2905,10 +2926,12 @@ async def delete_registration(
         cleaned_reason: Optional[str] = None
         if paid_before > 0 and force_refund:
             cleaned_reason = require_refund_reason(refund_reason)
-            require_approve_for_large_refund(
+            require_approve_for_cumulative_refund(
+                session,
+                registration_id,
                 paid_before,
                 current_user,
-                label="刪除報名自動沖帳金額",
+                label="刪除報名自動沖帳累積退費總額",
             )
 
         activity_service.delete_registration(

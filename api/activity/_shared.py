@@ -132,6 +132,39 @@ def require_approve_for_large_refund(
         )
 
 
+def require_approve_for_cumulative_refund(
+    session,
+    registration_id: int,
+    this_refund_amount: int,
+    current_user: dict,
+    *,
+    label: str,
+) -> None:
+    """以「該 reg 已存在 voided=NULL 的 refund 累積 + 本次」判斷是否跨閾值。
+
+    Why: 與 add_registration_payment / pos.refund 既有累積判斷對齊。
+    退課自動沖帳、刪除報名自動沖帳、標記未繳全額沖帳這三條 legacy 路徑只用
+    「本次金額」過 require_approve_for_large_refund，可拆單跨閾值繞過簽核
+    （reg 已退 NT$600 → 再退 NT$900 兩筆都 < NT$1000，但累積 NT$1500 應簽核）。
+
+    Refs: 邏輯漏洞 audit 2026-05-07 P0 (#8)。
+    """
+    from sqlalchemy import func
+    from models.database import ActivityPaymentRecord
+
+    prior = (
+        session.query(func.coalesce(func.sum(ActivityPaymentRecord.amount), 0))
+        .filter(
+            ActivityPaymentRecord.registration_id == registration_id,
+            ActivityPaymentRecord.type == "refund",
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
+        .scalar()
+    ) or 0
+    cumulative = int(prior) + int(this_refund_amount)
+    require_approve_for_large_refund(cumulative, current_user, label=label)
+
+
 def validate_payment_date(
     value: date, *, back_limit_days: int = PAYMENT_DATE_BACK_LIMIT_DAYS
 ) -> date:
