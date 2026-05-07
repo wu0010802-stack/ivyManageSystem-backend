@@ -1124,6 +1124,14 @@ def approve_leave(
             raise HTTPException(status_code=403, detail="不可自我核准請假單")
 
         # ── 角色資格檢查 ────────────────────────────────────────────────────────
+        # 既有設計允許「已核准 → 駁回」的合法業務路徑（例如發現超時數需撤銷），
+        # 由 risk_tags="reject_of_approved" 在 audit_summary 顯式打標記，於
+        # AuditLogView 可篩。撤回 audit 2026-05-07 P1 hard-block flip-flop 提案：
+        # 業主既有業務模型即是「approver 可改判」，硬擋會破壞合法 reject_of_approved
+        # 路徑（test_leave_reject_approved_regression / TestApprovedOvertimeRollback
+        # 既有測試）。如未來需要更嚴限制，應改成「reject_of_approved 強制需要
+        # ACTIVITY_PAYMENT_APPROVE + force_reason ≥ 10 字」軟擋方案。
+
         submitter_role = _get_submitter_role(leave.employee_id, session)
         approver_role = current_user.get("role", "")
         if not _check_approval_eligibility(

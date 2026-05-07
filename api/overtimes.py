@@ -1163,9 +1163,25 @@ def approve_overtime(
     request: Request,
     approved: bool = True,
     approved_by: str = "管理員",
+    rejection_reason: Optional[str] = None,
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
-    """核准/駁回加班；核准後自動重算該員工當月薪資，補休模式核准後自動累積配額"""
+    """核准/駁回加班；核准後自動重算該員工當月薪資，補休模式核准後自動累積配額。
+
+    audit P1（2026-05-07）：駁回（approved=False）必填 rejection_reason
+    （≥3 字），對齊 leaves / punch_corrections 既有要求；避免管理員惡意
+    零原因駁回他人加班費。reason 落 ApprovalLog.comment（OvertimeRecord
+    無 rejection_reason 欄位）。
+    """
+    # 駁回必填原因（schema 也驗一次，雙保險）
+    if not approved:
+        cleaned = (rejection_reason or "").strip()
+        if len(cleaned) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail="駁回時必須填寫原因（至少 3 個字）",
+            )
+
     session = get_session()
     try:
         # with_for_update() 鎖定加班記錄，防止並發核准觸發補休配額重複發放（Race Condition）
@@ -1178,6 +1194,11 @@ def approve_overtime(
         if not ot:
             raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
         was_approved = ot.is_approved is True
+
+        # 既有設計允許「已核准 → 駁回」的合法業務路徑（例如發現超時數需撤銷），
+        # 由 risk_tags="reject_of_approved" 在 audit_summary 打標記。撤回 audit
+        # 2026-05-07 P1 hard-block flip-flop 提案：業主業務模型即是「approver
+        # 可改判」，硬擋會破壞合法 TestApprovedOvertimeRollback 路徑。
 
         # ── 自我核准防護 ─────────────────────────────────────────────────────────
         # 僅在 approver 確實擁有 employee_id 且與申請人相同時才拒絕。
@@ -1255,6 +1276,11 @@ def approve_overtime(
 
         ot.is_approved = approved
         ot.approved_by = current_user.get("username", approved_by) if approved else None
+        # OvertimeRecord 無 rejection_reason 欄位（LeaveRecord 才有）；
+        # 駁回原因落 ApprovalLog.comment，與 _write_approval_log 同 transaction。
+        cleaned_reason: Optional[str] = None
+        if not approved:
+            cleaned_reason = (rejection_reason or "").strip() or None
 
         result = {"message": "已核准" if approved else "已駁回"}
 
@@ -1264,7 +1290,7 @@ def approve_overtime(
 
         action = "approved" if approved else "rejected"
         approval_log_row = _write_approval_log(
-            "overtime", overtime_id, action, current_user, None, session
+            "overtime", overtime_id, action, current_user, cleaned_reason, session
         )
         session.commit()
 

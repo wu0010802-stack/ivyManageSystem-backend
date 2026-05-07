@@ -20,7 +20,15 @@ from api.auth import _account_failures, _ip_attempts
 from api.leaves import router as leaves_router
 from api.overtimes import router as overtimes_router
 from api.portal.leaves import router as portal_leaves_router
-from models.database import Base, Employee, Holiday, LeaveQuota, LeaveRecord, OvertimeRecord, User
+from models.database import (
+    Base,
+    Employee,
+    Holiday,
+    LeaveQuota,
+    LeaveRecord,
+    OvertimeRecord,
+    User,
+)
 from utils.auth import hash_password
 
 
@@ -98,11 +106,15 @@ def _create_user(
 
 
 def _login(client: TestClient, username: str, password: str):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 class TestPortalLeaveDeductionRatio:
-    def test_portal_leave_persists_deduction_ratio_from_leave_type(self, leave_overtime_client):
+    def test_portal_leave_persists_deduction_ratio_from_leave_type(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "T001", "教師甲")
@@ -136,7 +148,9 @@ class TestPortalLeaveDeductionRatio:
             assert leave.deduction_ratio == 0.0
             assert leave.is_deductible is False
 
-    def test_leave_longer_than_two_days_requires_attachment_before_approval(self, leave_overtime_client):
+    def test_leave_longer_than_two_days_requires_attachment_before_approval(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "T002", "教師乙")
@@ -169,7 +183,9 @@ class TestPortalLeaveDeductionRatio:
         assert approve_res.status_code == 400
         assert "超過 2 天" in approve_res.json()["detail"]
 
-    def test_portal_leave_rejects_hours_that_count_weekend_and_holiday(self, leave_overtime_client):
+    def test_portal_leave_rejects_hours_that_count_weekend_and_holiday(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "T002A", "教師假日")
@@ -201,7 +217,9 @@ class TestPortalLeaveDeductionRatio:
         assert create_res.status_code == 400
         assert "自動排除週末與國定假日" in create_res.json()["detail"]
 
-    def test_portal_leave_rejects_substitute_with_overlapping_pending_leave(self, leave_overtime_client):
+    def test_portal_leave_rejects_substitute_with_overlapping_pending_leave(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "T003", "教師丙")
@@ -246,7 +264,9 @@ class TestPortalLeaveDeductionRatio:
         assert "代理人" in create_res.json()["detail"]
         assert "請假" in create_res.json()["detail"]
 
-    def test_leave_approval_rejects_substitute_who_later_has_overlapping_leave(self, leave_overtime_client):
+    def test_leave_approval_rejects_substitute_who_later_has_overlapping_leave(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "T005", "教師丁")
@@ -291,7 +311,9 @@ class TestPortalLeaveDeductionRatio:
         assert approve_res.status_code == 409
         assert "代理人" in approve_res.json()["detail"]
 
-    def test_leave_approval_can_force_approve_without_substitute_acceptance(self, leave_overtime_client):
+    def test_leave_approval_can_force_approve_without_substitute_acceptance(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "T005A", "教師戊")
@@ -333,7 +355,9 @@ class TestPortalLeaveDeductionRatio:
 
 
 class TestPortalSubstitutePendingCount:
-    def test_only_counts_pending_requests_for_current_substitute(self, leave_overtime_client):
+    def test_only_counts_pending_requests_for_current_substitute(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             requester = _create_employee(session, "T007", "請假老師")
@@ -355,58 +379,60 @@ class TestPortalSubstitutePendingCount:
                 permissions=0,
                 employee=other_substitute,
             )
-            session.add_all([
-                LeaveRecord(
-                    employee_id=requester.id,
-                    leave_type="personal",
-                    start_date=date(2026, 3, 21),
-                    end_date=date(2026, 3, 21),
-                    leave_hours=8,
-                    substitute_employee_id=substitute.id,
-                    substitute_status="pending",
-                    is_approved=None,
-                ),
-                LeaveRecord(
-                    employee_id=requester.id,
-                    leave_type="personal",
-                    start_date=date(2026, 3, 22),
-                    end_date=date(2026, 3, 22),
-                    leave_hours=8,
-                    substitute_employee_id=substitute.id,
-                    substitute_status="pending",
-                    is_approved=None,
-                ),
-                LeaveRecord(
-                    employee_id=requester.id,
-                    leave_type="personal",
-                    start_date=date(2026, 3, 23),
-                    end_date=date(2026, 3, 23),
-                    leave_hours=8,
-                    substitute_employee_id=substitute.id,
-                    substitute_status="accepted",
-                    is_approved=None,
-                ),
-                LeaveRecord(
-                    employee_id=requester.id,
-                    leave_type="personal",
-                    start_date=date(2026, 3, 24),
-                    end_date=date(2026, 3, 24),
-                    leave_hours=8,
-                    substitute_employee_id=substitute.id,
-                    substitute_status="rejected",
-                    is_approved=None,
-                ),
-                LeaveRecord(
-                    employee_id=requester.id,
-                    leave_type="personal",
-                    start_date=date(2026, 3, 25),
-                    end_date=date(2026, 3, 25),
-                    leave_hours=8,
-                    substitute_employee_id=other_substitute.id,
-                    substitute_status="pending",
-                    is_approved=None,
-                ),
-            ])
+            session.add_all(
+                [
+                    LeaveRecord(
+                        employee_id=requester.id,
+                        leave_type="personal",
+                        start_date=date(2026, 3, 21),
+                        end_date=date(2026, 3, 21),
+                        leave_hours=8,
+                        substitute_employee_id=substitute.id,
+                        substitute_status="pending",
+                        is_approved=None,
+                    ),
+                    LeaveRecord(
+                        employee_id=requester.id,
+                        leave_type="personal",
+                        start_date=date(2026, 3, 22),
+                        end_date=date(2026, 3, 22),
+                        leave_hours=8,
+                        substitute_employee_id=substitute.id,
+                        substitute_status="pending",
+                        is_approved=None,
+                    ),
+                    LeaveRecord(
+                        employee_id=requester.id,
+                        leave_type="personal",
+                        start_date=date(2026, 3, 23),
+                        end_date=date(2026, 3, 23),
+                        leave_hours=8,
+                        substitute_employee_id=substitute.id,
+                        substitute_status="accepted",
+                        is_approved=None,
+                    ),
+                    LeaveRecord(
+                        employee_id=requester.id,
+                        leave_type="personal",
+                        start_date=date(2026, 3, 24),
+                        end_date=date(2026, 3, 24),
+                        leave_hours=8,
+                        substitute_employee_id=substitute.id,
+                        substitute_status="rejected",
+                        is_approved=None,
+                    ),
+                    LeaveRecord(
+                        employee_id=requester.id,
+                        leave_type="personal",
+                        start_date=date(2026, 3, 25),
+                        end_date=date(2026, 3, 25),
+                        leave_hours=8,
+                        substitute_employee_id=other_substitute.id,
+                        substitute_status="pending",
+                        is_approved=None,
+                    ),
+                ]
+            )
             session.commit()
 
         login_res = _login(client, "substitute_portal", "PortalPass123")
@@ -432,7 +458,9 @@ class TestPortalSubstitutePendingCount:
 
 
 class TestLeaveScheduleGuard:
-    def test_admin_update_rejects_hours_that_exceed_workdays_after_holiday_exclusion(self, leave_overtime_client):
+    def test_admin_update_rejects_hours_that_exceed_workdays_after_holiday_exclusion(
+        self, leave_overtime_client
+    ):
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "T010", "教師己")
@@ -444,10 +472,12 @@ class TestLeaveScheduleGuard:
                 leave_hours=8,
                 is_approved=None,
             )
-            session.add_all([
-                leave,
-                Holiday(date=date(2026, 3, 16), name="補假", is_active=True),
-            ])
+            session.add_all(
+                [
+                    leave,
+                    Holiday(date=date(2026, 3, 16), name="補假", is_active=True),
+                ]
+            )
             _create_user(
                 session,
                 username="admin_update_guard",
@@ -475,7 +505,9 @@ class TestLeaveScheduleGuard:
 
 
 class TestApprovedOvertimeRollback:
-    def test_update_approved_overtime_revokes_comp_leave_and_recalculates_salary(self, leave_overtime_client):
+    def test_update_approved_overtime_revokes_comp_leave_and_recalculates_salary(
+        self, leave_overtime_client
+    ):
         client, session_factory, fake_salary_engine = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "E001", "員工甲")
@@ -519,15 +551,25 @@ class TestApprovedOvertimeRollback:
         )
         assert update_res.status_code == 200
         assert update_res.json()["salary_recalculated"] is True
-        fake_salary_engine.process_salary_calculation.assert_called_once_with(employee_id, 2026, 3)
+        fake_salary_engine.process_salary_calculation.assert_called_once_with(
+            employee_id, 2026, 3
+        )
 
         with session_factory() as session:
-            overtime = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).one()
-            quota = session.query(LeaveQuota).filter(
-                LeaveQuota.employee_id == employee_id,
-                LeaveQuota.year == 2026,
-                LeaveQuota.leave_type == "compensatory",
-            ).one()
+            overtime = (
+                session.query(OvertimeRecord)
+                .filter(OvertimeRecord.id == overtime_id)
+                .one()
+            )
+            quota = (
+                session.query(LeaveQuota)
+                .filter(
+                    LeaveQuota.employee_id == employee_id,
+                    LeaveQuota.year == 2026,
+                    LeaveQuota.leave_type == "compensatory",
+                )
+                .one()
+            )
             assert overtime.is_approved is None
             assert overtime.comp_leave_granted is False
             assert overtime.hours == 1.5
@@ -567,13 +609,21 @@ class TestApprovedOvertimeRollback:
         delete_res = client.delete(f"/api/overtimes/{overtime_id}")
         assert delete_res.status_code == 200
         assert delete_res.json()["salary_recalculated"] is True
-        fake_salary_engine.process_salary_calculation.assert_called_once_with(employee_id, 2026, 4)
+        fake_salary_engine.process_salary_calculation.assert_called_once_with(
+            employee_id, 2026, 4
+        )
 
         with session_factory() as session:
-            overtime = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).first()
+            overtime = (
+                session.query(OvertimeRecord)
+                .filter(OvertimeRecord.id == overtime_id)
+                .first()
+            )
             assert overtime is None
 
-    def test_rejecting_previously_approved_comp_overtime_revokes_granted_quota(self, leave_overtime_client):
+    def test_rejecting_previously_approved_comp_overtime_revokes_granted_quota(
+        self, leave_overtime_client
+    ):
         client, session_factory, fake_salary_engine = leave_overtime_client
         with session_factory() as session:
             employee = _create_employee(session, "E003", "員工丙")
@@ -610,21 +660,32 @@ class TestApprovedOvertimeRollback:
         assert login_res.status_code == 200
 
         fake_salary_engine.reset_mock()
+        # audit P1（2026-05-07）：overtime 駁回必填 rejection_reason ≥3 字
         reject_res = client.put(
             f"/api/overtimes/{overtime_id}/approve",
-            params={"approved": "false"},
+            params={"approved": "false", "rejection_reason": "事後審核發現問題"},
         )
         assert reject_res.status_code == 200
         assert reject_res.json()["salary_recalculated"] is True
-        fake_salary_engine.process_salary_calculation.assert_called_once_with(employee_id, 2026, 5)
+        fake_salary_engine.process_salary_calculation.assert_called_once_with(
+            employee_id, 2026, 5
+        )
 
         with session_factory() as session:
-            overtime = session.query(OvertimeRecord).filter(OvertimeRecord.id == overtime_id).one()
-            quota = session.query(LeaveQuota).filter(
-                LeaveQuota.employee_id == employee_id,
-                LeaveQuota.year == 2026,
-                LeaveQuota.leave_type == "compensatory",
-            ).one()
+            overtime = (
+                session.query(OvertimeRecord)
+                .filter(OvertimeRecord.id == overtime_id)
+                .one()
+            )
+            quota = (
+                session.query(LeaveQuota)
+                .filter(
+                    LeaveQuota.employee_id == employee_id,
+                    LeaveQuota.year == 2026,
+                    LeaveQuota.leave_type == "compensatory",
+                )
+                .one()
+            )
             assert overtime.is_approved is False
             assert overtime.approved_by is None
             assert overtime.comp_leave_granted is False
@@ -634,7 +695,9 @@ class TestApprovedOvertimeRollback:
 class TestSelfApprovalGuard:
     """H2：自我核准防護——有 employee_id 的帳號不可核准自己的假單/加班。"""
 
-    def test_employee_with_account_cannot_self_approve_leave(self, leave_overtime_client):
+    def test_employee_with_account_cannot_self_approve_leave(
+        self, leave_overtime_client
+    ):
         """提交假單的教師若同時具備 LEAVES_WRITE 權限，不可自我核准。"""
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
@@ -669,7 +732,9 @@ class TestSelfApprovalGuard:
         assert approve_res.status_code == 403
         assert "自我核准" in approve_res.json()["detail"]
 
-    def test_admin_without_employee_id_can_approve_others_leave(self, leave_overtime_client):
+    def test_admin_without_employee_id_can_approve_others_leave(
+        self, leave_overtime_client
+    ):
         """純管理員帳號（無 employee_id）可正常核准他人假單。"""
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
@@ -760,7 +825,9 @@ class TestBatchSelfApprovalGuard:
         # 自己的假單應在 failed 清單中
         failed_ids = [f["id"] for f in data["failed"]]
         assert self_leave_id in failed_ids
-        failed_reasons = [f["reason"] for f in data["failed"] if f["id"] == self_leave_id]
+        failed_reasons = [
+            f["reason"] for f in data["failed"] if f["id"] == self_leave_id
+        ]
         assert any("自我核准" in r for r in failed_reasons)
         # 他人假單應成功
         assert other_leave_id in data["succeeded"]
@@ -821,7 +888,9 @@ class TestBatchSelfApprovalGuard:
 class TestConcurrentApprovalQuotaGuard:
     """V11：多張待審假單同時核准時，配額應正確計算不超支。"""
 
-    def test_approving_second_leave_blocked_when_first_is_pending(self, leave_overtime_client):
+    def test_approving_second_leave_blocked_when_first_is_pending(
+        self, leave_overtime_client
+    ):
         """核准第二張待審假單時，應計入其他待審假單使用量，防止超額核准（race condition 防護）。"""
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
@@ -868,11 +937,13 @@ class TestConcurrentApprovalQuotaGuard:
         # 核准第一張：此時 leave2 仍 pending，include_pending=True 會計入
         # approved=0, pending=8(leave2), committed=8, leave1.hours=8 > remaining=0 → 應被阻擋
         res1 = client.put(f"/api/leaves/{leave1_id}/approve", json={"approved": True})
-        assert res1.status_code == 400, (
-            f"第一張核准應因另一張待審假單佔用配額而被阻擋，但回傳 {res1.status_code}: {res1.json()}"
-        )
+        assert (
+            res1.status_code == 400
+        ), f"第一張核准應因另一張待審假單佔用配額而被阻擋，但回傳 {res1.status_code}: {res1.json()}"
 
-    def test_approving_second_leave_blocked_after_first_approved(self, leave_overtime_client):
+    def test_approving_second_leave_blocked_after_first_approved(
+        self, leave_overtime_client
+    ):
         """第一張核准後，第二張因配額耗盡應被阻擋。"""
         client, session_factory, _ = leave_overtime_client
         with session_factory() as session:
@@ -926,9 +997,9 @@ class TestConcurrentApprovalQuotaGuard:
             leave_b_id = leave_b.id
 
         res_b = client.put(f"/api/leaves/{leave_b_id}/approve", json={"approved": True})
-        assert res_b.status_code == 400, (
-            f"第二張 8 小時特休核准應因配額耗盡而被阻擋，但回傳 {res_b.status_code}: {res_b.json()}"
-        )
+        assert (
+            res_b.status_code == 400
+        ), f"第二張 8 小時特休核准應因配額耗盡而被阻擋，但回傳 {res_b.status_code}: {res_b.json()}"
 
 
 def _get_employee_id(session, employee_code: str) -> int:
