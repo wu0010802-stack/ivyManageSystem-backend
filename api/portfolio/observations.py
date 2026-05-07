@@ -100,9 +100,45 @@ def _attachments_for_owner(session, owner_type: str, owner_id: int) -> list[dict
     return [_attachment_to_dict(a) for a in rows]
 
 
+def _attachments_by_owner_ids(
+    session, owner_type: str, owner_ids: list[int]
+) -> dict[int, list[dict]]:
+    """批次取得多個 owner 的附件 dict（owner_id → list[dict]）。
+
+    Audit G.P0.4：取代 list 端點對每筆 obs 各跑一次 _attachments_for_owner。
+    """
+    from api.attachments import _attachment_to_dict  # 避免循環 import
+
+    if not owner_ids:
+        return {}
+    rows = (
+        session.query(Attachment)
+        .filter(
+            Attachment.owner_type == owner_type,
+            Attachment.owner_id.in_(owner_ids),
+            Attachment.deleted_at.is_(None),
+        )
+        .order_by(Attachment.owner_id.asc(), Attachment.created_at.asc())
+        .all()
+    )
+    out: dict[int, list[dict]] = {oid: [] for oid in owner_ids}
+    for a in rows:
+        out.setdefault(a.owner_id, []).append(_attachment_to_dict(a))
+    return out
+
+
 def _observation_to_dict(
-    obs: StudentObservation, session=None, include_attachments: bool = True
+    obs: StudentObservation,
+    session=None,
+    include_attachments: bool = True,
+    *,
+    attachments_map: dict[int, list[dict]] | None = None,
 ) -> dict:
+    """單筆 observation → dict。
+
+    attachments_map: 若 list 端點已批次預載，傳入 {obs_id: [att_dict, ...]} 即可避免
+    這裡再跑單筆 query（audit G.P0.4）。未供預載時 fall back 到原 single query 路徑。
+    """
     base = {
         "id": obs.id,
         "student_id": obs.student_id,
@@ -117,10 +153,13 @@ def _observation_to_dict(
         "created_at": obs.created_at.isoformat() if obs.created_at else None,
         "updated_at": obs.updated_at.isoformat() if obs.updated_at else None,
     }
-    if include_attachments and session is not None:
-        base["attachments"] = _attachments_for_owner(
-            session, ATTACHMENT_OWNER_OBSERVATION, obs.id
-        )
+    if include_attachments:
+        if attachments_map is not None:
+            base["attachments"] = attachments_map.get(obs.id, [])
+        elif session is not None:
+            base["attachments"] = _attachments_for_owner(
+                session, ATTACHMENT_OWNER_OBSERVATION, obs.id
+            )
     return base
 
 
@@ -166,9 +205,15 @@ async def list_observations(
                 .limit(limit)
                 .all()
             )
+            attachments_map = _attachments_by_owner_ids(
+                session, ATTACHMENT_OWNER_OBSERVATION, [r.id for r in rows]
+            )
             return {
                 "total": total,
-                "items": [_observation_to_dict(r, session=session) for r in rows],
+                "items": [
+                    _observation_to_dict(r, attachments_map=attachments_map)
+                    for r in rows
+                ],
             }
     except HTTPException:
         raise
