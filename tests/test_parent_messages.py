@@ -16,6 +16,7 @@ import models.base as base_module
 from api.parent_portal import parent_router
 from api.portal import router as portal_router
 from models.database import (
+    Attachment,
     Base,
     Classroom,
     Employee,
@@ -25,6 +26,7 @@ from models.database import (
     Student,
     User,
 )
+from models.portfolio import ATTACHMENT_OWNER_MESSAGE
 from utils.auth import create_access_token
 from utils.permissions import Permission
 
@@ -645,3 +647,96 @@ class TestThreadListing:
             cookies={"access_token": p_tk},
         ).json()
         assert len(page2["items"]) == 6  # 35 + 1 首則 - 30
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Phase 8: thread list messages N+1 query count 回歸測試
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestThreadListQueryCount:
+    """Phase 8: list_messages endpoint 不應 N+1 attachment query。"""
+
+    def test_list_messages_with_attachments_no_n_plus_one(self, msg_client):
+        """20 條 message，每條 1 張 attachment；修補後 query count 應 <= 8。
+
+        未修補前（N+1）：20 messages × 1 attachment query = 20+ queries。
+        修補後（IN clause batch）：整批一次 attachment query，總 query <= 8。
+        """
+        from tests.conftest import QueryCounter
+
+        client, sf = msg_client
+        with sf() as session:
+            parent, teacher, emp, student, _ = _seed(session)
+            session.commit()
+            t_tk = _teacher_token(teacher, emp.id)
+            p_tk = _parent_token(parent)
+            sid, pid = student.id, parent.id
+
+        # 建立 thread（第一則訊息）
+        rsp = client.post(
+            "/api/portal/parent-messages/threads",
+            json={"student_id": sid, "parent_user_id": pid, "body": "頭一條"},
+            cookies={"access_token": t_tk},
+        )
+        assert rsp.status_code == 201
+        thread_id = rsp.json()["thread"]["id"]
+
+        # 再補 19 則訊息，共 20 則
+        for i in range(19):
+            r = client.post(
+                f"/api/portal/parent-messages/threads/{thread_id}/messages",
+                json={"body": f"訊息 {i}"},
+                cookies={"access_token": t_tk},
+            )
+            assert r.status_code == 201
+
+        # 為每則訊息直接插入一張 attachment（繞過 upload 流程）
+        with sf() as session:
+            msgs = (
+                session.query(ParentMessage)
+                .filter(ParentMessage.thread_id == thread_id)
+                .all()
+            )
+            for msg in msgs:
+                session.add(
+                    Attachment(
+                        owner_type=ATTACHMENT_OWNER_MESSAGE,
+                        owner_id=msg.id,
+                        original_filename=f"file_{msg.id}.jpg",
+                        mime_type="image/jpeg",
+                        size_bytes=1024,
+                        storage_key=f"key_{msg.id}",
+                    )
+                )
+            session.commit()
+
+        # 取得 db_engine 以便 QueryCounter 監聽
+        db_engine = sf.kw.get("bind") if hasattr(sf, "kw") else None
+        if db_engine is None:
+            # sessionmaker 在 msg_client fixture 以 bind= 建立
+            db_engine = sf.kw["bind"] if hasattr(sf, "kw") and "bind" in sf.kw else None
+        if db_engine is None:
+            # 透過 base_module 取得
+            import models.base as bm
+
+            db_engine = bm._engine
+
+        with QueryCounter(db_engine) as counter:
+            resp = client.get(
+                f"/api/portal/parent-messages/threads/{thread_id}/messages?limit=20",
+                cookies={"access_token": t_tk},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 20
+        # 確認 attachments 確實有回傳（避免誤判）
+        total_attachments = sum(len(item["attachments"]) for item in data["items"])
+        assert total_attachments == 20, f"attachments 沒有正確回傳：{total_attachments}"
+        # N+1 修補後：query count 應 <= 8（遠低於未修補的 20+）
+        assert (
+            counter.count <= 8
+        ), f"N+1 query 回歸：查詢次數 {counter.count}，應 <= 8。" f"\n發出的 SQL:\n" + "\n".join(
+            counter.statements[:10]
+        )

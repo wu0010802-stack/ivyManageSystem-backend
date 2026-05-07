@@ -321,8 +321,24 @@ def list_messages(
         rows = q.order_by(ParentMessage.id.desc()).limit(limit + 1).all()
         has_more = len(rows) > limit
         page = rows[:limit]
+        # Phase 8 N+1 修補：列表前一次 IN clause 取所有 messages 的 attachments
+        message_ids = [m.id for m in page]
+        attachments_by_message: dict[int, list] = {mid: [] for mid in message_ids}
+        if message_ids:
+            atts = (
+                session.query(Attachment)
+                .filter(
+                    Attachment.owner_type == ATTACHMENT_OWNER_MESSAGE,
+                    Attachment.owner_id.in_(message_ids),
+                    Attachment.deleted_at.is_(None),
+                )
+                .order_by(Attachment.id.asc())
+                .all()
+            )
+            for a in atts:
+                attachments_by_message.setdefault(a.owner_id, []).append(a)
         items = [
-            _message_to_dict(m, _attachments_for_message(session, m.id)) for m in page
+            _message_to_dict(m, attachments_by_message.get(m.id, [])) for m in page
         ]
         next_cursor = page[-1].id if has_more and page else None
         return {"items": items, "next_cursor": next_cursor}
