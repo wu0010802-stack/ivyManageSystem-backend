@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -18,6 +19,32 @@ logger = logging.getLogger(__name__)
 # Hold strong refs to fire-and-forget audit tasks so the event loop
 # does not drop them before they finish (asyncio gotcha).
 _background_tasks: "set[asyncio.Task]" = set()
+
+# 資安掃描 2026-05-07 P1：401/403 失敗寫入嘗試的 audit 防灌爆。
+# 同 (ip, method, path) 在 dedup window 內只記第一筆，避免攻擊者猛轟受保護端點
+# 把 audit_logs 灌爆。Trade-off：失去「攻擊次數」訊號，但 server log 仍有完整記錄
+# 可供 SIEM 分析。多 worker 部署時每 worker 各自有 cache（最多 N× 通過率，仍有限）。
+_AUDIT_BLOCK_DEDUP_WINDOW_SEC = 60
+_AUDIT_BLOCK_CACHE_MAX = 1000
+_audit_block_cache: dict[tuple[str, str, str], float] = {}
+
+
+def _should_audit_block(ip: str | None, method: str, path: str) -> bool:
+    """同 (ip, method, path) 在 60 秒內只 audit 一次 401/403。"""
+    key = (ip or "anon", method, path)
+    now = time.monotonic()
+    last = _audit_block_cache.get(key)
+    if last is not None and now - last < _AUDIT_BLOCK_DEDUP_WINDOW_SEC:
+        return False
+    _audit_block_cache[key] = now
+    # Opportunistic cleanup：cache 超過 1000 條時掃過去清掉超出視窗的舊條目
+    if len(_audit_block_cache) > _AUDIT_BLOCK_CACHE_MAX:
+        cutoff = now - _AUDIT_BLOCK_DEDUP_WINDOW_SEC
+        for k in list(_audit_block_cache.keys()):
+            if _audit_block_cache[k] < cutoff:
+                del _audit_block_cache[k]
+    return True
+
 
 # HTTP method → action mapping
 METHOD_ACTION_MAP = {
@@ -387,6 +414,12 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # 若 endpoint 已設定跳過標記，直接略過
         if getattr(request.state, "audit_skip", False):
             return response
+
+        # 資安 P1 (2026-05-07)：401/403 dedup 防灌爆。同 (ip, method, path) 60s 內只記一筆
+        if is_auth_block:
+            ip_for_dedup = request.client.host if request.client else None
+            if not _should_audit_block(ip_for_dedup, method, path):
+                return response
 
         try:
             user_id, username = _extract_user_from_header(request)
