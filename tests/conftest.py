@@ -1,12 +1,16 @@
 import sys
 import os
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 # 讓 tests 可以 import backend 模組
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.salary_engine import SalaryEngine
 from services.attendance_parser import AttendanceResult
+import models.base as base_module
+from models.database import Base
 
 
 @pytest.fixture
@@ -101,3 +105,36 @@ def query_counter():
     這個 fixture 讓測試自己傳入 engine。
     """
     return QueryCounter
+
+
+@pytest.fixture
+def test_db_session(tmp_path):
+    """共用 SQLite in-memory 測試 DB fixture。
+
+    建立 SQLite 引擎、swap 全域 engine/_SessionFactory，
+    以 Base.metadata.create_all 建立全部 ORM 表，
+    yield 測試用 session，測試結束後還原全域狀態。
+
+    適用：需要實際 DB 操作的 model / CRUD 測試。
+    """
+    db_path = tmp_path / "test_gov_data.sqlite"
+    test_engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    test_session_factory = sessionmaker(bind=test_engine)
+
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = test_engine
+    base_module._SessionFactory = test_session_factory
+
+    Base.metadata.create_all(test_engine)
+
+    session = test_session_factory()
+    yield session
+    session.close()
+
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_session_factory
+    test_engine.dispose()
