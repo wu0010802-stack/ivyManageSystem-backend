@@ -14,6 +14,7 @@ api/activity/pos.py — 課後才藝 POS 快速收銀端點
 """
 
 import logging
+import os
 import re
 import uuid
 from collections import defaultdict
@@ -81,7 +82,21 @@ _RECEIPT_NO_RETRIES = 5
 
 # 現金累積警報門檻（spec H7）：當日預期現金 ≥ 此值時提示老闆「請存銀行」
 # Why: 櫃台抽屜累積過多現金被竊損失大；NT$30,000 是常見幼稚園單日上限參考
-_CASH_DEPOSIT_WARNING_THRESHOLD = 30_000
+# 資安掃描 2026-05-07 P1：原本寫死無法熱更新；改 env POS_CASH_DEPOSIT_WARNING_THRESHOLD
+# 可調，invalid 值 fallback 30000（不 raise，避免一個壞 env 卡住結帳）。
+_CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT = 30_000
+
+
+def _resolve_cash_warning_threshold() -> int:
+    raw = os.getenv("POS_CASH_DEPOSIT_WARNING_THRESHOLD", "")
+    if not raw:
+        return _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT
+    try:
+        v = int(raw)
+        return v if v > 0 else _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT
+    except (TypeError, ValueError):
+        return _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT
+
 
 # Rate limiter：同 IP 每分鐘最多 60 次 checkout（約 1 張/秒，足以應付連按）
 _pos_checkout_limiter = SlidingWindowLimiter(
@@ -822,7 +837,8 @@ async def pos_daily_summary(
         # spec H7：現金累積警報。預期現金 ≥ 門檻時 cash_warning=True，
         # 前端顯示橘色「請存銀行」提示，避免抽屜累積大量現金被竊
         cash_in_drawer = int(snap["by_method_net"].get("現金", 0))
-        cash_warning = cash_in_drawer >= _CASH_DEPOSIT_WARNING_THRESHOLD
+        cash_threshold = _resolve_cash_warning_threshold()
+        cash_warning = cash_in_drawer >= cash_threshold
         # 保持既有 response 結構（不含 transaction_count / by_method_net）
         return {
             "date": snap["date"],
@@ -834,7 +850,7 @@ async def pos_daily_summary(
             "by_method": snap["by_method"],
             "cash_in_drawer": cash_in_drawer,
             "cash_warning": cash_warning,
-            "cash_warning_threshold": _CASH_DEPOSIT_WARNING_THRESHOLD,
+            "cash_warning_threshold": cash_threshold,
         }
     finally:
         session.close()

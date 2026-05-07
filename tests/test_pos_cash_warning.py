@@ -204,3 +204,39 @@ def test_refund_offsets_cash_in_drawer(cash_client):
     body = res.json()
     assert body["cash_in_drawer"] == 25000
     assert body["cash_warning"] is False
+
+
+def test_threshold_override_via_env(cash_client, monkeypatch):
+    """資安掃描 2026-05-07 P1：env POS_CASH_DEPOSIT_WARNING_THRESHOLD 可調門檻。"""
+    monkeypatch.setenv("POS_CASH_DEPOSIT_WARNING_THRESHOLD", "10000")
+    client, sf = cash_client
+    today = date.today()
+    with sf() as s:
+        _create_admin(s, permissions=READ_PERMS)
+        reg = _make_reg(s, "丁")
+        _add_cash_payment(s, reg.id, 12000, day=today)
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/daily-summary")
+    body = res.json()
+    assert body["cash_warning_threshold"] == 10000
+    # 12000 >= 10000 → 警示開啟
+    assert body["cash_warning"] is True
+
+
+def test_threshold_invalid_env_falls_back_to_default(cash_client, monkeypatch):
+    """壞 env 值 fallback 預設 30000，不 raise 卡住結帳。"""
+    monkeypatch.setenv("POS_CASH_DEPOSIT_WARNING_THRESHOLD", "not-a-number")
+    client, sf = cash_client
+    today = date.today()
+    with sf() as s:
+        _create_admin(s, permissions=READ_PERMS)
+        reg = _make_reg(s, "戊")
+        _add_cash_payment(s, reg.id, 10000, day=today)
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/daily-summary")
+    body = res.json()
+    assert body["cash_warning_threshold"] == 30000
