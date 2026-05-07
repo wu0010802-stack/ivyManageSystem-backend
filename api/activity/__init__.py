@@ -14,6 +14,7 @@ from ._shared import (
 
 from .stats import router as _stats_router
 from .registrations_static import router as _registrations_static_router
+from .registrations_pending import router as _registrations_pending_router
 from .registrations import router as _registrations_router
 from .courses import router as _courses_router
 from .supplies import router as _supplies_router
@@ -28,10 +29,12 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 
 # 順序重要：靜態路由必須優先 include；registrations_static 含 batch-payment / export /
 # payment-report，必須在 _registrations_router（含 /registrations/{id}）之前 include。
+# registrations_pending 含 /pending、/students/search 等字面路徑，亦須優先。
 router.include_router(_stats_router)
 router.include_router(_pos_approval_router)
 router.include_router(_pos_router)
 router.include_router(_registrations_static_router)
+router.include_router(_registrations_pending_router)
 router.include_router(_registrations_router)
 router.include_router(_courses_router)
 router.include_router(_supplies_router)
