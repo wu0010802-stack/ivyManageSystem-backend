@@ -32,6 +32,18 @@ class LineLoginService:
 
     def __init__(self, channel_id: Optional[str] = None):
         self.channel_id = (channel_id or "").strip()
+        # 資安掃描 2026-05-07 P2：啟動時提醒 SRE LINE Login channel_id 是否設定
+        # 否則家長端 LIFF 登入會在第一個請求才回 503，問題曝露慢
+        if not self.channel_id:
+            logger.warning(
+                "LineLoginService 初始化：LINE_LOGIN_CHANNEL_ID 未設定，"
+                "家長 LIFF 登入會回 503"
+            )
+        else:
+            logger.info(
+                "LineLoginService 已設定 channel_id（後 4 碼=%s）",
+                self.channel_id[-4:] if len(self.channel_id) >= 4 else "?",
+            )
 
     def is_configured(self) -> bool:
         return bool(self.channel_id)
@@ -59,9 +71,7 @@ class LineLoginService:
             )
         except httpx.HTTPError as exc:
             logger.warning("LINE verify 連線失敗: %s", exc)
-            raise HTTPException(
-                status_code=503, detail="LINE 驗證服務暫時無法連線"
-            )
+            raise HTTPException(status_code=503, detail="LINE 驗證服務暫時無法連線")
         if response.status_code != 200:
             logger.warning(
                 "LINE verify 失敗 status=%s body=%s",
@@ -73,11 +83,15 @@ class LineLoginService:
             payload = response.json()
         except ValueError:
             raise HTTPException(status_code=401, detail="LINE 回應格式異常")
-        if payload.get("aud") != self.channel_id:
+        # 資安掃描 2026-05-07 P2：aud 必須為非空字串且嚴格相等。defense in depth：
+        # is_configured() 已擋空 channel_id，但 LINE 回應若為 None / 空字串 / 非字串
+        # 也應拒絕，避免異常型別吃進通過。
+        aud = payload.get("aud")
+        if not aud or not isinstance(aud, str) or aud != self.channel_id:
             logger.warning(
-                "LINE verify aud 不符 expected=%s got=%s",
+                "LINE verify aud 不符 expected=%s got=%r",
                 self.channel_id,
-                payload.get("aud"),
+                aud,
             )
             raise HTTPException(status_code=401, detail="LINE id_token aud 不符")
         sub = payload.get("sub")
