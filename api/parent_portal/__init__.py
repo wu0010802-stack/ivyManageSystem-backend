@@ -23,6 +23,7 @@ from .binding_admin import router as binding_admin_router
 from .calendar import router as calendar_router
 from .contact_book import router as contact_book_router
 from .events import router as events_router
+from .family import router as family_router
 from .fees import router as fees_router
 from .home import router as home_router
 from .leaves import router as leaves_router
@@ -45,6 +46,7 @@ parent_router = APIRouter(
 parent_router.include_router(auth_router)
 parent_router.include_router(profile_router)
 parent_router.include_router(home_router)
+parent_router.include_router(family_router)
 parent_router.include_router(attendance_router)
 parent_router.include_router(announcements_router)
 parent_router.include_router(events_router)
