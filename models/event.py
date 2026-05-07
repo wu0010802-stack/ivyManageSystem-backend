@@ -304,3 +304,12 @@ class EventAcknowledgment(Base):
         nullable=True,
         comment="手寫簽名圖（PNG）；NULL 表示僅以姓名簽（向下相容舊資料）",
     )
+    # 資安掃描 2026-05-07 P2：簽名圖上傳時間。與 acknowledged_at 分離，因為
+    # parent 可能先 /ack 確認簽閱意圖，後再上傳簽名圖。事後追蹤簽名是否在
+    # event.ack_deadline 之內、是否替換過簽名（重簽會更新此欄位）皆需獨立 timestamp。
+    # 舊資料 NULL → 視為未紀錄，與 signature_attachment_id 為 NULL 同步。
+    signature_uploaded_at = Column(
+        DateTime,
+        nullable=True,
+        comment="簽名圖上傳時間（防 ack_deadline 後補簽 + 重簽紀錄）",
+    )

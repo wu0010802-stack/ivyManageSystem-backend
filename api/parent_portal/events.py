@@ -187,6 +187,15 @@ def acknowledge_event(
             raise HTTPException(status_code=404, detail="找不到事件")
         if not event.requires_acknowledgment:
             raise HTTPException(status_code=400, detail="此事件未要求簽閱")
+        # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽閱（與 signature 上傳對齊）
+        if event.ack_deadline is not None and date.today() > event.ack_deadline:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"事件簽閱截止日（{event.ack_deadline.isoformat()}）已過，"
+                    f"無法簽收。如需補簽請聯繫校方協助處理。"
+                ),
+            )
 
         existing = (
             session.query(EventAcknowledgment)
@@ -256,6 +265,25 @@ async def upload_ack_signature(
     session = get_session()
     try:
         _assert_student_owned(session, user_id, student_id, for_write=True)
+
+        # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽。家長若有正當理由
+        # 補簽，需請校方協助走後台 admin override（不在本端點開放）。
+        event = (
+            session.query(SchoolEvent)
+            .filter(SchoolEvent.id == event_id, SchoolEvent.is_active == True)
+            .first()
+        )
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到事件")
+        if event.ack_deadline is not None and date.today() > event.ack_deadline:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"事件簽閱截止日（{event.ack_deadline.isoformat()}）已過，"
+                    f"無法上傳簽名。如需補簽請聯繫校方協助處理。"
+                ),
+            )
+
         ack = (
             session.query(EventAcknowledgment)
             .filter(
@@ -298,6 +326,8 @@ async def upload_ack_signature(
         session.flush()
         session.refresh(att)
         ack.signature_attachment_id = att.id
+        # 資安掃描 2026-05-07 P2：紀錄簽名上傳時間（重簽會更新此欄位）
+        ack.signature_uploaded_at = datetime.now()
         session.commit()
 
         request.state.audit_entity_id = str(ack.id)
