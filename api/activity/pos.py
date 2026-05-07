@@ -37,6 +37,7 @@ from services.report_cache_service import report_cache_service
 from utils.advisory_lock import acquire_activity_refund_lock
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
+from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_student_pii
 from utils.rate_limit import SlidingWindowLimiter
@@ -886,6 +887,12 @@ async def pos_recent_transactions(
     else:
         target_date = datetime.now(TAIPEI_TZ).date()
 
+    # 資安掃描 2026-05-07 P2：operator 欄位顯示員工名單；對只持 ACTIVITY_READ
+    # 的低權限員工會洩漏「誰收的款」，可被用於內部竊盜情報蒐集 / 騷擾。改為
+    # has_finance_approve（== ACTIVITY_PAYMENT_APPROVE）才回傳真實操作員，
+    # 其他角色看到 "[已遮罩]"。
+    can_see_operator = has_finance_approve(current_user)
+
     session = get_session()
     try:
         # 軟刪（voided）紀錄不出現在交易列表：避免誤以為某張收據還在、且 tx_total 會錯算
@@ -982,7 +989,9 @@ async def pos_recent_transactions(
                     "payment_date": (
                         first.payment_date.isoformat() if first.payment_date else None
                     ),
-                    "operator": first.operator or "",
+                    "operator": (
+                        (first.operator or "") if can_see_operator else "[已遮罩]"
+                    ),
                     "notes": user_note,
                     "created_at": (
                         first.created_at.isoformat(timespec="seconds")
