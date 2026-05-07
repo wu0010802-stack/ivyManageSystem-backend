@@ -187,7 +187,7 @@ def list_today_medications(
                 }
             )
 
-        request.state.audit_skip = True
+        request.state.audit_summary = "portal.medications.list"
         return {
             "date": today.isoformat(),
             "groups": [

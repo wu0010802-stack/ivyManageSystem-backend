@@ -251,7 +251,7 @@ def get_teacher_unread_count(
     session = get_session()
     try:
         count = count_unread_for_teacher(session, teacher_user_id=user_id)
-        request.state.audit_skip = True
+        request.state.audit_summary = "portal.parent_messages.unread_count"
         return {"unread_count": count}
     finally:
         session.close()
@@ -557,7 +557,7 @@ def mark_thread_read(
         t = _get_thread_for_teacher(session, user_id=user_id, thread_id=thread_id)
         mark_read(session, thread=t, role="teacher")
         session.commit()
-        request.state.audit_skip = True
+        request.state.audit_summary = "portal.parent_messages.mark_read"
         return {"status": "ok"}
     finally:
         session.close()

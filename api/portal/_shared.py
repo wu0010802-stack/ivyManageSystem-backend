@@ -18,7 +18,12 @@ from utils.validators import validate_hhmm_format
 from sqlalchemy import or_
 
 from models.database import (
-    get_session, Employee, DailyShift, ShiftAssignment, Classroom, Student,
+    get_session,
+    Employee,
+    DailyShift,
+    ShiftAssignment,
+    Classroom,
+    Student,
 )
 from utils.auth import get_current_user
 
@@ -30,6 +35,7 @@ logger = logging.getLogger(__name__)
 WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
 
 # ============ Pydantic Models ============
+
 
 class LeaveCreatePortal(BaseModel):
     leave_type: str
@@ -100,6 +106,7 @@ class AnomalyConfirm(BaseModel):
 
 _mask_bank_account = mask_bank_account
 
+
 class ProfileUpdate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
@@ -135,16 +142,21 @@ class SubstituteRespond(BaseModel):
 
 # ============ Helpers ============
 
+
 def _get_teacher_classroom_ids(session, emp_id: int) -> list[int]:
     """取得教師所屬班級 ID 列表"""
-    classrooms = session.query(Classroom).filter(
-        Classroom.is_active == True,
-        or_(
-            Classroom.head_teacher_id == emp_id,
-            Classroom.assistant_teacher_id == emp_id,
-            Classroom.art_teacher_id == emp_id,
-        ),
-    ).all()
+    classrooms = (
+        session.query(Classroom)
+        .filter(
+            Classroom.is_active == True,
+            or_(
+                Classroom.head_teacher_id == emp_id,
+                Classroom.assistant_teacher_id == emp_id,
+                Classroom.art_teacher_id == emp_id,
+            ),
+        )
+        .all()
+    )
     return [c.id for c in classrooms]
 
 
@@ -175,10 +187,13 @@ def _get_teacher_student_ids(
         target_ids = classroom_ids
 
     student_ids = [
-        s.id for s in session.query(Student.id).filter(
+        s.id
+        for s in session.query(Student.id)
+        .filter(
             Student.classroom_id.in_(target_ids),
             Student.is_active == True,
-        ).all()
+        )
+        .all()
     ]
     return target_ids, student_ids
 
@@ -199,19 +214,27 @@ def _get_employee(session, current_user: dict) -> Employee:
 def _get_employee_shift_for_date(session, employee_id: int, target_date: date):
     """取得員工在指定日期的班別（優先 DailyShift -> ShiftAssignment）"""
     # 1. DailyShift override
-    ds = session.query(DailyShift).filter(
-        DailyShift.employee_id == employee_id,
-        DailyShift.date == target_date,
-    ).first()
+    ds = (
+        session.query(DailyShift)
+        .filter(
+            DailyShift.employee_id == employee_id,
+            DailyShift.date == target_date,
+        )
+        .first()
+    )
     if ds:
         return ds.shift_type_id
 
     # 2. Weekly ShiftAssignment
     week_monday = target_date - timedelta(days=target_date.weekday())
-    sa = session.query(ShiftAssignment).filter(
-        ShiftAssignment.employee_id == employee_id,
-        ShiftAssignment.week_start_date == week_monday,
-    ).first()
+    sa = (
+        session.query(ShiftAssignment)
+        .filter(
+            ShiftAssignment.employee_id == employee_id,
+            ShiftAssignment.week_start_date == week_monday,
+        )
+        .first()
+    )
     if sa:
         return sa.shift_type_id
 
@@ -225,6 +248,7 @@ def _get_shift_type_map(session, active_only: bool = False) -> dict:
     if cached is not None:
         return cached
     from models.database import ShiftType
+
     query = session.query(ShiftType)
     if active_only:
         query = query.filter(ShiftType.is_active == True)
@@ -241,6 +265,59 @@ def _get_shift_type_map(session, active_only: bool = False) -> dict:
     }
     _shift_type_cache[cache_key] = result
     return result
+
+
+# ============ ETag / Last-Modified helpers ============
+
+import hashlib
+from email.utils import format_datetime, parsedate_to_datetime
+
+from fastapi import Request, Response as FastAPIResponse
+
+
+def check_last_modified(request: Request, last_modified) -> FastAPIResponse | None:
+    """If-Modified-Since 命中回 304；否則回 None（caller 繼續處理）。"""
+    if last_modified is None:
+        return None
+    if_modified = request.headers.get("if-modified-since")
+    if if_modified:
+        try:
+            client_dt = parsedate_to_datetime(if_modified)
+            # floor 至秒（HTTP date 精度為秒）
+            server_dt = last_modified.replace(microsecond=0)
+            from datetime import timezone
+
+            if client_dt.tzinfo is None:
+                client_dt = client_dt.replace(tzinfo=timezone.utc)
+            if server_dt.tzinfo is None:
+                server_dt = server_dt.replace(tzinfo=timezone.utc)
+            if server_dt <= client_dt:
+                return FastAPIResponse(status_code=304)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def add_last_modified_header(response: FastAPIResponse, last_modified) -> None:
+    response.headers["Last-Modified"] = format_datetime(last_modified, usegmt=True)
+
+
+def check_etag(request: Request, etag: str) -> FastAPIResponse | None:
+    """If-None-Match 命中回 304。"""
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match and if_none_match.strip('"').lstrip("W/").strip('"') == etag.strip(
+        '"'
+    ).lstrip("W/").strip('"'):
+        return FastAPIResponse(status_code=304)
+    return None
+
+
+def compute_etag(payload) -> str:
+    """`W/"<md5 16-char prefix>"` weak ETag。"""
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    digest = hashlib.md5(payload).hexdigest()[:16]
+    return f'W/"{digest}"'
 
 
 def _calculate_annual_leave_quota(hire_date: date) -> int:
