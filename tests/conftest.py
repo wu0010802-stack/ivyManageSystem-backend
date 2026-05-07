@@ -138,3 +138,91 @@ def test_db_session(tmp_path):
     base_module._engine = old_engine
     base_module._SessionFactory = old_session_factory
     test_engine.dispose()
+
+
+import pytest as _pytest_for_gov_data
+
+
+@_pytest_for_gov_data.fixture
+def pending_brackets_staging(test_db_session):
+    """提供一筆 pending InsuranceBracketsStaging（year=2027 / 1 列簡化資料）。"""
+    from models.database import InsuranceBracketsStaging, session_scope
+
+    with session_scope() as s:
+        st = InsuranceBracketsStaging(
+            effective_year=2027,
+            composed_from={"mol_labor_brackets": 1},
+            brackets=[
+                {
+                    "amount": 30000,
+                    "labor_employee": 600,
+                    "labor_employer": 2100,
+                    "health_employee": 470,
+                    "health_employer": 1450,
+                    "pension": 1800,
+                },
+            ],
+            rates={"labor_max_insured": 45800},
+            diff_summary={"added": [], "removed": [], "modified": []},
+            status="pending",
+        )
+        s.add(st)
+        s.flush()
+        return st.id
+
+
+@_pytest_for_gov_data.fixture
+def sample_unfinalized_salary_2027(test_db_session):
+    """模擬一筆 2027 年未封存的 SalaryRecord，用於驗證 mark_stale 觸發。
+
+    SalaryRecord 使用 salary_year / salary_month 欄位（非 year/month）。
+    """
+    from models.database import SalaryRecord, session_scope
+
+    with session_scope() as s:
+        rec = SalaryRecord(
+            employee_id=1,
+            salary_year=2027,
+            salary_month=1,
+            base_salary=30000,
+            net_salary=27000,
+            is_finalized=False,
+            needs_recalc=False,
+        )
+        s.add(rec)
+        s.flush()
+
+        # 回傳一個含 id 的 namedtuple-like 物件，確保 id 可在 session 外存取
+        class _Rec:
+            def __init__(self, id_):
+                self.id = id_
+
+        return _Rec(rec.id)
+
+
+@_pytest_for_gov_data.fixture
+def sample_minimum_wage_staging_2027(test_db_session):
+    """提供一筆 pending MinimumWageStaging + 對應 GovDataSnapshot（年度 2027）。"""
+    from datetime import date
+    from models.database import GovDataSnapshot, MinimumWageStaging, session_scope
+
+    with session_scope() as s:
+        snap = GovDataSnapshot(
+            source="mol_minimum_wage",
+            source_url="https://example.com",
+            http_status=200,
+            raw_payload={},
+            payload_hash="b" * 64,
+        )
+        s.add(snap)
+        s.flush()
+        st = MinimumWageStaging(
+            effective_date=date(2027, 1, 1),
+            monthly=30500,
+            hourly=200,
+            source_snapshot_id=snap.id,
+            status="pending",
+        )
+        s.add(st)
+        s.flush()
+        return st.id
