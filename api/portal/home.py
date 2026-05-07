@@ -95,52 +95,45 @@ def _my_attendance_today(session, employee_id: int, today: date_cls) -> dict:
     }
 
 
-def _classroom_card(session, classroom: Classroom, today: date_cls) -> dict:
-    student_count = (
-        session.query(Student)
-        .filter(Student.classroom_id == classroom.id, Student.is_active.is_(True))
-        .count()
+def _classroom_card(classroom: Classroom, today: date_cls, batches: dict) -> dict:
+    """純資料組裝；所有 query 由呼叫端預先 batch。
+
+    `batches` 必須含以下 keys（每個 value 為 dict[classroom_id, T]）:
+      - student_count: dict[int, int]
+      - completion: dict[int, dict]
+      - pending_dismissal: dict[int, int]
+      - attendance_called: dict[int, bool]
+      - consecutive_absences: dict[int, list[dict]]
+      - upcoming_birthdays: dict[int, list[dict]]
+      - allergy_alerts: dict[int, list[dict]]
+      - pending_medications: dict[int, int]
+    """
+    cid = classroom.id
+    completion = batches["completion"].get(
+        cid, {"roster": 0, "draft": 0, "published": 0, "missing": 0}
     )
-    completion = compute_class_completion(
-        session, classroom_id=classroom.id, log_date=today
-    )
-    pending_dismissal = (
-        session.query(StudentDismissalCall)
-        .filter(
-            StudentDismissalCall.classroom_id == classroom.id,
-            StudentDismissalCall.status == "pending",
-        )
-        .count()
-    )
+    roster = completion.get("roster", 0)
     return {
-        "classroom_id": classroom.id,
+        "classroom_id": cid,
         "classroom_name": classroom.name,
-        "student_count": student_count,
+        "student_count": batches["student_count"].get(cid, 0),
         "contact_book": {
-            "roster": completion["roster"],
-            "draft": completion["draft"],
-            "published": completion["published"],
-            "missing": completion["missing"],
+            "roster": roster,
+            "draft": completion.get("draft", 0),
+            "published": completion.get("published", 0),
+            "missing": completion.get("missing", 0),
             "percentage": (
-                round(completion["published"] / completion["roster"] * 100, 1)
-                if completion["roster"]
+                round(completion.get("published", 0) / roster * 100, 1)
+                if roster
                 else 0.0
             ),
         },
-        "attendance_called_today": has_attendance_today(
-            session, classroom_id=classroom.id, today=today
-        ),
-        "pending_dismissal_calls": pending_dismissal,
-        "consecutive_absences": compute_consecutive_absences(
-            session, classroom_id=classroom.id, today=today
-        ),
-        "upcoming_birthdays_7d": compute_upcoming_birthdays(
-            session, classroom_id=classroom.id, today=today
-        ),
-        "allergy_alerts": compute_allergy_alerts(session, classroom_id=classroom.id),
-        "pending_medications_today": count_pending_medications(
-            session, classroom_id=classroom.id, today=today
-        ),
+        "attendance_called_today": batches["attendance_called"].get(cid, False),
+        "pending_dismissal_calls": batches["pending_dismissal"].get(cid, 0),
+        "consecutive_absences": batches["consecutive_absences"].get(cid, []),
+        "upcoming_birthdays_7d": batches["upcoming_birthdays"].get(cid, []),
+        "allergy_alerts": batches["allergy_alerts"].get(cid, []),
+        "pending_medications_today": batches["pending_medications"].get(cid, 0),
     }
 
 
@@ -217,7 +210,65 @@ def get_home_summary(
             if classroom_ids
             else []
         )
-        classroom_cards = [_classroom_card(session, c, today) for c in classrooms]
+        # batch 預取所有班級 dashboard 資料（避免 _classroom_card N+1）
+        ids = [c.id for c in classrooms]
+        if ids:
+            from sqlalchemy import func
+
+            student_counts = dict(
+                session.query(Student.classroom_id, func.count(Student.id))
+                .filter(
+                    Student.classroom_id.in_(ids),
+                    Student.is_active.is_(True),
+                )
+                .group_by(Student.classroom_id)
+                .all()
+            )
+            pending_dismissal = dict(
+                session.query(
+                    StudentDismissalCall.classroom_id,
+                    func.count(StudentDismissalCall.id),
+                )
+                .filter(
+                    StudentDismissalCall.classroom_id.in_(ids),
+                    StudentDismissalCall.status == "pending",
+                )
+                .group_by(StudentDismissalCall.classroom_id)
+                .all()
+            )
+            batches = {
+                "student_count": student_counts,
+                "completion": compute_class_completion(
+                    session, classroom_id=ids, log_date=today
+                ),
+                "pending_dismissal": pending_dismissal,
+                "attendance_called": has_attendance_today(
+                    session, classroom_id=ids, today=today
+                ),
+                "consecutive_absences": compute_consecutive_absences(
+                    session, classroom_id=ids, today=today
+                ),
+                "upcoming_birthdays": compute_upcoming_birthdays(
+                    session, classroom_id=ids, today=today
+                ),
+                "allergy_alerts": compute_allergy_alerts(session, classroom_id=ids),
+                "pending_medications": count_pending_medications(
+                    session, classroom_id=ids, today=today
+                ),
+            }
+        else:
+            batches = {
+                "student_count": {},
+                "completion": {},
+                "pending_dismissal": {},
+                "attendance_called": {},
+                "consecutive_absences": {},
+                "upcoming_birthdays": {},
+                "allergy_alerts": {},
+                "pending_medications": {},
+            }
+
+        classroom_cards = [_classroom_card(c, today, batches) for c in classrooms]
 
         # actions：跨站待辦計數
         unread_messages = 0
