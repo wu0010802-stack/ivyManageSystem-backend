@@ -621,6 +621,11 @@ async def update_student(
     audit（2026-05-07 P1）：在 request.state.audit_changes 寫入 before/after diff，
     讓 AuditMiddleware 把家長姓名/電話/地址/緊急聯絡人/班級等敏感欄位的具體
     變動寫進 audit_logs。否則只剩動作標籤，無法事後溯回誰把家長電話從 A 改成 B。
+
+    終態守衛（資安掃描 2026-05-07 P0）：lifecycle_status 為畢業/退學/轉出時拒絕
+    寫入主資料。離校學生資料應視為「歷史檔」，避免事後被改家長電話、班級或
+    緊急聯絡人造成稽核斷鏈。如業主真要修正歷史資料，需先用 lifecycle 流程
+    把學生轉回 enrolled，再修主資料。
     """
     require_unrestricted_role(current_user, action_label="修改學生主資料")
 
@@ -629,6 +634,19 @@ async def update_student(
         student = session.query(Student).filter(Student.id == student_id).first()
         if not student:
             raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+
+        if student.lifecycle_status in {
+            LIFECYCLE_GRADUATED,
+            LIFECYCLE_WITHDRAWN,
+            LIFECYCLE_TRANSFERRED,
+        }:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "學生已離校（畢業/退學/轉出），不可修改主資料。"
+                    "如需修正歷史資料，請先透過異動流程恢復學籍。"
+                ),
+            )
 
         update_data = item.model_dump(exclude_unset=True)
         old_classroom_id = student.classroom_id
