@@ -164,7 +164,7 @@ def create_leave(
     _validate_date_range(payload)
     session = get_session()
     try:
-        _assert_student_owned(session, user_id, payload.student_id)
+        _assert_student_owned(session, user_id, payload.student_id, for_write=True)
         _check_overlap(
             session, payload.student_id, payload.start_date, payload.end_date
         )

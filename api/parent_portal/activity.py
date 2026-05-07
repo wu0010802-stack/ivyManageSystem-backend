@@ -164,7 +164,7 @@ def register_courses(
     user_id = current_user["user_id"]
     session = get_session()
     try:
-        _assert_student_owned(session, user_id, payload.student_id)
+        _assert_student_owned(session, user_id, payload.student_id, for_write=True)
 
         student = (
             session.query(Student).filter(Student.id == payload.student_id).first()

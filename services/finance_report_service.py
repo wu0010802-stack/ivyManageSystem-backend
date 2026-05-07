@@ -12,6 +12,7 @@ Source provider 模式：每個收入/支出來源是一個純函式，回傳
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import extract, func
@@ -31,6 +32,20 @@ def _month_totals_from(rows) -> dict[int, int]:
     return {int(m): int(a or 0) for m, a in rows if m is not None}
 
 
+def _year_range(year: int) -> tuple[date, date]:
+    """[start, end_exclusive) for the given year — sargable replacement for
+    ``extract('year', col) == year`` so PostgreSQL can use payment_date indexes.
+    """
+    return date(year, 1, 1), date(year + 1, 1, 1)
+
+
+def _month_range(year: int, month: int) -> tuple[date, date]:
+    """[start, end_exclusive) for (year, month). Wraps to next year on month=12."""
+    if month == 12:
+        return date(year, 12, 1), date(year + 1, 1, 1)
+    return date(year, month, 1), date(year, month + 1, 1)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 收入 providers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,12 +60,16 @@ def get_tuition_revenue_by_month(session: Session, year: int) -> dict[int, int]:
     3) partial 狀態的現金不計入（條件是 status='paid'）
     改讀 StudentFeePayment 每筆 append-only 流水即可正確歸月。
     """
+    start, end = _year_range(year)
     rows = (
         session.query(
             extract("month", StudentFeePayment.payment_date).label("m"),
             func.sum(StudentFeePayment.amount),
         )
-        .filter(extract("year", StudentFeePayment.payment_date) == year)
+        .filter(
+            StudentFeePayment.payment_date >= start,
+            StudentFeePayment.payment_date < end,
+        )
         .group_by("m")
         .all()
     )
@@ -59,12 +78,16 @@ def get_tuition_revenue_by_month(session: Session, year: int) -> dict[int, int]:
 
 def get_tuition_refund_by_month(session: Session, year: int) -> dict[int, int]:
     """學費退款，按 refunded_at 月份聚合。"""
+    start, end = _year_range(year)
     rows = (
         session.query(
             extract("month", StudentFeeRefund.refunded_at).label("m"),
             func.sum(StudentFeeRefund.amount),
         )
-        .filter(extract("year", StudentFeeRefund.refunded_at) == year)
+        .filter(
+            StudentFeeRefund.refunded_at >= start,
+            StudentFeeRefund.refunded_at < end,
+        )
         .group_by("m")
         .all()
     )
@@ -73,6 +96,7 @@ def get_tuition_refund_by_month(session: Session, year: int) -> dict[int, int]:
 
 def get_activity_revenue_by_month(session: Session, year: int) -> dict[int, int]:
     """才藝繳費（type='payment'），按 payment_date 月份聚合；排除 voided 軟刪紀錄。"""
+    start, end = _year_range(year)
     rows = (
         session.query(
             extract("month", ActivityPaymentRecord.payment_date).label("m"),
@@ -80,7 +104,8 @@ def get_activity_revenue_by_month(session: Session, year: int) -> dict[int, int]
         )
         .filter(
             ActivityPaymentRecord.type == "payment",
-            extract("year", ActivityPaymentRecord.payment_date) == year,
+            ActivityPaymentRecord.payment_date >= start,
+            ActivityPaymentRecord.payment_date < end,
             ActivityPaymentRecord.voided_at.is_(None),
         )
         .group_by("m")
@@ -91,6 +116,7 @@ def get_activity_revenue_by_month(session: Session, year: int) -> dict[int, int]
 
 def get_activity_refund_by_month(session: Session, year: int) -> dict[int, int]:
     """才藝退費（type='refund'），按 payment_date 月份聚合；排除 voided 軟刪紀錄。"""
+    start, end = _year_range(year)
     rows = (
         session.query(
             extract("month", ActivityPaymentRecord.payment_date).label("m"),
@@ -98,7 +124,8 @@ def get_activity_refund_by_month(session: Session, year: int) -> dict[int, int]:
         )
         .filter(
             ActivityPaymentRecord.type == "refund",
-            extract("year", ActivityPaymentRecord.payment_date) == year,
+            ActivityPaymentRecord.payment_date >= start,
+            ActivityPaymentRecord.payment_date < end,
             ActivityPaymentRecord.voided_at.is_(None),
         )
         .group_by("m")
@@ -248,12 +275,13 @@ def get_tuition_detail(session: Session, year: int, month: int) -> list[dict]:
     繳費從 StudentFeePayment 逐筆取（保留原收款日），JOIN record 拿學生/項目 snapshot。
     """
     out: list[dict] = []
+    start, end = _month_range(year, month)
     paid_rows = (
         session.query(StudentFeePayment, StudentFeeRecord)
         .join(StudentFeeRecord, StudentFeePayment.record_id == StudentFeeRecord.id)
         .filter(
-            extract("year", StudentFeePayment.payment_date) == year,
-            extract("month", StudentFeePayment.payment_date) == month,
+            StudentFeePayment.payment_date >= start,
+            StudentFeePayment.payment_date < end,
         )
         .order_by(StudentFeePayment.payment_date)
         .all()
@@ -273,8 +301,8 @@ def get_tuition_detail(session: Session, year: int, month: int) -> list[dict]:
     refunds = (
         session.query(StudentFeeRefund)
         .filter(
-            extract("year", StudentFeeRefund.refunded_at) == year,
-            extract("month", StudentFeeRefund.refunded_at) == month,
+            StudentFeeRefund.refunded_at >= start,
+            StudentFeeRefund.refunded_at < end,
         )
         .all()
     )
@@ -294,6 +322,7 @@ def get_tuition_detail(session: Session, year: int, month: int) -> list[dict]:
 
 def get_activity_detail(session: Session, year: int, month: int) -> list[dict]:
     """才藝繳費/退費明細（含報名關聯的學生姓名）；排除 voided 軟刪紀錄。"""
+    start, end = _month_range(year, month)
     rows = (
         session.query(ActivityPaymentRecord, ActivityRegistration)
         .outerjoin(
@@ -301,8 +330,8 @@ def get_activity_detail(session: Session, year: int, month: int) -> list[dict]:
             ActivityPaymentRecord.registration_id == ActivityRegistration.id,
         )
         .filter(
-            extract("year", ActivityPaymentRecord.payment_date) == year,
-            extract("month", ActivityPaymentRecord.payment_date) == month,
+            ActivityPaymentRecord.payment_date >= start,
+            ActivityPaymentRecord.payment_date < end,
             ActivityPaymentRecord.voided_at.is_(None),
         )
         .order_by(ActivityPaymentRecord.payment_date)

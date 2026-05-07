@@ -188,9 +188,13 @@ def _load_photos(session, order_id: int) -> list[Attachment]:
 
 
 def _get_order_for_parent(
-    session, *, user_id: int, order_id: int
+    session, *, user_id: int, order_id: int, for_write: bool = False
 ) -> StudentMedicationOrder:
-    """查 order 並做 IDOR：parent 必須是該 student 的監護人。"""
+    """查 order 並做 IDOR：parent 必須是該 student 的監護人。
+
+    for_write=True：用於上傳藥袋照片/刪除照片等寫入動作；額外擋已退學/畢業
+    /轉出子女，避免家長對已離校子女佔系統資源。
+    """
     o = (
         session.query(StudentMedicationOrder)
         .filter(StudentMedicationOrder.id == order_id)
@@ -198,7 +202,7 @@ def _get_order_for_parent(
     )
     if not o:
         raise HTTPException(status_code=404, detail="用藥單不存在")
-    _assert_student_owned(session, user_id, o.student_id)
+    _assert_student_owned(session, user_id, o.student_id, for_write=for_write)
     return o
 
 
@@ -265,7 +269,7 @@ def create_medication_order(
     user_id = current_user["user_id"]
     session = get_session()
     try:
-        _assert_student_owned(session, user_id, payload.student_id)
+        _assert_student_owned(session, user_id, payload.student_id, for_write=True)
 
         # 過敏軟警告
         conflicts = find_allergy_conflicts(
@@ -362,7 +366,9 @@ async def upload_medication_photo(
     session = get_session()
     try:
         # IDOR
-        order = _get_order_for_parent(session, user_id=user_id, order_id=order_id)
+        order = _get_order_for_parent(
+            session, user_id=user_id, order_id=order_id, for_write=True
+        )
 
         storage = get_portfolio_storage()
         stored = storage.put_attachment(content, ext)
@@ -411,8 +417,10 @@ def delete_medication_photo(
     user_id = current_user["user_id"]
     session = get_session()
     try:
-        # IDOR：order 必須屬此 parent
-        _get_order_for_parent(session, user_id=user_id, order_id=order_id)
+        # IDOR：order 必須屬此 parent；for_write=True 擋已退學/畢業子女
+        _get_order_for_parent(
+            session, user_id=user_id, order_id=order_id, for_write=True
+        )
         att = (
             session.query(Attachment)
             .filter(

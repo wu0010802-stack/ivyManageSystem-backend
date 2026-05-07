@@ -3,8 +3,10 @@
 職責：集中學生/班級存取權限檢查，避免每個 router 重寫相同邏輯。
 
 規則：
-- admin / hr / supervisor 不受班級限制
+- admin / hr / supervisor 不受班級限制；可看終態學生（已退學/畢業/轉出）以查歷史
 - teacher 只能存取自己擔任導師（head_teacher / assistant_teacher / art_teacher）的班級
+  - 終態學生（lifecycle_status in graduated/withdrawn/transferred）對 teacher 立即失效
+    （audit 2026-05-07 P0 #5）；要查歷史走 admin/hr/supervisor
 - 未分班的學生（classroom_id = NULL）：非 admin 角色不能存取
 """
 
@@ -14,15 +16,43 @@ from typing import Any, Callable, Iterable
 
 from fastapi import HTTPException
 
-from models.classroom import Classroom, Student
+from models.classroom import (
+    LIFECYCLE_GRADUATED,
+    LIFECYCLE_TRANSFERRED,
+    LIFECYCLE_WITHDRAWN,
+    Classroom,
+    Student,
+)
 from utils.permissions import Permission, has_permission
 
 _UNRESTRICTED_ROLES = frozenset({"admin", "hr", "supervisor"})
+
+# 終態：學生已離校（退學/轉出/畢業）。對 teacher 不可見；管理角色仍可看
+# （事後查紀錄、家長申請成績單等用途）。
+_TEACHER_BLOCKED_LIFECYCLE = frozenset(
+    {LIFECYCLE_GRADUATED, LIFECYCLE_TRANSFERRED, LIFECYCLE_WITHDRAWN}
+)
 
 
 def is_unrestricted(current_user: dict) -> bool:
     """管理角色不受班級限制。"""
     return current_user.get("role", "") in _UNRESTRICTED_ROLES
+
+
+def require_unrestricted_role(
+    current_user: dict, *, action_label: str = "此操作"
+) -> None:
+    """限定 admin/hr/supervisor。teacher 等其他角色一律 403。
+
+    用於學生主資料寫入端點（PUT/DELETE /students、bulk-transfer），避免
+    teacher 改家長電話、把學生轉到其他班這類敏感動作（policy: 只 admin/hr/
+    supervisor 可寫，audit 2026-05-07 P0 #3 #4）。
+    """
+    if not is_unrestricted(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{action_label}僅限 admin/hr/supervisor 角色執行",
+        )
 
 
 def accessible_classroom_ids(session, current_user: dict) -> list[int]:
@@ -51,8 +81,9 @@ def accessible_classroom_ids(session, current_user: dict) -> list[int]:
 def assert_student_access(session, current_user: dict, student_id: int) -> Student:
     """檢查 user 是否可存取該學生；不可則 403。回傳 Student 物件。
 
-    - admin/hr/supervisor：一律放行
-    - teacher：僅可存取自己班級的學生；未分班學生一律禁
+    - admin/hr/supervisor：一律放行（含終態學生，供事後查歷史）
+    - teacher：僅可存取自己班級且 lifecycle 非終態（graduated/withdrawn/transferred）
+      的學生；未分班學生一律禁
     - 學生不存在：raise 404
     """
     student = session.query(Student).filter(Student.id == student_id).first()
@@ -60,6 +91,9 @@ def assert_student_access(session, current_user: dict, student_id: int) -> Stude
         raise HTTPException(status_code=404, detail="學生不存在")
     if is_unrestricted(current_user):
         return student
+    # teacher 路徑：終態學生立即失效（audit 2026-05-07 P0 #5）
+    if student.lifecycle_status in _TEACHER_BLOCKED_LIFECYCLE:
+        raise HTTPException(status_code=403, detail="您無權存取此學生")
     if not student.classroom_id:
         raise HTTPException(status_code=403, detail="您無權存取此學生")
     allowed = accessible_classroom_ids(session, current_user)
@@ -71,7 +105,11 @@ def assert_student_access(session, current_user: dict, student_id: int) -> Stude
 def filter_student_ids_by_access(
     session, current_user: dict, candidate_ids: Iterable[int]
 ) -> set[int]:
-    """把一批 student_id 過濾掉該 user 無權存取的。用於 list 端點。"""
+    """把一批 student_id 過濾掉該 user 無權存取的。用於 list 端點。
+
+    對 teacher：除班級限制外，亦排除 lifecycle 終態學生
+    （graduated/withdrawn/transferred；audit 2026-05-07 P0 #5）。
+    """
     if is_unrestricted(current_user):
         return set(candidate_ids)
     allowed_classrooms = accessible_classroom_ids(session, current_user)
@@ -82,6 +120,7 @@ def filter_student_ids_by_access(
         .filter(
             Student.id.in_(list(candidate_ids)),
             Student.classroom_id.in_(allowed_classrooms),
+            ~Student.lifecycle_status.in_(_TEACHER_BLOCKED_LIFECYCLE),
         )
         .all()
     )
@@ -184,6 +223,7 @@ def student_ids_in_scope(session, current_user: dict) -> list[int] | None:
     """回傳 user 所有可存取的 student_id 清單；管理角色回傳 None（表無限制）。
 
     用於彙總端點（例：今日用藥）的 WHERE student_id IN (...) 子句。
+    對 teacher：排除 lifecycle 終態學生（audit 2026-05-07 P0 #5）。
     """
     if is_unrestricted(current_user):
         return None
@@ -192,7 +232,10 @@ def student_ids_in_scope(session, current_user: dict) -> list[int] | None:
         return []
     rows = (
         session.query(Student.id)
-        .filter(Student.classroom_id.in_(allowed_classrooms))
+        .filter(
+            Student.classroom_id.in_(allowed_classrooms),
+            ~Student.lifecycle_status.in_(_TEACHER_BLOCKED_LIFECYCLE),
+        )
         .all()
     )
     return [r.id for r in rows]

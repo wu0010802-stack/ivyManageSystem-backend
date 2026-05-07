@@ -176,7 +176,7 @@ def acknowledge_event(
     user_id = current_user["user_id"]
     session = get_session()
     try:
-        _assert_student_owned(session, user_id, payload.student_id)
+        _assert_student_owned(session, user_id, payload.student_id, for_write=True)
 
         event = (
             session.query(SchoolEvent)
@@ -255,7 +255,7 @@ async def upload_ack_signature(
 
     session = get_session()
     try:
-        _assert_student_owned(session, user_id, student_id)
+        _assert_student_owned(session, user_id, student_id, for_write=True)
         ack = (
             session.query(EventAcknowledgment)
             .filter(
