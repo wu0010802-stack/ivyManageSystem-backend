@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from models.database import (
     ActivityPaymentRecord,
@@ -709,5 +709,99 @@ async def list_pos_unlock_events(
             "count": len(events),
             "events": events,
         }
+    finally:
+        session.close()
+
+
+# ── 端點 7：操作員活動稽核 dashboard（spec H1）─────────────────────
+
+
+_OPERATOR_ACTIVITY_LIMIT = 100
+
+
+@router.get("/audit/operator-activity")
+async def list_operator_activity(
+    days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
+):
+    """列出近 N 天每位 POS operator 的活動量（spec H1）。
+
+    Why: 業主政策要求每位員工以個人帳號操作 POS（避免共用帳號失去歸責性）。
+    本端點供老闆每月稽核哪些帳號操作量異常 — 共用帳號通常筆數高、個人帳號零，
+    視覺即可判斷誰沒落實規範。
+
+    JOIN User 表豐富 display_name / role / employee_id；無 User row 對應的
+    operator 字串以 user=null 回傳，前端以紅色標記提醒（已停用 / 共用殘留）。
+    voided 紀錄排除；按總筆數倒序，限 100 筆。
+    """
+    cutoff_date = (
+        datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(days=days)
+    ).date()
+    payment_count_expr = func.sum(
+        case((ActivityPaymentRecord.type == "payment", 1), else_=0)
+    )
+    refund_count_expr = func.sum(
+        case((ActivityPaymentRecord.type == "refund", 1), else_=0)
+    )
+    session = get_session()
+    try:
+        rows = (
+            session.query(
+                ActivityPaymentRecord.operator,
+                payment_count_expr.label("payment_count"),
+                refund_count_expr.label("refund_count"),
+                func.max(ActivityPaymentRecord.created_at).label("last_at"),
+            )
+            .filter(
+                ActivityPaymentRecord.payment_date >= cutoff_date,
+                ActivityPaymentRecord.voided_at.is_(None),
+                ActivityPaymentRecord.operator.isnot(None),
+                ActivityPaymentRecord.operator != "",
+            )
+            .group_by(ActivityPaymentRecord.operator)
+            .order_by((payment_count_expr + refund_count_expr).desc())
+            .limit(_OPERATOR_ACTIVITY_LIMIT)
+            .all()
+        )
+
+        if not rows:
+            return {"days": days, "count": 0, "operators": []}
+
+        from models.auth import User
+
+        usernames = [r.operator for r in rows]
+        users = session.query(User).filter(User.username.in_(usernames)).all()
+        user_by_name = {u.username: u for u in users}
+
+        operators = []
+        for r in rows:
+            u = user_by_name.get(r.operator)
+            payment_count = int(r.payment_count or 0)
+            refund_count = int(r.refund_count or 0)
+            operators.append(
+                {
+                    "operator": r.operator,
+                    "payment_count": payment_count,
+                    "refund_count": refund_count,
+                    "total_count": payment_count + refund_count,
+                    "last_activity_at": (
+                        r.last_at.isoformat(timespec="seconds") if r.last_at else None
+                    ),
+                    "user": (
+                        {
+                            "id": u.id,
+                            "display_name": u.display_name or u.username,
+                            "role": u.role,
+                            "employee_id": u.employee_id,
+                            "is_active": bool(u.is_active),
+                        }
+                        if u
+                        else None
+                    ),
+                }
+            )
+        return {"days": days, "count": len(operators), "operators": operators}
     finally:
         session.close()
