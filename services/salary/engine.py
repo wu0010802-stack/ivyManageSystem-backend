@@ -255,6 +255,11 @@ class SalaryEngine:
         # 重算歷史月份時用來序列化 engine 設定切換,避免兩個並發請求互相
         # 蓋掉對方剛 swap 進來的設定;使用 RLock 讓同一執行緒可重入。
         self._config_swap_lock = threading.RLock()
+        # config_for_month snapshot cache：(year, month) → snapshot dict
+        # 同一個歷史月份的設定不會變動（除非 admin 寫入 PUT，會 invalidate），
+        # 因此把第一次 _apply_configs_for_month 的結果快取，後續 swap 直接 restore。
+        # 取代 audit A.P0.1：避免每次 with config_for_month 都跑 5-6 次 DB query。
+        self._month_config_cache: dict[tuple[int, int], dict] = {}
         # 可被覆蓋的設定 - 節慶獎金（深拷貝，避免測試修改巢狀 dict 時汙染常數）
         self._bonus_base = {k: dict(v) for k, v in FESTIVAL_BONUS_BASE.items()}
         self._target_enrollment = {k: dict(v) for k, v in TARGET_ENROLLMENT.items()}
@@ -533,14 +538,25 @@ class SalaryEngine:
         - 取 _config_swap_lock 序列化,避免兩個並發 calc 把對方的 swap 蓋掉
         - 失敗(任何例外)時也會 restore,保持 engine 狀態一致
         - 同 thread 可重入(RLock),內層 context 一樣會 swap & restore
+
+        效能：同一 (year, month) 第一次 swap 後其 snapshot 進入 _month_config_cache，
+        後續 swap 直接 restore（避免 5-6 次 DB query）。設定異動時由 load_config_from_db /
+        invalidate_month_config_cache 清空。Audit A.P0.1。
         """
         with self._config_swap_lock:
-            snapshot = self._snapshot_config_state()
+            outer_snapshot = self._snapshot_config_state()
             try:
-                self._apply_configs_for_month(session, year, month)
+                cached = self._month_config_cache.get((year, month))
+                if cached is not None:
+                    self._restore_config_state(cached)
+                else:
+                    self._apply_configs_for_month(session, year, month)
+                    self._month_config_cache[(year, month)] = (
+                        self._snapshot_config_state()
+                    )
                 yield
             finally:
-                self._restore_config_state(snapshot)
+                self._restore_config_state(outer_snapshot)
 
     def load_config_from_db(self):
         """從資料庫載入設定。
@@ -554,6 +570,19 @@ class SalaryEngine:
         """
         with self._config_swap_lock:
             self._load_config_from_db_locked()
+            # 設定異動：清空所有歷史月份 snapshot cache，下次 config_for_month
+            # 會以新版設定重新建立。Audit A.P0.1。
+            self._month_config_cache.clear()
+
+    def invalidate_month_config_cache(self) -> None:
+        """外部呼叫端可主動清空 (year, month) snapshot cache。
+
+        典型場景：新增 / 修改 / 失效 BonusConfig / InsuranceRate / AttendancePolicy /
+        GradeTarget 後（避免 cache 拿到舊版設定）。注意 load_config_from_db 已自動
+        清除，此 helper 給「未走 load_config_from_db 但仍想保險」的路徑備用。
+        """
+        with self._config_swap_lock:
+            self._month_config_cache.clear()
 
     def _load_grade_map_from_db(self, session) -> None:
         """從 job_titles.bonus_grade 載入「職稱→等級」對應，更新 self._position_grade_map
@@ -1130,6 +1159,8 @@ class SalaryEngine:
         employee_id: int,
         reference_date: date,
         classroom_count_map: dict | None = None,
+        assistant_to_classes_map: dict | None = None,
+        art_to_classes_map: dict | None = None,
     ) -> Optional[dict]:
         """從 DB 班級資料建構帶班獎金計算上下文。
 
@@ -1137,6 +1168,10 @@ class SalaryEngine:
                               明細頁與正式計算必須用同一日期，否則在籍人數
                               會以「今天」漂移，明細對不上已計算的薪資記錄。
         classroom_count_map:  可傳入預先批次查詢的 {classroom_id: int}，避免 N+1。
+        assistant_to_classes_map / art_to_classes_map: 預先建好的 emp_id → list[Classroom]
+                              副班導/美師 shared_classes 反查表（audit B.P0.2）。
+                              若任一 supplied 則 shared_classes 從 map 讀取，跳過
+                              session.query(DBClassroom)。
         """
         if not classroom:
             return None
@@ -1188,17 +1223,27 @@ class SalaryEngine:
             shared_filter = DBClassroom.art_teacher_id == employee_id
 
         if shared_filter is not None:
-            # is_active 過濾與 process_bulk_salary_calculation 預載一致（line 2093），
-            # 否則同一員工在單筆與批次路徑會得到不同的 is_shared_assistant 判斷。
-            shared_classes = (
-                session.query(DBClassroom)
-                .options(joinedload(DBClassroom.grade))
-                .filter(
-                    shared_filter,
-                    DBClassroom.is_active == True,
+            # 預載 map（audit B.P0.2）優先：避免 session.query(DBClassroom) per-emp。
+            preloaded: list | None = None
+            if role == "assistant_teacher" and assistant_to_classes_map is not None:
+                preloaded = assistant_to_classes_map.get(employee_id, [])
+            elif role == "art_teacher" and art_to_classes_map is not None:
+                preloaded = art_to_classes_map.get(employee_id, [])
+
+            if preloaded is not None:
+                shared_classes = preloaded
+            else:
+                # is_active 過濾與 process_bulk_salary_calculation 預載一致（line 2093），
+                # 否則同一員工在單筆與批次路徑會得到不同的 is_shared_assistant 判斷。
+                shared_classes = (
+                    session.query(DBClassroom)
+                    .options(joinedload(DBClassroom.grade))
+                    .filter(
+                        shared_filter,
+                        DBClassroom.is_active == True,
+                    )
+                    .all()
                 )
-                .all()
-            )
             if len(shared_classes) >= 2:
                 if role == "assistant_teacher":
                     classroom_context["is_shared_assistant"] = True
@@ -1918,6 +1963,12 @@ class SalaryEngine:
                     classroom_count_map=(
                         _ctx.get("classroom_count_map") if _ctx else None
                     ),
+                    assistant_to_classes_map=(
+                        _ctx.get("assistant_to_classes_map") if _ctx else None
+                    ),
+                    art_to_classes_map=(
+                        _ctx.get("art_to_classes_map") if _ctx else None
+                    ),
                 )
                 current_enrollment = classroom_context.get("current_enrollment", 0)
                 bonus_result = self._calculate_classroom_bonus_result(
@@ -2531,10 +2582,24 @@ class SalaryEngine:
                 cache value 結構與 api/salary.py period-accrual 端點一致。
         """
         from .utils import get_distribution_period_months
+        from utils.academic import resolve_current_academic_term
 
         period_months = get_distribution_period_months(year, month)
         if not period_months:
             return None, None
+
+        # 預先把 period_months 收攏為唯一 term，避免單員工迴圈內每月各跑 1 次
+        # _resolve_classroom_for_employee_in_term（同 term 內班級不會變）。
+        # Audit A.P0.2：3 個 period 月通常 ≤ 2 個 term，從 6 query 砍到 1-2 query。
+        term_classroom_cache: dict[tuple[int, int], object] = {}
+        for y, m in period_months:
+            term_key = resolve_current_academic_term(date(y, m, 1))
+            if term_key not in term_classroom_cache:
+                term_classroom_cache[term_key] = (
+                    self._resolve_classroom_for_employee_in_term(
+                        session, emp.id, term_key[0], term_key[1]
+                    )
+                )
 
         festival_total = 0
         overtime_total = 0
@@ -2549,6 +2614,10 @@ class SalaryEngine:
                         ctx["school_active_students"] = cache["school_active"]
                     if "cls_count_map" in cache:
                         ctx["classroom_count_map"] = cache["cls_count_map"]
+                    if "meeting_absent_count_map" in cache:
+                        ctx["meeting_absent_count_map"] = cache[
+                            "meeting_absent_count_map"
+                        ]
                 # 依「該月份所對應的學期」反查班級，避免拿目前 classroom 套用在跨學期的舊月份。
                 # 若 cache 內預先放了該月解析好的 classroom，優先使用以節省查詢。
                 cached_classroom = (
@@ -2557,9 +2626,10 @@ class SalaryEngine:
                 if cached_classroom is not None:
                     ctx["classroom"] = cached_classroom
                 else:
-                    ctx["classroom"] = self._resolve_classroom_for_employee_in_month(
-                        session, emp.id, y, m
-                    )
+                    # 用本函式預先建好的 term-keyed cache
+                    ctx["classroom"] = term_classroom_cache[
+                        resolve_current_academic_term(date(y, m, 1))
+                    ]
                 # 期間累積每月用該月份對應的 BonusConfig/AttendancePolicy/InsuranceRate,
                 # 而非「目前最新」設定;與 _build_breakdown_for_month 同一語意,
                 # 但這裡是 per-iteration swap(因為要為每個歷史月份各自挑版本)。

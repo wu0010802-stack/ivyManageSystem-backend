@@ -690,6 +690,25 @@ def get_festival_bonus_period_accrual(
             .all()
         )
 
+        # 跨月共用：副班導 / 美師 → 班級清單映射，shared_classes 反查 O(1)
+        # （audit B.P0.2，避免 _build_classroom_context_from_db 在每員工各跑一次 query）。
+        all_active_classrooms = (
+            session.query(Classroom)
+            .options(joinedload(Classroom.grade))
+            .filter(Classroom.is_active == True)  # noqa: E712
+            .all()
+        )
+        classroom_map_shared = {c.id: c for c in all_active_classrooms}
+        assistant_to_classes_map: dict[int, list] = {}
+        art_to_classes_map: dict[int, list] = {}
+        for _c in all_active_classrooms:
+            if _c.assistant_teacher_id:
+                assistant_to_classes_map.setdefault(_c.assistant_teacher_id, []).append(
+                    _c
+                )
+            if _c.art_teacher_id:
+                art_to_classes_map.setdefault(_c.art_teacher_id, []).append(_c)
+
         monthly_ctx_cache: dict[tuple[int, int], dict] = {}
         for y, m in passed_months:
             _, last_day = _cal.monthrange(y, m)
@@ -717,13 +736,7 @@ def get_festival_bonus_period_accrual(
                 "month_end": month_end,
                 "school_active": count_students_active_on(session, month_end),
                 "cls_count_map": classroom_student_count_map(session, month_end),
-                "classroom_map": {
-                    c.id: c
-                    for c in session.query(Classroom)
-                    .options(joinedload(Classroom.grade))
-                    .filter(Classroom.is_active == True)  # noqa: E712
-                    .all()
-                },
+                "classroom_map": classroom_map_shared,
                 "meeting_absent_count_map": meeting_absent_count_map,
             }
 
@@ -745,6 +758,8 @@ def get_festival_bonus_period_accrual(
                     "meeting_absent_count_map": ctx_cache.get(
                         "meeting_absent_count_map", {}
                     ),
+                    "assistant_to_classes_map": assistant_to_classes_map,
+                    "art_to_classes_map": art_to_classes_map,
                 }
                 try:
                     row = engine.calculate_period_accrual_row(
