@@ -37,6 +37,12 @@ class JobTitle(Base):
     name = Column(String, unique=True, index=True)
     is_active = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)
+    # 階段 2-D（2026-05-07）：節慶獎金等級對應從 hardcode 搬到 DB
+    bonus_grade = Column(
+        CHAR(1),
+        nullable=True,
+        comment="節慶獎金等級（A/B/C）；NULL=非帶班職稱不適用",
+    )
 
 
 class Employee(Base):
@@ -96,6 +102,61 @@ class Employee(Base):
         Boolean, default=False, comment="是否為辦公室人員（舊欄位，停用）"
     )
     dependents = Column(Integer, default=0, comment="眷屬人數（健保計算用）")
+
+    # 階段 2-C（2026-05-07）：表達常見會計實務狀況的特殊欄位
+    no_employment_insurance = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="免就保（退休再聘等）；勞保扣款改用 11.5% 不含就保 1%",
+    )
+    health_exempt = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="健保豁免（公保/老人健保等）；公司不扣本人+眷屬健保",
+    )
+    skip_payroll_bonuses = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="業主指示不發紅利/節慶/超額獎金（基本薪+保險仍正常計算）",
+    )
+    extra_dependents_quarterly = Column(
+        Integer,
+        default=0,
+        nullable=False,
+        comment="季扣眷屬人數；1/4/7/10 月份額外扣 health_employee × N × 3",
+    )
+    insurance_salary_override_reason = Column(
+        String(200),
+        nullable=True,
+        comment="投保金額 ≠ 底薪 的合規記錄；純文字，不影響計算",
+    )
+    bypass_standard_base = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="True=計薪用 emp.base_salary（個人合約含年資加給）；False=走 PositionSalaryConfig 標準",
+    )
+
+    # 議題 B：勞保/健保/勞退 三制度分項投保金額（NULL=沿用 insurance_salary_level）
+    labor_insured_salary = Column(
+        Money,
+        nullable=True,
+        comment="勞保獨立投保金額；NULL=沿用 insurance_salary_level",
+    )
+    health_insured_salary = Column(
+        Money,
+        nullable=True,
+        comment="健保獨立投保金額；NULL=沿用 insurance_salary_level",
+    )
+    pension_insured_salary = Column(
+        Money,
+        nullable=True,
+        comment="勞退獨立提繳工資；NULL=沿用 insurance_salary_level",
+    )
+
     hire_date = Column(Date, comment="到職日期")
     probation_end_date = Column(Date, nullable=True, comment="試用期結束日")
     birthday = Column(Date, nullable=True, comment="生日")

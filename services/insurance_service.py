@@ -741,14 +741,95 @@ class InsuranceService:
         self.pension_employer_rate = PENSION_EMPLOYER_RATE
         self.average_dependents = AVERAGE_DEPENDENTS
 
+        # 三制度上限改為 instance 屬性，可被 DB InsuranceRate 覆寫；
+        # 模組常數仍保留作為 fallback / 既有 import 對外相容。
+        self.labor_max_insured = LABOR_MAX_INSURED_SALARY
+        self.health_max_insured = HEALTH_MAX_INSURED_SALARY
+        self.pension_max_insured = PENSION_MAX_INSURED_SALARY
+
+        # 級距表來源年度（DB 載入時會覆寫，未載入則為 hardcode 年度）
+        self.brackets_year: int = CURRENT_INSURANCE_YEAR
+
         current = date.today().year
         if current > CURRENT_INSURANCE_YEAR:
             logger.warning(
                 "勞健保級距表已過期：表年度 %d、系統年度 %d。"
-                "請至 services/insurance_service.py 更新 INSURANCE_TABLE_2026 與 CURRENT_INSURANCE_YEAR 並檢視費率",
+                "請新增 insurance_brackets 對應 effective_year=%d 的列；"
+                "若 DB 無新年度資料，將沿用 INSURANCE_TABLE_2026 fallback。",
                 CURRENT_INSURANCE_YEAR,
                 current,
+                current,
             )
+
+    def load_brackets_from_db(self, year: int | None = None) -> bool:
+        """從 DB insurance_brackets 載入級距表。
+
+        Args:
+            year: 指定年度；None=取當年。
+        Returns:
+            True=成功覆寫 self.table；False=DB 無資料或讀取失敗，沿用 hardcode。
+
+        失敗策略：DB 表不存在（migration 未跑）/ 該年度無資料時皆視為 silent fallback，
+        以保持測試與 fresh deploy 的可啟動性。仍會 log 供 ops 排查。
+        """
+        if year is None:
+            year = date.today().year
+        try:
+            # 延遲 import，避免 service 模組在 DB 尚未初始化前被引用時 ImportError
+            from models.database import InsuranceBracket, get_session
+
+            session = get_session()
+            try:
+                rows = (
+                    session.query(InsuranceBracket)
+                    .filter(InsuranceBracket.effective_year == year)
+                    .order_by(InsuranceBracket.amount.asc())
+                    .all()
+                )
+                if not rows:
+                    # 該年度無資料：可能尚未公告，fallback 到當前年度往下找最近一年
+                    fallback_year = (
+                        session.query(InsuranceBracket.effective_year)
+                        .filter(InsuranceBracket.effective_year <= year)
+                        .order_by(InsuranceBracket.effective_year.desc())
+                        .first()
+                    )
+                    if fallback_year is None:
+                        logger.warning(
+                            "insurance_brackets 無 effective_year<=%d 的資料，沿用 hardcode 級距表",
+                            year,
+                        )
+                        return False
+                    year = fallback_year[0]
+                    rows = (
+                        session.query(InsuranceBracket)
+                        .filter(InsuranceBracket.effective_year == year)
+                        .order_by(InsuranceBracket.amount.asc())
+                        .all()
+                    )
+
+                self.table = [
+                    {
+                        "amount": r.amount,
+                        "labor_employee": r.labor_employee,
+                        "labor_employer": r.labor_employer,
+                        "health_employee": r.health_employee,
+                        "health_employer": r.health_employer,
+                        "pension": r.pension,
+                    }
+                    for r in rows
+                ]
+                self.brackets_year = year
+                return True
+            finally:
+                session.close()
+        except Exception:
+            logger.warning(
+                "load_brackets_from_db 失敗（year=%s），沿用 hardcode 級距表",
+                year,
+                exc_info=True,
+            )
+            return False
 
     def update_rates_from_db(self, rate_record) -> None:
         """以 DB `InsuranceRate` 紀錄覆寫 instance 費率屬性。
@@ -776,6 +857,14 @@ class InsuranceService:
             0.0,
             1.0 - self.labor_employee_ratio - self.labor_employer_ratio,
         )
+        # 三制度上限：DB NULL → 沿用模組常數（保持向後相容）
+        for attr, default in (
+            ("labor_max_insured", LABOR_MAX_INSURED_SALARY),
+            ("health_max_insured", HEALTH_MAX_INSURED_SALARY),
+            ("pension_max_insured", PENSION_MAX_INSURED_SALARY),
+        ):
+            value = getattr(rate_record, attr, None)
+            setattr(self, attr, default if value is None else int(value))
 
     def get_bracket(self, salary: float) -> dict:
         """根據薪資查找對應的級距（薪資介於兩個級距之間取較高級數）"""
@@ -785,9 +874,29 @@ class InsuranceService:
         return self.table[-1]
 
     def calculate(
-        self, salary: float, dependents: int = 0, pension_self_rate: float = 0
+        self,
+        salary: float,
+        dependents: int = 0,
+        pension_self_rate: float = 0,
+        *,
+        no_employment_insurance: bool = False,
+        health_exempt: bool = False,
+        labor_insured: float | None = None,
+        health_insured: float | None = None,
+        pension_insured: float | None = None,
     ) -> InsuranceCalculation:
-        """計算勞健保及勞退費用"""
+        """計算勞健保及勞退費用。
+
+        Args:
+            no_employment_insurance: 員工免就保（如退休再聘）。True 時勞保扣款改用
+                純勞保 11.5% 不含就保 1%（級距表的 labor_employee 是 12.5% 的結果，
+                需以 (11.5/12.5) ≈ 0.92 比例調整）。雇主端與政府端同步調整。
+            health_exempt: 員工健保由其他管道（公保/老人健保等）；公司不扣本人+
+                眷屬健保（含 health_employee/employer 都歸零）。
+            labor_insured / health_insured / pension_insured: 議題 B 分項投保。
+                各制度可獨立指定投保金額；None=沿用 `salary`（既有單一投保語意）。
+                各自仍套用其上限 clamp 與級距 lookup。
+        """
         if salary < 0:
             raise ValueError(f"投保薪資不可為負數：{salary}")
         if not 0 <= pension_self_rate <= 0.06:
@@ -795,10 +904,19 @@ class InsuranceService:
         bracket = self.get_bracket(salary)
         amount = bracket["amount"]
 
-        # 三制度各自以其上限 clamp 後查級距（2026：勞保 45,800 / 健保 219,500 / 勞退 150,000）
-        labor_bracket = self.get_bracket(min(amount, LABOR_MAX_INSURED_SALARY))
-        health_bracket = self.get_bracket(min(amount, HEALTH_MAX_INSURED_SALARY))
-        pension_bracket = self.get_bracket(min(amount, PENSION_MAX_INSURED_SALARY))
+        # 議題 B：三制度可獨立投保金額；None 沿用 salary。
+        # 各值皆先套各自上限 clamp，再查級距（與單一投保的行為一致）。
+        labor_amount = labor_insured if labor_insured is not None else salary
+        health_amount = health_insured if health_insured is not None else salary
+        pension_amount = pension_insured if pension_insured is not None else salary
+        if labor_amount < 0 or health_amount < 0 or pension_amount < 0:
+            raise ValueError("分項投保金額不可為負數")
+
+        labor_bracket = self.get_bracket(min(labor_amount, self.labor_max_insured))
+        health_bracket = self.get_bracket(min(health_amount, self.health_max_insured))
+        pension_bracket = self.get_bracket(
+            min(pension_amount, self.pension_max_insured)
+        )
 
         labor_emp = labor_bracket["labor_employee"]
         labor_er = labor_bracket["labor_employer"]
@@ -807,10 +925,29 @@ class InsuranceService:
             labor_bracket["amount"] * self.labor_rate * self.labor_government_ratio
         )
 
+        # 免就保：勞保扣款比例從 12.5% 下調至 11.5%（員工/雇主/政府三邊都按此比例縮放）
+        # Why ratio: 級距表 labor_employee 是 amount × 0.125 × employee_ratio 預先算好的，
+        # 要轉成 11.5% 等同乘 (11.5/12.5) = 0.92。避免再次重算引入捨入誤差。
+        if no_employment_insurance:
+            EMPLOYMENT_INSURANCE_RATE = 0.01  # 就保 1%
+            ratio = (
+                (self.labor_rate - EMPLOYMENT_INSURANCE_RATE) / self.labor_rate
+                if self.labor_rate > 0
+                else 1.0
+            )
+            labor_emp = round(labor_emp * ratio)
+            labor_er = round(labor_er * ratio)
+            labor_gov = round(labor_gov * ratio)
+
         # 健保員工自付額依眷屬人數倍增（最多3人；負值以0計，防止DB舊資料或直接寫入產生負健保費）
         health_emp_base = health_bracket["health_employee"]
         health_emp = health_emp_base * (1 + min(max(0, dependents), 3))
         health_er = health_bracket["health_employer"]
+
+        # 健保豁免：員工本人+眷屬皆不扣
+        if health_exempt:
+            health_emp = 0
+            health_er = 0
 
         pension_er = pension_bracket["pension"]
         # 勞退自提採員工自選比例（0~6%）；雇主端 6% 仍依級距表

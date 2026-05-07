@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from cachetools import TTLCache
 from sqlalchemy.orm import joinedload
 
+from services.salary.utils import lock_and_premark_stale
+
 from models.database import (
     get_session,
     ShiftType,
@@ -67,11 +69,15 @@ def _assert_shift_month_not_finalized(
 
 
 def _mark_shift_emp_stale(session, employee_id: int, target_date: date) -> None:
-    """每日排班異動後將該員工該月薪資標 needs_recalc=True。"""
-    from services.salary.utils import mark_salary_stale
+    """每日排班異動後將該員工該月薪資標 needs_recalc=True。
 
+    使用 lock_and_premark_stale 同時取 advisory lock + pre-mark stale,
+    封住「來源 commit 前 finalize 以 needs_recalc=False 搶先」的 race window。
+    """
     try:
-        mark_salary_stale(session, employee_id, target_date.year, target_date.month)
+        lock_and_premark_stale(
+            session, employee_id, {(target_date.year, target_date.month)}
+        )
     except Exception:
         logger.warning(
             "排班異動標記 SalaryRecord stale 失敗 emp=%d %d/%d",
@@ -80,6 +86,7 @@ def _mark_shift_emp_stale(session, employee_id: int, target_date: date) -> None:
             target_date.month,
             exc_info=True,
         )
+
 
 # ShiftType 很少變動，使用 TTLCache 減少重複 DB 查詢（5 分鐘 TTL）
 _shift_type_cache: TTLCache = TTLCache(maxsize=3, ttl=300)

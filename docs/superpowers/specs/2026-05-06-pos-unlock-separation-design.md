@@ -1,7 +1,9 @@
 # 才藝 POS 日結解鎖權限分離（Unlock 4-eye）設計
 
 **日期**：2026-05-06
-**狀態**：📝 Draft（待 brainstorming approve）
+**狀態**：✅ Implemented (2026-05-06)
+- 後端 commit: `3de05165` (ivy-backend@fix/bug-sweep-v1)
+- 前端 commit: `cd02fd4e` (ivy-frontend@fix/bug-sweep-v1)
 **前置稽核**：2026-05-06 對話內 POS 企業稽核 C2 項
 **範圍**：跨前後端（ivy-backend + ivy-frontend）
 

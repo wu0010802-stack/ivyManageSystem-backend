@@ -72,7 +72,7 @@ async def get_dashboard_table(
 
 
 @router.get("/dashboard-table/export")
-async def export_dashboard_table(
+def export_dashboard_table(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),

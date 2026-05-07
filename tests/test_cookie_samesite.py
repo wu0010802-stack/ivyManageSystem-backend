@@ -55,9 +55,19 @@ def test_env_var_lax_is_respected():
 
 
 def test_invalid_value_falls_back_to_strict(caplog):
-    cookie = _reload_cookie("none")
+    # 注意：'none' 在後續為跨網域部署支援後已是合法值（dev 會 fallback 到 lax），
+    # 故此處改用真正不在白名單內的值來驗證 fallback 到 strict 的守衛邏輯。
+    cookie = _reload_cookie("garbage")
     raw = _capture_set_cookie(cookie.set_access_token_cookie)
     assert "samesite=strict" in raw.lower()
+
+
+def test_dev_none_falls_back_to_lax():
+    """dev (HTTP) 環境下設 COOKIE_SAMESITE=none 會 fallback 到 lax，
+    避免本機端 cookie 被瀏覽器拒收（None 強制要求 Secure）。"""
+    cookie = _reload_cookie("none")
+    raw = _capture_set_cookie(cookie.set_access_token_cookie)
+    assert "samesite=lax" in raw.lower()
 
 
 def test_admin_token_cookie_has_same_attribute():

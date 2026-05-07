@@ -47,6 +47,7 @@ from utils.approval_helpers import (
     _check_approval_eligibility,
     _write_approval_log,
 )
+from services.salary.utils import lock_and_premark_stale, mark_salary_stale
 from utils.excel_utils import xlsx_streaming_response
 from utils.import_utils import build_employee_lookup, resolve_employee_from_row
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
@@ -876,11 +877,16 @@ def update_leave(
 
         # 封存月薪保護：同時檢查原始月份與更新後月份
         if was_approved:
+            _affected_months = {orig_month, (new_start.year, new_start.month)}
             _check_salary_months_not_finalized(
                 session,
                 leave.employee_id,
-                {orig_month, (new_start.year, new_start.month)},
+                _affected_months,
             )
+            # commit→recalc 鎖延伸：取得 per-emp salary lock 並 pre-mark stale,
+            # 確保 commit 釋放鎖後即使 finalize 搶先,看到的也是 needs_recalc=True 而被擋下。
+
+            lock_and_premark_stale(session, leave.employee_id, _affected_months)
 
         _apply_leave_update_and_revoke(leave, data, current_user, leave_id)
         session.commit()
@@ -945,8 +951,6 @@ def update_leave(
                     logger.error("請假修改退審後薪資重算失敗：%s", e)
                     # 重算失敗 → 標 stale,避免後續 finalize 把「假單已退審但薪資未更新」
                     # 的舊資料封存。對齊 approve_leave 降級樣板。
-                    from services.salary.utils import mark_salary_stale
-
                     for yr, mo in sorted(months_to_recalc):
                         try:
                             mark_salary_stale(session, leave.employee_id, yr, mo)
@@ -1007,6 +1011,9 @@ def delete_leave(
         }
         if was_approved:
             _check_salary_months_not_finalized(session, emp_id, {leave_month})
+            # commit→recalc 鎖延伸：見 update_leave 同款註解（封 finalize race window）
+
+            lock_and_premark_stale(session, emp_id, {leave_month})
 
         session.delete(leave)
         session.commit()
@@ -1037,8 +1044,6 @@ def delete_leave(
                 logger.error("刪除假單後薪資重算失敗：%s", e)
                 # 重算失敗 → 標 stale,避免後續 finalize 在「假單已刪除但扣款未撤銷」
                 # 的狀態下誤封存舊薪資。對齊 approve_leave 降級樣板。
-                from services.salary.utils import mark_salary_stale
-
                 try:
                     mark_salary_stale(session, emp_id, *leave_month)
                     session.commit()
@@ -1152,14 +1157,18 @@ def approve_leave(
         # 但提前抓出減少耦合
         leave_employee_id = leave.employee_id
 
-        # ── 提早取得薪資鎖（封存守衛 + commit + 重算共用同一鎖窗）─────────────
-        # Why: 原流程「_check_finalized → commit leave → process_salary_calculation」
-        # 中間沒有 lock，finalize 可能在 commit 之後 / recalc 之前搶到鎖,結果
-        # 假單變更已落地但薪資沒重算就被封存。改在 approval_changed 路徑一進來
-        # 就 acquire per-emp salary lock(同 transaction 可重入,recalc 內再取一次
-        # 不會 deadlock),保證守衛/commit/recalc 三步在同個鎖窗內完成。
+        # ── 提早取得薪資鎖 + pre-mark stale（封住兩個 race window）────────────
+        # Why:
+        # 1. 原流程「_check_finalized → commit leave → process_salary_calculation」
+        #    中間沒有 lock,finalize 可能在 commit 之後 / recalc 之前搶到鎖,結果
+        #    假單變更已落地但薪資沒重算就被封存。
+        # 2. 即使 caller 在自己 session 上 acquire 了 advisory lock,commit 時鎖即
+        #    釋放;engine 開新 session 才 acquire,中間有縫隙,finalize 仍可搶先。
+        # 修法:在 caller session 同時做兩件事:
+        #   - 取得 per-emp salary lock(關 race window 1)
+        #   - mark_salary_stale 把該員工受影響月份預標 needs_recalc=True
+        #     → commit 後即使 finalize 搶到鎖也會被 stale 守衛擋下(關 race window 2)
         if approval_changed:
-            from utils.advisory_lock import acquire_salary_lock as _acquire_salary_lock
 
             _months_for_lock: set[tuple[int, int]] = set()
             _cur = date(leave.start_date.year, leave.start_date.month, 1)
@@ -1171,10 +1180,7 @@ def approve_leave(
                     if _cur.month == 12
                     else date(_cur.year, _cur.month + 1, 1)
                 )
-            for _y, _m in sorted(_months_for_lock):
-                _acquire_salary_lock(
-                    session, employee_id=leave.employee_id, year=_y, month=_m
-                )
+            lock_and_premark_stale(session, leave.employee_id, _months_for_lock)
 
         warning = None
         if data.approved:
@@ -1456,8 +1462,6 @@ def approve_leave(
                 logger.error(f"請假審核後薪資重算失敗：{e}")
                 # 把所有應重算月份的 SalaryRecord 標 stale,避免後續 finalize
                 # 在「假單已審核但薪資未更新」的狀態下誤封存舊薪資。
-                from services.salary.utils import mark_salary_stale
-
                 for year, month in sorted(months_to_recalc):
                     try:
                         mark_salary_stale(session, emp_id, year, month)
@@ -1634,10 +1638,20 @@ def batch_approve_leaves(
                 # 封存月薪保護：approve 或 reject-of-approved 都會改變 SalaryRecord
                 if approval_changed:
                     try:
+                        _affected_months_batch = {
+                            (leave.start_date.year, leave.start_date.month)
+                        }
                         _check_salary_months_not_finalized(
                             session,
                             leave.employee_id,
-                            {(leave.start_date.year, leave.start_date.month)},
+                            _affected_months_batch,
+                        )
+                        # commit→recalc 鎖延伸 + pre-mark stale,封住 finalize race window。
+                        # 統一 commit (line 1708) 才釋放鎖,中間若有並發 finalize 嘗試
+                        # 取同 key 會等到 commit；commit 後 stale 旗標保護 engine recalc 前的窗口。
+
+                        lock_and_premark_stale(
+                            session, leave.employee_id, _affected_months_batch
                         )
                     except HTTPException as e:
                         failed.append({"id": leave_id, "reason": e.detail})
@@ -1773,8 +1787,6 @@ def batch_approve_leaves(
                             )
                             # 重算失敗 → 標 stale,避免後續 finalize 在「假單已審核
                             # 但薪資未更新」的狀態下誤封存舊薪資。
-                            from services.salary.utils import mark_salary_stale
-
                             for yr, mo in sorted(months):
                                 try:
                                     mark_salary_stale(session, emp_id, yr, mo)

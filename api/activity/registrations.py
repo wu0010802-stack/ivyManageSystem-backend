@@ -219,7 +219,7 @@ async def batch_update_payment(
 
 
 @router.get("/registrations/export")
-async def export_registrations(
+def export_registrations(
     search: Optional[str] = None,
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
@@ -300,7 +300,7 @@ async def export_registrations(
 
 
 @router.get("/registrations/payment-report")
-async def export_payment_report(
+def export_payment_report(
     search: Optional[str] = None,
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,

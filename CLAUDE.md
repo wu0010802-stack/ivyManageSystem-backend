@@ -24,7 +24,7 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 
 - **服務注入**：`SalaryEngine`、`InsuranceService`、`LineService` 為 `main.py` 啟動時建立的 singleton。需要這些服務的 router 必須透過 `init_*_services()` 注入，**不可** 直接 import。
 - **DB session**：新程式優先用 `session_scope()`（context manager，自動 commit/rollback/close）；`get_session()` 僅在需要手動管理時使用。
-- **權限守衛**：所有路由必須有 `require_permission(Permission.XXX)`。`Permission` 為 IntFlag 位元遮罩，**讀取放低位（如 `1 << 11`）、寫入放高位（如 `1 << 23`）**。
+- **權限守衛**：所有路由必須有 `require_permission(Permission.XXX)`。`Permission` IntFlag 位元遮罩定義在 `utils/permissions.py`，**讀取放低位（如 `1 << 11`）、寫入放高位（如 `1 << 23`）**。
 - **Schema 異動**：使用 Alembic（`alembic/versions/`），啟動時自動 `alembic upgrade heads`。
 - **啟動邏輯**：seed / migration 放 `startup/`，**不要** 放回 `main.py`。
 - **Rate Limiter**：`utils/rate_limit.py` 為 in-process 記憶體版，僅單 worker 部署有效；多實例需改 Redis-backed。
@@ -33,7 +33,9 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 
 ---
 
-## 業務不變式 — 薪資計算（`salary_engine.py`）
+## 業務不變式 — 薪資計算（`services/salary/`）
+
+薪資邏輯拆成 package：`engine.py`（入口 `SalaryEngine`）、`totals.py`（gross/total 組合）、`festival.py`、`hourly.py`、`deduction.py`、`proration.py`、`severance.py`、`unused_leave_pay.py`、`insurance_salary.py`、`minimum_wage.py`、`breakdown.py`、`constants.py`。改薪資邏輯時先看 engine 入口再下鑽。
 
 - **`gross_salary`（月薪應發）** = `base_salary + allowances + performance/special_bonus + supervisor_dividend + birthday_bonus + meeting_overtime_pay + overtime_work_pay`
   - **不含** `festival_bonus` / `overtime_bonus`（這兩項另行轉帳）
@@ -41,7 +43,7 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 - **`festival_bonus`** 僅在 2、6、9、12 月計入；`meeting_absence_deduction` 只從 `festival_bonus` 扣，**不進入** `total_deduction`。
 - **`bonus_separate`** 旗標：當 `festival_bonus + overtime_bonus + supervisor_dividend > 0` 時為 True，表示有另行匯款。
 - **`total_deduction`** = 勞保 + 健保 + 勞退 + 遲到/早退/請假扣款（**無** `meeting_absence_deduction`）。
-- **時薪基準**：`base_salary / 30 / 8`（`MONTHLY_BASE_DAYS = 30`，依勞基法）。
+- **時薪基準**：`base_salary / 30 / 8`，`MONTHLY_BASE_DAYS = 30` 定義在 `services/salary/constants.py`（依勞基法）。
 - **加班費時薪基準**：`emp.base_salary` 僅底薪，**不含** 任何加給或獎金。
 - **稽核追蹤**：`SalaryRecord` 必須記錄當下使用的 `bonus_config_id` 與 `attendance_policy_id`，確保可回溯。
 

@@ -11,7 +11,14 @@ from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
-from models.database import get_session, session_scope, Employee, Classroom, JobTitle
+from models.database import (
+    get_session,
+    session_scope,
+    Employee,
+    Classroom,
+    JobTitle,
+    SalaryRecord,
+)
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
 from utils.finance_guards import (
@@ -140,6 +147,17 @@ class EmployeeCreate(BaseModel):
     address: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
+    # 階段 2-C 特殊投保/獎金狀態（可選；建檔時通常都是 False/0）
+    no_employment_insurance: bool = False
+    health_exempt: bool = False
+    skip_payroll_bonuses: bool = False
+    extra_dependents_quarterly: int = Field(0, ge=0, le=10)
+    insurance_salary_override_reason: Optional[str] = Field(None, max_length=200)
+    bypass_standard_base: bool = False
+    # 議題 B 分項投保（NULL/None 沿用 insurance_salary_level）
+    labor_insured_salary: Optional[float] = Field(None, ge=0)
+    health_insured_salary: Optional[float] = Field(None, ge=0)
+    pension_insured_salary: Optional[float] = Field(None, ge=0)
 
 
 class EmployeeUpdate(BaseModel):
@@ -170,6 +188,17 @@ class EmployeeUpdate(BaseModel):
     address: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
+    # 階段 2-C 特殊投保/獎金狀態
+    no_employment_insurance: Optional[bool] = None
+    health_exempt: Optional[bool] = None
+    skip_payroll_bonuses: Optional[bool] = None
+    extra_dependents_quarterly: Optional[int] = Field(None, ge=0, le=10)
+    insurance_salary_override_reason: Optional[str] = Field(None, max_length=200)
+    bypass_standard_base: Optional[bool] = None
+    # 議題 B 分項投保
+    labor_insured_salary: Optional[float] = Field(None, ge=0)
+    health_insured_salary: Optional[float] = Field(None, ge=0)
+    pension_insured_salary: Optional[float] = Field(None, ge=0)
     # 修改薪資金額欄位（base_salary / hourly_rate / insurance_salary_level）時必填，
     # 與 salary manual-adjust 同流程：留檔備查 + 大額時觸發 require_finance_approve。
     adjustment_reason: Optional[str] = Field(None, max_length=200)
@@ -407,6 +436,64 @@ _EMPLOYEE_SALARY_AMOUNT_FIELDS = (
     "insurance_salary_level",
 )
 
+# 主檔變動會影響薪資計算結果的欄位（直接金額 + 間接輸入）。
+# Why: 這些欄位被改動時必須把該員工未封存的 SalaryRecord 標 needs_recalc=True，
+#     否則 finalize 會以舊草稿封存（例如 9 月先算薪、9 月底再調 base_salary，
+#     finalize 仍用舊金額）。與 attendance/leaves/overtimes 等上游同樣的 stale 規範。
+# 與 EMPLOYEE_SALARY_SENSITIVE_FIELDS 區分：那組是 self-edit 守衛用，語意為
+#     「員工自己不能改」；本組是「異動需通知薪資草稿重算」，含 dependents /
+#     pension_self_rate / resign_date / is_active / work_start_time 等也會
+#     影響計算結果的欄位。
+_SALARY_INPUT_FIELDS = frozenset(
+    {
+        "base_salary",
+        "hourly_rate",
+        "insurance_salary_level",
+        "pension_self_rate",
+        "dependents",
+        "employee_type",
+        "hire_date",
+        "resign_date",
+        "is_active",
+        "work_start_time",
+        "job_title_id",
+        "title",
+        "position",
+        "supervisor_role",
+        "bonus_grade",
+        # 不含 classroom_id：MEMORY 2026-04-27 起 SalaryEngine 改 Classroom 反查
+        # （class_teachers + 學期過濾），不再讀 Employee.classroom_id；
+        # 列入會做無謂 needs_recalc 標記。
+        # 階段 2-C 特殊投保/獎金狀態（會影響保險與獎金計算結果）
+        "no_employment_insurance",
+        "health_exempt",
+        "skip_payroll_bonuses",
+        "extra_dependents_quarterly",
+        # 議題 A 選項 3：bypass_standard_base 切換 → base_salary 計算路徑改變 → 必須重算
+        "bypass_standard_base",
+        # 議題 B 分項投保（任一改變 → 三制度結果不同）
+        "labor_insured_salary",
+        "health_insured_salary",
+        "pension_insured_salary",
+    }
+)
+
+
+def _mark_employee_salary_stale(session, employee_id: int) -> int:
+    """將該員工未封存的所有 SalaryRecord 標 needs_recalc=True。
+
+    僅回傳實際被更新的筆數；caller 負責同 transaction commit。
+    封存（is_finalized=True）的不動，維持結帳鎖定語意。
+    """
+    return (
+        session.query(SalaryRecord)
+        .filter(
+            SalaryRecord.employee_id == employee_id,
+            SalaryRecord.is_finalized != True,
+        )
+        .update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
+    )
+
 
 @router.put("/employees/{employee_id}")
 async def update_employee(
@@ -527,6 +614,26 @@ async def update_employee(
             db_employee.hourly_rate or 0,
         )
 
+        # 員工檔薪資相關欄位若實際發生變動，把該員工所有未封存薪資標需重算。
+        # Why: finalize 守衛靠 needs_recalc 旗標擋下舊草稿；上游事件（請假/加班/
+        #     考勤）都會 mark_salary_stale，主檔卻沒有 → 改 base_salary 後
+        #     已算未封存薪資仍可能以舊金額落帳。
+        # before_snapshot 已收錄所有將被異動的鍵的舊值，這裡用同一份做精確 diff，
+        # 避免「送相同值不該觸發重算」的偽陽性。
+        salary_fields_changed = any(
+            k in _SALARY_INPUT_FIELDS
+            and getattr(db_employee, k, None) != before_snapshot.get(k)
+            for k in audited_keys
+        )
+        if salary_fields_changed:
+            stale_marked = _mark_employee_salary_stale(session, employee_id)
+            if stale_marked:
+                logger.warning(
+                    "員工 %s 主檔變動觸發薪資重算旗標，影響 %d 筆未封存記錄",
+                    employee_id,
+                    stale_marked,
+                )
+
         session.commit()
 
         # 計算 diff：只記錄實際有變動的欄位；敏感欄位以 *** 代替
@@ -569,9 +676,21 @@ async def delete_employee(
         if not employee:
             raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
 
-        employee.is_active = False
+        changed = False
+        if employee.is_active:
+            employee.is_active = False
+            changed = True
         if not employee.resign_date:
             employee.resign_date = date.today()
+            changed = True
+        if changed:
+            stale_marked = _mark_employee_salary_stale(session, employee_id)
+            if stale_marked:
+                logger.warning(
+                    "員工 %s 軟刪除（離職）觸發薪資重算旗標，影響 %d 筆未封存記錄",
+                    employee_id,
+                    stale_marked,
+                )
         session.commit()
         return {"message": "員工已設為離職", "id": employee.id}
     except HTTPException:
@@ -602,6 +721,9 @@ async def offboard_employee(
         if not emp:
             raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
 
+        old_resign_date = emp.resign_date
+        old_is_active = emp.is_active
+
         emp.resign_date = resign_d
         emp.resign_reason = req.resign_reason
 
@@ -609,6 +731,16 @@ async def offboard_employee(
         if resign_d <= today:
             emp.is_active = False
         # 若 resign_date > today，保留 is_active = True（通知期）
+
+        # resign_date 或 is_active 任一發生變動即影響在職比例 / proration → 標 stale。
+        if old_resign_date != emp.resign_date or old_is_active != emp.is_active:
+            stale_marked = _mark_employee_salary_stale(session, employee_id)
+            if stale_marked:
+                logger.warning(
+                    "員工 %s 辦理離職觸發薪資重算旗標，影響 %d 筆未封存記錄",
+                    employee_id,
+                    stale_marked,
+                )
 
         logger.warning(
             "辦理離職：employee_id=%s name=%s resign_date=%s operator=%s",

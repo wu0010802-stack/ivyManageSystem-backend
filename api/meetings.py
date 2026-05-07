@@ -15,6 +15,7 @@ from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import _get_finalized_salary_record
 from services.salary.constants import DEFAULT_MEETING_HOURS
+from services.salary.utils import lock_and_premark_stale
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +26,16 @@ def _mark_meeting_emps_stale(session, emp_ids, meeting_date: date) -> None:
     Why: 會議出席會進入 meeting_overtime_pay,缺席會在發放月扣節慶獎金;
     薪資算完後再改會議紀錄,既有 SalaryRecord 必須標 stale 避免被 finalize
     封存到舊金額。
+
+    使用 lock_and_premark_stale 同時取 advisory lock + pre-mark stale,封住
+    「來源 mark_stale → caller commit 之間 finalize 以 needs_recalc=False 搶先」的 race。
     """
     if not emp_ids:
         return
-    from services.salary.utils import mark_salary_stale
-
+    months = {(meeting_date.year, meeting_date.month)}
     for eid in set(emp_ids):
         try:
-            mark_salary_stale(session, eid, meeting_date.year, meeting_date.month)
+            lock_and_premark_stale(session, eid, months)
         except Exception:
             logger.warning(
                 "會議異動標記 SalaryRecord stale 失敗 emp=%d %d/%d",
@@ -55,6 +58,32 @@ def _meeting_pay_for(base_salary: float, hours: float) -> float:
     return calculate_overtime_pay(base_salary, hours, "weekday")
 
 
+def _active_meeting_default_hours() -> float:
+    """從 active BonusConfig 取每場會議預設小時數。
+
+    DB 無 active 設定 / 欄位為 NULL → fallback 到模組常數 DEFAULT_MEETING_HOURS。
+    為避免每次建會議都查 DB（雖然成本極低），讀失敗也 silent fallback。
+    """
+    try:
+        from models.database import BonusConfig
+
+        session = get_session()
+        try:
+            bc = (
+                session.query(BonusConfig)
+                .filter(BonusConfig.is_active == True)  # noqa: E712
+                .order_by(BonusConfig.id.desc())
+                .first()
+            )
+            if bc is not None and bc.meeting_default_hours is not None:
+                return float(bc.meeting_default_hours)
+        finally:
+            session.close()
+    except Exception:
+        logger.warning("讀取 BonusConfig.meeting_default_hours 失敗", exc_info=True)
+    return float(DEFAULT_MEETING_HOURS)
+
+
 router = APIRouter(prefix="/api", tags=["meetings"])
 
 
@@ -66,7 +95,11 @@ class MeetingRecordCreate(BaseModel):
     meeting_date: str  # YYYY-MM-DD
     meeting_type: str = "staff_meeting"
     attended: bool = True
-    overtime_hours: float = DEFAULT_MEETING_HOURS
+    # NOTE: 此欄位為「前端未指定時的預設值」。生產 default 由 active BonusConfig
+    # 提供（_active_meeting_default_hours），這裡的常數值僅作為模型 schema 必要的
+    # static default；實際建立會議若 client 沒帶 overtime_hours，下方 endpoint 會
+    # 改以 _active_meeting_default_hours() 覆蓋。
+    overtime_hours: Optional[float] = None
     # overtime_pay 一律由後端依勞基法平日加班費公式計算，不接受前端傳入
     # （拿掉 override 防止 MEETINGS 權限者直接寫入超額金額繞過薪資簽核）
     remark: Optional[str] = None
@@ -234,14 +267,20 @@ def create_meeting(
 
         emp = session.query(Employee).get(data.employee_id)
         base = emp.base_salary if emp else 0
-        pay = _meeting_pay_for(base, data.overtime_hours)
+        # 前端未指定 overtime_hours → 採用 active BonusConfig 設定（業主實務 2 hr）
+        hours = (
+            data.overtime_hours
+            if data.overtime_hours is not None
+            else _active_meeting_default_hours()
+        )
+        pay = _meeting_pay_for(base, hours)
 
         record = MeetingRecord(
             employee_id=data.employee_id,
             meeting_date=meeting_date,
             meeting_type=data.meeting_type,
             attended=data.attended,
-            overtime_hours=data.overtime_hours,
+            overtime_hours=hours,
             overtime_pay=pay,
             remark=data.remark,
         )
@@ -298,18 +337,21 @@ def create_meetings_batch(
         employees = session.query(Employee).filter(Employee.id.in_(all_emp_ids)).all()
         emp_map = {e.id: e for e in employees}
 
-        # 建立出席記錄：依勞基法平日加班費公式（底薪 ÷ 30 ÷ 8 × 1 小時 × 1.34）
+        # 建立出席記錄：依勞基法平日加班費公式（底薪 ÷ 30 ÷ 8 × N 小時 × 1.34）
+        # N 由 active BonusConfig.meeting_default_hours 決定（業主實務 2 hr，
+        # 早期 hardcode 預設 1 與實務不符 → 系統建會議費永遠少一半）。
+        meeting_hours = _active_meeting_default_hours()
         for emp_id in data.attendees:
             emp = emp_map.get(emp_id)
             base = emp.base_salary if emp else 0
-            pay = _meeting_pay_for(base, DEFAULT_MEETING_HOURS)
+            pay = _meeting_pay_for(base, meeting_hours)
 
             record = MeetingRecord(
                 employee_id=emp_id,
                 meeting_date=meeting_date,
                 meeting_type=data.meeting_type,
                 attended=True,
-                overtime_hours=DEFAULT_MEETING_HOURS,
+                overtime_hours=meeting_hours,
                 overtime_pay=pay,
                 remark=data.remark,
             )

@@ -166,8 +166,13 @@ def _query_leave_monthly(session, start: date, end: date) -> list:
 
 
 def _query_salary_monthly(session, year: int) -> list:
-    """查詢並整理年度每月薪資彙總（總應發、實發、扣款、獎金）。"""
-    rows = (
+    """查詢並整理年度每月薪資彙總（總應發、實發、扣款、獎金）。
+
+    報表趨勢只認封存且非 stale 的薪資（is_finalized=True AND needs_recalc=False）。
+    Why: 草稿/待重算薪資是中間態,讓會計用測試重算的草稿影響管理層看到的薪資趨勢
+    形同 A 錢空間。pending 統計另列 (employee_count_pending),前端可選擇是否顯示提示。
+    """
+    finalized_rows = (
         session.query(
             SalaryRecord.salary_month.label("month"),
             func.count(SalaryRecord.id).label("employee_count"),
@@ -186,11 +191,28 @@ def _query_salary_monthly(session, year: int) -> list:
         )
         .filter(
             SalaryRecord.salary_year == year,
+            SalaryRecord.is_finalized == True,  # noqa: E712
+            SalaryRecord.needs_recalc == False,  # noqa: E712
         )
         .group_by(SalaryRecord.salary_month)
         .order_by(SalaryRecord.salary_month)
         .all()
     )
+
+    pending_rows = (
+        session.query(
+            SalaryRecord.salary_month.label("month"),
+            func.count(SalaryRecord.id).label("pending_count"),
+        )
+        .filter(
+            SalaryRecord.salary_year == year,
+            (SalaryRecord.is_finalized == False)  # noqa: E712
+            | (SalaryRecord.needs_recalc == True),  # noqa: E712
+        )
+        .group_by(SalaryRecord.salary_month)
+        .all()
+    )
+    pending_map = {int(row.month): int(row.pending_count) for row in pending_rows}
 
     return [
         {
@@ -201,8 +223,9 @@ def _query_salary_monthly(session, year: int) -> list:
             "total_deductions": round(float(row.total_deductions or 0)),
             "total_bonus": round(float(row.total_bonus or 0)),
             "total_overtime_pay": round(float(row.total_overtime_pay or 0)),
+            "employee_count_pending": pending_map.get(int(row.month), 0),
         }
-        for row in rows
+        for row in finalized_rows
     ]
 
 

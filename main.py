@@ -425,22 +425,14 @@ async def app_lifespan(app_instance: FastAPI):
 
             for ws in list(ws_manager._admin_conns):
                 try:
-                    import asyncio
-
-                    asyncio.get_event_loop().run_until_complete(
-                        ws.close(code=1001, reason="Server shutting down")
-                    )
+                    await ws.close(code=1001, reason="Server shutting down")
                 except Exception:
                     pass
             ws_manager._admin_conns.clear()
             for classroom_conns in ws_manager._teacher_conns.values():
                 for ws in list(classroom_conns):
                     try:
-                        import asyncio
-
-                        asyncio.get_event_loop().run_until_complete(
-                            ws.close(code=1001, reason="Server shutting down")
-                        )
+                        await ws.close(code=1001, reason="Server shutting down")
                     except Exception:
                         pass
                 classroom_conns.clear()

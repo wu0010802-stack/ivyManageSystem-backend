@@ -40,8 +40,8 @@ LEAVE_DEDUCTION_RULES = {
 DEFAULT_LATE_PER_MINUTE = 1  # 遲到每分鐘扣款（會被按比例覆蓋）
 DEFAULT_EARLY_PER_MINUTE = 1  # 早退每分鐘扣款（會被按比例覆蓋）
 DEFAULT_MISSING_PUNCH = 0  # 未打卡不扣款（僅記錄）
-DEFAULT_MEETING_ABSENCE_PENALTY = 100  # 園務會議缺席扣節慶獎金
-DEFAULT_MEETING_HOURS = 1  # 園務會議每次時數（依勞基法加班費公式計算）
+DEFAULT_MEETING_ABSENCE_PENALTY = 100  # 園務會議缺席扣節慶獎金（fallback；實際由 BonusConfig.meeting_absence_penalty 覆寫）
+DEFAULT_MEETING_HOURS = 2  # 園務會議每次時數（fallback；實際由 BonusConfig.meeting_default_hours 覆寫；業主實務 2 hr）
 
 # 節慶獎金職位等級對應
 # A級 = 幼兒園教師, B級 = 教保員, C級 = 助理教保員

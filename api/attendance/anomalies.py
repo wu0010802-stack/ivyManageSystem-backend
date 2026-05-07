@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 
 from models.database import get_session, Employee, Attendance, SalaryRecord
-from services.salary.utils import calc_daily_salary
+from services.salary.utils import calc_daily_salary, lock_and_premark_stale
 from utils.auth import require_staff_permission
 from utils.attendance_guards import assert_no_self_in_batch
 from utils.permissions import Permission
@@ -297,10 +297,13 @@ def batch_confirm_anomalies(
                 )
 
         if salary_recalc_keys:
-            from services.salary.utils import mark_salary_stale
-
+            # 以員工為單位 group 月份,一次性 acquire lock + pre-mark stale,
+            # 避免 finalize 在 commit 前以 needs_recalc=False 搶先封存舊薪資。
+            by_emp: dict[int, set[tuple[int, int]]] = {}
             for emp_id, year, month in salary_recalc_keys:
-                mark_salary_stale(session, emp_id, year, month)
+                by_emp.setdefault(emp_id, set()).add((year, month))
+            for emp_id, months in by_emp.items():
+                lock_and_premark_stale(session, emp_id, months)
 
         session.commit()
         logger.warning(

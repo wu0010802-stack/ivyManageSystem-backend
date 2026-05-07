@@ -107,6 +107,7 @@ class TestSalaryExcelExport:
                     gross_salary=32000,
                     total_deduction=1000,
                     net_salary=31000,
+                    is_finalized=True,
                 )
             )
             session.commit()
@@ -155,6 +156,7 @@ class TestSalaryExcelExport:
                     other_deduction=200,
                     total_deduction=700 + 500 + 1800 + 100 + 50 + 300 + 1500 + 200,
                     net_salary=32000 - (700 + 500 + 1800 + 100 + 50 + 300 + 1500 + 200),
+                    is_finalized=True,
                 )
             )
             session.commit()
@@ -249,6 +251,7 @@ class TestSalaryExcelExport:
                     total_deduction=1000,
                     net_salary=31000,
                     remark="[2026-03-14 10:00] 手動編輯：節慶獎金 2000→1800",
+                    is_finalized=True,
                 )
             )
             session.commit()

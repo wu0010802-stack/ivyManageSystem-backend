@@ -1126,11 +1126,14 @@ class TestBatchInputLimits:
             BatchPaymentUpdate(ids=[], is_paid=True, reason="期末批次補繳")
 
     def test_batch_payment_update_valid(self):
-        """BatchPaymentUpdate.ids 正常 500 筆不應拋例外（只允許 is_paid=True）。"""
+        """BatchPaymentUpdate.ids 正常 500 筆不應拋例外（只允許 is_paid=True）。
+        reason 最小長度與 MIN_REFUND_REASON_LENGTH 對齊（cash-only 後為 15 字）。"""
         from api.activity._shared import BatchPaymentUpdate
 
         obj = BatchPaymentUpdate(
-            ids=list(range(500)), is_paid=True, reason="期末批次補繳已收齊"
+            ids=list(range(500)),
+            is_paid=True,
+            reason="期末批次補繳家長已現金繳清完畢",
         )
         assert len(obj.ids) == 500
 

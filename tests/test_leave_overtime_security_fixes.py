@@ -86,9 +86,7 @@ def app_client(tmp_path, monkeypatch):
 
 
 def _emp(session, employee_id: str, name: str) -> Employee:
-    e = Employee(
-        employee_id=employee_id, name=name, base_salary=36000, is_active=True
-    )
+    e = Employee(employee_id=employee_id, name=name, base_salary=36000, is_active=True)
     session.add(e)
     session.flush()
     return e
@@ -117,6 +115,7 @@ def _login(client: TestClient, username: str, password: str):
 
 # ── Issue 5：OvertimeCreatePortal 時間順序驗證（Pydantic 純單元測試） ──
 
+
 class TestPortalOvertimeReverseTimeRejected:
     def test_portal_overtime_rejects_reverse_time_range(self):
         with pytest.raises(ValueError, match="早於 end_time"):
@@ -140,6 +139,7 @@ class TestPortalOvertimeReverseTimeRejected:
 
 
 # ── Issue 6：OvertimeUpdate 單欄更新合併後仍驗證時間順序 ──
+
 
 class TestOvertimeUpdateReverseTimeRejected:
     def test_end_time_update_alone_cannot_produce_reverse_range(self, app_client):
@@ -179,6 +179,7 @@ class TestOvertimeUpdateReverseTimeRejected:
 
 # ── Issue 7：已審核假單禁止新增附件 ──
 
+
 class TestApprovedLeaveRejectsNewAttachment:
     def test_cannot_upload_attachment_after_leave_is_approved(self, app_client):
         client, session_factory = app_client
@@ -210,14 +211,13 @@ class TestApprovedLeaveRejectsNewAttachment:
         # 使用最小 PNG 頭 + 1 byte 內容，讓 file signature validator 通過但不寫大檔
         png_header = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
         files = {"files": ("evidence.png", png_header, "image/png")}
-        res = client.post(
-            f"/api/portal/my-leaves/{leave_id}/attachments", files=files
-        )
+        res = client.post(f"/api/portal/my-leaves/{leave_id}/attachments", files=files)
         assert res.status_code == 400
         assert "已審核" in res.json()["detail"]
 
 
 # ── Issue 3：portal 補休假單必須驗證 source_overtime_id ──
+
 
 class TestPortalCompLeaveSourceOvertimeValidation:
     def _setup_actor(self, session):
@@ -243,6 +243,8 @@ class TestPortalCompLeaveSourceOvertimeValidation:
         return emp, other
 
     def test_rejects_nonexistent_source_overtime(self, app_client):
+        # F-011 collapse 後，「不存在」與「不屬於本人」一律回 400 generic
+        # 「來源加班記錄無效或無權使用」，避免存在性 oracle。
         client, session_factory = app_client
         with session_factory() as session:
             self._setup_actor(session)
@@ -260,9 +262,10 @@ class TestPortalCompLeaveSourceOvertimeValidation:
             },
         )
         assert res.status_code == 400
-        assert "不存在" in res.json()["detail"]
+        assert "無效或無權使用" in res.json()["detail"]
 
     def test_rejects_source_overtime_belonging_to_other_employee(self, app_client):
+        # F-011 collapse：同上一個測試的 generic detail，且 status code 一致為 400。
         client, session_factory = app_client
         with session_factory() as session:
             emp, other = self._setup_actor(session)
@@ -292,8 +295,8 @@ class TestPortalCompLeaveSourceOvertimeValidation:
                 "source_overtime_id": ot_id,
             },
         )
-        assert res.status_code == 403
-        assert "不屬於本人" in res.json()["detail"]
+        assert res.status_code == 400
+        assert "無效或無權使用" in res.json()["detail"]
 
     def test_rejects_unapproved_source_overtime(self, app_client):
         client, session_factory = app_client
@@ -330,6 +333,7 @@ class TestPortalCompLeaveSourceOvertimeValidation:
 
 # ── Issue 1：匯入請假必須檢查排班工時 ──
 
+
 class TestImportLeavesHoursGuard:
     def _build_xlsx(self) -> bytes:
         wb = Workbook()
@@ -345,7 +349,9 @@ class TestImportLeavesHoursGuard:
                 "原因(可空)",
             ]
         )
-        ws.append(["IMP001", "匯入教師", "personal", "2026-03-20", "2026-03-20", 100, "超額"])
+        ws.append(
+            ["IMP001", "匯入教師", "personal", "2026-03-20", "2026-03-20", 100, "超額"]
+        )
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
@@ -414,9 +420,7 @@ class TestApproveLeaveHoursGuardDefenseInDepth:
             session.commit()
 
         assert _login(client, "imp_admin2", "AdminPass123").status_code == 200
-        res = client.put(
-            f"/api/leaves/{leave_id}/approve", json={"approved": True}
-        )
+        res = client.put(f"/api/leaves/{leave_id}/approve", json={"approved": True})
         assert res.status_code == 400
         assert "工作時數" in res.json()["detail"] or "可請假" in res.json()["detail"]
 
@@ -445,6 +449,7 @@ class TestApproveLeaveHoursGuardDefenseInDepth:
 
 
 # ── Issue 2：approve_overtime 最後一致性驗證（反向時間） ──
+
 
 class TestApproveOvertimeRejectsInvalidPendingRecord:
     def test_approve_rejects_overtime_with_reverse_time(self, app_client):
@@ -481,6 +486,7 @@ class TestApproveOvertimeRejectsInvalidPendingRecord:
 
 
 # ── Issue 8：批次核准補休加班使用含列鎖的共用 helper（靜態檢查） ──
+
 
 class TestBatchApproveUsesCompLeaveHelper:
     def test_batch_approve_delegates_comp_leave_quota_to_helper(self):

@@ -15,6 +15,7 @@ from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import _get_finalized_salary_record
 from utils.attendance_guards import require_not_self_attendance
+from services.salary.utils import lock_and_premark_stale
 from ._shared import AttendanceRecordUpdate
 
 logger = logging.getLogger(__name__)
@@ -270,41 +271,22 @@ async def create_or_update_attendance_record(
                 detail=f"時間錯誤：上下班時間相同 {record.punch_in}，請確認資料",
             )
 
-        work_start = datetime.strptime(
-            employee.work_start_time or "08:00", "%H:%M"
-        ).time()
-        work_end = datetime.strptime(employee.work_end_time or "17:00", "%H:%M").time()
+        from utils.attendance_calc import recompute_attendance_status
 
-        is_late = False
-        is_early_leave = False
-        is_missing_punch_in = punch_in_time is None
-        is_missing_punch_out = punch_out_time is None
-        late_minutes = 0
-        early_leave_minutes = 0
-        status = "normal"
-
-        if punch_in_time:
-            work_start_dt = datetime.combine(attendance_date, work_start)
-            if punch_in_time > work_start_dt:
-                is_late = True
-                late_minutes = int((punch_in_time - work_start_dt).total_seconds() / 60)
-                status = "late"
-
-        if punch_out_time:
-            work_end_dt = datetime.combine(attendance_date, work_end)
-            if punch_out_time < work_end_dt:
-                is_early_leave = True
-                early_leave_minutes = int(
-                    (work_end_dt - punch_out_time).total_seconds() / 60
-                )
-                status = (
-                    "early_leave" if status == "normal" else status + "+early_leave"
-                )
-
-        if is_missing_punch_in:
-            status = "missing" if status == "normal" else status + "+missing_in"
-        if is_missing_punch_out:
-            status = "missing" if status == "normal" else status + "+missing_out"
+        fields = recompute_attendance_status(
+            attendance_date=attendance_date,
+            punch_in_time=punch_in_time,
+            punch_out_time=punch_out_time,
+            work_start_str=employee.work_start_time,
+            work_end_str=employee.work_end_time,
+        )
+        is_late = fields["is_late"]
+        is_early_leave = fields["is_early_leave"]
+        is_missing_punch_in = fields["is_missing_punch_in"]
+        is_missing_punch_out = fields["is_missing_punch_out"]
+        late_minutes = fields["late_minutes"]
+        early_leave_minutes = fields["early_leave_minutes"]
+        status = fields["status"]
 
         existing = (
             session.query(Attendance)
@@ -346,10 +328,13 @@ async def create_or_update_attendance_record(
         # 考勤異動會改變遲到/早退/缺打卡計數,進而影響薪資扣款計算;
         # 該月若有未封存薪資需標 stale,讓 finalize 守衛擋下舊薪資。
         # 已封存月份由 _assert_attendance_not_finalized 攔下,此處不會執行。
-        from services.salary.utils import mark_salary_stale
+        # lock_and_premark_stale 同時取 advisory lock + 標 stale,避免 finalize 在
+        # 「來源檢查通過 → mark_stale → caller commit」中間以舊 needs_recalc=False 搶先封存。
 
-        mark_salary_stale(
-            session, employee.id, attendance_date.year, attendance_date.month
+        lock_and_premark_stale(
+            session,
+            employee.id,
+            {(attendance_date.year, attendance_date.month)},
         )
 
         session.commit()
@@ -398,10 +383,11 @@ async def delete_single_attendance_record(
         )
 
         if deleted:
-            from services.salary.utils import mark_salary_stale
 
-            mark_salary_stale(
-                session, employee_id, attendance_date.year, attendance_date.month
+            lock_and_premark_stale(
+                session,
+                employee_id,
+                {(attendance_date.year, attendance_date.month)},
             )
 
         session.commit()
@@ -453,9 +439,9 @@ def delete_single_attendance(
 
         session.delete(record)
 
-        from services.salary.utils import mark_salary_stale
-
-        mark_salary_stale(session, employee_id, target_date.year, target_date.month)
+        lock_and_premark_stale(
+            session, employee_id, {(target_date.year, target_date.month)}
+        )
 
         session.commit()
         return {"message": "刪除成功"}
@@ -507,10 +493,9 @@ async def delete_attendance_records(
         )
 
         if affected_emp_ids:
-            from services.salary.utils import mark_salary_stale
 
             for emp_id in affected_emp_ids:
-                mark_salary_stale(session, emp_id, year, month)
+                lock_and_premark_stale(session, emp_id, {(year, month)})
 
         session.commit()
 
