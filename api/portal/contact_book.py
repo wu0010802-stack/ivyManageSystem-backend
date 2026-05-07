@@ -217,10 +217,29 @@ def list_classroom_day(
             .all()
         )
         entry_by_student = {e.student_id: e for e in entries}
+
+        # Phase 3 N+1 修補：列表前一次 IN clause 取所有 entries 的 photos，
+        # 取代 _load_photos 在迴圈內逐 entry 一次 query。
+        entry_ids = [e.id for e in entries]
+        photos_by_entry: dict[int, list] = {eid: [] for eid in entry_ids}
+        if entry_ids:
+            attachments = (
+                session.query(Attachment)
+                .filter(
+                    Attachment.owner_type == ATTACHMENT_OWNER_CONTACT_BOOK,
+                    Attachment.owner_id.in_(entry_ids),
+                    Attachment.deleted_at.is_(None),
+                )
+                .order_by(Attachment.created_at.asc())
+                .all()
+            )
+            for a in attachments:
+                photos_by_entry.setdefault(a.owner_id, []).append(a)
+
         items = []
         for s in roster:
             entry = entry_by_student.get(s.id)
-            photos = _load_photos(session, entry.id) if entry else []
+            photos = photos_by_entry.get(entry.id, []) if entry else []
             items.append(
                 {
                     "student_id": s.id,
@@ -349,12 +368,15 @@ def update_entry(
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
         if expected_version is not None and entry.version != expected_version:
+            # 衝突：回 409 + 完整 current_entry payload，前端可局部寫回不必整撈
+            current_photos = _load_photos(session, entry.id)
             raise HTTPException(
                 status_code=409,
                 detail={
                     "code": "VERSION_CONFLICT",
                     "message": "聯絡簿已被他人更新，請重新整理後再編輯",
                     "current_version": entry.version,
+                    "current_entry": _entry_to_dict(entry, current_photos),
                 },
             )
 

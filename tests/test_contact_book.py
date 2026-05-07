@@ -525,3 +525,146 @@ class TestParentIDOR:
             headers={"Authorization": f"Bearer {token_a}"},
         )
         assert r3.status_code == 403
+
+
+class TestContactBookListQueryCount:
+    """Phase 3 N+1 regression test：list endpoint 不應每 entry 一次 photos query。"""
+
+    def test_30_student_list_under_baseline(self, app_clients):
+        """15 student 班級 + 15 entry + 各 1 photo，baseline ~17-20 query → 目標 ≤ 8。"""
+        from datetime import date as _date
+
+        from models.database import StudentContactBookEntry
+        from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK, Attachment
+        from tests.conftest import QueryCounter
+
+        client, sf, _ = app_clients
+
+        with sf() as session:
+            classroom = _make_classroom(session, name="N+1 測試班")
+            emp, user = _make_teacher(session, classroom.id)
+            _set_classroom_teacher(session, classroom, emp)
+            session.commit()
+            cid = classroom.id
+
+            # 建 15 個學生（不需家長）
+            for i in range(15):
+                session.add(
+                    Student(
+                        student_id=f"S_QC_{i:03d}",
+                        name=f"學生{i:03d}",
+                        classroom_id=cid,
+                        is_active=True,
+                    )
+                )
+            session.commit()
+
+            today = _date.today()
+
+            # 每個學生建一筆 entry + 1 張 photo
+            students = session.query(Student).filter(Student.classroom_id == cid).all()
+            for s in students:
+                e = StudentContactBookEntry(
+                    student_id=s.id,
+                    classroom_id=cid,
+                    log_date=today,
+                    published_at=None,
+                    version=1,
+                )
+                session.add(e)
+                session.flush()
+                session.add(
+                    Attachment(
+                        owner_type=ATTACHMENT_OWNER_CONTACT_BOOK,
+                        owner_id=e.id,
+                        storage_key=f"test/{s.id}/photo.jpg",
+                        original_filename="photo.jpg",
+                        mime_type="image/jpeg",
+                        size_bytes=1024,
+                    )
+                )
+            session.commit()
+
+            tk = _teacher_token(user, emp)
+            engine = session.get_bind()
+
+        # 計算 list endpoint 發出的 query 數
+        with QueryCounter(engine) as counter:
+            resp = client.get(
+                f"/api/portal/contact-book?classroom_id={cid}&log_date={today.isoformat()}",
+                cookies={"access_token": tk},
+            )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["items"]) == 15  # 15 students
+        assert sum(1 for it in body["items"] if it["entry"]) == 15  # 全部有 entry
+
+        # 目前 _load_photos 在迴圈每個 entry 各發一次 query → baseline ~17-20
+        # Task 3B.3 批次修補後應降至 ≤ 9（photos 改 IN clause；auth+emp+classroom+roster+entries+photos+completion×2 共 9）
+        assert counter.count <= 9, (
+            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 9). "
+            f"Last 5 statements: {counter.statements[-5:]}"
+        )
+
+
+class TestUpdateEntryConflictPayload:
+    """Phase 3B.4：409 衝突 response 應含 current_entry 完整 payload。"""
+
+    def test_409_returns_current_entry_in_detail(self, app_clients):
+        client, sf, _ = app_clients
+        with sf() as s:
+            classroom = _make_classroom(s, "衝突測試班")
+            emp, user = _make_teacher(s, classroom.id)
+            _set_classroom_teacher(s, classroom, emp)
+            child = Student(
+                student_id="S_CFL_01",
+                name="衝突測試學生",
+                classroom_id=classroom.id,
+                is_active=True,
+            )
+            s.add(child)
+            s.flush()
+            entry = StudentContactBookEntry(
+                student_id=child.id,
+                classroom_id=classroom.id,
+                log_date=date(2026, 5, 6),
+                mood="happy",
+                teacher_note="原始留言",
+                version=1,
+                created_by_employee_id=emp.id,
+            )
+            s.add(entry)
+            s.commit()
+            entry_id = entry.id
+            token = _teacher_token(user, emp)
+
+        # 用過期 version（If-Match: "0"）嘗試更新 → 應 409
+        resp = client.put(
+            f"/api/portal/contact-book/{entry_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "If-Match": '"0"',  # 過期版本
+            },
+            json={"mood": "sad", "teacher_note": "新留言"},
+        )
+        assert resp.status_code == 409, resp.text
+        body = resp.json()
+        detail = body["detail"]
+
+        # detail 應為 dict（非 string）
+        assert isinstance(
+            detail, dict
+        ), f"detail 應為 dict，實際為 {type(detail)}: {detail}"
+        # 含既有欄位
+        assert detail.get("code") == "VERSION_CONFLICT"
+        assert "message" in detail
+        # 新增：含完整 current_entry
+        assert "current_entry" in detail, f"detail 缺 current_entry：{detail}"
+
+        current = detail["current_entry"]
+        assert current["id"] == entry_id
+        assert current["mood"] == "happy"  # 仍是原值（PUT 失敗未提交）
+        assert current["teacher_note"] == "原始留言"
+        assert current["version"] == 1
+        assert "photos" in current  # photos key 存在（可能空 list）
