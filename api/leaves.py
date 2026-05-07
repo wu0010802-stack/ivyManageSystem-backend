@@ -876,8 +876,13 @@ def update_leave(
         )
 
         # 封存月薪保護：同時檢查原始月份與更新後月份
+        # 跨月假單（理論上 schema 已擋，但歷史資料/直接 DB 寫入仍可能存在）的
+        # 原區間每一個月份都會在 _collect_leave_months 重算迴圈中被觸及，
+        # 必須涵蓋完整月份集合，與 line 935 的 months_to_recalc 對齊。
         if was_approved:
-            _affected_months = {orig_month, (new_start.year, new_start.month)}
+            _affected_months = _collect_leave_months(
+                leave.start_date, leave.end_date
+            ) | _collect_leave_months(new_start, new_end)
             _check_salary_months_not_finalized(
                 session,
                 leave.employee_id,
@@ -995,7 +1000,8 @@ def delete_leave(
 
         # ── 封存保護：已核准假單在封存月份不得刪除 ──────────────────────────
         was_approved = leave.is_approved is True
-        leave_month = (leave.start_date.year, leave.start_date.month)
+        # 跨月假單需涵蓋完整月份集合，與 lock_and_premark_stale 的範圍對齊。
+        leave_months = _collect_leave_months(leave.start_date, leave.end_date)
         emp_id = leave.employee_id
         # 預先 snapshot：刪除後 leave 物件被 expunge，audit_changes 必須在這裡備份
         deleted_snapshot = {
@@ -1010,10 +1016,10 @@ def delete_leave(
             "reason": leave.reason,
         }
         if was_approved:
-            _check_salary_months_not_finalized(session, emp_id, {leave_month})
+            _check_salary_months_not_finalized(session, emp_id, leave_months)
             # commit→recalc 鎖延伸：見 update_leave 同款註解（封 finalize race window）
 
-            lock_and_premark_stale(session, emp_id, {leave_month})
+            lock_and_premark_stale(session, emp_id, leave_months)
 
         session.delete(leave)
         session.commit()
@@ -1027,15 +1033,16 @@ def delete_leave(
             "action": "leave_delete",
             "deleted": deleted_snapshot,
             "was_approved": was_approved,
-            "leave_month": f"{leave_month[0]}-{leave_month[1]:02d}",
+            "leave_months": sorted(f"{yr}-{mo:02d}" for yr, mo in leave_months),
             "triggered_salary_recalc": was_approved,
         }
 
         result = {"message": "請假記錄已刪除"}
-        # 刪除已核准假單後補算薪資，撤銷原扣款
+        # 刪除已核准假單後補算薪資，撤銷原扣款；跨月假單需重算每一個月份。
         if was_approved and _salary_engine is not None:
             try:
-                _salary_engine.process_salary_calculation(emp_id, *leave_month)
+                for yr, mo in sorted(leave_months):
+                    _salary_engine.process_salary_calculation(emp_id, yr, mo)
                 result["salary_recalculated"] = True
             except Exception as e:
                 result["salary_warning"] = (
@@ -1044,15 +1051,22 @@ def delete_leave(
                 logger.error("刪除假單後薪資重算失敗：%s", e)
                 # 重算失敗 → 標 stale,避免後續 finalize 在「假單已刪除但扣款未撤銷」
                 # 的狀態下誤封存舊薪資。對齊 approve_leave 降級樣板。
+                for yr, mo in sorted(leave_months):
+                    try:
+                        mark_salary_stale(session, emp_id, yr, mo)
+                    except Exception:
+                        logger.warning(
+                            "刪除假單降級時標記 SalaryRecord stale 失敗 emp=%d %d/%d",
+                            emp_id,
+                            yr,
+                            mo,
+                            exc_info=True,
+                        )
                 try:
-                    mark_salary_stale(session, emp_id, *leave_month)
                     session.commit()
                 except Exception:
                     logger.warning(
-                        "刪除假單降級時 commit stale 標記失敗 emp=%d %d/%d",
-                        emp_id,
-                        *leave_month,
-                        exc_info=True,
+                        "刪除假單降級時 commit stale 標記失敗", exc_info=True
                     )
                     session.rollback()
 
@@ -1306,11 +1320,13 @@ def approve_leave(
         # ── 封存月薪保護（commit 前）────────────────────────────────────────
         # 核准假單或將已核准假單改為駁回都會改變 SalaryRecord；若該月薪資已封存，
         # 必須在 commit 前阻擋，否則假單狀態被翻面、薪資沒更新，DB 永遠處於矛盾狀態。
+        # 跨月假單需檢查整個跨越區間（中間月份/end_date 月份），與上方 lock_and_premark_stale
+        # 的範圍對齊，避免 check 漏放後 stale 標記被 finalize 守衛擋下、假單已 commit 的破口。
         if approval_changed:
             _check_salary_months_not_finalized(
                 session,
                 leave.employee_id,
-                {(leave.start_date.year, leave.start_date.month)},
+                _collect_leave_months(leave.start_date, leave.end_date),
             )
 
         # ── V8：防禦性扣款比例同步 ───────────────────────────────────────────
@@ -1644,11 +1660,13 @@ def batch_approve_leaves(
                         continue
 
                 # 封存月薪保護：approve 或 reject-of-approved 都會改變 SalaryRecord
+                # 跨月假單需涵蓋整個跨越區間（中間月份 / end_date 月份），與下方
+                # lock_and_premark_stale 的範圍對齊；單一 start 月會漏跨月場景。
                 if approval_changed:
                     try:
-                        _affected_months_batch = {
-                            (leave.start_date.year, leave.start_date.month)
-                        }
+                        _affected_months_batch = _collect_leave_months(
+                            leave.start_date, leave.end_date
+                        )
                         _check_salary_months_not_finalized(
                             session,
                             leave.employee_id,
