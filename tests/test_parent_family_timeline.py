@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
 from api.parent_portal import parent_router as parent_portal_router
+from api.parent_portal.family import _timeline_cache
 from models.classroom import StudentAttendance
 from models.database import (
     Base,
@@ -39,6 +40,8 @@ def parent_family_client(tmp_path):
     base_module._engine = db_engine
     base_module._SessionFactory = session_factory
     Base.metadata.create_all(db_engine)
+    # 模組級 TTLCache 會跨測試殘留；每個 fixture 清空一次。
+    _timeline_cache.clear()
 
     app = FastAPI()
     app.include_router(parent_portal_router)
