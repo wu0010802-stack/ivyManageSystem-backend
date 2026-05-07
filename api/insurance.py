@@ -12,7 +12,13 @@ from utils.permissions import Permission
 from utils.finance_guards import has_finance_approve, require_adjustment_reason
 from pydantic import BaseModel, Field
 
-from models.database import get_session, session_scope, InsuranceBracket, SalaryRecord
+from models.database import (
+    get_session,
+    session_scope,
+    InsuranceBracket,
+    InsuranceBracketsStaging,
+    SalaryRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +33,11 @@ _insurance_service = None
 def init_insurance_services(insurance_service):
     global _insurance_service
     _insurance_service = insurance_service
+
+
+# 模組層級 dependency 常數，方便測試以 app.dependency_overrides 覆寫
+_DEP_SALARY_READ = require_staff_permission(Permission.SALARY_READ)
+_DEP_SALARY_WRITE = require_staff_permission(Permission.SALARY_WRITE)
 
 
 # ============ Pydantic Models ============
@@ -140,13 +151,15 @@ async def calculate_insurance(
 
 @router.get("/insurance/brackets")
 async def list_brackets(
-    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+    current_user: dict = Depends(_DEP_SALARY_READ),
     year: Optional[int] = Query(None, description="預設取當年；可指定歷史年度"),
 ):
     """讀取指定年度的勞健保級距表。
 
     無資料時 fallback 到 ≤year 中最新的年度（與 service load_brackets_from_db 同邏輯），
     便於行政在新年度尚未公告時還能看到目前生效級距。
+
+    回應包含 `latest_promoted_from_gov_data` 旗標，表示該年度的級距是否由政府資料 promote 流程寫入。
     """
     target_year = year or date.today().year
     session = get_session()
@@ -173,9 +186,20 @@ async def list_brackets(
                     .order_by(InsuranceBracket.amount.asc())
                     .all()
                 )
+        # 判斷 effective_year 的資料是否來自政府資料 promote 流程
+        promoted_staging = (
+            session.query(InsuranceBracketsStaging)
+            .filter(
+                InsuranceBracketsStaging.effective_year == actual_year,
+                InsuranceBracketsStaging.status == "promoted",
+            )
+            .first()
+        )
+        latest_promoted_from_gov_data = promoted_staging is not None
         return {
             "requested_year": target_year,
             "effective_year": actual_year if rows else None,
+            "latest_promoted_from_gov_data": latest_promoted_from_gov_data,
             "brackets": [
                 {
                     "id": r.id,
