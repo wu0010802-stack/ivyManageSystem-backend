@@ -474,3 +474,226 @@ def test_audit_endpoint_orders_desc_and_limits_200(unlock_client):
     events = res.json()["events"]
     assert len(events) == 200
     assert events[0]["occurred_at"] > events[-1]["occurred_at"]
+
+
+# ── Test 11-13: live_diff（spec H2）────────────────────────────────
+
+
+def test_unlock_live_diff_zero_when_no_change(unlock_client):
+    """無新交易也無 voided → live_diff 全 0；snapshot 與 live 相同。"""
+    client, sf = unlock_client
+    target = date.today() - timedelta(days=1)
+    with sf() as s:
+        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        s.commit()
+    # _seed_signed_close 寫入 snapshot payment_total=1000，但實際無 payment_records
+    # → live_snapshot 為 0，diff = 0 - 1000 = -1000（DB 層沒對齊）
+    # 為了讓 live_diff=0，需要 _seed_signed_close 對應實際 records
+    _seed_signed_close(sf, target=target, approver_username="approver_a")
+
+    assert _login(client, "approver_b").status_code == 200
+    res = client.request(
+        "DELETE",
+        f"/api/activity/pos/daily-close/{target.isoformat()}",
+        json={"reason": "B 解 A 的：驗證 live_diff 結構", "is_admin_override": False},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert "live_diff" in body
+    diff = body["live_diff"]
+    # _seed_signed_close 寫 snapshot 1000 但無 records → live=0，diff=-1000
+    assert diff["original_payment_total"] == 1000
+    assert diff["live_payment_total"] == 0
+    assert diff["payment_total_diff"] == -1000
+    assert diff["net_total_diff"] == -1000
+
+
+def test_unlock_live_diff_positive_when_new_payment_added(unlock_client):
+    """簽核後新增 payment_record → live > original，diff 正值。"""
+    from datetime import datetime as _dt
+    from models.database import (
+        ActivityCourse,
+        ActivityPaymentRecord,
+        ActivityRegistration,
+        RegistrationCourse,
+    )
+
+    client, sf = unlock_client
+    target = date.today() - timedelta(days=1)
+    with sf() as s:
+        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        # 寫一筆 reg + 1500 payment_record（payment_date = target）
+        course = ActivityCourse(
+            name="美術",
+            price=1500,
+            capacity=30,
+            allow_waitlist=True,
+            school_year=114,
+            semester=1,
+        )
+        s.add(course)
+        s.flush()
+        reg = ActivityRegistration(
+            student_name="新生",
+            birthday="2020-01-01",
+            class_name="大班",
+            paid_amount=1500,
+            is_paid=True,
+            is_active=True,
+            school_year=114,
+            semester=1,
+        )
+        s.add(reg)
+        s.flush()
+        s.add(
+            RegistrationCourse(
+                registration_id=reg.id,
+                course_id=course.id,
+                status="enrolled",
+                price_snapshot=1500,
+            )
+        )
+        # 一筆 payment_record（live snapshot 會看到這筆）
+        s.add(
+            ActivityPaymentRecord(
+                registration_id=reg.id,
+                type="payment",
+                amount=1500,
+                payment_date=target,
+                payment_method="現金",
+                operator="approver_a",
+                notes="",
+                created_at=_dt.now(),
+            )
+        )
+        s.commit()
+    # snapshot 寫 1000（假設簽核時只看到 1000，後來補了 500 → live=1500）
+    with sf() as s:
+        s.add(
+            ActivityPosDailyClose(
+                close_date=target,
+                approver_username="approver_a",
+                approved_at=_dt.now(),
+                payment_total=1000,
+                refund_total=0,
+                net_total=1000,
+                transaction_count=1,
+                by_method_json='{"現金": 1000}',
+            )
+        )
+        s.commit()
+
+    assert _login(client, "approver_b").status_code == 200
+    res = client.request(
+        "DELETE",
+        f"/api/activity/pos/daily-close/{target.isoformat()}",
+        json={
+            "reason": "B 解 A 的：驗證新增交易後 live_diff 正值",
+            "is_admin_override": False,
+        },
+    )
+    assert res.status_code == 200, res.text
+    diff = res.json()["live_diff"]
+    # original: 1000；live: 1500 → diff = +500
+    assert diff["original_payment_total"] == 1000
+    assert diff["live_payment_total"] == 1500
+    assert diff["payment_total_diff"] == 500
+    assert diff["net_total_diff"] == 500
+    assert diff["transaction_count_diff"] == 0  # snapshot 紀錄了 1 筆，live 也是 1 筆
+
+
+def test_unlock_live_diff_negative_when_voided_after_approve(unlock_client):
+    """簽核後紀錄被 void → live < original，diff 負值。"""
+    from datetime import datetime as _dt
+    from models.database import (
+        ActivityCourse,
+        ActivityPaymentRecord,
+        ActivityRegistration,
+        RegistrationCourse,
+    )
+
+    client, sf = unlock_client
+    target = date.today() - timedelta(days=1)
+    with sf() as s:
+        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        course = ActivityCourse(
+            name="美術",
+            price=1000,
+            capacity=30,
+            allow_waitlist=True,
+            school_year=114,
+            semester=1,
+        )
+        s.add(course)
+        s.flush()
+        reg = ActivityRegistration(
+            student_name="退費生",
+            birthday="2020-01-01",
+            class_name="大班",
+            paid_amount=0,
+            is_paid=False,
+            is_active=True,
+            school_year=114,
+            semester=1,
+        )
+        s.add(reg)
+        s.flush()
+        s.add(
+            RegistrationCourse(
+                registration_id=reg.id,
+                course_id=course.id,
+                status="enrolled",
+                price_snapshot=1000,
+            )
+        )
+        # 一筆 voided 的 payment（簽核時計入，現在被 void 排除）
+        s.add(
+            ActivityPaymentRecord(
+                registration_id=reg.id,
+                type="payment",
+                amount=1000,
+                payment_date=target,
+                payment_method="現金",
+                operator="approver_a",
+                notes="",
+                created_at=_dt.now(),
+                voided_at=_dt.now(),
+                voided_by="approver_b",
+                void_reason="誤刷",
+            )
+        )
+        s.commit()
+    # snapshot 簽核時 1000 元（當時還沒 void）
+    with sf() as s:
+        s.add(
+            ActivityPosDailyClose(
+                close_date=target,
+                approver_username="approver_a",
+                approved_at=_dt.now(),
+                payment_total=1000,
+                refund_total=0,
+                net_total=1000,
+                transaction_count=1,
+                by_method_json='{"現金": 1000}',
+            )
+        )
+        s.commit()
+
+    assert _login(client, "approver_b").status_code == 200
+    res = client.request(
+        "DELETE",
+        f"/api/activity/pos/daily-close/{target.isoformat()}",
+        json={
+            "reason": "B 解 A 的：驗證 void 後 live_diff 負值",
+            "is_admin_override": False,
+        },
+    )
+    assert res.status_code == 200, res.text
+    diff = res.json()["live_diff"]
+    # original: 1000；live: 0（voided 排除）→ diff = -1000
+    assert diff["original_payment_total"] == 1000
+    assert diff["live_payment_total"] == 0
+    assert diff["payment_total_diff"] == -1000

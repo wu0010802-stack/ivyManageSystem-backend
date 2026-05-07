@@ -528,11 +528,38 @@ async def unlock_daily_close(
         except Exception:
             logger.warning("LINE notify on POS unlock failed", exc_info=True)
 
+        # ── live_diff 計算（spec H2）─────────────────────────────
+        # Why: 解鎖後實況（含補登/voided 變動後的最新 records）vs 原 snapshot
+        # 的差異，幫解鎖人即時掌握「為什麼帳變了」。本步驟在 commit 後計算
+        # 才能反映 commit 後的真相；計算失敗不擋已 commit 的解鎖。
+        live_diff = None
+        try:
+            live_snap = compute_daily_snapshot(session, target)
+            live_diff = {
+                "payment_total_diff": int(live_snap["payment_total"])
+                - original_payment,
+                "refund_total_diff": int(live_snap["refund_total"]) - original_refund,
+                "net_total_diff": int(live_snap["net"]) - original_net,
+                "transaction_count_diff": int(live_snap["transaction_count"])
+                - original_tx,
+                "live_payment_total": int(live_snap["payment_total"]),
+                "live_refund_total": int(live_snap["refund_total"]),
+                "live_net_total": int(live_snap["net"]),
+                "live_transaction_count": int(live_snap["transaction_count"]),
+                "original_payment_total": original_payment,
+                "original_refund_total": original_refund,
+                "original_net_total": original_net,
+                "original_transaction_count": original_tx,
+            }
+        except Exception:
+            logger.warning("compute_daily_snapshot failed during unlock", exc_info=True)
+
         return {
             "close_date": target.isoformat(),
             "unlocked_at": datetime.now().isoformat(timespec="seconds"),
             "is_admin_override": body.is_admin_override,
             "notification_delivered": notification_delivered,
+            "live_diff": live_diff,
         }
     except HTTPException:
         session.rollback()
