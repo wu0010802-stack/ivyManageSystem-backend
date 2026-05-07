@@ -28,6 +28,7 @@ from api.parent_portal import (
 )
 from api.parent_portal._shared import resolve_parent_display_name
 from api.parent_portal.auth import _bind_failures, _hash_code
+from api.parent_portal.home import _home_summary_cache
 from models.database import (
     Base,
     Guardian,
@@ -68,6 +69,7 @@ def parent_app(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
     _bind_failures.clear()
+    _home_summary_cache.clear()
 
     fake_line = FakeLineLoginService(
         {
@@ -86,6 +88,7 @@ def parent_app(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
     _bind_failures.clear()
+    _home_summary_cache.clear()
     base_module._engine = old_engine
     base_module._SessionFactory = old_factory
     engine.dispose()

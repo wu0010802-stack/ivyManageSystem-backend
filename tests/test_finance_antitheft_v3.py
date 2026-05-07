@@ -758,7 +758,7 @@ class TestStudentDeactivateRefundGuard:
                 s,
                 username="stu_writer",
                 permissions=Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
-                role="staff",
+                role="admin",
             )
             s.commit()
             student_id = st.id

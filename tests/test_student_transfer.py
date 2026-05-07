@@ -26,10 +26,10 @@ from models.auth import User
 from models.classroom import Classroom, Student, ClassGrade
 from models.student_transfer import StudentClassroomTransfer
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def session():
@@ -82,6 +82,7 @@ def seed_data(session):
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def _add_transfer(session, student, from_cls, to_cls, at: datetime):
     t = StudentClassroomTransfer(
         student_id=student.id,
@@ -98,12 +99,16 @@ def _add_transfer(session, student, from_cls, to_cls, at: datetime):
 # get_classroom_student_ids_at_date()
 # ---------------------------------------------------------------------------
 
+
 class TestGetClassroomStudentIdsAtDate:
     """歷史日期班級歸屬溯源邏輯。"""
 
-    def test_no_transfer_returns_students_in_current_classroom(self, session, seed_data):
+    def test_no_transfer_returns_students_in_current_classroom(
+        self, session, seed_data
+    ):
         """從未轉班的學生，直接以 classroom_id 判斷歸屬。"""
         from api.students import get_classroom_student_ids_at_date
+
         result = get_classroom_student_ids_at_date(
             session, seed_data["class_a"].id, date.today()
         )
@@ -112,42 +117,65 @@ class TestGetClassroomStudentIdsAtDate:
     def test_after_transfer_student_appears_in_new_classroom(self, session, seed_data):
         """轉班後，學生應出現在新班級，不在舊班級。"""
         from api.students import get_classroom_student_ids_at_date
+
         transfer_time = datetime(2025, 9, 1, 10, 0, 0)
-        _add_transfer(session, seed_data["s1"], seed_data["class_a"], seed_data["class_b"], transfer_time)
+        _add_transfer(
+            session,
+            seed_data["s1"],
+            seed_data["class_a"],
+            seed_data["class_b"],
+            transfer_time,
+        )
         # 更新 classroom_id（模擬 bulk_transfer 的效果）
         seed_data["s1"].classroom_id = seed_data["class_b"].id
         session.commit()
 
         query_date = date(2025, 9, 15)
-        result_a = get_classroom_student_ids_at_date(session, seed_data["class_a"].id, query_date)
-        result_b = get_classroom_student_ids_at_date(session, seed_data["class_b"].id, query_date)
+        result_a = get_classroom_student_ids_at_date(
+            session, seed_data["class_a"].id, query_date
+        )
+        result_b = get_classroom_student_ids_at_date(
+            session, seed_data["class_b"].id, query_date
+        )
 
         assert seed_data["s1"].id not in result_a, "轉班後不應在原班"
         assert seed_data["s1"].id in result_b, "轉班後應在新班"
 
-    def test_between_two_transfers_student_in_intermediate_classroom(self, session, seed_data):
+    def test_between_two_transfers_student_in_intermediate_classroom(
+        self, session, seed_data
+    ):
         """兩次轉班：查詢第一次轉班後、第二次轉班前，學生應在中間班級。"""
         from api.students import get_classroom_student_ids_at_date
-        t1 = datetime(2025, 8, 15)   # class_a → class_b
-        t2 = datetime(2025, 11, 1)   # class_b → class_a（轉回）
 
-        _add_transfer(session, seed_data["s1"], seed_data["class_a"], seed_data["class_b"], t1)
-        _add_transfer(session, seed_data["s1"], seed_data["class_b"], seed_data["class_a"], t2)
+        t1 = datetime(2025, 8, 15)  # class_a → class_b
+        t2 = datetime(2025, 11, 1)  # class_b → class_a（轉回）
+
+        _add_transfer(
+            session, seed_data["s1"], seed_data["class_a"], seed_data["class_b"], t1
+        )
+        _add_transfer(
+            session, seed_data["s1"], seed_data["class_b"], seed_data["class_a"], t2
+        )
         seed_data["s1"].classroom_id = seed_data["class_a"].id
         session.commit()
 
         # 查詢 t1 之後、t2 之前 → 應在 class_b
         query_date = date(2025, 10, 31)
-        result_b = get_classroom_student_ids_at_date(session, seed_data["class_b"].id, query_date)
+        result_b = get_classroom_student_ids_at_date(
+            session, seed_data["class_b"].id, query_date
+        )
         assert seed_data["s1"].id in result_b, "t1–t2 期間查詢應在中間班級"
 
         # 查詢 t2 之後 → 已轉回 class_a
-        result_a = get_classroom_student_ids_at_date(session, seed_data["class_a"].id, date(2025, 11, 15))
+        result_a = get_classroom_student_ids_at_date(
+            session, seed_data["class_a"].id, date(2025, 11, 15)
+        )
         assert seed_data["s1"].id in result_a
 
     def test_inactive_student_excluded_from_no_transfer_path(self, session, seed_data):
         """is_active=False 的學生（從未轉班路徑）不應出現在結果中。"""
         from api.students import get_classroom_student_ids_at_date
+
         seed_data["s2"].is_active = False
         session.commit()
 
@@ -156,35 +184,51 @@ class TestGetClassroomStudentIdsAtDate:
         )
         assert seed_data["s2"].id not in result
 
-    def test_student_transferred_out_not_in_original_classroom(self, session, seed_data):
+    def test_student_transferred_out_not_in_original_classroom(
+        self, session, seed_data
+    ):
         """有轉班記錄且轉出的學生，在轉班後不應出現在原班查詢結果中。"""
         from api.students import get_classroom_student_ids_at_date
+
         t = datetime(2025, 9, 1)
-        _add_transfer(session, seed_data["s2"], seed_data["class_a"], seed_data["class_b"], t)
+        _add_transfer(
+            session, seed_data["s2"], seed_data["class_a"], seed_data["class_b"], t
+        )
         seed_data["s2"].classroom_id = seed_data["class_b"].id
         session.commit()
 
-        result = get_classroom_student_ids_at_date(session, seed_data["class_a"].id, date(2025, 10, 1))
+        result = get_classroom_student_ids_at_date(
+            session, seed_data["class_a"].id, date(2025, 10, 1)
+        )
         assert seed_data["s2"].id not in result
 
     def test_multiple_transfers_uses_latest_before_date(self, session, seed_data):
         """多次轉班時，應以查詢日期前的最後一筆為準。"""
         from api.students import get_classroom_student_ids_at_date
+
         t1 = datetime(2025, 8, 1)
         t2 = datetime(2025, 10, 1)
         # 第一次：A → B
-        _add_transfer(session, seed_data["s1"], seed_data["class_a"], seed_data["class_b"], t1)
+        _add_transfer(
+            session, seed_data["s1"], seed_data["class_a"], seed_data["class_b"], t1
+        )
         # 第二次：B → A（轉回來）
-        _add_transfer(session, seed_data["s1"], seed_data["class_b"], seed_data["class_a"], t2)
+        _add_transfer(
+            session, seed_data["s1"], seed_data["class_b"], seed_data["class_a"], t2
+        )
         seed_data["s1"].classroom_id = seed_data["class_a"].id
         session.commit()
 
         # 查詢第一次轉班後、第二次轉班前 → 應在 class_b
-        result_b = get_classroom_student_ids_at_date(session, seed_data["class_b"].id, date(2025, 9, 1))
+        result_b = get_classroom_student_ids_at_date(
+            session, seed_data["class_b"].id, date(2025, 9, 1)
+        )
         assert seed_data["s1"].id in result_b
 
         # 查詢第二次轉班後 → 應回到 class_a
-        result_a = get_classroom_student_ids_at_date(session, seed_data["class_a"].id, date(2025, 11, 1))
+        result_a = get_classroom_student_ids_at_date(
+            session, seed_data["class_a"].id, date(2025, 11, 1)
+        )
         assert seed_data["s1"].id in result_a
 
 
@@ -192,19 +236,32 @@ class TestGetClassroomStudentIdsAtDate:
 # bulk_transfer_students endpoint
 # ---------------------------------------------------------------------------
 
+
 class TestBulkTransferStudents:
     """透過 endpoint 函式測試轉班業務邏輯。"""
 
     def _run(self, session, student_ids, target_classroom_id, user_id=1):
+        from types import SimpleNamespace
         from api.students import bulk_transfer_students, StudentBulkTransfer
+
         item = StudentBulkTransfer(
             student_ids=student_ids,
             target_classroom_id=target_classroom_id,
         )
-        current_user = {"user_id": user_id, "username": "admin", "permissions": -1}
+        current_user = {
+            "user_id": user_id,
+            "username": "admin",
+            "permissions": -1,
+            "role": "admin",
+        }
+        request = SimpleNamespace(state=SimpleNamespace())
         session.close = MagicMock()
         with patch("api.students.get_session", return_value=session):
-            return asyncio.run(bulk_transfer_students(item=item, current_user=current_user))
+            return asyncio.run(
+                bulk_transfer_students(
+                    item=item, request=request, current_user=current_user
+                )
+            )
 
     def test_creates_transfer_record_and_updates_classroom(self, session, seed_data):
         """基本轉班：寫入 StudentClassroomTransfer，更新 classroom_id。"""
@@ -249,17 +306,27 @@ class TestBulkTransferStudents:
         seed_data["class_b"].is_active = False
         session.commit()
         with pytest.raises(HTTPException) as exc_info:
-            self._run(session, student_ids=[seed_data["s1"].id], target_classroom_id=seed_data["class_b"].id)
+            self._run(
+                session,
+                student_ids=[seed_data["s1"].id],
+                target_classroom_id=seed_data["class_b"].id,
+            )
         assert exc_info.value.status_code == 400
 
     def test_missing_student_raises_404(self, session, seed_data):
         """找不到學生應回傳 404。"""
         with pytest.raises(HTTPException) as exc_info:
-            self._run(session, student_ids=[99999], target_classroom_id=seed_data["class_b"].id)
+            self._run(
+                session,
+                student_ids=[99999],
+                target_classroom_id=seed_data["class_b"].id,
+            )
         assert exc_info.value.status_code == 404
 
     def test_empty_student_ids_raises_400(self, session, seed_data):
         """空的學生列表應回傳 400。"""
         with pytest.raises(HTTPException) as exc_info:
-            self._run(session, student_ids=[], target_classroom_id=seed_data["class_b"].id)
+            self._run(
+                session, student_ids=[], target_classroom_id=seed_data["class_b"].id
+            )
         assert exc_info.value.status_code == 400

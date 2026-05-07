@@ -216,9 +216,7 @@ def test_run_alembic_upgrade_empty_db_creates_schema_and_stamps_heads(monkeypatc
     create_all_args = []
 
     monkeypatch.setattr(migrations_module, "_detect_alembic_state", lambda: "empty")
-    monkeypatch.setattr(
-        migrations_module, "get_engine", lambda: "fake_engine_handle"
-    )
+    monkeypatch.setattr(migrations_module, "get_engine", lambda: "fake_engine_handle")
 
     class _FakeMetadata:
         @staticmethod
@@ -253,9 +251,7 @@ def test_run_alembic_upgrade_legacy_schema_stamps_baseline_then_upgrades(monkeyp
     monkeypatch.setattr(
         migrations_module, "_detect_alembic_state", lambda: "needs_baseline"
     )
-    monkeypatch.setattr(
-        migrations_module, "get_engine", lambda: "fake_engine_handle"
-    )
+    monkeypatch.setattr(migrations_module, "get_engine", lambda: "fake_engine_handle")
 
     class _FakeMetadata:
         @staticmethod
@@ -283,12 +279,8 @@ def test_run_alembic_upgrade_versioned_db_only_upgrades(monkeypatch):
     calls = []
     create_all_args = []
 
-    monkeypatch.setattr(
-        migrations_module, "_detect_alembic_state", lambda: "versioned"
-    )
-    monkeypatch.setattr(
-        migrations_module, "get_engine", lambda: "fake_engine_handle"
-    )
+    monkeypatch.setattr(migrations_module, "_detect_alembic_state", lambda: "versioned")
+    monkeypatch.setattr(migrations_module, "get_engine", lambda: "fake_engine_handle")
 
     class _FakeMetadata:
         @staticmethod
@@ -339,7 +331,9 @@ def test_startup_event_only_runs_bootstrap(monkeypatch):
 
     monkeypatch.setattr(main, "run_alembic_upgrade", lambda: calls.append("alembic"))
     monkeypatch.setattr(
-        main, "run_startup_bootstrap", lambda se, ls: calls.append("bootstrap")
+        main,
+        "run_startup_bootstrap",
+        lambda se, ls, *, insurance_service=None: calls.append("bootstrap"),
     )
 
     main.on_startup()
