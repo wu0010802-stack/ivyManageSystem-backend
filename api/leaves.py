@@ -535,7 +535,7 @@ def get_leaves(
                 LeaveRecord.start_date <= date(year, 12, 31),
             )
 
-        records = q.order_by(LeaveRecord.start_date.desc()).all()
+        records = q.order_by(LeaveRecord.start_date.desc()).limit(5000).all()
 
         # 預先載入員工角色映射（減少逐筆查 DB 的 N+1 問題）
         from models.database import User as UserModel

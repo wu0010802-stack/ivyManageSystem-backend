@@ -250,6 +250,7 @@ def download_anomaly_report(
                 ),
             )
             .order_by(Attendance.attendance_date, Employee.name)
+            .limit(5000)
             .all()
         )
     finally:

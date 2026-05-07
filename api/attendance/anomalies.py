@@ -99,7 +99,7 @@ def _build_anomaly_rows(session, year: int, month: int, status_filter: str):
     elif status_filter == "confirmed":
         query = query.filter(Attendance.confirmed_action != None)
 
-    records = query.all()
+    records = query.limit(5000).all()
 
     rows = []
     for att, emp in records:

@@ -96,7 +96,9 @@ def list_punch_corrections(
         if employee_id:
             query = query.filter(PunchCorrectionRequest.employee_id == employee_id)
 
-        rows = query.order_by(PunchCorrectionRequest.created_at.desc()).all()
+        rows = (
+            query.order_by(PunchCorrectionRequest.created_at.desc()).limit(5000).all()
+        )
         return [_format_correction(c, emp.name) for c, emp in rows]
     finally:
         session.close()

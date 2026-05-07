@@ -705,7 +705,7 @@ def get_overtimes(
         elif status == "rejected":
             q = q.filter(OvertimeRecord.is_approved == False)
 
-        records = q.order_by(OvertimeRecord.overtime_date.desc()).all()
+        records = q.order_by(OvertimeRecord.overtime_date.desc()).limit(5000).all()
 
         # 預先載入員工角色映射
         employee_ids = list({ot.employee_id for ot, _ in records})

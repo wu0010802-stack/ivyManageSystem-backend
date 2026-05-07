@@ -171,7 +171,7 @@ async def get_attendance_records(
 
         query = query.order_by(Employee.name, Attendance.attendance_date)
 
-        records = query.all()
+        records = query.limit(5000).all()
 
         result = []
         for att, emp in records:
