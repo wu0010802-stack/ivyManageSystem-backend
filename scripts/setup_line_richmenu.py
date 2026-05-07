@@ -34,10 +34,10 @@ _CELLS = [
     # (label, hash_path, bg_color)
     ("🏠 首頁", "/home", "#f5f5f5"),
     ("💬 訊息", "/messages", "#fff5e6"),
-    ("📋 出席", "/attendance", "#f5f5f5"),
-    ("📢 公告", "/announcements", "#fff5e6"),
-    ("📅 簽收", "/events", "#f5f5f5"),
-    ("⋯ 更多", "/more", "#fff5e6"),
+    ("🏫 家校", "/family", "#f5f5f5"),
+    ("💰 繳費", "/fees", "#fff5e6"),
+    ("✍ 簽閱", "/events", "#f5f5f5"),
+    ("👤 我的", "/me", "#fff5e6"),
 ]
 
 _LINE_API = "https://api.line.me/v2/bot/richmenu"
