@@ -26,6 +26,7 @@ from sqlalchemy import func, or_
 
 from models.database import (
     Attachment,
+    Employee,
     ParentMessage,
     ParentMessageThread,
     Student,
@@ -130,22 +131,36 @@ def _thread_summary_from_maps(
     thread: ParentMessageThread,
     student: Optional[Student],
     teacher: Optional[User],
+    teacher_employee: Optional[Employee],
     last_message: Optional[ParentMessage],
     unread_count: int,
 ) -> dict:
-    """Pure transformer：把預載的 student/teacher/last/unread map 拼成 thread dict。"""
+    """Pure transformer：把預載的 student/teacher/last/unread map 拼成 thread dict。
+
+    teacher_name 解析（資安掃描 2026-05-07 P1）：以 employee.name（員工正式姓名）優先，
+    退而求其次 user.display_name；username 是內部登入帳號（emp_xxx 形式），
+    不應外洩到家長端。
+    """
     last_preview = None
     if last_message and last_message.deleted_at is None:
         last_preview = (last_message.body or "(附件)")[:60]
     elif last_message and last_message.deleted_at is not None:
         last_preview = "(已撤回)"
 
+    teacher_name: Optional[str] = None
+    if teacher_employee and teacher_employee.name:
+        teacher_name = teacher_employee.name
+    elif teacher and teacher.display_name:
+        teacher_name = teacher.display_name
+    elif teacher:
+        teacher_name = "老師"
+
     return {
         "id": thread.id,
         "student_id": thread.student_id,
         "student_name": student.name if student else None,
         "teacher_user_id": thread.teacher_user_id,
-        "teacher_name": teacher.username if teacher else None,
+        "teacher_name": teacher_name,
         "last_message_at": (
             thread.last_message_at.isoformat() if thread.last_message_at else None
         ),
@@ -160,6 +175,11 @@ def _thread_summary(
     """單一 thread summary（給 get_thread 等 single-thread 呼叫）；list 端點走 batch 路徑。"""
     student = session.query(Student).filter(Student.id == thread.student_id).first()
     teacher = session.query(User).filter(User.id == thread.teacher_user_id).first()
+    teacher_employee: Optional[Employee] = None
+    if teacher and teacher.employee_id:
+        teacher_employee = (
+            session.query(Employee).filter(Employee.id == teacher.employee_id).first()
+        )
     last = (
         session.query(ParentMessage)
         .filter(ParentMessage.thread_id == thread.id)
@@ -181,6 +201,7 @@ def _thread_summary(
         thread=thread,
         student=student,
         teacher=teacher,
+        teacher_employee=teacher_employee,
         last_message=last,
         unread_count=unread_count,
     )
@@ -212,6 +233,21 @@ def _batch_thread_summaries(
     if teacher_ids:
         teachers_by_id = {
             u.id: u for u in session.query(User).filter(User.id.in_(teacher_ids)).all()
+        }
+
+    # 2b) 教師對應的 Employee（for teacher_name 顯示，避免洩漏 username）
+    # Refs: 資安掃描 2026-05-07 P1。
+    teacher_employee_by_user_id: dict[int, Employee] = {}
+    employee_ids = list(
+        {u.employee_id for u in teachers_by_id.values() if u.employee_id}
+    )
+    if employee_ids:
+        emp_rows = session.query(Employee).filter(Employee.id.in_(employee_ids)).all()
+        emp_by_id = {e.id: e for e in emp_rows}
+        teacher_employee_by_user_id = {
+            uid: emp_by_id[u.employee_id]
+            for uid, u in teachers_by_id.items()
+            if u.employee_id and u.employee_id in emp_by_id
         }
 
     # 3) last message per thread：先以 (thread_id, max(created_at)) 取 key，再 join 撈完整 row
@@ -261,6 +297,7 @@ def _batch_thread_summaries(
             thread=t,
             student=students_by_id.get(t.student_id),
             teacher=teachers_by_id.get(t.teacher_user_id),
+            teacher_employee=teacher_employee_by_user_id.get(t.teacher_user_id),
             last_message=last_by_thread.get(t.id),
             unread_count=unread_by_thread.get(t.id, 0),
         )
