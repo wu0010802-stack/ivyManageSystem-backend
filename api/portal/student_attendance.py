@@ -6,7 +6,11 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import func
+from datetime import date as date_cls
+import calendar as cal_module
+from ._shared import check_last_modified, add_last_modified_header
 from utils.errors import raise_safe_500
 from openpyxl import Workbook
 from utils.excel_utils import SafeWorksheet
@@ -196,6 +200,8 @@ def batch_save_class_attendance(
 
 @router.get("/my-class-attendance/monthly")
 def get_my_class_attendance_monthly(
+    request: Request,
+    response: Response,
     classroom_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),
@@ -210,7 +216,29 @@ def get_my_class_attendance_monthly(
         if classroom_id not in classroom_ids:
             raise HTTPException(status_code=403, detail="無權查看此班級的統計資料")
 
-        return build_monthly_attendance_report(session, classroom_id, year, month)
+        # Phase 8 ETag：用該班該月 StudentAttendance.updated_at 算 Last-Modified
+        _, last_day = cal_module.monthrange(year, month)
+        start = date_cls(year, month, 1)
+        end = date_cls(year, month, last_day)
+        last_modified = (
+            session.query(func.max(StudentAttendance.updated_at))
+            .join(Student, Student.id == StudentAttendance.student_id)
+            .filter(
+                Student.classroom_id == classroom_id,
+                StudentAttendance.date >= start,
+                StudentAttendance.date <= end,
+            )
+            .scalar()
+        )
+        if last_modified is not None:
+            cached = check_last_modified(request, last_modified)
+            if cached:
+                return cached
+
+        result = build_monthly_attendance_report(session, classroom_id, year, month)
+        if last_modified is not None:
+            add_last_modified_header(response, last_modified)
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:

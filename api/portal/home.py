@@ -302,7 +302,7 @@ def get_home_summary(
         today_shift = _today_shift_for_employee(session, emp.id, today)
         my_attendance = _my_attendance_today(session, emp.id, today)
 
-        request.state.audit_skip = True
+        request.state.audit_summary = "portal.home.summary"
 
         return {
             "me": {

@@ -2,7 +2,8 @@
 Portal - announcement endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import func
 from utils.errors import raise_safe_500
 
 from models.database import (
@@ -15,11 +16,15 @@ from models.database import (
 from utils.auth import get_current_user
 from utils.error_messages import ANNOUNCEMENT_NOT_FOUND
 
+from ._shared import check_etag, compute_etag
+
 router = APIRouter()
 
 
 @router.get("/announcements")
 def get_portal_announcements(
+    request: Request,
+    response: Response,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
@@ -28,6 +33,18 @@ def get_portal_announcements(
     session = get_session()
     try:
         emp_id = current_user["employee_id"]
+
+        # Phase 8 ETag：用 max(updated_at, created_at) + employee_id 算 weak ETag
+        max_changed = session.query(
+            func.max(Announcement.updated_at),
+            func.max(Announcement.created_at),
+        ).first()
+        max_ts = max(filter(None, max_changed or []), default=None)
+        etag_payload = f"emp={emp_id}|skip={skip}|limit={limit}|ts={max_ts.isoformat() if max_ts else 'none'}"
+        etag = compute_etag(etag_payload)
+        cached = check_etag(request, etag)
+        if cached:
+            return cached
 
         # 過濾：全員公告（無 recipients）或指定包含當前員工的公告
         no_recipients_subq = (
@@ -88,6 +105,7 @@ def get_portal_announcements(
                 }
             )
 
+        response.headers["ETag"] = etag
         return {"items": items, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
