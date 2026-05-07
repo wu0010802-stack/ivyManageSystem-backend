@@ -56,8 +56,13 @@ def record_attempt(
 ) -> None:
     """記錄一次 attempt（INSERT/UPSERT 累積 count）。
 
-    PG: ON CONFLICT 累加；SQLite: 先 SELECT 後決定 UPDATE/INSERT。
+    PG / SQLite 3.24+ 同走 INSERT ... ON CONFLICT DO UPDATE 單一原子操作；
+    rate_limit_buckets 上的 UNIQUE(bucket_key, window_start) 保證並發安全。
     DB 失敗時 fail-open（log 警告），避免 DB 短暫失聯把所有 login 都 503。
+
+    資安掃描 2026-05-07 P2：原 SQLite path 用 SELECT-then-INSERT/UPDATE 兩步，
+    並發測試（特別是高 worker 數 / 平行 fixture）會出現 race 漏算。改用
+    ON CONFLICT 後 SQLite 與 PG 行為一致。
     """
     if engine is None:
         from models.base import get_engine
@@ -81,30 +86,16 @@ def record_attempt(
                     {"bk": bk, "ws": window_start},
                 )
             else:
-                # SQLite fallback：SELECT 後 UPDATE，失敗則 INSERT
-                row = conn.execute(
-                    text(
-                        "SELECT count FROM rate_limit_buckets "
-                        "WHERE bucket_key = :bk AND window_start = :ws"
-                    ),
+                # SQLite 3.24+：ON CONFLICT DO UPDATE 同 PG 語法（excluded 為待插入列別名）
+                conn.execute(
+                    text("""
+                        INSERT INTO rate_limit_buckets (bucket_key, window_start, count)
+                        VALUES (:bk, :ws, 1)
+                        ON CONFLICT(bucket_key, window_start)
+                        DO UPDATE SET count = rate_limit_buckets.count + 1
+                        """),
                     {"bk": bk, "ws": window_start},
-                ).fetchone()
-                if row is not None:
-                    conn.execute(
-                        text(
-                            "UPDATE rate_limit_buckets SET count = count + 1 "
-                            "WHERE bucket_key = :bk AND window_start = :ws"
-                        ),
-                        {"bk": bk, "ws": window_start},
-                    )
-                else:
-                    conn.execute(
-                        text(
-                            "INSERT INTO rate_limit_buckets "
-                            "(bucket_key, window_start, count) VALUES (:bk, :ws, 1)"
-                        ),
-                        {"bk": bk, "ws": window_start},
-                    )
+                )
     except Exception as e:
         logger.warning("record_attempt 失敗 [%s:%s]: %s", scope, key, e)
 
