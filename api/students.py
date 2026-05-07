@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
@@ -569,9 +569,15 @@ async def create_student(
 async def update_student(
     student_id: int,
     item: StudentUpdate,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
-    """更新學生資料"""
+    """更新學生資料
+
+    audit（2026-05-07 P1）：在 request.state.audit_changes 寫入 before/after diff，
+    讓 AuditMiddleware 把家長姓名/電話/地址/緊急聯絡人/班級等敏感欄位的具體
+    變動寫進 audit_logs。否則只剩動作標籤，無法事後溯回誰把家長電話從 A 改成 B。
+    """
     session = get_session()
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
@@ -580,6 +586,13 @@ async def update_student(
 
         update_data = item.model_dump(exclude_unset=True)
         old_classroom_id = student.classroom_id
+
+        # 變更前 snapshot — 只取會被 update_data 影響的欄位，避免 dict 過大
+        before_snapshot = {
+            key: getattr(student, key, None)
+            for key in update_data.keys()
+            if hasattr(student, key)
+        }
 
         NULLABLE_FK_FIELDS = {"classroom_id"}
         for key, value in update_data.items():
@@ -599,6 +612,17 @@ async def update_student(
                     student.id,
                     synced,
                 )
+
+        # 計算 diff：只收真有差異的欄位（避免 audit changes 充斥沒變動的列）
+        diff: dict = {}
+        for key in before_snapshot.keys():
+            old_val = before_snapshot.get(key)
+            new_val = getattr(student, key, None)
+            if old_val != new_val:
+                diff[key] = {"before": old_val, "after": new_val}
+        if diff:
+            request.state.audit_changes = diff
+        request.state.audit_entity_id = student.id
 
         session.commit()
         return {"message": "學生資料更新成功", "id": student.id}
@@ -753,9 +777,16 @@ async def graduate_student(
 @router.post("/students/bulk-transfer")
 async def bulk_transfer_students(
     item: StudentBulkTransfer,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
-    """批次轉班。"""
+    """批次轉班。
+
+    audit（2026-05-07 P1）：在 request.state.audit_changes 寫入 student_ids
+    與 from→to classroom 摘要，讓 AuditMiddleware 把這次大規模轉班動作的
+    細節寫入 audit_logs（既有 StudentClassroomTransfer 是逐筆業務 audit，
+    本處再多一層整體動作軌跡，事後篩 entity_type=student 可一次撈到）。
+    """
     session = get_session()
     try:
         if not item.student_ids:
@@ -795,6 +826,7 @@ async def bulk_transfer_students(
         now = datetime.now()
         moved_count = 0
         moved_student_ids: list[int] = []
+        per_student_changes: list[dict] = []
         for student in students:
             if student.classroom_id == item.target_classroom_id:
                 continue
@@ -806,6 +838,13 @@ async def bulk_transfer_students(
                     transferred_at=now,
                     transferred_by=operator_id,
                 )
+            )
+            per_student_changes.append(
+                {
+                    "student_id": student.id,
+                    "from_classroom_id": student.classroom_id,
+                    "to_classroom_id": item.target_classroom_id,
+                }
             )
             student.classroom_id = item.target_classroom_id
             moved_count += 1
@@ -826,6 +865,14 @@ async def bulk_transfer_students(
                     item.target_classroom_id,
                     activity_synced,
                 )
+
+        if per_student_changes:
+            request.state.audit_changes = {
+                "action": "bulk_transfer",
+                "target_classroom_id": item.target_classroom_id,
+                "moved_count": moved_count,
+                "transfers": per_student_changes,
+            }
 
         session.commit()
         logger.info(
