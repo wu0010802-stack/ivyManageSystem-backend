@@ -6,7 +6,7 @@ import csv
 import io
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -25,6 +25,12 @@ router = APIRouter(prefix="/api", tags=["audit"])
 
 # 匯出上限：避免寬鬆篩選拉出超大筆數
 EXPORT_MAX_ROWS = 10000
+
+# 列表預設時間窗：未指定 start_at / end_at 時，僅查最近 N 天
+# Why（audit H.P0.1）：audit_logs 是 append-only 成長表，全表 COUNT + OFFSET
+# 在資料量上萬後會明顯拖累 list 端點。預設 30 天窗口既能讓最常見的「最近操作」
+# 查詢瞬時返回，又不阻擋使用者主動指定更長範圍。
+LIST_DEFAULT_DAYS = 30
 
 
 def _parse_changes(raw):
@@ -80,6 +86,11 @@ def get_audit_logs(
     current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
 ):
     """查詢操作審計紀錄"""
+    # 未指定時間窗時，預設只看最近 30 天，避免全表 COUNT + OFFSET 隨表成長拖慢
+    # （audit H.P0.1）；使用者要更久的歷史只需主動帶 start_at 即可。
+    if start_at is None and end_at is None:
+        start_at = datetime.now() - timedelta(days=LIST_DEFAULT_DAYS)
+
     session = get_session()
     try:
         q = _apply_filters(
