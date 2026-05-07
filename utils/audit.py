@@ -49,6 +49,10 @@ ENTITY_PATTERNS = [
     (r"/api/config/deduction-types", "deduction_type"),
     (r"/api/config/bonus-types", "bonus_type"),
     (r"/api/config", "config"),
+    # 審核流程設定（多層 ApprovalPolicy）。policy 自身 INSERT/UPDATE/DELETE
+    # 必須留 audit，否則 admin 可「改規則 → 自批 → 改回」全程零稽核。
+    # Refs: 邏輯漏洞 audit 2026-05-07 P0 (#13)。
+    (r"/api/approval-settings", "approval_policy"),
     (r"/api/meetings", "meeting"),
     (r"/api/announcements", "announcement"),
     (r"/api/calendar", "calendar"),
@@ -130,6 +134,8 @@ ENTITY_LABELS = {
     "gov_report": "政府申報",
     # F-035：audit-logs 自身匯出（meta-audit）
     "audit_log": "操作紀錄",
+    # 審核流程設定（policy 自身異動稽核）
+    "approval_policy": "審核流程設定",
 }
 
 ACTION_LABELS = {
