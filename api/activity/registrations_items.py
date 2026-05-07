@@ -43,16 +43,18 @@ from ._shared import (
     _compute_is_paid,
     _derive_payment_status,
     _invalidate_activity_dashboard_caches,
+    _lock_registration,
     _require_daily_close_unlocked,
     require_refund_reason,
     require_approve_for_large_refund,
     require_approve_for_cumulative_refund,
     today_taipei,
 )
-from .registrations import _lock_registration
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
 @router.post("/registrations/{registration_id}/courses", status_code=201)
 async def add_registration_course(
     registration_id: int,
@@ -394,6 +396,7 @@ async def remove_registration_supply(
     finally:
         session.close()
 
+
 @router.delete("/registrations/{registration_id}/courses/{course_id}")
 async def withdraw_course(
     registration_id: int,
@@ -577,4 +580,3 @@ async def withdraw_course(
         raise_safe_500(e)
     finally:
         session.close()
-

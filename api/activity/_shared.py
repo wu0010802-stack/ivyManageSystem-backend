@@ -18,6 +18,7 @@ from fastapi import HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select as sa_select
+from sqlalchemy.exc import CompileError, OperationalError
 
 from models.database import (
     get_session,
@@ -47,6 +48,18 @@ def _invalidate_finance_summary_cache() -> None:
         report_cache_service.invalidate_category(None, "reports_finance_summary")
     except Exception:
         logger.warning("invalidate finance_summary cache failed", exc_info=True)
+
+
+def _lock_registration(session, registration_id: int):
+    """對單筆 registration 取得行級鎖；SQLite（單元測試）自動降級為無鎖。"""
+    query = session.query(ActivityRegistration).filter(
+        ActivityRegistration.id == registration_id,
+        ActivityRegistration.is_active.is_(True),
+    )
+    try:
+        return query.with_for_update().first()
+    except (CompileError, OperationalError, NotImplementedError):
+        return query.first()
 
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")

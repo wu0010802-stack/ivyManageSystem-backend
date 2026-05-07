@@ -1,15 +1,14 @@
 """
-api/activity/registrations.py — 報名管理 CRUD core + items（courses/supplies）
+api/activity/registrations.py — 報名管理 CRUD core
 
-含後台手動建立報名、列表/詳情/更新/作廢、子項加減（課程/用品）等核心 CRUD。
+含 8 個核心端點：admin_create / list / detail / update / remark / waitlist /
+sweep-expired / delete。不含繳費／審核／靜態匯出／子項加減（已拆出子模組）。
 
 已拆出之子模組：
 - registrations_static.py    batch-payment / export / payment-report
 - registrations_pending.py   pending / match / reject / rematch / force-accept / restore
 - registrations_payments.py  payment ledger（單筆 PUT/payment、payments 明細）
-
-_lock_registration helper 仍保留在本檔，供 items 端點與 registrations_payments.py
-共用（後者透過 sibling import 取用）。
+- registrations_items.py     /{id}/courses 與 /{id}/supplies 的加減
 """
 
 import logging
@@ -20,7 +19,6 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func
-from sqlalchemy.exc import CompileError, IntegrityError, OperationalError
 
 from models.database import (
     get_session,
@@ -634,19 +632,6 @@ async def update_registration_basic(
         session.close()
 
 
-
-def _lock_registration(session, registration_id: int):
-    """對單筆 registration 取得行級鎖；SQLite（單元測試）自動降級為無鎖。"""
-    query = session.query(ActivityRegistration).filter(
-        ActivityRegistration.id == registration_id,
-        ActivityRegistration.is_active.is_(True),
-    )
-    try:
-        return query.with_for_update().first()
-    except (CompileError, OperationalError, NotImplementedError):
-        return query.first()
-
-
 @router.put("/registrations/{registration_id}/waitlist")
 async def promote_waitlist(
     registration_id: int,
@@ -715,7 +700,6 @@ async def sweep_expired_waitlist_promotions(
         raise_safe_500(e)
     finally:
         session.close()
-
 
 
 @router.delete("/registrations/{registration_id}")

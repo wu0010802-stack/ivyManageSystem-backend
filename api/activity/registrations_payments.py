@@ -46,6 +46,7 @@ from ._shared import (
     _derive_payment_status,
     _invalidate_activity_dashboard_caches,
     _invalidate_finance_summary_cache,
+    _lock_registration,
     has_payment_approve,
     require_refund_reason,
     require_approve_for_large_refund,
@@ -53,7 +54,6 @@ from ._shared import (
     _require_daily_close_unlocked,
     today_taipei,
 )
-from .registrations import _lock_registration
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
