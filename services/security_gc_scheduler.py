@@ -3,7 +3,8 @@ services/security_gc_scheduler.py — 安全支援表 GC 排程
 
 兩個 GC：
 - rate_limit_buckets：每 5 分鐘清除超過 1 小時的舊視窗
-- jwt_blocklist：每 24 小時清除已過期的黑名單項目
+- jwt_blocklist：每 6 小時清除已過期的黑名單項目（資安掃描 2026-05-07 P1，
+  原 24 小時太長，高峰登出量會讓 blocklist 表持續長到下次 GC 才縮）
 
 環境變數：
 - SECURITY_GC_DISABLED=1 → 完全關閉本排程（用於測試或多 worker 部署時只在主 worker 跑）
@@ -21,7 +22,8 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_GC_INTERVAL_SEC = 5 * 60
-_JWT_BLOCKLIST_GC_INTERVAL_SEC = 24 * 60 * 60
+# 資安掃描 2026-05-07 P1：原 24h 太長，改 6h；blocklist 內容輕（只 jti+exp）多跑無壓力。
+_JWT_BLOCKLIST_GC_INTERVAL_SEC = 6 * 60 * 60
 
 
 def scheduler_enabled() -> bool:
