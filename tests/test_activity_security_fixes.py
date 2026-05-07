@@ -318,7 +318,7 @@ class TestExportRowLimit:
     def test_export_rejects_when_exceeding_cap(self, client, monkeypatch):
         c, sf = client
         # 把 MAX_EXPORT_ROWS 暫時調小以避免要建 5001 筆
-        import api.activity.registrations as reg_module
+        import api.activity.registrations_static as reg_module
 
         monkeypatch.setattr(reg_module, "MAX_EXPORT_ROWS", 2)
 
@@ -336,7 +336,7 @@ class TestExportRowLimit:
 
     def test_export_allowed_within_cap(self, client, monkeypatch):
         c, sf = client
-        import api.activity.registrations as reg_module
+        import api.activity.registrations_static as reg_module
 
         monkeypatch.setattr(reg_module, "MAX_EXPORT_ROWS", 10)
 

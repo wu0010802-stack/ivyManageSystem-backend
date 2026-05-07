@@ -13,6 +13,7 @@ from ._shared import (
 )  # noqa: F401（測試 import）
 
 from .stats import router as _stats_router
+from .registrations_static import router as _registrations_static_router
 from .registrations import router as _registrations_router
 from .courses import router as _courses_router
 from .supplies import router as _supplies_router
@@ -25,10 +26,12 @@ from .pos_approval import router as _pos_approval_router
 
 router = APIRouter(prefix="/api/activity", tags=["activity"])
 
-# 順序重要：靜態路由（batch-payment、export、pos/*）已在各自檔案內優先定義
+# 順序重要：靜態路由必須優先 include；registrations_static 含 batch-payment / export /
+# payment-report，必須在 _registrations_router（含 /registrations/{id}）之前 include。
 router.include_router(_stats_router)
 router.include_router(_pos_approval_router)
 router.include_router(_pos_router)
+router.include_router(_registrations_static_router)
 router.include_router(_registrations_router)
 router.include_router(_courses_router)
 router.include_router(_supplies_router)

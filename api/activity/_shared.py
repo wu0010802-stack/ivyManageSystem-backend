@@ -34,10 +34,20 @@ from models.database import (
     ActivityAttendance,
 )
 from services.activity_service import activity_service
+from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission, JWT_SECRET_KEY
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
+
+
+def _invalidate_finance_summary_cache() -> None:
+    """金流寫入後失效 /finance-summary 快取（TTL 30 分，否則看到舊值）。"""
+    try:
+        report_cache_service.invalidate_category(None, "reports_finance_summary")
+    except Exception:
+        logger.warning("invalidate finance_summary cache failed", exc_info=True)
+
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
