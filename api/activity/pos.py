@@ -79,6 +79,10 @@ _IDK_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 # 收據編號同日唯一檢查重試次數（uuid 碰撞極低，但保險起見）
 _RECEIPT_NO_RETRIES = 5
 
+# 現金累積警報門檻（spec H7）：當日預期現金 ≥ 此值時提示老闆「請存銀行」
+# Why: 櫃台抽屜累積過多現金被竊損失大；NT$30,000 是常見幼稚園單日上限參考
+_CASH_DEPOSIT_WARNING_THRESHOLD = 30_000
+
 # Rate limiter：同 IP 每分鐘最多 60 次 checkout（約 1 張/秒，足以應付連按）
 _pos_checkout_limiter = SlidingWindowLimiter(
     max_calls=60,
@@ -815,6 +819,10 @@ async def pos_daily_summary(
     session = get_session()
     try:
         snap = compute_daily_snapshot(session, target_date)
+        # spec H7：現金累積警報。預期現金 ≥ 門檻時 cash_warning=True，
+        # 前端顯示橘色「請存銀行」提示，避免抽屜累積大量現金被竊
+        cash_in_drawer = int(snap["by_method_net"].get("現金", 0))
+        cash_warning = cash_in_drawer >= _CASH_DEPOSIT_WARNING_THRESHOLD
         # 保持既有 response 結構（不含 transaction_count / by_method_net）
         return {
             "date": snap["date"],
@@ -824,6 +832,9 @@ async def pos_daily_summary(
             "payment_count": snap["payment_count"],
             "refund_count": snap["refund_count"],
             "by_method": snap["by_method"],
+            "cash_in_drawer": cash_in_drawer,
+            "cash_warning": cash_warning,
+            "cash_warning_threshold": _CASH_DEPOSIT_WARNING_THRESHOLD,
         }
     finally:
         session.close()
