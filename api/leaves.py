@@ -448,6 +448,66 @@ def _check_overlap(
     )
 
 
+def _check_employee_has_conflicting_overtime(
+    session,
+    employee_id: int,
+    start_date: date,
+    end_date: date,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> None:
+    """申請請假時檢查同員工同時段是否已有 approved/pending 加班。
+
+    修補 2026-05-11 P1-5：請假與加班不互查重疊，導致同日扣款 + 加班費雙重溢付。
+
+    時段比對規則：
+    - leave 全日（start_time/end_time 為 None）→ 與 OT 同日就衝突
+    - leave 半日（HH:MM）→ 與 OT 時段比對；OT 缺時段視為全日衝突
+    """
+    from models.database import OvertimeRecord  # avoid circular import at module load
+
+    candidates = (
+        session.query(OvertimeRecord)
+        .filter(
+            OvertimeRecord.employee_id == employee_id,
+            OvertimeRecord.is_approved.in_([None, True]),
+            OvertimeRecord.overtime_date >= start_date,
+            OvertimeRecord.overtime_date <= end_date,
+        )
+        .all()
+    )
+    for ot in candidates:
+        # leave 全日 → 同日有 OT 即衝突
+        if start_time is None or end_time is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {ot.overtime_date} 已有加班申請 #{ot.id}，"
+                    "請假與加班時段重疊"
+                ),
+            )
+        # leave 半日 → OT 缺時段視為全日 → 衝突
+        if ot.start_time is None or ot.end_time is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {ot.overtime_date} 已有加班申請 #{ot.id}（全日），"
+                    "請假時段與加班重疊"
+                ),
+            )
+        # 時段精比：兩端轉成 HH:MM 字串再比
+        ot_start_str = ot.start_time.strftime("%H:%M")
+        ot_end_str = ot.end_time.strftime("%H:%M")
+        if max(start_time, ot_start_str) < min(end_time, ot_end_str):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {ot.overtime_date} 已有加班申請 #{ot.id}"
+                    f"（{ot_start_str}~{ot_end_str}），請假時段與其重疊"
+                ),
+            )
+
+
 def _check_substitute_leave_conflict(
     session,
     substitute_employee_id: Optional[int],
@@ -676,6 +736,16 @@ def create_leave(
                 status_code=409,
                 detail=f"該員工在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄（ID: {overlap.id}），無法重複請假",
             )
+
+        # 修補 2026-05-11 P1-5：跨類重疊檢查
+        _check_employee_has_conflicting_overtime(
+            session,
+            data.employee_id,
+            data.start_date,
+            data.end_date,
+            data.start_time,
+            data.end_time,
+        )
 
         validate_leave_hours_against_schedule(
             session,
@@ -2099,6 +2169,22 @@ async def import_leaves(
                     end_date,
                     leave_hours,
                 )
+                # 修補 2026-05-11 P1-4：原本不查 overlap，可一次 import 兩筆同員工
+                # 同日 pending；逐筆主管核准時看到的 approved 集合都不包含對方
+                # （_check_overlap include_pending=False），兩張都通過進薪資扣款。
+                # 用 include_pending=True 涵蓋 pending 與 approved。
+                conflict = _find_overlapping_leave(
+                    session,
+                    emp.id,
+                    start_date,
+                    end_date,
+                    include_pending=True,
+                )
+                if conflict:
+                    raise ValueError(
+                        f"與既有假單 #{conflict.id}"
+                        f"（{conflict.start_date}~{conflict.end_date}）重疊"
+                    )
                 _check_leave_limits(
                     session,
                     emp.id,

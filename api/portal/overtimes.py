@@ -100,6 +100,7 @@ def create_my_overtime(
 
         from api.overtimes import (
             calculate_overtime_pay,
+            _check_employee_has_conflicting_leave,
             _check_overtime_overlap,
             _check_monthly_overtime_cap,
             _check_overtime_type_calendar,
@@ -139,6 +140,11 @@ def create_my_overtime(
                     f"（ID: {overlap.id}，{st}～{et}），請勿重複送出"
                 ),
             )
+
+        # 修補 2026-05-11 P1-5：跨類重疊（同日請假 vs 加班）
+        _check_employee_has_conflicting_leave(
+            session, emp.id, data.overtime_date, start_dt, end_dt
+        )
 
         # 與管理端 create_overtime 一致：46h/月上限 + 國定假日類型驗證。
         # 否則教師可從 portal 繞過上限,或在國定假日用 weekday/weekend 短付加班費。

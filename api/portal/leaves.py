@@ -48,6 +48,7 @@ from ._shared import (
     SubstituteRespond,
 )
 from api.leaves import (
+    _check_employee_has_conflicting_overtime,
     _check_overlap,
     _check_substitute_leave_conflict,
     _guard_leave_quota,
@@ -260,6 +261,16 @@ def create_my_leave(
                 status_code=409,
                 detail=f"您在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄，無法重複請假",
             )
+
+        # 修補 2026-05-11 P1-5：跨類重疊（同日加班 vs 請假）
+        _check_employee_has_conflicting_overtime(
+            session,
+            emp.id,
+            data.start_date,
+            data.end_date,
+            data.start_time,
+            data.end_time,
+        )
 
         validate_leave_hours_against_schedule(
             session,

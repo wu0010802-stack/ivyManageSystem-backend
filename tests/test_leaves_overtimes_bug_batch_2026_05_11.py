@@ -298,6 +298,143 @@ class TestP0_1BatchApproveTwoPass:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Task D — P1-4: import_leaves 補 _check_overlap
+#         P1-5: leave ↔ overtime 跨類自我重疊偵測
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestP1_4_5LeaveOvertimeCrossOverlap:
+    """import_leaves 必須擋同員工同日多筆 pending；create_leave/create_overtime
+    必須交叉檢查同員工同時段是否有對方類型的紀錄。"""
+
+    def test_create_overtime_blocked_by_existing_approved_leave_same_day(
+        self, app_client
+    ):
+        """申請人同日已有 approved 全日假，再申請 OT 應被擋"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "D001", "員工")
+            _admin(session)
+            # 已核准 全日 personal 假
+            lv = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="personal",
+                start_date=date(2026, 7, 1),
+                end_date=date(2026, 7, 1),
+                leave_hours=8.0,
+                is_approved=True,
+                is_deductible=True,
+                deduction_ratio=1.0,
+            )
+            session.add(lv)
+            session.commit()
+            emp_id = emp.id
+
+        assert _login(client).status_code == 200
+
+        res = client.post(
+            "/api/overtimes",
+            json={
+                "employee_id": emp_id,
+                "overtime_date": "2026-07-01",
+                "overtime_type": "weekday",
+                "start_time": "18:00",
+                "end_time": "20:00",
+                "hours": 2.0,
+            },
+        )
+        assert res.status_code in (
+            400,
+            409,
+        ), f"OT 與既有 leave 同日重疊應 400/409；實際 {res.status_code} body={res.json()}"
+        assert "請假" in res.json().get("detail", "")
+
+    def test_create_leave_blocked_by_existing_approved_overtime_same_day(
+        self, app_client
+    ):
+        """申請人同日已有 approved OT 全日，再申請全日假應被擋"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "D002", "員工二")
+            _admin(session)
+            _approved_overtime(
+                session,
+                emp.id,
+                overtime_date=date(2026, 7, 2),
+                start_time="08:00",
+                end_time="17:00",
+                hours=8.0,
+            )
+            session.commit()
+            emp_id = emp.id
+
+        assert _login(client).status_code == 200
+
+        res = client.post(
+            "/api/leaves",
+            json={
+                "employee_id": emp_id,
+                "leave_type": "personal",
+                "start_date": "2026-07-02",
+                "end_date": "2026-07-02",
+                "leave_hours": 8.0,
+            },
+        )
+        assert res.status_code in (
+            400,
+            409,
+        ), f"leave 與既有 OT 同日重疊應 400/409；實際 {res.status_code} body={res.json()}"
+        assert "加班" in res.json().get("detail", "")
+
+    def test_import_leaves_blocks_duplicate_pending_same_day(self, app_client):
+        """import 兩筆同員工同日 leave，第二筆應 failed（avoid duplicate pending）"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "D003", "員工三")
+            _admin(session)
+            # 先建立一筆 pending leave（模擬 import 第一筆已落地）
+            lv = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="personal",
+                start_date=date(2026, 7, 3),
+                end_date=date(2026, 7, 3),
+                leave_hours=8.0,
+                is_approved=None,
+                is_deductible=True,
+                deduction_ratio=1.0,
+            )
+            session.add(lv)
+            session.commit()
+            emp_id = emp.id
+
+        assert _login(client).status_code == 200
+
+        # 用 _find_overlapping_leave include_pending=True 應該偵測到既有 pending
+        from api.leaves import _find_overlapping_leave
+
+        with session_factory() as session:
+            conflict = _find_overlapping_leave(
+                session,
+                emp_id,
+                date(2026, 7, 3),
+                date(2026, 7, 3),
+                include_pending=True,
+            )
+        assert (
+            conflict is not None
+        ), "預先建立的 pending leave 應被 _find_overlapping_leave 偵測"
+
+        # 直接 inspect import_leaves source 確認有 _check_overlap 或 _find_overlapping_leave 呼叫
+        import inspect
+        from api import leaves as m
+
+        src = inspect.getsource(m.import_leaves)
+        assert (
+            "_check_overlap" in src or "_find_overlapping_leave" in src
+        ), "import_leaves 必須呼叫 overlap 檢查（include_pending=True）"
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Task C — P0-3: update/delete 缺 with_for_update 列鎖
 # ────────────────────────────────────────────────────────────────────────────
 

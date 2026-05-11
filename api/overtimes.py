@@ -421,6 +421,65 @@ def calculate_overtime_pay(
         return round(hourly_base * hours * HOLIDAY_RATE)
 
 
+def _check_employee_has_conflicting_leave(
+    session,
+    employee_id: int,
+    overtime_date: date,
+    start_time,  # datetime | None
+    end_time,  # datetime | None
+) -> None:
+    """申請加班時檢查同員工同時段是否已有 approved/pending 請假。
+
+    修補 2026-05-11 P1-5：請假與加班不互查重疊，導致同日扣款 + 加班費雙重溢付。
+
+    時段比對規則：
+    - OT 全日（start_time/end_time 為 None）→ 與 leave 同日就衝突
+    - OT 半日 → 與 leave 時段比對；leave 缺時段視為全日衝突
+    """
+    from models.database import LeaveRecord  # avoid circular import at module load
+
+    candidates = (
+        session.query(LeaveRecord)
+        .filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.is_approved.in_([None, True]),
+            LeaveRecord.start_date <= overtime_date,
+            LeaveRecord.end_date >= overtime_date,
+        )
+        .all()
+    )
+    for lv in candidates:
+        # OT 全日 → 同日有 leave 即衝突
+        if start_time is None or end_time is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {overtime_date} 已有請假申請 #{lv.id}"
+                    f"（{lv.leave_type}），加班時段與請假重疊"
+                ),
+            )
+        # leave 全日 → 衝突
+        if not lv.start_time or not lv.end_time:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {overtime_date} 已有全日請假 #{lv.id}"
+                    f"（{lv.leave_type}），加班時段與請假重疊"
+                ),
+            )
+        # 半日 vs 半日：時段精比
+        ot_start_str = start_time.strftime("%H:%M")
+        ot_end_str = end_time.strftime("%H:%M")
+        if max(ot_start_str, lv.start_time) < min(ot_end_str, lv.end_time):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {overtime_date} 已有請假 #{lv.id}"
+                    f"（{lv.start_time}~{lv.end_time}），加班時段與其重疊"
+                ),
+            )
+
+
 def _check_overtime_overlap(
     session,
     employee_id: int,
@@ -800,6 +859,11 @@ def create_overtime(
                     f"（ID: {overlap.id}，{st}～{et}），請勿重複申請"
                 ),
             )
+
+        # 修補 2026-05-11 P1-5：跨類重疊檢查（避免同日扣款 + 加班費雙重溢付）
+        _check_employee_has_conflicting_leave(
+            session, data.employee_id, data.overtime_date, start_dt, end_dt
+        )
 
         _check_monthly_overtime_cap(
             session, data.employee_id, data.overtime_date, data.hours
