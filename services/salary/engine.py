@@ -3116,6 +3116,37 @@ class SalaryEngine:
             shifts_by_emp=shifts_by_emp,
         )
 
+    def _build_period_monthly_context(
+        self,
+        session,
+        year: int,
+        month: int,
+        classroom_map: dict,
+    ) -> dict:
+        """process_bulk_salary_calculation Phase 2：預載期間每月班級/學生快照。
+
+        節慶/超額累積期間涵蓋多個月（_compute_period_accrual_totals 內部會
+        逐月計算）。為避免 N×期間月 重覆查詢學生數，提前在這層把每個 (y, m)
+        對應月底的學生快照載好，下游從 cache 取即可。
+        """
+        from .utils import get_distribution_period_months as _gdpm
+        from services.student_enrollment import (
+            count_students_active_on as _csa,
+            classroom_student_count_map as _csm,
+        )
+
+        monthly_ctx_cache: dict[tuple[int, int], dict] = {}
+        for _y, _m in _gdpm(year, month):
+            _, _last = calendar.monthrange(_y, _m)
+            _ref = date(_y, _m, _last)
+            monthly_ctx_cache[(_y, _m)] = {
+                "month_end": _ref,
+                "school_active": _csa(session, _ref),
+                "cls_count_map": _csm(session, _ref),
+                "classroom_map": classroom_map,
+            }
+        return monthly_ctx_cache
+
     def process_bulk_salary_calculation(
         self, employee_ids: list, year: int, month: int, progress_callback=None
     ):
@@ -3167,22 +3198,9 @@ class SalaryEngine:
 
             # 發放月：預載期間每月的班級/學生快照，供 _compute_period_accrual_totals
             # 使用，避免 N×期間月 重覆查詢
-            monthly_ctx_cache: dict[tuple[int, int], dict] = {}
-            from .utils import get_distribution_period_months as _gdpm
-            from services.student_enrollment import (
-                count_students_active_on as _csa,
-                classroom_student_count_map as _csm,
+            monthly_ctx_cache = self._build_period_monthly_context(
+                session, year, month, classroom_map
             )
-
-            for _y, _m in _gdpm(year, month):
-                _, _last = calendar.monthrange(_y, _m)
-                _ref = date(_y, _m, _last)
-                monthly_ctx_cache[(_y, _m)] = {
-                    "month_end": _ref,
-                    "school_active": _csa(session, _ref),
-                    "cls_count_map": _csm(session, _ref),
-                    "classroom_map": classroom_map,
-                }
 
             results = []
             errors = []
