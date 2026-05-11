@@ -314,3 +314,15 @@ def test_subsidy_export_returns_xlsx(gov_moe_client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/vnd.openxmlformats")
     assert r.content.startswith(b"PK")
+
+
+# ---------------------------------------------------------------------------
+# B5 test: audit pattern registration
+# ---------------------------------------------------------------------------
+
+
+def test_audit_pattern_registered_for_subsidy():
+    from utils.audit import ENTITY_PATTERNS, ENTITY_LABELS
+
+    assert any("special_subsidy" in (et or "") for _, et in ENTITY_PATTERNS)
+    assert ENTITY_LABELS.get("special_subsidy") == "特教加給/助理鐘點費"
