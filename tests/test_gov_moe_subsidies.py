@@ -19,6 +19,7 @@ from api.auth import router as auth_router
 from api.gov_moe import router as gov_moe_router
 from models.base import Base
 from models.database import User
+from models.employee import Employee  # noqa: F401 — registers employees table
 from models.gov_moe import (
     SpecialEducationSubsidy,
 )  # noqa: F401 — registers table on Base
@@ -97,3 +98,153 @@ def test_subsidies_list_returns_empty(gov_moe_client):
     )
     assert r.status_code == 200
     assert r.json() == []
+
+
+# ---------------------------------------------------------------------------
+# B2 helpers
+# ---------------------------------------------------------------------------
+
+_seed_counter = 0
+
+
+def _seed_employee(session_factory):
+    global _seed_counter
+    _seed_counter += 1
+    with session_factory() as s:
+        e = Employee(
+            employee_id=f"T{_seed_counter:04d}",
+            name="陳老師",
+            is_active=True,
+        )
+        s.add(e)
+        s.commit()
+        s.refresh(e)
+        return e.id
+
+
+def _create_subsidy(client, token, eid):
+    return client.post(
+        "/api/gov-moe/subsidies",
+        json={
+            "subsidy_type": "teacher_extra",
+            "employee_id": eid,
+            "period_start": "2026-05-01",
+            "period_end": "2026-05-31",
+            "amount_requested": "3000.00",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# B2 tests: full state-machine + RBAC
+# ---------------------------------------------------------------------------
+
+
+def test_subsidy_create_starts_in_draft(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    eid = _seed_employee(sf)
+    r = _create_subsidy(client, tok, eid)
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "draft"
+
+
+def test_subsidy_full_state_flow(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    eid = _seed_employee(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    sid = _create_subsidy(client, tok, eid).json()["id"]
+
+    r = client.put(f"/api/gov-moe/subsidies/{sid}/submit", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "submitted"
+
+    r = client.put(
+        f"/api/gov-moe/subsidies/{sid}/approve",
+        json={"amount_approved": "2500.00"},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved"
+    # Money 欄位透過 Money TypeDecorator 回傳 float，Pydantic 序列化為 Decimal 字串
+    # 使用 Decimal 值比較，忽略尾數格式差異
+    assert Decimal(str(r.json()["amount_approved"])) == Decimal("2500.00")
+
+    r = client.put(
+        f"/api/gov-moe/subsidies/{sid}/mark_paid",
+        json={"paid_at": "2026-06-15T10:00:00"},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "paid"
+
+
+def test_subsidy_cannot_skip_state(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    eid = _seed_employee(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    sid = _create_subsidy(client, tok, eid).json()["id"]
+    # draft → mark_paid 應拒絕（須先 approve，approve 前須 submit）
+    r = client.put(
+        f"/api/gov-moe/subsidies/{sid}/mark_paid",
+        json={"paid_at": "2026-06-15T10:00:00"},
+        headers=auth,
+    )
+    assert r.status_code == 409
+
+
+def test_subsidy_reject_submitted(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    eid = _seed_employee(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    sid = _create_subsidy(client, tok, eid).json()["id"]
+    client.put(f"/api/gov-moe/subsidies/{sid}/submit", headers=auth)
+    r = client.put(f"/api/gov-moe/subsidies/{sid}/reject", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "rejected"
+
+
+def test_subsidy_period_validation(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    eid = _seed_employee(sf)
+    r = client.post(
+        "/api/gov-moe/subsidies",
+        json={
+            "subsidy_type": "teacher_extra",
+            "employee_id": eid,
+            "period_start": "2026-06-30",
+            "period_end": "2026-06-01",
+            "amount_requested": "0",
+        },
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 422
+
+
+def test_teacher_cannot_create_subsidy(gov_moe_client):
+    client, sf = gov_moe_client
+    eid = _seed_employee(sf)
+    # 先建立教師帳號，不用 admin 登入
+    with sf() as s:
+        s.add(
+            User(
+                username="t_teacher",
+                password_hash=hash_password("Teach123"),
+                role="teacher",
+                permissions=0,
+                is_active=True,
+            )
+        )
+        s.commit()
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "t_teacher", "password": "Teach123"},
+    )
+    tok = resp.json().get("access_token") or resp.cookies.get("access_token")
+    r = _create_subsidy(client, tok, eid)
+    assert r.status_code == 403
