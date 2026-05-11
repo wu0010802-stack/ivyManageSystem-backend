@@ -39,6 +39,7 @@ from utils.permissions import (
     get_role_default_permissions,
     ROLE_LABELS,
 )
+from utils.audit import write_login_audit
 
 logger = logging.getLogger(__name__)
 
@@ -373,9 +374,27 @@ def login(data: LoginRequest, request: Request):
     """教師/管理員登入"""
     client_ip = request.client.host if request.client else "unknown"
     # 層級一：IP 滑動視窗（不分成敗，防 Credential Stuffing）
-    _check_ip_rate_limit(client_ip)
+    try:
+        _check_ip_rate_limit(client_ip)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="LOGIN_RATE_LIMITED",
+            username=data.username,
+            extras={"ip": client_ip, "scope": "ip_sliding_window"},
+        )
+        raise
     # 層級二：帳號失敗鎖定（只在密碼錯誤時遞增，防定向暴力破解）
-    _check_account_lockout(data.username)
+    try:
+        _check_account_lockout(data.username)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="LOGIN_LOCKED",
+            username=data.username,
+            extras={"scope": "account_lockout"},
+        )
+        raise
 
     session = get_session()
     try:
@@ -393,10 +412,22 @@ def login(data: LoginRequest, request: Request):
             # 防止攻擊者透過回應時間差異枚舉有效帳號（Timing Side-Channel）
             verify_password(data.password, _DUMMY_PASSWORD_HASH)
             _record_login_failure(data.username)
+            write_login_audit(
+                request,
+                action="LOGIN_FAILED",
+                username=data.username,
+                extras={"reason": "wrong_credentials"},
+            )
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
 
         if not verify_password(data.password, user.password_hash):
             _record_login_failure(data.username)  # 記錄失敗，累積後觸發鎖定
+            write_login_audit(
+                request,
+                action="LOGIN_FAILED",
+                username=data.username,
+                extras={"reason": "wrong_credentials"},
+            )
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
 
         # 登入成功：清除帳號失敗記錄
@@ -404,6 +435,12 @@ def login(data: LoginRequest, request: Request):
 
         # 教師角色須從學校 WiFi 登入
         if user.role == "teacher" and not _is_school_wifi(client_ip):
+            write_login_audit(
+                request,
+                action="LOGIN_FAILED",
+                username=data.username,
+                extras={"reason": "non_school_wifi", "ip": client_ip},
+            )
             raise HTTPException(status_code=403, detail="請連接學校 WiFi 後再登入")
 
         # 透明升級：若密碼是舊格式（100,000 次迭代），趁登入時無感升級至 600,000 次
@@ -432,6 +469,14 @@ def login(data: LoginRequest, request: Request):
                 "permissions": permissions,
                 "token_version": user.token_version,
             }
+        )
+
+        write_login_audit(
+            request,
+            action="LOGIN_SUCCESS",
+            username=data.username,
+            user_id=user.id,
+            extras={"role": user.role},
         )
 
         response = JSONResponse(

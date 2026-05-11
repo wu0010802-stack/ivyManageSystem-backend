@@ -194,7 +194,8 @@ class TestAuditListFilters:
             s.commit()
         assert _login(client).status_code == 200
 
-        res = client.get("/api/audit-logs")
+        # 使用 entity_type 篩選，排除登入 audit（entity_type='auth'）
+        res = client.get("/api/audit-logs", params={"entity_type": "employee"})
         assert res.status_code == 200
         body = res.json()
         assert body["items"][0]["changes"] == diff
@@ -210,7 +211,14 @@ class TestAuditExport:
             s.commit()
         assert _login(client).status_code == 200
 
-        res = client.get("/api/audit-logs/export")
+        # 以日期篩選測試資料（_insert_log 預設 created_at=2026-04-18），排除當日登入 audit
+        res = client.get(
+            "/api/audit-logs/export",
+            params={
+                "start_at": "2026-04-18T00:00:00",
+                "end_at": "2026-04-18T23:59:59",
+            },
+        )
         assert res.status_code == 200
         assert res.headers["content-type"].startswith("text/csv")
         # BOM + header line + 2 rows

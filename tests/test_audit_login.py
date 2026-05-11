@@ -168,3 +168,132 @@ class TestWriteLoginAuditHelper:
         assert changes["username"] == "alice"  # 權威參數獲勝
         # row.username 欄位也應該是 alice，不是 MALICIOUS
         assert rows[0].username == "alice"
+
+
+class TestLoginEndpointAudit:
+    """測試 /api/auth/login 五個分支與 WiFi 拒絕都會寫 audit_logs。"""
+
+    @pytest.fixture
+    def client_with_db(self, tmp_path):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from api.auth import router as auth_router
+        from api.auth import _ip_attempts, _account_failures
+        from models.database import User
+        from utils.auth import hash_password
+
+        db_path = tmp_path / "auth-audit.sqlite"
+        engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+        session_factory = sessionmaker(bind=engine)
+        old_engine = base_module._engine
+        old_factory = base_module._SessionFactory
+        base_module._engine = engine
+        base_module._SessionFactory = session_factory
+
+        Base.metadata.create_all(engine)
+        # 清空 rate limit / lockout 計數
+        try:
+            _ip_attempts.clear()
+            _account_failures.clear()
+        except Exception:
+            pass
+
+        # 建一個測試用 admin
+        session = session_factory()
+        admin = User(
+            username="alice",
+            password_hash=hash_password("CorrectPass1"),
+            role="admin",
+            is_active=True,
+        )
+        session.add(admin)
+        session.commit()
+        session.close()
+
+        app = FastAPI()
+        app.include_router(auth_router)
+        with TestClient(app) as client:
+            yield client, session_factory
+
+        base_module._engine = old_engine
+        base_module._SessionFactory = old_factory
+        engine.dispose()
+
+    def _get_login_audits(self, session_factory):
+        time.sleep(0.05)  # 等背景寫入
+        session = session_factory()
+        try:
+            rows = (
+                session.query(AuditLog)
+                .filter(AuditLog.entity_type == "auth")
+                .order_by(AuditLog.id)
+                .all()
+            )
+        finally:
+            session.close()
+        return rows
+
+    def test_login_success_creates_audit(self, client_with_db):
+        client, sf = client_with_db
+        res = client.post(
+            "/api/auth/login", json={"username": "alice", "password": "CorrectPass1"}
+        )
+        assert res.status_code == 200, res.text
+        rows = self._get_login_audits(sf)
+        assert any(r.action == "LOGIN_SUCCESS" and r.username == "alice" for r in rows)
+
+    def test_login_wrong_password_creates_failed_audit(self, client_with_db):
+        client, sf = client_with_db
+        res = client.post(
+            "/api/auth/login", json={"username": "alice", "password": "WrongPass"}
+        )
+        assert res.status_code == 401
+        rows = self._get_login_audits(sf)
+        failed_rows = [r for r in rows if r.action == "LOGIN_FAILED"]
+        assert failed_rows, "wrong password 必須記 LOGIN_FAILED"
+        changes = json.loads(failed_rows[0].changes)
+        assert changes["reason"] == "wrong_credentials"
+
+    def test_login_unknown_username_creates_failed_audit_same_reason(
+        self, client_with_db
+    ):
+        client, sf = client_with_db
+        res = client.post(
+            "/api/auth/login", json={"username": "ghost", "password": "AnyPass"}
+        )
+        assert res.status_code == 401
+        rows = self._get_login_audits(sf)
+        failed = [r for r in rows if r.action == "LOGIN_FAILED"]
+        assert failed, "未知帳號也應記 LOGIN_FAILED"
+        changes = json.loads(failed[0].changes)
+        # 防帳號列舉：與密碼錯誤同 reason
+        assert changes["reason"] == "wrong_credentials"
+        # 失敗事件不寫 user_id（防 audit 洩漏帳號存在性）
+        assert failed[0].entity_id is None
+
+    def test_login_failed_does_not_record_password(self, client_with_db):
+        client, sf = client_with_db
+        client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "SecretLeakedPass"},
+        )
+        rows = self._get_login_audits(sf)
+        for r in rows:
+            haystack = f"{r.summary or ''} {r.changes or ''}"
+            assert "SecretLeakedPass" not in haystack, "audit 不可包含明文密碼"
+            # 也不可包含 password_hash 字串
+            assert "password_hash" not in haystack
+
+    def test_login_failed_bypasses_dedup(self, client_with_db):
+        """連續多筆 LOGIN_FAILED 都會寫入，不被 path-based dedup 壓掉。"""
+        client, sf = client_with_db
+        for _ in range(3):
+            client.post(
+                "/api/auth/login", json={"username": "alice", "password": "WrongPass"}
+            )
+        rows = self._get_login_audits(sf)
+        failed = [r for r in rows if r.action == "LOGIN_FAILED"]
+        assert len(failed) >= 3, f"預期至少 3 筆 LOGIN_FAILED，實得 {len(failed)} 筆"
