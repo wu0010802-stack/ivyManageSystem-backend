@@ -1405,16 +1405,6 @@ def batch_approve_overtimes(
                     _check_salary_month_not_finalized(
                         session, ot.employee_id, ot.overtime_date
                     )
-                    # commit→recalc 鎖延伸：取 per-emp salary lock 並 pre-mark stale,
-                    # 統一 commit (line 1462) 後即使 finalize 搶到鎖也會被 stale 守衛擋下。
-
-                    lock_and_premark_stale(
-                        session,
-                        ot.employee_id,
-                        {(ot.overtime_date.year, ot.overtime_date.month)},
-                    )
-                if not data.approved and was_approved:
-                    _revoke_comp_leave_grant(session, ot)
 
                 # 核准最後一致性驗證，防止舊資料 / import 舊版遺留壞紀錄進入薪資
                 if data.approved and not was_approved:
@@ -1460,22 +1450,52 @@ def batch_approve_overtimes(
                         session, ot.overtime_date, ot.overtime_type
                     )
 
+                is_reject_of_approved = was_approved and not data.approved
+                # Pass 1 純驗證收集；setattr/lock/log/grant 全部移到 Pass 2。
+                changes.append(
+                    (
+                        ot_id,
+                        ot,
+                        was_approved,
+                        is_reject_of_approved,
+                        None,  # approval_log_row.id placeholder
+                    )
+                )
+            except HTTPException as he:
+                failed.append({"id": ot_id, "reason": he.detail})
+            except Exception as e:
+                session.rollback()
+                failed.append({"id": ot_id, "reason": str(e)})
+                session.expire_all()
+
+        # ── Pass 2：套用 setattr + lock + grant + ApprovalLog ────────────
+        applied = []
+        for ot_id, ot, was_approved, is_reject_of_approved, _ph in list(changes):
+            try:
+                if data.approved or was_approved:
+                    # commit→recalc 鎖延伸：取 per-emp salary lock 並 pre-mark stale。
+                    lock_and_premark_stale(
+                        session,
+                        ot.employee_id,
+                        {(ot.overtime_date.year, ot.overtime_date.month)},
+                    )
+                if not data.approved and was_approved:
+                    _revoke_comp_leave_grant(session, ot)
+
                 ot.is_approved = data.approved
                 ot.approved_by = (
                     current_user.get("username", "管理員") if data.approved else None
                 )
 
                 if data.approved:
-                    # 使用共用 helper 統一配額發放邏輯（含 with_for_update() 列鎖），
-                    # 避免批次與單筆核准在補休配額累積的 race condition。
+                    # 使用共用 helper 統一配額發放邏輯（含 with_for_update() 列鎖）。
                     _grant_comp_leave_quota(session, ot, {})
 
                 action = "approved" if data.approved else "rejected"
                 approval_log_row = _write_approval_log(
                     "overtime", ot_id, action, current_user, None, session
                 )
-                is_reject_of_approved = was_approved and not data.approved
-                changes.append(
+                applied.append(
                     (
                         ot_id,
                         ot,
@@ -1485,10 +1505,20 @@ def batch_approve_overtimes(
                     )
                 )
             except Exception as e:
+                logger.exception("批次核准 Pass 2 套用階段意外失敗（加班 #%d）", ot_id)
                 session.rollback()
+                for prev_id, *_rest in applied:
+                    failed.append(
+                        {
+                            "id": prev_id,
+                            "reason": f"同批後續條目失敗導致整批回滾：{e}",
+                        }
+                    )
                 failed.append({"id": ot_id, "reason": str(e)})
-                # 驗證階段失敗需清除 session 狀態，重新載入後續記錄
-                session.expire_all()
+                applied = []
+                break
+
+        changes = applied
 
         # ── Phase 2：所有驗證通過後統一 commit ──────────────────────────────
         if changes:

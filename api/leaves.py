@@ -1548,7 +1548,10 @@ def batch_approve_leaves(
         approver_role = current_user.get("role", "")
         _eligibility_cache: dict[str, bool] = {}
 
-        # ── Phase 1：驗證 + 準備所有異動（不 commit）────────────────────────
+        # ── Pass 1：純驗證（不 touch ORM dirty state） ────────────────────
+        # 修補 2026-05-11 P0-1：原本 setattr/_write_approval_log/lock_and_premark_stale
+        # 都在 Phase 1 內，catch-all rollback 會抹掉同 batch 已通過條目的變更，造成
+        # succeeded 與 DB 脫鉤（silent data loss）。改為「驗證→收集→Pass 2 統一套用」。
         changes = []  # list of (leave_id, leave)
         for leave_id in data.ids:
             try:
@@ -1660,28 +1663,77 @@ def batch_approve_leaves(
                         continue
 
                 # 封存月薪保護：approve 或 reject-of-approved 都會改變 SalaryRecord
-                # 跨月假單需涵蓋整個跨越區間（中間月份 / end_date 月份），與下方
-                # lock_and_premark_stale 的範圍對齊；單一 start 月會漏跨月場景。
+                # 跨月假單需涵蓋整個跨越區間（中間月份 / end_date 月份）。
+                affected_months = None
                 if approval_changed:
                     try:
-                        _affected_months_batch = _collect_leave_months(
+                        affected_months = _collect_leave_months(
                             leave.start_date, leave.end_date
                         )
                         _check_salary_months_not_finalized(
                             session,
                             leave.employee_id,
-                            _affected_months_batch,
-                        )
-                        # commit→recalc 鎖延伸 + pre-mark stale,封住 finalize race window。
-                        # 統一 commit (line 1708) 才釋放鎖,中間若有並發 finalize 嘗試
-                        # 取同 key 會等到 commit；commit 後 stale 旗標保護 engine recalc 前的窗口。
-
-                        lock_and_premark_stale(
-                            session, leave.employee_id, _affected_months_batch
+                            affected_months,
                         )
                     except HTTPException as e:
                         failed.append({"id": leave_id, "reason": e.detail})
                         continue
+
+                # Pass 1 只收集 validated metadata；setattr/log/lock 全部移到 Pass 2。
+                changes.append(
+                    (
+                        leave_id,
+                        leave,
+                        approval_changed,
+                        is_reject_of_approved,
+                        affected_months,
+                        None,  # approval_log_row.id placeholder (Pass 2 才填)
+                    )
+                )
+            except Exception as e:
+                # Pass 1 純查詢/驗證，幾乎不可能 dirty session；保留 rollback 防呆。
+                session.rollback()
+                failed.append({"id": leave_id, "reason": str(e)})
+                session.expire_all()
+
+        # ── Pass 2：套用 setattr + lock + ApprovalLog（仍不 commit）──────
+        applied = []
+        for _i, (
+            leave_id,
+            leave,
+            approval_changed,
+            is_reject_of_approved,
+            affected_months,
+            _placeholder,
+        ) in enumerate(list(changes)):
+            try:
+                if data.approved:
+                    # 同批 in-batch overlap：autoflush 會把 Pass 2 前面已 setattr 的
+                    # 條目視為 approved，達成「同員工同時段第二張被擋」效果。
+                    conflict = _check_overlap(
+                        session,
+                        leave.employee_id,
+                        leave.start_date,
+                        leave.end_date,
+                        leave.start_time,
+                        leave.end_time,
+                        exclude_id=leave_id,
+                    )
+                    if conflict:
+                        failed.append(
+                            {
+                                "id": leave_id,
+                                "reason": (
+                                    f"與同批已核准假單 #{conflict.id}"
+                                    f"（{conflict.start_date}~{conflict.end_date}）重疊"
+                                ),
+                            }
+                        )
+                        continue
+
+                if approval_changed and affected_months:
+                    # commit→recalc 鎖延伸 + pre-mark stale，封住 finalize race window。
+                    lock_and_premark_stale(session, leave.employee_id, affected_months)
 
                 # V8：批次核准時強制同步 deduction_ratio 到假別標準值
                 if data.approved and leave.leave_type in LEAVE_DEDUCTION_RULES:
@@ -1717,7 +1769,7 @@ def batch_approve_leaves(
                     data.rejection_reason if not data.approved else None,
                     session,
                 )
-                changes.append(
+                applied.append(
                     (
                         leave_id,
                         leave,
@@ -1727,10 +1779,24 @@ def batch_approve_leaves(
                     )
                 )
             except Exception as e:
+                # Pass 2 套用階段意外：整批中止；rollback 抹掉 applied 內已 setattr 條目。
+                logger.exception(
+                    "批次核准 Pass 2 套用階段意外失敗（leave #%d）", leave_id
+                )
                 session.rollback()
+                for prev_id, *_ in applied:
+                    failed.append(
+                        {
+                            "id": prev_id,
+                            "reason": f"同批後續條目失敗導致整批回滾：{e}",
+                        }
+                    )
                 failed.append({"id": leave_id, "reason": str(e)})
-                # 驗證階段失敗需清除 session 狀態，重新載入後續記錄
-                session.expire_all()
+                applied = []
+                break
+
+        # 用 applied 覆寫 changes，後續 Phase 2 (commit + LINE + 重算) 邏輯不變
+        changes = applied
 
         # ── Phase 2：所有驗證通過後統一 commit ──────────────────────────────
         if changes:
