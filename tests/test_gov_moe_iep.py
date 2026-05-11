@@ -257,3 +257,105 @@ def test_iep_scope_班導_only_sees_own_classroom(gov_moe_client):
     rows = r.json()
     assert len(rows) == 1, f"期望 1 筆，實際 {len(rows)} 筆：{rows}"
     assert rows[0]["student_id"] == sid_a
+
+
+# ---------------------------------------------------------------------------
+# A2 Tests: clone semantics + state transitions
+# ---------------------------------------------------------------------------
+
+
+def test_iep_clone_preserves_goals_clears_evaluations(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    sid, _ = _seed_student_and_classroom(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    src = client.post(
+        "/api/gov-moe/iep",
+        json={
+            "student_id": sid,
+            "school_year": 2026,
+            "semester": 1,
+            "current_status": "認知尚可",
+            "long_term_goals": "提升口語",
+            "short_term_goals": [{"goal": "10 詞彙"}],
+            "iep_team_members": [{"role": "班導", "name": "陳老師"}],
+            "mid_term_evaluation": "已達成 5 詞",
+            "final_evaluation": "達 9 詞",
+            "meeting_dates": {"initial": "2026-09-15"},
+        },
+        headers=auth,
+    ).json()
+    r = client.post(
+        f"/api/gov-moe/iep/{src['id']}/clone",
+        json={"target_school_year": 2026, "target_semester": 2},
+        headers=auth,
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["status"] == "draft"
+    assert body["current_status"] == "認知尚可"
+    assert body["long_term_goals"] == "提升口語"
+    assert body["short_term_goals"] == [{"goal": "10 詞彙"}]
+    assert body["iep_team_members"] == [{"role": "班導", "name": "陳老師"}]
+    assert body["mid_term_evaluation"] is None
+    assert body["final_evaluation"] is None
+    assert body["meeting_dates"] is None
+
+
+def test_iep_clone_target_existing_returns_409(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    sid, _ = _seed_student_and_classroom(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    s1 = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 1},
+        headers=auth,
+    ).json()
+    client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 2},
+        headers=auth,
+    )
+    r = client.post(
+        f"/api/gov-moe/iep/{s1['id']}/clone",
+        json={"target_school_year": 2026, "target_semester": 2},
+        headers=auth,
+    )
+    assert r.status_code == 409
+
+
+def test_iep_state_transitions(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    sid, _ = _seed_student_and_classroom(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    iep = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 1},
+        headers=auth,
+    ).json()
+    r = client.put(f"/api/gov-moe/iep/{iep['id']}/submit", headers=auth)
+    assert r.json()["status"] == "pending_review"
+    r = client.put(f"/api/gov-moe/iep/{iep['id']}/approve", headers=auth)
+    assert r.json()["status"] == "approved"
+    r = client.put(f"/api/gov-moe/iep/{iep['id']}/close", headers=auth)
+    assert r.json()["status"] == "closed"
+
+
+def test_iep_cannot_edit_after_approved(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    sid, _ = _seed_student_and_classroom(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    iep = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 1},
+        headers=auth,
+    ).json()
+    client.put(f"/api/gov-moe/iep/{iep['id']}/submit", headers=auth)
+    client.put(f"/api/gov-moe/iep/{iep['id']}/approve", headers=auth)
+    r = client.put(
+        f"/api/gov-moe/iep/{iep['id']}", json={"current_status": "edited"}, headers=auth
+    )
+    assert r.status_code == 409
