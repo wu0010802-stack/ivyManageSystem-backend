@@ -108,6 +108,15 @@ def _format_employee_response(
         "emergency_contact_name": emp.emergency_contact_name,
         "emergency_contact_phone": emp.emergency_contact_phone,
         "dependents": emp.dependents,
+        # 特殊狀態旗標（會影響薪資/匯出流程）
+        "no_employment_insurance": getattr(emp, "no_employment_insurance", False),
+        "health_exempt": getattr(emp, "health_exempt", False),
+        "skip_payroll_bonuses": getattr(emp, "skip_payroll_bonuses", False),
+        "extra_dependents_quarterly": getattr(emp, "extra_dependents_quarterly", 0),
+        "bypass_standard_base": getattr(emp, "bypass_standard_base", False),
+        "insurance_salary_override_reason": getattr(
+            emp, "insurance_salary_override_reason", None
+        ),
     }
     if resign_fields:
         data["resign_date"] = emp.resign_date.isoformat() if emp.resign_date else None
@@ -159,6 +168,10 @@ class EmployeeCreate(BaseModel):
     labor_insured_salary: Optional[float] = Field(None, ge=0)
     health_insured_salary: Optional[float] = Field(None, ge=0)
     pension_insured_salary: Optional[float] = Field(None, ge=0)
+    # 政府申報結構化欄位（Phase 1）
+    staff_role_category: Optional[str] = Field(None, max_length=20)
+    teacher_cert_no: Optional[str] = Field(None, max_length=50)
+    teacher_cert_type: Optional[str] = Field(None, max_length=20)
 
 
 class EmployeeUpdate(BaseModel):
@@ -203,6 +216,10 @@ class EmployeeUpdate(BaseModel):
     # 修改薪資金額欄位（base_salary / hourly_rate / insurance_salary_level）時必填，
     # 與 salary manual-adjust 同流程：留檔備查 + 大額時觸發 require_finance_approve。
     adjustment_reason: Optional[str] = Field(None, max_length=200)
+    # 政府申報結構化欄位（Phase 1）
+    staff_role_category: Optional[str] = Field(None, max_length=20)
+    teacher_cert_no: Optional[str] = Field(None, max_length=50)
+    teacher_cert_type: Optional[str] = Field(None, max_length=20)
 
 
 class OffboardRequest(BaseModel):

@@ -137,3 +137,45 @@ def test_migration_created_shell_tables():
         "special_education_subsidies",
         "monthly_enrollment_snapshots",
     }.issubset(names)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic round-trip tests (Task 5)
+# ---------------------------------------------------------------------------
+
+from datetime import date
+from api.students import StudentCreate
+
+
+def test_student_create_accepts_new_fields():
+    payload = {
+        "student_id": "TEST001",
+        "name": "測試幼生",
+        "id_number": "A123456789",
+        "nationality": "本國",
+        "is_disadvantaged": True,
+        "low_income_status": "low",
+        "disability_type": "自閉症",
+        "disability_level": "中度",
+        "disability_cert_no": "TPE-2026-001",
+        "disability_cert_expiry": "2027-12-31",
+    }
+    obj = StudentCreate(**payload)
+    assert obj.id_number == "A123456789"
+    assert obj.disability_cert_expiry == date(2027, 12, 31)
+
+
+from api.employees import EmployeeCreate
+
+
+def test_employee_create_accepts_new_fields():
+    payload = {
+        "employee_id": "E001",
+        "name": "測試教師",
+        "employee_type": "regular",
+        "staff_role_category": "teacher_certified",
+        "teacher_cert_no": "EC-2020-001",
+        "teacher_cert_type": "幼教師證",
+    }
+    obj = EmployeeCreate(**payload)
+    assert obj.staff_role_category == "teacher_certified"

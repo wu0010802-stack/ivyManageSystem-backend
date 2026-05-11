@@ -167,6 +167,17 @@ class StudentCreate(BaseModel):
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     emergency_contact_relation: Optional[str] = None
+    # 政府申報結構化欄位（Phase 1）
+    id_number: Optional[str] = Field(None, max_length=20)
+    nationality: Optional[str] = Field(None, max_length=20)
+    household_address: Optional[str] = None
+    is_disadvantaged: bool = False
+    low_income_status: Optional[str] = Field(None, max_length=20)
+    indigenous_status: Optional[str] = Field(None, max_length=20)
+    disability_type: Optional[str] = Field(None, max_length=50)
+    disability_level: Optional[str] = Field(None, max_length=10)
+    disability_cert_no: Optional[str] = Field(None, max_length=50)
+    disability_cert_expiry: Optional[date] = None
 
     @field_validator("student_id", mode="before")
     @classmethod
@@ -180,6 +191,7 @@ class StudentCreate(BaseModel):
     @field_validator(
         "birthday",
         "enrollment_date",
+        "disability_cert_expiry",
         mode="before",
     )
     @classmethod
@@ -199,6 +211,14 @@ class StudentCreate(BaseModel):
         "special_needs",
         "emergency_contact_name",
         "emergency_contact_relation",
+        "id_number",
+        "nationality",
+        "household_address",
+        "low_income_status",
+        "indigenous_status",
+        "disability_type",
+        "disability_level",
+        "disability_cert_no",
         mode="before",
     )
     @classmethod
@@ -235,6 +255,17 @@ class StudentUpdate(BaseModel):
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     emergency_contact_relation: Optional[str] = None
+    # 政府申報結構化欄位（Phase 1）
+    id_number: Optional[str] = Field(None, max_length=20)
+    nationality: Optional[str] = Field(None, max_length=20)
+    household_address: Optional[str] = None
+    is_disadvantaged: bool = False
+    low_income_status: Optional[str] = Field(None, max_length=20)
+    indigenous_status: Optional[str] = Field(None, max_length=20)
+    disability_type: Optional[str] = Field(None, max_length=50)
+    disability_level: Optional[str] = Field(None, max_length=10)
+    disability_cert_no: Optional[str] = Field(None, max_length=50)
+    disability_cert_expiry: Optional[date] = None
 
     @field_validator("student_id", mode="before")
     @classmethod
@@ -250,6 +281,7 @@ class StudentUpdate(BaseModel):
     @field_validator(
         "birthday",
         "enrollment_date",
+        "disability_cert_expiry",
         mode="before",
     )
     @classmethod
@@ -269,6 +301,14 @@ class StudentUpdate(BaseModel):
         "special_needs",
         "emergency_contact_name",
         "emergency_contact_relation",
+        "id_number",
+        "nationality",
+        "household_address",
+        "low_income_status",
+        "indigenous_status",
+        "disability_type",
+        "disability_level",
+        "disability_cert_no",
         mode="before",
     )
     @classmethod
