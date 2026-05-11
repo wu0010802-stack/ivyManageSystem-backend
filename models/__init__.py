@@ -4,6 +4,7 @@ from models.gov_moe import (
     StudentIEPRecord,
     SpecialEducationSubsidy,
     MonthlyEnrollmentSnapshot,
+    EnrollmentCertificate,
 )
 
 from .appraisal import (

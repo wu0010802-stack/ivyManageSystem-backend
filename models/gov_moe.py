@@ -175,3 +175,35 @@ class MonthlyEnrollmentSnapshot(Base):
             name="uq_monthly_snapshot_key",
         ),
     )
+
+
+class EnrollmentCertificate(Base):
+    """在學證明書（Phase 4 內容）"""
+
+    __tablename__ = "enrollment_certificates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    student_id = Column(
+        Integer,
+        ForeignKey("students.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    year = Column(Integer, nullable=False, comment="開立年（用於序號）")
+    seq = Column(Integer, nullable=False, comment="該年序號，從 1 起跳")
+    purpose = Column(String(200), nullable=False, comment="申請用途")
+    copies = Column(Integer, nullable=False, default=1, server_default="1")
+    issue_date = Column(Date, nullable=False)
+    issued_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    pdf_path = Column(String(500), nullable=True, comment="若已存檔則記錄路徑")
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("year", "seq", name="uq_enrollment_cert_year_seq"),
+        Index("ix_enrollment_cert_student", "student_id"),
+        Index("ix_enrollment_cert_year", "year"),
+    )
+
+    @property
+    def serial(self) -> str:
+        """格式化序號 EC-{year}-{seq:04d}"""
+        return f"EC-{self.year}-{self.seq:04d}"
