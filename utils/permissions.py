@@ -299,6 +299,12 @@ PERMISSION_LABELS: Dict[str, str] = {
     "STUDENTS_SPECIAL_NEEDS_WRITE": "特殊需求 (編輯 / IEP)",
     # 家園溝通平台
     "PARENT_MESSAGES_WRITE": "家長訊息 (發送/回覆)",
+    # 教職員考核
+    "APPRAISAL_READ": "考核資料 (檢視)",
+    "APPRAISAL_EVENT_WRITE": "考核事件 (登錄)",
+    "APPRAISAL_REVIEW": "考核簽核 (主管第一階)",
+    "APPRAISAL_ACCOUNTING": "考核核數字 (會計第二階)",
+    "APPRAISAL_FINALIZE": "考核核定 (最高主管第三階)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -359,6 +365,21 @@ PERMISSION_GROUPS: List[Dict] = [
                 "read": "RECRUITMENT_READ",
                 "write": "RECRUITMENT_WRITE",
             },
+        ],
+    },
+    {
+        "name": "教職員考核",
+        "permissions": [
+            "APPRAISAL_REVIEW",
+            "APPRAISAL_ACCOUNTING",
+            "APPRAISAL_FINALIZE",
+        ],
+        "split_permissions": [
+            {
+                "module": "考核資料",
+                "read": "APPRAISAL_READ",
+                "write": "APPRAISAL_EVENT_WRITE",
+            }
         ],
     },
     {

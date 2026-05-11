@@ -72,10 +72,10 @@ def downgrade() -> None:
     inspector = sa.inspect(bind)
     if "users" not in inspector.get_table_names():
         return
-    mask_clear = (
-        ~((1 << 50) | (1 << 51) | (1 << 52) | (1 << 53) | (1 << 54))
-        & 0xFFFFFFFFFFFFFFFF
-    )
+    # 注意：不要 & 0xFFFFFFFFFFFFFFFF，那會把結果轉為無號 64-bit 整數，
+    # 超過 PostgreSQL signed BIGINT 上限，psycopg2 會 raise NumericValueOutOfRange。
+    # Python 直接讓結果為負整數即可，PostgreSQL 對 signed BIGINT 的 bitwise AND 正確處理。
+    mask_clear = ~((1 << 50) | (1 << 51) | (1 << 52) | (1 << 53) | (1 << 54))
     bind.execute(
         sa.text(
             "UPDATE users "
