@@ -27,6 +27,8 @@ def client_with_db(tmp_path):
     from api.auth import router as auth_router
     from api.employees import router as employees_router
     from api.employees_docs import router as employees_docs_router
+    from api.salary.records import router as salary_records_router
+    from api.salary.detail import router as salary_detail_router
 
     db_path = tmp_path / "sensitive-get.sqlite"
     engine = create_engine(
@@ -78,6 +80,8 @@ def client_with_db(tmp_path):
     app.include_router(auth_router)
     app.include_router(employees_router)
     app.include_router(employees_docs_router)
+    app.include_router(salary_records_router, prefix="/api")
+    app.include_router(salary_detail_router, prefix="/api")
 
     client = TestClient(app)
     client.cookies.set("access_token", token)
@@ -167,4 +171,82 @@ class TestEmployeeSensitiveGetAudit:
             assert not matching, (
                 f"端點 raise（status={res.status_code}）不應留 salary READ audit；"
                 f"卻找到 {len(matching)} 筆"
+            )
+
+
+class TestSalarySensitiveGetAudit:
+    def test_salary_records_list_audits_with_month_in_summary(self, client_with_db):
+        client, sf, _ = client_with_db
+        res = client.get("/api/salaries/records?year=2026&month=4")
+        # 即使 200 回 [] 也應該寫 audit
+        rows = _get_read_audits(sf, entity_type="salary")
+        matching = [
+            r
+            for r in rows
+            if "薪資列表" in (r.summary or "") and "2026-04" in (r.summary or "")
+        ]
+        assert matching, (
+            f"未找到含 month=2026-04 的薪資列表 READ audit；"
+            f"rows={[(r.summary, r.action) for r in rows]}"
+        )
+
+    def test_salary_history_audits(self, client_with_db):
+        client, sf, emp_id = client_with_db
+        res = client.get(f"/api/salaries/history?employee_id={emp_id}")
+        # 因為 admin 查自己的員工 history，且 DB 中無 SalaryRecord，endpoint 200 回 []
+        rows = _get_read_audits(sf, entity_type="salary")
+        matching = [r for r in rows if "薪資歷史" in (r.summary or "")]
+        if res.status_code == 200:
+            assert (
+                matching
+            ), f"200 response 但找不到薪資歷史 audit；rows={[r.summary for r in rows]}"
+
+    def test_salary_history_all_audits(self, client_with_db):
+        client, sf, _ = client_with_db
+        res = client.get("/api/salaries/history-all?year=2026")
+        rows = _get_read_audits(sf, entity_type="salary")
+        if res.status_code == 200:
+            matching = [r for r in rows if "全員工薪資歷史" in (r.summary or "")]
+            assert (
+                matching
+            ), f"未找到 history-all audit；rows={[r.summary for r in rows]}"
+
+    def test_salary_breakdown_audits(self, client_with_db):
+        client, sf, _ = client_with_db
+        # 沒有實際 SalaryRecord 資料；端點會 404
+        # 因此 audit 不應出現（404 在 audit 寫入之前 raise）
+        res = client.get("/api/salaries/9999/breakdown")
+        rows = _get_read_audits(sf, entity_type="salary")
+        if res.status_code == 200:
+            matching = [
+                r
+                for r in rows
+                if r.entity_id == "9999" and "薪資明細" in (r.summary or "")
+            ]
+            assert matching
+        else:
+            matching = [
+                r
+                for r in rows
+                if r.entity_id == "9999" and "薪資明細" in (r.summary or "")
+            ]
+            assert not matching, "404 不應寫 audit"
+
+    def test_salary_field_breakdown_audits(self, client_with_db):
+        client, sf, _ = client_with_db
+        res = client.get("/api/salaries/9999/field-breakdown?field=base_salary")
+        rows = _get_read_audits(sf, entity_type="salary")
+        if res.status_code == 200:
+            assert any(
+                r.entity_id == "9999" and "欄位拆分" in (r.summary or "") for r in rows
+            )
+
+    def test_salary_audit_log_endpoint_audits(self, client_with_db):
+        """meta-audit：查 salary 自身 audit 也要留 audit（追責看誰查了 audit）。"""
+        client, sf, _ = client_with_db
+        res = client.get("/api/salaries/9999/audit-log")
+        rows = _get_read_audits(sf, entity_type="salary")
+        if res.status_code == 200:
+            assert any(
+                r.entity_id == "9999" and "自身稽核" in (r.summary or "") for r in rows
             )
