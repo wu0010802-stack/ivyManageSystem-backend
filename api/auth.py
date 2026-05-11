@@ -525,13 +525,37 @@ def refresh_token(request: Request):
         if authorization.startswith("Bearer "):
             token = authorization.split(" ", 1)[1]
     if not token:
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH_FAILED",
+            username=None,
+            user_id=None,
+            extras={"reason": "no_token"},
+        )
         raise HTTPException(status_code=401, detail="未提供認證 Token")
 
     # 允許過期的 token 解碼（在寬限期內）
-    payload = decode_token_allow_expired(token)
+    try:
+        payload = decode_token_allow_expired(token)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH_FAILED",
+            username=None,
+            user_id=None,
+            extras={"reason": "invalid_token"},
+        )
+        raise
 
     user_id = payload.get("user_id")
     if not user_id:
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH_FAILED",
+            username=payload.get("name"),
+            user_id=None,
+            extras={"reason": "incomplete_payload"},
+        )
         raise HTTPException(status_code=401, detail="Token 資料不完整")
 
     # 驗證使用者仍然有效
@@ -543,13 +567,34 @@ def refresh_token(request: Request):
             .first()
         )
         if not user:
+            write_login_audit(
+                request,
+                action="TOKEN_REFRESH_FAILED",
+                username=payload.get("name"),
+                user_id=user_id,
+                extras={"reason": "user_inactive"},
+            )
             raise HTTPException(status_code=401, detail="使用者已停用或不存在")
         if user.must_change_password:
+            write_login_audit(
+                request,
+                action="TOKEN_REFRESH_FAILED",
+                username=user.username,
+                user_id=user.id,
+                extras={"reason": "must_change_password"},
+            )
             raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
 
         # 驗證 token_version：帳號停用或權限變更時版本遞增，使舊 token 無法換發
         # payload 缺少 token_version（舊 token 向下相容）時視為 0，與 DB 預設值相符
         if payload.get("token_version", 0) != user.token_version:
+            write_login_audit(
+                request,
+                action="TOKEN_REFRESH_FAILED",
+                username=user.username,
+                user_id=user.id,
+                extras={"reason": "token_version_mismatch"},
+            )
             raise HTTPException(
                 status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
             )
@@ -570,6 +615,13 @@ def refresh_token(request: Request):
                 "permissions": permissions,
                 "token_version": user.token_version,
             }
+        )
+
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH",
+            username=user.username,
+            user_id=user.id,
         )
 
         response = JSONResponse(
@@ -609,6 +661,26 @@ def logout(request: Request):
         if authorization.startswith("Bearer "):
             token = authorization.split(" ", 1)[1]
 
+    # 在 token 廢止前先抽取 audit 用的 username / user_id
+    # 使用 verify_exp=False 確保即使 token 已過期也能成功抽取
+    audit_username = None
+    audit_user_id = None
+    if token:
+        try:
+            from jose import jwt as _jose_jwt
+            from utils.auth import JWT_SECRET_KEY, JWT_ALGORITHM
+
+            _payload = _jose_jwt.decode(
+                token,
+                JWT_SECRET_KEY,
+                algorithms=[JWT_ALGORITHM],
+                options={"verify_exp": False},
+            )
+            audit_user_id = _payload.get("user_id")
+            audit_username = _payload.get("name")
+        except Exception:
+            pass  # token 格式無效，audit 仍繼續執行
+
     if token:
         try:
             from datetime import datetime, timezone
@@ -645,6 +717,13 @@ def logout(request: Request):
                 )
         except Exception:
             pass  # token 已過期或無效，無需廢止
+
+    write_login_audit(
+        request,
+        action="LOGOUT",
+        username=audit_username,
+        user_id=audit_user_id,
+    )
 
     response = JSONResponse(content={"message": "已登出"})
     clear_access_token_cookie(response)

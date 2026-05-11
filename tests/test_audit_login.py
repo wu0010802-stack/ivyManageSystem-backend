@@ -400,3 +400,48 @@ class TestLoginEndpointAudit:
             f"{[(r.action, json.loads(r.changes or '{}').get('reason')) for r in rows]}"
         )
         assert wifi_failures[0].username == "bob_teacher"
+
+    def test_logout_creates_audit(self, client_with_db):
+        client, sf = client_with_db
+        # 先登入取得 cookie
+        res_login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "CorrectPass1"},
+        )
+        assert res_login.status_code == 200
+        # 再登出
+        res = client.post("/api/auth/logout")
+        assert res.status_code == 200, res.text
+        rows = self._get_login_audits(sf)
+        logouts = [r for r in rows if r.action == "LOGOUT"]
+        assert logouts, f"未找到 LOGOUT audit；現有 actions: {[r.action for r in rows]}"
+
+    def test_refresh_token_success_audit(self, client_with_db):
+        client, sf = client_with_db
+        # 先登入
+        client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "CorrectPass1"},
+        )
+        # 用同一個 TestClient（會帶 cookie）打 refresh
+        res = client.post("/api/auth/refresh")
+        assert res.status_code == 200, res.text
+        rows = self._get_login_audits(sf)
+        refresh_rows = [r for r in rows if r.action == "TOKEN_REFRESH"]
+        assert (
+            refresh_rows
+        ), f"未找到 TOKEN_REFRESH audit；現有 actions: {[r.action for r in rows]}"
+        assert refresh_rows[0].username == "alice"
+
+    def test_refresh_token_no_token_audits_failure(self, client_with_db):
+        client, sf = client_with_db
+        # 未登入直接 refresh
+        res = client.post("/api/auth/refresh")
+        assert res.status_code == 401
+        rows = self._get_login_audits(sf)
+        failed = [r for r in rows if r.action == "TOKEN_REFRESH_FAILED"]
+        assert (
+            failed
+        ), f"未找到 TOKEN_REFRESH_FAILED audit；現有 actions: {[r.action for r in rows]}"
+        changes = json.loads(failed[0].changes or "{}")
+        assert changes.get("reason") == "no_token"
