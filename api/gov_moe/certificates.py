@@ -86,7 +86,7 @@ def generate_certificate(
         purpose=payload.purpose,
         copies=payload.copies,
         issue_date=payload.issue_date,
-        issued_by_user_id=current_user.get("id"),
+        issued_by_user_id=current_user.get("user_id"),
     )
     db.add(cert)
     db.commit()
