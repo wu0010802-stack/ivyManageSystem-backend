@@ -248,3 +248,49 @@ def test_teacher_cannot_create_subsidy(gov_moe_client):
     tok = resp.json().get("access_token") or resp.cookies.get("access_token")
     r = _create_subsidy(client, tok, eid)
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# B3 test: Excel exporter
+# ---------------------------------------------------------------------------
+
+
+def test_subsidies_excel_export_has_expected_columns(tmp_path):
+    from datetime import date
+    from services.subsidies_excel import generate_subsidies_excel
+
+    rows = [
+        {
+            "id": 1,
+            "subsidy_type": "teacher_extra",
+            "employee_name": "陳老師",
+            "period_start": date(2026, 5, 1),
+            "period_end": date(2026, 5, 31),
+            "hours_or_rate": 20,
+            "amount_requested": 3000,
+            "amount_approved": 2500,
+            "status": "paid",
+            "notes": "",
+        }
+    ]
+    data = generate_subsidies_excel(rows, period_label="2026-05")
+    assert data.startswith(b"PK")  # xlsx is a zip
+    out = tmp_path / "out.xlsx"
+    out.write_bytes(data)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(out)
+    ws = wb.active
+    # When period_label is provided, it is in row 1, blank row 2, headers in row 3
+    headers = [c.value for c in ws[3]]
+    for h in (
+        "申領類型",
+        "員工",
+        "起期",
+        "迄期",
+        "時數/費率",
+        "申請金額",
+        "核定金額",
+        "狀態",
+    ):
+        assert h in headers
