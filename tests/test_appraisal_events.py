@@ -5,10 +5,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 
-@pytest.mark.skipif(
-    True,
-    reason="conftest fixtures 將在 T17 加入",
-)
 class TestAppraisalEvents:
 
     def test_create_event_帶_catalog_自動填_score(

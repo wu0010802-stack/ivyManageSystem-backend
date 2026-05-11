@@ -4,7 +4,6 @@ import pytest
 from io import BytesIO
 
 
-@pytest.mark.skipif(True, reason="conftest fixtures 將在 T17 加入")
 class TestAppraisalReports:
 
     def test_cycle_report_json(self, client, admin_headers, finalized_cycle):

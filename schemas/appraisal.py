@@ -111,7 +111,8 @@ class EventPatch(BaseModel):
 
 
 class EventRevert(BaseModel):
-    reason: str = Field(min_length=4, max_length=200)
+    # min_length=2 讓 2 字繁體中文（如「誤登」）可通過；空字串仍被擋
+    reason: str = Field(min_length=2, max_length=200)
 
 
 class EventOut(BaseModel):

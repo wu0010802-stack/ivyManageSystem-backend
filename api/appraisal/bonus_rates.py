@@ -46,7 +46,7 @@ def create_rate(
         role_group=payload.role_group,
         grade=payload.grade,
         base_amount=payload.base_amount,
-        created_by=current_user["id"],
+        created_by=current_user["user_id"],
     )
     db.add(r)
     try:

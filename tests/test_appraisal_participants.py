@@ -3,10 +3,6 @@
 import pytest
 
 
-@pytest.mark.skipif(
-    True,
-    reason="conftest fixtures 將在 T17 加入",
-)
 class TestAppraisalParticipants:
 
     def test_bulk_init_自動排除離職員工(

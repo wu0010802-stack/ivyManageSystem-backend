@@ -74,7 +74,7 @@ def create_cycle(
         end_date=end,
         base_score_calc_date=payload.base_score_calc_date or calc,
         status=CycleStatus.OPEN,
-        created_by=current_user["id"],
+        created_by=current_user["user_id"],
     )
     db.add(cycle)
     try:
@@ -167,7 +167,7 @@ def unlock_cycle(
     logger.warning(
         "[appraisal] cycle %d 解鎖 by user=%s reason=%r",
         cycle.id,
-        current_user.get("id"),
+        current_user.get("user_id"),
         payload.reason,
     )
     # AuditMiddleware 慣例

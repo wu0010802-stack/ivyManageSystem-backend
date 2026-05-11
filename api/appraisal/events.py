@@ -133,7 +133,7 @@ def create_event(
         title=payload.title,
         detail=payload.detail,
         attachments=[],
-        created_by=current_user["id"],
+        created_by=current_user["user_id"],
     )
     db.add(ev)
     db.flush()
@@ -252,7 +252,7 @@ def revert_event(
     if ev.reverted_at is not None:
         raise HTTPException(400, "already_reverted")
     ev.reverted_at = datetime.now(timezone.utc)
-    ev.reverted_by = current_user["id"]
+    ev.reverted_by = current_user["user_id"]
     ev.reverted_reason = payload.reason
     db.flush()
 

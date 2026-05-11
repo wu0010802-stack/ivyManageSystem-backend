@@ -3,7 +3,6 @@
 import pytest
 
 
-@pytest.mark.skipif(True, reason="conftest fixtures 將在 T17 加入")
 class TestAppraisalBonusRates:
 
     def test_list_bonus_rates(self, client, admin_headers):

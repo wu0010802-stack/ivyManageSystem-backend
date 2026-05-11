@@ -3,7 +3,6 @@
 import pytest
 
 
-@pytest.mark.skipif(True, reason="conftest fixtures 將在 T17 加入")
 class TestAppraisalPenaltyCatalog:
 
     def test_list_catalog_含_29_筆_seed(self, client, admin_headers):

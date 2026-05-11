@@ -11,10 +11,6 @@ Import 路徑慣例（與 cycles.py 一致）：
 import pytest
 
 
-@pytest.mark.skipif(
-    True,
-    reason="conftest fixtures（sample_cycle / admin_headers 等）將在 T17 加入；屆時移除 skipif",
-)
 class TestAppraisalCycles:
     """考核週期 CRUD + 狀態轉換測試。
 

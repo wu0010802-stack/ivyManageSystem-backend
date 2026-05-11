@@ -141,7 +141,7 @@ def sign_supervisor(
     _check_stage(s, SummaryStatus.DRAFT)
     s.status = SummaryStatus.SUPERVISOR_SIGNED
     s.supervisor_signed_at = _now()
-    s.supervisor_signed_by = current_user["id"]
+    s.supervisor_signed_by = current_user["user_id"]
     s.supervisor_comment = payload.comment
     db.commit()
     db.refresh(s)
@@ -165,7 +165,7 @@ def sign_accounting(
     _check_stage(s, SummaryStatus.SUPERVISOR_SIGNED)
     s.status = SummaryStatus.ACCOUNTING_SIGNED
     s.accounting_signed_at = _now()
-    s.accounting_signed_by = current_user["id"]
+    s.accounting_signed_by = current_user["user_id"]
     s.accounting_comment = payload.comment
     db.commit()
     db.refresh(s)
@@ -189,14 +189,14 @@ def finalize_summary(
     _check_stage(s, SummaryStatus.ACCOUNTING_SIGNED)
     s.status = SummaryStatus.FINALIZED
     s.finalized_at = _now()
-    s.finalized_by = current_user["id"]
+    s.finalized_by = current_user["user_id"]
     s.finalized_comment = payload.comment
     db.commit()
     db.refresh(s)
     logger.info(
         "[appraisal] finalize summary=%d user=%d reason=%r",
         s.id,
-        current_user["id"],
+        current_user["user_id"],
         payload.reason,
     )
     request.state.audit_entity_id = s.id
@@ -237,7 +237,7 @@ def reject_summary(
         raise HTTPException(403, f"missing_permission:{required_perm.name}")
 
     s.rejected_at = _now()
-    s.rejected_by = current_user["id"]
+    s.rejected_by = current_user["user_id"]
     s.rejected_from_stage = s.status
     s.rejected_reason = payload.reason
     # 清簽核戳記
