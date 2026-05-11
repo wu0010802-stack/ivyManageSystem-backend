@@ -8,6 +8,7 @@ import logging
 import threading
 from collections import defaultdict
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional
 from datetime import date, datetime, time, timedelta
 
@@ -58,6 +59,32 @@ def _get_db_session():
     from models.database import get_session
 
     return get_session()
+
+
+@dataclass
+class _BulkSalaryPreload:
+    """process_bulk_salary_calculation 第一階段批次預載結果。
+
+    Why: 以 ~13 次批次 DB query 取代 N×13 個別查詢；將結果打包成單一 bundle
+        避免向 per-employee 計算迴圈傳 16 個參數。
+    """
+
+    emp_map: dict
+    att_by_emp: dict
+    classroom_map: dict
+    employee_to_classroom: dict
+    assistant_to_classes: dict
+    art_to_classes: dict
+    db_count_map: dict
+    total_students: int
+    leaves_by_emp: dict
+    ytd_sick_by_emp: dict
+    ot_by_emp: dict
+    meetings_by_emp: dict
+    prior_absent_by_emp: dict
+    holiday_set: set
+    makeup_set: set
+    shifts_by_emp: dict
 
 
 def _get_ytd_sick_hours_before(
@@ -2841,6 +2868,254 @@ class SalaryEngine:
         finally:
             session.close()
 
+    def _bulk_preload_for_salary_month(
+        self,
+        session,
+        employee_ids: list,
+        year: int,
+        month: int,
+        start_date: date,
+        end_date: date,
+    ) -> _BulkSalaryPreload:
+        """process_bulk_salary_calculation Phase 1：以 ~13 次批次查詢取代 N×13。
+
+        所有需在 per-employee 迴圈內查的資料先一次性載回記憶體，按員工分群成
+        dict / set，打包成 _BulkSalaryPreload 回傳。Session 由 caller 管理。
+        """
+        from models.database import (
+            Employee,
+            Attendance,
+            LeaveRecord,
+            OvertimeRecord as DBOvertimeRecord,
+            MeetingRecord,
+            Holiday,
+            Classroom,
+        )
+
+        try:
+            from models.database import DailyShift as _DailyShift
+
+            _has_daily_shift = True
+        except ImportError:
+            _DailyShift = None
+            _has_daily_shift = False
+
+        from services.student_enrollment import classroom_student_count_map
+
+        # 1. 員工（含 job_title_rel，避免 N 次 lazy load）
+        employees = (
+            session.query(Employee)
+            .options(joinedload(Employee.job_title_rel))
+            .filter(Employee.id.in_(employee_ids))
+            .all()
+        )
+        emp_map = {e.id: e for e in employees}
+
+        # 2. 考勤
+        all_attendances = (
+            session.query(Attendance)
+            .filter(
+                Attendance.employee_id.in_(employee_ids),
+                Attendance.attendance_date >= start_date,
+                Attendance.attendance_date <= end_date,
+            )
+            .all()
+        )
+        att_by_emp = defaultdict(list)
+        for a in all_attendances:
+            att_by_emp[a.employee_id].append(a)
+
+        # 4. 班級與年級（預載 grade 避免 lazy load）
+        all_classrooms = (
+            session.query(Classroom)
+            .options(joinedload(Classroom.grade))
+            .filter(Classroom.is_active == True)
+            .all()
+        )
+        classroom_map = {c.id: c for c in all_classrooms}
+        # 助理教師 → 班級清單（避免迴圈內 O(classrooms) 線性掃描，改為 O(1) 查表）
+        assistant_to_classes: dict[int, list] = defaultdict(list)
+        art_to_classes: dict[int, list] = defaultdict(list)
+        for _c in all_classrooms:
+            if _c.assistant_teacher_id:
+                assistant_to_classes[_c.assistant_teacher_id].append(_c)
+            if _c.art_teacher_id:
+                art_to_classes[_c.art_teacher_id].append(_c)
+
+        # 員工 → 當期主要班級反查表（取代 emp.classroom_id 讀取）
+        # 優先用本月份對應學期（school_year, semester）篩選；若該員在當期無班，
+        # 個別 fallback 至跨學期任一 active（例如學校沿用同一個 Classroom 紀錄跨學期）。
+        from utils.academic import resolve_current_academic_term as _resolve_term
+
+        target_school_year, target_semester = _resolve_term(end_date)
+
+        def _role_priority(c, employee_id: int) -> int:
+            if c.head_teacher_id == employee_id:
+                return 1
+            if c.assistant_teacher_id == employee_id:
+                return 2
+            if c.art_teacher_id == employee_id:
+                return 3
+            return 99
+
+        def _accumulate(target: dict, classrooms):
+            for _c in classrooms:
+                for tid in (
+                    _c.head_teacher_id,
+                    _c.assistant_teacher_id,
+                    _c.art_teacher_id,
+                ):
+                    if not tid:
+                        continue
+                    existing = target.get(tid)
+                    if existing is None or _role_priority(_c, tid) < _role_priority(
+                        existing, tid
+                    ):
+                        target[tid] = _c
+
+        employee_to_classroom: dict[int, Classroom] = {}
+        term_classrooms = [
+            c
+            for c in all_classrooms
+            if c.school_year == target_school_year and c.semester == target_semester
+        ]
+        _accumulate(employee_to_classroom, term_classrooms)
+        # 對未在當期班級表中出現的教師，再從跨學期 active 補上 fallback
+        missing_classrooms = [c for c in all_classrooms if c not in term_classrooms]
+        fallback_target: dict[int, Classroom] = {}
+        _accumulate(fallback_target, missing_classrooms)
+        for tid, _c in fallback_target.items():
+            if tid not in employee_to_classroom:
+                employee_to_classroom[tid] = _c
+
+        # 5. 學生數（1 次批次查詢，取代每人 1 次）
+        db_count_map = classroom_student_count_map(session, end_date)
+        total_students = sum(db_count_map.values())
+
+        # 6. 請假
+        all_leaves = (
+            session.query(LeaveRecord)
+            .filter(
+                LeaveRecord.employee_id.in_(employee_ids),
+                LeaveRecord.is_approved == True,
+                LeaveRecord.start_date <= end_date,
+                LeaveRecord.end_date >= start_date,
+            )
+            .all()
+        )
+        leaves_by_emp = defaultdict(list)
+        for lv in all_leaves:
+            leaves_by_emp[lv.employee_id].append(lv)
+
+        # 6b. 年度累計病假時數（用於 30 日半薪上限判斷）
+        ytd_sick_by_emp = _get_ytd_sick_hours_bulk(session, employee_ids, year, month)
+
+        # 7. 加班
+        all_ot = (
+            session.query(DBOvertimeRecord)
+            .filter(
+                DBOvertimeRecord.employee_id.in_(employee_ids),
+                DBOvertimeRecord.is_approved == True,
+                DBOvertimeRecord.overtime_date >= start_date,
+                DBOvertimeRecord.overtime_date <= end_date,
+            )
+            .all()
+        )
+        ot_by_emp = defaultdict(list)
+        for ot in all_ot:
+            ot_by_emp[ot.employee_id].append(ot)
+
+        # 8. 園務會議（當月）
+        all_meetings = (
+            session.query(MeetingRecord)
+            .filter(
+                MeetingRecord.employee_id.in_(employee_ids),
+                MeetingRecord.meeting_date >= start_date,
+                MeetingRecord.meeting_date <= end_date,
+            )
+            .all()
+        )
+        meetings_by_emp = defaultdict(list)
+        for m in all_meetings:
+            meetings_by_emp[m.employee_id].append(m)
+
+        # 9. 發放月前幾月會議缺席（bonus months: 2/6/9/12）
+        prior_absent_by_emp = defaultdict(int)
+        period_start = get_meeting_deduction_period_start(year, month)
+        if period_start is not None and period_start < start_date:
+            prior_meetings = (
+                session.query(MeetingRecord)
+                .filter(
+                    MeetingRecord.employee_id.in_(employee_ids),
+                    MeetingRecord.meeting_date >= period_start,
+                    MeetingRecord.meeting_date < start_date,
+                )
+                .all()
+            )
+            for m in prior_meetings:
+                if not m.attended:
+                    prior_absent_by_emp[m.employee_id] += 1
+
+        # 10. 假日（全月共用，1 次）
+        holidays_raw = (
+            session.query(Holiday.date)
+            .filter(
+                Holiday.date >= start_date,
+                Holiday.date <= end_date,
+                Holiday.is_active == True,
+            )
+            .all()
+        )
+        holiday_set = {h.date for h in holidays_raw}
+
+        # 10.5 補班日（WorkdayOverride，全月共用）
+        from models.database import WorkdayOverride as _WorkdayOverride
+
+        makeup_raw = (
+            session.query(_WorkdayOverride.date)
+            .filter(
+                _WorkdayOverride.date >= start_date,
+                _WorkdayOverride.date <= end_date,
+                _WorkdayOverride.is_active.is_(True),
+            )
+            .all()
+        )
+        makeup_set = {m.date for m in makeup_raw}
+
+        # 11. 班別（DailyShift）
+        shifts_by_emp = defaultdict(dict)
+        if _has_daily_shift:
+            all_shifts = (
+                session.query(_DailyShift)
+                .filter(
+                    _DailyShift.employee_id.in_(employee_ids),
+                    _DailyShift.date >= start_date,
+                    _DailyShift.date <= end_date,
+                )
+                .all()
+            )
+            for ds in all_shifts:
+                shifts_by_emp[ds.employee_id][ds.date] = ds.shift_type_id
+
+        return _BulkSalaryPreload(
+            emp_map=emp_map,
+            att_by_emp=att_by_emp,
+            classroom_map=classroom_map,
+            employee_to_classroom=employee_to_classroom,
+            assistant_to_classes=assistant_to_classes,
+            art_to_classes=art_to_classes,
+            db_count_map=db_count_map,
+            total_students=total_students,
+            leaves_by_emp=leaves_by_emp,
+            ytd_sick_by_emp=ytd_sick_by_emp,
+            ot_by_emp=ot_by_emp,
+            meetings_by_emp=meetings_by_emp,
+            prior_absent_by_emp=prior_absent_by_emp,
+            holiday_set=holiday_set,
+            makeup_set=makeup_set,
+            shifts_by_emp=shifts_by_emp,
+        )
+
     def process_bulk_salary_calculation(
         self, employee_ids: list, year: int, month: int, progress_callback=None
     ):
@@ -2856,27 +3131,7 @@ class SalaryEngine:
         Returns:
             (results: list[dict], errors: list[dict])
         """
-        from models.database import (
-            Employee,
-            SalaryRecord,
-            Attendance,
-            LeaveRecord,
-            OvertimeRecord as DBOvertimeRecord,
-            MeetingRecord,
-            Holiday,
-            Classroom,
-            ClassGrade,
-        )
-
-        try:
-            from models.database import DailyShift as _DailyShift
-
-            _has_daily_shift = True
-        except ImportError:
-            _DailyShift = None
-            _has_daily_shift = False
-
-        from services.student_enrollment import classroom_student_count_map
+        from models.database import SalaryRecord
 
         session = _get_db_session()
         session.expire_on_commit = (
@@ -2887,204 +3142,26 @@ class SalaryEngine:
             start_date = date(year, month, 1)
             end_date = date(year, month, last_day)
 
-            # ── 批次預載所有資料（~13 次 DB 查詢取代 N×13）─────────────────────
-
-            # 1. 員工（含 job_title_rel，避免 N 次 lazy load）
-            employees = (
-                session.query(Employee)
-                .options(joinedload(Employee.job_title_rel))
-                .filter(Employee.id.in_(employee_ids))
-                .all()
+            # ── Phase 1：批次預載所有資料（~13 次 DB 查詢取代 N×13）─────────────
+            preload = self._bulk_preload_for_salary_month(
+                session, employee_ids, year, month, start_date, end_date
             )
-            emp_map = {e.id: e for e in employees}
-
-            # 2. 考勤
-            all_attendances = (
-                session.query(Attendance)
-                .filter(
-                    Attendance.employee_id.in_(employee_ids),
-                    Attendance.attendance_date >= start_date,
-                    Attendance.attendance_date <= end_date,
-                )
-                .all()
-            )
-            att_by_emp = defaultdict(list)
-            for a in all_attendances:
-                att_by_emp[a.employee_id].append(a)
-
-            # 4. 班級與年級（預載 grade 避免 lazy load）
-            all_classrooms = (
-                session.query(Classroom)
-                .options(joinedload(Classroom.grade))
-                .filter(Classroom.is_active == True)
-                .all()
-            )
-            classroom_map = {c.id: c for c in all_classrooms}
-            # 助理教師 → 班級清單（避免迴圈內 O(classrooms) 線性掃描，改為 O(1) 查表）
-            assistant_to_classes: dict[int, list] = defaultdict(list)
-            art_to_classes: dict[int, list] = defaultdict(list)
-            for _c in all_classrooms:
-                if _c.assistant_teacher_id:
-                    assistant_to_classes[_c.assistant_teacher_id].append(_c)
-                if _c.art_teacher_id:
-                    art_to_classes[_c.art_teacher_id].append(_c)
-
-            # 員工 → 當期主要班級反查表（取代 emp.classroom_id 讀取）
-            # 優先用本月份對應學期（school_year, semester）篩選；若該員在當期無班，
-            # 個別 fallback 至跨學期任一 active（例如學校沿用同一個 Classroom 紀錄跨學期）。
-            from utils.academic import resolve_current_academic_term as _resolve_term
-
-            target_school_year, target_semester = _resolve_term(end_date)
-
-            def _role_priority(c, employee_id: int) -> int:
-                if c.head_teacher_id == employee_id:
-                    return 1
-                if c.assistant_teacher_id == employee_id:
-                    return 2
-                if c.art_teacher_id == employee_id:
-                    return 3
-                return 99
-
-            def _accumulate(target: dict, classrooms):
-                for _c in classrooms:
-                    for tid in (
-                        _c.head_teacher_id,
-                        _c.assistant_teacher_id,
-                        _c.art_teacher_id,
-                    ):
-                        if not tid:
-                            continue
-                        existing = target.get(tid)
-                        if existing is None or _role_priority(_c, tid) < _role_priority(
-                            existing, tid
-                        ):
-                            target[tid] = _c
-
-            employee_to_classroom: dict[int, Classroom] = {}
-            term_classrooms = [
-                c
-                for c in all_classrooms
-                if c.school_year == target_school_year and c.semester == target_semester
-            ]
-            _accumulate(employee_to_classroom, term_classrooms)
-            # 對未在當期班級表中出現的教師，再從跨學期 active 補上 fallback
-            missing_classrooms = [c for c in all_classrooms if c not in term_classrooms]
-            fallback_target: dict[int, Classroom] = {}
-            _accumulate(fallback_target, missing_classrooms)
-            for tid, _c in fallback_target.items():
-                if tid not in employee_to_classroom:
-                    employee_to_classroom[tid] = _c
-
-            # 5. 學生數（1 次批次查詢，取代每人 1 次）
-            db_count_map = classroom_student_count_map(session, end_date)
-            total_students = sum(db_count_map.values())
-
-            # 6. 請假
-            all_leaves = (
-                session.query(LeaveRecord)
-                .filter(
-                    LeaveRecord.employee_id.in_(employee_ids),
-                    LeaveRecord.is_approved == True,
-                    LeaveRecord.start_date <= end_date,
-                    LeaveRecord.end_date >= start_date,
-                )
-                .all()
-            )
-            leaves_by_emp = defaultdict(list)
-            for lv in all_leaves:
-                leaves_by_emp[lv.employee_id].append(lv)
-
-            # 6b. 年度累計病假時數（用於 30 日半薪上限判斷）
-            ytd_sick_by_emp = _get_ytd_sick_hours_bulk(
-                session, employee_ids, year, month
-            )
-
-            # 7. 加班
-            all_ot = (
-                session.query(DBOvertimeRecord)
-                .filter(
-                    DBOvertimeRecord.employee_id.in_(employee_ids),
-                    DBOvertimeRecord.is_approved == True,
-                    DBOvertimeRecord.overtime_date >= start_date,
-                    DBOvertimeRecord.overtime_date <= end_date,
-                )
-                .all()
-            )
-            ot_by_emp = defaultdict(list)
-            for ot in all_ot:
-                ot_by_emp[ot.employee_id].append(ot)
-
-            # 8. 園務會議（當月）
-            all_meetings = (
-                session.query(MeetingRecord)
-                .filter(
-                    MeetingRecord.employee_id.in_(employee_ids),
-                    MeetingRecord.meeting_date >= start_date,
-                    MeetingRecord.meeting_date <= end_date,
-                )
-                .all()
-            )
-            meetings_by_emp = defaultdict(list)
-            for m in all_meetings:
-                meetings_by_emp[m.employee_id].append(m)
-
-            # 9. 發放月前幾月會議缺席（bonus months: 2/6/9/12）
-            prior_absent_by_emp = defaultdict(int)
-            period_start = get_meeting_deduction_period_start(year, month)
-            if period_start is not None and period_start < start_date:
-                prior_meetings = (
-                    session.query(MeetingRecord)
-                    .filter(
-                        MeetingRecord.employee_id.in_(employee_ids),
-                        MeetingRecord.meeting_date >= period_start,
-                        MeetingRecord.meeting_date < start_date,
-                    )
-                    .all()
-                )
-                for m in prior_meetings:
-                    if not m.attended:
-                        prior_absent_by_emp[m.employee_id] += 1
-
-            # 10. 假日（全月共用，1 次）
-            holidays_raw = (
-                session.query(Holiday.date)
-                .filter(
-                    Holiday.date >= start_date,
-                    Holiday.date <= end_date,
-                    Holiday.is_active == True,
-                )
-                .all()
-            )
-            holiday_set = {h.date for h in holidays_raw}
-
-            # 10.5 補班日（WorkdayOverride，全月共用）
-            from models.database import WorkdayOverride as _WorkdayOverride
-
-            makeup_raw = (
-                session.query(_WorkdayOverride.date)
-                .filter(
-                    _WorkdayOverride.date >= start_date,
-                    _WorkdayOverride.date <= end_date,
-                    _WorkdayOverride.is_active.is_(True),
-                )
-                .all()
-            )
-            makeup_set = {m.date for m in makeup_raw}
-
-            # 11. 班別（DailyShift）
-            shifts_by_emp = defaultdict(dict)
-            if _has_daily_shift:
-                all_shifts = (
-                    session.query(_DailyShift)
-                    .filter(
-                        _DailyShift.employee_id.in_(employee_ids),
-                        _DailyShift.date >= start_date,
-                        _DailyShift.date <= end_date,
-                    )
-                    .all()
-                )
-                for ds in all_shifts:
-                    shifts_by_emp[ds.employee_id][ds.date] = ds.shift_type_id
+            emp_map = preload.emp_map
+            att_by_emp = preload.att_by_emp
+            classroom_map = preload.classroom_map
+            employee_to_classroom = preload.employee_to_classroom
+            assistant_to_classes = preload.assistant_to_classes
+            art_to_classes = preload.art_to_classes
+            db_count_map = preload.db_count_map
+            total_students = preload.total_students
+            leaves_by_emp = preload.leaves_by_emp
+            ytd_sick_by_emp = preload.ytd_sick_by_emp
+            ot_by_emp = preload.ot_by_emp
+            meetings_by_emp = preload.meetings_by_emp
+            prior_absent_by_emp = preload.prior_absent_by_emp
+            holiday_set = preload.holiday_set
+            makeup_set = preload.makeup_set
+            shifts_by_emp = preload.shifts_by_emp
 
             # ── 批次預載結束，開始計算 ──────────────────────────────────────────
 
