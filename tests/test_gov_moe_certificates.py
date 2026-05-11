@@ -36,3 +36,23 @@ def test_enrollment_certificate_serial_format():
 
     c = EnrollmentCertificate(year=2026, seq=7)
     assert c.serial == "EC-2026-0007"
+
+
+def test_enrollment_cert_pdf_contains_required_fields():
+    from datetime import date
+    from services.enrollment_certificate_pdf import generate_enrollment_cert_pdf
+
+    pdf_bytes = generate_enrollment_cert_pdf(
+        student_name="王小明",
+        student_no="S0001",
+        id_number="A123456789",
+        admit_date=date(2024, 8, 1),
+        classroom_name="向日葵班",
+        purpose="申請育兒津貼",
+        issue_date=date(2026, 5, 12),
+        serial="EC-2026-0001",
+        copies=2,
+        institution_name="義華幼兒園",
+    )
+    assert isinstance(pdf_bytes, bytes) and len(pdf_bytes) > 1000
+    assert pdf_bytes.startswith(b"%PDF")
