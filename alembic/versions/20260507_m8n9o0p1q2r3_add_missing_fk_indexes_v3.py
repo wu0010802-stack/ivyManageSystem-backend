@@ -127,10 +127,18 @@ INDEXES = [
 
 
 def upgrade() -> None:
-    for table, column, name in INDEXES:
-        op.create_index(name, table, [column], unique=False)
+    # CONCURRENTLY 不取 ShareLock，避免阻塞 audit_logs / salary_snapshots /
+    # attendances 等熱寫表；IF NOT EXISTS 容許 partial-run 重跑。兩者皆需
+    # autocommit_block（CREATE INDEX CONCURRENTLY 不可在 transaction 內）。
+    with op.get_context().autocommit_block():
+        for table, column, name in INDEXES:
+            op.execute(
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS "{name}" '
+                f"ON public.{table} ({column})"
+            )
 
 
 def downgrade() -> None:
-    for _table, _column, name in reversed(INDEXES):
-        op.drop_index(name, table_name=_table)
+    with op.get_context().autocommit_block():
+        for _table, _column, name in reversed(INDEXES):
+            op.execute(f'DROP INDEX CONCURRENTLY IF EXISTS public."{name}"')

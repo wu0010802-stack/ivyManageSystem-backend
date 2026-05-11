@@ -31,9 +31,12 @@ def upgrade() -> None:
     bind = op.get_bind()
     if "sync_raw_data" not in set(inspect(bind).get_table_names()):
         return
-    bind.execute(
-        text("DELETE FROM sync_raw_data WHERE created_at < NOW() - INTERVAL '7 days'")
-    )
+    # docstring 已說明本表已無 INSERT / SELECT 路徑（scraper 也已切換）。
+    # TRUNCATE 取代 DELETE 以避免 16 萬筆 dead tuples 與長 row lock；雖取
+    # AccessExclusiveLock 但瞬間完成，且 prod 既然「無寫」也不會搶鎖。
+    # 改 TRUNCATE 後不再保留 "7 天" 過濾條件，但這條件在 docstring 假
+    # 設下已無意義（無寫者代表所有資料皆 > 7 天）。
+    bind.execute(text("TRUNCATE TABLE sync_raw_data"))
 
 
 def downgrade() -> None:
