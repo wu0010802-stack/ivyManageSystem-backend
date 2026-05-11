@@ -298,6 +298,110 @@ class TestP0_1BatchApproveTwoPass:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Task E — P1-6: approve_overtime body schema（向後相容）
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestP1_6ApproveOvertimeBodySchema:
+    """approve_overtime 必須支援 body schema 接 rejection_reason（不洩漏個資到 URL log）。
+    保留 query param fallback 不破壞既有前端。approved_by 強制 current_user.username。
+    """
+
+    def test_approve_overtime_accepts_body_rejection_reason(self, app_client):
+        """body 內的 approved=False + rejection_reason 必須被讀取並落 ApprovalLog。"""
+        from models.database import ApprovalLog
+
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "E001", "員工")
+            _admin(session)
+            ot = _approved_overtime(
+                session,
+                emp.id,
+                is_approved=None,
+                overtime_date=date(2026, 8, 1),
+            )
+            session.commit()
+            ot_id = ot.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(
+            f"/api/overtimes/{ot_id}/approve",
+            json={"approved": False, "rejection_reason": "時數不符實際工作"},
+        )
+        assert res.status_code == 200, f"body 路徑應通過；body={res.json()}"
+
+        with session_factory() as session:
+            ot_db = session.get(OvertimeRecord, ot_id)
+            assert (
+                ot_db.is_approved is False
+            ), f"body 內 approved=False 應被讀取；實際 is_approved={ot_db.is_approved}"
+            log = (
+                session.query(ApprovalLog)
+                .filter(
+                    ApprovalLog.doc_type == "overtime",
+                    ApprovalLog.doc_id == ot_id,
+                )
+                .order_by(ApprovalLog.id.desc())
+                .first()
+            )
+            assert log is not None and "時數不符實際工作" in (
+                log.comment or ""
+            ), f"rejection_reason 必須落 ApprovalLog.comment；log={log.comment if log else None}"
+
+    def test_approve_overtime_query_fallback_still_works(self, app_client):
+        """向後相容：舊前端用 query param 應仍可運作。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "E002", "員工二")
+            _admin(session)
+            ot = _approved_overtime(
+                session,
+                emp.id,
+                is_approved=None,
+                overtime_date=date(2026, 8, 2),
+            )
+            session.commit()
+            ot_id = ot.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(
+            f"/api/overtimes/{ot_id}/approve?approved=false&rejection_reason=tooshort",
+        )
+        assert res.status_code == 200, f"query fallback 應通過；body={res.json()}"
+
+    def test_approved_by_uses_current_user_not_query_param(self, app_client):
+        """approved_by 應強制取 current_user.username，不接受外部 query 輸入。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "E003", "員工三")
+            _admin(session, username="real_admin")
+            ot = _approved_overtime(
+                session,
+                emp.id,
+                is_approved=None,
+                overtime_date=date(2026, 8, 3),
+            )
+            session.commit()
+            ot_id = ot.id
+
+        assert _login(client, username="real_admin").status_code == 200
+
+        res = client.put(
+            f"/api/overtimes/{ot_id}/approve?approved=true&approved_by=spoofed_name",
+        )
+        assert res.status_code == 200
+
+        with session_factory() as session:
+            ot_db = session.get(OvertimeRecord, ot_id)
+            assert (
+                ot_db.approved_by == "real_admin"
+            ), f"approved_by 應取 current_user，不應為 spoofed_name；實際={ot_db.approved_by}"
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Task D — P1-4: import_leaves 補 _check_overlap
 #         P1-5: leave ↔ overtime 跨類自我重疊偵測
 # ────────────────────────────────────────────────────────────────────────────

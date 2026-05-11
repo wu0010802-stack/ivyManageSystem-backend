@@ -11,7 +11,7 @@ from typing import Optional, List
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile, File
 from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.rate_limit import SlidingWindowLimiter
@@ -693,6 +693,18 @@ class OvertimeUpdate(BaseModel):
 # ============ Batch Approve Request Model ============
 
 
+class OvertimeApproveRequest(BaseModel):
+    """單筆加班核准/駁回 body schema（修補 2026-05-11 P1-6）。
+
+    原本 approve_overtime 用 query parameter 接 rejection_reason，會把駁回原因
+    寫進 proxy/CDN/access log；approved_by 也可被外部覆寫。新增 body schema 後
+    新前端應改用 body；查詢字串保留作向後相容 fallback。
+    """
+
+    approved: bool = True
+    rejection_reason: Optional[str] = None
+
+
 class OvertimeBatchApproveRequest(BaseModel):
     ids: List[int]
     approved: bool
@@ -1231,6 +1243,8 @@ def delete_overtime(
 def approve_overtime(
     overtime_id: int,
     request: Request,
+    data: Optional[OvertimeApproveRequest] = Body(None),
+    # 以下為向後相容 query parameter；新前端應改用 body（修補 2026-05-11 P1-6）
     approved: bool = True,
     approved_by: str = "管理員",
     rejection_reason: Optional[str] = None,
@@ -1242,7 +1256,13 @@ def approve_overtime(
     （≥3 字），對齊 leaves / punch_corrections 既有要求；避免管理員惡意
     零原因駁回他人加班費。reason 落 ApprovalLog.comment（OvertimeRecord
     無 rejection_reason 欄位）。
+
+    P1-6 修補（2026-05-11）：body 優先；無 body 才回退 query parameter。
     """
+    # body 優先：新前端走 body，rejection_reason 不再寫進 URL log
+    if data is not None:
+        approved = data.approved
+        rejection_reason = data.rejection_reason
     # 駁回必填原因（schema 也驗一次，雙保險）
     if not approved:
         cleaned = (rejection_reason or "").strip()
