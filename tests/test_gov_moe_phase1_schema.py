@@ -27,9 +27,16 @@ def test_admin_role_has_gov_reports_permissions():
     assert admin_perms & Permission.GOV_REPORTS_EXPORT.value
 
 
-def test_hr_role_has_gov_reports_view():
+def test_hr_role_has_gov_reports_view_and_export():
     hr_perms = ROLE_TEMPLATES["hr"]
     assert hr_perms & Permission.GOV_REPORTS_VIEW.value
+    assert hr_perms & Permission.GOV_REPORTS_EXPORT.value
+
+
+def test_supervisor_role_has_view_but_not_export():
+    supervisor_perms = ROLE_TEMPLATES["supervisor"]
+    assert supervisor_perms & Permission.GOV_REPORTS_VIEW.value
+    assert not (supervisor_perms & Permission.GOV_REPORTS_EXPORT.value)
 
 
 def test_teacher_role_has_no_gov_reports_permissions():

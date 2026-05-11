@@ -359,6 +359,8 @@ PERMISSION_GROUPS: List[Dict] = [
             "AUDIT_LOGS",
             "BUSINESS_ANALYTICS",
             "PARENT_MESSAGES_WRITE",
+            "GOV_REPORTS_VIEW",
+            "GOV_REPORTS_EXPORT",
         ],
         "split_permissions": [
             {
