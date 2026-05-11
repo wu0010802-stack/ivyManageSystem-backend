@@ -126,6 +126,7 @@ ENTITY_PATTERNS = [
     (r"/api/gov-moe/disability-documents", "disability_document"),
     (r"/api/gov-moe/certificates", "enrollment_certificate"),
     (r"/api/gov-moe/subsidies", "special_subsidy"),
+    (r"/api/gov-moe/iep", "iep_record"),
     # 考核系統（2026-05-11）。penalty_catalog / bonus_rates 排在 cycles / participants / events /
     # summaries 之前，確保更具體路徑優先匹配。
     # /api/appraisal/cycles/{id}/summaries:recompute 歸 appraisal_cycle，
@@ -190,6 +191,8 @@ ENTITY_LABELS = {
     "disability_document": "身障鑑定文件",
     "enrollment_certificate": "在學證明",
     "special_subsidy": "特教加給/助理鐘點費",
+    # 教育部申報 Phase 4A
+    "iep_record": "IEP 個別化教育計畫",
     # 考核系統
     "appraisal_cycle": "考核週期",
     "appraisal_participant": "考核參與者",

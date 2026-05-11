@@ -394,3 +394,15 @@ def test_iep_pdf_export(gov_moe_client):
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
     assert r.content.startswith(b"%PDF")
+
+
+# ---------------------------------------------------------------------------
+# A4 Tests: Audit pattern
+# ---------------------------------------------------------------------------
+
+
+def test_audit_pattern_registered_for_iep():
+    from utils.audit import ENTITY_PATTERNS, ENTITY_LABELS
+
+    assert any("iep_record" in (et or "") for _, et in ENTITY_PATTERNS)
+    assert ENTITY_LABELS.get("iep_record") == "IEP 個別化教育計畫"
