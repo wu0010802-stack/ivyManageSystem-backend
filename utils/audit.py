@@ -121,6 +121,9 @@ ENTITY_PATTERNS = [
     (r"/api/parent/contact-book", "contact_book_entry"),
     (r"/api/portal/parent-messages", "parent_message"),
     (r"/api/portal/contact-book", "contact_book_entry"),
+    # 教育部申報模組 Phase 1 — 身障/特教文件 CRUD 必須留 audit，
+    # 否則鑑定證明異動（影響補助/IEP）會無稽核痕跡。
+    (r"/api/gov-moe/disability-documents", "disability_document"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -171,6 +174,8 @@ ENTITY_LABELS = {
     # 審核流程設定（policy 自身異動稽核）
     "approval_policy": "審核流程設定",
     "insurance_bracket": "勞健保級距",
+    # 教育部申報 Phase 1
+    "disability_document": "身障鑑定文件",
 }
 
 ACTION_LABELS = {
