@@ -3116,6 +3116,73 @@ class SalaryEngine:
             shifts_by_emp=shifts_by_emp,
         )
 
+    def _acquire_locks_and_load_existing_records(
+        self,
+        session,
+        employee_ids: list,
+        emp_map: dict,
+        year: int,
+        month: int,
+    ) -> dict:
+        """process_bulk_salary_calculation Phase 3：取 advisory lock + 載既有薪資記錄。
+
+        Why: 鎖與既有記錄載入的順序至關重要（TOCTOU 防護）：
+            必須先取鎖、再 expire_all、再 query existing_records，否則
+            in-memory 快取會在另一 worker finalize 後仍以 is_finalized=False
+            覆蓋實際已封存資料。取鎖後再做整月封存掃描攔截前置 API 檢查
+            到取鎖之間的偷 finalize。
+
+        Raises:
+            HTTPException(409): 取鎖後若仍有 is_finalized 記錄，拒絕繼續批次。
+        """
+        from models.database import SalaryRecord
+        from utils.advisory_lock import acquire_salary_lock
+
+        for locked_emp_id in sorted(employee_ids):
+            acquire_salary_lock(
+                session, employee_id=locked_emp_id, year=year, month=month
+            )
+
+        # 12. 現有薪資記錄（upsert check）
+        # 此查詢必須在 advisory lock 全部取得之後才進行（TOCTOU 防護見 docstring）。
+        session.expire_all()
+        existing_records = (
+            session.query(SalaryRecord)
+            .filter(
+                SalaryRecord.employee_id.in_(employee_ids),
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+            )
+            .all()
+        )
+        salary_record_by_emp = {r.employee_id: r for r in existing_records}
+
+        # 取鎖後再做一次整月封存檢查：若有人在 API 前置檢查後搶先封存單筆，
+        # 這裡能在開始寫入前攔下來，避免覆蓋封存資料。
+        finalized_after_lock = [
+            r for r in existing_records if getattr(r, "is_finalized", False)
+        ]
+        if finalized_after_lock:
+            from fastapi import HTTPException as _HTTPException
+
+            finalized_names = [
+                emp_map[r.employee_id].name
+                for r in finalized_after_lock
+                if r.employee_id in emp_map
+            ]
+            # 使用 HTTPException(409) 讓 API 層回傳 conflict，而非被
+            # raise_safe_500 吞為 500。前置 API 檢查 + 此二次檢查共同
+            # 覆蓋 TOCTOU：介於兩次檢查的封存會在此攔下。
+            raise _HTTPException(
+                status_code=409,
+                detail=(
+                    f"{year}/{month} 有 {len(finalized_after_lock)} 筆薪資在取得鎖後被封存"
+                    f"（{'、'.join(finalized_names)}），無法繼續批次計算；"
+                    "請重新整理後再試。"
+                ),
+            )
+        return salary_record_by_emp
+
     def _build_period_monthly_context(
         self,
         session,
@@ -3207,56 +3274,10 @@ class SalaryEngine:
             total = len(employee_ids)
             done = 0
 
-            # ── advisory lock：對每位員工依 id 排序取鎖，避免多 worker 交錯死鎖 ──
-            # 鎖綁定在本 transaction，commit/rollback 時才釋放。
-            from utils.advisory_lock import acquire_salary_lock
-
-            for locked_emp_id in sorted(employee_ids):
-                acquire_salary_lock(
-                    session, employee_id=locked_emp_id, year=year, month=month
-                )
-
-            # 12. 現有薪資記錄（upsert check）
-            #
-            # 重要：此查詢必須在 advisory lock 全部取得之後才進行，否則會有 TOCTOU：
-            # 若在取鎖前載入 salary_record_by_emp，另一個 worker 可能在取鎖前
-            # finalize 某筆記錄；待本 worker 取得鎖後還使用陳舊快取，
-            # 就會以 is_finalized=False 覆蓋實際已封存的記錄。
-            session.expire_all()
-            existing_records = (
-                session.query(SalaryRecord)
-                .filter(
-                    SalaryRecord.employee_id.in_(employee_ids),
-                    SalaryRecord.salary_year == year,
-                    SalaryRecord.salary_month == month,
-                )
-                .all()
+            # ── advisory lock + 取既有 SalaryRecord + TOCTOU finalize 檢查 ──
+            salary_record_by_emp = self._acquire_locks_and_load_existing_records(
+                session, employee_ids, emp_map, year, month
             )
-            salary_record_by_emp = {r.employee_id: r for r in existing_records}
-            # 取鎖後再做一次整月封存檢查：若有人在 API 前置檢查後搶先封存單筆，
-            # 這裡能在開始寫入前攔下來，避免覆蓋封存資料。
-            finalized_after_lock = [
-                r for r in existing_records if getattr(r, "is_finalized", False)
-            ]
-            if finalized_after_lock:
-                from fastapi import HTTPException as _HTTPException
-
-                finalized_names = [
-                    emp_map[r.employee_id].name
-                    for r in finalized_after_lock
-                    if r.employee_id in emp_map
-                ]
-                # 使用 HTTPException(409) 讓 API 層回傳 conflict，而非被
-                # raise_safe_500 吞為 500。前置 API 檢查 + 此二次檢查共同
-                # 覆蓋 TOCTOU：介於兩次檢查的封存會在此攔下。
-                raise _HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"{year}/{month} 有 {len(finalized_after_lock)} 筆薪資在取得鎖後被封存"
-                        f"（{'、'.join(finalized_names)}），無法繼續批次計算；"
-                        "請重新整理後再試。"
-                    ),
-                )
 
             # 整批共用 config_for_month:本批次都針對同一個 (year, month),
             # 因此進入 loop 前 swap 一次即可;內層 _compute_period_accrual_totals
