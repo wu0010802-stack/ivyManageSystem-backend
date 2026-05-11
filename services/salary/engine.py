@@ -3214,6 +3214,267 @@ class SalaryEngine:
             }
         return monthly_ctx_cache
 
+    def _compute_and_persist_single_employee(
+        self,
+        session,
+        emp,
+        preload: _BulkSalaryPreload,
+        monthly_ctx_cache: dict,
+        salary_record_by_emp: dict,
+        year: int,
+        month: int,
+        start_date: date,
+        end_date: date,
+    ):
+        """process_bulk_salary_calculation Phase 4：單一員工的薪資計算 + SalaryRecord upsert。
+
+        Why: 把 per-employee 主計算抽出來，呼叫端僅負責 SAVEPOINT 與錯誤
+            回報。raise 時呼叫端會 rollback savepoint；正常結束時 caller commit。
+
+        Returns:
+            (emp, SalaryBreakdown) — 直接拿來 append 到 results。
+        """
+        from models.database import SalaryRecord
+        from .utils import is_attendance_waived
+
+        att_by_emp = preload.att_by_emp
+        employee_to_classroom = preload.employee_to_classroom
+        db_count_map = preload.db_count_map
+        assistant_to_classes = preload.assistant_to_classes
+        art_to_classes = preload.art_to_classes
+        total_students = preload.total_students
+        leaves_by_emp = preload.leaves_by_emp
+        ytd_sick_by_emp = preload.ytd_sick_by_emp
+        ot_by_emp = preload.ot_by_emp
+        meetings_by_emp = preload.meetings_by_emp
+        prior_absent_by_emp = preload.prior_absent_by_emp
+        holiday_set = preload.holiday_set
+        makeup_set = preload.makeup_set
+        shifts_by_emp = preload.shifts_by_emp
+
+        emp_dict = self._load_emp_dict(emp)
+        # 載入既有 record 的手動調整欄位(performance/special bonus),
+        # 避免 bulk 重算把 HR 人工加的獎金歸 0。已在 salary_record_by_emp
+        # 預載過 record,直接讀記憶體值省一次 query。
+        _existing_rec = salary_record_by_emp.get(emp.id)
+        emp_dict["performance_bonus"] = (
+            (_existing_rec.performance_bonus or 0) if _existing_rec else 0
+        )
+        emp_dict["special_bonus"] = (
+            (_existing_rec.special_bonus or 0) if _existing_rec else 0
+        )
+
+        # ── 考勤統計（使用預載）
+        # admin_waive 標記的考勤異常薪資端視為已豁免（不計入遲到/早退/缺打卡）
+        attendances = att_by_emp[emp.id]
+        late_count = sum(
+            1 for a in attendances if a.is_late and not is_attendance_waived(a)
+        )
+        early_count = sum(
+            1 for a in attendances if a.is_early_leave and not is_attendance_waived(a)
+        )
+        missing_in = sum(
+            1
+            for a in attendances
+            if a.is_missing_punch_in and not is_attendance_waived(a)
+        )
+        missing_out = sum(
+            1
+            for a in attendances
+            if a.is_missing_punch_out and not is_attendance_waived(a)
+        )
+        total_late_minutes = sum(
+            a.late_minutes or 0
+            for a in attendances
+            if a.is_late and not is_attendance_waived(a)
+        )
+        total_early_minutes = sum(
+            a.early_leave_minutes or 0
+            for a in attendances
+            if a.is_early_leave and not is_attendance_waived(a)
+        )
+        emp_dict["_late_details"] = [
+            a.late_minutes or 0
+            for a in attendances
+            if a.is_late and not is_attendance_waived(a) and (a.late_minutes or 0) > 0
+        ]
+
+        if emp.employee_type == "hourly":
+            _work_end_t = datetime.strptime(
+                emp.work_end_time or "17:00", "%H:%M"
+            ).time()
+            total_hours = 0.0
+            total_hourly_pay = 0.0
+            monthly_ot_used = 0.0
+            sorted_attendances = sorted(
+                attendances, key=lambda a: a.punch_in_time or datetime.max
+            )
+            for a in sorted_attendances:
+                if not a.punch_in_time:
+                    continue
+                day_hours = _compute_hourly_daily_hours(
+                    a.punch_in_time, a.punch_out_time, _work_end_t
+                )
+                total_hours += day_hours
+                remaining = max(0.0, MAX_MONTHLY_OVERTIME_HOURS - monthly_ot_used)
+                day_pay, ot_used = _calc_daily_hourly_pay_with_cap(
+                    day_hours,
+                    emp.hourly_rate or 0,
+                    remaining_ot_quota=remaining,
+                )
+                monthly_ot_used += ot_used
+                total_hourly_pay += day_pay
+            if monthly_ot_used >= MAX_MONTHLY_OVERTIME_HOURS - 1e-9:
+                logger.warning(
+                    "時薪員工 emp_id=%d 當月加班時數觸及 %.0fh 上限，後續加班以 1.0 倍率計薪",
+                    emp.id,
+                    MAX_MONTHLY_OVERTIME_HOURS,
+                )
+            emp_dict["work_hours"] = round(total_hours, 2)
+            emp_dict["hourly_calculated_pay"] = round(total_hourly_pay, 2)
+
+        attendance_result = AttendanceResult(
+            employee_name=emp.name,
+            total_days=len(attendances),
+            normal_days=len(attendances) - late_count - early_count,
+            late_count=late_count,
+            early_leave_count=early_count,
+            missing_punch_in_count=missing_in,
+            missing_punch_out_count=missing_out,
+            total_late_minutes=total_late_minutes,
+            total_early_minutes=total_early_minutes,
+            details=[],
+        )
+
+        # ── classroom_context / office_staff_context（使用預載 + 共用方法）
+        # 改用反查 map（不再讀 emp.classroom_id），可同時修：
+        #   - 班級頁面指派老師時未同步 Employee.classroom_id 的 silent zero bug
+        #   - 跨學期老師被誤套用其他學期班級的問題（term filter）
+        classroom_context = None
+        primary_classroom = employee_to_classroom.get(emp.id)
+        if primary_classroom is not None:
+            classroom_context = self._build_classroom_context_from_batch(
+                emp,
+                primary_classroom,
+                db_count_map,
+                assistant_to_classes,
+                art_to_classes,
+            )
+        office_staff_context = self._build_office_staff_context(
+            emp, total_students, classroom_context
+        )
+
+        # ── 請假、加班、會議（使用預載）
+        approved_leaves = leaves_by_emp[emp.id]
+        daily_salary = calc_daily_salary(emp_dict["base_salary"])
+        leave_deduction_total = _sum_leave_deduction(
+            approved_leaves,
+            daily_salary,
+            ytd_sick_hours_before_month=ytd_sick_by_emp.get(emp.id, 0.0),
+        )
+        personal_sick_leave_hours = sum(
+            lv.leave_hours or 0
+            for lv in approved_leaves
+            if lv.leave_type in ("personal", "sick")
+        )
+        overtime_work_pay_total = sum(o.overtime_pay or 0 for o in ot_by_emp[emp.id])
+
+        meeting_records = meetings_by_emp[emp.id]
+        meeting_attended = sum(1 for m in meeting_records if m.attended)
+        meeting_absent_current = sum(1 for m in meeting_records if not m.attended)
+        meeting_overtime_pay_total = sum(
+            m.overtime_pay or 0 for m in meeting_records if m.attended
+        )
+        absent_period = meeting_absent_current + prior_absent_by_emp[emp.id]
+        meeting_context = None
+        if meeting_records or absent_period > 0:
+            meeting_context = {
+                "attended": meeting_attended,
+                "absent": meeting_absent_current,
+                "absent_period": absent_period,
+                "overtime_pay_total": meeting_overtime_pay_total,
+            }
+
+        # ── 曠職偵測（使用預載 + 共用方法）
+        absent_count = 0
+        absence_deduction_amount = 0.0
+        if emp.employee_type != "hourly":
+            expected_workdays = _build_expected_workdays(
+                year=year,
+                month=month,
+                holiday_set=holiday_set,
+                daily_shift_map=shifts_by_emp[emp.id],
+                hire_date_raw=emp.hire_date,
+                resign_date_raw=getattr(emp, "resign_date", None),
+                makeup_set=makeup_set,
+            )
+            absent_count, absence_deduction_amount = self._compute_absence(
+                emp.id,
+                attendances,
+                approved_leaves,
+                expected_workdays,
+                daily_salary,
+                start_date,
+                end_date,
+                year,
+                month,
+            )
+
+        # 發放月：累積期間每月節慶/超額（共用 monthly_ctx_cache）
+        period_festival_total, period_overtime_total = (
+            self._compute_period_accrual_totals(
+                session,
+                emp,
+                year,
+                month,
+                monthly_ctx_cache=monthly_ctx_cache,
+            )
+        )
+
+        # ── 計算薪資
+        breakdown = self.calculate_salary(
+            employee=emp_dict,
+            year=year,
+            month=month,
+            attendance=attendance_result,
+            leave_deduction=leave_deduction_total,
+            classroom_context=classroom_context,
+            office_staff_context=office_staff_context,
+            meeting_context=meeting_context,
+            overtime_work_pay=overtime_work_pay_total,
+            personal_sick_leave_hours=personal_sick_leave_hours,
+            period_festival_override=period_festival_total,
+            period_overtime_override=period_overtime_total,
+        )
+
+        breakdown.absent_count = absent_count
+        breakdown.absence_deduction = round(absence_deduction_amount)
+        breakdown.total_deduction = round(
+            breakdown.total_deduction + absence_deduction_amount
+        )
+        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
+        if breakdown.total_deduction < 0:
+            raise ValueError(
+                f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
+            )
+        if breakdown.net_salary < 0:
+            raise ValueError(f"net_salary 異常負值（含曠職）: {breakdown.net_salary}")
+
+        # ── SalaryRecord upsert（延後至外層 commit）
+        salary_record = salary_record_by_emp.get(emp.id)
+        self._check_not_finalized(salary_record, emp.name, year, month)
+        if not salary_record:
+            salary_record = SalaryRecord(
+                employee_id=emp.id,
+                salary_year=year,
+                salary_month=month,
+            )
+            session.add(salary_record)
+
+        _fill_salary_record(salary_record, breakdown, self)
+        return emp, breakdown
+
     def process_bulk_salary_calculation(
         self, employee_ids: list, year: int, month: int, progress_callback=None
     ):
@@ -3244,22 +3505,10 @@ class SalaryEngine:
             preload = self._bulk_preload_for_salary_month(
                 session, employee_ids, year, month, start_date, end_date
             )
+            # 本層僅需 emp_map 與 classroom_map；其餘預載資料下傳給
+            # _compute_and_persist_single_employee 使用。
             emp_map = preload.emp_map
-            att_by_emp = preload.att_by_emp
             classroom_map = preload.classroom_map
-            employee_to_classroom = preload.employee_to_classroom
-            assistant_to_classes = preload.assistant_to_classes
-            art_to_classes = preload.art_to_classes
-            db_count_map = preload.db_count_map
-            total_students = preload.total_students
-            leaves_by_emp = preload.leaves_by_emp
-            ytd_sick_by_emp = preload.ytd_sick_by_emp
-            ot_by_emp = preload.ot_by_emp
-            meetings_by_emp = preload.meetings_by_emp
-            prior_absent_by_emp = preload.prior_absent_by_emp
-            holiday_set = preload.holiday_set
-            makeup_set = preload.makeup_set
-            shifts_by_emp = preload.shifts_by_emp
 
             # ── 批次預載結束，開始計算 ──────────────────────────────────────────
 
@@ -3309,258 +3558,17 @@ class SalaryEngine:
                     # 統一 commit(維持原 batch atomicity)。
                     sp = session.begin_nested()
                     try:
-                        emp_dict = self._load_emp_dict(emp)
-                        # 載入既有 record 的手動調整欄位(performance/special bonus),
-                        # 避免 bulk 重算把 HR 人工加的獎金歸 0。已在 salary_record_by_emp
-                        # 預載過 record,直接讀記憶體值省一次 query。
-                        _existing_rec = salary_record_by_emp.get(emp.id)
-                        emp_dict["performance_bonus"] = (
-                            (_existing_rec.performance_bonus or 0)
-                            if _existing_rec
-                            else 0
+                        emp, breakdown = self._compute_and_persist_single_employee(
+                            session,
+                            emp,
+                            preload,
+                            monthly_ctx_cache,
+                            salary_record_by_emp,
+                            year,
+                            month,
+                            start_date,
+                            end_date,
                         )
-                        emp_dict["special_bonus"] = (
-                            (_existing_rec.special_bonus or 0) if _existing_rec else 0
-                        )
-
-                        # ── 考勤統計（使用預載）
-                        # admin_waive 標記的考勤異常薪資端視為已豁免（不計入遲到/早退/缺打卡）
-                        from .utils import is_attendance_waived
-
-                        attendances = att_by_emp[emp.id]
-                        late_count = sum(
-                            1
-                            for a in attendances
-                            if a.is_late and not is_attendance_waived(a)
-                        )
-                        early_count = sum(
-                            1
-                            for a in attendances
-                            if a.is_early_leave and not is_attendance_waived(a)
-                        )
-                        missing_in = sum(
-                            1
-                            for a in attendances
-                            if a.is_missing_punch_in and not is_attendance_waived(a)
-                        )
-                        missing_out = sum(
-                            1
-                            for a in attendances
-                            if a.is_missing_punch_out and not is_attendance_waived(a)
-                        )
-                        total_late_minutes = sum(
-                            a.late_minutes or 0
-                            for a in attendances
-                            if a.is_late and not is_attendance_waived(a)
-                        )
-                        total_early_minutes = sum(
-                            a.early_leave_minutes or 0
-                            for a in attendances
-                            if a.is_early_leave and not is_attendance_waived(a)
-                        )
-                        emp_dict["_late_details"] = [
-                            a.late_minutes or 0
-                            for a in attendances
-                            if a.is_late
-                            and not is_attendance_waived(a)
-                            and (a.late_minutes or 0) > 0
-                        ]
-
-                        if emp.employee_type == "hourly":
-                            _work_end_t = datetime.strptime(
-                                emp.work_end_time or "17:00", "%H:%M"
-                            ).time()
-                            total_hours = 0.0
-                            total_hourly_pay = 0.0
-                            monthly_ot_used = 0.0
-                            sorted_attendances = sorted(
-                                attendances,
-                                key=lambda a: a.punch_in_time or datetime.max,
-                            )
-                            for a in sorted_attendances:
-                                if not a.punch_in_time:
-                                    continue
-                                day_hours = _compute_hourly_daily_hours(
-                                    a.punch_in_time, a.punch_out_time, _work_end_t
-                                )
-                                total_hours += day_hours
-                                remaining = max(
-                                    0.0, MAX_MONTHLY_OVERTIME_HOURS - monthly_ot_used
-                                )
-                                day_pay, ot_used = _calc_daily_hourly_pay_with_cap(
-                                    day_hours,
-                                    emp.hourly_rate or 0,
-                                    remaining_ot_quota=remaining,
-                                )
-                                monthly_ot_used += ot_used
-                                total_hourly_pay += day_pay
-                            if monthly_ot_used >= MAX_MONTHLY_OVERTIME_HOURS - 1e-9:
-                                logger.warning(
-                                    "時薪員工 emp_id=%d 當月加班時數觸及 %.0fh 上限，後續加班以 1.0 倍率計薪",
-                                    emp.id,
-                                    MAX_MONTHLY_OVERTIME_HOURS,
-                                )
-                            emp_dict["work_hours"] = round(total_hours, 2)
-                            emp_dict["hourly_calculated_pay"] = round(
-                                total_hourly_pay, 2
-                            )
-
-                        attendance_result = AttendanceResult(
-                            employee_name=emp.name,
-                            total_days=len(attendances),
-                            normal_days=len(attendances) - late_count - early_count,
-                            late_count=late_count,
-                            early_leave_count=early_count,
-                            missing_punch_in_count=missing_in,
-                            missing_punch_out_count=missing_out,
-                            total_late_minutes=total_late_minutes,
-                            total_early_minutes=total_early_minutes,
-                            details=[],
-                        )
-
-                        # ── classroom_context / office_staff_context（使用預載 + 共用方法）
-                        # 改用反查 map（不再讀 emp.classroom_id），可同時修：
-                        #   - 班級頁面指派老師時未同步 Employee.classroom_id 的 silent zero bug
-                        #   - 跨學期老師被誤套用其他學期班級的問題（term filter）
-                        classroom_context = None
-                        primary_classroom = employee_to_classroom.get(emp.id)
-                        if primary_classroom is not None:
-                            classroom_context = (
-                                self._build_classroom_context_from_batch(
-                                    emp,
-                                    primary_classroom,
-                                    db_count_map,
-                                    assistant_to_classes,
-                                    art_to_classes,
-                                )
-                            )
-                        office_staff_context = self._build_office_staff_context(
-                            emp, total_students, classroom_context
-                        )
-
-                        # ── 請假、加班、會議（使用預載）
-                        approved_leaves = leaves_by_emp[emp.id]
-                        daily_salary = calc_daily_salary(emp_dict["base_salary"])
-                        leave_deduction_total = _sum_leave_deduction(
-                            approved_leaves,
-                            daily_salary,
-                            ytd_sick_hours_before_month=ytd_sick_by_emp.get(
-                                emp.id, 0.0
-                            ),
-                        )
-                        personal_sick_leave_hours = sum(
-                            lv.leave_hours or 0
-                            for lv in approved_leaves
-                            if lv.leave_type in ("personal", "sick")
-                        )
-                        overtime_work_pay_total = sum(
-                            o.overtime_pay or 0 for o in ot_by_emp[emp.id]
-                        )
-
-                        meeting_records = meetings_by_emp[emp.id]
-                        meeting_attended = sum(1 for m in meeting_records if m.attended)
-                        meeting_absent_current = sum(
-                            1 for m in meeting_records if not m.attended
-                        )
-                        meeting_overtime_pay_total = sum(
-                            m.overtime_pay or 0 for m in meeting_records if m.attended
-                        )
-                        absent_period = (
-                            meeting_absent_current + prior_absent_by_emp[emp.id]
-                        )
-                        meeting_context = None
-                        if meeting_records or absent_period > 0:
-                            meeting_context = {
-                                "attended": meeting_attended,
-                                "absent": meeting_absent_current,
-                                "absent_period": absent_period,
-                                "overtime_pay_total": meeting_overtime_pay_total,
-                            }
-
-                        # ── 曠職偵測（使用預載 + 共用方法）
-                        absent_count = 0
-                        absence_deduction_amount = 0.0
-                        if emp.employee_type != "hourly":
-                            expected_workdays = _build_expected_workdays(
-                                year=year,
-                                month=month,
-                                holiday_set=holiday_set,
-                                daily_shift_map=shifts_by_emp[emp.id],
-                                hire_date_raw=emp.hire_date,
-                                resign_date_raw=getattr(emp, "resign_date", None),
-                                makeup_set=makeup_set,
-                            )
-                            absent_count, absence_deduction_amount = (
-                                self._compute_absence(
-                                    emp.id,
-                                    attendances,
-                                    approved_leaves,
-                                    expected_workdays,
-                                    daily_salary,
-                                    start_date,
-                                    end_date,
-                                    year,
-                                    month,
-                                )
-                            )
-
-                        # 發放月：累積期間每月節慶/超額（共用 monthly_ctx_cache）
-                        period_festival_total, period_overtime_total = (
-                            self._compute_period_accrual_totals(
-                                session,
-                                emp,
-                                year,
-                                month,
-                                monthly_ctx_cache=monthly_ctx_cache,
-                            )
-                        )
-
-                        # ── 計算薪資
-                        breakdown = self.calculate_salary(
-                            employee=emp_dict,
-                            year=year,
-                            month=month,
-                            attendance=attendance_result,
-                            leave_deduction=leave_deduction_total,
-                            classroom_context=classroom_context,
-                            office_staff_context=office_staff_context,
-                            meeting_context=meeting_context,
-                            overtime_work_pay=overtime_work_pay_total,
-                            personal_sick_leave_hours=personal_sick_leave_hours,
-                            period_festival_override=period_festival_total,
-                            period_overtime_override=period_overtime_total,
-                        )
-
-                        breakdown.absent_count = absent_count
-                        breakdown.absence_deduction = round(absence_deduction_amount)
-                        breakdown.total_deduction = round(
-                            breakdown.total_deduction + absence_deduction_amount
-                        )
-                        breakdown.net_salary = (
-                            breakdown.gross_salary - breakdown.total_deduction
-                        )
-
-                        if breakdown.total_deduction < 0:
-                            raise ValueError(
-                                f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
-                            )
-                        if breakdown.net_salary < 0:
-                            raise ValueError(
-                                f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
-                            )
-
-                        # ── SalaryRecord upsert（延後至迴圈結束統一 commit）
-                        salary_record = salary_record_by_emp.get(emp.id)
-                        self._check_not_finalized(salary_record, emp.name, year, month)
-                        if not salary_record:
-                            salary_record = SalaryRecord(
-                                employee_id=emp.id,
-                                salary_year=year,
-                                salary_month=month,
-                            )
-                            session.add(salary_record)
-
-                        _fill_salary_record(salary_record, breakdown, self)
                         sp.commit()  # RELEASE SAVEPOINT
                         results.append((emp, breakdown))
 
