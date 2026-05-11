@@ -277,6 +277,49 @@ def close_iep(
     return row
 
 
+@router.get("/{iep_id}/export")
+def export_iep_pdf(
+    iep_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(
+        require_permission(Permission.STUDENTS_SPECIAL_NEEDS_WRITE)
+    ),
+):
+    import urllib.parse
+
+    from fastapi.responses import Response
+
+    from services.iep_pdf import generate_iep_pdf
+
+    row = _scoped_query(db, current_user).filter(StudentIEPRecord.id == iep_id).first()
+    if not row:
+        raise HTTPException(404)
+    student = db.query(Student).filter(Student.id == row.student_id).first()
+    pdf = generate_iep_pdf(
+        student_name=student.name if student else "（未知）",
+        school_year=row.school_year,
+        semester=row.semester,
+        current_status=row.current_status or "",
+        long_term_goals=row.long_term_goals or "",
+        short_term_goals=row.short_term_goals or [],
+        mid_term_evaluation=row.mid_term_evaluation or "",
+        final_evaluation=row.final_evaluation or "",
+        iep_team_members=row.iep_team_members or [],
+        meeting_dates=row.meeting_dates or {},
+    )
+    # ASCII-safe filename + RFC 5987 UTF-8 fallback (Chinese filename needs encoding)
+    student_label = student.name if student else f"iep_{iep_id}"
+    raw_name = f"IEP_{student_label}_{row.school_year}-{row.semester}.pdf"
+    encoded = urllib.parse.quote(raw_name)
+    return Response(
+        pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=iep_{iep_id}.pdf; filename*=UTF-8''{encoded}"
+        },
+    )
+
+
 @router.post(
     "/{iep_id}/clone",
     response_model=IepOut,

@@ -359,3 +359,38 @@ def test_iep_cannot_edit_after_approved(gov_moe_client):
         f"/api/gov-moe/iep/{iep['id']}", json={"current_status": "edited"}, headers=auth
     )
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# A3 Tests: PDF export
+# ---------------------------------------------------------------------------
+
+
+def test_iep_pdf_export(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    sid, _ = _seed_student_and_classroom(sf)
+    auth = {"Authorization": f"Bearer {tok}"}
+    iep = client.post(
+        "/api/gov-moe/iep",
+        json={
+            "student_id": sid,
+            "school_year": 2026,
+            "semester": 1,
+            "current_status": "x",
+            "long_term_goals": "y",
+            "short_term_goals": [
+                {
+                    "goal": "a",
+                    "criteria": "b",
+                    "due_date": "2026-12-01",
+                    "status": "active",
+                }
+            ],
+        },
+        headers=auth,
+    ).json()
+    r = client.get(f"/api/gov-moe/iep/{iep['id']}/export", headers=auth)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF")
