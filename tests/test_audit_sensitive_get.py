@@ -177,6 +177,16 @@ class TestEmployeeSensitiveGetAudit:
 
 
 class TestSalarySensitiveGetAudit:
+    """
+    Note: tests below using `if res.status_code == 200:` are gated because
+    the fresh-DB fixture has no SalaryRecord rows, so detail endpoints 404.
+    These tests verify the audit IS NOT written on 404, AND the audit IS
+    written on 200 (when reachable). To strengthen coverage, follow up by
+    seeding SalaryRecord rows in the fixture so all asserts can be unconditional.
+    TODO(audit-coverage-gap-followup): seed SalaryRecord fixture for
+    breakdown/field-breakdown/audit-log tests.
+    """
+
     def test_salary_records_list_audits_with_month_in_summary(self, client_with_db):
         client, sf, _ = client_with_db
         res = client.get("/api/salaries/records?year=2026&month=4")

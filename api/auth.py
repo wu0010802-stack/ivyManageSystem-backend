@@ -718,12 +718,16 @@ def logout(request: Request):
         except Exception:
             pass  # token 已過期或無效，無需廢止
 
-    write_login_audit(
-        request,
-        action="LOGOUT",
-        username=audit_username,
-        user_id=audit_user_id,
-    )
+    # 只有 token 存在時才寫 LOGOUT audit
+    # Why: 無 token 的 /logout 請求（爬蟲/curl 探測）會產生 username=None 的雜訊
+    # audit 行；登入過的使用者主動登出才是有意義的事件。
+    if token:
+        write_login_audit(
+            request,
+            action="LOGOUT",
+            username=audit_username,
+            user_id=audit_user_id,
+        )
 
     response = JSONResponse(content={"message": "已登出"})
     clear_access_token_cookie(response)

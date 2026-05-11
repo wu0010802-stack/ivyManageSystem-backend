@@ -416,6 +416,16 @@ class TestLoginEndpointAudit:
         logouts = [r for r in rows if r.action == "LOGOUT"]
         assert logouts, f"未找到 LOGOUT audit；現有 actions: {[r.action for r in rows]}"
 
+    def test_logout_without_token_does_not_audit(self, client_with_db):
+        """無 token 的 /logout 不應寫 audit（防爬蟲灌爆 audit_logs）。"""
+        client, sf = client_with_db
+        # 不先登入；直接 logout
+        res = client.post("/api/auth/logout")
+        # logout 端點本身可能回 200 即使 token 不存在
+        rows = self._get_login_audits(sf)
+        logouts = [r for r in rows if r.action == "LOGOUT"]
+        assert not logouts, f"無 token 的 logout 不應寫 audit；卻找到 {len(logouts)} 筆"
+
     def test_refresh_token_success_audit(self, client_with_db):
         client, sf = client_with_db
         # 先登入
