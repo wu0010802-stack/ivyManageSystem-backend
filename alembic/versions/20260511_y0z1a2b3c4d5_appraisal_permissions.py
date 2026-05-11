@@ -1,8 +1,11 @@
 """appraisal: 註冊 5 個 Permission bit 到既有預設角色
 
 新增 5 個 Permission bit（1<<50 ~ 1<<54）並更新現有使用者的明確權限遮罩：
-- admin：全 5 個 bit
-- teacher：APPRAISAL_READ + EVENT_WRITE
+- admin：-1 全權限，已含新 bit，跳過
+- supervisor：READ + EVENT_WRITE + REVIEW + FINALIZE
+- hr：READ + EVENT_WRITE + ACCOUNTING
+- teacher：READ + EVENT_WRITE
+- parent：0，無任何 bit，跳過
 
 ⚠ 本系統無獨立 roles 表；角色預設已於 utils/permissions.py ROLE_TEMPLATES 定義。
   此 migration 只針對 users.permissions 欄位非 NULL 且非 -1（全權限）的使用者補位元，
@@ -31,33 +34,15 @@ APPRAISAL_ACCOUNTING = 1 << 53
 APPRAISAL_FINALIZE = 1 << 54
 
 # 本系統實際存在的角色（users.role）對應要加的 mask
-# 無 roles 表 — 對齊 utils/permissions.py ROLE_TEMPLATES 中的角色設計
+# 對應 utils/permissions.py ROLE_TEMPLATES
+# - admin: -1 全權限，已含新 bit，跳過
+# - parent: 0，無任何 bit，跳過
 ROLE_ADDONS = {
-    # admin / superadmin：全 5 個 bit
-    "admin": (
-        APPRAISAL_READ
-        | APPRAISAL_EVENT_WRITE
-        | APPRAISAL_REVIEW
-        | APPRAISAL_ACCOUNTING
-        | APPRAISAL_FINALIZE
+    "hr": APPRAISAL_READ | APPRAISAL_EVENT_WRITE | APPRAISAL_ACCOUNTING,
+    "supervisor": (
+        APPRAISAL_READ | APPRAISAL_EVENT_WRITE | APPRAISAL_REVIEW | APPRAISAL_FINALIZE
     ),
-    "superadmin": (
-        APPRAISAL_READ
-        | APPRAISAL_EVENT_WRITE
-        | APPRAISAL_REVIEW
-        | APPRAISAL_ACCOUNTING
-        | APPRAISAL_FINALIZE
-    ),
-    # principal / director：三階簽核 + FINALIZE（無此角色時 SQL 無影響）
-    "principal": APPRAISAL_READ | APPRAISAL_REVIEW | APPRAISAL_FINALIZE,
-    "director": APPRAISAL_READ | APPRAISAL_REVIEW | APPRAISAL_FINALIZE,
-    # accountant：中段審核
-    "accountant": APPRAISAL_READ | APPRAISAL_EVENT_WRITE | APPRAISAL_ACCOUNTING,
-    # teacher：登錄事件
     "teacher": APPRAISAL_READ | APPRAISAL_EVENT_WRITE,
-    # supervisor / hr：可讀考核資料
-    "supervisor": APPRAISAL_READ | APPRAISAL_EVENT_WRITE | APPRAISAL_REVIEW,
-    "hr": APPRAISAL_READ,
 }
 
 

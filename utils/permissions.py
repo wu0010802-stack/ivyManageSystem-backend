@@ -158,6 +158,10 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.OVERTIME_READ
         | Permission.OVERTIME_WRITE
         | Permission.REPORTS
+        # 教職員考核：人事/會計（核數字）
+        | Permission.APPRAISAL_READ
+        | Permission.APPRAISAL_EVENT_WRITE
+        | Permission.APPRAISAL_ACCOUNTING
     ),
     "supervisor": (
         Permission.DASHBOARD
@@ -196,6 +200,11 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.STUDENTS_SPECIAL_NEEDS_WRITE
         # 家園溝通平台：主管可主動發訊（後端 endpoint 仍以班導師守衛把關發起 thread 範圍）
         | Permission.PARENT_MESSAGES_WRITE
+        # 教職員考核：主管全程權限（評分+簽核+核定）
+        | Permission.APPRAISAL_READ
+        | Permission.APPRAISAL_EVENT_WRITE
+        | Permission.APPRAISAL_REVIEW
+        | Permission.APPRAISAL_FINALIZE
     ),
     "teacher": (
         Permission.DASHBOARD
@@ -211,6 +220,9 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.STUDENTS_SPECIAL_NEEDS_READ
         # 家園溝通平台：教師可發訊；發起 thread 範圍由 endpoint 端 assert_teacher_is_homeroom 守衛
         | Permission.PARENT_MESSAGES_WRITE
+        # 教職員考核：教師登錄事件 + 看自己
+        | Permission.APPRAISAL_READ
+        | Permission.APPRAISAL_EVENT_WRITE
     ),
     # 家長角色：恆無任何 Permission 位元；資源存取一律由 user_id → guardians 過濾
     "parent": 0,
