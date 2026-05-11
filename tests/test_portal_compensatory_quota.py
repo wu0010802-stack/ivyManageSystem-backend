@@ -57,7 +57,11 @@ class TestPortalCreateLeaveCompensatoryQuota:
         ]
 
     def test_compensatory_dispatched_to_compensatory_helper(self):
-        """portal 對 compensatory 必須呼叫 _check_compensatory_quota"""
+        """portal 對 compensatory 必須走 _guard_leave_quota（內部分流到 _check_compensatory_quota）。
+
+        2026-05-11 P0-2 修補後：portal 直接呼叫 _guard_leave_quota，由它分流
+        sick / compensatory / 其他假別到對應 helper。
+        """
         from api.portal import leaves as portal_lv
 
         emp = _make_emp()
@@ -65,11 +69,7 @@ class TestPortalCreateLeaveCompensatoryQuota:
         for p in patches:
             p.start()
         try:
-            with (
-                patch.object(portal_lv, "_check_compensatory_quota") as mock_comp,
-                patch.object(portal_lv, "_check_quota") as mock_quota,
-            ):
-                # _check_compensatory_quota 通過 → 後續 add/commit
+            with patch.object(portal_lv, "_guard_leave_quota") as mock_guard:
                 try:
                     portal_lv.create_my_leave(
                         data=self._build_payload(),
@@ -77,12 +77,10 @@ class TestPortalCreateLeaveCompensatoryQuota:
                         current_user={"username": "teacher", "employee_id": 10},
                     )
                 except Exception:
-                    # 後續 ORM/commit 可能失敗,但配額分流必須先發生
                     pass
-            assert (
-                mock_comp.called
-            ), "portal 對 compensatory 未呼叫 _check_compensatory_quota"
-            assert not mock_quota.called, "portal 對 compensatory 不應再走 _check_quota"
+            assert mock_guard.called, "portal compensatory 必須走 _guard_leave_quota"
+            # 確認傳給 _guard_leave_quota 的 leave_type 是 compensatory
+            assert mock_guard.call_args.args[2] == "compensatory"
         finally:
             for p in patches:
                 p.stop()

@@ -12,7 +12,7 @@ from datetime import date, datetime
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -295,3 +295,114 @@ class TestP0_1BatchApproveTwoPass:
             ), f"silent data loss: ot1 succeeded 但 DB is_approved={ot1_db.is_approved}"
         assert ot2_id in failed_ids
         assert ot2_db.is_approved is None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Task B — P0-2: Portal 病假繞過勞基雙配額
+# ────────────────────────────────────────────────────────────────────────────
+
+
+import types as _types
+from unittest.mock import patch as _patch
+
+
+def _portal_emp():
+    e = _types.SimpleNamespace()
+    e.id = 99
+    e.name = "Portal 教師"
+    e.base_salary = 30000
+    e.hire_date = date(2020, 1, 1)
+    return e
+
+
+class TestP0_2PortalSickStatutoryCap:
+    """Portal sick 必須走 _guard_leave_quota（呼叫 assert_sick_leave_within_statutory_caps）。
+
+    修補前：portal/leaves.py:312-326 sick 分支只走 _check_quota（看 LeaveQuota 總量），
+    LeaveQuota 未初始化時直接 return，雙桶（未住院 240h / 住院 2080h / 合計 2080h）
+    完全繞過。
+    """
+
+    def _build_payload(
+        self, *, leave_type: str = "sick", hours: float = 4.0, is_hosp: bool = False
+    ):
+        from api.portal._shared import LeaveCreatePortal
+
+        return LeaveCreatePortal(
+            leave_type=leave_type,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 1),
+            leave_hours=hours,
+            reason="生病",
+            is_hospitalized=is_hosp,
+        )
+
+    def _common_patches(self, emp):
+        from api.portal import leaves as portal_lv
+
+        session = MagicMock()
+        return session, [
+            _patch.object(portal_lv, "get_session", return_value=session),
+            _patch.object(portal_lv, "_get_employee", return_value=emp),
+            _patch.object(portal_lv, "_check_overlap", return_value=None),
+            _patch.object(portal_lv, "_check_substitute_leave_conflict"),
+            _patch.object(portal_lv, "validate_leave_hours_against_schedule"),
+            _patch.object(portal_lv, "_check_leave_limits"),
+            _patch.object(portal_lv, "validate_portal_leave_rules"),
+        ]
+
+    def test_sick_dispatched_to_guard_leave_quota(self):
+        """portal sick 必須呼叫 _guard_leave_quota（觸發雙桶檢查）"""
+        from api.portal import leaves as portal_lv
+
+        emp = _portal_emp()
+        session, patches = self._common_patches(emp)
+        for p in patches:
+            p.start()
+        try:
+            with (
+                _patch.object(portal_lv, "_guard_leave_quota") as mock_guard,
+                _patch.object(portal_lv, "_check_quota") as mock_quota,
+            ):
+                try:
+                    portal_lv.create_my_leave(
+                        data=self._build_payload(),
+                        request=MagicMock(),
+                        current_user={"username": "t", "employee_id": 99},
+                    )
+                except Exception:
+                    pass
+            assert mock_guard.called, "portal sick 必須走 _guard_leave_quota"
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_sick_outpatient_241h_blocked_by_statutory_cap(self):
+        """未住院 sick 已用 240h，再申請 1h 應被擋（勞工請假規則第 4 條）"""
+        from api.portal import leaves as portal_lv
+
+        emp = _portal_emp()
+        session, patches = self._common_patches(emp)
+        for p in patches:
+            p.start()
+        try:
+            # 已用 240h 未住院 sick，年度上限 240h
+            with (
+                _patch(
+                    "api.leaves._get_sick_committed_hours",
+                    side_effect=lambda s, eid, year, is_hospitalized, exclude_id=None: (
+                        240.0 if not is_hospitalized else 0.0
+                    ),
+                ),
+            ):
+                with pytest.raises(HTTPException) as exc:
+                    portal_lv.create_my_leave(
+                        data=self._build_payload(hours=1.0, is_hosp=False),
+                        request=MagicMock(),
+                        current_user={"username": "t", "employee_id": 99},
+                    )
+            assert exc.value.status_code == 400
+            assert "勞工請假規則" in exc.value.detail or "未住院" in exc.value.detail
+        finally:
+            for p in patches:
+                p.stop()
