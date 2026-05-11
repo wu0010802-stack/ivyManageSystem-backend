@@ -9,10 +9,10 @@
 from fastapi import APIRouter
 
 from .cycles import router as cycles_router
+from .events import router as events_router
 from .participants import router as participants_router
 
-# 後續 task 加入（T10-T13）：
-# from .events import router as events_router
+# 後續 task 加入（T11-T13）：
 # from .summaries import router as summaries_router
 # from .bonus_rates import router as bonus_rates_router
 # from .penalty_catalog import router as penalty_catalog_router
@@ -21,6 +21,7 @@ from .participants import router as participants_router
 appraisal_router = APIRouter(prefix="/api/appraisal", tags=["appraisal"])
 appraisal_router.include_router(cycles_router)
 appraisal_router.include_router(participants_router)
+appraisal_router.include_router(events_router)
 # 後續 include 其他 router（按功能區塊加入）
 
 __all__ = ["appraisal_router"]
