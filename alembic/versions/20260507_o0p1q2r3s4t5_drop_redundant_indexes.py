@@ -199,10 +199,19 @@ DROPS = [
 
 
 def upgrade() -> None:
-    for name, table, _recreate in DROPS:
-        op.execute(f'DROP INDEX IF EXISTS public."{name}"')
+    # CONCURRENTLY 不取 AccessExclusiveLock，避免短暫卡住 audit_logs /
+    # salary_records / attendances 等熱讀表的查詢。需 autocommit_block。
+    with op.get_context().autocommit_block():
+        for name, _table, _recreate in DROPS:
+            op.execute(f'DROP INDEX CONCURRENTLY IF EXISTS public."{name}"')
 
 
 def downgrade() -> None:
-    for _name, _table, recreate in reversed(DROPS):
-        op.execute(recreate)
+    with op.get_context().autocommit_block():
+        for _name, _table, recreate in reversed(DROPS):
+            # 在原 recreate 字串首段插入 CONCURRENTLY IF NOT EXISTS
+            op.execute(
+                recreate.replace(
+                    "CREATE INDEX ", "CREATE INDEX CONCURRENTLY IF NOT EXISTS ", 1
+                )
+            )
