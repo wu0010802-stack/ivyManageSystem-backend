@@ -237,3 +237,10 @@ def test_teacher_cannot_generate_certificate(gov_moe_client):
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert resp.status_code == 403
+
+
+def test_audit_pattern_registered_for_certificate():
+    from utils.audit import ENTITY_PATTERNS, ENTITY_LABELS
+
+    assert any("enrollment_certificate" in (et or "") for _, et in ENTITY_PATTERNS)
+    assert ENTITY_LABELS.get("enrollment_certificate") == "在學證明"
