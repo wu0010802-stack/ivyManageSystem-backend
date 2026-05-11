@@ -96,6 +96,52 @@ Backend 跑 `pip-audit -r requirements.txt` 結果：**No known vulnerabilities 
 
 ---
 
+### 🔴 HIGH-2：後端 site-packages 落後且 requirements.txt 下限過寬（實測 2026-05-11）
+
+**位置**：`ivy-backend/requirements.txt` + 本機 site-packages
+
+**描述**（實跑 `pip-audit` 於 2026-05-11 取得）：
+
+兩個視角發現結果差異甚大：
+
+| 視角 | 命令 | 發現 CVE 數 |
+|------|------|-------------|
+| 本機 site-packages 實裝版本 | `pip-audit` | **32** 個 CVE，跨 16 個套件 |
+| requirements.txt 解析（fresh install） | `pip-audit -r requirements.txt` | **0** |
+
+代表 CI / 部署做 fresh install 不會踩到（`>=` 解析吃 latest），但本機 / 長壽 venv 持續落後即實際暴露。
+
+**直接依賴受影響清單**：
+
+| 套件 | 舊下限 | 實裝（升前） | 修補版本（實裝升後） | 已修 CVE |
+|------|--------|--------------|-----------------------|---------|
+| `Pillow` | `>=11.0.0` | 12.1.0 | 12.2.0 | CVE-2026-25990, -40192, -42308/9/10/11 |
+| `python-multipart` | `>=0.0.6` | 0.0.22 | 0.0.28 | CVE-2026-40347, -42561 |
+| `python-dotenv` | `>=1.0.0` | 1.2.1 | 1.2.2 | CVE-2026-28684 |
+| `requests` | `>=2.31.0` | 2.32.5 | 2.33.1 | CVE-2026-25645 |
+| `pytest` | `>=7.4.0` | 9.0.2 | 9.0.3 | CVE-2025-71176 |
+
+**間接依賴**（cryptography、tornado、urllib3、werkzeug、mako、gitpython、pyasn1、pygments、flask）由 transitive resolution 自然帶入 latest，無需釘版。
+
+**無修補 CVE 風險評估**：
+
+| 套件 | CVE | 評估 |
+|------|-----|------|
+| `ecdsa` | CVE-2024-23342 | **不影響本系統**。系統 JWT 使用 HS256 對稱演算法（`utils/auth.py:34`），`ecdsa` 僅為 `python-jose` 預設依賴被動帶入，運行時未走 ECDSA 簽章路徑，timing 側信道攻擊條件不成立。長期可考慮把 `python-jose` 換成 `pyjwt` 移除 `ecdsa` 依賴。 |
+| `pip` | CVE-2026-3219 | 工具層 CVE，不在 application runtime。其餘兩個 pip CVE（1703 / 6357）已修在 26.0 / 26.1。CI 已自動升 pip；本機可 `python3 -m pip install --upgrade pip`。 |
+
+**修補執行（2026-05-11）**：
+
+- ✅ `requirements.txt` 直接依賴下限提升到修補版本，每行加 `# CVE-xxxx` 註解。
+- ✅ `pip-audit -r requirements.txt` 再驗：0 CVE。
+- ✅ 本機 site-packages 以 `python3 -m pip install --upgrade -r requirements.txt` 升級。連動升級：fastapi 0.128 → 0.136（8 minor）、pandas 2.3 → 3.0（**major**）、python-json-logger 2 → 4（**major**）、pydantic 2.12 → 2.13、cachetools 6 → 7。
+- ✅ 後端 baseline + 升級後 pytest 各跑一次：**3055 passed, 4 skipped, 8 warnings**（兩次完全一致；升級後 9:30 比 baseline 10:24 反而快）。
+- ✅ 該 3055 tests 覆蓋 FastAPI form 上傳路徑、JWT 簽章、圖片處理、Pandas 報表，等同完成高 blast-radius 套件 smoke。
+
+**本機環境注意**：`/usr/local/bin/pip` shebang 指向 macOS CommandLineTools 的 Python 3.9，與 `pytest` / `python3` 使用的 Python 3.14 不一致；用 `pip install ...` 會走錯 Python 導致 install 失敗。本機升級必須用 `python3 -m pip install -r requirements.txt --upgrade`。CI 使用 Python 3.12（見 `.github/workflows/ci.yml`），無此問題。
+
+---
+
 ### 🟡 LOW-1：Rate Limiter 為 in-process 版本
 
 **位置**：`backend/utils/rate_limit.py`，`backend/api/auth.py:82-83`（登入限流 dict）
