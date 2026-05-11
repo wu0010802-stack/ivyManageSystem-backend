@@ -7,7 +7,7 @@ Employee ancillary docs (educations / certificates / contracts) CRUD.
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from models.database import (
@@ -17,6 +17,7 @@ from models.database import (
     EmployeeCertificate,
     EmployeeContract,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
 from utils.errors import raise_safe_500
@@ -152,6 +153,7 @@ def _ensure_employee(session, employee_id: int) -> Employee:
 @router.get("/employees/{employee_id}/educations")
 def list_educations(
     employee_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     with session_scope() as session:
@@ -165,7 +167,16 @@ def list_educations(
             )
             .all()
         )
-        return [_edu_to_dict(r) for r in rows]
+        result = [_edu_to_dict(r) for r in rows]
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="employee",
+        entity_id=str(employee_id),
+        summary=f"查看員工學歷：employee_id={employee_id}",
+        changes={"includes_pii": True},
+    )
+    return result
 
 
 @router.post("/employees/{employee_id}/educations", status_code=201)
@@ -262,6 +273,7 @@ def delete_education(
 @router.get("/employees/{employee_id}/certificates")
 def list_certificates(
     employee_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     with session_scope() as session:
@@ -272,7 +284,16 @@ def list_certificates(
             .order_by(EmployeeCertificate.issued_date.desc().nullslast())
             .all()
         )
-        return [_cert_to_dict(r) for r in rows]
+        result = [_cert_to_dict(r) for r in rows]
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="employee",
+        entity_id=str(employee_id),
+        summary=f"查看員工證照：employee_id={employee_id}",
+        changes={"includes_pii": True},
+    )
+    return result
 
 
 @router.post("/employees/{employee_id}/certificates", status_code=201)
@@ -353,6 +374,7 @@ def delete_certificate(
 @router.get("/employees/{employee_id}/contracts")
 def list_contracts(
     employee_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     # F-014：非 admin/hr 且非本人時遮罩 salary_at_contract（合約簽訂月薪屬薪資敏感欄位）。
@@ -369,7 +391,16 @@ def list_contracts(
             .order_by(EmployeeContract.start_date.desc())
             .all()
         )
-        return [_contract_to_dict(r, mask_salary=mask_salary) for r in rows]
+        result = [_contract_to_dict(r, mask_salary=mask_salary) for r in rows]
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="employee",
+        entity_id=str(employee_id),
+        summary=f"查看員工合約：employee_id={employee_id}",
+        changes={"includes_pii": True},
+    )
+    return result
 
 
 @router.post("/employees/{employee_id}/contracts", status_code=201)

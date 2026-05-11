@@ -29,6 +29,7 @@ from utils.finance_guards import (
 )
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
+from utils.audit import write_explicit_audit
 from utils.salary_access import can_view_salary_of
 from utils.validators import parse_optional_date
 
@@ -324,6 +325,7 @@ async def get_probation_alerts(
 @router.get("/employees/{employee_id}")
 async def get_employee(
     employee_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     """取得單一員工詳細資料"""
@@ -359,6 +361,14 @@ async def get_employee(
 
         # F-017：admin/hr 一律可看；其他角色僅看自己
         can_view_salary = can_view_salary_of(current_user, employee.id)
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="employee",
+            entity_id=str(employee_id),
+            summary=f"查看員工資料：{employee.name if employee else employee_id}",
+            changes={"includes_pii": True},
+        )
         return _format_employee_response(
             employee,
             can_view_full_account,
@@ -815,6 +825,7 @@ async def final_salary_preview(
     employee_id: int,
     year: int,
     month: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """最終薪資預覽：呼叫薪資引擎計算指定員工指定月份薪資（含月中離職折算）"""
@@ -850,6 +861,7 @@ async def final_salary_preview(
         contracted_base = emp.base_salary or 0
         employee_type = emp.employee_type
         hourly_rate = emp.hourly_rate or 0
+        emp_name = emp.name
 
     _, month_days = _cal.monthrange(year, month)
     proration_note = None
@@ -891,6 +903,14 @@ async def final_salary_preview(
 
     net_salary_with_unused_annual = breakdown.net_salary + unused_annual_compensation
 
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="salary",
+        entity_id=str(employee_id),
+        summary=f"預覽離職薪資：{emp_name if emp_name else employee_id}",
+        changes={"includes_pii": True},
+    )
     return {
         "year": year,
         "month": month,
