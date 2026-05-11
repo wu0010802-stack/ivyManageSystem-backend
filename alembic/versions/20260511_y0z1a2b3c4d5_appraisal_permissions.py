@@ -1,6 +1,6 @@
 """appraisal: 註冊 5 個 Permission bit 到既有預設角色
 
-新增 5 個 Permission bit（1<<50 ~ 1<<54）並更新現有使用者的明確權限遮罩：
+新增 5 個 Permission bit（1<<55 ~ 1<<59）並更新現有使用者的明確權限遮罩：
 - admin：-1 全權限，已含新 bit，跳過
 - supervisor：READ + EVENT_WRITE + REVIEW + FINALIZE
 - hr：READ + EVENT_WRITE + ACCOUNTING
@@ -27,11 +27,11 @@ branch_labels = None
 depends_on = None
 
 # 與 utils/permissions.py 對齊
-APPRAISAL_READ = 1 << 50
-APPRAISAL_EVENT_WRITE = 1 << 51
-APPRAISAL_REVIEW = 1 << 52
-APPRAISAL_ACCOUNTING = 1 << 53
-APPRAISAL_FINALIZE = 1 << 54
+APPRAISAL_READ = 1 << 55
+APPRAISAL_EVENT_WRITE = 1 << 56
+APPRAISAL_REVIEW = 1 << 57
+APPRAISAL_ACCOUNTING = 1 << 58
+APPRAISAL_FINALIZE = 1 << 59
 
 # 本系統實際存在的角色（users.role）對應要加的 mask
 # 對應 utils/permissions.py ROLE_TEMPLATES
@@ -75,7 +75,7 @@ def downgrade() -> None:
     # 注意：不要 & 0xFFFFFFFFFFFFFFFF，那會把結果轉為無號 64-bit 整數，
     # 超過 PostgreSQL signed BIGINT 上限，psycopg2 會 raise NumericValueOutOfRange。
     # Python 直接讓結果為負整數即可，PostgreSQL 對 signed BIGINT 的 bitwise AND 正確處理。
-    mask_clear = ~((1 << 50) | (1 << 51) | (1 << 52) | (1 << 53) | (1 << 54))
+    mask_clear = ~((1 << 55) | (1 << 56) | (1 << 57) | (1 << 58) | (1 << 59))
     bind.execute(
         sa.text(
             "UPDATE users "
