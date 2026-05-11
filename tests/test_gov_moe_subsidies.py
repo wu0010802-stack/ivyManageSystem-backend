@@ -294,3 +294,23 @@ def test_subsidies_excel_export_has_expected_columns(tmp_path):
         "狀態",
     ):
         assert h in headers
+
+
+# ---------------------------------------------------------------------------
+# B4 test: /export endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_subsidy_export_returns_xlsx(gov_moe_client):
+    client, sf = gov_moe_client
+    tok = _login_admin(client, sf)
+    eid = _seed_employee(sf)
+    _create_subsidy(client, tok, eid)
+    r = client.get(
+        "/api/gov-moe/subsidies/export",
+        params={"since": "2026-05-01", "until": "2026-05-31"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/vnd.openxmlformats")
+    assert r.content.startswith(b"PK")

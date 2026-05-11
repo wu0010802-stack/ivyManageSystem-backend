@@ -109,6 +109,66 @@ def create_subsidy(
     return row
 
 
+@router.get("/export")
+def export_subsidies(
+    since: Optional[date] = None,
+    until: Optional[date] = None,
+    employee_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_staff_permission(Permission.GOV_REPORTS_EXPORT)),
+):
+    from fastapi.responses import Response
+    from services.subsidies_excel import generate_subsidies_excel
+    from models.employee import Employee
+
+    q = db.query(SpecialEducationSubsidy)
+    if since:
+        q = q.filter(SpecialEducationSubsidy.period_end >= since)
+    if until:
+        q = q.filter(SpecialEducationSubsidy.period_start <= until)
+    if employee_id:
+        q = q.filter(SpecialEducationSubsidy.employee_id == employee_id)
+    rows = q.order_by(SpecialEducationSubsidy.period_start.asc()).all()
+
+    emp_map = {
+        e.id: e.name
+        for e in db.query(Employee).filter(
+            Employee.id.in_({r.employee_id for r in rows})
+        )
+    }
+    payload = [
+        {
+            "id": r.id,
+            "subsidy_type": r.subsidy_type,
+            "employee_name": emp_map.get(r.employee_id, f"#{r.employee_id}"),
+            "period_start": r.period_start,
+            "period_end": r.period_end,
+            "hours_or_rate": float(r.hours_or_rate) if r.hours_or_rate else None,
+            "amount_requested": float(r.amount_requested),
+            "amount_approved": float(r.amount_approved) if r.amount_approved else None,
+            "status": r.status,
+            "notes": r.notes,
+        }
+        for r in rows
+    ]
+
+    label = f"{since}~{until}" if since and until else "all"
+    data = generate_subsidies_excel(payload, period_label=label)
+    from urllib.parse import quote
+
+    safe_label = label.replace("~", "_")
+    ascii_name = f"subsidies_{safe_label}.xlsx"
+    utf8_name = quote(f"義華幼兒園_特教加給_{label}.xlsx", safe="")
+    content_disposition = (
+        f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}"
+    )
+    return Response(
+        data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": content_disposition},
+    )
+
+
 @router.put("/{sub_id}", response_model=SubsidyOut)
 def update_subsidy(
     sub_id: int,
