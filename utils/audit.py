@@ -30,7 +30,15 @@ _audit_block_cache: dict[tuple[str, str, str], float] = {}
 
 
 def _should_audit_block(ip: str | None, method: str, path: str) -> bool:
-    """同 (ip, method, path) 在 60 秒內只 audit 一次 401/403。"""
+    """同 (ip, method, path) 在 60 秒內只 audit 一次 401/403。
+
+    例外：/api/auth/login 路徑跳過 dedup —— 登入失敗的密集計數是 C 階段
+    告警的訊號來源，dedup 會把 brute-force 壓成 1 筆，失去判斷依據。
+    既有 _check_ip_rate_limit 本身會在 N 次後 raise 429 自然封頂。
+    Refs: spec 2026-05-11-audit-coverage-gap-design §3.2。
+    """
+    if path.startswith("/api/auth/login"):
+        return True
     key = (ip or "anon", method, path)
     now = time.monotonic()
     last = _audit_block_cache.get(key)
@@ -184,6 +192,7 @@ ENTITY_LABELS = {
     # 審核流程設定（policy 自身異動稽核）
     "approval_policy": "審核流程設定",
     "insurance_bracket": "勞健保級距",
+    "auth": "登入活動",
     # 教育部申報 Phase 1
     "disability_document": "身障鑑定文件",
     # 考核系統
@@ -200,10 +209,19 @@ ACTION_LABELS = {
     "UPDATE": "修改",
     "DELETE": "刪除",
     "EXPORT": "匯出",
+    "READ": "查看",
     # 失敗的寫入嘗試（401/403）— audit P1 補登攻擊偵測
     "BLOCKED_CREATE": "拒絕新增",
     "BLOCKED_UPDATE": "拒絕修改",
     "BLOCKED_DELETE": "拒絕刪除",
+    # 登入事件（A 階段）— write_login_audit 顯式呼叫
+    "LOGIN_SUCCESS": "登入成功",
+    "LOGIN_FAILED": "登入失敗",
+    "LOGIN_RATE_LIMITED": "登入被限流",
+    "LOGIN_LOCKED": "帳號鎖定中",
+    "LOGOUT": "登出",
+    "TOKEN_REFRESH": "刷新 Token",
+    "TOKEN_REFRESH_FAILED": "Token 刷新失敗",
 }
 
 
@@ -397,6 +415,70 @@ def write_explicit_audit(
         _schedule_audit_write(payload)
     except Exception as e:
         logger.warning(f"Explicit audit write failed: {e}")
+
+
+def _build_login_summary(action: str, username: str | None) -> str:
+    """登入事件的摘要文案（中文）"""
+    label = ACTION_LABELS.get(action, action)
+    if username:
+        return f"{label}：{username}"
+    return label
+
+
+def write_login_audit(
+    request: Request,
+    *,
+    action: str,
+    username: str | None,
+    user_id: int | None = None,
+    extras: dict | None = None,
+) -> None:
+    """登入相關事件 audit 寫入。entity_type 固定 'auth'。
+
+    Why: AuditMiddleware 對 /api/auth/login 在 SKIP_PATHS 中跳過；登入事件
+    含成功/失敗/限流/鎖定/登出/refresh 都要顯式從 endpoint 內寫入。
+    與 write_explicit_audit 同樣採 fire-and-forget 背景寫入，失敗只記 logger.warning。
+
+    安全注意：失敗事件不寫 user_id（防 audit 本身洩漏帳號存在性）；
+    extras 中絕不可放密碼或密碼 hash（由 caller 自行確保）。
+
+    Why not write_explicit_audit: 登入時尚無有效 JWT，_extract_user_from_header 無法
+    取得 username；此處直接使用呼叫方傳入的 username，以保證 audit 行中有正確帳號名稱。
+
+    Refs: spec 2026-05-11-audit-coverage-gap-design §3.2 / §3.3。
+    """
+    try:
+        ip = request.client.host if request.client else None
+        changes: dict = {}
+        if username:
+            changes["username"] = username
+        if extras:
+            changes.update(extras)
+        changes_json = None
+        if changes:
+            try:
+                changes_json = json.dumps(changes, ensure_ascii=False, default=str)
+                if len(changes_json) > 64 * 1024:
+                    changes_json = json.dumps(
+                        {"_truncated": True, "size": len(changes_json)}
+                    )
+            except (TypeError, ValueError) as e:
+                logger.warning(f"Login audit changes serialize failed: {e}")
+
+        payload = dict(
+            user_id=user_id,
+            username=username or "anonymous",
+            action=action,
+            entity_type="auth",
+            entity_id=str(user_id) if user_id is not None else None,
+            summary=_build_login_summary(action, username),
+            changes=changes_json,
+            ip_address=ip,
+            created_at=datetime.now(),
+        )
+        _schedule_audit_write(payload)
+    except Exception as e:
+        logger.warning(f"Login audit write failed: {e}")
 
 
 class AuditMiddleware(BaseHTTPMiddleware):
