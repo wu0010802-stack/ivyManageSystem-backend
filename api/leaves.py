@@ -467,6 +467,9 @@ def _check_employee_has_conflicting_overtime(
     時段比對規則：
     - leave 全日（start_time/end_time 為 None）→ 與 OT 同日就衝突
     - leave 半日（HH:MM）→ 與 OT 時段比對；OT 缺時段視為全日衝突
+
+    NOTE: 目前只在 create 路徑使用。若未來在 update 路徑也呼叫此 helper，需新增
+    exclude_overtime_id 參數避免自我衝突；同步調整 _check_employee_has_conflicting_leave。
     """
     from models.database import OvertimeRecord  # avoid circular import at module load
 
