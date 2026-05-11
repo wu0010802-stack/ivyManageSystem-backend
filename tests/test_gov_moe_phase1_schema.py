@@ -95,3 +95,45 @@ def test_monthly_snapshot_model_importable():
     from models.gov_moe import MonthlyEnrollmentSnapshot
 
     assert MonthlyEnrollmentSnapshot.__tablename__ == "monthly_enrollment_snapshots"
+
+
+# ---------------------------------------------------------------------------
+# Migration schema verification (via SQLAlchemy metadata — no live DB needed)
+# ---------------------------------------------------------------------------
+
+
+def test_migration_added_student_columns():
+    from models.base import Base
+    import models.database  # noqa: F401 — ensure all models are registered
+
+    cols = {c.name for c in Base.metadata.tables["students"].columns}
+    assert "id_number" in cols
+    assert "disability_cert_expiry" in cols
+
+
+def test_migration_added_employee_columns():
+    from models.base import Base
+    import models.database  # noqa: F401
+
+    cols = {c.name for c in Base.metadata.tables["employees"].columns}
+    assert "staff_role_category" in cols
+    assert "teacher_cert_no" in cols
+
+
+def test_migration_created_disability_documents_table():
+    from models.base import Base
+    import models.database  # noqa: F401
+
+    assert "student_disability_documents" in Base.metadata.tables
+
+
+def test_migration_created_shell_tables():
+    from models.base import Base
+    import models.database  # noqa: F401
+
+    names = set(Base.metadata.tables)
+    assert {
+        "student_iep_records",
+        "special_education_subsidies",
+        "monthly_enrollment_snapshots",
+    }.issubset(names)
