@@ -747,6 +747,11 @@ class InsuranceService:
         self.health_max_insured = HEALTH_MAX_INSURED_SALARY
         self.pension_max_insured = PENSION_MAX_INSURED_SALARY
 
+        # 二代健保補充保費（兼職單筆給付 ≥ 門檻時扣 2.11%）
+        # 預設值對應 115 年公告，可由 DB InsuranceRate 覆寫
+        self.supplementary_health_rate = 0.0211
+        self.supplementary_health_threshold = 29500
+
         # 級距表來源年度（DB 載入時會覆寫，未載入則為 hardcode 年度）
         self.brackets_year: int = CURRENT_INSURANCE_YEAR
 
@@ -865,6 +870,14 @@ class InsuranceService:
         ):
             value = getattr(rate_record, attr, None)
             setattr(self, attr, default if value is None else int(value))
+
+        # 補充保費（兼職）：DB 欄位 NULL 或不存在時沿用 instance 預設
+        suppl_rate = getattr(rate_record, "supplementary_health_rate", None)
+        if suppl_rate is not None:
+            self.supplementary_health_rate = float(suppl_rate)
+        suppl_threshold = getattr(rate_record, "supplementary_health_threshold", None)
+        if suppl_threshold is not None:
+            self.supplementary_health_threshold = int(suppl_threshold)
 
     def get_bracket(self, salary: float) -> dict:
         """根據薪資查找對應的級距（薪資介於兩個級距之間取較高級數）"""

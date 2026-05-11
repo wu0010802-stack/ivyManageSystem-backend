@@ -112,6 +112,8 @@ def _format_employee_response(
         "no_employment_insurance": getattr(emp, "no_employment_insurance", False),
         "health_exempt": getattr(emp, "health_exempt", False),
         "skip_payroll_bonuses": getattr(emp, "skip_payroll_bonuses", False),
+        "skip_payroll_transfer": getattr(emp, "skip_payroll_transfer", False),
+        "unreported_for_tax": getattr(emp, "unreported_for_tax", False),
         "extra_dependents_quarterly": getattr(emp, "extra_dependents_quarterly", 0),
         "bypass_standard_base": getattr(emp, "bypass_standard_base", False),
         "insurance_salary_override_reason": getattr(
@@ -161,6 +163,8 @@ class EmployeeCreate(BaseModel):
     no_employment_insurance: bool = False
     health_exempt: bool = False
     skip_payroll_bonuses: bool = False
+    skip_payroll_transfer: bool = False
+    unreported_for_tax: bool = False
     extra_dependents_quarterly: int = Field(0, ge=0, le=10)
     insurance_salary_override_reason: Optional[str] = Field(None, max_length=200)
     bypass_standard_base: bool = False
@@ -206,6 +210,8 @@ class EmployeeUpdate(BaseModel):
     no_employment_insurance: Optional[bool] = None
     health_exempt: Optional[bool] = None
     skip_payroll_bonuses: Optional[bool] = None
+    skip_payroll_transfer: Optional[bool] = None
+    unreported_for_tax: Optional[bool] = None
     extra_dependents_quarterly: Optional[int] = Field(None, ge=0, le=10)
     insurance_salary_override_reason: Optional[str] = Field(None, max_length=200)
     bypass_standard_base: Optional[bool] = None

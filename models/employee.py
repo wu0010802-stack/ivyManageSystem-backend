@@ -122,6 +122,18 @@ class Employee(Base):
         nullable=False,
         comment="業主指示不發紅利/節慶/超額獎金（基本薪+保險仍正常計算）",
     )
+    skip_payroll_transfer = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="不入銀行轉帳名冊（薪資仍計算，但用現金/其他管道支付）",
+    )
+    unreported_for_tax = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="所得不報國稅局（薪資/保險仍計算，但年度扣繳憑單匯出時排除）",
+    )
     extra_dependents_quarterly = Column(
         Integer,
         default=0,

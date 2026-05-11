@@ -105,6 +105,26 @@ class BonusConfig(Base):
         comment="美語/才藝教師節慶獎金基數（A/B/C 同值，預設 2000）",
     )
 
+    # 懲處扣款預設（DisciplinaryAction.deduction_amount=0 時 fallback 用）
+    warning_deduction = Column(
+        Float,
+        nullable=False,
+        default=1000,
+        comment="警告一支預設扣節慶/超額獎金（業主慣例 1000）",
+    )
+    minor_offense_deduction = Column(
+        Float,
+        nullable=False,
+        default=3000,
+        comment="小過一支預設扣款（業主慣例 3000）",
+    )
+    major_offense_deduction = Column(
+        Float,
+        nullable=False,
+        default=0,
+        comment="大過一支預設扣款（業主未定，預設 0 由個案指定）",
+    )
+
     is_active = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.now)
@@ -170,6 +190,20 @@ class InsuranceRate(Base):
     )
     health_max_insured = Column(Integer, nullable=True, comment="健保最高月投保金額")
     pension_max_insured = Column(Integer, nullable=True, comment="勞退最高月提繳工資")
+
+    # 二代健保補充保費（兼職單筆給付 ≥ 門檻時扣）
+    supplementary_health_rate = Column(
+        Float,
+        nullable=False,
+        default=0.0211,
+        comment="二代健保補充保費率（115 年 2.11%）",
+    )
+    supplementary_health_threshold = Column(
+        Integer,
+        nullable=False,
+        default=29500,
+        comment="兼職補充保費起扣門檻（現行基本工資 29500）",
+    )
 
     is_active = Column(Boolean, default=True)
 
