@@ -1,6 +1,6 @@
-"""appraisal 考核系統初始化（5 表 + 8 enum 型別）
+"""appraisal 考核系統初始化（6 表 + 8 enum 型別）
 
-新增 8 個 enum + 5 張表：
+新增 8 個 enum + 6 張表：
 - appraisal_cycles
 - appraisal_participants
 - appraisal_events
@@ -94,6 +94,10 @@ CATALOG_CATEGORY = ENUM(
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    tables = set(inspector.get_table_names())
+
     # 以 raw DDL 建立全部 8 個 enum；用 DO $$ 包裝 + pg_type 檢查保證冪等
     # （PostgreSQL 沒有 CREATE TYPE IF NOT EXISTS 語法，必須走 plpgsql DO block）
     enum_ddls = [
@@ -145,285 +149,313 @@ def upgrade() -> None:
             f" END $$"
         )
 
-    op.create_table(
-        "appraisal_cycles",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("academic_year", sa.Integer(), nullable=False),
-        sa.Column("semester", SEMESTER, nullable=False),
-        sa.Column("start_date", sa.Date(), nullable=False),
-        sa.Column("end_date", sa.Date(), nullable=False),
-        sa.Column("base_score_calc_date", sa.Date(), nullable=False),
-        sa.Column("status", CYCLE_STATUS, nullable=False, server_default="OPEN"),
-        sa.Column(
-            "created_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.UniqueConstraint(
-            "academic_year", "semester", name="uq_appraisal_cycle_year_sem"
-        ),
-    )
+    if "appraisal_cycles" not in tables:
+        op.create_table(
+            "appraisal_cycles",
+            sa.Column("id", sa.BigInteger(), primary_key=True),
+            sa.Column("academic_year", sa.Integer(), nullable=False),
+            sa.Column("semester", SEMESTER, nullable=False),
+            sa.Column("start_date", sa.Date(), nullable=False),
+            sa.Column("end_date", sa.Date(), nullable=False),
+            sa.Column("base_score_calc_date", sa.Date(), nullable=False),
+            sa.Column("status", CYCLE_STATUS, nullable=False, server_default="OPEN"),
+            sa.Column(
+                "created_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.UniqueConstraint(
+                "academic_year", "semester", name="uq_appraisal_cycle_year_sem"
+            ),
+        )
 
-    op.create_table(
-        "appraisal_penalty_catalog",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("code", sa.String(40), nullable=False, unique=True),
-        sa.Column("category", CATALOG_CATEGORY, nullable=False),
-        sa.Column("subcategory", sa.String(60), nullable=False),
-        sa.Column("description", sa.Text(), nullable=False),
-        sa.Column("default_event_type", EVENT_TYPE, nullable=False),
-        sa.Column("default_score_delta", sa.Numeric(4, 1), nullable=False),
-        sa.Column(
-            "severity_max", sa.SmallInteger(), nullable=False, server_default="1"
-        ),
-        sa.Column("display_order", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-    )
+    if "appraisal_penalty_catalog" not in tables:
+        op.create_table(
+            "appraisal_penalty_catalog",
+            sa.Column("id", sa.BigInteger(), primary_key=True),
+            sa.Column("code", sa.String(40), nullable=False, unique=True),
+            sa.Column("category", CATALOG_CATEGORY, nullable=False),
+            sa.Column("subcategory", sa.String(60), nullable=False),
+            sa.Column("description", sa.Text(), nullable=False),
+            sa.Column("default_event_type", EVENT_TYPE, nullable=False),
+            sa.Column("default_score_delta", sa.Numeric(4, 1), nullable=False),
+            sa.Column(
+                "severity_max", sa.SmallInteger(), nullable=False, server_default="1"
+            ),
+            sa.Column(
+                "display_order", sa.Integer(), nullable=False, server_default="0"
+            ),
+            sa.Column(
+                "is_active", sa.Boolean(), nullable=False, server_default=sa.true()
+            ),
+        )
 
-    op.create_table(
-        "appraisal_participants",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column(
-            "cycle_id",
-            sa.BigInteger(),
-            sa.ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "employee_id",
-            sa.BigInteger(),
-            sa.ForeignKey("employees.id", ondelete="RESTRICT"),
-            nullable=False,
-        ),
-        sa.Column("role_group", ROLE_GROUP, nullable=False),
-        sa.Column(
-            "classroom_id",
-            sa.BigInteger(),
-            sa.ForeignKey("classrooms.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("base_score", sa.Numeric(5, 2), nullable=False, server_default="0"),
-        sa.Column("target_enrollment", sa.Integer(), nullable=True),
-        sa.Column("actual_enrollment", sa.Integer(), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.UniqueConstraint(
-            "cycle_id", "employee_id", name="uq_appraisal_participant_cycle_emp"
-        ),
-    )
-    op.create_index(
-        "ix_appraisal_participant_cycle_rg",
-        "appraisal_participants",
-        ["cycle_id", "role_group"],
-    )
+    if "appraisal_participants" not in tables:
+        op.create_table(
+            "appraisal_participants",
+            sa.Column("id", sa.BigInteger(), primary_key=True),
+            sa.Column(
+                "cycle_id",
+                sa.BigInteger(),
+                sa.ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "employee_id",
+                sa.Integer(),
+                sa.ForeignKey("employees.id", ondelete="RESTRICT"),
+                nullable=False,
+            ),
+            sa.Column("role_group", ROLE_GROUP, nullable=False),
+            sa.Column(
+                "classroom_id",
+                sa.Integer(),
+                sa.ForeignKey("classrooms.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column(
+                "base_score", sa.Numeric(5, 2), nullable=False, server_default="0"
+            ),
+            sa.Column("target_enrollment", sa.Integer(), nullable=True),
+            sa.Column("actual_enrollment", sa.Integer(), nullable=True),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.UniqueConstraint(
+                "cycle_id", "employee_id", name="uq_appraisal_participant_cycle_emp"
+            ),
+        )
+        op.create_index(
+            "ix_appraisal_participant_cycle_rg",
+            "appraisal_participants",
+            ["cycle_id", "role_group"],
+        )
 
-    op.create_table(
-        "appraisal_events",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column(
-            "participant_id",
-            sa.BigInteger(),
-            sa.ForeignKey("appraisal_participants.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "cycle_id",
-            sa.BigInteger(),
-            sa.ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "catalog_item_id",
-            sa.BigInteger(),
-            sa.ForeignKey("appraisal_penalty_catalog.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("event_type", EVENT_TYPE, nullable=False),
-        sa.Column("event_date", sa.Date(), nullable=False),
-        sa.Column("score_delta", sa.Numeric(4, 1), nullable=False),
-        sa.Column("severity_level", sa.SmallInteger(), nullable=True),
-        sa.Column("parent_reaction", PARENT_REACTION, nullable=True),
-        sa.Column("title", sa.String(120), nullable=False),
-        sa.Column("detail", sa.Text(), nullable=False, server_default=""),
-        sa.Column(
-            "attachments",
-            JSONB(),
-            nullable=False,
-            server_default=sa.text("'[]'::jsonb"),
-        ),
-        sa.Column(
-            "created_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="RESTRICT"),
-            nullable=False,
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column("reverted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "reverted_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("reverted_reason", sa.Text(), nullable=True),
-    )
-    op.create_index(
-        "ix_appraisal_event_participant_date",
-        "appraisal_events",
-        ["participant_id", "event_date"],
-    )
-    op.create_index(
-        "ix_appraisal_event_cycle_type",
-        "appraisal_events",
-        ["cycle_id", "event_type"],
-    )
-    op.create_index(
-        "ix_appraisal_event_created",
-        "appraisal_events",
-        ["created_by", "created_at"],
-    )
+    if "appraisal_events" not in tables:
+        op.create_table(
+            "appraisal_events",
+            sa.Column("id", sa.BigInteger(), primary_key=True),
+            sa.Column(
+                "participant_id",
+                sa.BigInteger(),
+                sa.ForeignKey("appraisal_participants.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "cycle_id",
+                sa.BigInteger(),
+                sa.ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "catalog_item_id",
+                sa.BigInteger(),
+                sa.ForeignKey("appraisal_penalty_catalog.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column("event_type", EVENT_TYPE, nullable=False),
+            sa.Column("event_date", sa.Date(), nullable=False),
+            sa.Column("score_delta", sa.Numeric(4, 1), nullable=False),
+            sa.Column("severity_level", sa.SmallInteger(), nullable=True),
+            sa.Column("parent_reaction", PARENT_REACTION, nullable=True),
+            sa.Column("title", sa.String(120), nullable=False),
+            sa.Column("detail", sa.Text(), nullable=False, server_default=""),
+            sa.Column(
+                "attachments",
+                JSONB(),
+                nullable=False,
+                server_default=sa.text("'[]'::jsonb"),
+            ),
+            sa.Column(
+                "created_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="RESTRICT"),
+                nullable=False,
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column("reverted_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column(
+                "reverted_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column("reverted_reason", sa.Text(), nullable=True),
+        )
+        # spec §4.3 規定 (participant_id, event_date DESC)；
+        # op.create_index 不支援 sort direction，改用 raw DDL
+        op.execute(
+            "CREATE INDEX ix_appraisal_event_participant_date "
+            "ON appraisal_events (participant_id, event_date DESC)"
+        )
+        op.create_index(
+            "ix_appraisal_event_cycle_type",
+            "appraisal_events",
+            ["cycle_id", "event_type"],
+        )
+        op.create_index(
+            "ix_appraisal_event_created",
+            "appraisal_events",
+            ["created_by", "created_at"],
+        )
+        # spec §4.3 catalog 統計用索引
+        op.create_index(
+            "ix_appraisal_event_catalog_item",
+            "appraisal_events",
+            ["catalog_item_id"],
+        )
 
-    op.create_table(
-        "appraisal_summaries",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column(
-            "participant_id",
-            sa.BigInteger(),
-            sa.ForeignKey("appraisal_participants.id", ondelete="CASCADE"),
-            nullable=False,
-            unique=True,
-        ),
-        sa.Column(
-            "cycle_id",
-            sa.BigInteger(),
-            sa.ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("base_score", sa.Numeric(5, 2), nullable=False),
-        sa.Column(
-            "event_score_sum", sa.Numeric(5, 2), nullable=False, server_default="0"
-        ),
-        sa.Column("total_score", sa.Numeric(5, 2), nullable=False, server_default="0"),
-        sa.Column("grade", GRADE, nullable=False, server_default="FAIL"),
-        sa.Column(
-            "bonus_amount", sa.Numeric(10, 2), nullable=False, server_default="0"
-        ),
-        sa.Column("status", SUMMARY_STATUS, nullable=False, server_default="DRAFT"),
-        sa.Column("supervisor_signed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "supervisor_signed_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("supervisor_comment", sa.Text(), nullable=True),
-        sa.Column("accounting_signed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "accounting_signed_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("accounting_comment", sa.Text(), nullable=True),
-        sa.Column("finalized_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "finalized_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("finalized_comment", sa.Text(), nullable=True),
-        sa.Column("rejected_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "rejected_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column("rejected_from_stage", SUMMARY_STATUS, nullable=True),
-        sa.Column("rejected_reason", sa.Text(), nullable=True),
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-    )
-    op.create_index(
-        "ix_appraisal_summary_cycle_status",
-        "appraisal_summaries",
-        ["cycle_id", "status"],
-    )
-    op.create_index(
-        "ix_appraisal_summary_cycle_grade",
-        "appraisal_summaries",
-        ["cycle_id", "grade"],
-    )
+    if "appraisal_summaries" not in tables:
+        op.create_table(
+            "appraisal_summaries",
+            sa.Column("id", sa.BigInteger(), primary_key=True),
+            sa.Column(
+                "participant_id",
+                sa.BigInteger(),
+                sa.ForeignKey("appraisal_participants.id", ondelete="CASCADE"),
+                nullable=False,
+                unique=True,
+            ),
+            sa.Column(
+                "cycle_id",
+                sa.BigInteger(),
+                sa.ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column("base_score", sa.Numeric(5, 2), nullable=False),
+            sa.Column(
+                "event_score_sum",
+                sa.Numeric(5, 2),
+                nullable=False,
+                server_default="0",
+            ),
+            sa.Column(
+                "total_score", sa.Numeric(5, 2), nullable=False, server_default="0"
+            ),
+            sa.Column("grade", GRADE, nullable=False, server_default="FAIL"),
+            sa.Column(
+                "bonus_amount", sa.Numeric(10, 2), nullable=False, server_default="0"
+            ),
+            sa.Column("status", SUMMARY_STATUS, nullable=False, server_default="DRAFT"),
+            sa.Column(
+                "supervisor_signed_at", sa.DateTime(timezone=True), nullable=True
+            ),
+            sa.Column(
+                "supervisor_signed_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column("supervisor_comment", sa.Text(), nullable=True),
+            sa.Column(
+                "accounting_signed_at", sa.DateTime(timezone=True), nullable=True
+            ),
+            sa.Column(
+                "accounting_signed_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column("accounting_comment", sa.Text(), nullable=True),
+            sa.Column("finalized_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column(
+                "finalized_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column("finalized_comment", sa.Text(), nullable=True),
+            sa.Column("rejected_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column(
+                "rejected_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column("rejected_from_stage", SUMMARY_STATUS, nullable=True),
+            sa.Column("rejected_reason", sa.Text(), nullable=True),
+            sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+        )
+        op.create_index(
+            "ix_appraisal_summary_cycle_status",
+            "appraisal_summaries",
+            ["cycle_id", "status"],
+        )
+        op.create_index(
+            "ix_appraisal_summary_cycle_grade",
+            "appraisal_summaries",
+            ["cycle_id", "grade"],
+        )
 
-    op.create_table(
-        "appraisal_bonus_rates",
-        sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("effective_from", sa.Date(), nullable=False),
-        sa.Column("role_group", ROLE_GROUP, nullable=False),
-        sa.Column("grade", GRADE, nullable=False),
-        sa.Column("base_amount", sa.Numeric(10, 2), nullable=False),
-        sa.Column(
-            "created_by",
-            sa.BigInteger(),
-            sa.ForeignKey("users.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.UniqueConstraint(
-            "effective_from", "role_group", "grade", name="uq_appraisal_bonus_rate"
-        ),
-    )
+    if "appraisal_bonus_rates" not in tables:
+        op.create_table(
+            "appraisal_bonus_rates",
+            sa.Column("id", sa.BigInteger(), primary_key=True),
+            sa.Column("effective_from", sa.Date(), nullable=False),
+            sa.Column("role_group", ROLE_GROUP, nullable=False),
+            sa.Column("grade", GRADE, nullable=False),
+            sa.Column("base_amount", sa.Numeric(10, 2), nullable=False),
+            sa.Column(
+                "created_by",
+                sa.Integer(),
+                sa.ForeignKey("users.id", ondelete="SET NULL"),
+                nullable=True,
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.UniqueConstraint(
+                "effective_from", "role_group", "grade", name="uq_appraisal_bonus_rate"
+            ),
+        )
 
 
 def downgrade() -> None:
@@ -431,9 +463,12 @@ def downgrade() -> None:
     op.drop_index("ix_appraisal_summary_cycle_grade", table_name="appraisal_summaries")
     op.drop_index("ix_appraisal_summary_cycle_status", table_name="appraisal_summaries")
     op.drop_table("appraisal_summaries")
+    op.drop_index("ix_appraisal_event_catalog_item", table_name="appraisal_events")
     op.drop_index("ix_appraisal_event_created", table_name="appraisal_events")
     op.drop_index("ix_appraisal_event_cycle_type", table_name="appraisal_events")
-    op.drop_index("ix_appraisal_event_participant_date", table_name="appraisal_events")
+    # I2: 對應 upgrade 的 raw DDL（op.drop_index 無法清掉非 alembic 建的索引名稱時，
+    # 用 raw DROP INDEX IF EXISTS 較保險）
+    op.execute("DROP INDEX IF EXISTS ix_appraisal_event_participant_date")
     op.drop_table("appraisal_events")
     op.drop_index(
         "ix_appraisal_participant_cycle_rg", table_name="appraisal_participants"
