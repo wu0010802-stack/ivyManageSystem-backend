@@ -78,6 +78,11 @@ class Permission(IntFlag):
     # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
     PARENT_MESSAGES_WRITE = 1 << 49  # 家長 1對1 訊息（教師端發送/回覆）
 
+    # --- 教育部申報模組（Phase 1） ---
+    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
+    GOV_REPORTS_VIEW = 1 << 50  # 政府申報資料 (檢視)
+    GOV_REPORTS_EXPORT = 1 << 51  # 政府申報匯出 (執行)
+
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
 
@@ -149,6 +154,8 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.OVERTIME_READ
         | Permission.OVERTIME_WRITE
         | Permission.REPORTS
+        | Permission.GOV_REPORTS_VIEW
+        | Permission.GOV_REPORTS_EXPORT
     ),
     "supervisor": (
         Permission.DASHBOARD
@@ -187,6 +194,8 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.STUDENTS_SPECIAL_NEEDS_WRITE
         # 家園溝通平台：主管可主動發訊（後端 endpoint 仍以班導師守衛把關發起 thread 範圍）
         | Permission.PARENT_MESSAGES_WRITE
+        # 教育部申報模組：主管可檢視（不可匯出）
+        | Permission.GOV_REPORTS_VIEW
     ),
     "teacher": (
         Permission.DASHBOARD
@@ -278,6 +287,9 @@ PERMISSION_LABELS: Dict[str, str] = {
     "STUDENTS_SPECIAL_NEEDS_WRITE": "特殊需求 (編輯 / IEP)",
     # 家園溝通平台
     "PARENT_MESSAGES_WRITE": "家長訊息 (發送/回覆)",
+    # 教育部申報模組
+    "GOV_REPORTS_VIEW": "政府申報資料 (檢視)",
+    "GOV_REPORTS_EXPORT": "政府申報匯出 (執行)",
 }
 
 # 權限分組 (供前端 UI 使用)
