@@ -534,6 +534,18 @@ def _check_substitute_leave_conflict(
 
     _GENERIC_DETAIL = "代理人於該期間已有其他請假/加班，無法擔任代理人，請改選其他人選"
 
+    # ── 代理人 active 檢查（修補 2026-05-11 P1-10）──────────────────────
+    # 離職或停用的代理人不可被指定；approve 時也要重驗（建立時是 active，
+    # approve 時可能已離職）。
+    sub_emp = (
+        session.query(Employee).filter(Employee.id == substitute_employee_id).first()
+    )
+    if sub_emp is None or not sub_emp.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail="代理人不存在或已離職／停用，請改選其他人選",
+        )
+
     # ── 檢查請假衝突 ────────────────────────────────────────────────────
     leave_conflict = _find_overlapping_leave(
         session,
@@ -547,9 +559,10 @@ def _check_substitute_leave_conflict(
     if leave_conflict:
         raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
 
-    # ── 檢查加班衝突（V14）──────────────────────────────────────────────
-    # 代理人若有與請假時段重疊的待審/已核准加班記錄，同樣不適合擔任代理人
-    ot_conflict = (
+    # ── 檢查加班衝突（V14；修補 2026-05-11 P1-9 改時段精比）──────────────
+    # 代理人 OT 與請假時段需精細比對：申請人半日假 08:00-12:00 vs 代理人
+    # 同日 18:00-20:00 OT 不應誤判衝突；舊實作只比 overtime_date 區間。
+    ot_candidates = (
         session.query(OvertimeRecord)
         .filter(
             OvertimeRecord.employee_id == substitute_employee_id,
@@ -557,10 +570,19 @@ def _check_substitute_leave_conflict(
             OvertimeRecord.overtime_date >= start_date,
             OvertimeRecord.overtime_date <= end_date,
         )
-        .first()
+        .all()
     )
-    if ot_conflict:
-        raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
+    for ot in ot_candidates:
+        # 申請人請假是全日（無 start_time/end_time）→ 與 OT 同日即衝突
+        if not start_time or not end_time:
+            raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
+        # OT 無時段（罕見）→ 視為全日 → 衝突
+        if not ot.start_time or not ot.end_time:
+            raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
+        ot_start_str = ot.start_time.strftime("%H:%M")
+        ot_end_str = ot.end_time.strftime("%H:%M")
+        if max(start_time, ot_start_str) < min(end_time, ot_end_str):
+            raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
 
 
 # ============ Routes ============

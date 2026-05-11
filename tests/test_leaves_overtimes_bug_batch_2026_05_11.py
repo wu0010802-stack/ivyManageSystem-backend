@@ -298,6 +298,85 @@ class TestP0_1BatchApproveTwoPass:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Task G — 代理人衝突精細化
+#   P1-9: 代理人 OT 衝突改用時段比對（不要只比日期）
+#   P1-10: 代理人 is_active=False 不可被指定
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestGSubstituteConflictRefinement:
+    def test_p1_9_substitute_ot_different_time_no_conflict_on_approve(self, app_client):
+        """半日假 08:00-12:00 + 代理人 OT 18:00-20:00，approve 不應因 OT 不同時段被擋。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            applicant = _emp(session, "G001", "申請人")
+            substitute = _emp(session, "G002", "代理人")
+            _admin(session)
+            _approved_overtime(
+                session,
+                substitute.id,
+                overtime_date=date(2026, 9, 15),
+                start_time="18:00",
+                end_time="20:00",
+                hours=2.0,
+            )
+            lv = LeaveRecord(
+                employee_id=applicant.id,
+                leave_type="personal",
+                start_date=date(2026, 9, 15),
+                end_date=date(2026, 9, 15),
+                start_time="08:00",
+                end_time="12:00",
+                leave_hours=4.0,
+                is_approved=None,
+                is_deductible=True,
+                deduction_ratio=1.0,
+                substitute_employee_id=substitute.id,
+            )
+            session.add(lv)
+            session.commit()
+            lv_id = lv.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(f"/api/leaves/{lv_id}/approve", json={"approved": True})
+        assert (
+            res.status_code == 200
+        ), f"代理人晚間 OT 不應與上午半日假衝突；body={res.json()}"
+
+    def test_p1_10_inactive_substitute_blocked_on_approve(self, app_client):
+        """代理人離職 is_active=False，approve 假單應被擋。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            applicant = _emp(session, "G003", "申請人")
+            inactive_sub = _emp(session, "G004", "離職代理人", is_active=False)
+            _admin(session)
+            lv = LeaveRecord(
+                employee_id=applicant.id,
+                leave_type="personal",
+                start_date=date(2026, 9, 16),
+                end_date=date(2026, 9, 16),
+                leave_hours=8.0,
+                is_approved=None,
+                is_deductible=True,
+                deduction_ratio=1.0,
+                substitute_employee_id=inactive_sub.id,
+            )
+            session.add(lv)
+            session.commit()
+            lv_id = lv.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(f"/api/leaves/{lv_id}/approve", json={"approved": True})
+        assert res.status_code in (
+            400,
+            403,
+            409,
+        ), f"離職代理人不應通過 approve；status={res.status_code} body={res.json()}"
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Task F — update 路徑硬化
 #   P1-7: start_time/end_time 允許 null 清空（半日↔全日）
 #   P1-8: _revoke_comp_leave_grant 自動駁回 linked_pending 補寫 ApprovalLog
