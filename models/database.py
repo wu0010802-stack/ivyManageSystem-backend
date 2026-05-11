@@ -75,6 +75,8 @@ from models.auth import User
 from models.audit import AuditLog
 from models.approval import ApprovalPolicy, ApprovalLog
 from models.line_config import LineConfig
+from models.disciplinary import DisciplinaryAction  # noqa: F401
+from models.art_teacher_payroll import ArtTeacherPayrollEntry  # noqa: F401
 from models.report_cache import ReportSnapshot
 from models.activity import (
     ActivityCourse,
@@ -209,6 +211,10 @@ __all__ = [
     "ApprovalLog",
     # line
     "LineConfig",
+    # disciplinary
+    "DisciplinaryAction",
+    # art teacher payroll
+    "ArtTeacherPayrollEntry",
     # report cache
     "ReportSnapshot",
     # activity

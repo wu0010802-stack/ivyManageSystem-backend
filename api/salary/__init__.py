@@ -689,6 +689,7 @@ from .manual_adjust import (  # noqa: E402,F401
 from .records import router as _records_router  # noqa: E402
 from .simulate import router as _simulate_router  # noqa: E402
 from .snapshots import router as _snapshots_router  # noqa: E402
+from .transfer_roster import router as _transfer_roster_router  # noqa: E402
 
 router.include_router(_calculate_router)
 router.include_router(_detail_router)
@@ -697,3 +698,4 @@ router.include_router(_manual_adjust_router)
 router.include_router(_records_router)
 router.include_router(_simulate_router)
 router.include_router(_snapshots_router)
+router.include_router(_transfer_roster_router)

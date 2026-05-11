@@ -122,6 +122,18 @@ class Employee(Base):
         nullable=False,
         comment="業主指示不發紅利/節慶/超額獎金（基本薪+保險仍正常計算）",
     )
+    skip_payroll_transfer = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="不入銀行轉帳名冊（薪資仍計算，但用現金/其他管道支付）",
+    )
+    unreported_for_tax = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="所得不報國稅局（薪資/保險仍計算，但年度扣繳憑單匯出時排除）",
+    )
     extra_dependents_quarterly = Column(
         Integer,
         default=0,
@@ -165,6 +177,21 @@ class Employee(Base):
     address = Column(String(200), comment="通訊地址")
     emergency_contact_name = Column(String(50), comment="緊急聯絡人")
     emergency_contact_phone = Column(String(20), comment="緊急聯絡人電話")
+
+    # --- 教保身分結構化欄位（Phase 1） ---
+    # 註：teacher_cert_no/teacher_cert_type 為政府申報用的「主證號 snapshot」，
+    #     完整證照清單仍維護於 employee_certificates 表（EmployeeCertificate model）
+    staff_role_category = Column(
+        String(20),
+        nullable=True,
+        comment="教保身分別：teacher_certified/educare_certified/assistant_educare/office/kitchen/driver/other",
+    )
+    teacher_cert_no = Column(String(50), nullable=True, comment="教師證/教保員證號")
+    teacher_cert_type = Column(
+        String(20),
+        nullable=True,
+        comment="幼教師證/教保員證/助理教保員證",
+    )
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

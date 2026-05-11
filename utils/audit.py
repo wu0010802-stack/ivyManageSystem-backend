@@ -121,6 +121,19 @@ ENTITY_PATTERNS = [
     (r"/api/parent/contact-book", "contact_book_entry"),
     (r"/api/portal/parent-messages", "parent_message"),
     (r"/api/portal/contact-book", "contact_book_entry"),
+    # 教育部申報模組 Phase 1 — 身障/特教文件 CRUD 必須留 audit，
+    # 否則鑑定證明異動（影響補助/IEP）會無稽核痕跡。
+    (r"/api/gov-moe/disability-documents", "disability_document"),
+    # 考核系統（2026-05-11）。penalty_catalog / bonus_rates 排在 cycles / participants / events /
+    # summaries 之前，確保更具體路徑優先匹配。
+    # /api/appraisal/cycles/{id}/summaries:recompute 歸 appraisal_cycle，
+    # 因為 recompute 由 cycle 觸發；個別 summary sign/finalize/reject 由 /summaries/{id} 端點產生。
+    (r"/api/appraisal/penalty_catalog", "appraisal_catalog"),
+    (r"/api/appraisal/bonus_rates", "appraisal_bonus_rate"),
+    (r"/api/appraisal/cycles", "appraisal_cycle"),
+    (r"/api/appraisal/participants", "appraisal_participant"),
+    (r"/api/appraisal/events", "appraisal_event"),
+    (r"/api/appraisal/summaries", "appraisal_summary"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -171,6 +184,15 @@ ENTITY_LABELS = {
     # 審核流程設定（policy 自身異動稽核）
     "approval_policy": "審核流程設定",
     "insurance_bracket": "勞健保級距",
+    # 教育部申報 Phase 1
+    "disability_document": "身障鑑定文件",
+    # 考核系統
+    "appraisal_cycle": "考核週期",
+    "appraisal_participant": "考核參與者",
+    "appraisal_event": "考核事件",
+    "appraisal_summary": "考核結算",
+    "appraisal_bonus_rate": "考核獎金率",
+    "appraisal_catalog": "懲處目錄",
 }
 
 ACTION_LABELS = {

@@ -7,10 +7,36 @@ from sqlalchemy.orm import sessionmaker
 # 讓 tests 可以 import backend 模組
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# ── SQLite 相容性修補（必須在所有模型 import 前執行）─────────────────────────
+# models/__init__.py 在 SalaryEngine 匯入鏈中被觸發，導致 models/appraisal.py 先被
+# 載入；因此修補必須在 conftest.py 最頂端（任何 import 前）執行。
+import sqlalchemy as _sa
+import sqlalchemy.sql.sqltypes as _sqltypes
+import sqlalchemy.dialects.postgresql as _pg_dialects
+from sqlalchemy import JSON as _JSON
+
+# 1. JSONB → JSON（appraisal_events.attachments 欄位）
+_pg_dialects.JSONB = _JSON  # type: ignore[assignment]
+
+
+# 2. BigInteger → Integer（讓 SQLite 主鍵自動遞增）
+class _SQLiteInteger(_sa.Integer):  # type: ignore[misc]
+    """SQLite 相容的 BigInteger 替代型別。"""
+
+    pass
+
+
+_sa.BigInteger = _SQLiteInteger  # type: ignore[assignment]
+_sqltypes.BigInteger = _SQLiteInteger  # type: ignore[assignment]
+# ─────────────────────────────────────────────────────────────────────────────
+
 from services.salary_engine import SalaryEngine
 from services.attendance_parser import AttendanceResult
 import models.base as base_module
 from models.database import Base
+
+# 載入考核系統 fixtures（test_appraisal_*.py 所需）
+pytest_plugins = ["tests.conftest_appraisal"]
 
 
 @pytest.fixture

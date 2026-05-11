@@ -24,6 +24,9 @@ from api.student_assessments import router as student_assessments_router
 from api.classrooms import router as classrooms_router
 from api.attendance import router as attendance_router
 from api.salary import router as salary_router, init_salary_services
+from api.disciplinary import router as disciplinary_router
+from api.art_teacher_payroll import router as art_teacher_payroll_router
+from api.system_config import router as system_config_router
 from api.config import router as config_router, init_config_services
 from api.leaves import (
     router as leaves_router,
@@ -63,6 +66,7 @@ from api.dismissal_ws import ws_router as dismissal_ws_router
 from api.contact_book_ws import ws_router as contact_book_ws_router
 from api.line_webhook import router as line_webhook_router, init_webhook_service
 from api.gov_reports import router as gov_reports_router, init_gov_report_services
+from api.gov_moe import router as gov_moe_router
 from api.fees import router as fees_router
 from api.recruitment import router as recruitment_router
 from api.recruitment_ivykids import router as recruitment_ivykids_router
@@ -89,6 +93,7 @@ from api.parent_portal import (
     init_parent_line_service,
 )
 from api.student_leaves import router as student_leaves_router
+from api.appraisal import appraisal_router
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -547,6 +552,9 @@ app.include_router(student_assessments_router)
 app.include_router(classrooms_router)
 app.include_router(attendance_router)
 app.include_router(salary_router)
+app.include_router(disciplinary_router)
+app.include_router(art_teacher_payroll_router)
+app.include_router(system_config_router)
 app.include_router(config_router)
 app.include_router(leaves_router)
 app.include_router(overtimes_router)
@@ -579,6 +587,7 @@ app.include_router(dismissal_ws_router)  # WebSocket（路徑已含 /ws/...）
 app.include_router(contact_book_ws_router)  # 聯絡簿 WebSocket（教師 + 家長 channel）
 app.include_router(line_webhook_router)
 app.include_router(gov_reports_router)
+app.include_router(gov_moe_router, prefix="/api")
 app.include_router(fees_router)
 app.include_router(recruitment_router)
 app.include_router(recruitment_ivykids_router)
@@ -598,6 +607,7 @@ app.include_router(parent_portal_router)
 app.include_router(parent_admin_router)
 app.include_router(student_leaves_router)
 app.include_router(gov_data_sync_router)
+app.include_router(appraisal_router)
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）

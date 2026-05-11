@@ -36,6 +36,8 @@ class SalaryBreakdown:
     labor_insurance: float = 0
     health_insurance: float = 0
     pension_self: float = 0
+    # 二代健保補充保費（兼職單筆給付 ≥ 門檻才扣；已併入 health_insurance，本欄位供稽核明細）
+    supplementary_health_employee: float = 0
 
     # 雇主端負擔（不從薪水扣，但會落到 SalaryRecord 供財報/政府匯出聚合）
     # Why: 若 breakdown 不帶、engine 也不寫，SalaryRecord.*_employer 永遠 0，

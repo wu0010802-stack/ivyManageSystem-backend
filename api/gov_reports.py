@@ -711,10 +711,14 @@ def export_withholding(
     """國稅局年度薪資所得扣繳憑單（所得類別50，Excel）"""
     session = get_session()
     try:
+        # 排除「不入稅報」員工（業主指示國稅局不作帳的特殊個案）
         records = (
             session.query(SalaryRecord, Employee)
             .join(Employee, SalaryRecord.employee_id == Employee.id)
-            .filter(SalaryRecord.salary_year == year)
+            .filter(
+                SalaryRecord.salary_year == year,
+                Employee.unreported_for_tax == False,  # noqa: E712
+            )
             .all()
         )
 

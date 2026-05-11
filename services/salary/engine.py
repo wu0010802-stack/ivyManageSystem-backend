@@ -1621,6 +1621,24 @@ class SalaryEngine:
                 employee.get("name") or employee.get("employee_id"),
             )
 
+        # 二代健保補充保費（兼職單筆給付 ≥ 門檻時扣）
+        # 規則：employee_type='hourly' 且當月 hourly_total ≥ threshold（預設 29500）
+        #       扣 hourly_total × supplementary_health_rate（預設 2.11%）
+        # Excel 註記「115.01 月起未達 29500 元，兼職所得無需扣除二代健保」
+        if employee.get("employee_type") == "hourly":
+            suppl_rate = float(
+                getattr(self.insurance_service, "supplementary_health_rate", 0) or 0
+            )
+            suppl_threshold = int(
+                getattr(self.insurance_service, "supplementary_health_threshold", 0)
+                or 0
+            )
+            hourly_pay = float(breakdown.hourly_total or 0)
+            if suppl_rate > 0 and suppl_threshold > 0 and hourly_pay >= suppl_threshold:
+                suppl = round(hourly_pay * suppl_rate)
+                breakdown.health_insurance = (breakdown.health_insurance or 0) + suppl
+                breakdown.supplementary_health_employee = suppl
+
         # 考勤扣款
         base_sal = employee.get("base_salary", 0) or 0
         daily_salary = calc_daily_salary(base_sal)
@@ -1790,12 +1808,18 @@ class SalaryEngine:
             # 時薪制計算
             breakdown.hourly_rate = employee.get("hourly_rate", 0)
             breakdown.work_hours = employee.get("work_hours", 0)
-            # 優先使用已依勞基法分段計費的結果（process_salary_calculation 提供）；
-            # 未提供時 fallback 至等比計算（向後相容直接傳入 employee dict 的測試情境）
-            breakdown.hourly_total = (
-                employee.get("hourly_calculated_pay")
-                or breakdown.hourly_rate * breakdown.work_hours
-            )
+            # 優先序：
+            #   1. 才藝老師明細 entries 合計（ArtTeacherPayrollEntry 多筆 sum）— 業主在 UI 填明細
+            #   2. hourly_calculated_pay（process_salary_calculation 提供的勞基法分段計費結果）
+            #   3. hourly_rate × work_hours（向後相容測試情境）
+            art_entries_total = employee.get("art_teacher_entries_total")
+            if art_entries_total is not None and float(art_entries_total) > 0:
+                breakdown.hourly_total = float(art_entries_total)
+            else:
+                breakdown.hourly_total = (
+                    employee.get("hourly_calculated_pay")
+                    or breakdown.hourly_rate * breakdown.work_hours
+                )
             breakdown.gross_salary = breakdown.hourly_total
         else:
             # 正職員工
@@ -2628,9 +2652,15 @@ class SalaryEngine:
                     )
                 )
 
+        from services.leave_bonus_skip import should_skip_bonuses_for_month
+
         festival_total = 0
         overtime_total = 0
         for y, m in period_months:
+            # 該月有產假/育嬰/流產假 → 不計入累積（業主慣例對齊 Excel 郭玟秀/陳品棻案例）
+            skip, _ = should_skip_bonuses_for_month(session, emp.id, y, m)
+            if skip:
+                continue
             try:
                 ctx: dict = {"session": session, "employee": emp}
                 cache = monthly_ctx_cache.get((y, m)) if monthly_ctx_cache else None
@@ -2669,6 +2699,108 @@ class SalaryEngine:
                     "計算期間累積失敗 emp=%s year=%s month=%s", emp.id, y, m
                 )
         return festival_total, overtime_total
+
+    def _adjust_period_totals_for_discipline(
+        self,
+        session,
+        emp,
+        year: int,
+        month: int,
+        festival_total,
+        overtime_total,
+    ):
+        """從發放月累積總額中扣減 pending 懲處。
+
+        扣減順序：節慶獎金優先扣完才動超額（業主慣例，與 Excel 案例一致）。
+        非發放月（totals 為 None）或無 pending 懲處直接 pass-through。
+
+        Returns:
+            (festival_after, overtime_after, total_deducted)
+            total_deducted 是計算層的「應扣總額」（可能 > available 時截斷）。
+            mark applied（標記抵扣到 salary_record_id）由呼叫端在 record 寫入後處理。
+        """
+        if festival_total is None or overtime_total is None:
+            return festival_total, overtime_total, 0
+
+        import calendar as _cal
+        from services.disciplinary import (
+            _effective_amount,
+            get_pending_actions,
+        )
+
+        _, last_day = _cal.monthrange(year, month)
+        until_date = date(year, month, last_day)
+
+        actions = get_pending_actions(session, emp.id, until_date)
+        if not actions:
+            return festival_total, overtime_total, 0
+
+        bonus_config = getattr(self, "_bonus_config", None)
+        target = sum(_effective_amount(a, bonus_config) for a in actions)
+        if target <= 0:
+            return festival_total, overtime_total, 0
+
+        available = float(festival_total) + float(overtime_total)
+        deducted = min(target, available)
+        if deducted <= 0:
+            return festival_total, overtime_total, 0
+
+        festival_after = max(0.0, float(festival_total) - deducted)
+        overtime_consumed = max(0.0, deducted - float(festival_total))
+        overtime_after = max(0.0, float(overtime_total) - overtime_consumed)
+
+        return (
+            int(round(festival_after)),
+            int(round(overtime_after)),
+            int(round(deducted)),
+        )
+
+    def _mark_discipline_applied(
+        self,
+        session,
+        employee_id: int,
+        year: int,
+        month: int,
+        salary_record_id: int,
+    ) -> None:
+        """發放月寫入 record 後標記 pending 懲處為已抵扣。
+
+        非發放月（period_accrual 不適用）自動 no-op。實際抵扣金額按
+        _adjust_period_totals_for_discipline 的同樣語意分配（節慶優先）。
+        """
+        import calendar as _cal
+        from services.disciplinary import apply_deductions
+        from .utils import get_distribution_period_months
+        from models.database import SalaryRecord
+
+        period_months = get_distribution_period_months(year, month)
+        if not period_months:
+            return
+
+        rec = session.query(SalaryRecord).filter_by(id=salary_record_id).first()
+        if not rec:
+            return
+
+        _, last_day = _cal.monthrange(year, month)
+        until_date = date(year, month, last_day)
+        bonus_config = getattr(self, "_bonus_config", None)
+        available = float(rec.festival_bonus or 0) + float(rec.overtime_bonus or 0)
+        try:
+            apply_deductions(
+                session,
+                employee_id=employee_id,
+                salary_record_id=salary_record_id,
+                until_date=until_date,
+                available_bonus=available,
+                bonus_config=bonus_config,
+            )
+        except Exception:
+            logger.exception(
+                "mark discipline applied 失敗 emp=%s %d/%02d",
+                employee_id,
+                year,
+                month,
+            )
 
     def _load_manual_salary_fields(
         self, session, employee_id: int, year: int, month: int
@@ -2718,6 +2850,14 @@ class SalaryEngine:
                 self._load_manual_salary_fields(session, emp.id, year, month)
             )
 
+            # 才藝老師薪資明細（ArtTeacherPayrollEntry）：若有 entries，覆寫 hourly_total
+            if emp.employee_type == "hourly":
+                from services.art_teacher_payroll import compute_total_for_month
+
+                art_total = compute_total_for_month(session, emp.id, year, month)
+                if art_total > 0:
+                    emp_dict["art_teacher_entries_total"] = art_total
+
             _, last_day = calendar.monthrange(year, month)
             start_date = date(year, month, 1)
             end_date = date(year, month, last_day)
@@ -2749,6 +2889,18 @@ class SalaryEngine:
             # 發放月：累積期間每月節慶/超額獎金（內部會逐月再 swap 設定）
             period_festival_total, period_overtime_total = (
                 self._compute_period_accrual_totals(session, emp, year, month)
+            )
+
+            # 從合計中扣減 pending 懲處（節慶優先扣完才動超額）
+            period_festival_total, period_overtime_total, _disc_deducted = (
+                self._adjust_period_totals_for_discipline(
+                    session,
+                    emp,
+                    year,
+                    month,
+                    period_festival_total,
+                    period_overtime_total,
+                )
             )
 
             breakdown = self.calculate_salary(
@@ -2840,6 +2992,12 @@ class SalaryEngine:
                 session.add(salary_record)
 
             _fill_salary_record(salary_record, breakdown, self)
+            session.flush()  # 取得 salary_record.id 供 discipline mark applied 用
+
+            # 發放月才會有 period 累積 → 此時 mark applied pending 懲處
+            self._mark_discipline_applied(
+                session, emp.id, year, month, salary_record.id
+            )
 
             try:
                 session.commit()
@@ -2857,6 +3015,10 @@ class SalaryEngine:
                 )
                 self._check_not_finalized(salary_record, emp.name, year, month)
                 _fill_salary_record(salary_record, breakdown, self)
+                session.flush()
+                self._mark_discipline_applied(
+                    session, emp.id, year, month, salary_record.id
+                )
                 session.commit()
 
             return breakdown
