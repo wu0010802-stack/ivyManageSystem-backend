@@ -83,6 +83,14 @@ class Permission(IntFlag):
     GOV_REPORTS_VIEW = 1 << 50  # 政府申報資料 (檢視)
     GOV_REPORTS_EXPORT = 1 << 51  # 政府申報匯出 (執行)
 
+    # --- 教職員考核（Phase 1）---
+    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
+    APPRAISAL_READ = 1 << 55  # 考核資料檢視（自己/屬下/全部三層 visibility）
+    APPRAISAL_EVENT_WRITE = 1 << 56  # 登錄事件（功過/扣加分/特別辦法）
+    APPRAISAL_REVIEW = 1 << 57  # 主管簽核（第一階）
+    APPRAISAL_ACCOUNTING = 1 << 58  # 行政會計核數字（第二階）
+    APPRAISAL_FINALIZE = 1 << 59  # 最高主管核定（第三階）+ cycle lock/unlock/close
+
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
 
@@ -113,6 +121,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "FEES": {"read": "FEES_READ", "write": "FEES_WRITE"},
     "RECRUITMENT": {"read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
     "GUARDIANS": {"read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
+    "APPRAISAL": {"read": "APPRAISAL_READ", "write": "APPRAISAL_EVENT_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -156,6 +165,10 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.REPORTS
         | Permission.GOV_REPORTS_VIEW
         | Permission.GOV_REPORTS_EXPORT
+        # 教職員考核：人事/會計（核數字）
+        | Permission.APPRAISAL_READ
+        | Permission.APPRAISAL_EVENT_WRITE
+        | Permission.APPRAISAL_ACCOUNTING
     ),
     "supervisor": (
         Permission.DASHBOARD
@@ -196,6 +209,11 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.PARENT_MESSAGES_WRITE
         # 教育部申報模組：主管可檢視（不可匯出）
         | Permission.GOV_REPORTS_VIEW
+        # 教職員考核：主管全程權限（評分+簽核+核定）
+        | Permission.APPRAISAL_READ
+        | Permission.APPRAISAL_EVENT_WRITE
+        | Permission.APPRAISAL_REVIEW
+        | Permission.APPRAISAL_FINALIZE
     ),
     "teacher": (
         Permission.DASHBOARD
@@ -211,6 +229,9 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.STUDENTS_SPECIAL_NEEDS_READ
         # 家園溝通平台：教師可發訊；發起 thread 範圍由 endpoint 端 assert_teacher_is_homeroom 守衛
         | Permission.PARENT_MESSAGES_WRITE
+        # 教職員考核：教師登錄事件 + 看自己
+        | Permission.APPRAISAL_READ
+        | Permission.APPRAISAL_EVENT_WRITE
     ),
     # 家長角色：恆無任何 Permission 位元；資源存取一律由 user_id → guardians 過濾
     "parent": 0,
@@ -290,6 +311,12 @@ PERMISSION_LABELS: Dict[str, str] = {
     # 教育部申報模組
     "GOV_REPORTS_VIEW": "政府申報資料 (檢視)",
     "GOV_REPORTS_EXPORT": "政府申報匯出 (執行)",
+    # 教職員考核
+    "APPRAISAL_READ": "考核資料 (檢視)",
+    "APPRAISAL_EVENT_WRITE": "考核事件 (登錄)",
+    "APPRAISAL_REVIEW": "考核簽核 (主管第一階)",
+    "APPRAISAL_ACCOUNTING": "考核核數字 (會計第二階)",
+    "APPRAISAL_FINALIZE": "考核核定 (最高主管第三階)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -350,6 +377,21 @@ PERMISSION_GROUPS: List[Dict] = [
                 "read": "RECRUITMENT_READ",
                 "write": "RECRUITMENT_WRITE",
             },
+        ],
+    },
+    {
+        "name": "教職員考核",
+        "permissions": [
+            "APPRAISAL_REVIEW",
+            "APPRAISAL_ACCOUNTING",
+            "APPRAISAL_FINALIZE",
+        ],
+        "split_permissions": [
+            {
+                "module": "考核資料",
+                "read": "APPRAISAL_READ",
+                "write": "APPRAISAL_EVENT_WRITE",
+            }
         ],
     },
     {
