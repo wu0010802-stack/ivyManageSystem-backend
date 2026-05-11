@@ -78,6 +78,14 @@ class Permission(IntFlag):
     # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
     PARENT_MESSAGES_WRITE = 1 << 49  # 家長 1對1 訊息（教師端發送/回覆）
 
+    # --- 教職員考核（Phase 1）---
+    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
+    APPRAISAL_READ = 1 << 50  # 考核資料檢視（自己/屬下/全部三層 visibility）
+    APPRAISAL_EVENT_WRITE = 1 << 51  # 登錄事件（功過/扣加分/特別辦法）
+    APPRAISAL_REVIEW = 1 << 52  # 主管簽核（第一階）
+    APPRAISAL_ACCOUNTING = 1 << 53  # 行政會計核數字（第二階）
+    APPRAISAL_FINALIZE = 1 << 54  # 最高主管核定（第三階）+ cycle lock/unlock/close
+
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
 
@@ -108,6 +116,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "FEES": {"read": "FEES_READ", "write": "FEES_WRITE"},
     "RECRUITMENT": {"read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
     "GUARDIANS": {"read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
+    "APPRAISAL": {"read": "APPRAISAL_READ", "write": "APPRAISAL_EVENT_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
