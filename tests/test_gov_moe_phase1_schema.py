@@ -71,3 +71,27 @@ def test_student_has_disability_fields():
 def test_employee_has_staff_role_category_field():
     for f in ("staff_role_category", "teacher_cert_no", "teacher_cert_type"):
         assert hasattr(Employee, f), f"Employee missing field: {f}"
+
+
+def test_disability_document_model_importable():
+    from models.gov_moe import StudentDisabilityDocument
+
+    assert StudentDisabilityDocument.__tablename__ == "student_disability_documents"
+
+
+def test_iep_record_model_importable():
+    from models.gov_moe import StudentIEPRecord
+
+    assert StudentIEPRecord.__tablename__ == "student_iep_records"
+
+
+def test_special_subsidy_model_importable():
+    from models.gov_moe import SpecialEducationSubsidy
+
+    assert SpecialEducationSubsidy.__tablename__ == "special_education_subsidies"
+
+
+def test_monthly_snapshot_model_importable():
+    from models.gov_moe import MonthlyEnrollmentSnapshot
+
+    assert MonthlyEnrollmentSnapshot.__tablename__ == "monthly_enrollment_snapshots"
