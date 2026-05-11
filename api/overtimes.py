@@ -860,9 +860,12 @@ def update_overtime(
     """更新加班記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
     session = get_session()
     try:
+        # 列鎖（修補 2026-05-11 P0-3）：與 approve 路徑對齊，防止並發 update+approve
+        # 在補休配額 / overtime_pay 重算間產生 lost update。
         ot = (
             session.query(OvertimeRecord)
             .filter(OvertimeRecord.id == overtime_id)
+            .with_for_update()
             .first()
         )
         if not ot:
@@ -1089,9 +1092,12 @@ def delete_overtime(
     """刪除加班記錄"""
     session = get_session()
     try:
+        # 列鎖（修補 2026-05-11 P0-3）：與 approve 路徑對齊，防止並發 delete+approve race
+        # 在補休配額退還階段 lost update。
         ot = (
             session.query(OvertimeRecord)
             .filter(OvertimeRecord.id == overtime_id)
+            .with_for_update()
             .first()
         )
         if not ot:

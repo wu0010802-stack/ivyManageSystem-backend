@@ -298,6 +298,55 @@ class TestP0_1BatchApproveTwoPass:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Task C — P0-3: update/delete 缺 with_for_update 列鎖
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestP0_3UpdateDeleteRowLock:
+    """leaves/overtimes 的 update/delete 路徑必須與 approve 一樣用 with_for_update()，
+    否則並發 update+approve 會 lost update（補休配額負數、重複退還等）。
+
+    用 source inspection 驗證 invariant；真實 race 留 staging 演練。
+    """
+
+    def test_update_leave_uses_for_update(self):
+        import inspect
+        from api import leaves as m
+
+        src = inspect.getsource(m.update_leave)
+        assert (
+            "with_for_update" in src
+        ), "update_leave 的 LeaveRecord SELECT 缺 with_for_update()"
+
+    def test_delete_leave_uses_for_update(self):
+        import inspect
+        from api import leaves as m
+
+        src = inspect.getsource(m.delete_leave)
+        assert (
+            "with_for_update" in src
+        ), "delete_leave 的 LeaveRecord SELECT 缺 with_for_update()"
+
+    def test_update_overtime_uses_for_update(self):
+        import inspect
+        from api import overtimes as m
+
+        src = inspect.getsource(m.update_overtime)
+        assert (
+            "with_for_update" in src
+        ), "update_overtime 的 OvertimeRecord SELECT 缺 with_for_update()"
+
+    def test_delete_overtime_uses_for_update(self):
+        import inspect
+        from api import overtimes as m
+
+        src = inspect.getsource(m.delete_overtime)
+        assert (
+            "with_for_update" in src
+        ), "delete_overtime 的 OvertimeRecord SELECT 缺 with_for_update()"
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Task B — P0-2: Portal 病假繞過勞基雙配額
 # ────────────────────────────────────────────────────────────────────────────
 

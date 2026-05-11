@@ -25,7 +25,9 @@ from fastapi import HTTPException
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _make_leave(leave_id=1, employee_id=10, start=date(2026, 3, 15), end=date(2026, 3, 15)):
+def _make_leave(
+    leave_id=1, employee_id=10, start=date(2026, 3, 15), end=date(2026, 3, 15)
+):
     leave = types.SimpleNamespace()
     leave.id = leave_id
     leave.employee_id = employee_id
@@ -48,10 +50,17 @@ def _make_leave(leave_id=1, employee_id=10, start=date(2026, 3, 15), end=date(20
 
 def _common_patches(leave, mock_engine):
     """套用 update_leave 所需的全部依賴 patch,讓焦點集中在月份重算。"""
-    from api.leaves import _salary_engine as _orig_engine  # noqa: F401  (only to confirm symbol)
+    from api.leaves import (
+        _salary_engine as _orig_engine,
+    )  # noqa: F401  (only to confirm symbol)
 
     session = MagicMock()
-    # session.query(LeaveRecord).filter(...).first() → leave
+    # session.query(LeaveRecord).filter(...).with_for_update().first() → leave
+    # 2026-05-11 P0-3：update_leave 加了 with_for_update() 列鎖
+    session.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (
+        leave
+    )
+    # 兼容沒走 with_for_update 的舊呼叫（若有）
     session.query.return_value.filter.return_value.first.return_value = leave
 
     return [
@@ -90,14 +99,14 @@ class TestUpdateLeaveCrossMonthRecalc:
                 p.stop()
 
         called_months = {
-            (call.args[1], call.args[2]) for call in engine.process_salary_calculation.call_args_list
+            (call.args[1], call.args[2])
+            for call in engine.process_salary_calculation.call_args_list
         }
-        assert (2026, 3) in called_months, (
-            f"3 月(orig)未被重算,實際呼叫:{called_months}"
-        )
-        assert (2026, 4) in called_months, (
-            f"4 月(new)未被重算,實際呼叫:{called_months}"
-        )
+        assert (
+            2026,
+            3,
+        ) in called_months, f"3 月(orig)未被重算,實際呼叫:{called_months}"
+        assert (2026, 4) in called_months, f"4 月(new)未被重算,實際呼叫:{called_months}"
 
     def test_same_month_update_recalculates_once(self):
         """同月份更新(3/15 → 3/16)只需重算 3 月一次,不重複"""
@@ -122,7 +131,8 @@ class TestUpdateLeaveCrossMonthRecalc:
                 p.stop()
 
         called_months = [
-            (call.args[1], call.args[2]) for call in engine.process_salary_calculation.call_args_list
+            (call.args[1], call.args[2])
+            for call in engine.process_salary_calculation.call_args_list
         ]
         # 同一月份只應呼叫一次(set semantics)
         assert called_months == [(2026, 3)], f"期望僅 (2026, 3),實際:{called_months}"

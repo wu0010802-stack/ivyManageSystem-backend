@@ -779,7 +779,14 @@ def update_leave(
     """更新請假記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
     session = get_session()
     try:
-        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        # 列鎖（修補 2026-05-11 P0-3）：與 approve 路徑對齊，防止並發 update+approve
+        # 造成 lost update（補休配額負數、deduction_ratio 不同步等）。
+        leave = (
+            session.query(LeaveRecord)
+            .filter(LeaveRecord.id == leave_id)
+            .with_for_update()
+            .first()
+        )
         if not leave:
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
@@ -994,7 +1001,13 @@ def delete_leave(
     """刪除請假記錄"""
     session = get_session()
     try:
-        leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
+        # 列鎖（修補 2026-05-11 P0-3）：與 approve 路徑對齊，防止並發 delete+approve race。
+        leave = (
+            session.query(LeaveRecord)
+            .filter(LeaveRecord.id == leave_id)
+            .with_for_update()
+            .first()
+        )
         if not leave:
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
