@@ -49,13 +49,17 @@ def _guard_event_writable(
     """驗證事件可寫入的守衛條件。
 
     Rules:
-    1. cycle 必須是 ACTIVE 狀態（非 CLOSED）
+    1. cycle 必須是 OPEN 狀態（非 LOCKED / CLOSED）
+       - LOCKED：spec §4.7 唯讀期間，禁止新增/修改/作廢事件
+       - CLOSED：封存後不可變動
     2. event_date 必須落在 cycle.start_date ~ cycle.end_date 內
     3. 自登守衛：不能登錄自己的事件
     """
     cycle = db.get(AppraisalCycle, participant.cycle_id)
     if cycle.status == CycleStatus.CLOSED:
         raise HTTPException(400, "cycle_closed")
+    if cycle.status == CycleStatus.LOCKED:
+        raise HTTPException(400, "cycle_locked:LOCKED 期間禁止新增/修改事件")
     if not (cycle.start_date <= event_date <= cycle.end_date):
         raise HTTPException(400, "event_date_out_of_cycle")
     actor_emp_id = _resolve_user_employee_id(current_user)

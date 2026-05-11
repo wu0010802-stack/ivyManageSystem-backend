@@ -109,6 +109,13 @@ class EventPatch(BaseModel):
     title: Optional[str] = Field(default=None, max_length=120)
     detail: Optional[str] = None
 
+    @field_validator("score_delta")
+    @classmethod
+    def _bounded(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and (v < Decimal("-20") or v > Decimal("20")):
+            raise ValueError("score_delta out of [-20, 20]")
+        return v
+
 
 class EventRevert(BaseModel):
     # min_length=2 讓 2 字繁體中文（如「誤登」）可通過；空字串仍被擋

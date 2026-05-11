@@ -67,6 +67,45 @@ class TestAppraisalEvents:
         assert resp.status_code == 400
         assert "event_date_out_of_cycle" in resp.json()["detail"]
 
+    def test_create_event_LOCKED_cycle_被擋(
+        self, client, supervisor_headers, locked_cycle_with_participants
+    ):
+        """LOCKED cycle 期間禁止登錄事件（spec §4.7 唯讀）。"""
+        # 取該 cycle 第一個 participant
+        r = client.get(
+            f"/api/appraisal/cycles/{locked_cycle_with_participants.id}/participants",
+            headers=supervisor_headers,
+        )
+        assert r.status_code == 200, r.json()
+        participants = r.json()
+        assert len(participants) > 0
+        pid = participants[0]["id"]
+
+        resp = client.post(
+            "/api/appraisal/events",
+            json={
+                "participant_id": pid,
+                "event_type": "MINOR_MERIT",
+                "event_date": str(locked_cycle_with_participants.start_date),
+                "score_delta": "3",
+                "title": "LOCKED 期間補登",
+            },
+            headers=supervisor_headers,
+        )
+        assert resp.status_code == 400
+        assert "cycle_locked" in resp.json()["detail"]
+
+    def test_patch_event_score_delta_out_of_range_422(
+        self, client, supervisor_headers, existing_event
+    ):
+        """PATCH score_delta=999 (超出 [-20,20]) 應 422 被擋。"""
+        resp = client.patch(
+            f"/api/appraisal/events/{existing_event.id}",
+            json={"score_delta": "999"},
+            headers=supervisor_headers,
+        )
+        assert resp.status_code == 422
+
     def test_patch_event_觸發_stale(
         self, client, supervisor_headers, existing_event, db_session
     ):
