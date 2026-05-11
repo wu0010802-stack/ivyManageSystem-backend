@@ -12,16 +12,16 @@
 
 獎金計算：bonus_amount = base_amount × (total_score / 100)
 
-Revision ID: x9y0z1a2b3c4
-Revises: w8x9y0z1a2b3
+Revision ID: a3p4p5r6i7s8
+Revises: a7p8p9r0i1s2
 Create Date: 2026-05-11
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "x9y0z1a2b3c4"
-down_revision = "w8x9y0z1a2b3"
+revision = "a3p4p5r6i7s8"
+down_revision = "a7p8p9r0i1s2"
 branch_labels = None
 depends_on = None
 

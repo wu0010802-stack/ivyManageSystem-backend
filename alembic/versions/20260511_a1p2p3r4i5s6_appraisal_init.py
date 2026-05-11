@@ -8,14 +8,14 @@
 - appraisal_bonus_rates
 - appraisal_penalty_catalog（seed 在後續 migration）
 
-接在 user disciplinary_actions migration (u6v7w8x9y0z1) 之後。
+接在 moe_phase1_schema (v8a9b0c1d2e3) 之後。
 disciplinary_actions 是金額型扣款（warning -1000 從節慶獎金扣），
 appraisal_events 是分數型扣考核分（warning -2 影響學期等級），兩者互補。
 
 Refs: docs/superpowers/specs/2026-05-11-employee-appraisal-system-design.md
 
-Revision ID: v7w8x9y0z1a2
-Revises: u6v7w8x9y0z1
+Revision ID: a1p2p3r4i5s6
+Revises: v8a9b0c1d2e3
 Create Date: 2026-05-11
 """
 
@@ -23,8 +23,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import ENUM, JSONB
 
-revision = "v7w8x9y0z1a2"
-down_revision = "u6v7w8x9y0z1"
+revision = "a1p2p3r4i5s6"
+down_revision = "v8a9b0c1d2e3"
 branch_labels = None
 depends_on = None
 

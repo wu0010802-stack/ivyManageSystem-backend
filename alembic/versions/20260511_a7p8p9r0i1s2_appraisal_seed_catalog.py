@@ -6,16 +6,16 @@
      + 功類 3（嘉獎/小功/大功）
      + 特別辦法 4（主管推薦/特教生/種子講師/才藝班全期）
 
-Revision ID: w8x9y0z1a2b3
-Revises: v7w8x9y0z1a2
+Revision ID: a7p8p9r0i1s2
+Revises: a1p2p3r4i5s6
 Create Date: 2026-05-11
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "w8x9y0z1a2b3"
-down_revision = "v7w8x9y0z1a2"
+revision = "a7p8p9r0i1s2"
+down_revision = "a1p2p3r4i5s6"
 branch_labels = None
 depends_on = None
 

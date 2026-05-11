@@ -13,16 +13,16 @@
 
 ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt（utils/permissions.py 已有警告註解）
 
-Revision ID: y0z1a2b3c4d5
-Revises: x9y0z1a2b3c4
+Revision ID: a9p0p1r2i3s4
+Revises: a3p4p5r6i7s8
 Create Date: 2026-05-11
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "y0z1a2b3c4d5"
-down_revision = "x9y0z1a2b3c4"
+revision = "a9p0p1r2i3s4"
+down_revision = "a3p4p5r6i7s8"
 branch_labels = None
 depends_on = None
 
