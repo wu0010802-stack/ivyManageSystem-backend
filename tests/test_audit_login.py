@@ -3,6 +3,7 @@
 A 階段（spec 2026-05-11-audit-coverage-gap）：登入事件補登 audit_logs。
 """
 
+import ipaddress
 import json
 import os
 import sys
@@ -297,3 +298,105 @@ class TestLoginEndpointAudit:
         rows = self._get_login_audits(sf)
         failed = [r for r in rows if r.action == "LOGIN_FAILED"]
         assert len(failed) >= 3, f"預期至少 3 筆 LOGIN_FAILED，實得 {len(failed)} 筆"
+
+    def test_login_account_locked_creates_audit(self, client_with_db):
+        """連續 _FAIL_THRESHOLD 次密碼錯誤觸發帳號鎖定，下一次嘗試應寫 LOGIN_LOCKED audit。"""
+        client, sf = client_with_db
+        from api.auth import _FAIL_THRESHOLD
+
+        # 打到鎖定門檻：_check_account_lockout 在 _FAIL_THRESHOLD 筆失敗後才鎖定
+        # 每次: check（count < threshold, pass）→ wrong password → record failure
+        # 第 threshold+1 次：check 時 count == threshold >= threshold → LOCKED
+        for _ in range(_FAIL_THRESHOLD):
+            client.post(
+                "/api/auth/login", json={"username": "alice", "password": "WrongPass"}
+            )
+        # 下一次觸發 lockout（即使密碼正確也會被帳號鎖定守衛擋住）
+        res = client.post(
+            "/api/auth/login", json={"username": "alice", "password": "CorrectPass1"}
+        )
+        assert (
+            res.status_code == 429
+        ), f"預期 429 lockout，實得 {res.status_code}: {res.text}"
+        rows = self._get_login_audits(sf)
+        locked = [r for r in rows if r.action == "LOGIN_LOCKED"]
+        assert (
+            locked
+        ), f"未找到 LOGIN_LOCKED audit；現有 actions: {[r.action for r in rows]}"
+        changes = json.loads(locked[0].changes)
+        assert changes["scope"] == "account_lockout"
+
+    def test_login_ip_rate_limited_creates_audit(self, client_with_db):
+        """同 IP 在短時間內過多嘗試應觸發 IP 限流，寫 LOGIN_RATE_LIMITED audit。"""
+        client, sf = client_with_db
+        from api.auth import _IP_MAX_ATTEMPTS
+
+        # record_attempt 在 count 前執行，故第 _IP_MAX_ATTEMPTS+1 次 count > 20 → 觸發
+        # 用不同 username 避免帳號鎖定干擾
+        for i in range(_IP_MAX_ATTEMPTS + 1):
+            client.post(
+                "/api/auth/login",
+                json={"username": f"nonexistent_user_{i}", "password": "AnyPass"},
+            )
+        rows = self._get_login_audits(sf)
+        rate_limited = [r for r in rows if r.action == "LOGIN_RATE_LIMITED"]
+        assert rate_limited, (
+            f"未找到 LOGIN_RATE_LIMITED audit；現有 actions: "
+            f"{[r.action for r in rows]} (total {len(rows)})"
+        )
+        changes = json.loads(rate_limited[0].changes)
+        assert changes["scope"] == "ip_sliding_window"
+
+    def test_login_teacher_non_school_wifi_creates_audit(
+        self, client_with_db, monkeypatch
+    ):
+        """教師角色從非校園 WiFi 登入應寫 LOGIN_FAILED + reason='non_school_wifi'。"""
+        client, sf = client_with_db
+        from models.database import User
+        from utils.auth import hash_password
+
+        # 建一名 teacher
+        session = sf()
+        try:
+            teacher = User(
+                username="bob_teacher",
+                password_hash=hash_password("TeacherPass1"),
+                role="teacher",
+                is_active=True,
+            )
+            session.add(teacher)
+            session.commit()
+        finally:
+            session.close()
+
+        # monkeypatch _get_school_wifi_networks 回傳包含真實 ip_network 物件的清單
+        # TestClient 的 request.client.host 為 "testclient"，ipaddress.ip_address("testclient")
+        # 會拋 ValueError，故 _is_school_wifi 回 False（從非校園 IP 視角拒絕）
+        import api.auth as auth_module
+
+        monkeypatch.setattr(
+            auth_module,
+            "_get_school_wifi_networks",
+            lambda: [ipaddress.ip_network("192.168.99.0/24")],
+        )
+
+        res = client.post(
+            "/api/auth/login",
+            json={"username": "bob_teacher", "password": "TeacherPass1"},
+        )
+        assert (
+            res.status_code == 403
+        ), f"預期 403 WiFi 拒絕，實得 {res.status_code}: {res.text}"
+
+        rows = self._get_login_audits(sf)
+        wifi_failures = [
+            r
+            for r in rows
+            if r.action == "LOGIN_FAILED"
+            and json.loads(r.changes or "{}").get("reason") == "non_school_wifi"
+        ]
+        assert wifi_failures, (
+            f"未找到 non_school_wifi 失敗 audit；現有 actions/reasons: "
+            f"{[(r.action, json.loads(r.changes or '{}').get('reason')) for r in rows]}"
+        )
+        assert wifi_failures[0].username == "bob_teacher"

@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
+from utils.audit import write_login_audit
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
 from utils.auth import (
     hash_password,
@@ -39,7 +40,6 @@ from utils.permissions import (
     get_role_default_permissions,
     ROLE_LABELS,
 )
-from utils.audit import write_login_audit
 
 logger = logging.getLogger(__name__)
 
