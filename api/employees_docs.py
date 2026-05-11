@@ -156,8 +156,10 @@ def list_educations(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
+    emp_name = None
     with session_scope() as session:
-        _ensure_employee(session, employee_id)
+        employee = _ensure_employee(session, employee_id)
+        emp_name = employee.name
         rows = (
             session.query(EmployeeEducation)
             .filter(EmployeeEducation.employee_id == employee_id)
@@ -173,7 +175,7 @@ def list_educations(
         action="READ",
         entity_type="employee",
         entity_id=str(employee_id),
-        summary=f"查看員工學歷：employee_id={employee_id}",
+        summary=f"查看員工學歷：{emp_name or employee_id}",
         changes={"includes_pii": True},
     )
     return result
@@ -276,8 +278,10 @@ def list_certificates(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
+    emp_name = None
     with session_scope() as session:
-        _ensure_employee(session, employee_id)
+        employee = _ensure_employee(session, employee_id)
+        emp_name = employee.name
         rows = (
             session.query(EmployeeCertificate)
             .filter(EmployeeCertificate.employee_id == employee_id)
@@ -290,7 +294,7 @@ def list_certificates(
         action="READ",
         entity_type="employee",
         entity_id=str(employee_id),
-        summary=f"查看員工證照：employee_id={employee_id}",
+        summary=f"查看員工證照：{emp_name or employee_id}",
         changes={"includes_pii": True},
     )
     return result
@@ -383,8 +387,10 @@ def list_contracts(
     from utils.salary_access import can_view_salary_of
 
     mask_salary = not can_view_salary_of(current_user, employee_id)
+    emp_name = None
     with session_scope() as session:
-        _ensure_employee(session, employee_id)
+        employee = _ensure_employee(session, employee_id)
+        emp_name = employee.name
         rows = (
             session.query(EmployeeContract)
             .filter(EmployeeContract.employee_id == employee_id)
@@ -397,7 +403,7 @@ def list_contracts(
         action="READ",
         entity_type="employee",
         entity_id=str(employee_id),
-        summary=f"查看員工合約：employee_id={employee_id}",
+        summary=f"查看員工合約：{emp_name or employee_id}",
         changes={"includes_pii": True},
     )
     return result

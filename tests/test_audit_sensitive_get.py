@@ -141,3 +141,30 @@ class TestEmployeeSensitiveGetAudit:
         assert any(
             r.entity_id == str(emp_id) and "合約" in (r.summary or "") for r in rows
         )
+
+    def test_employee_final_salary_preview_get_creates_audit(self, client_with_db):
+        """final-salary-preview 使用 entity_type='salary'，不是 employee。"""
+        client, sf, emp_id = client_with_db
+        res = client.get(f"/api/employees/{emp_id}/final-salary-preview")
+        # 端點可能因缺少 lifecycle 紀錄等原因 raise；只要呼叫成功（即未 raise 早於 audit）就應有 audit
+        # 若 200 必有 audit；若 4xx 則 audit 不應出現
+        rows_salary = _get_read_audits(sf, entity_type="salary")
+        if res.status_code == 200:
+            assert any(
+                r.entity_id == str(emp_id) and "離職薪資" in (r.summary or "")
+                for r in rows_salary
+            ), (
+                f"200 回應但找不到 salary READ audit；"
+                f"rows={[(r.entity_id, r.summary) for r in rows_salary]}"
+            )
+        else:
+            # 端點 raise（如 404 找不到員工）的情況下，不應寫 audit
+            matching = [
+                r
+                for r in rows_salary
+                if r.entity_id == str(emp_id) and "離職薪資" in (r.summary or "")
+            ]
+            assert not matching, (
+                f"端點 raise（status={res.status_code}）不應留 salary READ audit；"
+                f"卻找到 {len(matching)} 筆"
+            )
