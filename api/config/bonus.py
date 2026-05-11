@@ -1,0 +1,274 @@
+"""api/config/bonus.py — 獎金設定 (get/put/history)。
+
+3 個 endpoint + 1 個 Pydantic schema：
+- GET  /bonus              取得目前 active 獎金設定（5 分鐘 TTL cache）
+- PUT  /bonus              建立新版本（複製舊欄位 → 套用變更 → mark stale）
+- GET  /bonus/history      所有歷史版本
+
+依賴 __init__ 的 _cache / _clear_cache / _mark_existing_salary_stale_for_config /
+_salary_engine 經 lazy back-import 取得（同 .line / .position_salary pattern）。
+"""
+
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy import or_
+
+from models.database import (
+    get_session,
+    BonusConfig as DBBonusConfig,
+    GradeTarget,
+)
+from utils.auth import require_staff_permission
+from utils.constants import MIN_CONFIG_YEAR, MAX_CONFIG_YEAR
+from utils.errors import raise_safe_500
+from utils.permissions import Permission
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# BonusConfig 所有可複製的業務欄位（不含 id/version/changed_by/is_active/timestamps）
+_BONUS_FIELDS = [
+    "config_year",
+    "head_teacher_ab",
+    "head_teacher_c",
+    "assistant_teacher_ab",
+    "assistant_teacher_c",
+    "principal_festival",
+    "director_festival",
+    "leader_festival",
+    "driver_festival",
+    "designer_festival",
+    "admin_festival",
+    "principal_dividend",
+    "director_dividend",
+    "leader_dividend",
+    "vice_leader_dividend",
+    "overtime_head_normal",
+    "overtime_head_baby",
+    "overtime_assistant_normal",
+    "overtime_assistant_baby",
+    "school_wide_target",
+    # 階段 2-B（2026-05-07）：園規常數從 hardcode 搬到 BonusConfig
+    "meeting_default_hours",
+    "meeting_absence_penalty",
+    "art_teacher_festival",
+]
+
+
+class BonusConfigUpdate(BaseModel):
+    """獎金設定更新"""
+
+    config_year: Optional[int] = Field(None, ge=MIN_CONFIG_YEAR, le=MAX_CONFIG_YEAR)
+    head_teacher_ab: Optional[float] = Field(None, ge=0)
+    head_teacher_c: Optional[float] = Field(None, ge=0)
+    assistant_teacher_ab: Optional[float] = Field(None, ge=0)
+    assistant_teacher_c: Optional[float] = Field(None, ge=0)
+    principal_festival: Optional[float] = Field(None, ge=0)
+    director_festival: Optional[float] = Field(None, ge=0)
+    leader_festival: Optional[float] = Field(None, ge=0)
+    driver_festival: Optional[float] = Field(None, ge=0)
+    designer_festival: Optional[float] = Field(None, ge=0)
+    admin_festival: Optional[float] = Field(None, ge=0)
+    principal_dividend: Optional[float] = Field(None, ge=0)
+    director_dividend: Optional[float] = Field(None, ge=0)
+    leader_dividend: Optional[float] = Field(None, ge=0)
+    vice_leader_dividend: Optional[float] = Field(None, ge=0)
+    overtime_head_normal: Optional[float] = Field(None, ge=0)
+    overtime_head_baby: Optional[float] = Field(None, ge=0)
+    overtime_assistant_normal: Optional[float] = Field(None, ge=0)
+    overtime_assistant_baby: Optional[float] = Field(None, ge=0)
+    school_wide_target: Optional[int] = Field(None, ge=0)
+    # 階段 2-B（2026-05-07）：園規常數
+    # 上限：每場會議計薪不超過勞基法每日加班上限（防誤輸 99）
+    meeting_default_hours: Optional[float] = Field(None, ge=0, le=12)
+    # 上限：缺席扣節慶獎金不應超過獎金本身常見上限（防扣到負值）
+    meeting_absence_penalty: Optional[int] = Field(None, ge=0, le=10000)
+    art_teacher_festival: Optional[float] = Field(None, ge=0)
+
+
+@router.get("/bonus")
+def get_bonus_config(
+    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
+):
+    """取得獎金設定"""
+    from . import _cache  # lazy back-import
+
+    cached = _cache.get("bonus")
+    if cached is not None:
+        return cached
+
+    session = get_session()
+    try:
+        config = (
+            session.query(DBBonusConfig)
+            .filter(DBBonusConfig.is_active == True)
+            .order_by(DBBonusConfig.config_year.desc(), DBBonusConfig.id.desc())
+            .first()
+        )
+        if not config:
+            return {}
+        result = {
+            "id": config.id,
+            "config_year": config.config_year,
+            "head_teacher_ab": config.head_teacher_ab,
+            "head_teacher_c": config.head_teacher_c,
+            "assistant_teacher_ab": config.assistant_teacher_ab,
+            "assistant_teacher_c": config.assistant_teacher_c,
+            "principal_festival": config.principal_festival,
+            "director_festival": config.director_festival,
+            "leader_festival": config.leader_festival,
+            "driver_festival": config.driver_festival,
+            "designer_festival": config.designer_festival,
+            "admin_festival": config.admin_festival,
+            "principal_dividend": config.principal_dividend,
+            "director_dividend": config.director_dividend,
+            "leader_dividend": config.leader_dividend,
+            "vice_leader_dividend": config.vice_leader_dividend,
+            "overtime_head_normal": config.overtime_head_normal,
+            "overtime_head_baby": config.overtime_head_baby,
+            "overtime_assistant_normal": config.overtime_assistant_normal,
+            "overtime_assistant_baby": config.overtime_assistant_baby,
+            "school_wide_target": config.school_wide_target,
+        }
+        _cache["bonus"] = result
+        return result
+    finally:
+        session.close()
+
+
+@router.put("/bonus")
+def update_bonus_config(
+    data: BonusConfigUpdate,
+    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
+):
+    """更新獎金設定（建立新版本，保留舊版歷程，同步複製年級目標）"""
+    from . import (  # lazy back-import
+        _clear_cache,
+        _mark_existing_salary_stale_for_config,
+        _salary_engine,
+    )
+
+    session = get_session()
+    try:
+        old_config = (
+            session.query(DBBonusConfig)
+            .filter(DBBonusConfig.is_active == True)
+            .order_by(DBBonusConfig.id.desc())
+            .first()
+        )
+
+        # 複製舊版欄位值，再套用本次變更
+        new_config = DBBonusConfig(is_active=True)
+        if old_config:
+            for field in _BONUS_FIELDS:
+                setattr(new_config, field, getattr(old_config, field, None))
+            new_config.version = (old_config.version or 1) + 1
+        else:
+            new_config.version = 1
+            new_config.config_year = 2026
+
+        new_config.changed_by = current_user.get("username")
+
+        update_data = data.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            if value is not None:
+                setattr(new_config, key, value)
+
+        if old_config:
+            old_config.is_active = False
+
+        session.add(new_config)
+        session.flush()  # 取得 new_config.id
+
+        # 複製年級目標到新版本：合併 NULL（舊資料）與版本特定目標
+        # 策略：NULL 目標作為基礎，舊版本目標覆蓋同年級的 NULL 值
+        # 這樣即使只有部分年級已綁定到舊版本 ID（其他仍為 NULL），所有年級都能被複製
+        conds = [GradeTarget.bonus_config_id == None]  # noqa: E711
+        if old_config:
+            conds.append(GradeTarget.bonus_config_id == old_config.id)
+        all_grade_targets = session.query(GradeTarget).filter(or_(*conds)).all()
+        # 合併：版本目標（bonus_config_id is not None）優先覆蓋 NULL 目標
+        null_targets = {
+            gt.grade_name: gt for gt in all_grade_targets if gt.bonus_config_id is None
+        }
+        versioned_targets = {
+            gt.grade_name: gt
+            for gt in all_grade_targets
+            if gt.bonus_config_id is not None
+        }
+        merged_targets = {**null_targets, **versioned_targets}
+
+        for grade_name, gt in merged_targets.items():
+            session.add(
+                GradeTarget(
+                    config_year=gt.config_year,
+                    grade_name=grade_name,
+                    festival_two_teachers=gt.festival_two_teachers,
+                    festival_one_teacher=gt.festival_one_teacher,
+                    festival_shared=gt.festival_shared,
+                    overtime_two_teachers=gt.overtime_two_teachers,
+                    overtime_one_teacher=gt.overtime_one_teacher,
+                    overtime_shared=gt.overtime_shared,
+                    bonus_config_id=new_config.id,
+                )
+            )
+
+        stale_marked = _mark_existing_salary_stale_for_config(
+            session, bonus_config_id=new_config.id
+        )
+        session.commit()
+        if stale_marked:
+            logger.warning(
+                "獎金設定更新後標記 %d 筆未封存薪資為 needs_recalc(舊獎金 id=%s → 新 id=%s)",
+                stale_marked,
+                old_config.id if old_config else None,
+                new_config.id,
+            )
+        if _salary_engine is not None:
+            _salary_engine.load_config_from_db()
+        _clear_cache("bonus")
+        return {
+            "message": "獎金設定更新成功",
+            "version": new_config.version,
+            "id": new_config.id,
+            "salary_records_marked_stale": stale_marked,
+        }
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.get("/bonus/history")
+def get_bonus_config_history(
+    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
+):
+    """取得獎金設定所有歷史版本（最新在前）"""
+    session = get_session()
+    try:
+        configs = (
+            session.query(DBBonusConfig).order_by(DBBonusConfig.created_at.desc()).all()
+        )
+        return [
+            {
+                "id": c.id,
+                "version": c.version,
+                "config_year": c.config_year,
+                "is_active": c.is_active,
+                "changed_by": c.changed_by,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "head_teacher_ab": c.head_teacher_ab,
+                "head_teacher_c": c.head_teacher_c,
+                "assistant_teacher_ab": c.assistant_teacher_ab,
+                "assistant_teacher_c": c.assistant_teacher_c,
+                "school_wide_target": c.school_wide_target,
+            }
+            for c in configs
+        ]
+    finally:
+        session.close()
