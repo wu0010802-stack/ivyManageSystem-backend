@@ -3,6 +3,7 @@
 A 階段（spec 2026-05-11-audit-coverage-gap）：登入事件補登 audit_logs。
 """
 
+import json
 import os
 import sys
 import time
@@ -51,6 +52,7 @@ def _fake_request(ip="10.0.0.1"):
         "type": "http",
         "method": "POST",
         "path": "/api/auth/login",
+        "query_string": b"",
         "headers": [],
         "client": (ip, 12345),
     }
@@ -116,8 +118,6 @@ class TestWriteLoginAuditHelper:
         assert row.entity_id == "42"
         assert row.username == "alice"
         # changes 是 JSON text
-        import json
-
         changes = json.loads(row.changes)
         assert changes["username"] == "alice"
         assert changes["role"] == "admin"
@@ -143,3 +143,28 @@ class TestWriteLoginAuditHelper:
         assert len(rows) == 1
         assert rows[0].action == "LOGIN_FAILED"
         assert rows[0].entity_id is None  # 防帳號列舉：失敗不寫 user_id
+
+    def test_extras_username_does_not_override_authoritative_username(
+        self, sqlite_engine
+    ):
+        """caller 傳 extras={'username': '...'} 不應蓋過明確 username 參數。
+        Refs: Task 1 code review Issue 2。
+        """
+        request = _fake_request()
+        write_login_audit(
+            request,
+            action="LOGIN_FAILED",
+            username="alice",
+            extras={"username": "MALICIOUS", "reason": "wrong_credentials"},
+        )
+        time.sleep(0.05)
+        session = base_module._SessionFactory()
+        try:
+            rows = session.query(AuditLog).all()
+        finally:
+            session.close()
+        assert len(rows) == 1
+        changes = json.loads(rows[0].changes)
+        assert changes["username"] == "alice"  # 權威參數獲勝
+        # row.username 欄位也應該是 alice，不是 MALICIOUS
+        assert rows[0].username == "alice"

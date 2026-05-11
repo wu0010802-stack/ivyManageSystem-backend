@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 # does not drop them before they finish (asyncio gotcha).
 _background_tasks: "set[asyncio.Task]" = set()
 
+# 登入路徑 — 同時用於 SKIP_PATHS（讓 AuditMiddleware 不對成功登入記預設 audit）
+# 與 _should_audit_block（讓 login 失敗的 BLOCKED 計數不被 60s dedup 壓平）。
+_LOGIN_PATH = "/api/auth/login"
+
 # 資安掃描 2026-05-07 P1：401/403 失敗寫入嘗試的 audit 防灌爆。
 # 同 (ip, method, path) 在 dedup window 內只記第一筆，避免攻擊者猛轟受保護端點
 # 把 audit_logs 灌爆。Trade-off：失去「攻擊次數」訊號，但 server log 仍有完整記錄
@@ -37,7 +41,7 @@ def _should_audit_block(ip: str | None, method: str, path: str) -> bool:
     既有 _check_ip_rate_limit 本身會在 N 次後 raise 429 自然封頂。
     Refs: spec 2026-05-11-audit-coverage-gap-design §3.2。
     """
-    if path.startswith("/api/auth/login"):
+    if path == _LOGIN_PATH:
         return True
     key = (ip or "anon", method, path)
     now = time.monotonic()
@@ -145,7 +149,7 @@ ENTITY_PATTERNS = [
 ]
 
 # Skip these paths (login should not be audited as sensitive)
-SKIP_PATHS = {"/api/auth/login"}
+SKIP_PATHS = {_LOGIN_PATH}
 
 # entity_type → 中文 label。同時作為 /audit-logs/meta 的 source of truth
 # 與前端下拉選項同步。新增 entity_type 請只在此處增補一次。
@@ -450,10 +454,10 @@ def write_login_audit(
     try:
         ip = request.client.host if request.client else None
         changes: dict = {}
-        if username:
-            changes["username"] = username
         if extras:
             changes.update(extras)
+        if username:
+            changes["username"] = username
         changes_json = None
         if changes:
             try:
