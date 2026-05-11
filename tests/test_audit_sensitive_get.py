@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
-from models.database import AuditLog, Base, User, Employee
+from models.database import AuditLog, Base, User, Employee, Student
 from utils.auth import hash_password, create_access_token
 from utils.permissions import Permission
 
@@ -29,6 +29,7 @@ def client_with_db(tmp_path):
     from api.employees_docs import router as employees_docs_router
     from api.salary.records import router as salary_records_router
     from api.salary.detail import router as salary_detail_router
+    from api.students import router as students_router
 
     db_path = tmp_path / "sensitive-get.sqlite"
     engine = create_engine(
@@ -82,6 +83,7 @@ def client_with_db(tmp_path):
     app.include_router(employees_docs_router)
     app.include_router(salary_records_router, prefix="/api")
     app.include_router(salary_detail_router, prefix="/api")
+    app.include_router(students_router)  # students.py has prefix="/api" built-in
 
     client = TestClient(app)
     client.cookies.set("access_token", token)
@@ -250,3 +252,53 @@ class TestSalarySensitiveGetAudit:
             assert any(
                 r.entity_id == "9999" and "自身稽核" in (r.summary or "") for r in rows
             )
+
+
+class TestStudentSensitiveGetAudit:
+    @pytest.fixture
+    def student_setup(self, client_with_db):
+        client, sf, _ = client_with_db
+        session = sf()
+        try:
+            student = Student(student_id="S99", name="陳小華", is_active=True)
+            session.add(student)
+            session.commit()
+            sid = student.id
+        finally:
+            session.close()
+        return client, sf, sid
+
+    def test_student_detail_creates_audit(self, student_setup):
+        client, sf, sid = student_setup
+        res = client.get(f"/api/students/{sid}")
+        rows = _get_read_audits(sf, entity_type="student")
+        if res.status_code == 200:
+            assert any(
+                r.entity_id == str(sid) for r in rows
+            ), f"未找到 student READ audit；rows={[(r.entity_id, r.summary) for r in rows]}"
+
+    def test_student_profile_creates_audit(self, student_setup):
+        client, sf, sid = student_setup
+        res = client.get(f"/api/students/{sid}/profile")
+        rows = _get_read_audits(sf, entity_type="student")
+        if res.status_code == 200:
+            assert any(
+                r.entity_id == str(sid) and "檔案" in (r.summary or "") for r in rows
+            ), f"未找到 profile audit；rows={[r.summary for r in rows]}"
+
+    def test_student_guardians_creates_audit(self, student_setup):
+        client, sf, sid = student_setup
+        res = client.get(f"/api/students/{sid}/guardians")
+        rows = _get_read_audits(sf, entity_type="student")
+        if res.status_code == 200:
+            assert any(
+                r.entity_id == str(sid) and "監護人" in (r.summary or "") for r in rows
+            ), f"未找到 guardians audit；rows={[r.summary for r in rows]}"
+
+    def test_student_list_does_not_audit(self, client_with_db):
+        client, sf, _ = client_with_db
+        client.get("/api/students")
+        rows = _get_read_audits(sf, entity_type="student")
+        # 列表不應寫 READ audit
+        list_rows = [r for r in rows if r.entity_id is None]
+        assert len(list_rows) == 0, f"列表不應寫 READ audit；找到 {len(list_rows)} 筆"
