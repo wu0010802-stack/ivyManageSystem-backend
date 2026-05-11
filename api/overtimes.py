@@ -114,7 +114,11 @@ def _check_salary_month_not_finalized(
         )
 
 
-def _revoke_comp_leave_grant(session, ot: OvertimeRecord) -> None:
+def _revoke_comp_leave_grant(
+    session,
+    ot: OvertimeRecord,
+    current_user: Optional[dict] = None,
+) -> None:
     """撤銷已發放的補休配額。
 
     1. 若有與此加班記錄明確關聯（source_overtime_id）的補休假單：
@@ -170,10 +174,24 @@ def _revoke_comp_leave_grant(session, ot: OvertimeRecord) -> None:
         )
 
     # 自動駁回待審核的關聯補休假單
+    # 修補 2026-05-11 P1-8：補寫 ApprovalLog 確保稽核軌跡完整。current_user 由
+    # caller 傳入；無 caller 傳入時 fallback "system_auto" 確保函式仍可用。
+    _audit_actor = current_user or {
+        "username": "system_auto",
+        "role": "system",
+    }
     for lv in linked_pending:
         lv.is_approved = False
         lv.rejection_reason = (
             f"來源加班申請（#{ot.id}，{ot.overtime_date}）已被撤銷，補休資格取消"
+        )
+        _write_approval_log(
+            "leave",
+            lv.id,
+            "rejected",
+            _audit_actor,
+            f"auto_revoked_by_overtime_rollback (#{ot.id})",
+            session,
         )
         logger.info(
             "補休假單 #%d 因來源加班 #%d 被撤銷而自動駁回（員工 ID=%d）",
@@ -657,6 +675,19 @@ class OvertimeUpdate(BaseModel):
     end_time: Optional[str] = None
     hours: Optional[float] = None
     reason: Optional[str] = None
+    # 注意：刻意不列 use_comp_leave；翻轉模式必須走 reject + recreate 流程，
+    # 避免在 update 過程中切換補休/加班費而與 _grant_comp_leave_quota /
+    # _revoke_comp_leave_grant 的狀態機脫節（修補 2026-05-11 P2-14）。
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_use_comp_leave_flip(cls, values):
+        if isinstance(values, dict) and "use_comp_leave" in values:
+            raise ValueError(
+                "不允許在 update 中翻轉 use_comp_leave；如需切換補休/加班費模式，"
+                "請先 reject 該加班，然後以新 use_comp_leave 值重新申請"
+            )
+        return values
 
     @field_validator("overtime_type")
     @classmethod
@@ -1048,7 +1079,7 @@ def update_overtime(
             # 封住 caller commit 與 engine 重新 acquire lock 之間 finalize 搶先封存舊薪資的 race。
 
             lock_and_premark_stale(session, ot.employee_id, recalculation_months)
-            _revoke_comp_leave_grant(session, ot)
+            _revoke_comp_leave_grant(session, ot, current_user=current_user)
 
         update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
@@ -1198,7 +1229,7 @@ def delete_overtime(
             # commit→recalc 鎖延伸 + pre-mark stale（同 update_overtime 註解）
 
             lock_and_premark_stale(session, employee_id, {overtime_month})
-            _revoke_comp_leave_grant(session, ot)
+            _revoke_comp_leave_grant(session, ot, current_user=current_user)
         session.delete(ot)
         session.commit()
 
@@ -1320,7 +1351,7 @@ def approve_overtime(
                 {(ot.overtime_date.year, ot.overtime_date.month)},
             )
         if not approved and was_approved:
-            _revoke_comp_leave_grant(session, ot)
+            _revoke_comp_leave_grant(session, ot, current_user=current_user)
 
         # ── 核准最後一致性驗證 ───────────────────────────────────────────────
         # 建立路徑（管理端 create、portal、import）都有這些檢查，但舊資料、import
@@ -1570,7 +1601,7 @@ def batch_approve_overtimes(
                         {(ot.overtime_date.year, ot.overtime_date.month)},
                     )
                 if not data.approved and was_approved:
-                    _revoke_comp_leave_grant(session, ot)
+                    _revoke_comp_leave_grant(session, ot, current_user=current_user)
 
                 ot.is_approved = data.approved
                 ot.approved_by = (

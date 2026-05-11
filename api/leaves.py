@@ -209,9 +209,13 @@ def _apply_leave_update_and_revoke(leave, data, current_user, leave_id: int) -> 
         leave_id:     假單 ID（供 audit log）
     """
     update_data = data.model_dump(exclude_unset=True)
+    # 修補 2026-05-11 P1-7：start_time/end_time 允許明確傳 null 清空（半日↔全日場景）；
+    # 其他欄位維持「不傳=不改、傳 null=不改」的舊行為避免破壞契約。
+    _NULLABLE_FIELDS = {"start_time", "end_time"}
     for key, value in update_data.items():
-        if value is not None:
-            setattr(leave, key, value)
+        if value is None and key not in _NULLABLE_FIELDS:
+            continue
+        setattr(leave, key, value)
 
     # 假別更換時重設 deduction_ratio，但若本次同時明確傳入 deduction_ratio 則以傳入值為準
     if data.leave_type and data.leave_type in LEAVE_DEDUCTION_RULES:

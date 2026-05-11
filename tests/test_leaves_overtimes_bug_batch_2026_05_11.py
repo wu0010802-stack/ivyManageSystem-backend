@@ -298,6 +298,196 @@ class TestP0_1BatchApproveTwoPass:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Task F — update 路徑硬化
+#   P1-7: start_time/end_time 允許 null 清空（半日↔全日）
+#   P1-8: _revoke_comp_leave_grant 自動駁回 linked_pending 補寫 ApprovalLog
+#   P1-11: update_overtime 改 hours 縮減守衛（linked_approved 已使用）
+#   P2-14: OvertimeUpdate 拒絕 use_comp_leave 翻轉
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestFUpdatePathHardening:
+    def test_p1_7_update_leave_can_clear_start_end_time(self, app_client):
+        """半日假改全日：傳 start_time/end_time = null 應清空欄位。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "F001", "員工")
+            _admin(session)
+            lv = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="personal",
+                start_date=date(2026, 9, 1),
+                end_date=date(2026, 9, 1),
+                start_time="09:00",
+                end_time="12:00",
+                leave_hours=3.0,
+                is_approved=None,
+                is_deductible=True,
+                deduction_ratio=1.0,
+            )
+            session.add(lv)
+            session.commit()
+            lv_id = lv.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(
+            f"/api/leaves/{lv_id}",
+            json={
+                "start_time": None,
+                "end_time": None,
+            },
+        )
+        assert res.status_code == 200, f"body={res.json()}"
+
+        with session_factory() as session:
+            lv_db = session.get(LeaveRecord, lv_id)
+            assert (
+                lv_db.start_time is None
+            ), f"start_time 應被清空；實際={lv_db.start_time}"
+            assert lv_db.end_time is None, f"end_time 應被清空；實際={lv_db.end_time}"
+
+    def test_p1_8_revoke_comp_leave_writes_approval_log(self, app_client):
+        """delete 已核准補休 OT 時，linked_pending 自動駁回必須寫 ApprovalLog。"""
+        from models.database import ApprovalLog
+
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "F002", "員工二")
+            _admin(session)
+            # 已核准補休模式 OT（comp_leave_granted=True）+ LeaveQuota
+            ot = _approved_overtime(
+                session,
+                emp.id,
+                overtime_date=date(2026, 9, 5),
+                hours=4.0,
+                use_comp_leave=True,
+            )
+            from models.database import LeaveQuota
+
+            quota = LeaveQuota(
+                employee_id=emp.id,
+                year=2026,
+                leave_type="compensatory",
+                total_hours=4.0,
+            )
+            session.add(quota)
+            # pending 補休假單關聯該 OT
+            pending_leave = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="compensatory",
+                start_date=date(2026, 9, 10),
+                end_date=date(2026, 9, 10),
+                leave_hours=2.0,
+                is_approved=None,
+                is_deductible=False,
+                deduction_ratio=0.0,
+                source_overtime_id=ot.id,
+            )
+            session.add(pending_leave)
+            session.commit()
+            ot_id = ot.id
+            leave_id = pending_leave.id
+
+        assert _login(client).status_code == 200
+
+        res = client.delete(f"/api/overtimes/{ot_id}")
+        assert res.status_code == 200, f"刪除應成功；body={res.json()}"
+
+        with session_factory() as session:
+            lv_db = session.get(LeaveRecord, leave_id)
+            assert lv_db.is_approved is False, "linked_pending 應被自動駁回"
+            log = (
+                session.query(ApprovalLog)
+                .filter(
+                    ApprovalLog.doc_type == "leave",
+                    ApprovalLog.doc_id == leave_id,
+                )
+                .order_by(ApprovalLog.id.desc())
+                .first()
+            )
+            assert log is not None, "自動駁回必須留 ApprovalLog（修補 P1-8）"
+            assert log.action == "rejected"
+
+    def test_p1_11_update_overtime_hours_shrink_blocked_when_used(self, app_client):
+        """補休 OT 已核准 4h、linked_approved 用了 3h，再把 hours 改 2h 應 409。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "F003", "員工三")
+            _admin(session)
+            ot = _approved_overtime(
+                session,
+                emp.id,
+                overtime_date=date(2026, 9, 6),
+                hours=4.0,
+                use_comp_leave=True,
+            )
+            from models.database import LeaveQuota
+
+            quota = LeaveQuota(
+                employee_id=emp.id,
+                year=2026,
+                leave_type="compensatory",
+                total_hours=4.0,
+            )
+            session.add(quota)
+            # 已核准 3h 補休假
+            used_leave = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="compensatory",
+                start_date=date(2026, 9, 12),
+                end_date=date(2026, 9, 12),
+                leave_hours=3.0,
+                is_approved=True,
+                is_deductible=False,
+                deduction_ratio=0.0,
+                source_overtime_id=ot.id,
+            )
+            session.add(used_leave)
+            session.commit()
+            ot_id = ot.id
+
+        assert _login(client).status_code == 200
+
+        # update_overtime 試圖把 hours 縮減到 2.0
+        res = client.put(
+            f"/api/overtimes/{ot_id}",
+            json={"hours": 2.0},
+        )
+        assert (
+            res.status_code == 409
+        ), f"已用 3h、縮減至 2h 應被擋；實際 status={res.status_code} body={res.json()}"
+
+    def test_p2_14_overtime_update_rejects_use_comp_leave_flip(self, app_client):
+        """OvertimeUpdate 不應接受 use_comp_leave 翻轉。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "F004", "員工四")
+            _admin(session)
+            ot = _approved_overtime(
+                session,
+                emp.id,
+                overtime_date=date(2026, 9, 7),
+                hours=2.0,
+                use_comp_leave=True,
+            )
+            session.commit()
+            ot_id = ot.id
+
+        assert _login(client).status_code == 200
+
+        # 試圖把 use_comp_leave 翻為 False
+        res = client.put(
+            f"/api/overtimes/{ot_id}",
+            json={"use_comp_leave": False},
+        )
+        assert res.status_code in (
+            400,
+            422,
+        ), f"use_comp_leave 翻轉應 422/400；實際 status={res.status_code}"
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Task E — P1-6: approve_overtime body schema（向後相容）
 # ────────────────────────────────────────────────────────────────────────────
 
