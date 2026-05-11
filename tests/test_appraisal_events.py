@@ -123,3 +123,42 @@ class TestAppraisalEvents:
         )
         assert resp.status_code == 501
         assert "attachment_upload_not_implemented" in resp.json()["detail"]
+
+    def test_第二筆_major_demerit_觸發_warning_log(
+        self, client, supervisor_headers, participant, caplog
+    ):
+        """第 1 次大過不觸發 warning；第 2 次累積 → termination_threshold_reached warning。
+
+        T15 調查（2026-05-11）：codebase 無通用 create_notification /
+        notify_users_with_permission；此測試改驗 WARNING log 被發出，
+        確保 log aggregation 工具（Loki / CloudWatch）可觸發告警規則。
+        待推播基礎建設確定後，此測試將替換為 monkeypatch + spy 驗測。
+        """
+        import logging
+
+        payload = {
+            "participant_id": participant.id,
+            "event_type": "MAJOR_DEMERIT",
+            "event_date": date.today().isoformat(),
+            "score_delta": "-6",
+            "title": "大過事件",
+        }
+
+        # 第 1 筆大過：不應觸發 warning
+        with caplog.at_level(logging.WARNING, logger="api.appraisal.events"):
+            caplog.clear()
+            resp = client.post(
+                "/api/appraisal/events", json=payload, headers=supervisor_headers
+            )
+        assert resp.status_code == 201
+        assert "termination_threshold_reached" not in caplog.text
+
+        # 第 2 筆大過：累積 ≥ 2，應觸發 warning
+        with caplog.at_level(logging.WARNING, logger="api.appraisal.events"):
+            caplog.clear()
+            resp = client.post(
+                "/api/appraisal/events", json=payload, headers=supervisor_headers
+            )
+        assert resp.status_code == 201
+        assert "termination_threshold_reached" in caplog.text
+        assert str(participant.id) in caplog.text

@@ -147,7 +147,28 @@ def create_event(
     db.commit()
     db.refresh(ev)
 
-    # 解聘 trigger（T15 notification 整合會把這裡改成 notification call）
+    # 解聘門檻檢查（T15 notification 整合）
+    # ─────────────────────────────────────────────────────────────────────
+    # 調查結果（2026-05-11）：
+    #   此 codebase 目前不存在通用 create_notification / notify_users_with_permission。
+    #   api/notifications.py 是 **拉取模型**（dashboard pull），非推播 API。
+    #   services/line_service.py 的 _push() 為單一群組 target，語義不符
+    #   「通知所有 APPRAISAL_FINALIZE 持有者」的需求。
+    #
+    # 後續整合選項（待業主確認後擇一實作）：
+    #   (A) 擴充 dashboard_query_service.build_notification_summary
+    #       → 加入 appraisal_termination_threshold section；管理端儀表板
+    #         自動顯示警示；不需推播基礎建設。
+    #   (B) 新增 per-user in-app notification 表
+    #       → 搜尋 APPRAISAL_FINALIZE 持有者、逐一寫入；前端
+    #         Notification Center 可輪詢或 WS 推播。
+    #   (C) 利用 line_service 逐一 _push_to_user
+    #       → 查詢有 APPRAISAL_FINALIZE 且已綁 LINE 的 users；無 LINE
+    #         綁定者 silent fail，需搭配 (A) 或 (B) 補救。
+    #
+    # 現階段：保留 WARNING log，確保事件可被 log aggregation 工具（Loki /
+    # CloudWatch）觸發告警規則，直到推播基礎建設確定後替換。
+    # ─────────────────────────────────────────────────────────────────────
     if check_termination_threshold(db, participant):
         logger.warning(
             "[appraisal] termination_threshold_reached participant=%d cycle=%d",
