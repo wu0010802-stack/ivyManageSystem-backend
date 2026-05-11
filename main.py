@@ -36,6 +36,8 @@ from api.overtimes import (
     init_overtimes_line_service,
 )
 from api.insurance import router as insurance_router, init_insurance_services
+from api.gov_data_sync import router as gov_data_sync_router
+from services import gov_data_scheduler
 from api.auth import router as auth_router
 from api.portal import router as portal_router, init_portal_notify_services
 from api.shifts import router as shifts_router
@@ -333,6 +335,14 @@ async def app_lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("對帳排程啟動失敗: %s", e)
 
+    gov_data_task = None
+    if gov_data_scheduler.is_enabled():
+        try:
+            gov_data_task = asyncio.create_task(gov_data_scheduler.loop_forever())
+            logger.info("gov_data scheduler 已啟用")
+        except Exception:
+            logger.exception("啟動 gov_data scheduler 失敗")
+
     try:
         yield
     finally:
@@ -419,6 +429,12 @@ async def app_lifespan(app_instance: FastAPI):
                     await finance_reconciliation_task
                 except (asyncio.CancelledError, Exception):
                     pass
+        if gov_data_task is not None:
+            gov_data_task.cancel()
+            try:
+                await gov_data_task
+            except (asyncio.CancelledError, Exception):
+                pass
         # Graceful Shutdown：釋放資源
         logger.info("Application shutting down — releasing resources…")
         # 關閉所有 WebSocket 連線
@@ -581,6 +597,7 @@ app.include_router(student_health_router)
 app.include_router(parent_portal_router)
 app.include_router(parent_admin_router)
 app.include_router(student_leaves_router)
+app.include_router(gov_data_sync_router)
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）
