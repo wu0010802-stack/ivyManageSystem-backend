@@ -298,6 +298,93 @@ class TestP0_1BatchApproveTwoPass:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Task H — P2-12: batch LINE 推播挪到薪資重算成功後
+#         P2-13: _calc_shift_hours 與 _calc_bounded_shift_hours 對午休扣除統一
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestHLinePushAndShiftHours:
+    def test_p2_12_batch_line_push_skipped_when_recalc_fails(
+        self, app_client, monkeypatch
+    ):
+        """薪資重算失敗的條目不應收到「已核准」LINE 推播。"""
+        from unittest.mock import MagicMock as _MM
+
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "H001", "員工")
+            _admin(session)
+            # 建立員工自己的 User 帳號 + line_user_id（LINE push 走到 emp_user.line_user_id 才會推）
+            emp_user = User(
+                employee_id=emp.id,
+                username="emp_h001",
+                password_hash=hash_password("AdminPass123"),
+                role="teacher",
+                permissions=0,
+                is_active=True,
+                must_change_password=False,
+                line_user_id="UTEST_LINE_ID_H001",
+            )
+            session.add(emp_user)
+            lv = _pending_leave(session, emp.id, start=date(2026, 10, 1))
+            session.commit()
+            lv_id = lv.id
+
+        # 假 LINE service 記錄推播
+        notify_calls = []
+        fake_line = _MM()
+        fake_line.notify_leave_result = lambda *a, **kw: notify_calls.append(a)
+        # 假薪資 engine 拋例外
+        fake_engine = _MM()
+        fake_engine.process_salary_calculation = _MM(
+            side_effect=RuntimeError("simulated recalc fail")
+        )
+        mp.setattr(leaves_module, "_line_service", fake_line)
+        mp.setattr(leaves_module, "_salary_engine", fake_engine)
+
+        assert _login(client).status_code == 200
+
+        res = client.post(
+            "/api/leaves/batch-approve",
+            json={"ids": [lv_id], "approved": True},
+        )
+        # 修補前：LINE 已推給員工但薪資重算失敗 → 員工收到「已核准」與 DB 矛盾
+        # 修補後：薪資重算失敗時不推 LINE
+        body = res.json()
+        failed_ids = {f.get("id") for f in (body.get("failed") or [])}
+        assert lv_id in failed_ids, f"薪資重算失敗應計入 failed; body={body}"
+        assert (
+            len(notify_calls) == 0
+        ), f"薪資重算失敗條目不應推 LINE；實際 {len(notify_calls)} 次"
+
+    def test_p2_13_calc_shift_hours_consistent_with_bounded(self):
+        """_calc_shift_hours 與 _calc_bounded_shift_hours(work_start, work_end, None, None)
+        對 5h 邊界班的午休處理應一致。"""
+        from api.leaves_workday import (
+            _calc_shift_hours,
+            _calc_bounded_shift_hours,
+        )
+
+        # 08:00-13:00：含 12:00-13:00 一段午休
+        unbounded = _calc_shift_hours("08:00", "13:00")
+        bounded = _calc_bounded_shift_hours("08:00", "13:00", None, None)
+        assert unbounded == bounded, (
+            f"_calc_shift_hours({unbounded}) vs _calc_bounded_shift_hours({bounded}) "
+            "兩者午休扣除規則應一致（08:00-13:00 5h 邊界班）"
+        )
+
+        # 08:00-17:00：完整工作日
+        u2 = _calc_shift_hours("08:00", "17:00")
+        b2 = _calc_bounded_shift_hours("08:00", "17:00", None, None)
+        assert u2 == b2, f"_calc_shift_hours({u2}) vs _calc_bounded_shift_hours({b2})"
+
+        # 09:00-11:00：早上短班，午休不在範圍
+        u3 = _calc_shift_hours("09:00", "11:00")
+        b3 = _calc_bounded_shift_hours("09:00", "11:00", None, None)
+        assert u3 == b3, f"_calc_shift_hours({u3}) vs _calc_bounded_shift_hours({b3})"
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Task G — 代理人衝突精細化
 #   P1-9: 代理人 OT 衝突改用時段比對（不要只比日期）
 #   P1-10: 代理人 is_active=False 不可被指定

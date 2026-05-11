@@ -1939,26 +1939,6 @@ def batch_approve_leaves(
                     _is_reject_of_approved,
                     _approval_log_id,
                 ) in changes:
-                    # 個人 LINE 推播（審核結果）
-                    if _line_service is not None:
-                        try:
-                            emp_user = _line_user_map.get(leave.employee_id)
-                            if emp_user and emp_user.line_user_id:
-                                emp_name = _emp_name_map.get(leave.employee_id, "員工")
-                                _line_service.notify_leave_result(
-                                    emp_user.line_user_id,
-                                    emp_name,
-                                    leave.leave_type,
-                                    leave.start_date,
-                                    leave.end_date,
-                                    data.approved,
-                                    data.rejection_reason,
-                                )
-                        except Exception as _le:
-                            logger.warning(
-                                "批次假單審核 LINE 推播失敗（#%d）: %s", leave_id, _le
-                            )
-
                     # approve 或 reject-of-approved 都需重算薪資
                     # Why: succeeded 必須等到「假單狀態 commit + 薪資重算成功」兩步都 OK
                     # 才寫入；不然會出現「假單已核准但薪資仍是舊值」的中間狀態，
@@ -2018,6 +1998,30 @@ def batch_approve_leaves(
                             )
 
                     if not recalc_failed:
+                        # 修補 2026-05-11 P2-12：LINE 推播挪到 recalc 成功後才發，
+                        # 避免「重算失敗但員工已收到核准通知」與 DB 矛盾的場景。
+                        if _line_service is not None:
+                            try:
+                                emp_user = _line_user_map.get(leave.employee_id)
+                                if emp_user and emp_user.line_user_id:
+                                    emp_name = _emp_name_map.get(
+                                        leave.employee_id, "員工"
+                                    )
+                                    _line_service.notify_leave_result(
+                                        emp_user.line_user_id,
+                                        emp_name,
+                                        leave.leave_type,
+                                        leave.start_date,
+                                        leave.end_date,
+                                        data.approved,
+                                        data.rejection_reason,
+                                    )
+                            except Exception as _le:
+                                logger.warning(
+                                    "批次假單審核 LINE 推播失敗（#%d）: %s",
+                                    leave_id,
+                                    _le,
+                                )
                         succeeded.append(leave_id)
             except Exception as e:
                 session.rollback()

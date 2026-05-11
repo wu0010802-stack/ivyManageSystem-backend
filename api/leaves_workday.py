@@ -11,7 +11,10 @@ from sqlalchemy.orm import joinedload
 
 from models.database import (
     get_session,
-    ShiftAssignment, ShiftType, DailyShift, AttendancePolicy,
+    ShiftAssignment,
+    ShiftType,
+    DailyShift,
+    AttendancePolicy,
 )
 from services.workday_rules import classify_day, load_day_rule_maps
 from utils.auth import require_staff_permission
@@ -23,16 +26,14 @@ workday_router = APIRouter()
 
 
 def _calc_shift_hours(work_start: str, work_end: str) -> float:
-    """從 HH:MM 上下班時間計算有效工時，超過 5 小時自動扣除 1 小時午休"""
-    sh, sm = map(int, work_start.split(":"))
-    eh, em = map(int, work_end.split(":"))
-    total_minutes = (eh * 60 + em) - (sh * 60 + sm)
-    if total_minutes <= 0:
-        total_minutes += 24 * 60  # 跨午夜班別（不常見但防呆）
-    total_hours = total_minutes / 60
-    if total_hours > 5:
-        total_hours -= 1  # 扣除午休 1 小時
-    return round(total_hours * 2) / 2  # 四捨五入至 0.5
+    """從 HH:MM 上下班時間計算有效工時，扣除午休 12:00-13:00 與班表的交集。
+
+    修補 2026-05-11 P2-13：原本實作為「>5h 一律扣 1h 午休」的簡化規則，
+    與 _calc_bounded_shift_hours（12-13 區段交集扣除）對 5h 邊界班結果矛盾
+    （例：08:00-13:00 用簡化規則 5h 不扣 → 5.0；bounded 規則 12-13 全扣 → 4.0）。
+    統一為呼叫 _calc_bounded_shift_hours(work_start, work_end, None, None)。
+    """
+    return _calc_bounded_shift_hours(work_start, work_end, None, None)
 
 
 def _normalize_time(value: Optional[str]) -> Optional[str]:
@@ -46,7 +47,9 @@ def _to_minutes(value: str) -> int:
     return hh * 60 + mm
 
 
-def _calc_bounded_shift_hours(work_start: str, work_end: str, start_bound: Optional[str], end_bound: Optional[str]) -> float:
+def _calc_bounded_shift_hours(
+    work_start: str, work_end: str, start_bound: Optional[str], end_bound: Optional[str]
+) -> float:
     day_start = max(work_start, _normalize_time(start_bound) or work_start)
     day_end = min(work_end, _normalize_time(end_bound) or work_end)
     if day_start >= day_end:
@@ -56,11 +59,13 @@ def _calc_bounded_shift_hours(work_start: str, work_end: str, start_bound: Optio
     overlap_start = max(_to_minutes(day_start), _to_minutes("12:00"))
     overlap_end = min(_to_minutes(day_end), _to_minutes("13:00"))
     if overlap_end > overlap_start:
-        minutes -= (overlap_end - overlap_start)
+        minutes -= overlap_end - overlap_start
     return max(0.0, round((minutes / 60) * 2) / 2)
 
 
-def _build_workday_hours_payload(session, employee_id: int, start_date: date, end_date: date) -> dict:
+def _build_workday_hours_payload(
+    session, employee_id: int, start_date: date, end_date: date
+) -> dict:
     holiday_map, makeup_map = load_day_rule_maps(session, start_date, end_date)
 
     daily_shifts: dict[date, ShiftType] = {
@@ -90,8 +95,12 @@ def _build_workday_hours_payload(session, employee_id: int, start_date: date, en
     }
 
     policy = session.query(AttendancePolicy).first()
-    default_ws = policy.default_work_start if policy and policy.default_work_start else "08:00"
-    default_we = policy.default_work_end if policy and policy.default_work_end else "17:00"
+    default_ws = (
+        policy.default_work_start if policy and policy.default_work_start else "08:00"
+    )
+    default_we = (
+        policy.default_work_end if policy and policy.default_work_end else "17:00"
+    )
 
     breakdown = []
     total_hours = 0.0
@@ -102,33 +111,37 @@ def _build_workday_hours_payload(session, employee_id: int, start_date: date, en
         day_rule = classify_day(cur, holiday_map, makeup_map)
 
         if day_rule["kind"] == "weekend":
-            breakdown.append({
-                "date": cur.isoformat(),
-                "weekday": weekday,
-                "type": "weekend",
-                "hours": 0,
-                "shift": None,
-                "work_start": None,
-                "work_end": None,
-                "holiday_name": None,
-                "is_makeup_workday": False,
-                "workday_override_name": None,
-                "source": None,
-            })
+            breakdown.append(
+                {
+                    "date": cur.isoformat(),
+                    "weekday": weekday,
+                    "type": "weekend",
+                    "hours": 0,
+                    "shift": None,
+                    "work_start": None,
+                    "work_end": None,
+                    "holiday_name": None,
+                    "is_makeup_workday": False,
+                    "workday_override_name": None,
+                    "source": None,
+                }
+            )
         elif day_rule["kind"] == "holiday":
-            breakdown.append({
-                "date": cur.isoformat(),
-                "weekday": weekday,
-                "type": "holiday",
-                "hours": 0,
-                "shift": None,
-                "work_start": None,
-                "work_end": None,
-                "holiday_name": day_rule["holiday_name"],
-                "is_makeup_workday": False,
-                "workday_override_name": None,
-                "source": None,
-            })
+            breakdown.append(
+                {
+                    "date": cur.isoformat(),
+                    "weekday": weekday,
+                    "type": "holiday",
+                    "hours": 0,
+                    "shift": None,
+                    "work_start": None,
+                    "work_end": None,
+                    "holiday_name": day_rule["holiday_name"],
+                    "is_makeup_workday": False,
+                    "workday_override_name": None,
+                    "source": None,
+                }
+            )
         else:
             shift_type: ShiftType | None = None
             source = "default"
@@ -154,19 +167,21 @@ def _build_workday_hours_payload(session, employee_id: int, start_date: date, en
                 work_end = default_we
 
             total_hours += hours
-            breakdown.append({
-                "date": cur.isoformat(),
-                "weekday": weekday,
-                "type": "workday",
-                "hours": hours,
-                "shift": shift_name,
-                "work_start": work_start,
-                "work_end": work_end,
-                "holiday_name": None,
-                "is_makeup_workday": day_rule["is_makeup_workday"],
-                "workday_override_name": day_rule["workday_override_name"],
-                "source": source,
-            })
+            breakdown.append(
+                {
+                    "date": cur.isoformat(),
+                    "weekday": weekday,
+                    "type": "workday",
+                    "hours": hours,
+                    "shift": shift_name,
+                    "work_start": work_start,
+                    "work_end": work_end,
+                    "holiday_name": None,
+                    "is_makeup_workday": day_rule["is_makeup_workday"],
+                    "workday_override_name": day_rule["workday_override_name"],
+                    "source": source,
+                }
+            )
 
         cur += timedelta(days=1)
 
