@@ -43,3 +43,31 @@ def test_teacher_role_has_no_gov_reports_permissions():
     teacher_perms = ROLE_TEMPLATES["teacher"]
     assert not (teacher_perms & Permission.GOV_REPORTS_VIEW.value)
     assert not (teacher_perms & Permission.GOV_REPORTS_EXPORT.value)
+
+
+from models.classroom import Student
+from models.employee import Employee
+
+
+def test_student_has_id_number_field():
+    assert hasattr(Student, "id_number")
+
+
+def test_student_has_disability_fields():
+    for f in (
+        "nationality",
+        "household_address",
+        "is_disadvantaged",
+        "low_income_status",
+        "indigenous_status",
+        "disability_type",
+        "disability_level",
+        "disability_cert_no",
+        "disability_cert_expiry",
+    ):
+        assert hasattr(Student, f), f"Student missing field: {f}"
+
+
+def test_employee_has_staff_role_category_field():
+    for f in ("staff_role_category", "teacher_cert_no", "teacher_cert_type"):
+        assert hasattr(Employee, f), f"Employee missing field: {f}"

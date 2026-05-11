@@ -182,6 +182,30 @@ class Student(Base):
     )
     emergency_contact_relation = Column(String(20), nullable=True, comment="與學生關係")
 
+    # --- 政府申報結構化欄位（Phase 1） ---
+    id_number = Column(
+        String(20),
+        nullable=True,
+        comment="身分證字號（政府報表 key；partial unique index in migration）",
+    )
+    nationality = Column(
+        String(20), nullable=True, server_default="本國", comment="國籍"
+    )
+    household_address = Column(String(200), nullable=True, comment="戶籍地址")
+    is_disadvantaged = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default="false",
+        comment="弱勢總開關",
+    )
+    low_income_status = Column(String(20), nullable=True, comment="low/mid_low/null")
+    indigenous_status = Column(String(20), nullable=True, comment="原住民族別")
+    disability_type = Column(String(50), nullable=True, comment="身障類型")
+    disability_level = Column(String(10), nullable=True, comment="身障等級")
+    disability_cert_no = Column(String(50), nullable=True, comment="鑑定證明文號")
+    disability_cert_expiry = Column(Date, nullable=True, comment="鑑定到期日")
+
     __table_args__ = (
         Index("ix_student_classroom", "classroom_id", "is_active"),
         Index("ix_student_enrollment_grad", "enrollment_date", "graduation_date"),
