@@ -30,7 +30,7 @@ from models.database import (
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
-from ._shared import TAIPEI_TZ, compute_daily_snapshot
+from ._shared import TAIPEI_TZ, compute_daily_snapshot, now_taipei_naive
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -319,7 +319,7 @@ async def approve_daily_close(
         row = ActivityPosDailyClose(
             close_date=target,
             approver_username=current_user.get("username", ""),
-            approved_at=datetime.now(),
+            approved_at=now_taipei_naive(),
             note=(body.note or None),
             payment_total=snap["payment_total"],
             refund_total=snap["refund_total"],
@@ -489,7 +489,7 @@ async def unlock_daily_close(
                 by_method_json=row.by_method_json or "{}",
                 actual_cash_count=row.actual_cash_count,
                 cash_variance=row.cash_variance,
-                unlocked_at=datetime.now(),
+                unlocked_at=now_taipei_naive(),
                 unlocked_by=current_user.get("username", ""),
                 unlocked_by_role=current_user.get("role"),
                 is_admin_override=body.is_admin_override,
@@ -583,7 +583,7 @@ async def unlock_daily_close(
 
         return {
             "close_date": target.isoformat(),
-            "unlocked_at": datetime.now().isoformat(timespec="seconds"),
+            "unlocked_at": now_taipei_naive().isoformat(timespec="seconds"),
             "is_admin_override": body.is_admin_override,
             "notification_delivered": notification_delivered,
             "live_diff": live_diff,

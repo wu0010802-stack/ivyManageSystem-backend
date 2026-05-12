@@ -574,6 +574,9 @@ async def withdraw_course(
             "payment_status": _derive_payment_status(final_paid, new_total),
         }
     except HTTPException:
+        # 與本檔其他端點一致：HTTPException 也走 rollback，避免 except 之前的
+        # session.delete / flush 殘留在事務中
+        session.rollback()
         raise
     except Exception as e:
         session.rollback()

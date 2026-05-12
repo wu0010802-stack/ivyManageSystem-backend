@@ -19,8 +19,10 @@ from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
 from models.database import (
     Base,
+    ActivityAttendance,
     ActivityCourse,
     ActivityRegistration,
+    ActivitySession,
     ActivitySupply,
     Classroom,
     Employee,
@@ -825,3 +827,380 @@ class TestCourseEnrolledRoster:
         body = res.json()
         assert len(body["items"]) == 1
         assert body["items"][0]["student_name"] == "在籍生"
+
+
+class TestAttendanceCourseEnrollmentGuard:
+    """攻擊面收緊：batch_update_attendance 不可為「未報該課」的學生寫出席。
+
+    Why: 點名端點原本只驗證 registration is_active + match_status，未驗證
+    RegistrationCourse 是否真的關聯到 session.course_id；操作員（或前端傳錯）
+    可為任意 reg 在任意 session 寫 attendance，污染出席統計與 student_id 冗餘欄位。
+    """
+
+    def test_batch_update_skips_reg_not_enrolled_in_session_course(
+        self, activity_client
+    ):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            course_a = _create_course(session, "圍棋", 1000)
+            course_b = _create_course(session, "繪畫", 1200)
+
+            reg_a = _create_registration(
+                session,
+                student_name="阿圍棋",
+                class_name="大班",
+                parent_phone="0911111111",
+            )
+            reg_b = _create_registration(
+                session,
+                student_name="阿繪畫",
+                class_name="大班",
+                parent_phone="0922222222",
+            )
+            # reg_a 只報圍棋；reg_b 只報繪畫
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg_a.id,
+                    course_id=course_a.id,
+                    status="enrolled",
+                    price_snapshot=1000,
+                )
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg_b.id,
+                    course_id=course_b.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+
+            sess = ActivitySession(
+                course_id=course_a.id,
+                session_date=date.today(),
+                created_by="test",
+            )
+            session.add(sess)
+            session.commit()
+            session_id = sess.id
+            reg_a_id = reg_a.id
+            reg_b_id = reg_b.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.put(
+            f"/api/activity/attendance/sessions/{session_id}/records",
+            json={
+                "records": [
+                    {"registration_id": reg_a_id, "is_present": True, "notes": ""},
+                    {"registration_id": reg_b_id, "is_present": True, "notes": ""},
+                ]
+            },
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["updated"] == 1
+        assert body["skipped"] == 1
+
+        with session_factory() as session:
+            atts = (
+                session.query(ActivityAttendance)
+                .filter(ActivityAttendance.session_id == session_id)
+                .all()
+            )
+            assert len(atts) == 1
+            assert atts[0].registration_id == reg_a_id
+
+    def test_batch_update_accepts_promoted_pending_enrollment(self, activity_client):
+        """promoted_pending（待家長確認的候補升正）也算佔位，應允許點名。"""
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            course = _create_course(session, "陶藝", 800)
+            reg = _create_registration(
+                session,
+                student_name="阿陶",
+                class_name="大班",
+                parent_phone="0933333333",
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="promoted_pending",
+                    price_snapshot=800,
+                )
+            )
+            sess = ActivitySession(
+                course_id=course.id,
+                session_date=date.today(),
+                created_by="test",
+            )
+            session.add(sess)
+            session.commit()
+            session_id = sess.id
+            reg_id = reg.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.put(
+            f"/api/activity/attendance/sessions/{session_id}/records",
+            json={
+                "records": [
+                    {"registration_id": reg_id, "is_present": True, "notes": ""},
+                ]
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["updated"] == 1
+
+
+class TestTimestampsUseTaipeiTimezone:
+    """寫入 naive datetime 欄位的端點必須走台灣時間 helper。
+
+    Why: 同檔的「今日」判定多用 `datetime.now(TAIPEI_TZ).date()`，但部分時間戳寫入
+    用裸 `datetime.now()`，server 部署於 UTC 時 8 小時偏移會造成稽核時序錯位
+    （如 approved_at 比 close_date 早一天）。本測試比對寫入時刻與台灣 wall-clock
+    在合理差內，並驗證與系統 UTC now 之間的差距明顯大於 0（部署於台灣時區的
+    CI 無法捕獲 bug，故再透過 `now_taipei_naive` helper 的單元測試做雙保險）。
+    """
+
+    def test_now_taipei_naive_helper_returns_taipei_wall_clock(self):
+        """now_taipei_naive() 必須等於 datetime.now(TAIPEI_TZ).replace(tzinfo=None)。"""
+        from datetime import datetime, timedelta
+
+        from api.activity._shared import TAIPEI_TZ, now_taipei_naive
+
+        ts = now_taipei_naive()
+        expected = datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+        assert ts.tzinfo is None
+        # 連續呼叫差距應在數秒內
+        assert abs((ts - expected).total_seconds()) < 2
+
+    def test_reject_registration_writes_taipei_reviewed_at(self, activity_client):
+        """reject_registration 寫入的 reviewed_at 必須是台灣時間 (naive)。"""
+        from datetime import datetime, timedelta
+
+        from api.activity._shared import TAIPEI_TZ
+
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            reg = _create_registration(
+                session,
+                student_name="待審",
+                class_name="大班",
+                parent_phone="0944444444",
+            )
+            session.commit()
+            reg_id = reg.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        before = datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/reject",
+            json={"reason": "資料不符，視為校外生不收件"},
+        )
+        assert res.status_code == 200
+        after = datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+
+        with session_factory() as session:
+            reg_row = (
+                session.query(ActivityRegistration)
+                .filter(ActivityRegistration.id == reg_id)
+                .one()
+            )
+            assert reg_row.reviewed_at is not None
+            # reviewed_at 必須落在 [before - 1s, after + 1s] 視窗內
+            # （server 若在 UTC 而寫入用 datetime.now()，會偏離 8 小時被抓出）
+            assert before - timedelta(seconds=1) <= reg_row.reviewed_at <= after + timedelta(seconds=1)
+
+
+class TestCourseSupplyRenameAcrossTerms:
+    """update_course / update_supply 的改名查重必須限定學期，否則跨學期同名會誤報 409。
+
+    Why: DB 層 UniqueConstraint 是 (name, school_year, semester)，跨學期同名是
+    被允許的；router 的應用層查重若不帶 school_year/semester 過濾，會把跨學期
+    存在的同名項目誤判為衝突，阻擋正當的改名/重新命名操作。
+    """
+
+    def test_course_rename_to_other_term_existing_name_is_allowed(self, activity_client):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            sy, sem = _current_term()
+            # 目前學期：圍棋
+            course_current = _create_course(session, "圍棋", 1000)
+            # 不同學期：書法（將被當作衝突候選的雜訊）
+            other_sem = 1 if sem == 2 else 2
+            other_sy = sy if sem == 2 else sy - 1
+            session.add(
+                ActivityCourse(
+                    name="書法",
+                    price=1500,
+                    capacity=30,
+                    is_active=True,
+                    school_year=other_sy,
+                    semester=other_sem,
+                )
+            )
+            session.commit()
+            course_id = course_current.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        # 把目前學期的圍棋改名為「書法」(目前學期不存在，僅其他學期存在)
+        res = client.put(
+            f"/api/activity/courses/{course_id}",
+            json={"name": "書法"},
+        )
+        assert res.status_code == 200, res.text
+
+    def test_course_rename_within_same_term_to_existing_name_still_blocked(
+        self, activity_client
+    ):
+        """同學期內改成既有名稱仍要 409，避免破壞 UniqueConstraint。"""
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            _create_course(session, "圍棋", 1000)
+            target = _create_course(session, "書法", 1500)
+            session.commit()
+            target_id = target.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.put(
+            f"/api/activity/courses/{target_id}",
+            json={"name": "圍棋"},
+        )
+        assert res.status_code == 400
+
+    def test_supply_rename_to_other_term_existing_name_is_allowed(self, activity_client):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            sy, sem = _current_term()
+            supply_current = _create_supply(session, "教材包", 350)
+            other_sem = 1 if sem == 2 else 2
+            other_sy = sy if sem == 2 else sy - 1
+            session.add(
+                ActivitySupply(
+                    name="畫筆組",
+                    price=200,
+                    is_active=True,
+                    school_year=other_sy,
+                    semester=other_sem,
+                )
+            )
+            session.commit()
+            supply_id = supply_current.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.put(
+            f"/api/activity/supplies/{supply_id}",
+            json={"name": "畫筆組"},
+        )
+        assert res.status_code == 200, res.text
+
+
+class TestSessionCreateRejectsInactiveCourse:
+    """create_session 必須拒絕為已停用課程建立場次。"""
+
+    def test_create_session_on_inactive_course_404(self, activity_client):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            course = _create_course(session, "圍棋", 1000)
+            course.is_active = False
+            session.commit()
+            course_id = course.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.post(
+            "/api/activity/attendance/sessions",
+            json={
+                "course_id": course_id,
+                "session_date": date.today().isoformat(),
+                "notes": "",
+            },
+        )
+        assert res.status_code == 404
+
+
+class TestPortalBatchAttendanceRecordsCap:
+    """PortalBatchAttendanceUpdate.records 必須有 max_length 上限（DoS 防護）。"""
+
+    def test_portal_batch_records_exceeds_cap_rejected(self):
+        from pydantic import ValidationError
+
+        from api.portal.activity import PortalBatchAttendanceUpdate
+
+        # 501 筆（超過 500 上限）必須觸發 ValidationError
+        with pytest.raises(ValidationError):
+            PortalBatchAttendanceUpdate(
+                records=[
+                    {"registration_id": i, "is_present": True, "notes": ""}
+                    for i in range(1, 502)
+                ]
+            )
+
+
+class TestOverpaidFilterIncludesSupplyOnlyRegs:
+    """payment_status=overpaid 篩選必須支援『只有用品、無課程』的報名。
+
+    Why: subquery 加法 (course_total_sq + supply_total_sq) 若任一為 NULL 會整體
+    NULL，導致 `paid_amount > NULL` 永遠 False，超繳的報名查不到。目前
+    `coalesce(sum(...), 0)` 已包住兩個子查詢防 NULL；本測試保護未來不被誤刪。
+    """
+
+    def test_overpaid_filter_returns_supply_only_overpaid_reg(self, activity_client):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            supply = _create_supply(session, "教材包", 350)
+            reg = _create_registration(
+                session,
+                student_name="超繳生",
+                class_name="大班",
+                parent_phone="0955555555",
+            )
+            # 只有用品、無 RegistrationCourse；paid_amount > 應繳
+            session.add(
+                RegistrationSupply(
+                    registration_id=reg.id,
+                    supply_id=supply.id,
+                    price_snapshot=350,
+                )
+            )
+            reg.paid_amount = 500  # 超繳
+            session.commit()
+            reg_id = reg.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        res = client.get("/api/activity/registrations?payment_status=overpaid")
+        assert res.status_code == 200
+        body = res.json()
+        ids = [r["id"] for r in body.get("registrations", body.get("items", []))]
+        assert reg_id in ids, f"overpaid filter 未返回 {reg_id}; got: {body}"

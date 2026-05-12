@@ -8,7 +8,7 @@ from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
@@ -162,7 +162,9 @@ class PortalAttendanceRecordItem(BaseModel):
 
 
 class PortalBatchAttendanceUpdate(BaseModel):
-    records: List[PortalAttendanceRecordItem]
+    # max_length=500 與 admin 端 BatchAttendanceUpdate 對齊；防止單次請求送入
+    # 過量 records 觸發 DoS 級記憶體/查詢壓力
+    records: List[PortalAttendanceRecordItem] = Field(..., min_length=1, max_length=500)
 
 
 def _get_teacher_class_names(session, emp_id: int) -> list[str]:
@@ -345,18 +347,26 @@ def portal_batch_update_attendance(
             raise HTTPException(status_code=404, detail="找不到場次")
 
         # 驗證所有 registration_id 都屬於自班（classroom_id FK 比對），
-        # 並排除已軟刪/被拒絕的報名，避免對離園或 rejected 學生寫入 attendance。
+        # 排除已軟刪/被拒絕的報名，並要求該 registration 真的有報本 session 對應的
+        # 課程（enrolled 或 promoted_pending 皆算佔位）；避免老師為「未報該課」的
+        # 學生寫入 attendance 污染統計。
         if body.records:
             req_reg_ids = [item.registration_id for item in body.records]
             if not classroom_ids:
                 raise HTTPException(status_code=403, detail="包含無權操作的學生記錄")
             allowed_regs = (
                 session.query(ActivityRegistration.id)
+                .join(
+                    RegistrationCourse,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
                 .filter(
                     ActivityRegistration.id.in_(req_reg_ids),
                     ActivityRegistration.classroom_id.in_(classroom_ids),
                     ActivityRegistration.is_active.is_(True),
                     ActivityRegistration.match_status != "rejected",
+                    RegistrationCourse.course_id == sess.course_id,
+                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
                 )
                 .all()
             )

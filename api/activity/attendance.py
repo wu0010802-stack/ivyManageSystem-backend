@@ -146,12 +146,19 @@ def create_session(
     body: SessionCreate,
     current_user: dict = Depends(get_current_user),
 ):
-    """建立場次（同課程同日重複則 400）"""
+    """建立場次（同課程同日重複則 400）
+
+    課程已停用（is_active=False）視同不存在，回 404；
+    避免為退場的課程繼續建場次造成統計與點名異常。
+    """
     session = get_session()
     try:
         course = (
             session.query(ActivityCourse)
-            .filter(ActivityCourse.id == body.course_id)
+            .filter(
+                ActivityCourse.id == body.course_id,
+                ActivityCourse.is_active.is_(True),
+            )
             .first()
         )
         if not course:
@@ -322,13 +329,21 @@ def batch_update_attendance(
         }
 
         # 過濾已退課（is_active=False）或已駁回（match_status='rejected'）的報名，
-        # 避免污染出席統計。一併取 student_id 供冗餘欄位使用。
+        # 並要求 registration 必須真的報了本 session 對應的課程（enrolled 或
+        # promoted_pending 皆算佔位）；避免操作員為「未報該課」的學生寫出席紀錄
+        # 污染統計與 student_id 冗餘欄位。一併取 student_id 供冗餘欄位使用。
         valid_reg_rows = (
             session.query(ActivityRegistration.id, ActivityRegistration.student_id)
+            .join(
+                RegistrationCourse,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
             .filter(
                 ActivityRegistration.id.in_(req_reg_ids),
                 ActivityRegistration.is_active.is_(True),
                 ActivityRegistration.match_status != "rejected",
+                RegistrationCourse.course_id == sess.course_id,
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
             )
             .all()
             if req_reg_ids
