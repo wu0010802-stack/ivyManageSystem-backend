@@ -188,6 +188,71 @@ def communication_to_timeline_item(c) -> dict:
     }
 
 
+def contact_book_to_timeline_item(e) -> dict:
+    summary = (
+        getattr(e, "teacher_note", None)
+        or getattr(e, "learning_highlight", None)
+        or getattr(e, "teacher_summary", None)
+        or getattr(e, "parent_message", None)
+        or ""
+    )
+    return {
+        "id": f"contact_book-{e.id}",
+        "type": "contact_book",
+        "occurred_at": _date_iso(
+            getattr(e, "log_date", None) or getattr(e, "entry_date", None)
+        ),
+        "title": "聯絡簿",
+        "summary": _truncate(summary),
+        "icon": SOURCE_ICONS["contact_book"],
+        "is_highlight": False,
+        "raw_ref": {"router": "contact_book", "id": e.id},
+        "extra": {},
+    }
+
+
+def attendance_to_timeline_item(a) -> dict:
+    status_labels = {
+        "缺席": "缺席",
+        "病假": "病假",
+        "事假": "事假",
+        "遲到": "遲到",
+        "absent": "缺席",
+        "late": "遲到",
+        "leave": "請假",
+        "sick": "病假",
+        "early_leave": "早退",
+    }
+    status = getattr(a, "status", "") or ""
+    return {
+        "id": f"attendance-{a.id}",
+        "type": "attendance",
+        "occurred_at": _date_iso(a.date),
+        "title": status_labels.get(status, status or "出勤異常"),
+        "summary": "",
+        "icon": SOURCE_ICONS["attendance"],
+        "is_highlight": False,
+        "raw_ref": {"router": "attendance", "id": a.id},
+        "extra": {"status": status},
+    }
+
+
+def activity_to_timeline_item(r) -> dict:
+    return {
+        "id": f"activity-{r.id}",
+        "type": "activity",
+        "occurred_at": _date_iso(
+            getattr(r, "registered_at", None) or getattr(r, "created_at", None)
+        ),
+        "title": f"報名活動 #{r.id}",  # v1 不 join course name
+        "summary": "",
+        "icon": SOURCE_ICONS["activity"],
+        "is_highlight": False,
+        "raw_ref": {"router": "activity-registrations", "id": r.id},
+        "extra": {},
+    }
+
+
 def sort_and_paginate(items: list[dict], *, limit: int = 30) -> dict:
     """合併多源排序後分頁。Sort key: (occurred_at desc, type asc, id desc)."""
     sorted_items = sorted(

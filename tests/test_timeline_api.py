@@ -266,3 +266,65 @@ def test_timeline_includes_communications(app_client):
     resp = client.get("/api/students/1/timeline")
     items = resp.json()["items"]
     assert any(it["type"] == "communication" for it in items)
+
+
+def test_timeline_includes_contact_book(app_client):
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.database import StudentContactBookEntry
+
+        session.add(
+            StudentContactBookEntry(
+                student_id=1,
+                classroom_id=1,
+                log_date=date.today(),
+                teacher_note="今天小華有把蘋果吃完",
+            )
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline")
+    items = resp.json()["items"]
+    assert any(it["type"] == "contact_book" for it in items)
+
+
+def test_timeline_includes_attendance_only_when_abnormal(app_client):
+    client, session_factory = app_client
+    today = date.today()
+    with session_factory() as session:
+        from models.database import StudentAttendance
+
+        session.add_all(
+            [
+                StudentAttendance(
+                    student_id=1, date=today, status="出席"
+                ),  # 正常 → 不應出現
+                StudentAttendance(
+                    student_id=1,
+                    date=today - timedelta(days=1),
+                    status="請假",
+                ),  # 異常 → 出現
+            ]
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline")
+    items = resp.json()["items"]
+    attendance_items = [it for it in items if it["type"] == "attendance"]
+    assert len(attendance_items) == 1
+    assert attendance_items[0]["extra"]["status"] == "請假"
+
+
+def test_timeline_includes_activity(app_client):
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.activity import ActivityRegistration
+
+        session.add(
+            ActivityRegistration(
+                student_id=1,
+                student_name="王小明",  # NOT NULL 欄位
+            )
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline?since=2020-01-01")
+    items = resp.json()["items"]
+    assert any(it["type"] == "activity" for it in items)

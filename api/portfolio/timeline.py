@@ -14,6 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from models.activity import ActivityRegistration
 from models.database import (
     StudentAssessment,
     StudentAttendance,
@@ -27,8 +28,11 @@ from models.database import (
 from models.student_log import ParentCommunicationLog
 from services.timeline_aggregator import (
     SOURCE_TYPES,
+    activity_to_timeline_item,
     assessment_to_timeline_item,
+    attendance_to_timeline_item,
     communication_to_timeline_item,
+    contact_book_to_timeline_item,
     decode_cursor,
     incident_to_timeline_item,
     measurement_to_timeline_item,
@@ -125,6 +129,43 @@ def _fetch_communications(session, student_id, since, until) -> list[dict]:
     return [communication_to_timeline_item(r) for r in rows]
 
 
+def _fetch_contact_books(session, student_id, since, until) -> list[dict]:
+    q = session.query(StudentContactBookEntry).filter(
+        StudentContactBookEntry.student_id == student_id
+    )
+    if since:
+        q = q.filter(StudentContactBookEntry.log_date >= since)
+    if until:
+        q = q.filter(StudentContactBookEntry.log_date <= until)
+    rows = q.order_by(StudentContactBookEntry.log_date.desc()).limit(100).all()
+    return [contact_book_to_timeline_item(r) for r in rows]
+
+
+def _fetch_attendance(session, student_id, since, until) -> list[dict]:
+    q = session.query(StudentAttendance).filter(
+        StudentAttendance.student_id == student_id,
+        StudentAttendance.status != "出席",  # 只取異常/特殊出勤
+    )
+    if since:
+        q = q.filter(StudentAttendance.date >= since)
+    if until:
+        q = q.filter(StudentAttendance.date <= until)
+    rows = q.order_by(StudentAttendance.date.desc()).limit(100).all()
+    return [attendance_to_timeline_item(r) for r in rows]
+
+
+def _fetch_activity(session, student_id, since, until) -> list[dict]:
+    q = session.query(ActivityRegistration).filter(
+        ActivityRegistration.student_id == student_id
+    )
+    if since:
+        q = q.filter(ActivityRegistration.created_at >= since)
+    if until:
+        q = q.filter(ActivityRegistration.created_at <= until)
+    rows = q.order_by(ActivityRegistration.created_at.desc()).limit(100).all()
+    return [activity_to_timeline_item(r) for r in rows]
+
+
 def _by_type_count(items: list[dict]) -> dict[str, int]:
     out: dict[str, int] = {}
     for it in items:
@@ -167,6 +208,14 @@ async def get_timeline(
                 all_items.extend(
                     _fetch_communications(session, student_id, since, until)
                 )
+            if "contact_book" in requested_types:
+                all_items.extend(
+                    _fetch_contact_books(session, student_id, since, until)
+                )
+            if "attendance" in requested_types:
+                all_items.extend(_fetch_attendance(session, student_id, since, until))
+            if "activity" in requested_types:
+                all_items.extend(_fetch_activity(session, student_id, since, until))
 
             paginated = sort_and_paginate(all_items, limit=limit)
             return {

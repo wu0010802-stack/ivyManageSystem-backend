@@ -175,3 +175,50 @@ def test_communication_to_timeline_item():
     assert item["occurred_at"] == "2026-05-08"
     assert item["title"] == "詢問活動"
     assert item["extra"]["communication_type"] == "電話"
+
+
+def test_contact_book_to_timeline_item():
+    from datetime import date
+    from services.timeline_aggregator import contact_book_to_timeline_item
+
+    class _E:
+        id = 21
+        log_date = date(2026, 5, 10)
+        teacher_note = "今天有把蘋果吃完"
+        learning_highlight = None
+
+    item = contact_book_to_timeline_item(_E())
+    assert item["id"] == "contact_book-21"
+    assert item["type"] == "contact_book"
+    assert item["occurred_at"] == "2026-05-10"
+
+
+def test_attendance_to_timeline_item():
+    from datetime import date
+    from services.timeline_aggregator import attendance_to_timeline_item
+
+    class _A:
+        id = 23
+        date = date(2026, 5, 11)
+        status = "請假"
+
+    item = attendance_to_timeline_item(_A())
+    assert item["id"] == "attendance-23"
+    assert item["type"] == "attendance"
+    assert item["occurred_at"] == "2026-05-11"
+    assert item["extra"]["status"] == "請假"
+
+
+def test_activity_to_timeline_item():
+    from datetime import datetime
+    from services.timeline_aggregator import activity_to_timeline_item
+
+    class _R:
+        id = 25
+        created_at = datetime(2026, 4, 1, 9, 30)
+        student_id = 1
+
+    item = activity_to_timeline_item(_R())
+    assert item["id"] == "activity-25"
+    assert item["type"] == "activity"
+    assert item["occurred_at"] == "2026-04-01T09:30:00"
