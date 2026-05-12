@@ -554,7 +554,7 @@ async def send_growth_report_to_line(
             )
             sent_count = 0
             for uid in line_user_ids:
-                ok = _line_service._push_to_user(uid, base_text)
+                ok = _line_service.push_to_user(uid, base_text)
                 if ok:
                     sent_count += 1
 
