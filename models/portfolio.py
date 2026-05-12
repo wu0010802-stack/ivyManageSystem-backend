@@ -427,3 +427,69 @@ class StudentMilestone(Base):
             "achieved_on",
         ),
     )
+
+
+# ── Growth report status 枚舉 ────────────────────────────────────────────
+REPORT_STATUS_PENDING = "pending"
+REPORT_STATUS_GENERATING = "generating"
+REPORT_STATUS_READY = "ready"
+REPORT_STATUS_FAILED = "failed"
+REPORT_STATUSES = (
+    REPORT_STATUS_PENDING,
+    REPORT_STATUS_GENERATING,
+    REPORT_STATUS_READY,
+    REPORT_STATUS_FAILED,
+)
+
+
+class StudentGrowthReport(Base):
+    """學生期末成長報告（PDF）追蹤表.
+
+    每筆對應一份生成中或已完成的 PDF。
+    - status 由 pending → generating → ready / failed
+    - file_path 為相對於 instance/growth_reports/ 的路徑
+    - parent_view_count 統計家長下載次數
+    """
+
+    __tablename__ = "student_growth_reports"
+
+    id = Column(Integer, primary_key=True)
+    student_id = Column(
+        Integer,
+        ForeignKey("students.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    period_label = Column(String(40), nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+
+    status = Column(String(20), nullable=False, server_default=text("'pending'"))
+    file_path = Column(String(255), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    generated_by = Column(
+        Integer,
+        ForeignKey("employees.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    generated_at = Column(DateTime, nullable=True)
+    created_at = Column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+    line_sent_at = Column(DateTime, nullable=True)
+    parent_first_viewed_at = Column(DateTime, nullable=True)
+    parent_view_count = Column(Integer, nullable=False, server_default=text("0"))
+
+    teacher_narrative = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_growth_reports_student_period",
+            "student_id",
+            "period_start",
+            "period_end",
+        ),
+        Index("ix_growth_reports_status", "status"),
+    )

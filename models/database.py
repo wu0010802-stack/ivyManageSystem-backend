@@ -113,6 +113,7 @@ from models.portfolio import (
     StudentMedicationLog,
     StudentMeasurement,
     StudentMilestone,
+    StudentGrowthReport,
 )
 from models.security import JwtBlocklist, RateLimitBucket
 from models.parent_message import (
@@ -254,6 +255,7 @@ __all__ = [
     "StudentMedicationLog",
     "StudentMeasurement",
     "StudentMilestone",
+    "StudentGrowthReport",
     # security support tables
     "RateLimitBucket",
     "JwtBlocklist",
