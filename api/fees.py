@@ -342,11 +342,19 @@ def update_fee_item(
 @router.delete("/items/{item_id}")
 def delete_fee_item(
     item_id: int,
+    request: Request,
     _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     """刪除費用項目（若有關聯記錄則拒絕）"""
     with session_scope() as session:
-        item = session.query(FeeItem).filter(FeeItem.id == item_id).first()
+        # with_for_update：與 count linked + delete 同 transaction 持鎖，
+        # 避免「檢查無關聯 → 他人 INSERT StudentFeeRecord → 刪除成功」造成 FK 違反或孤兒。
+        item = (
+            session.query(FeeItem)
+            .filter(FeeItem.id == item_id)
+            .with_for_update()
+            .first()
+        )
         if not item:
             raise HTTPException(status_code=404, detail="費用項目不存在")
 
@@ -361,8 +369,27 @@ def delete_fee_item(
                 detail=f"此費用項目已有 {linked} 筆學生記錄，無法刪除。請先刪除相關記錄或改為停用。",
             )
 
+        snapshot = {
+            "id": item.id,
+            "name": item.name,
+            "amount": item.amount,
+            "classroom_id": item.classroom_id,
+            "period": item.period,
+            "is_active": item.is_active,
+        }
         name = item.name
         session.delete(item)
+
+        # 金流項目刪除必須留 audit；同 session 寫入確保與 delete 共生死
+        write_audit_in_session(
+            session,
+            request,
+            action="DELETE",
+            entity_type="fee",
+            entity_id=item_id,
+            summary=f"刪除費用項目 #{item_id}（{name}，金額 {snapshot['amount']}）",
+            changes={"action": "fee_item_delete", "snapshot": snapshot},
+        )
 
     logger.warning("刪除費用項目 id=%s name=%s", item_id, name)
     return {"ok": True}
