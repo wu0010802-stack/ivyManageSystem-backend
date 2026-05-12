@@ -136,6 +136,21 @@ ENTITY_PATTERNS = [
     # 教育部申報模組 Phase 1 — 身障/特教文件 CRUD 必須留 audit，
     # 否則鑑定證明異動（影響補助/IEP）會無稽核痕跡。
     (r"/api/gov-moe/disability-documents", "disability_document"),
+    # 政府資料同步：promote/dismiss staging 寫入級距/基本工資（影響全員保費）；
+    # sync-now 觸發 fetch。原 ENTITY_PATTERNS 漏，middleware 視為 entity_type=None
+    # 整批跳過 audit。Refs: bug sweep round 4 (2026-05-12) DB 完整性檢查發現。
+    (r"/api/gov-data", "gov_data_sync"),
+    # 學生輔導：發展評估 / 事件紀錄 / 班級點名。原 /api/students 不會匹配子路徑，
+    # middleware 跳過 audit。學生事件紀錄涉及衝突/受傷等敏感資訊，必留稽核。
+    # 注意：student-attendance 是教師日常 batch 點名，量大；若上 prod 後 audit_logs
+    # 量爆，可考慮把 /api/student-attendance 從此處移除（middleware 自然不審），
+    # 改在 controversial action（如手動覆寫他人考勤）走 write_audit_in_session。
+    (r"/api/student-assessments", "student_assessment"),
+    (r"/api/student-incidents", "student_incident"),
+    (r"/api/student-attendance", "student_attendance"),
+    # 招生紀錄：records / market / hotspots / periods / competitors 共用一個
+    # entity_type，前端可在 changes 細分；convert 會建學生，必留稽核痕跡。
+    (r"/api/recruitment", "recruitment"),
     # 考核系統（2026-05-11）。penalty_catalog / bonus_rates 排在 cycles / participants / events /
     # summaries 之前，確保更具體路徑優先匹配。
     # /api/appraisal/cycles/{id}/summaries:recompute 歸 appraisal_cycle，
@@ -199,6 +214,13 @@ ENTITY_LABELS = {
     "auth": "登入活動",
     # 教育部申報 Phase 1
     "disability_document": "身障鑑定文件",
+    # 政府資料同步（bug sweep round 4 2026-05-12 補）
+    "gov_data_sync": "政府資料同步",
+    # 學生輔導/招生（bug sweep round 4 2026-05-12 補）
+    "student_assessment": "學生發展評估",
+    "student_incident": "學生事件紀錄",
+    "student_attendance": "學生點名",
+    "recruitment": "招生紀錄",
     # 考核系統
     "appraisal_cycle": "考核週期",
     "appraisal_participant": "考核參與者",
