@@ -76,11 +76,15 @@ def downgrade() -> None:
     # 超過 PostgreSQL signed BIGINT 上限，psycopg2 會 raise NumericValueOutOfRange。
     # Python 直接讓結果為負整數即可，PostgreSQL 對 signed BIGINT 的 bitwise AND 正確處理。
     mask_clear = ~((1 << 55) | (1 << 56) | (1 << 57) | (1 << 58) | (1 << 59))
+    # 對稱化：upgrade 只動 hr/supervisor/teacher 三 role，downgrade 也限縮到相同 role，
+    # 避免清掉手動指派此 5 bit 的特殊帳號（雖然在預設角色下實務上是 no-op，但行為對稱）。
     bind.execute(
         sa.text(
             "UPDATE users "
             "SET permissions = permissions & :mask "
-            "WHERE permissions IS NOT NULL AND permissions != -1"
+            "WHERE permissions IS NOT NULL "
+            "  AND permissions != -1 "
+            "  AND role IN ('hr', 'supervisor', 'teacher')"
         ),
         {"mask": mask_clear},
     )
