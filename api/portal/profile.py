@@ -5,12 +5,13 @@ Portal - profile endpoints
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from utils.errors import raise_safe_500
 
 from models.database import get_session, Classroom
 from models.auth import User
+from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
 from ._shared import _get_employee, ProfileUpdate, _mask_bank_account
 
@@ -20,29 +21,43 @@ _LINE_USER_ID_RE = re.compile(r"^U[0-9a-f]{32}$")
 class LineBindingUpdate(BaseModel):
     line_user_id: str
 
+
 router = APIRouter()
 
 
 @router.get("/profile")
 def get_profile(
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """取得個人資料"""
+    """取得個人資料（含 bank_account masked、emergency_contact 等個資）。"""
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="employee",
+            entity_id=str(emp.id),
+            summary=f"portal 查看個人資料：{emp.name}",
+            changes={"includes_pii": True, "bank_account_masked": True},
+        )
 
         job_title_name = None
         if emp.job_title_rel:
             job_title_name = emp.job_title_rel.name
 
         classroom_name = None
-        classroom = session.query(Classroom).filter(
-            Classroom.is_active == True,
-            (Classroom.head_teacher_id == emp.id) |
-            (Classroom.assistant_teacher_id == emp.id) |
-            (Classroom.art_teacher_id == emp.id),
-        ).first()
+        classroom = (
+            session.query(Classroom)
+            .filter(
+                Classroom.is_active == True,
+                (Classroom.head_teacher_id == emp.id)
+                | (Classroom.assistant_teacher_id == emp.id)
+                | (Classroom.art_teacher_id == emp.id),
+            )
+            .first()
+        )
         if classroom:
             classroom_name = classroom.name
 
@@ -90,14 +105,21 @@ def update_line_binding(
 ):
     """綁定 LINE User ID（格式 ^U[0-9a-f]{32}$）"""
     if not _LINE_USER_ID_RE.match(data.line_user_id):
-        raise HTTPException(status_code=400, detail="LINE User ID 格式不正確（應為 U 開頭後接 32 個小寫十六進位字元）")
+        raise HTTPException(
+            status_code=400,
+            detail="LINE User ID 格式不正確（應為 U 開頭後接 32 個小寫十六進位字元）",
+        )
     session = get_session()
     try:
         # 唯一性衝突檢查
-        existing = session.query(User).filter(
-            User.line_user_id == data.line_user_id,
-            User.id != current_user.get("user_id"),
-        ).first()
+        existing = (
+            session.query(User)
+            .filter(
+                User.line_user_id == data.line_user_id,
+                User.id != current_user.get("user_id"),
+            )
+            .first()
+        )
         if existing:
             raise HTTPException(status_code=409, detail="此 LINE 帳號已被其他用戶綁定")
 
@@ -151,9 +173,13 @@ def update_profile(
         emp = _get_employee(session, current_user)
 
         allowed_fields = [
-            "phone", "address",
-            "emergency_contact_name", "emergency_contact_phone",
-            "bank_code", "bank_account", "bank_account_name",
+            "phone",
+            "address",
+            "emergency_contact_name",
+            "emergency_contact_phone",
+            "bank_code",
+            "bank_account",
+            "bank_account_name",
         ]
 
         update_data = data.model_dump(exclude_unset=True)
