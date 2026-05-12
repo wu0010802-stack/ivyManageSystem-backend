@@ -204,12 +204,14 @@ def update_event(
     """更新行事曆事件"""
     session = get_session()
     try:
+        # with_for_update：避免兩個 request 同時 update 造成 lost-update（部分欄位被覆蓋）
         ev = (
             session.query(SchoolEvent)
             .filter(
                 SchoolEvent.id == event_id,
                 SchoolEvent.is_active == True,
             )
+            .with_for_update()
             .first()
         )
         if not ev:
@@ -256,6 +258,7 @@ def delete_event(
                 SchoolEvent.id == event_id,
                 SchoolEvent.is_active == True,
             )
+            .with_for_update()
             .first()
         )
         if not ev:
@@ -491,9 +494,7 @@ async def import_holidays(
                     or_(*stale_conditions),
                     SalaryRecord.is_finalized == False,
                 )
-                .update(
-                    {SalaryRecord.needs_recalc: True}, synchronize_session=False
-                )
+                .update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
             )
             if stale_count:
                 logger.info(

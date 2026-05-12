@@ -15,7 +15,7 @@ import io
 import threading
 
 from cachetools import TTLCache
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
 
@@ -68,12 +68,15 @@ def _snapshot_cache_put(record_id: int, version: int, data: dict) -> None:
 @router.get("/salaries/{record_id}/audit-log")
 def get_salary_audit_log(
     record_id: int,
+    request: Request,
     limit: int = Query(50, ge=1, le=200),
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """查詢單筆薪資的操作歷史（來源：通用 AuditLog 表）。"""
     from models.audit import AuditLog
     from sqlalchemy import desc
+
+    from utils.audit import write_explicit_audit
 
     with session_scope() as session:
         record_owner = (
@@ -95,7 +98,7 @@ def get_salary_audit_log(
             .limit(limit)
             .all()
         )
-        return {
+        result = {
             "record_id": record_id,
             "items": [
                 {
@@ -110,14 +113,26 @@ def get_salary_audit_log(
                 for log in logs
             ],
         }
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="salary",
+            entity_id=str(record_id),
+            summary=f"查看薪資自身稽核：record={record_id}",
+            changes={"record_id": record_id, "items_returned": len(logs)},
+        )
+        return result
 
 
 @router.get("/salaries/{record_id}/breakdown")
 def get_salary_breakdown(
     record_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """查詢單筆薪資明細。"""
+    from utils.audit import write_explicit_audit
+
     with session_scope() as session:
         record, emp = session.query(SalaryRecord, Employee).join(
             Employee, SalaryRecord.employee_id == Employee.id
@@ -138,7 +153,7 @@ def get_salary_breakdown(
         elif emp.title:
             job_title = emp.title
 
-        return {
+        result = {
             "employee": {
                 "record_id": record.id,
                 "employee_name": emp.name,
@@ -177,17 +192,29 @@ def get_salary_breakdown(
             },
             "manual_overrides": list(record.manual_overrides or []),
         }
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="salary",
+            entity_id=str(record_id),
+            summary=f"查看薪資明細：record={record_id}",
+            changes={"record_id": record_id},
+        )
+        return result
 
 
 @router.get("/salaries/{record_id}/field-breakdown")
 def get_salary_field_breakdown(
     record_id: int,
+    request: Request,
     field: str = Query(...),
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """查詢單筆薪資指定欄位明細。"""
     # Lazy import _salary_engine：service injection 後才有值。
     from . import _salary_engine
+
+    from utils.audit import write_explicit_audit
 
     if field not in FIELD_LABELS:
         raise HTTPException(status_code=400, detail="不支援的明細欄位")
@@ -218,7 +245,16 @@ def get_salary_field_breakdown(
                 session, engine, emp, record.salary_year, record.salary_month
             )
             _snapshot_cache_put(record_id, version, snapshot)
-        return build_field_breakdown(record, emp, snapshot, field)
+        result = build_field_breakdown(record, emp, snapshot, field)
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="salary",
+            entity_id=str(record_id),
+            summary=f"查看薪資欄位拆分：record={record_id}",
+            changes={"record_id": record_id, "field": field},
+        )
+        return result
 
 
 @router.get("/salaries/{record_id}/export")

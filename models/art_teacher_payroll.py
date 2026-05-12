@@ -33,7 +33,7 @@ class ArtTeacherPayrollEntry(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     employee_id = Column(
-        Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
+        Integer, ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False
     )
     salary_year = Column(Integer, nullable=False)
     salary_month = Column(Integer, nullable=False)

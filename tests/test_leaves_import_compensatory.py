@@ -61,6 +61,9 @@ def _common_patches(emp, df):
         patch("api.leaves.resolve_employee_from_row", return_value=emp),
         patch("api.leaves.validate_leave_hours_against_schedule"),
         patch("api.leaves._check_leave_limits"),
+        # 2026-05-11 P1-4：import_leaves 新增 _find_overlapping_leave；
+        # mock 回 None 避免假衝突中斷 dispatch 測試。
+        patch("api.leaves._find_overlapping_leave", return_value=None),
     ]
 
 
@@ -68,7 +71,9 @@ def _run_import(file_mock):
     """呼叫 async import_leaves 並回傳結果。"""
     from api.leaves import import_leaves
 
-    return asyncio.run(import_leaves(file=file_mock, current_user={"username": "admin"}))
+    return asyncio.run(
+        import_leaves(file=file_mock, current_user={"username": "admin"})
+    )
 
 
 class TestImportLeavesCompensatoryDispatch:
@@ -95,9 +100,9 @@ class TestImportLeavesCompensatoryDispatch:
                 f"import 對 compensatory 列未呼叫 _check_compensatory_quota,"
                 f"errors={result.get('errors')}"
             )
-            assert not mock_quota.called, (
-                f"compensatory 不應再走 _check_quota,errors={result.get('errors')}"
-            )
+            assert (
+                not mock_quota.called
+            ), f"compensatory 不應再走 _check_quota,errors={result.get('errors')}"
         finally:
             for p in patches:
                 p.stop()

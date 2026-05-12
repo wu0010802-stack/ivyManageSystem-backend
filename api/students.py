@@ -38,6 +38,8 @@ from models.classroom import (
 
 logger = logging.getLogger(__name__)
 
+from utils.audit import write_explicit_audit
+
 
 def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
     """取消學生所有進行中（pending/acknowledged）的接送通知。
@@ -560,6 +562,7 @@ async def get_student_records_timeline(
 @router.get("/students/{student_id}")
 async def get_student(
     student_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得單一學生詳細資料
@@ -570,6 +573,7 @@ async def get_student(
     session = get_session()
     try:
         student = assert_student_access(session, current_user, student_id)
+        student_name = student.name
         payload = {
             "id": student.id,
             "student_id": student.student_id,
@@ -592,6 +596,13 @@ async def get_student(
             "emergency_contact_relation": student.emergency_contact_relation,
             "is_active": student.is_active,
         }
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student",
+            entity_id=str(student_id),
+            summary=f"查看學生資料：{student_name}",
+        )
         return mask_student_health_fields(payload, current_user)
     finally:
         session.close()
@@ -1014,6 +1025,7 @@ async def bulk_transfer_students(
 @router.get("/students/{student_id}/profile")
 async def get_student_profile(
     student_id: int,
+    request: Request,
     timeline_limit: int = Query(20, ge=1, le=100),
     incident_limit: int = Query(5, ge=1, le=50),
     fee_period: Optional[str] = Query(None, description="None 表示聚合所有歷史費用"),
@@ -1036,6 +1048,14 @@ async def get_student_profile(
             profile["health"] = mask_student_health_fields(
                 profile["health"], current_user
             )
+        student_name = (profile.get("basic") or {}).get("name") or student_id
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student",
+            entity_id=str(student_id),
+            summary=f"查看學生檔案：{student_name}",
+        )
         return profile
     finally:
         session.close()
@@ -1170,12 +1190,14 @@ def _serialize_guardian(g: Guardian) -> dict:
 @router.get("/students/{student_id}/guardians")
 async def list_guardians(
     student_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_READ)),
 ):
     session = get_session()
     try:
         # F-025：班級 scope 守衛 — 教師 / 自訂角色不可跨班讀家長 PII
-        assert_student_access(session, current_user, student_id)
+        student = assert_student_access(session, current_user, student_id)
+        student_name = student.name
         rows = (
             session.query(Guardian)
             .filter(
@@ -1188,6 +1210,17 @@ async def list_guardians(
                 Guardian.id.asc(),
             )
             .all()
+        )
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student",
+            entity_id=str(student_id),
+            summary=f"查看學生監護人：{student_name}",
+            changes={
+                "includes_pii": True,
+                "fields_returned": ["phone", "line_user_id", "address"],
+            },
         )
         return {"items": [_serialize_guardian(g) for g in rows]}
     finally:

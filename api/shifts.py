@@ -556,13 +556,16 @@ def upsert_daily_shift(
         # 封存月禁改:排班直接影響應上班日 → 曠職扣款基準
         _assert_shift_month_not_finalized(session, data.employee_id, target_date)
 
-        # 檢查是否已存在
+        # 檢查是否已存在；with_for_update 對既存 row 取列鎖，
+        # 避免兩個 request 同時 update 造成 lost-update。
+        # INSERT race 由 uq_daily_shift_employee_date 攔截（撞 IntegrityError → 500）。
         existing = (
             session.query(DailyShift)
             .filter(
                 DailyShift.employee_id == data.employee_id,
                 DailyShift.date == target_date,
             )
+            .with_for_update()
             .first()
         )
 
@@ -603,7 +606,14 @@ def delete_daily_shift(
     """刪除每日排班（恢復為週排班或預設）"""
     session = get_session()
     try:
-        ds = session.query(DailyShift).get(shift_id)
+        # with_for_update：避免「查到 ds → 他人 update → 此處 delete」造成的 lost-update。
+        # SQLAlchemy 2.x 的 Query.get() 不支援 with_for_update，改用 filter + .first()。
+        ds = (
+            session.query(DailyShift)
+            .filter(DailyShift.id == shift_id)
+            .with_for_update()
+            .first()
+        )
         if not ds:
             raise HTTPException(status_code=404, detail="找不到該排班記錄")
 

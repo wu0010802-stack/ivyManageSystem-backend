@@ -34,7 +34,7 @@ from models.portfolio import (
     StudentMedicationOrder,
     StudentObservation,
 )
-from utils.audit import write_audit_in_session
+from utils.audit import write_audit_in_session, write_explicit_audit
 from utils.auth import get_current_user
 from utils.masking import mask_phone
 from utils.permissions import Permission
@@ -366,12 +366,14 @@ def _build_transfer_history(
 @router.get("/students/{student_id}/detail")
 def get_student_detail(
     student_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """單一學生彙總頁：基本資料 + 健康 + 30 天出席/觀察/事件 + 評量 + 近期聯絡簿。
 
     教師僅可查自己班級的學生；admin/supervisor 可跨班。
     隱私：不回 address；電話走 mask_phone（需另呼叫 reveal-phone 揭露）。
+    敏感讀取（含監護人、過敏、健康、事件）會留下 audit 痕跡。
     """
     session = get_session()
     try:
@@ -511,6 +513,19 @@ def get_student_detail(
         allergy_text = student.allergy if can_health else None
         medication_text = student.medication if can_health else None
         special_needs = student.special_needs if can_special else None
+
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student",
+            entity_id=str(student_id),
+            summary=f"portal 查看學生詳情：{student.name}",
+            changes={
+                "includes_pii": True,
+                "includes_health": bool(can_health),
+                "includes_special_needs": bool(can_special),
+            },
+        )
 
         return {
             "student": {

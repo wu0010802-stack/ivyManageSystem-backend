@@ -35,6 +35,7 @@ router = APIRouter()
 
 @router.get("/salaries/records")
 def get_salary_records(
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_permission(Permission.SALARY_READ)),
     year: int = Query(..., ge=2000, le=2100),
@@ -121,6 +122,26 @@ def get_salary_records(
                     "net_pay": record.net_salary or 0,
                 }
             )
+
+        from utils.audit import write_explicit_audit
+
+        viewer_employee_id_filter = (
+            viewer_employee_id if viewer_employee_id is not None else None
+        )
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="salary",
+            summary=f"查看薪資列表（month={year}-{month:02d}）",
+            changes={
+                "filter": {
+                    "year": year,
+                    "month": month,
+                    "employee_id": viewer_employee_id_filter,
+                },
+                "rows_returned": len(results),
+            },
+        )
 
         return results
 
@@ -222,6 +243,7 @@ def export_all_salaries(
 
 @router.get("/salaries/history")
 def get_salary_history(
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     employee_id: int = Query(...),
     months: int = Query(12, ge=1, le=60),
@@ -263,11 +285,26 @@ def get_salary_history(
                 }
             )
 
+        from utils.audit import write_explicit_audit
+
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="salary",
+            summary=f"查看薪資歷史（employee={employee_id}）",
+            changes={
+                "employee_id": employee_id,
+                "months_requested": months,
+                "rows_returned": len(results),
+            },
+        )
+
         return results
 
 
 @router.get("/salaries/history-all")
 def get_salary_history_all(
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     year: int = Query(..., ge=2000, le=2100),
     skip: int = Query(0, ge=0),
@@ -291,7 +328,21 @@ def get_salary_history_all(
         emp_ids = [e.id for e in emp_page]
         emp_name_map = {e.id: e.name for e in emp_page}
 
+        from utils.audit import write_explicit_audit
+
         if not emp_ids:
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="salary",
+                summary=f"查看全員工薪資歷史（year={year}）",
+                changes={
+                    "year": year,
+                    "skip": skip,
+                    "limit": limit,
+                    "rows_returned": 0,
+                },
+            )
             return {"items": [], "total": total, "skip": skip, "limit": limit}
 
         records = (
@@ -322,4 +373,16 @@ def get_salary_history_all(
             }
             for eid in emp_ids
         ]
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="salary",
+            summary=f"查看全員工薪資歷史（year={year}）",
+            changes={
+                "year": year,
+                "skip": skip,
+                "limit": limit,
+                "employees_returned": len(results),
+            },
+        )
         return {"items": results, "total": total, "skip": skip, "limit": limit}

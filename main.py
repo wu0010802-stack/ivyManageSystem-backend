@@ -85,7 +85,15 @@ from api.attachments import (
     router as attachments_router,
     download_router as attachments_download_router,
 )
-from api.portfolio import observations_router
+from api.portfolio import (
+    auto_milestone_router,
+    growth_reports_router,
+    init_growth_reports_line_service,
+    measurements_router,
+    milestones_router,
+    observations_router,
+    timeline_router,
+)
 from api.student_health import router as student_health_router
 from api.parent_portal import (
     parent_router as parent_portal_router,
@@ -524,6 +532,7 @@ init_dismissal_line_service(line_service)
 init_activity_services(line_service)
 init_portal_notify_services(line_service)
 init_announcement_line_service(line_service)
+init_growth_reports_line_service(line_service)
 init_webhook_service(line_service)
 init_gov_report_services(insurance_service)
 init_bonus_preview_services(salary_engine)
@@ -601,6 +610,11 @@ app.include_router(health_router)
 app.include_router(attachments_router)
 app.include_router(attachments_download_router)
 app.include_router(observations_router)
+app.include_router(measurements_router)
+app.include_router(milestones_router)
+app.include_router(timeline_router)
+app.include_router(auto_milestone_router)
+app.include_router(growth_reports_router)
 app.include_router(student_health_router)
 # 家長入口
 app.include_router(parent_portal_router)

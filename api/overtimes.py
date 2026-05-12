@@ -11,7 +11,7 @@ from typing import Optional, List
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile, File
 from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.rate_limit import SlidingWindowLimiter
@@ -114,7 +114,11 @@ def _check_salary_month_not_finalized(
         )
 
 
-def _revoke_comp_leave_grant(session, ot: OvertimeRecord) -> None:
+def _revoke_comp_leave_grant(
+    session,
+    ot: OvertimeRecord,
+    current_user: Optional[dict] = None,
+) -> None:
     """撤銷已發放的補休配額。
 
     1. 若有與此加班記錄明確關聯（source_overtime_id）的補休假單：
@@ -170,10 +174,24 @@ def _revoke_comp_leave_grant(session, ot: OvertimeRecord) -> None:
         )
 
     # 自動駁回待審核的關聯補休假單
+    # 修補 2026-05-11 P1-8：補寫 ApprovalLog 確保稽核軌跡完整。current_user 由
+    # caller 傳入；無 caller 傳入時 fallback "system_auto" 確保函式仍可用。
+    _audit_actor = current_user or {
+        "username": "system_auto",
+        "role": "system",
+    }
     for lv in linked_pending:
         lv.is_approved = False
         lv.rejection_reason = (
             f"來源加班申請（#{ot.id}，{ot.overtime_date}）已被撤銷，補休資格取消"
+        )
+        _write_approval_log(
+            "leave",
+            lv.id,
+            "rejected",
+            _audit_actor,
+            f"auto_revoked_by_overtime_rollback (#{ot.id})",
+            session,
         )
         logger.info(
             "補休假單 #%d 因來源加班 #%d 被撤銷而自動駁回（員工 ID=%d）",
@@ -421,6 +439,68 @@ def calculate_overtime_pay(
         return round(hourly_base * hours * HOLIDAY_RATE)
 
 
+def _check_employee_has_conflicting_leave(
+    session,
+    employee_id: int,
+    overtime_date: date,
+    start_time,  # datetime | None
+    end_time,  # datetime | None
+) -> None:
+    """申請加班時檢查同員工同時段是否已有 approved/pending 請假。
+
+    修補 2026-05-11 P1-5：請假與加班不互查重疊，導致同日扣款 + 加班費雙重溢付。
+
+    時段比對規則：
+    - OT 全日（start_time/end_time 為 None）→ 與 leave 同日就衝突
+    - OT 半日 → 與 leave 時段比對；leave 缺時段視為全日衝突
+
+    NOTE: 目前只在 create 路徑使用。若未來在 update 路徑也呼叫此 helper，需新增
+    exclude_leave_id 參數避免自我衝突；同步調整 _check_employee_has_conflicting_overtime。
+    """
+    from models.database import LeaveRecord  # avoid circular import at module load
+
+    candidates = (
+        session.query(LeaveRecord)
+        .filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.is_approved.in_([None, True]),
+            LeaveRecord.start_date <= overtime_date,
+            LeaveRecord.end_date >= overtime_date,
+        )
+        .all()
+    )
+    for lv in candidates:
+        # OT 全日 → 同日有 leave 即衝突
+        if start_time is None or end_time is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {overtime_date} 已有請假申請 #{lv.id}"
+                    f"（{lv.leave_type}），加班時段與請假重疊"
+                ),
+            )
+        # leave 全日 → 衝突
+        if not lv.start_time or not lv.end_time:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {overtime_date} 已有全日請假 #{lv.id}"
+                    f"（{lv.leave_type}），加班時段與請假重疊"
+                ),
+            )
+        # 半日 vs 半日：時段精比
+        ot_start_str = start_time.strftime("%H:%M")
+        ot_end_str = end_time.strftime("%H:%M")
+        if max(ot_start_str, lv.start_time) < min(ot_end_str, lv.end_time):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"員工於 {overtime_date} 已有請假 #{lv.id}"
+                    f"（{lv.start_time}~{lv.end_time}），加班時段與其重疊"
+                ),
+            )
+
+
 def _check_overtime_overlap(
     session,
     employee_id: int,
@@ -598,6 +678,19 @@ class OvertimeUpdate(BaseModel):
     end_time: Optional[str] = None
     hours: Optional[float] = None
     reason: Optional[str] = None
+    # 注意：刻意不列 use_comp_leave；翻轉模式必須走 reject + recreate 流程，
+    # 避免在 update 過程中切換補休/加班費而與 _grant_comp_leave_quota /
+    # _revoke_comp_leave_grant 的狀態機脫節（修補 2026-05-11 P2-14）。
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_use_comp_leave_flip(cls, values):
+        if isinstance(values, dict) and "use_comp_leave" in values:
+            raise ValueError(
+                "不允許在 update 中翻轉 use_comp_leave；如需切換補休/加班費模式，"
+                "請先 reject 該加班，然後以新 use_comp_leave 值重新申請"
+            )
+        return values
 
     @field_validator("overtime_type")
     @classmethod
@@ -632,6 +725,18 @@ class OvertimeUpdate(BaseModel):
 
 
 # ============ Batch Approve Request Model ============
+
+
+class OvertimeApproveRequest(BaseModel):
+    """單筆加班核准/駁回 body schema（修補 2026-05-11 P1-6）。
+
+    原本 approve_overtime 用 query parameter 接 rejection_reason，會把駁回原因
+    寫進 proxy/CDN/access log；approved_by 也可被外部覆寫。新增 body schema 後
+    新前端應改用 body；查詢字串保留作向後相容 fallback。
+    """
+
+    approved: bool = True
+    rejection_reason: Optional[str] = None
 
 
 class OvertimeBatchApproveRequest(BaseModel):
@@ -801,6 +906,11 @@ def create_overtime(
                 ),
             )
 
+        # 修補 2026-05-11 P1-5：跨類重疊檢查（避免同日扣款 + 加班費雙重溢付）
+        _check_employee_has_conflicting_leave(
+            session, data.employee_id, data.overtime_date, start_dt, end_dt
+        )
+
         _check_monthly_overtime_cap(
             session, data.employee_id, data.overtime_date, data.hours
         )
@@ -860,9 +970,12 @@ def update_overtime(
     """更新加班記錄。若記錄已核准，修改後自動退回「待審核」狀態以符合稽核要求。"""
     session = get_session()
     try:
+        # 列鎖（修補 2026-05-11 P0-3）：與 approve 路徑對齊，防止並發 update+approve
+        # 在補休配額 / overtime_pay 重算間產生 lost update。
         ot = (
             session.query(OvertimeRecord)
             .filter(OvertimeRecord.id == overtime_id)
+            .with_for_update()
             .first()
         )
         if not ot:
@@ -969,7 +1082,7 @@ def update_overtime(
             # 封住 caller commit 與 engine 重新 acquire lock 之間 finalize 搶先封存舊薪資的 race。
 
             lock_and_premark_stale(session, ot.employee_id, recalculation_months)
-            _revoke_comp_leave_grant(session, ot)
+            _revoke_comp_leave_grant(session, ot, current_user=current_user)
 
         update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
@@ -1089,9 +1202,12 @@ def delete_overtime(
     """刪除加班記錄"""
     session = get_session()
     try:
+        # 列鎖（修補 2026-05-11 P0-3）：與 approve 路徑對齊，防止並發 delete+approve race
+        # 在補休配額退還階段 lost update。
         ot = (
             session.query(OvertimeRecord)
             .filter(OvertimeRecord.id == overtime_id)
+            .with_for_update()
             .first()
         )
         if not ot:
@@ -1116,7 +1232,7 @@ def delete_overtime(
             # commit→recalc 鎖延伸 + pre-mark stale（同 update_overtime 註解）
 
             lock_and_premark_stale(session, employee_id, {overtime_month})
-            _revoke_comp_leave_grant(session, ot)
+            _revoke_comp_leave_grant(session, ot, current_user=current_user)
         session.delete(ot)
         session.commit()
 
@@ -1161,6 +1277,8 @@ def delete_overtime(
 def approve_overtime(
     overtime_id: int,
     request: Request,
+    data: Optional[OvertimeApproveRequest] = Body(None),
+    # 以下為向後相容 query parameter；新前端應改用 body（修補 2026-05-11 P1-6）
     approved: bool = True,
     approved_by: str = "管理員",
     rejection_reason: Optional[str] = None,
@@ -1172,7 +1290,13 @@ def approve_overtime(
     （≥3 字），對齊 leaves / punch_corrections 既有要求；避免管理員惡意
     零原因駁回他人加班費。reason 落 ApprovalLog.comment（OvertimeRecord
     無 rejection_reason 欄位）。
+
+    P1-6 修補（2026-05-11）：body 優先；無 body 才回退 query parameter。
     """
+    # body 優先：新前端走 body，rejection_reason 不再寫進 URL log
+    if data is not None:
+        approved = data.approved
+        rejection_reason = data.rejection_reason
     # 駁回必填原因（schema 也驗一次，雙保險）
     if not approved:
         cleaned = (rejection_reason or "").strip()
@@ -1230,7 +1354,7 @@ def approve_overtime(
                 {(ot.overtime_date.year, ot.overtime_date.month)},
             )
         if not approved and was_approved:
-            _revoke_comp_leave_grant(session, ot)
+            _revoke_comp_leave_grant(session, ot, current_user=current_user)
 
         # ── 核准最後一致性驗證 ───────────────────────────────────────────────
         # 建立路徑（管理端 create、portal、import）都有這些檢查，但舊資料、import
@@ -1405,16 +1529,6 @@ def batch_approve_overtimes(
                     _check_salary_month_not_finalized(
                         session, ot.employee_id, ot.overtime_date
                     )
-                    # commit→recalc 鎖延伸：取 per-emp salary lock 並 pre-mark stale,
-                    # 統一 commit (line 1462) 後即使 finalize 搶到鎖也會被 stale 守衛擋下。
-
-                    lock_and_premark_stale(
-                        session,
-                        ot.employee_id,
-                        {(ot.overtime_date.year, ot.overtime_date.month)},
-                    )
-                if not data.approved and was_approved:
-                    _revoke_comp_leave_grant(session, ot)
 
                 # 核准最後一致性驗證，防止舊資料 / import 舊版遺留壞紀錄進入薪資
                 if data.approved and not was_approved:
@@ -1460,22 +1574,52 @@ def batch_approve_overtimes(
                         session, ot.overtime_date, ot.overtime_type
                     )
 
+                is_reject_of_approved = was_approved and not data.approved
+                # Pass 1 純驗證收集；setattr/lock/log/grant 全部移到 Pass 2。
+                changes.append(
+                    (
+                        ot_id,
+                        ot,
+                        was_approved,
+                        is_reject_of_approved,
+                        None,  # approval_log_row.id placeholder
+                    )
+                )
+            except HTTPException as he:
+                failed.append({"id": ot_id, "reason": he.detail})
+            except Exception as e:
+                session.rollback()
+                failed.append({"id": ot_id, "reason": str(e)})
+                session.expire_all()
+
+        # ── Pass 2：套用 setattr + lock + grant + ApprovalLog ────────────
+        applied = []
+        for ot_id, ot, was_approved, is_reject_of_approved, _ph in list(changes):
+            try:
+                if data.approved or was_approved:
+                    # commit→recalc 鎖延伸：取 per-emp salary lock 並 pre-mark stale。
+                    lock_and_premark_stale(
+                        session,
+                        ot.employee_id,
+                        {(ot.overtime_date.year, ot.overtime_date.month)},
+                    )
+                if not data.approved and was_approved:
+                    _revoke_comp_leave_grant(session, ot, current_user=current_user)
+
                 ot.is_approved = data.approved
                 ot.approved_by = (
                     current_user.get("username", "管理員") if data.approved else None
                 )
 
                 if data.approved:
-                    # 使用共用 helper 統一配額發放邏輯（含 with_for_update() 列鎖），
-                    # 避免批次與單筆核准在補休配額累積的 race condition。
+                    # 使用共用 helper 統一配額發放邏輯（含 with_for_update() 列鎖）。
                     _grant_comp_leave_quota(session, ot, {})
 
                 action = "approved" if data.approved else "rejected"
                 approval_log_row = _write_approval_log(
                     "overtime", ot_id, action, current_user, None, session
                 )
-                is_reject_of_approved = was_approved and not data.approved
-                changes.append(
+                applied.append(
                     (
                         ot_id,
                         ot,
@@ -1485,10 +1629,20 @@ def batch_approve_overtimes(
                     )
                 )
             except Exception as e:
+                logger.exception("批次核准 Pass 2 套用階段意外失敗（加班 #%d）", ot_id)
                 session.rollback()
+                for prev_id, *_rest in applied:
+                    failed.append(
+                        {
+                            "id": prev_id,
+                            "reason": f"同批後續條目失敗導致整批回滾：{e}",
+                        }
+                    )
                 failed.append({"id": ot_id, "reason": str(e)})
-                # 驗證階段失敗需清除 session 狀態，重新載入後續記錄
-                session.expire_all()
+                applied = []
+                break
+
+        changes = applied
 
         # ── Phase 2：所有驗證通過後統一 commit ──────────────────────────────
         if changes:

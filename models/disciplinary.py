@@ -45,7 +45,7 @@ class DisciplinaryAction(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     employee_id = Column(
-        Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
+        Integer, ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False
     )
 
     action_date = Column(Date, nullable=False, comment="懲處發生日")

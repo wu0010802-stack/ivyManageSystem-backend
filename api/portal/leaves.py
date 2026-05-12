@@ -47,7 +47,12 @@ from ._shared import (
     LEAVE_TYPE_LABELS,
     SubstituteRespond,
 )
-from api.leaves import _check_overlap, _check_substitute_leave_conflict
+from api.leaves import (
+    _check_employee_has_conflicting_overtime,
+    _check_overlap,
+    _check_substitute_leave_conflict,
+    _guard_leave_quota,
+)
 from utils.file_upload import validate_file_signature
 from api.leaves_workday import (
     _calc_shift_hours,
@@ -257,6 +262,16 @@ def create_my_leave(
                 detail=f"您在 {overlap.start_date} ~ {overlap.end_date} 已有已核准的請假記錄，無法重複請假",
             )
 
+        # 修補 2026-05-11 P1-5：跨類重疊（同日加班 vs 請假）
+        _check_employee_has_conflicting_overtime(
+            session,
+            emp.id,
+            data.start_date,
+            data.end_date,
+            data.start_time,
+            data.end_time,
+        )
+
         validate_leave_hours_against_schedule(
             session,
             emp.id,
@@ -307,23 +322,19 @@ def create_my_leave(
             data.start_date,
             data.leave_hours,
         )
-        # 補休配額由加班核准動態累積，LeaveQuota 不存在代表 0；
-        # _check_quota 對非 QUOTA_LEAVE_TYPES 直接 return，會放過超額補休。
-        if data.leave_type == "compensatory":
-            _check_compensatory_quota(
-                session,
-                emp.id,
-                data.start_date.year,
-                data.leave_hours,
-            )
-        else:
-            _check_quota(
-                session,
-                emp.id,
-                data.leave_type,
-                data.start_date.year,
-                data.leave_hours,
-            )
+        # 走 _guard_leave_quota 統一分流：
+        # - sick → assert_sick_leave_within_statutory_caps（雙桶：未住院 240h/住院 2080h/合計 2080h）
+        # - compensatory → _check_compensatory_quota（LeaveQuota 不存在代表 0）
+        # - 其他 → _check_quota
+        # 修補 2026-05-11 P0-2：portal 原本只走 _check_quota，sick 雙桶完全繞過。
+        _guard_leave_quota(
+            session,
+            emp.id,
+            data.leave_type,
+            data.start_date.year,
+            data.leave_hours,
+            bool(getattr(data, "is_hospitalized", False)),
+        )
 
         effective_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]
         leave = LeaveRecord(
