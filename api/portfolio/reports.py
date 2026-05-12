@@ -1,0 +1,448 @@
+"""Growth report admin API.
+
+Endpoints:
+- POST /api/students/{student_id}/growth-reports           觸發生成（async via BackgroundTasks）
+- GET  /api/students/{student_id}/growth-reports           列出
+- GET  /api/students/{student_id}/growth-reports/{rid}     單筆狀態查詢
+- GET  /api/students/{student_id}/growth-reports/{rid}/download  下載 PDF
+- DELETE /api/students/{student_id}/growth-reports/{rid}   刪除（含檔案）
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import date, datetime
+from pathlib import Path
+from typing import Optional
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+
+from models.database import (
+    ActivityRegistration,
+    Student,
+    StudentAssessment,
+    StudentAttendance,
+    StudentGrowthReport,
+    StudentMeasurement,
+    StudentMilestone,
+    StudentObservation,
+    session_scope,
+)
+from models.portfolio import (
+    REPORT_STATUS_FAILED,
+    REPORT_STATUS_GENERATING,
+    REPORT_STATUS_PENDING,
+    REPORT_STATUS_READY,
+)
+from services.growth_report_collector import (
+    measurements_to_series,
+    pick_highlight_observations,
+    summarize_attendance,
+)
+from services.growth_report_pdf import generate_growth_report_pdf
+from utils.auth import require_permission
+from utils.errors import raise_safe_500
+from utils.permissions import Permission
+from utils.portfolio_access import assert_student_access
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/students", tags=["portfolio-growth-reports"])
+
+REPORT_ROOT = Path(os.environ.get("GROWTH_REPORT_ROOT", "instance/growth_reports"))
+
+class GenerateReportPayload(BaseModel):
+    period_label: str = Field(..., min_length=1, max_length=40)
+    period_start: date
+    period_end: date
+    teacher_narrative: Optional[str] = Field(default=None, max_length=5000)
+
+
+def _row_to_dict(r: StudentGrowthReport) -> dict:
+    return {
+        "id": r.id,
+        "student_id": r.student_id,
+        "period_label": r.period_label,
+        "period_start": r.period_start.isoformat() if r.period_start else None,
+        "period_end": r.period_end.isoformat() if r.period_end else None,
+        "status": r.status,
+        "file_size": r.file_size,
+        "error_message": r.error_message,
+        "generated_by": r.generated_by,
+        "generated_at": r.generated_at.isoformat() if r.generated_at else None,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "line_sent_at": r.line_sent_at.isoformat() if r.line_sent_at else None,
+        "parent_first_viewed_at": (
+            r.parent_first_viewed_at.isoformat() if r.parent_first_viewed_at else None
+        ),
+        "parent_view_count": r.parent_view_count,
+        "teacher_narrative": r.teacher_narrative,
+    }
+
+
+def _collect_report_data(
+    session,
+    student: Student,
+    period_start: date,
+    period_end: date,
+    report: StudentGrowthReport,
+) -> dict:
+    """聚合 period 內所有資料，組成 PDF 生成器接受的 dict."""
+    from models.database import Classroom
+
+    classroom_obj = (
+        session.query(Classroom).filter_by(id=student.classroom_id).first()
+        if student.classroom_id
+        else None
+    )
+    classroom_name = classroom_obj.name if classroom_obj else None
+
+    att_rows = (
+        session.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id == student.id,
+            StudentAttendance.date >= period_start,
+            StudentAttendance.date <= period_end,
+        )
+        .all()
+    )
+    att_records = [{"date": a.date, "status": a.status} for a in att_rows]
+
+    obs_rows = (
+        session.query(StudentObservation)
+        .filter(
+            StudentObservation.student_id == student.id,
+            StudentObservation.deleted_at.is_(None),
+            StudentObservation.observation_date >= period_start,
+            StudentObservation.observation_date <= period_end,
+        )
+        .all()
+    )
+
+    ms_rows = (
+        session.query(StudentMilestone)
+        .filter(
+            StudentMilestone.student_id == student.id,
+            StudentMilestone.deleted_at.is_(None),
+            StudentMilestone.achieved_on >= period_start,
+            StudentMilestone.achieved_on <= period_end,
+        )
+        .order_by(StudentMilestone.achieved_on.asc())
+        .all()
+    )
+
+    measurement_rows = (
+        session.query(StudentMeasurement)
+        .filter(
+            StudentMeasurement.student_id == student.id,
+            StudentMeasurement.measured_on >= period_start,
+            StudentMeasurement.measured_on <= period_end,
+        )
+        .order_by(StudentMeasurement.measured_on.asc())
+        .all()
+    )
+
+    assessment_rows = (
+        session.query(StudentAssessment)
+        .filter(
+            StudentAssessment.student_id == student.id,
+            StudentAssessment.assessment_date >= period_start,
+            StudentAssessment.assessment_date <= period_end,
+        )
+        .all()
+    )
+
+    activity_rows = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.student_id == student.id,
+            ActivityRegistration.created_at >= period_start,
+            ActivityRegistration.created_at <= period_end,
+        )
+        .all()
+    )
+
+    return {
+        "student": {
+            "name": student.name,
+            "student_no": student.student_id,
+            "classroom_name": classroom_name,
+            "birthday": student.birthday,
+        },
+        "report": {
+            "period_label": report.period_label,
+            "period_start": report.period_start,
+            "period_end": report.period_end,
+            "report_id": report.id,
+            "teacher_narrative": report.teacher_narrative,
+            "generated_on": date.today(),
+        },
+        "attendance_summary": summarize_attendance(att_records),
+        "highlight_observations": pick_highlight_observations(obs_rows, max_count=5),
+        "milestones": [
+            {
+                "title": m.title,
+                "achieved_on": m.achieved_on.isoformat() if m.achieved_on else "",
+                "icon": m.icon or "",
+            }
+            for m in ms_rows
+        ],
+        "measurement_series": measurements_to_series(measurement_rows),
+        "assessments": [
+            {
+                "domain": a.domain,
+                "rating": a.rating,
+                "comment": a.content or "",
+            }
+            for a in assessment_rows
+        ],
+        "activities": [
+            {
+                "name": f"報名 #{r.id}",
+                "registered_at": (
+                    r.created_at.date().isoformat() if r.created_at else ""
+                ),
+            }
+            for r in activity_rows
+        ],
+        "institution_name": "義華幼兒園",
+    }
+
+
+def _generate_pdf_job(report_id: int) -> None:
+    """Background job：撈資料 → 生 PDF → 寫檔 → 更新 status."""
+    try:
+        with session_scope() as session:
+            report = session.query(StudentGrowthReport).filter_by(id=report_id).first()
+            if not report:
+                logger.warning("PDF job: report %d not found", report_id)
+                return
+            report.status = REPORT_STATUS_GENERATING
+            session.flush()
+
+            student = session.query(Student).filter_by(id=report.student_id).first()
+            if not student:
+                report.status = REPORT_STATUS_FAILED
+                report.error_message = "Student not found"
+                return
+
+            data = _collect_report_data(
+                session, student, report.period_start, report.period_end, report
+            )
+            pdf_bytes = generate_growth_report_pdf(report_data=data)
+
+            student_dir = REPORT_ROOT / str(student.id)
+            student_dir.mkdir(parents=True, exist_ok=True)
+            path = student_dir / f"{report.id}.pdf"
+            path.write_bytes(pdf_bytes)
+
+            report.status = REPORT_STATUS_READY
+            # store as relative to cwd for portability
+            try:
+                report.file_path = str(path.resolve().relative_to(Path.cwd()))
+            except ValueError:
+                report.file_path = str(path.resolve())
+            report.file_size = len(pdf_bytes)
+            report.generated_at = datetime.utcnow()
+            logger.info("PDF report %d ready: %s", report.id, path)
+    except Exception as e:
+        logger.exception("PDF generation failed for report %d", report_id)
+        try:
+            with session_scope() as session:
+                r = session.query(StudentGrowthReport).filter_by(id=report_id).first()
+                if r:
+                    r.status = REPORT_STATUS_FAILED
+                    r.error_message = str(e)[:1000]
+        except Exception:
+            logger.exception("Failed to mark report %d as failed", report_id)
+
+
+def _resolve_pdf_path(file_path: str) -> Path:
+    """Resolve stored relative path back to absolute."""
+    p = Path(file_path)
+    return p if p.is_absolute() else (Path.cwd() / p)
+
+
+@router.post("/{student_id}/growth-reports", status_code=201)
+async def create_growth_report(
+    student_id: int,
+    payload: GenerateReportPayload,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_PUBLISH)),
+) -> dict:
+    try:
+        if payload.period_start > payload.period_end:
+            raise HTTPException(
+                status_code=422, detail="period_start 必須早於 period_end"
+            )
+        with session_scope() as session:
+            assert_student_access(session, current_user, student_id)
+            student = session.query(Student).filter_by(id=student_id).first()
+            if not student:
+                raise HTTPException(status_code=404, detail="學生不存在")
+            # generated_by → employees.id（從 users.employee_id 取，nullable 安全）
+            from models.auth import User as _AuthUser
+
+            _auth_user = (
+                session.query(_AuthUser)
+                .filter_by(id=current_user.get("user_id"))
+                .first()
+            )
+            _emp_id = _auth_user.employee_id if _auth_user else None
+            r = StudentGrowthReport(
+                student_id=student_id,
+                period_label=payload.period_label,
+                period_start=payload.period_start,
+                period_end=payload.period_end,
+                teacher_narrative=payload.teacher_narrative,
+                generated_by=_emp_id,
+                status=REPORT_STATUS_PENDING,
+            )
+            session.add(r)
+            session.flush()
+            session.refresh(r)
+            report_id = r.id
+            row_dict = _row_to_dict(r)
+            request.state.audit_entity_id = str(student_id)
+            request.state.audit_summary = (
+                f"建立成長報告：student_id={student_id} report_id={report_id} "
+                f"period={payload.period_label}"
+            )
+        background_tasks.add_task(_generate_pdf_job, report_id)
+        logger.info("growth report queued: student=%d report=%d", student_id, report_id)
+        return row_dict
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="建立成長報告失敗")
+
+
+@router.get("/{student_id}/growth-reports")
+async def list_growth_reports(
+    student_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
+) -> dict:
+    try:
+        with session_scope() as session:
+            assert_student_access(session, current_user, student_id)
+            rows = (
+                session.query(StudentGrowthReport)
+                .filter(StudentGrowthReport.student_id == student_id)
+                .order_by(StudentGrowthReport.created_at.desc())
+                .offset(skip)
+                .limit(limit)
+                .all()
+            )
+            return {"items": [_row_to_dict(r) for r in rows]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="查詢成長報告列表失敗")
+
+
+@router.get("/{student_id}/growth-reports/{report_id}")
+async def get_growth_report(
+    student_id: int,
+    report_id: int,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
+) -> dict:
+    try:
+        with session_scope() as session:
+            assert_student_access(session, current_user, student_id)
+            r = (
+                session.query(StudentGrowthReport)
+                .filter_by(id=report_id, student_id=student_id)
+                .first()
+            )
+            if not r:
+                raise HTTPException(status_code=404, detail="報告不存在")
+            return _row_to_dict(r)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="查詢成長報告失敗")
+
+
+@router.get("/{student_id}/growth-reports/{report_id}/download")
+async def download_growth_report(
+    student_id: int,
+    report_id: int,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
+) -> FileResponse:
+    try:
+        with session_scope() as session:
+            assert_student_access(session, current_user, student_id)
+            r = (
+                session.query(StudentGrowthReport)
+                .filter_by(id=report_id, student_id=student_id)
+                .first()
+            )
+            if not r:
+                raise HTTPException(status_code=404, detail="報告不存在")
+            if r.status != REPORT_STATUS_READY or not r.file_path:
+                raise HTTPException(
+                    status_code=409, detail=f"報告尚未準備好（status={r.status}）"
+                )
+            path = _resolve_pdf_path(r.file_path)
+            if not path.exists():
+                raise HTTPException(status_code=410, detail="報告檔案已遺失")
+            return FileResponse(
+                str(path),
+                media_type="application/pdf",
+                filename=f"growth_report_{r.id}.pdf",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="下載報告失敗")
+
+
+@router.delete("/{student_id}/growth-reports/{report_id}", status_code=204)
+async def delete_growth_report(
+    student_id: int,
+    report_id: int,
+    request: Request,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_PUBLISH)),
+) -> Response:
+    try:
+        with session_scope() as session:
+            assert_student_access(session, current_user, student_id)
+            r = (
+                session.query(StudentGrowthReport)
+                .filter_by(id=report_id, student_id=student_id)
+                .first()
+            )
+            if not r:
+                raise HTTPException(status_code=404, detail="報告不存在")
+            if r.file_path:
+                path = _resolve_pdf_path(r.file_path)
+                try:
+                    if path.exists():
+                        path.unlink()
+                except Exception:
+                    logger.exception("刪 PDF 檔失敗: %s", path)
+            session.delete(r)
+            request.state.audit_entity_id = str(student_id)
+            request.state.audit_summary = (
+                f"刪除成長報告：student_id={student_id} report_id={report_id}"
+            )
+            return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="刪除報告失敗")
+

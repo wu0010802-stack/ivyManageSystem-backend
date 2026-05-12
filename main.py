@@ -87,6 +87,7 @@ from api.attachments import (
 )
 from api.portfolio import (
     auto_milestone_router,
+    growth_reports_router,
     measurements_router,
     milestones_router,
     observations_router,
@@ -611,6 +612,7 @@ app.include_router(measurements_router)
 app.include_router(milestones_router)
 app.include_router(timeline_router)
 app.include_router(auto_milestone_router)
+app.include_router(growth_reports_router)
 app.include_router(student_health_router)
 # 家長入口
 app.include_router(parent_portal_router)
