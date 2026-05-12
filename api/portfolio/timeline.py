@@ -14,11 +14,18 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from models.database import StudentMilestone, session_scope
+from models.database import (
+    StudentMeasurement,
+    StudentMilestone,
+    StudentObservation,
+    session_scope,
+)
 from services.timeline_aggregator import (
     SOURCE_TYPES,
     decode_cursor,
+    measurement_to_timeline_item,
     milestone_to_timeline_item,
+    observation_to_timeline_item,
     sort_and_paginate,
 )
 from utils.auth import require_permission
@@ -51,6 +58,31 @@ def _fetch_milestones(session, student_id, since, until) -> list[dict]:
     return [milestone_to_timeline_item(r) for r in rows]
 
 
+def _fetch_measurements(session, student_id, since, until) -> list[dict]:
+    q = session.query(StudentMeasurement).filter(
+        StudentMeasurement.student_id == student_id
+    )
+    if since:
+        q = q.filter(StudentMeasurement.measured_on >= since)
+    if until:
+        q = q.filter(StudentMeasurement.measured_on <= until)
+    rows = q.order_by(StudentMeasurement.measured_on.desc()).limit(100).all()
+    return [measurement_to_timeline_item(r) for r in rows]
+
+
+def _fetch_observations(session, student_id, since, until) -> list[dict]:
+    q = session.query(StudentObservation).filter(
+        StudentObservation.student_id == student_id,
+        StudentObservation.deleted_at.is_(None),
+    )
+    if since:
+        q = q.filter(StudentObservation.observation_date >= since)
+    if until:
+        q = q.filter(StudentObservation.observation_date <= until)
+    rows = q.order_by(StudentObservation.observation_date.desc()).limit(100).all()
+    return [observation_to_timeline_item(r) for r in rows]
+
+
 def _by_type_count(items: list[dict]) -> dict[str, int]:
     out: dict[str, int] = {}
     for it in items:
@@ -81,7 +113,10 @@ async def get_timeline(
 
             if "milestone" in requested_types:
                 all_items.extend(_fetch_milestones(session, student_id, since, until))
-            # 後續 task 會在這加上其他來源
+            if "measurement" in requested_types:
+                all_items.extend(_fetch_measurements(session, student_id, since, until))
+            if "observation" in requested_types:
+                all_items.extend(_fetch_observations(session, student_id, since, until))
 
             paginated = sort_and_paginate(all_items, limit=limit)
             return {

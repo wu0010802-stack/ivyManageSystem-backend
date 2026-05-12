@@ -83,6 +83,53 @@ def milestone_to_timeline_item(m) -> dict:
     }
 
 
+def measurement_to_timeline_item(m) -> dict:
+    parts = []
+    if m.height_cm is not None:
+        parts.append(f"身高 {m.height_cm} cm")
+    if m.weight_kg is not None:
+        parts.append(f"體重 {m.weight_kg} kg")
+    if m.head_circumference_cm is not None:
+        parts.append(f"頭圍 {m.head_circumference_cm} cm")
+    if m.vision_left is not None or m.vision_right is not None:
+        left = m.vision_left if m.vision_left is not None else "—"
+        right = m.vision_right if m.vision_right is not None else "—"
+        parts.append(f"視力 L{left}/R{right}")
+    summary = "、".join(parts) if parts else (m.note or "")
+    title = parts[0] if parts else "量測紀錄"
+    return {
+        "id": f"measurement-{m.id}",
+        "type": "measurement",
+        "occurred_at": _date_iso(m.measured_on),
+        "title": title,
+        "summary": _truncate(summary),
+        "icon": SOURCE_ICONS["measurement"],
+        "is_highlight": False,
+        "raw_ref": {"router": "measurements", "id": m.id},
+        "extra": {
+            "height_cm": str(m.height_cm) if m.height_cm is not None else None,
+            "weight_kg": str(m.weight_kg) if m.weight_kg is not None else None,
+        },
+    }
+
+
+def observation_to_timeline_item(o) -> dict:
+    return {
+        "id": f"observation-{o.id}",
+        "type": "observation",
+        "occurred_at": _date_iso(o.observation_date),
+        "title": f"觀察記錄（{o.domain}）" if o.domain else "教師觀察",
+        "summary": _truncate(o.narrative),
+        "icon": SOURCE_ICONS["observation"],
+        "is_highlight": bool(o.is_highlight),
+        "raw_ref": {"router": "observations", "id": o.id},
+        "extra": {
+            "domain": o.domain,
+            "rating": o.rating,
+        },
+    }
+
+
 def sort_and_paginate(items: list[dict], *, limit: int = 30) -> dict:
     """合併多源排序後分頁。Sort key: (occurred_at desc, type asc, id desc)."""
     sorted_items = sorted(

@@ -161,3 +161,44 @@ def test_timeline_date_range_filter(app_client):
     titles = [i["title"] for i in resp.json()["items"]]
     assert "新里程碑" in titles
     assert "舊里程碑" not in titles
+
+
+def test_timeline_includes_measurements(app_client):
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.database import StudentMeasurement
+
+        session.add(
+            StudentMeasurement(
+                student_id=1,
+                measured_on=date.today(),
+                height_cm=110.5,
+                weight_kg=18.2,
+            )
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline")
+    items = resp.json()["items"]
+    assert any(it["type"] == "measurement" for it in items)
+
+
+def test_timeline_includes_observations(app_client):
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.database import StudentObservation
+
+        session.add(
+            StudentObservation(
+                student_id=1,
+                observation_date=date.today(),
+                narrative="測試觀察",
+                domain="認知",
+                is_highlight=True,
+            )
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline")
+    items = resp.json()["items"]
+    obs_items = [it for it in items if it["type"] == "observation"]
+    assert len(obs_items) == 1
+    assert obs_items[0]["is_highlight"] is True
