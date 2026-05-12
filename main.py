@@ -88,6 +88,7 @@ from api.attachments import (
 from api.portfolio import (
     auto_milestone_router,
     growth_reports_router,
+    init_growth_reports_line_service,
     measurements_router,
     milestones_router,
     observations_router,
@@ -531,6 +532,7 @@ init_dismissal_line_service(line_service)
 init_activity_services(line_service)
 init_portal_notify_services(line_service)
 init_announcement_line_service(line_service)
+init_growth_reports_line_service(line_service)
 init_webhook_service(line_service)
 init_gov_report_services(insurance_service)
 init_bonus_preview_services(salary_engine)

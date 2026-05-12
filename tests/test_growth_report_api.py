@@ -222,3 +222,49 @@ def test_download_409_if_not_ready(app_client):
     resp = client.get(f"/api/students/1/growth-reports/{rid}/download")
     assert resp.status_code == 409
 
+
+# ── Task 6: LINE send ──────────────────────────────────────────────────────
+
+
+def test_send_line_when_no_binding_returns_409(app_client):
+    """無 LINE 綁定 → 409."""
+    client, _, _ = app_client
+    create = client.post(
+        "/api/students/1/growth-reports",
+        json={
+            "period_label": "Z",
+            "period_start": "2026-01-01",
+            "period_end": "2026-03-31",
+        },
+    )
+    rid = create.json()["id"]
+    # Wait until report is ready before testing send-line
+    for _ in range(50):
+        st = client.get(f"/api/students/1/growth-reports/{rid}").json()
+        if st["status"] in ("ready", "failed"):
+            break
+        time.sleep(0.1)
+    resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
+    assert resp.status_code == 409
+
+
+def test_send_line_when_not_ready_returns_409(app_client):
+    client, session_factory, _ = app_client
+    create = client.post(
+        "/api/students/1/growth-reports",
+        json={
+            "period_label": "W",
+            "period_start": "2026-01-01",
+            "period_end": "2026-03-31",
+        },
+    )
+    rid = create.json()["id"]
+    # Force status back to pending
+    with session_factory() as session:
+        from models.database import StudentGrowthReport
+
+        r = session.query(StudentGrowthReport).filter_by(id=rid).first()
+        r.status = "pending"
+        session.commit()
+    resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
+    assert resp.status_code == 409

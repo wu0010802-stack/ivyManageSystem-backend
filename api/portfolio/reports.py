@@ -62,11 +62,25 @@ router = APIRouter(prefix="/api/students", tags=["portfolio-growth-reports"])
 
 REPORT_ROOT = Path(os.environ.get("GROWTH_REPORT_ROOT", "instance/growth_reports"))
 
+# Module-level LINE service (injected via init_growth_reports_line_service)
+_line_service = None
+
+
+def init_growth_reports_line_service(svc) -> None:
+    """由 main.py 注入 LINE service 單例。"""
+    global _line_service
+    _line_service = svc
+
+
 class GenerateReportPayload(BaseModel):
     period_label: str = Field(..., min_length=1, max_length=40)
     period_start: date
     period_end: date
     teacher_narrative: Optional[str] = Field(default=None, max_length=5000)
+
+
+class SendLinePayload(BaseModel):
+    message: Optional[str] = Field(default=None, max_length=500)
 
 
 def _row_to_dict(r: StudentGrowthReport) -> dict:
@@ -446,3 +460,71 @@ async def delete_growth_report(
     except Exception as e:
         raise_safe_500(e, context="刪除報告失敗")
 
+
+@router.post("/{student_id}/growth-reports/{report_id}/send-line")
+async def send_growth_report_to_line(
+    student_id: int,
+    report_id: int,
+    payload: SendLinePayload,
+    request: Request,
+    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_PUBLISH)),
+) -> dict:
+    """推送報告通知給該學生綁定家長 LINE."""
+    try:
+        with session_scope() as session:
+            assert_student_access(session, current_user, student_id)
+            r = (
+                session.query(StudentGrowthReport)
+                .filter_by(id=report_id, student_id=student_id)
+                .first()
+            )
+            if not r:
+                raise HTTPException(status_code=404, detail="報告不存在")
+            if r.status != REPORT_STATUS_READY:
+                raise HTTPException(status_code=409, detail="報告尚未準備好")
+
+            from models.database import Guardian
+            from models.auth import User as _UserModel
+
+            line_user_ids_q = (
+                session.query(_UserModel.line_user_id)
+                .join(Guardian, Guardian.user_id == _UserModel.id)
+                .filter(
+                    Guardian.student_id == student_id,
+                    Guardian.deleted_at.is_(None),
+                    _UserModel.line_user_id.isnot(None),
+                )
+                .all()
+            )
+            line_user_ids = [row[0] for row in line_user_ids_q if row[0]]
+            if not line_user_ids:
+                raise HTTPException(status_code=409, detail="該學生家長未綁定 LINE")
+
+            if _line_service is None:
+                raise HTTPException(status_code=503, detail="LINE 服務尚未初始化")
+
+            base_text = (
+                payload.message
+                or f"您孩子的成長報告（{r.period_label}）已備好，"
+                f"請至家長 App 查看下載。"
+            )
+            sent_count = 0
+            for uid in line_user_ids:
+                ok = _line_service._push_to_user(uid, base_text)
+                if ok:
+                    sent_count += 1
+
+            r.line_sent_at = datetime.utcnow()
+            request.state.audit_entity_id = str(student_id)
+            request.state.audit_summary = (
+                f"LINE 推送成長報告：student_id={student_id} report_id={report_id} "
+                f"to {sent_count}/{len(line_user_ids)} 位家長"
+            )
+            return {
+                "sent_count": sent_count,
+                "line_sent_at": r.line_sent_at.isoformat(),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="LINE 推送失敗")
