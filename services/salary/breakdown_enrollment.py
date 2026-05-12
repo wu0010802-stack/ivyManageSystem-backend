@@ -9,7 +9,8 @@ from typing import Optional
 
 from sqlalchemy.orm import Session, joinedload
 
-from models.classroom import Classroom, Student
+from models.classroom import Classroom
+from services.student_enrollment import count_students_active_on
 
 
 def compute_enrollment_breakdown(
@@ -26,6 +27,13 @@ def compute_enrollment_breakdown(
             "enrollment": { snapshot_date, total, classroom_id, classroom_name, grade_name } | None,
             "assistant":  { by_classroom: [str, ...] } | None,
         }
+
+    Note: this helper issues up to 3 small queries per call (one for head
+    classroom + grade, one for student count, one for assistant classrooms).
+    For batch use cases (e.g. salary records list iterating up to 500 rows),
+    callers should preload `Classroom` rows and `classroom_student_count_map`
+    once per request and adapt to a batch shape; see
+    services/salary/engine.py:3093-3108 for the existing preload pattern.
     """
     head_classroom = (
         session.query(Classroom)
@@ -40,14 +48,7 @@ def compute_enrollment_breakdown(
 
     enrollment = None
     if head_classroom is not None:
-        total = (
-            session.query(Student)
-            .filter(
-                Student.classroom_id == head_classroom.id,
-                Student.is_active.is_(True),
-            )
-            .count()
-        )
+        total = count_students_active_on(session, target_date, head_classroom.id)
         grade_name = head_classroom.grade.name if head_classroom.grade else None
         enrollment = {
             "snapshot_date": target_date.isoformat(),

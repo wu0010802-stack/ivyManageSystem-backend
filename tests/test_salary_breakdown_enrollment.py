@@ -1,5 +1,4 @@
 from datetime import date
-import pytest
 
 from models.classroom import Classroom, ClassGrade, Student
 from models.employee import Employee
@@ -45,16 +44,15 @@ def _make_classroom(session, name, grade_id, head_id=None, asst_id=None, art_id=
     return c
 
 
-def _make_students(session, classroom_id, n=23, active=True):
-    prefix = "S" if active else "X"
+def _make_students(session, classroom_id, n=23):
     for i in range(n):
         s = Student(
-            student_id=f"{prefix}{classroom_id}{i:03d}",
+            student_id=f"S{classroom_id}{i:03d}",
             name=f"學生{i}",
             classroom_id=classroom_id,
-            is_active=active,
+            is_active=True,
             enrollment_date=date(2025, 8, 1),
-            lifecycle_status="active" if active else "withdrawn",
+            lifecycle_status="active",
         )
         session.add(s)
     session.flush()
@@ -119,12 +117,26 @@ def test_compute_breakdown_non_teacher_returns_none(test_db_session):
 
 
 def test_compute_breakdown_inactive_students_excluded(test_db_session):
+    """Students graduated/withdrawn before target_date are excluded from count."""
     session = test_db_session
     grade = _make_grade(session)
     teacher = _make_teacher(session, code="T004", name="班導丁")
     classroom = _make_classroom(session, "大班 C", grade.id, head_id=teacher.id)
-    _make_students(session, classroom.id, n=20, active=True)
-    _make_students(session, classroom.id, n=3, active=False)
+    # 20 currently in
+    _make_students(session, classroom.id, n=20)
+    # 3 who graduated last year — should not count for May 2026 snapshot
+    for i in range(3):
+        s = Student(
+            student_id=f"G{classroom.id}{i:03d}",
+            name=f"已畢業{i}",
+            classroom_id=classroom.id,
+            is_active=True,  # is_active not used by the new helper
+            enrollment_date=date(2023, 8, 1),
+            graduation_date=date(2025, 7, 31),  # before target 2026-05-31
+            lifecycle_status="graduated",
+        )
+        session.add(s)
+    session.flush()
 
     result = compute_enrollment_breakdown(session, teacher.id, date(2026, 5, 31))
 
@@ -140,3 +152,26 @@ def test_compute_breakdown_no_grade_yields_null_grade_name(test_db_session):
     result = compute_enrollment_breakdown(session, teacher.id, date(2026, 5, 31))
 
     assert result["enrollment"]["grade_name"] is None
+
+
+def test_compute_breakdown_inactive_classroom_excluded(test_db_session):
+    """is_active=False classroom must not appear in enrollment or assistant."""
+    session = test_db_session
+    grade = _make_grade(session)
+    teacher = _make_teacher(session, code="T006", name="班導己")
+    # Head of an inactive classroom — should not count
+    c = Classroom(
+        name="廢棄班",
+        school_year=2026,
+        semester=1,
+        grade_id=grade.id,
+        head_teacher_id=teacher.id,
+        is_active=False,
+    )
+    session.add(c)
+    session.flush()
+    _make_students(session, c.id, n=15)
+
+    result = compute_enrollment_breakdown(session, teacher.id, date(2026, 5, 31))
+
+    assert result is None
