@@ -144,6 +144,7 @@ def _db_transition_call(
         call = (
             session.query(StudentDismissalCall)
             .filter(StudentDismissalCall.id == call_id)
+            .with_for_update()
             .first()
         )
         # F-006：「通知不存在」與「屬於別班」collapse 為單一 403 generic，
@@ -151,6 +152,8 @@ def _db_transition_call(
         # 422（own-class 但狀態不符）保留為合法業務流程錯誤，不算 enum oracle。
         if not call or call.classroom_id not in classroom_ids:
             raise HTTPException(status_code=403, detail="查無此通知或無權存取")
+        # 列鎖（bug sweep 2026-05-12 round 3）：兩位老師同時點 acknowledge / complete
+        # 同一筆通知時，無鎖會讓 acknowledged_by / completed_by 被後贏者覆蓋稽核軌跡。
         if call.status != required_status:
             raise HTTPException(
                 status_code=422,

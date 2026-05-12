@@ -317,10 +317,13 @@ def _db_cancel_dismissal_call(call_id: int, current_user: dict) -> tuple[dict, i
         call = (
             session.query(StudentDismissalCall)
             .filter(StudentDismissalCall.id == call_id)
+            .with_for_update()
             .first()
         )
         if not call:
             raise HTTPException(status_code=404, detail="找不到通知")
+        # 列鎖（bug sweep 2026-05-12 round 3）：cancel 與 portal 端 acknowledge/complete
+        # 競爭時，無鎖會讓狀態被後贏者覆蓋，且 status 檢查為 stale snapshot。
         if call.status not in ("pending", "acknowledged"):
             raise HTTPException(
                 status_code=422,
