@@ -136,6 +136,9 @@ ENTITY_PATTERNS = [
     # 教育部申報模組 Phase 1 — 身障/特教文件 CRUD 必須留 audit，
     # 否則鑑定證明異動（影響補助/IEP）會無稽核痕跡。
     (r"/api/gov-moe/disability-documents", "disability_document"),
+    (r"/api/gov-moe/certificates", "enrollment_certificate"),
+    (r"/api/gov-moe/subsidies", "special_subsidy"),
+    (r"/api/gov-moe/iep", "iep_record"),
     # 政府資料同步：promote/dismiss staging 寫入級距/基本工資（影響全員保費）；
     # sync-now 觸發 fetch。原 ENTITY_PATTERNS 漏，middleware 視為 entity_type=None
     # 整批跳過 audit。Refs: bug sweep round 4 (2026-05-12) DB 完整性檢查發現。
@@ -214,6 +217,10 @@ ENTITY_LABELS = {
     "auth": "登入活動",
     # 教育部申報 Phase 1
     "disability_document": "身障鑑定文件",
+    "enrollment_certificate": "在學證明",
+    "special_subsidy": "特教加給/助理鐘點費",
+    # 教育部申報 Phase 4A
+    "iep_record": "IEP 個別化教育計畫",
     # 政府資料同步（bug sweep round 4 2026-05-12 補）
     "gov_data_sync": "政府資料同步",
     # 學生輔導/招生（bug sweep round 4 2026-05-12 補）
