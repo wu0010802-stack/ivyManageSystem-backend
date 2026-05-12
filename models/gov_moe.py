@@ -82,8 +82,12 @@ class StudentIEPRecord(Base):
     final_evaluation = Column(Text, nullable=True)
     iep_team_members = Column(JSON, nullable=True)
     meeting_dates = Column(JSON, nullable=True)
-    created_by_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
-    approved_by_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    created_by_employee_id = Column(
+        Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
+    approved_by_employee_id = Column(
+        Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
@@ -107,7 +111,10 @@ class SpecialEducationSubsidy(Base):
         String(30), nullable=False, comment="teacher_extra / assistant_hourly"
     )
     employee_id = Column(
-        Integer, ForeignKey("employees.id"), nullable=False, index=True
+        Integer,
+        ForeignKey("employees.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
     related_student_ids = Column(JSON, nullable=True, comment="服務的身障幼生 id list")
     period_start = Column(Date, nullable=False)
@@ -150,17 +157,25 @@ class MonthlyEnrollmentSnapshot(Base):
         index=True,
     )
     age_group = Column(String(10), nullable=True, comment="2-3 / 3-4 / 4-5 / 5-6")
-    total_count = Column(Integer, default=0, server_default="0")
-    male_count = Column(Integer, default=0, server_default="0")
-    female_count = Column(Integer, default=0, server_default="0")
-    disadvantaged_count = Column(Integer, default=0, server_default="0")
-    disability_count = Column(Integer, default=0, server_default="0")
-    indigenous_count = Column(Integer, default=0, server_default="0")
-    foreign_count = Column(Integer, default=0, server_default="0")
-    expected_attendance_days = Column(Integer, default=0, server_default="0")
-    actual_attendance_days = Column(Integer, default=0, server_default="0")
+    total_count = Column(Integer, nullable=False, default=0, server_default="0")
+    male_count = Column(Integer, nullable=False, default=0, server_default="0")
+    female_count = Column(Integer, nullable=False, default=0, server_default="0")
+    disadvantaged_count = Column(Integer, nullable=False, default=0, server_default="0")
+    disability_count = Column(Integer, nullable=False, default=0, server_default="0")
+    indigenous_count = Column(Integer, nullable=False, default=0, server_default="0")
+    foreign_count = Column(Integer, nullable=False, default=0, server_default="0")
+    expected_attendance_days = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    actual_attendance_days = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     attendance_rate = Column(
-        Integer, default=0, server_default="0", comment="百分比×100 整數"
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="百分比×100 整數",
     )
     snapshot_date = Column(Date, nullable=True)
     generated_at = Column(DateTime, nullable=True)
