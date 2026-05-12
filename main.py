@@ -85,7 +85,7 @@ from api.attachments import (
     router as attachments_router,
     download_router as attachments_download_router,
 )
-from api.portfolio import observations_router
+from api.portfolio import measurements_router, observations_router
 from api.student_health import router as student_health_router
 from api.parent_portal import (
     parent_router as parent_portal_router,
@@ -601,6 +601,7 @@ app.include_router(health_router)
 app.include_router(attachments_router)
 app.include_router(attachments_download_router)
 app.include_router(observations_router)
+app.include_router(measurements_router)
 app.include_router(student_health_router)
 # 家長入口
 app.include_router(parent_portal_router)

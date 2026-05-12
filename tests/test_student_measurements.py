@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -31,6 +32,7 @@ def app_client(tmp_path, monkeypatch):
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
 
     @event.listens_for(engine, "connect")
@@ -89,7 +91,7 @@ def _make_test_token(role: str, user_id: int, username: str) -> str:
             "sub": username,
             "user_id": user_id,
             "role": role,
-            "permissions": ["PORTFOLIO_READ", "PORTFOLIO_WRITE"],
+            "permissions": -1,  # -1 = 全部權限
             "token_version": 0,
         }
     )
@@ -235,6 +237,15 @@ def test_teacher_cannot_access_other_class_student(app_client, monkeypatch):
                     name="李小華",
                     classroom_id=2,
                     lifecycle_status=LIFECYCLE_ACTIVE,
+                ),
+                User(
+                    id=10,
+                    username="teacher_a",
+                    password_hash="$2b$12$dummy",
+                    role="teacher",
+                    permissions=-1,
+                    is_active=True,
+                    token_version=0,
                 ),
             ]
         )
