@@ -33,6 +33,7 @@ from services.insurance_service import (
     PENSION_EMPLOYER_RATE,
 )
 from services.salary_engine import MONTHLY_BASE_DAYS
+from services.salary.constants import DEFAULT_MEETING_HOURS
 
 
 def _pct(value: float) -> str:
@@ -343,7 +344,10 @@ def _build_engine_config(engine: Any) -> dict:
         "deduction_rules": engine.deduction_rules,
         "attendance_policy": engine._attendance_policy,
         "school_wide_target": engine._school_wide_target,
-        "meeting_hours": engine._meeting_hours,
+        # meeting_hours：engine 不再持有此屬性（dead-read 清理 2026-05-11）；
+        # 實際建會議時數由 api/meetings.py 直讀 BonusConfig.meeting_default_hours。
+        # debug 頁面顯示模組常數作為 fallback（管理員想看實際使用值請開 BonusConfig）。
+        "meeting_hours": getattr(engine, "_meeting_hours", DEFAULT_MEETING_HOURS),
         "meeting_absence_penalty": engine._meeting_absence_penalty,
         "bonus_base": engine._bonus_base,
         "target_enrollment": engine._target_enrollment,

@@ -19,7 +19,12 @@ CURRENT_INSURANCE_YEAR = 2026
 
 @dataclass
 class InsuranceCalculation:
-    """勞健保計算結果"""
+    """勞健保計算結果
+
+    `insured_amount` 為向後相容的「單一投保金額」（= salary 對應級距），
+    分項投保（議題 B）啟用後，三制度各自實際扣繳基數可能不同，請使用
+    labor_insured_amount / health_insured_amount / pension_insured_amount。
+    """
 
     insured_amount: float
     salary_range: str
@@ -32,6 +37,10 @@ class InsuranceCalculation:
     pension_employee: float
     total_employee: float
     total_employer: float
+    # 議題 B：三制度各自的實際投保/提繳金額（已套上限 clamp + 級距 lookup）
+    labor_insured_amount: float = 0
+    health_insured_amount: float = 0
+    pension_insured_amount: float = 0
 
 
 # 2026年(115年)費率設定
@@ -766,16 +775,20 @@ class InsuranceService:
                 current,
             )
 
-    def load_brackets_from_db(self, year: int | None = None) -> bool:
+    def load_brackets_from_db(
+        self, year: int | None = None, *, strict: bool = False
+    ) -> bool:
         """從 DB insurance_brackets 載入級距表。
 
         Args:
             year: 指定年度；None=取當年。
+            strict: True=失敗 raise；False=silent fallback（log warning + 回 False）。
+                Admin CRUD 後的 reload 應該 strict=True，避免管理員以為 DB 已生效但
+                計算仍走 hardcode。Startup 路徑保持 strict=False 確保 fresh deploy
+                與測試可啟動。
         Returns:
             True=成功覆寫 self.table；False=DB 無資料或讀取失敗，沿用 hardcode。
-
-        失敗策略：DB 表不存在（migration 未跑）/ 該年度無資料時皆視為 silent fallback，
-        以保持測試與 fresh deploy 的可啟動性。仍會 log 供 ops 排查。
+            strict=True 時失敗會 raise 而非回 False。
         """
         if year is None:
             year = date.today().year
@@ -800,6 +813,9 @@ class InsuranceService:
                         .first()
                     )
                     if fallback_year is None:
+                        # 「DB 完全沒級距資料」是 admin 可能造成的合法狀態（清空所有年度
+                        # 或刪除某年最後一筆），不視為 exception，沿用 hardcode + log
+                        # 即可。strict=True 主要捕捉「DB 連線/import 失敗」等真正 exception。
                         logger.warning(
                             "insurance_brackets 無 effective_year<=%d 的資料，沿用 hardcode 級距表",
                             year,
@@ -829,11 +845,15 @@ class InsuranceService:
             finally:
                 session.close()
         except Exception:
+            # 真正的 exception（DB 連線失敗 / import 失敗 / SQL 錯誤等）
+            # strict=True 必須往外丟，否則 admin CRUD 寫入成功但 reload 失敗會被靜默吞掉
             logger.warning(
                 "load_brackets_from_db 失敗（year=%s），沿用 hardcode 級距表",
                 year,
                 exc_info=True,
             )
+            if strict:
+                raise
             return False
 
     def update_rates_from_db(self, rate_record) -> None:
@@ -917,11 +937,13 @@ class InsuranceService:
         bracket = self.get_bracket(salary)
         amount = bracket["amount"]
 
-        # 議題 B：三制度可獨立投保金額；None 沿用 salary。
-        # 各值皆先套各自上限 clamp，再查級距（與單一投保的行為一致）。
-        labor_amount = labor_insured if labor_insured is not None else salary
-        health_amount = health_insured if health_insured is not None else salary
-        pension_amount = pension_insured if pension_insured is not None else salary
+        # 議題 B：三制度可獨立投保金額；None 或 0 沿用 salary。
+        # Why 把 0 視同 None：前端 el-input-number 清欄可能 emit 0；若以 0 落入 get_bracket
+        # 會被 clamp 到最低級距（1500），導致員工保費被壓到月損上千。
+        # 業務語意上「分項投保=0」並無意義（保險級距無 0 元），故統一視為「沿用單一投保」。
+        labor_amount = labor_insured if labor_insured else salary
+        health_amount = health_insured if health_insured else salary
+        pension_amount = pension_insured if pension_insured else salary
         if labor_amount < 0 or health_amount < 0 or pension_amount < 0:
             raise ValueError("分項投保金額不可為負數")
 
@@ -980,4 +1002,7 @@ class InsuranceService:
             pension_employee=pension_emp,
             total_employee=labor_emp + health_emp + pension_emp,
             total_employer=labor_er + health_er + pension_er,
+            labor_insured_amount=labor_bracket["amount"],
+            health_insured_amount=health_bracket["amount"],
+            pension_insured_amount=pension_bracket["amount"],
         )

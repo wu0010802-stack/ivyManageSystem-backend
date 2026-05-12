@@ -98,6 +98,10 @@ class TestArtTeacherKeyPreserved:
 
 
 class TestMeetingDefaults:
+    """meeting_default_hours 由 api/meetings.py 直讀 BonusConfig（建會議時使用），
+    不流經 engine；engine 端僅保留 _meeting_absence_penalty（請假扣款用）。
+    """
+
     def test_default_meeting_hours_now_2(self):
         """模組常數從 1 改為 2（業主實務）"""
         assert DEFAULT_MEETING_HOURS == 2
@@ -105,60 +109,46 @@ class TestMeetingDefaults:
     def test_default_absence_penalty_unchanged(self):
         assert DEFAULT_MEETING_ABSENCE_PENALTY == 100
 
-    def test_engine_init_with_defaults(self):
+    def test_engine_init_with_absence_penalty_default(self):
         engine = SalaryEngine(load_from_db=False)
-        assert engine._meeting_hours == 2
         assert engine._meeting_absence_penalty == 100
 
-    def test_engine_load_overrides_with_db_values(self):
-        """模擬 DB 設了不同值（meeting_hours=3, penalty=200）→ engine 採用 DB 值"""
+    def test_engine_load_overrides_absence_penalty(self):
+        """模擬 DB 設了 penalty=200 → engine 採用 DB 值"""
         engine = SalaryEngine(load_from_db=False)
-        bonus = _fake_bonus(meeting_hours=3.0, meeting_penalty=200)
-        # reproduce 載入邏輯
-        if bonus.meeting_default_hours is not None:
-            engine._meeting_hours = float(bonus.meeting_default_hours)
+        bonus = _fake_bonus(meeting_penalty=200)
         if bonus.meeting_absence_penalty is not None:
             engine._meeting_absence_penalty = int(bonus.meeting_absence_penalty)
-        assert engine._meeting_hours == 3.0
         assert engine._meeting_absence_penalty == 200
 
-    def test_db_null_keeps_engine_defaults(self):
+    def test_db_null_keeps_engine_default(self):
         engine = SalaryEngine(load_from_db=False)
-        bonus = _fake_bonus(meeting_hours=None, meeting_penalty=None)
-        if bonus.meeting_default_hours is not None:
-            engine._meeting_hours = float(bonus.meeting_default_hours)
+        bonus = _fake_bonus(meeting_penalty=None)
         if bonus.meeting_absence_penalty is not None:
             engine._meeting_absence_penalty = int(bonus.meeting_absence_penalty)
-        assert engine._meeting_hours == 2  # 沿用 init default
         assert engine._meeting_absence_penalty == 100
 
 
-class TestSnapshotPreservesMeetingFields:
-    def test_snapshot_contains_meeting_fields(self):
+class TestSnapshotPreservesAbsencePenalty:
+    def test_snapshot_contains_absence_penalty(self):
         engine = SalaryEngine(load_from_db=False)
-        engine._meeting_hours = 2.5
         engine._meeting_absence_penalty = 150
         snapshot = engine._snapshot_config_state()
-        assert snapshot["meeting_hours"] == 2.5
         assert snapshot["meeting_absence_penalty"] == 150
+        # _meeting_hours 已從 engine 撤掉 (dead-read 清理 2026-05-11)
+        assert "meeting_hours" not in snapshot
 
-    def test_restore_recovers_meeting_fields(self):
+    def test_restore_recovers_absence_penalty(self):
         engine = SalaryEngine(load_from_db=False)
-        engine._meeting_hours = 2.0
         engine._meeting_absence_penalty = 100
         snap = engine._snapshot_config_state()
-        # 模擬 config_for_month 期間切換
-        engine._meeting_hours = 99.0
         engine._meeting_absence_penalty = 999
         engine._restore_config_state(snap)
-        assert engine._meeting_hours == 2.0
         assert engine._meeting_absence_penalty == 100
 
-    def test_old_snapshot_without_meeting_keys_no_crash(self):
-        """向後相容：舊 snapshot 沒這 2 個 key 不應 KeyError"""
+    def test_old_snapshot_without_penalty_key_no_crash(self):
+        """向後相容：舊 snapshot 沒這個 key 不應 KeyError"""
         engine = SalaryEngine(load_from_db=False)
         snap = engine._snapshot_config_state()
-        # 模擬舊 snapshot 缺 key
-        snap.pop("meeting_hours", None)
         snap.pop("meeting_absence_penalty", None)
         engine._restore_config_state(snap)  # 不應拋錯

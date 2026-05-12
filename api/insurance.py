@@ -332,9 +332,24 @@ async def upsert_brackets(
         # 級距表異動 → 該年所有未封存薪資全部標 stale
         stale_marked = _bulk_mark_salary_stale_for_year(session, payload.effective_year)
 
-    # session_scope 已 commit；reload 放 with 外，確保 service 看到最新狀態
+    # session_scope 已 commit；reload 放 with 外，確保 service 看到最新狀態。
+    # strict=True：admin 已寫入 DB，若 reload 失敗應 surface 5xx 讓前端知道，
+    # 避免管理員看到「儲存成功」但計算仍走舊 hardcode。
     if _insurance_service is not None:
-        _insurance_service.load_brackets_from_db(payload.effective_year)
+        try:
+            _insurance_service.load_brackets_from_db(
+                payload.effective_year, strict=True
+            )
+        except Exception as e:
+            logger.error("勞健保級距 reload 失敗", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "級距已寫入 DB，但 service reload 失敗："
+                    f"{type(e).__name__}: {e}。"
+                    "請聯絡 ops 確認；目前計算端仍使用 reload 前的級距表。"
+                ),
+            )
 
     logger.warning(
         "勞健保級距表變更：effective_year=%s, upserted=%d, replaced_existing=%s, "
@@ -417,7 +432,18 @@ async def delete_bracket(
         stale_marked = _bulk_mark_salary_stale_for_year(session, year)
 
     if _insurance_service is not None:
-        _insurance_service.load_brackets_from_db(year)
+        try:
+            _insurance_service.load_brackets_from_db(year, strict=True)
+        except Exception as e:
+            logger.error("勞健保級距 reload 失敗（delete 後）", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "級距已刪除，但 service reload 失敗："
+                    f"{type(e).__name__}: {e}。"
+                    "請聯絡 ops 確認；目前計算端仍使用 reload 前的級距表。"
+                ),
+            )
 
     logger.warning(
         "勞健保級距列刪除：bracket_id=%d, effective_year=%s, amount=%s, "

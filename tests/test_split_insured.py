@@ -83,11 +83,18 @@ class TestSplitInsured:
         with pytest.raises(ValueError):
             service.calculate(30000, labor_insured=-1)
 
-    def test_zero_split_treated_as_zero(self, service):
-        """0 視為「不投保」（級距表第一筆 1500 級距 → 277/458/90）"""
-        r = service.calculate(30000, labor_insured=0)
-        # 0 → bracket lookup 取第一個 ≥0 級距 = 1500
-        assert r.labor_employee == 277
+    def test_zero_split_treated_as_fallback(self, service):
+        """0 視為「沿用 salary」（與 None 同義）。
+
+        修補 2026-05-11 P1-7：前端 el-input-number 清欄可能 emit 0，若 0 被當「不投保」
+        會把員工 clamp 到最低 1500 級距，月損上千。業務語意上「分項投保=0」無意義
+        （保險級距無 0 元），故統一視為「沿用單一投保」。
+        """
+        r0 = service.calculate(30000, labor_insured=0)
+        rn = service.calculate(30000, labor_insured=None)
+        assert r0.labor_employee == rn.labor_employee
+        # salary=30000 對應 30300 級距
+        assert r0.labor_insured_amount == 30300
 
 
 class TestInsuredAmountField:

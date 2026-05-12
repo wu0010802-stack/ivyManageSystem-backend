@@ -290,7 +290,13 @@ def _resolve_insured(emp: Employee) -> int:
 
 
 def _ins_calc(emp: Employee):
-    """使用 InsuranceService fallback 計算（當月無 SalaryRecord 時）"""
+    """使用 InsuranceService fallback 計算（當月無 SalaryRecord 時）
+
+    必須把 Employee 特殊狀態 + 分項投保一併往下傳：
+    - no_employment_insurance/health_exempt：免就保/健保豁免會改變扣繳費率
+    - labor/health/pension_insured_salary：分項投保（如勞保 29500 vs 健保 30300）
+    漏傳會讓舊紀錄走 fallback 時送錯金額給勞健保局。
+    """
     if _insurance_service is None:
         return None
     salary = _resolve_insured(emp)
@@ -298,6 +304,11 @@ def _ins_calc(emp: Employee):
         salary,
         dependents=emp.dependents or 0,
         pension_self_rate=emp.pension_self_rate or 0,
+        no_employment_insurance=bool(getattr(emp, "no_employment_insurance", False)),
+        health_exempt=bool(getattr(emp, "health_exempt", False)),
+        labor_insured=getattr(emp, "labor_insured_salary", None),
+        health_insured=getattr(emp, "health_insured_salary", None),
+        pension_insured=getattr(emp, "pension_insured_salary", None),
     )
 
 
@@ -363,7 +374,9 @@ def export_labor_insurance(
                     labor_emp = round(calc.labor_employee)
                     labor_er = round(calc.labor_employer)
                     labor_gov = round(calc.labor_government)
-                    insured = int(calc.insured_amount)
+                    # 分項投保：勞保 section 要拿 labor_insured_amount，不要用 legacy
+                    # insured_amount（= 預設 salary 對應級距，可能與 labor 不同）
+                    insured = int(calc.labor_insured_amount or calc.insured_amount)
                 else:
                     labor_emp = labor_er = labor_gov = 0
 
@@ -558,13 +571,18 @@ def export_health_insurance(
                 health_emp = round(sr.health_insurance_employee or 0)
                 health_er = round(sr.health_insurance_employer or 0)
                 calc = _ins_calc(emp)
-                insured_amt = int(calc.insured_amount) if calc else insured
+                insured_amt = (
+                    int(calc.health_insured_amount or calc.insured_amount)
+                    if calc
+                    else insured
+                )
             else:
                 calc = _ins_calc(emp)
                 if calc:
                     health_emp = round(calc.health_employee)
                     health_er = round(calc.health_employer)
-                    insured_amt = int(calc.insured_amount)
+                    # 分項投保：健保 section 用 health_insured_amount
+                    insured_amt = int(calc.health_insured_amount or calc.insured_amount)
                 else:
                     health_emp = health_er = 0
                     insured_amt = insured
@@ -908,7 +926,8 @@ def export_pension(
                 if calc:
                     pension_er = round(calc.pension_employer)
                     pension_self = round(calc.pension_employee)
-                    insured = int(calc.insured_amount)
+                    # 分項投保：勞退 section 用 pension_insured_amount
+                    insured = int(calc.pension_insured_amount or calc.insured_amount)
                 else:
                     pension_er = pension_self = 0
 

@@ -209,14 +209,13 @@ def get_festival_bonus_period_accrual(
             monthly = []
             for y, m in passed_months:
                 ctx_cache = monthly_ctx_cache[(y, m)]
+                # 不帶 "classroom" key → engine.calculate_period_accrual_row 會以
+                # _resolve_classroom_for_employee_in_month(學期反查) 解析正確班級。
+                # 若塞 emp.classroom_id 對應的班級，跨學期換班場景預覽會與發放月實付
+                # 不一致（實付路徑走 _compute_period_accrual_totals + 學期反查）。
                 per_month_ctx = {
                     "session": session,
                     "employee": emp,
-                    "classroom": (
-                        ctx_cache["classroom_map"].get(emp.classroom_id)
-                        if emp.classroom_id
-                        else None
-                    ),
                     "school_active_students": ctx_cache["school_active"],
                     "classroom_count_map": ctx_cache["cls_count_map"],
                     "meeting_absent_count_map": ctx_cache.get(

@@ -308,8 +308,10 @@ class SalaryEngine:
         # 職稱→節慶獎金等級對應（DB 載入後覆蓋；初始為 hardcode POSITION_GRADE_MAP 副本）
         self._position_grade_map: dict = dict(POSITION_GRADE_MAP)
         # 園務會議設定
+        # _meeting_absence_penalty 由 engine 讀取（請假扣款用）；
+        # meeting_default_hours 不在 engine 內讀取，建會議的預設時數由 api/meetings.py
+        # 直接讀 BonusConfig.meeting_default_hours 落入 MeetingRecord.overtime_pay。
         self._meeting_absence_penalty = DEFAULT_MEETING_ABSENCE_PENALTY
-        self._meeting_hours = DEFAULT_MEETING_HOURS
         # 考勤政策設定（僅 festival_bonus_months 進入計算；其他欄位已 deprecated，
         # 詳見 deduction_rules 的說明 + services/salary/deduction.py）
         self._attendance_policy = {
@@ -347,7 +349,6 @@ class SalaryEngine:
             "target_enrollment": copy.deepcopy(self._target_enrollment),
             "overtime_target": copy.deepcopy(self._overtime_target),
             "attendance_policy": dict(self._attendance_policy),
-            "meeting_hours": self._meeting_hours,
             "meeting_absence_penalty": self._meeting_absence_penalty,
             "position_grade_map": dict(self._position_grade_map),
             # InsuranceService 的 instance 屬性
@@ -382,9 +383,7 @@ class SalaryEngine:
         self._target_enrollment = snapshot["target_enrollment"]
         self._overtime_target = snapshot["overtime_target"]
         self._attendance_policy = snapshot["attendance_policy"]
-        # 園規常數（KeyError 防禦：舊 snapshot 沒這兩個 key 時退回現值）
-        if "meeting_hours" in snapshot:
-            self._meeting_hours = snapshot["meeting_hours"]
+        # 園規常數（KeyError 防禦：舊 snapshot 沒 key 時退回現值）
         if "meeting_absence_penalty" in snapshot:
             self._meeting_absence_penalty = snapshot["meeting_absence_penalty"]
         # 職稱→等級對應（同步注入給 festival module cache，否則切換歷史月期間
@@ -463,8 +462,8 @@ class SalaryEngine:
             },
         }
         # 園規常數（NULL → 模組預設）
-        if bonus.meeting_default_hours is not None:
-            self._meeting_hours = float(bonus.meeting_default_hours)
+        # meeting_default_hours 不在這裡 sync 進 engine（engine 無讀取路徑），
+        # 它由 api/meetings.py 直接讀 BonusConfig 後寫入 MeetingRecord.overtime_pay。
         if bonus.meeting_absence_penalty is not None:
             self._meeting_absence_penalty = int(bonus.meeting_absence_penalty)
         self._supervisor_festival_bonus = {
@@ -1537,11 +1536,15 @@ class SalaryEngine:
         # （如總園長指示不薪轉、不作帳的特殊個案）。基本薪 + 勞健保仍正常計算。
         # 放在最後一步：所有 override / 期間累積 / 全勤條件都已套用後再短路歸零，
         # 避免漏蓋某條路徑導致仍發部分獎金。
+        # performance_bonus / special_bonus 由 employee dict 直接帶入（手動加項），
+        # 若漏蓋會繞過本短路，造成「設了 skip_payroll_bonuses 仍發績效/特別獎金」。
         if employee.get("skip_payroll_bonuses", False):
             breakdown.festival_bonus = 0
             breakdown.overtime_bonus = 0
             breakdown.supervisor_dividend = 0
             breakdown.birthday_bonus = 0
+            breakdown.performance_bonus = 0
+            breakdown.special_bonus = 0
 
     def _calculate_deductions(
         self,
