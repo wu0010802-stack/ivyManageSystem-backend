@@ -113,3 +113,65 @@ def test_observation_to_timeline_item():
     assert item["is_highlight"] is True
     assert item["extra"]["domain"] == "認知"
     assert item["extra"]["rating"] == 4
+
+
+def test_assessment_to_timeline_item():
+    from datetime import date
+
+    from services.timeline_aggregator import assessment_to_timeline_item
+
+    class _A:
+        id = 11
+        assessment_date = date(2026, 4, 1)
+        domain = "認知"
+        rating = "優"  # 實際 model 為 String（優/良/需加強）
+        content = "進步明顯"  # 實際 model 欄位為 content，非 comment
+
+    item = assessment_to_timeline_item(_A())
+    assert item["id"] == "assessment-11"
+    assert item["type"] == "assessment"
+    assert item["occurred_at"] == "2026-04-01"
+    assert "認知" in item["title"]
+    assert item["raw_ref"] == {"router": "assessments", "id": 11}
+    assert item["extra"]["domain"] == "認知"
+    assert item["extra"]["rating"] == "優"
+
+
+def test_incident_to_timeline_item():
+    from datetime import datetime
+
+    from services.timeline_aggregator import incident_to_timeline_item
+
+    class _I:
+        id = 13
+        occurred_at = datetime(2026, 5, 10, 14, 0)  # 實際 model 欄位為 occurred_at
+        incident_type = "意外受傷"  # 實際 model 欄位為 incident_type，非 title
+        description = "戶外活動時膝蓋擦傷"
+        severity = "輕微"
+
+    item = incident_to_timeline_item(_I())
+    assert item["id"] == "incident-13"
+    assert item["type"] == "incident"
+    assert item["occurred_at"] == "2026-05-10T14:00:00"
+    assert item["title"] == "意外受傷"
+    assert item["extra"]["severity"] == "輕微"
+
+
+def test_communication_to_timeline_item():
+    from datetime import date
+
+    from services.timeline_aggregator import communication_to_timeline_item
+
+    class _C:
+        id = 17
+        communication_date = date(2026, 5, 8)
+        topic = "詢問活動"  # 實際 model 欄位為 topic，非 subject
+        content = "下週活動內容？"
+        communication_type = "電話"
+
+    item = communication_to_timeline_item(_C())
+    assert item["id"] == "communication-17"
+    assert item["type"] == "communication"
+    assert item["occurred_at"] == "2026-05-08"
+    assert item["title"] == "詢問活動"
+    assert item["extra"]["communication_type"] == "電話"

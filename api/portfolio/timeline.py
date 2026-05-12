@@ -15,14 +15,22 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.database import (
+    StudentAssessment,
+    StudentAttendance,
+    StudentContactBookEntry,
+    StudentIncident,
     StudentMeasurement,
     StudentMilestone,
     StudentObservation,
     session_scope,
 )
+from models.student_log import ParentCommunicationLog
 from services.timeline_aggregator import (
     SOURCE_TYPES,
+    assessment_to_timeline_item,
+    communication_to_timeline_item,
     decode_cursor,
+    incident_to_timeline_item,
     measurement_to_timeline_item,
     milestone_to_timeline_item,
     observation_to_timeline_item,
@@ -83,6 +91,40 @@ def _fetch_observations(session, student_id, since, until) -> list[dict]:
     return [observation_to_timeline_item(r) for r in rows]
 
 
+def _fetch_assessments(session, student_id, since, until) -> list[dict]:
+    q = session.query(StudentAssessment).filter(
+        StudentAssessment.student_id == student_id
+    )
+    if since:
+        q = q.filter(StudentAssessment.assessment_date >= since)
+    if until:
+        q = q.filter(StudentAssessment.assessment_date <= until)
+    rows = q.order_by(StudentAssessment.assessment_date.desc()).limit(100).all()
+    return [assessment_to_timeline_item(r) for r in rows]
+
+
+def _fetch_incidents(session, student_id, since, until) -> list[dict]:
+    q = session.query(StudentIncident).filter(StudentIncident.student_id == student_id)
+    if since:
+        q = q.filter(StudentIncident.occurred_at >= since)
+    if until:
+        q = q.filter(StudentIncident.occurred_at <= until)
+    rows = q.order_by(StudentIncident.occurred_at.desc()).limit(100).all()
+    return [incident_to_timeline_item(r) for r in rows]
+
+
+def _fetch_communications(session, student_id, since, until) -> list[dict]:
+    q = session.query(ParentCommunicationLog).filter(
+        ParentCommunicationLog.student_id == student_id
+    )
+    if since:
+        q = q.filter(ParentCommunicationLog.communication_date >= since)
+    if until:
+        q = q.filter(ParentCommunicationLog.communication_date <= until)
+    rows = q.order_by(ParentCommunicationLog.communication_date.desc()).limit(100).all()
+    return [communication_to_timeline_item(r) for r in rows]
+
+
 def _by_type_count(items: list[dict]) -> dict[str, int]:
     out: dict[str, int] = {}
     for it in items:
@@ -117,6 +159,14 @@ async def get_timeline(
                 all_items.extend(_fetch_measurements(session, student_id, since, until))
             if "observation" in requested_types:
                 all_items.extend(_fetch_observations(session, student_id, since, until))
+            if "assessment" in requested_types:
+                all_items.extend(_fetch_assessments(session, student_id, since, until))
+            if "incident" in requested_types:
+                all_items.extend(_fetch_incidents(session, student_id, since, until))
+            if "communication" in requested_types:
+                all_items.extend(
+                    _fetch_communications(session, student_id, since, until)
+                )
 
             paginated = sort_and_paginate(all_items, limit=limit)
             return {

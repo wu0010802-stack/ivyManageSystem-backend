@@ -130,6 +130,64 @@ def observation_to_timeline_item(o) -> dict:
     }
 
 
+def assessment_to_timeline_item(a) -> dict:
+    domain = getattr(a, "domain", None)
+    content = getattr(a, "content", None) or getattr(a, "comment", None) or ""
+    return {
+        "id": f"assessment-{a.id}",
+        "type": "assessment",
+        "occurred_at": _date_iso(a.assessment_date),
+        "title": f"學期評量（{domain}）" if domain else "學期評量",
+        "summary": _truncate(content),
+        "icon": SOURCE_ICONS["assessment"],
+        "is_highlight": False,
+        "raw_ref": {"router": "assessments", "id": a.id},
+        "extra": {
+            "domain": domain,
+            "rating": getattr(a, "rating", None),
+        },
+    }
+
+
+def incident_to_timeline_item(i) -> dict:
+    occurred = (
+        getattr(i, "occurred_at", None)
+        or getattr(i, "incident_date", None)
+        or getattr(i, "created_at", None)
+    )
+    return {
+        "id": f"incident-{i.id}",
+        "type": "incident",
+        "occurred_at": _date_iso(occurred),
+        "title": getattr(i, "incident_type", None)
+        or getattr(i, "title", None)
+        or "事件記錄",
+        "summary": _truncate(getattr(i, "description", None)),
+        "icon": SOURCE_ICONS["incident"],
+        "is_highlight": False,
+        "raw_ref": {"router": "incidents", "id": i.id},
+        "extra": {"severity": getattr(i, "severity", None)},
+    }
+
+
+def communication_to_timeline_item(c) -> dict:
+    return {
+        "id": f"communication-{c.id}",
+        "type": "communication",
+        "occurred_at": _date_iso(
+            getattr(c, "communication_date", None) or getattr(c, "created_at", None)
+        ),
+        "title": getattr(c, "topic", None) or getattr(c, "subject", None) or "親師溝通",
+        "summary": _truncate(
+            getattr(c, "content", None) or getattr(c, "message", None)
+        ),
+        "icon": SOURCE_ICONS["communication"],
+        "is_highlight": False,
+        "raw_ref": {"router": "communications", "id": c.id},
+        "extra": {"communication_type": getattr(c, "communication_type", None)},
+    }
+
+
 def sort_and_paginate(items: list[dict], *, limit: int = 30) -> dict:
     """合併多源排序後分頁。Sort key: (occurred_at desc, type asc, id desc)."""
     sorted_items = sorted(

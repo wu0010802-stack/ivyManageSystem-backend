@@ -202,3 +202,67 @@ def test_timeline_includes_observations(app_client):
     obs_items = [it for it in items if it["type"] == "observation"]
     assert len(obs_items) == 1
     assert obs_items[0]["is_highlight"] is True
+
+
+def test_timeline_includes_assessments(app_client):
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.database import StudentAssessment
+
+        session.add(
+            StudentAssessment(
+                student_id=1,
+                semester="2025下",
+                assessment_type="期末",
+                domain="認知",
+                rating="優",
+                content="測試評量內容",  # 欄位為 content 非 comment
+                assessment_date=date.today(),
+            )
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline")
+    items = resp.json()["items"]
+    assert any(it["type"] == "assessment" for it in items)
+
+
+def test_timeline_includes_incidents(app_client):
+    from datetime import datetime
+
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.database import StudentIncident
+
+        session.add(
+            StudentIncident(
+                student_id=1,
+                incident_type="意外受傷",  # 欄位為 incident_type 非 title
+                severity="輕微",
+                occurred_at=datetime.now(),  # 欄位為 occurred_at
+                description="戶外活動時膝蓋擦傷",
+            )
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline?since=2020-01-01")
+    items = resp.json()["items"]
+    assert any(it["type"] == "incident" for it in items)
+
+
+def test_timeline_includes_communications(app_client):
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.student_log import ParentCommunicationLog
+
+        session.add(
+            ParentCommunicationLog(
+                student_id=1,
+                communication_date=date.today(),
+                communication_type="電話",
+                topic="家長詢問",  # 欄位為 topic 非 subject
+                content="詢問下週活動",
+            )
+        )
+        session.commit()
+    resp = client.get("/api/students/1/timeline")
+    items = resp.json()["items"]
+    assert any(it["type"] == "communication" for it in items)
