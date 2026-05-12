@@ -8,6 +8,7 @@ Pattern reference: .worktrees/moe-phase4/services/enrollment_certificate_pdf.py
 from __future__ import annotations
 
 import io
+import unicodedata
 from datetime import date
 from typing import Any
 
@@ -54,14 +55,28 @@ def _draw_kv_lines(
 
 
 def _draw_paragraph(c, text: str, y: float, max_chars_per_line: int = 38) -> float:
-    """簡易斷行 — reportlab 沒有 native paragraph，這裡按字數切。"""
-    text = (text or "").strip()
+    """簡易斷行 — reportlab 沒有 native paragraph，這裡按字數切。
+
+    處理：剝除控制字元（保留 \\n \\t）、尊重明確換行、再對長行按字寬切。
+    """
     if not text:
         return y
-    for start in range(0, len(text), max_chars_per_line):
-        chunk = text[start : start + max_chars_per_line]
-        c.drawString(20 * mm, y, chunk)
-        y -= 5 * mm
+    cleaned = "".join(
+        ch
+        for ch in str(text)
+        if ch in ("\n", "\t") or unicodedata.category(ch)[0] != "C"
+    ).strip()
+    if not cleaned:
+        return y
+    for raw_line in cleaned.split("\n"):
+        line = raw_line.rstrip()
+        if not line:
+            y -= 3 * mm
+            continue
+        for start in range(0, len(line), max_chars_per_line):
+            chunk = line[start : start + max_chars_per_line]
+            c.drawString(20 * mm, y, chunk)
+            y -= 5 * mm
     return y - 2 * mm
 
 

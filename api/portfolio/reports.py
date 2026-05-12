@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/students", tags=["portfolio-growth-reports"])
 
 REPORT_ROOT = Path(os.environ.get("GROWTH_REPORT_ROOT", "instance/growth_reports"))
+MAX_PDF_SIZE_BYTES = int(os.environ.get("GROWTH_REPORT_MAX_BYTES", 50 * 1024 * 1024))
 
 # Module-level LINE service (injected via init_growth_reports_line_service)
 _line_service = None
@@ -256,6 +257,18 @@ def _generate_pdf_job(report_id: int) -> None:
             )
             pdf_bytes = generate_growth_report_pdf(report_data=data)
 
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+                report.status = REPORT_STATUS_FAILED
+                report.error_message = (
+                    f"PDF 超過大小上限（{len(pdf_bytes)} > {MAX_PDF_SIZE_BYTES} bytes）"
+                )
+                logger.error(
+                    "growth report %d exceeds size cap: %d bytes",
+                    report.id,
+                    len(pdf_bytes),
+                )
+                return
+
             student_dir = REPORT_ROOT / str(student.id)
             student_dir.mkdir(parents=True, exist_ok=True)
             path = student_dir / f"{report.id}.pdf"
@@ -283,9 +296,20 @@ def _generate_pdf_job(report_id: int) -> None:
 
 
 def _resolve_pdf_path(file_path: str) -> Path:
-    """Resolve stored relative path back to absolute."""
+    """Resolve stored path to absolute, enforcing REPORT_ROOT containment.
+
+    Raises ValueError when the resolved path escapes REPORT_ROOT — defense in depth
+    against DB tampering / future code paths that might let user input reach file_path.
+    """
     p = Path(file_path)
-    return p if p.is_absolute() else (Path.cwd() / p)
+    candidate = p if p.is_absolute() else (Path.cwd() / p)
+    resolved = candidate.resolve()
+    root = REPORT_ROOT.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"report path outside REPORT_ROOT: {file_path}") from exc
+    return resolved
 
 
 @router.post("/{student_id}/growth-reports", status_code=201)
@@ -395,6 +419,7 @@ async def get_growth_report(
 async def download_growth_report(
     student_id: int,
     report_id: int,
+    request: Request,
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
 ) -> FileResponse:
     try:
@@ -411,9 +436,22 @@ async def download_growth_report(
                 raise HTTPException(
                     status_code=409, detail=f"報告尚未準備好（status={r.status}）"
                 )
-            path = _resolve_pdf_path(r.file_path)
+            try:
+                path = _resolve_pdf_path(r.file_path)
+            except ValueError:
+                logger.error(
+                    "growth report %d has illegal file_path: %r",
+                    report_id,
+                    r.file_path,
+                )
+                raise HTTPException(status_code=410, detail="報告檔案已遺失")
             if not path.exists():
                 raise HTTPException(status_code=410, detail="報告檔案已遺失")
+            request.state.audit_entity_id = str(student_id)
+            request.state.audit_summary = (
+                f"下載成長報告：student_id={student_id} report_id={report_id} "
+                f"period={r.period_label}"
+            )
             return FileResponse(
                 str(path),
                 media_type="application/pdf",
@@ -443,12 +481,18 @@ async def delete_growth_report(
             if not r:
                 raise HTTPException(status_code=404, detail="報告不存在")
             if r.file_path:
-                path = _resolve_pdf_path(r.file_path)
                 try:
+                    path = _resolve_pdf_path(r.file_path)
                     if path.exists():
                         path.unlink()
+                except ValueError:
+                    logger.error(
+                        "skip unlink for report %d: illegal file_path %r",
+                        report_id,
+                        r.file_path,
+                    )
                 except Exception:
-                    logger.exception("刪 PDF 檔失敗: %s", path)
+                    logger.exception("刪 PDF 檔失敗: %s", r.file_path)
             session.delete(r)
             request.state.audit_entity_id = str(student_id)
             request.state.audit_summary = (

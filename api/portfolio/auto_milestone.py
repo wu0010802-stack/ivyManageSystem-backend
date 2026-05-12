@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     Student,
@@ -126,9 +127,15 @@ async def auto_detect_milestones(
                     source_ref_id=p.get("source_ref_id"),
                     created_by=employee_id,
                 )
-                session.add(m)
-                session.flush()
-                created_count += 1
+                # SAVEPOINT so a concurrent insert hitting uq_milestone_dedup just
+                # bumps skipped_existing instead of poisoning the outer transaction.
+                try:
+                    with session.begin_nested():
+                        session.add(m)
+                        session.flush()
+                    created_count += 1
+                except IntegrityError:
+                    skipped_existing += 1
 
             if request:
                 request.state.audit_entity_id = str(student_id)

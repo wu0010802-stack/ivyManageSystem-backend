@@ -106,11 +106,27 @@ def _attachments_by_owner_ids(
     """批次取得多個 owner 的附件 dict（owner_id → list[dict]）。
 
     Audit G.P0.4：取代 list 端點對每筆 obs 各跑一次 _attachments_for_owner。
+
+    若 owner_type 為 observation，會在 helper 內部過濾掉已軟刪的 observation owner，
+    避免未來新 caller 直接呼叫時洩漏軟刪 owner 的附件。
     """
     from api.attachments import _attachment_to_dict  # 避免循環 import
 
     if not owner_ids:
         return {}
+    if owner_type == ATTACHMENT_OWNER_OBSERVATION:
+        live_ids = {
+            r[0]
+            for r in session.query(StudentObservation.id)
+            .filter(
+                StudentObservation.id.in_(owner_ids),
+                StudentObservation.deleted_at.is_(None),
+            )
+            .all()
+        }
+        owner_ids = [oid for oid in owner_ids if oid in live_ids]
+        if not owner_ids:
+            return {}
     rows = (
         session.query(Attachment)
         .filter(

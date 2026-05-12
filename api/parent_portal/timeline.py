@@ -78,7 +78,19 @@ async def parent_get_timeline(
     try:
         user_id = current_user["user_id"]
         requested_types = _parse_types(types)
-        _ = decode_cursor(cursor)  # parsed but multi-source cursor TBD
+        # Multi-source cursor pagination is TBD; signal "no more pages" rather than
+        # re-fetching head and looping the parent app (it drives loadMore on cursor).
+        if decode_cursor(cursor):
+            session = get_session()
+            try:
+                _assert_student_owned(session, current_user["user_id"], student_id)
+            finally:
+                session.close()
+            return {
+                "items": [],
+                "next_cursor": None,
+                "stats": {"total_items": 0, "by_type": {}},
+            }
         if not since:
             since = date.today() - timedelta(days=90)
 

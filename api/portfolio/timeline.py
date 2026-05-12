@@ -188,7 +188,16 @@ async def get_timeline(
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
             requested_types = _parse_types(types)
-            _ = decode_cursor(cursor)  # parsed but not yet used in single-source v1
+            # Multi-source cursor pagination is TBD; signal "no more pages" rather
+            # than re-fetching head and looping the client (frontend uses next_cursor
+            # to drive infinite scroll).
+            if decode_cursor(cursor):
+                return {
+                    "items": [],
+                    "next_cursor": None,
+                    "available_types": list(SOURCE_TYPES),
+                    "stats": {"total_items": 0, "by_type": {}},
+                }
             if not since:
                 since = date.today() - timedelta(days=90)
 
