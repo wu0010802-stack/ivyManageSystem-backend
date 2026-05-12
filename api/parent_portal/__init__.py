@@ -23,6 +23,7 @@ from .binding_admin import router as binding_admin_router
 from .calendar import router as calendar_router
 from .contact_book import router as contact_book_router
 from .growth_reports import router as growth_reports_router
+from .measurements import router as measurements_router
 from .milestones import router as milestones_router
 from .timeline import router as timeline_router
 from .events import router as events_router
@@ -65,6 +66,7 @@ parent_router.include_router(contact_book_router)
 parent_router.include_router(timeline_router)
 parent_router.include_router(growth_reports_router)
 parent_router.include_router(milestones_router)
+parent_router.include_router(measurements_router)
 
 
 # 行政端綁定碼 router（前綴 /api/guardians，需 GUARDIANS_WRITE）
