@@ -216,6 +216,9 @@ class RegistrationCourse(Base):
     promoted_at = Column(DateTime, nullable=True, comment="候補轉正起始時間")
     confirm_deadline = Column(DateTime, nullable=True, comment="家長確認截止時間")
     reminder_sent_at = Column(DateTime, nullable=True, comment="T-24h 提醒發送時間")
+    final_reminder_sent_at = Column(
+        DateTime, nullable=True, comment="T-6h 最後提醒發送時間"
+    )
 
     created_at = Column(DateTime, default=datetime.now)
 

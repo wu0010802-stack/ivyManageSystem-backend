@@ -466,3 +466,16 @@ class TestDeletePromotedPendingCascade:
         session.flush()
 
         assert rc_w.status == "promoted_pending"
+
+
+def test_final_reminder_sent_at_field_exists(session):
+    """final_reminder_sent_at 欄位應存在於 RegistrationCourse model。"""
+    rc = RegistrationCourse(
+        registration_id=1,
+        course_id=1,
+        status="promoted_pending",
+        price_snapshot=1000,
+        final_reminder_sent_at=None,
+    )
+    assert hasattr(rc, "final_reminder_sent_at")
+    assert rc.final_reminder_sent_at is None
