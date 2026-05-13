@@ -25,7 +25,6 @@ _batch_approve_limiter = SlidingWindowLimiter(
     name="leave_batch_approve",
     error_detail="批次審核操作過於頻繁，請稍後再試",
 ).as_dependency()
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.leave_validators import validate_leave_hours_value, validate_leave_date_order
 from sqlalchemy import or_, and_
@@ -2280,7 +2279,16 @@ def get_leave_attachment(
     filename: str,
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
 ):
-    """取得假單附件（管理後台）"""
+    """取得假單附件（管理後台）。
+
+    backend 為 local：直接 stream bytes（既有行為）
+    backend 為 supabase：302 redirect 到 signed URL（TTL 預設 1 小時）
+    """
+    import os
+
+    from fastapi.responses import RedirectResponse, Response as _Response
+    from utils.storage import LocalStorage, get_backend
+
     session = get_session()
     try:
         leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).first()
@@ -2291,10 +2299,17 @@ def get_leave_attachment(
         if filename not in paths:
             raise HTTPException(status_code=404, detail="找不到附件")
 
-        file_path = _safe_attach_path(leave_id, filename)
-        if not file_path.exists():
+        backend = get_backend()
+        key = f"{leave_id}/{filename}"
+        if not backend.exists(_UPLOAD_MODULE, key):
             raise HTTPException(status_code=404, detail="檔案不存在")
 
-        return FileResponse(str(file_path))
+        if isinstance(backend, LocalStorage):
+            data = backend.read(_UPLOAD_MODULE, key)
+            return _Response(content=data, media_type="application/octet-stream")
+
+        ttl = int(os.getenv("SUPABASE_STORAGE_SIGNED_URL_TTL", "3600"))
+        url = backend.signed_url(_UPLOAD_MODULE, key, ttl)
+        return RedirectResponse(url, status_code=302)
     finally:
         session.close()

@@ -18,16 +18,11 @@ from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.permissions import Permission
-from utils.storage import get_storage_path
 
 from ._shared import RegistrationTimeSettings
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _POSTER_MODULE = "activity_posters"
-
-
-def _poster_dir() -> Path:
-    return get_storage_path(_POSTER_MODULE)
 
 
 logger = logging.getLogger(__name__)
@@ -122,12 +117,23 @@ async def upload_activity_poster(
     # webp 無 magic bytes 條目，validate_file_signature 會略過；其餘會驗證
     validate_file_signature(content, ext)
 
-    poster_dir = _poster_dir()
-    stored_name = f"{uuid.uuid4().hex}{ext}"
-    file_path = poster_dir / stored_name
-    file_path.write_bytes(content)
+    from utils.storage import get_backend
 
-    poster_url = f"/api/activity/public/poster/{stored_name}"
+    backend = get_backend()
+
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    content_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }.get(ext, "application/octet-stream")
+    backend.save(_POSTER_MODULE, stored_name, content, content_type)
+
+    # 公開 URL：local 模式回 /api/activity/public/poster/<file>（不變）
+    #          supabase 模式回 https://<project>.supabase.co/.../activity-posters/<file>
+    poster_url = backend.public_url(_POSTER_MODULE, stored_name)
 
     session = get_session()
     try:
@@ -135,18 +141,20 @@ async def upload_activity_poster(
         if not settings:
             settings = ActivityRegistrationSettings()
             session.add(settings)
-        # 刪掉前一張避免 data 目錄無限長大
+        # 刪掉前一張避免儲存空間無限長大
         old = settings.poster_url
-        if old and old.startswith("/api/activity/public/poster/"):
-            old_name = old.rsplit("/", 1)[-1]
+        if old:
+            # 從舊 URL 反推檔名（兩種來源：/api/activity/public/poster/<file> 或 https://.../<file>）
+            old_name = old.rsplit("/", 1)[-1].split("?", 1)[0]
             # 只允許刪 hex + 已知副檔名，防穿越
-            if Path(old_name).suffix.lower() in _POSTER_ALLOWED_EXT:
-                old_path = poster_dir / old_name
-                if old_path.is_file():
-                    try:
-                        old_path.unlink()
-                    except OSError as e:
-                        logger.warning("刪除舊海報失敗：%s", e)
+            if (
+                Path(old_name).suffix.lower() in _POSTER_ALLOWED_EXT
+                and len(old_name) < 80
+            ):
+                try:
+                    backend.delete(_POSTER_MODULE, old_name)
+                except Exception as e:
+                    logger.warning("刪除舊海報失敗：%s", e)
         settings.poster_url = poster_url
         session.commit()
         logger.info("活動海報已更新：%s", stored_name)

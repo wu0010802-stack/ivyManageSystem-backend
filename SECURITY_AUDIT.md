@@ -409,3 +409,22 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 `appraisal_events.created_by` 歸檔（一般做法：在 events 表加 `created_by_archive`
 欄位、把 username 字串複本寫過去，再把 FK 設成「離職管理員」代理 id），
 這流程屬 HR + 法務 SOP，不由 schema 自動處理。
+
+---
+
+### F-STORAGE-001：Supabase Service Role Key 機敏處理（2026-05-13）
+
+**Status:** Open（隨上線同步處理）
+
+**Threat:** Service Role Key 等同 Supabase project root 權限。一旦外洩，攻擊者可讀寫所有 bucket、bypass RLS、刪除 DB 資料。
+
+**Context:** 物件儲存遷移 PR（feat/object-storage-migration-backend）引入 `utils/supabase_storage.py`，prod 模式下 backend container 需透過 `SUPABASE_SERVICE_ROLE_KEY` 連 Supabase Storage 寫入/取 signed URL。
+
+**Mitigation:**
+- Key 只放 backend container env var，不 commit 任何 repo
+- `.env.example` 僅放占位符與註解
+- 後端日誌不輸出 key 值（已用 `os.getenv` 不串接到 log）
+- 每 90 天輪替（見 `docs/sop/storage-deployment.md`）
+- 前端絕無存取 service role key 的需要（只用 anon/publishable key）
+
+**Verification:** `git grep -i "service_role\|SUPABASE_SERVICE"` 應只出現於 `.env.example`、`docs/sop/`、`SECURITY_AUDIT.md` 文件，不應有實際 key 值。

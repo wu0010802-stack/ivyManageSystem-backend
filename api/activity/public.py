@@ -12,20 +12,15 @@ import hashlib
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse, Response as PlainResponse
+from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from utils.errors import raise_safe_500
-from utils.storage import get_storage_path
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _POSTER_MODULE = "activity_posters"
-
-
-def _poster_dir() -> Path:
-    return get_storage_path(_POSTER_MODULE)
 
 
 _POSTER_MIME = {
@@ -150,8 +145,12 @@ async def get_public_registration_time(request: Request, response: Response):
 async def get_public_poster(filename: str, response: Response):
     """公開端點：回傳已上傳的活動海報圖。
 
-    防穿越：檔名只允許純 hex + 白名單副檔名，同時驗證檔案位於 _POSTER_DIR。
+    防穿越：檔名只允許純 hex + 白名單副檔名。
+    backend 為 local：直接 stream bytes；supabase：302 redirect 到 CDN URL。
     """
+    from fastapi.responses import RedirectResponse
+    from utils.storage import LocalStorage, get_backend
+
     path = Path(filename)
     if path.name != filename or ".." in filename or "/" in filename:
         raise HTTPException(status_code=400, detail="非法檔名")
@@ -164,17 +163,22 @@ async def get_public_poster(filename: str, response: Response):
     ):
         raise HTTPException(status_code=400, detail="非法檔名")
 
-    poster_dir = _poster_dir()
-    full_path = (poster_dir / filename).resolve()
-    try:
-        full_path.relative_to(poster_dir.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="非法路徑")
-    if not full_path.is_file():
+    backend = get_backend()
+    if not backend.exists(_POSTER_MODULE, filename):
         raise HTTPException(status_code=404, detail="海報不存在")
 
-    response.headers["Cache-Control"] = "public, max-age=300"
-    return FileResponse(str(full_path), media_type=_POSTER_MIME.get(ext, "image/*"))
+    if isinstance(backend, LocalStorage):
+        # local：直接吐 bytes 維持 e2e 測試簡單
+        data = backend.read(_POSTER_MODULE, filename)
+        return PlainResponse(
+            content=data,
+            media_type=_POSTER_MIME.get(ext, "image/*"),
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    # supabase：redirect 到 CDN URL（瀏覽器後續直接從 Supabase 拿）
+    url = backend.public_url(_POSTER_MODULE, filename)
+    return RedirectResponse(url, status_code=302)
 
 
 @router.get("/public/courses")
