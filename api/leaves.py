@@ -7,7 +7,7 @@ import logging
 import calendar as cal_module
 from pathlib import Path
 from datetime import date
-from typing import Optional, List
+from typing import Optional, List, Any
 from io import BytesIO
 
 import pandas as pd
@@ -53,6 +53,7 @@ from services.salary.finalize_guard import (
     assert_months_not_finalized,
 )
 from utils.excel_utils import xlsx_streaming_response
+from utils.excel_io import ExcelImportSchema, parse_excel
 from utils.import_utils import build_employee_lookup, resolve_employee_from_row
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.storage import get_storage_path
@@ -2107,6 +2108,23 @@ def get_leave_import_template(
     return xlsx_streaming_response(wb, "請假匯入範本.xlsx")
 
 
+class LeaveImportRow(ExcelImportSchema):
+    """請假匯入單列 schema（excel header 用中文 alias）。
+
+    僅負責「Excel 列 → 結構化資料」轉換；日期/時數/假別代碼的業務驗證
+    仍留在 endpoint（pandas 之前怎麼處理、現在保留相同行為）。
+    """
+
+    # employee_code 與 employee_name 兩者擇一即可由業務層 resolve_employee_from_row 判斷
+    employee_code: Optional[str] = Field(default=None, alias="員工編號")
+    employee_name: Optional[str] = Field(default=None, alias="員工姓名")
+    leave_type: Optional[str] = Field(default=None, alias="假別代碼")
+    start_date: Any = Field(default=None, alias="開始日期")
+    end_date: Any = Field(default=None, alias="結束日期")
+    leave_hours: Any = Field(default=None, alias="時數(可空)")
+    reason: Any = Field(default=None, alias="原因(可空)")
+
+
 @router.post("/leaves/import")
 async def import_leaves(
     file: UploadFile = File(...),
@@ -2115,25 +2133,48 @@ async def import_leaves(
     """批次匯入請假申請（建立草稿假單，is_approved=None，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, ".xlsx")
-    try:
-        df = pd.read_excel(BytesIO(content))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+
+    parse_result = parse_excel(BytesIO(content), schema=LeaveImportRow)
+    # 整檔級錯誤（INVALID_FILE / EMPTY_FILE / MISSING_COLUMN）→ 400，與既有行為一致
+    file_level_codes = {"INVALID_FILE", "EMPTY_FILE", "MISSING_COLUMN"}
+    file_level_errors = [
+        e for e in parse_result.errors if e["error_code"] in file_level_codes
+    ]
+    if file_level_errors:
+        # 取第一筆訊息維持訊息可讀性
+        msg = file_level_errors[0]["message"]
+        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{msg}")
 
     label_to_code = {v: k for k, v in LEAVE_TYPE_LABELS.items()}
 
     results: dict = {"total": 0, "created": 0, "failed": 0, "errors": []}
+    # 將 parse_excel 的 row-level errors（型別/缺欄）先映射回舊格式 "第 N 行: msg"
+    for err in parse_result.errors:
+        if err["error_code"] in file_level_codes:
+            continue
+        results["total"] += 1
+        results["failed"] += 1
+        results["errors"].append(f"第 {err['row']} 行: {err['message']}")
+
     session = get_session()
     try:
         emp_by_id, emp_by_name = build_employee_lookup(session)
 
-        for idx, row in df.iterrows():
+        for row_idx, row in enumerate(parse_result.rows, start=2):
             results["total"] += 1
-            row_num = int(idx) + 2
+            row_num = row_idx
             try:
-                emp = resolve_employee_from_row(row, emp_by_id, emp_by_name)
+                # resolve_employee_from_row 接受 dict-like / pandas Series；
+                # pydantic BaseModel 用 model_dump() 取得 dict 並補上原中文 keys。
+                row_dict = {
+                    "員工編號": row.employee_code,
+                    "員工姓名": row.employee_name,
+                }
+                emp = resolve_employee_from_row(row_dict, emp_by_id, emp_by_name)
 
-                leave_type_raw = str(row.get("假別代碼", "")).strip()
+                leave_type_raw = (
+                    str(row.leave_type).strip() if row.leave_type is not None else ""
+                )
                 if leave_type_raw in LEAVE_TYPE_LABELS:
                     leave_type = leave_type_raw
                 elif leave_type_raw in label_to_code:
@@ -2143,11 +2184,13 @@ async def import_leaves(
                         f"無效的假別代碼：{leave_type_raw}（請參考「假別代碼說明」頁）"
                     )
 
-                start_raw = row.get("開始日期")
-                end_raw = row.get("結束日期")
-                if pd.isna(start_raw) or pd.isna(end_raw):
+                start_raw = row.start_date
+                end_raw = row.end_date
+                if start_raw is None or end_raw is None:
                     raise ValueError("開始日期或結束日期不得為空")
                 try:
+                    # pd.to_datetime 對 str / datetime / Timestamp 均能 normalize，
+                    # 維持與舊 endpoint 完全相同的日期解析行為
                     start_date = pd.to_datetime(start_raw).date()
                     end_date = pd.to_datetime(end_raw).date()
                 except Exception:
@@ -2161,8 +2204,8 @@ async def import_leaves(
                 ):
                     raise ValueError("請假區間不可跨月，請拆成多筆分別匯入")
 
-                hours_raw = row.get("時數(可空)")
-                if hours_raw is None or pd.isna(hours_raw):
+                hours_raw = row.leave_hours
+                if hours_raw is None:
                     leave_hours = 8.0
                 else:
                     try:
@@ -2172,12 +2215,8 @@ async def import_leaves(
                     except (ValueError, TypeError):
                         leave_hours = 8.0
 
-                reason_raw = row.get("原因(可空)")
-                reason = (
-                    str(reason_raw).strip()
-                    if reason_raw is not None and not pd.isna(reason_raw)
-                    else None
-                )
+                reason_raw = row.reason
+                reason = str(reason_raw).strip() if reason_raw is not None else None
 
                 # 與管理端 / portal 建立假單相同：時數不得超過該區間排班工時，
                 # 且不得超過假別年度配額（含待審）。匯入跳過會讓單日 100h 這種
