@@ -482,20 +482,31 @@ async def app_lifespan(app_instance: FastAPI):
         logger.info("Application shutdown complete.")
 
 
+# 環境判斷需早於 FastAPI() 建構，docs/redoc/openapi 在 prod 預設關閉以避免
+# 完整 router/schema/權限欄位地圖被未認證者抓走（攻擊面地圖洩漏）。
+_env_name = os.environ.get("ENV", "development").lower()
+_is_prod_env = _env_name in ("production", "prod")
+_cors_env = os.environ.get("CORS_ORIGINS", "")
+_docs_force_enable = os.environ.get("ENABLE_API_DOCS", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_docs_enabled = _docs_force_enable or not _is_prod_env
+
 app = FastAPI(
     title="幼稚園考勤薪資系統",
     description="Kindergarten Payroll Management System API",
     version="2.0.0",
     lifespan=app_lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-
-_cors_env = os.environ.get("CORS_ORIGINS", "")
-_env_name = os.environ.get("ENV", "development").lower()
-_is_prod_env = _env_name in ("production", "prod")
 
 if _cors_env:
     CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]

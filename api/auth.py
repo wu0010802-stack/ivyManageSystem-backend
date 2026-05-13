@@ -540,6 +540,20 @@ def refresh_token(request: Request):
     寬限期內的過期 token 仍可刷新，超過則需重新登入。
     Token 來源：httpOnly Cookie 或 Authorization header。
     """
+    # 與 login 對稱：IP 滑動視窗限流，避免拿無效 token 壓 DB / 暴力試 jti。
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _check_ip_rate_limit(client_ip)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH_FAILED",
+            username=None,
+            user_id=None,
+            extras={"reason": "ip_rate_limited", "ip": client_ip},
+        )
+        raise
+
     # 從 Cookie 或 header 取得舊 token
     token = request.cookies.get("access_token")
     if not token:
@@ -896,6 +910,9 @@ def change_password(
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = False  # 使用者主動修改後清除強制旗標
+        # 與 reset_password 對齊：密碼變更後遞增 token_version，使所有現有 session
+        # 在下次 refresh 時即被拒絕；防止帳號疑似外洩後舊 token 在 grace 期內仍可用。
+        user.token_version = (user.token_version or 0) + 1
         session.commit()
         return {"message": "密碼修改成功"}
     except HTTPException:

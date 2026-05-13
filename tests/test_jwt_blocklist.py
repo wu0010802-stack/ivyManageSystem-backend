@@ -265,6 +265,47 @@ def test_refresh_rejects_logged_out_token(db):
     assert resp.status_code == 401
 
 
+def test_change_password_bumps_token_version(db):
+    """主動修改密碼後 token_version 必須遞增，舊 session 立即失效。
+
+    P1-2 修補目標：reset_password 已在 line 1000-1002 遞增 token_version，但
+    change_password 沒有；使用者懷疑帳號外洩主動改密碼後，原本所有有效 token
+    仍可在 grace 期內使用。
+    """
+    engine, session_factory = db
+    user_id = _make_user(session_factory, username="self_change_pw")
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    client = TestClient(app)
+
+    # 先登入拿 token
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"username": "self_change_pw", "password": "Pass123456"},
+    )
+    assert login_resp.status_code == 200
+    token = login_resp.cookies["access_token"]
+
+    with session_factory() as s:
+        before = s.query(User).filter(User.id == user_id).first().token_version or 0
+
+    resp = client.post(
+        "/api/auth/change-password",
+        cookies={"access_token": token},
+        json={"old_password": "Pass123456", "new_password": "BrandNewPass456"},
+    )
+    assert resp.status_code == 200, resp.json()
+
+    with session_factory() as s:
+        after = s.query(User).filter(User.id == user_id).first().token_version or 0
+    assert after == before + 1, f"token_version 應遞增；before={before} after={after}"
+
+    # 舊 token 應該無法再 refresh（token_version mismatch）
+    refresh_resp = client.post("/api/auth/refresh", cookies={"access_token": token})
+    assert refresh_resp.status_code == 401
+
+
 def test_old_token_without_jti_still_works_for_blocklist_check(db):
     """向後相容：直接寫 jose_jwt.encode 不帶 jti，is_token_revoked 應回 False。"""
     from jose import jwt as jose_jwt
