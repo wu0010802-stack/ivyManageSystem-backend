@@ -47,6 +47,15 @@ def _get_reminder_offset_hours() -> int:
         return 24
 
 
+def _get_final_reminder_offset_hours() -> int:
+    """T-6h 最後提醒的 deadline 前置時數。預設 6h。"""
+    try:
+        val = int(os.getenv("ACTIVITY_WAITLIST_FINAL_REMINDER_OFFSET_HOURS", "6"))
+        return val if val > 0 else 6
+    except (TypeError, ValueError):
+        return 6
+
+
 from models.activity import (
     ActivityCourse,
     ActivitySupply,
@@ -778,13 +787,12 @@ class ActivityService:
 
     def sweep_expired_pending_promotions(self, session) -> dict:
         """掃描過期未確認的 promoted_pending，逾期者刪除並遞補下一位；
-        同時發送 T-X 小時剩餘提醒（只發一次，以 reminder_sent_at 標註）。
+        同時發送 T-6h 最後提醒與 T-24h 一般提醒（各只發一次，以對應戳記標註）。
+        推送失敗時不寫戳記，下輪重試。
 
-        回傳 {"expired": N, "reminded": M}，由背景排程呼叫。
+        回傳 {"expired": N, "reminded": M, "final_reminded": K}，由背景排程呼叫。
         """
         now = _now_taipei_naive()
-        reminder_offset = timedelta(hours=_get_reminder_offset_hours())
-        reminder_threshold = now + reminder_offset
 
         # 1. 過期者：刪除 + 遞補
         expired_rows = (
@@ -839,7 +847,59 @@ class ActivityService:
             for _ in range(count):
                 self._auto_promote_first_waitlist(session, course_id)
 
-        # 2. 即將到期者：發剩餘時間提醒（只發一次）
+        # 2. T-6h 最後提醒（只發一次，推送成功才寫戳記）
+        final_reminder_offset = timedelta(hours=_get_final_reminder_offset_hours())
+        final_reminder_threshold = now + final_reminder_offset
+        final_reminder_rows = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.status == "promoted_pending",
+                RegistrationCourse.confirm_deadline.isnot(None),
+                RegistrationCourse.confirm_deadline >= now,
+                RegistrationCourse.confirm_deadline <= final_reminder_threshold,
+                RegistrationCourse.final_reminder_sent_at.is_(None),
+                ActivityRegistration.is_active.is_(True),
+            )
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+        final_reminded_count = 0
+        for rc, student_name in final_reminder_rows:
+            course = (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id == rc.course_id)
+                .first()
+            )
+            course_name = course.name if course else f"course_{rc.course_id}"
+            success = False
+            if self._line_svc is not None:
+                try:
+                    result = self._line_svc.notify_activity_waitlist_final_reminder(
+                        student_name or str(rc.registration_id),
+                        course_name,
+                        rc.confirm_deadline,
+                    )
+                    success = bool(result)
+                except Exception:
+                    logger.exception(
+                        "發送候補轉正最後提醒失敗 reg=%s course=%s",
+                        rc.registration_id,
+                        rc.course_id,
+                    )
+            else:
+                # 無 LINE 服務時視為不需發送，寫戳記避免重複查詢
+                success = True
+            if success:
+                rc.final_reminder_sent_at = now
+                final_reminded_count += 1
+
+        # 3. T-24h 一般提醒（只發一次，推送成功才寫戳記）
+        reminder_offset = timedelta(hours=_get_reminder_offset_hours())
+        reminder_threshold = now + reminder_offset
         reminder_rows = (
             session.query(RegistrationCourse, ActivityRegistration.student_name)
             .join(
@@ -854,6 +914,7 @@ class ActivityService:
                 RegistrationCourse.reminder_sent_at.is_(None),
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update(skip_locked=True)
             .all()
         )
         reminded_count = 0
@@ -864,23 +925,35 @@ class ActivityService:
                 .first()
             )
             course_name = course.name if course else f"course_{rc.course_id}"
+            success = False
             if self._line_svc is not None:
                 try:
-                    self._line_svc.notify_activity_waitlist_promotion_reminder(
+                    result = self._line_svc.notify_activity_waitlist_promotion_reminder(
                         student_name or str(rc.registration_id),
                         course_name,
                         rc.confirm_deadline,
                     )
+                    # notify_activity_waitlist_promotion_reminder 回傳 None（既有）
+                    # 視 None 或 True 為成功；False 為失敗
+                    success = result is None or bool(result)
                 except Exception:
                     logger.exception(
                         "發送候補轉正提醒失敗 reg=%s course=%s",
                         rc.registration_id,
                         rc.course_id,
                     )
-            rc.reminder_sent_at = now
-            reminded_count += 1
+            else:
+                # 無 LINE 服務時視為不需發送，寫戳記避免重複查詢
+                success = True
+            if success:
+                rc.reminder_sent_at = now
+                reminded_count += 1
 
-        return {"expired": expired_count, "reminded": reminded_count}
+        return {
+            "expired": expired_count,
+            "reminded": reminded_count,
+            "final_reminded": final_reminded_count,
+        }
 
     # ------------------------------------------------------------------ #
     # 軟刪除報名（含自動候補升位）

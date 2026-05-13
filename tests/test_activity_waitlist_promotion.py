@@ -327,7 +327,7 @@ class TestSweepExpired:
     def test_sweep_noop_when_nothing_pending(self, session, svc):
         _add_course(session)
         result = svc.sweep_expired_pending_promotions(session)
-        assert result == {"expired": 0, "reminded": 0}
+        assert result == {"expired": 0, "reminded": 0, "final_reminded": 0}
 
     def test_sweep_multiple_same_course_expired_all_replaced(self, session, svc):
         """同課 2 筆 pending 同時過期 → 應遞補 2 位（而非只補 1）"""
@@ -355,6 +355,64 @@ class TestSweepExpired:
         # P1/P2 被刪；W1/W2 各升 promoted_pending
         assert rc_w1.status == "promoted_pending"
         assert rc_w2.status == "promoted_pending"
+
+    def test_final_reminder_sent_when_within_6h(self, session, svc):
+        """剩餘 ≤ 6h 且 final_reminder_sent_at NULL 時應發送並寫戳記。"""
+        course = _add_course(session, capacity=1)
+        reg = _add_reg(session)
+        rc = _enroll(session, reg.id, course.id, status="promoted_pending")
+        rc.promoted_at = datetime.now() - timedelta(hours=42)
+        rc.confirm_deadline = datetime.now() + timedelta(hours=5)  # 剩 5h
+        rc.reminder_sent_at = datetime.now() - timedelta(hours=18)  # T-24h 已發
+        rc.final_reminder_sent_at = None
+        session.flush()
+
+        result = svc.sweep_expired_pending_promotions(session)
+        session.commit()
+
+        assert result["final_reminded"] == 1
+        session.refresh(rc)
+        assert rc.final_reminder_sent_at is not None
+
+    def test_final_reminder_not_resent(self, session, svc):
+        """final_reminder_sent_at 非 NULL 時不重發。"""
+        course = _add_course(session, capacity=1)
+        reg = _add_reg(session)
+        rc = _enroll(session, reg.id, course.id, status="promoted_pending")
+        rc.confirm_deadline = datetime.now() + timedelta(hours=3)
+        rc.final_reminder_sent_at = datetime.now() - timedelta(hours=1)
+        session.flush()
+
+        result = svc.sweep_expired_pending_promotions(session)
+        assert result["final_reminded"] == 0
+
+    def test_reminder_stamp_not_written_on_line_failure(
+        self, session, svc, monkeypatch
+    ):
+        """LINE 推送失敗時不應寫 final_reminder_sent_at（下輪重試）。"""
+        course = _add_course(session, capacity=1)
+        reg = _add_reg(session)
+        rc = _enroll(session, reg.id, course.id, status="promoted_pending")
+        rc.confirm_deadline = datetime.now() + timedelta(hours=4)
+        rc.reminder_sent_at = datetime.now()
+        session.flush()
+
+        class StubLineService:
+            def notify_activity_waitlist_final_reminder(self, *a, **kw):
+                return False  # 模擬推送失敗
+
+            def notify_activity_waitlist_promotion_reminder(self, *a, **kw):
+                return False
+
+            def notify_activity_waitlist_promotion_expired(self, *a, **kw):
+                return False
+
+        svc._line_svc = StubLineService()
+
+        result = svc.sweep_expired_pending_promotions(session)
+        session.refresh(rc)
+        assert rc.final_reminder_sent_at is None  # 失敗則不寫戳記
+        assert result["final_reminded"] == 0
 
 
 # ------------------------------------------------------------------ #
