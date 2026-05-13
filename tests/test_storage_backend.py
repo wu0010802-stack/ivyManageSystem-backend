@@ -89,3 +89,25 @@ def test_local_public_url_rejects_unknown_module(local_root):
     backend = LocalStorage()
     with pytest.raises(ValueError):
         backend.public_url("attendance_imports", "x.xlsx")
+
+
+def test_get_backend_default_is_local(local_root):
+    backend = get_backend()
+    assert isinstance(backend, LocalStorage)
+
+
+def test_get_backend_singleton_within_process(local_root):
+    b1 = get_backend()
+    b2 = get_backend()
+    assert b1 is b2
+
+
+def test_get_backend_invalid_value_raises(monkeypatch, tmp_path):
+    monkeypatch.setenv("STORAGE_BACKEND", "not_a_real_backend")
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    import utils.storage as storage_mod
+
+    storage_mod._BACKEND_SINGLETON = None
+
+    with pytest.raises(ValueError, match="未知的 STORAGE_BACKEND"):
+        get_backend()
