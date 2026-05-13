@@ -103,13 +103,22 @@ async def upload_attendance(
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, raw_ext)
 
-    file_path = _upload_dir() / f"{uuid.uuid4().hex}{raw_ext}"
+    import io
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    from utils.storage import get_backend
 
+    backend = get_backend()
+    stored_name = f"{uuid.uuid4().hex}{raw_ext}"
+    content_type = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if raw_ext == ".xlsx"
+        else "application/vnd.ms-excel"
+    )
+    backend.save(_UPLOAD_MODULE, stored_name, content, content_type)
+
+    # pandas 接受 BytesIO，不需要實體路徑；用記憶體 buffer 餵入避免本地檔依賴
     try:
-        df = pd.read_excel(file_path)
+        df = pd.read_excel(io.BytesIO(content))
         columns = df.columns.tolist()
 
         # 新格式：部門, 編號, 姓名, 日期, 星期, 上班時間, 下班時間
@@ -801,8 +810,11 @@ async def upload_attendance(
     except Exception as e:
         raise_safe_500(e, context="解析失敗")
     finally:
-        # 處理完畢後刪除暫存檔，無論成功或失敗
-        file_path.unlink(missing_ok=True)
+        # 處理完畢後刪除暫存（無論 local 或 supabase）
+        try:
+            backend.delete(_UPLOAD_MODULE, stored_name)
+        except Exception:
+            logger.warning("刪除考勤暫存檔失敗：%s", stored_name)
 
 
 @router.post("/upload-csv")
