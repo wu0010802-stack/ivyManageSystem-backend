@@ -27,6 +27,7 @@ from models.database import (
     StudentClassroomTransfer,
     StudentContactBookEntry,
     StudentIncident,
+    StudentMeasurement,
     get_session,
 )
 from models.portfolio import (
@@ -41,6 +42,13 @@ from utils.permissions import Permission
 from utils.portfolio_access import (
     can_view_student_health,
     can_view_student_special_needs,
+    is_unrestricted,
+)
+
+from models.classroom import (
+    LIFECYCLE_GRADUATED,
+    LIFECYCLE_TRANSFERRED,
+    LIFECYCLE_WITHDRAWN,
 )
 
 from ._shared import _get_employee, _get_teacher_classroom_ids
@@ -293,6 +301,115 @@ def get_my_students(
             "classrooms": result,
             "total_students": sum(c["student_count"] for c in result),
         }
+    finally:
+        session.close()
+
+
+# ────────────────────────────────────────────────────────────────────────
+# /api/portal/students/measurements-latest
+# ────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/students/measurements-latest")
+def get_students_measurements_latest(
+    current_user: dict = Depends(get_current_user),
+):
+    """回傳教師班級內所有學生 + 每位的「上次量測」摘要。
+
+    - 排除終態學生（graduated/withdrawn/transferred）
+    - 從未量測 → last_measurement = None
+    - 同日多筆 → 取 id 最大者
+    - 不分頁；單班通常 ≤ 30 人
+
+    用途：批次量測 sheet 的預填參考。
+    """
+    perms = int(current_user.get("permissions", 0) or 0)
+    if not (perms & int(Permission.PORTFOLIO_READ) or perms < 0):
+        raise HTTPException(status_code=403, detail="缺少 PORTFOLIO_READ 權限")
+
+    session = get_session()
+    try:
+        emp = _get_employee(session, current_user)
+        # admin/hr/supervisor 共用 is_unrestricted（與 utils/portfolio_access 統一定義）
+        if is_unrestricted(current_user):
+            student_query = session.query(Student).filter(
+                Student.is_active == True,  # noqa: E712
+                Student.lifecycle_status.notin_(
+                    [LIFECYCLE_GRADUATED, LIFECYCLE_WITHDRAWN, LIFECYCLE_TRANSFERRED]
+                ),
+            )
+        else:
+            classroom_id_list = _get_teacher_classroom_ids(session, emp.id)
+            if not classroom_id_list:
+                return []
+            student_query = session.query(Student).filter(
+                Student.classroom_id.in_(classroom_id_list),
+                Student.is_active == True,  # noqa: E712
+                Student.lifecycle_status.notin_(
+                    [LIFECYCLE_GRADUATED, LIFECYCLE_WITHDRAWN, LIFECYCLE_TRANSFERRED]
+                ),
+            )
+
+        students = student_query.all()
+        if not students:
+            return []
+
+        sids = [s.id for s in students]
+        # 一次撈全部 measurements、Python 端取每 student 的第一筆（按 measured_on desc, id desc）
+        # 效能足夠：單班 ≤ 30 人 × 通常 ≤ 12 次量測 = ≤ 360 筆
+        latest_by_student: dict[int, StudentMeasurement] = {}
+        all_measurements = (
+            session.query(StudentMeasurement)
+            .filter(StudentMeasurement.student_id.in_(sids))
+            .order_by(
+                StudentMeasurement.measured_on.desc(),
+                StudentMeasurement.id.desc(),
+            )
+            .all()
+        )
+        for m in all_measurements:
+            if m.student_id not in latest_by_student:
+                latest_by_student[m.student_id] = m
+
+        result = []
+        for s in students:
+            m = latest_by_student.get(s.id)
+            result.append(
+                {
+                    "student_id": s.id,
+                    "name": s.name,
+                    "classroom_id": s.classroom_id,
+                    "last_measurement": (
+                        {
+                            "measured_on": m.measured_on.isoformat(),
+                            "height_cm": (
+                                str(m.height_cm) if m.height_cm is not None else None
+                            ),
+                            "weight_kg": (
+                                str(m.weight_kg) if m.weight_kg is not None else None
+                            ),
+                            "head_circumference_cm": (
+                                str(m.head_circumference_cm)
+                                if m.head_circumference_cm is not None
+                                else None
+                            ),
+                            "vision_left": (
+                                str(m.vision_left)
+                                if m.vision_left is not None
+                                else None
+                            ),
+                            "vision_right": (
+                                str(m.vision_right)
+                                if m.vision_right is not None
+                                else None
+                            ),
+                        }
+                        if m
+                        else None
+                    ),
+                }
+            )
+        return result
     finally:
         session.close()
 
