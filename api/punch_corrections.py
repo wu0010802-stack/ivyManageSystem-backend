@@ -9,7 +9,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
-from models.database import get_session, Employee, Attendance, PunchCorrectionRequest
+from models.database import (
+    get_session,
+    Employee,
+    Attendance,
+    PunchCorrectionRequest,
+    User,
+)
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import (
@@ -21,10 +27,20 @@ from services.salary.finalize_guard import (
     assert_months_not_finalized,
     collect_months_from_dates,
 )
+from services.notification.approval_notifier import notify_approval
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["punch-corrections"])
+
+# ============ Service Injection ============
+
+_line_service = None
+
+
+def init_punch_corrections_line_service(line_service):
+    global _line_service
+    _line_service = line_service
 
 
 CORRECTION_TYPE_LABELS = {
@@ -172,6 +188,27 @@ def approve_punch_correction(
                 correction.attendance_date,
                 current_user.get("username"),
             )
+            # 個人 LINE 推播（審核結果）
+            if _line_service is not None:
+                emp_user = (
+                    session.query(User)
+                    .filter(User.employee_id == correction.employee_id)
+                    .first()
+                )
+                emp = (
+                    session.query(Employee)
+                    .filter(Employee.id == correction.employee_id)
+                    .first()
+                )
+                notify_approval(
+                    line_service=_line_service,
+                    doc_type="punch_correction",
+                    action="reject",
+                    line_user_id=emp_user.line_user_id if emp_user else None,
+                    name=emp.name if emp else "員工",
+                    context={"target_date": correction.attendance_date},
+                    rejection_reason=correction.rejection_reason,
+                )
             return {"message": "補打卡申請已駁回"}
 
         # 提早取得薪資鎖,讓「封存守衛 → 改 attendance → mark_stale → commit」
@@ -263,6 +300,21 @@ def approve_punch_correction(
             correction.attendance_date,
             current_user.get("username"),
         )
+        # 個人 LINE 推播（審核結果）。emp 已於上方 fetch；user 另查一次。
+        if _line_service is not None:
+            emp_user = (
+                session.query(User)
+                .filter(User.employee_id == correction.employee_id)
+                .first()
+            )
+            notify_approval(
+                line_service=_line_service,
+                doc_type="punch_correction",
+                action="approve",
+                line_user_id=emp_user.line_user_id if emp_user else None,
+                name=emp.name if emp else "員工",
+                context={"target_date": correction.attendance_date},
+            )
         return {"message": "補打卡申請已核准，考勤記錄已更新"}
     except HTTPException:
         raise

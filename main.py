@@ -55,7 +55,10 @@ from api.notifications import router as notifications_router
 from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
-from api.punch_corrections import router as punch_corrections_router
+from api.punch_corrections import (
+    router as punch_corrections_router,
+    init_punch_corrections_line_service,
+)
 from api.approval_settings import router as approval_settings_router
 from api.activity import router as activity_router, init_activity_services
 from api.dismissal_calls import (
@@ -540,6 +543,7 @@ init_overtimes_services(salary_engine)
 init_overtimes_line_service(line_service)
 init_leaves_services(salary_engine)
 init_leaves_line_service(line_service)
+init_punch_corrections_line_service(line_service)
 init_dismissal_line_service(line_service)
 init_activity_services(line_service)
 init_portal_notify_services(line_service)

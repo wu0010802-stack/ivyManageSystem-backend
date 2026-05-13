@@ -65,6 +65,7 @@ from services.salary.finalize_guard import (
     collect_months_from_dates,
     assert_months_not_finalized,
 )
+from services.notification.approval_notifier import notify_approval
 from utils.approval_helpers import (
     _get_submitter_role,
     _check_approval_eligibility,
@@ -288,29 +289,22 @@ def _notify_and_recalc_overtime(
     """
     # 個人 LINE 推播（審核結果）
     if _line_service is not None:
-        try:
-            emp_user = (
-                session.query(User).filter(User.employee_id == ot.employee_id).first()
-            )
-            if emp_user and emp_user.line_user_id:
-                emp = (
-                    session.query(Employee)
-                    .filter(Employee.id == ot.employee_id)
-                    .first()
-                )
-                emp_name = emp.name if emp else "員工"
-                ot_type_label = OVERTIME_TYPE_LABELS.get(
-                    ot.overtime_type, ot.overtime_type
-                )
-                _line_service.notify_overtime_result(
-                    emp_user.line_user_id,
-                    emp_name,
-                    ot.overtime_date,
-                    ot_type_label,
-                    approved,
-                )
-        except Exception as _le:
-            logger.warning("加班審核 LINE 推播失敗: %s", _le)
+        emp_user = (
+            session.query(User).filter(User.employee_id == ot.employee_id).first()
+        )
+        emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()
+        ot_type_label = OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type)
+        notify_approval(
+            line_service=_line_service,
+            doc_type="overtime",
+            action="approve" if approved else "reject",
+            line_user_id=emp_user.line_user_id if emp_user else None,
+            name=emp.name if emp else "員工",
+            context={
+                "ot_date": ot.overtime_date,
+                "ot_type": ot_type_label,
+            },
+        )
 
     # 核准或撤銷已核准狀態後都需要重算薪資
     if (approved or was_approved) and _salary_engine is not None:

@@ -68,6 +68,7 @@ from api.leaves_quota import (
 )
 from api.leaves_workday import workday_router, validate_leave_hours_against_schedule
 from services.leave_policy import requires_supporting_document
+from services.notification.approval_notifier import notify_approval
 
 _UPLOAD_MODULE = "leave_attachments"
 
@@ -1495,30 +1496,27 @@ def approve_leave(
 
         # 個人 LINE 推播（審核結果）
         if _line_service is not None:
-            try:
-                emp_user = (
-                    session.query(User)
-                    .filter(User.employee_id == leave.employee_id)
-                    .first()
-                )
-                if emp_user and emp_user.line_user_id:
-                    emp = (
-                        session.query(Employee)
-                        .filter(Employee.id == leave.employee_id)
-                        .first()
-                    )
-                    emp_name = emp.name if emp else "員工"
-                    _line_service.notify_leave_result(
-                        emp_user.line_user_id,
-                        emp_name,
-                        leave.leave_type,
-                        leave.start_date,
-                        leave.end_date,
-                        data.approved,
-                        data.rejection_reason,
-                    )
-            except Exception as _le:
-                logger.warning("假單審核 LINE 推播失敗: %s", _le)
+            emp_user = (
+                session.query(User)
+                .filter(User.employee_id == leave.employee_id)
+                .first()
+            )
+            emp = (
+                session.query(Employee).filter(Employee.id == leave.employee_id).first()
+            )
+            notify_approval(
+                line_service=_line_service,
+                doc_type="leave",
+                action="approve" if data.approved else "reject",
+                line_user_id=emp_user.line_user_id if emp_user else None,
+                name=emp.name if emp else "員工",
+                context={
+                    "leave_type": leave.leave_type,
+                    "start": leave.start_date,
+                    "end": leave.end_date,
+                },
+                rejection_reason=data.rejection_reason,
+            )
 
         # 核准狀態變動（approve 或 reject-of-approved）後，自動重算該員工所有涉及月份的薪資
         if approval_changed and _salary_engine is not None:
@@ -1961,27 +1959,23 @@ def batch_approve_leaves(
                         # 修補 2026-05-11 P2-12：LINE 推播挪到 recalc 成功後才發，
                         # 避免「重算失敗但員工已收到核准通知」與 DB 矛盾的場景。
                         if _line_service is not None:
-                            try:
-                                emp_user = _line_user_map.get(leave.employee_id)
-                                if emp_user and emp_user.line_user_id:
-                                    emp_name = _emp_name_map.get(
-                                        leave.employee_id, "員工"
-                                    )
-                                    _line_service.notify_leave_result(
-                                        emp_user.line_user_id,
-                                        emp_name,
-                                        leave.leave_type,
-                                        leave.start_date,
-                                        leave.end_date,
-                                        data.approved,
-                                        data.rejection_reason,
-                                    )
-                            except Exception as _le:
-                                logger.warning(
-                                    "批次假單審核 LINE 推播失敗（#%d）: %s",
-                                    leave_id,
-                                    _le,
-                                )
+                            emp_user = _line_user_map.get(leave.employee_id)
+                            emp_name = _emp_name_map.get(leave.employee_id, "員工")
+                            notify_approval(
+                                line_service=_line_service,
+                                doc_type="leave",
+                                action="approve" if data.approved else "reject",
+                                line_user_id=(
+                                    emp_user.line_user_id if emp_user else None
+                                ),
+                                name=emp_name,
+                                context={
+                                    "leave_type": leave.leave_type,
+                                    "start": leave.start_date,
+                                    "end": leave.end_date,
+                                },
+                                rejection_reason=data.rejection_reason,
+                            )
                         succeeded.append(leave_id)
             except Exception as e:
                 session.rollback()
