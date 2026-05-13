@@ -283,6 +283,21 @@ async def app_lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("薪資月底快照排程啟動失敗: %s", e)
 
+    # 才藝候補名單過期掃描排程：需要 ACTIVITY_WAITLIST_SCHEDULER_ENABLED=1；建議僅在單一 worker 啟用
+    activity_waitlist_task = None
+    activity_waitlist_stop_event: asyncio.Event | None = None
+    try:
+        from services import activity_waitlist_scheduler as _wl_sched
+
+        if _wl_sched.scheduler_enabled():
+            activity_waitlist_stop_event = asyncio.Event()
+            activity_waitlist_task = asyncio.create_task(
+                _wl_sched.run_activity_waitlist_scheduler(activity_waitlist_stop_event)
+            )
+            logger.info("activity waitlist scheduler 已啟用")
+    except Exception as e:
+        logger.warning("才藝候補名單排程啟動失敗: %s", e)
+
     # 用藥提醒排程：需要 MEDICATION_REMINDER_ENABLED=1；建議僅在單一 worker 啟用
     medication_reminder_task = None
     medication_reminder_stop_event: asyncio.Event | None = None
@@ -397,6 +412,17 @@ async def app_lifespan(app_instance: FastAPI):
                 salary_snapshot_task.cancel()
                 try:
                     await salary_snapshot_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if activity_waitlist_task is not None:
+            if activity_waitlist_stop_event is not None:
+                activity_waitlist_stop_event.set()
+            try:
+                await asyncio.wait_for(activity_waitlist_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                activity_waitlist_task.cancel()
+                try:
+                    await activity_waitlist_task
                 except (asyncio.CancelledError, Exception):
                     pass
         if medication_reminder_task is not None:

@@ -688,10 +688,11 @@ async def sweep_expired_waitlist_promotions(
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         logger.info(
-            "手動觸發候補過期掃描：operator=%s expired=%s reminded=%s",
+            "手動觸發候補過期掃描：operator=%s expired=%s reminded=%s final_reminded=%s",
             current_user.get("username", ""),
             result["expired"],
             result["reminded"],
+            result.get("final_reminded", 0),
         )
         return {"message": "候補過期掃描完成", **result}
     except Exception as e:

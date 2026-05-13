@@ -5,6 +5,7 @@ LINE Messaging API 通知服務
 import logging
 from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -159,6 +160,21 @@ def build_activity_waitlist_promotion_expired_message(
         f"課程：{course_name}\n"
         f"因未於期限內確認，名額已自動釋出給下一位候補。"
         f"若需重新報名，請聯繫校方或於公開頁面重新送件。"
+    )
+
+
+def build_activity_waitlist_final_reminder_message(
+    student_name: str,
+    course_name: str,
+    hours_left: int,
+) -> str:
+    """建構候補升位 T-6h 最後提醒訊息文字。"""
+    return (
+        f"⏰ 最後提醒：才藝候補確認期限即將到期\n"
+        f"學生：{student_name}\n"
+        f"課程：{course_name}\n"
+        f"距離確認期限剩餘約 {hours_left} 小時，請儘速至報名查詢頁確認接受；\n"
+        f"逾期未確認將自動放棄，由下一位候補遞補。"
     )
 
 
@@ -508,12 +524,15 @@ class LineService:
         student_name: str,
         course_name: str,
         deadline: datetime,
-    ) -> None:
-        """候補轉正剩餘時間提醒（failsafe log warning）。"""
+    ) -> bool:
+        """候補轉正剩餘時間提醒；回傳是否推送成功（True=成功，False=失敗或未啟用）。
+
+        失敗時 caller 不應寫 reminder_sent_at，下輪再重試。
+        """
         text = build_activity_waitlist_promotion_reminder_message(
             student_name, course_name, deadline
         )
-        self._push(text)
+        return self._push(text)
 
     def notify_activity_waitlist_promotion_expired(
         self,
@@ -525,6 +544,32 @@ class LineService:
             student_name, course_name
         )
         self._push(text)
+
+    def notify_activity_waitlist_final_reminder(
+        self,
+        student_name: str,
+        course_name: str,
+        confirm_deadline: datetime,
+    ) -> bool:
+        """T-6h 最後提醒；回傳是否推送成功（True=成功，False=失敗或未啟用）。
+
+        失敗時 caller 不應寫 final_reminder_sent_at，下輪再重試。
+        """
+        try:
+            now = datetime.now(ZoneInfo("Asia/Taipei")).replace(tzinfo=None)
+            delta_seconds = (confirm_deadline - now).total_seconds()
+            hours_left = max(1, int(delta_seconds // 3600))
+            text = build_activity_waitlist_final_reminder_message(
+                student_name, course_name, hours_left
+            )
+            return self._push(text)
+        except Exception:
+            logger.exception(
+                "notify_activity_waitlist_final_reminder 失敗：student=%s course=%s",
+                student_name,
+                course_name,
+            )
+            return False
 
     def notify_dismissal_created(
         self,

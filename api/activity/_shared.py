@@ -805,6 +805,7 @@ def _build_public_query_payload(session, reg) -> dict:
     # 一次查出所有候補課程的排位（window function，避免 N+1）
     waitlist_course_ids = [ac.id for rc, ac in rc_rows if rc.status == "waitlist"]
     waitlist_position_map: dict = {}
+    waitlist_total_map: dict = {}
     if waitlist_course_ids:
         stmt = (
             session.query(
@@ -833,11 +834,33 @@ def _build_public_query_payload(session, reg) -> dict:
         )
         waitlist_position_map = {row.course_id: row.position for row in waitlist_rows}
 
+        # 每個候補課程的總候補人數（promoted_pending 不計入，只算 waitlist）
+        total_rows = (
+            session.query(
+                RegistrationCourse.course_id,
+                func.count(RegistrationCourse.id).label("total"),
+            )
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.course_id.in_(waitlist_course_ids),
+                RegistrationCourse.status == "waitlist",
+                ActivityRegistration.is_active.is_(True),
+            )
+            .group_by(RegistrationCourse.course_id)
+            .all()
+        )
+        waitlist_total_map = {row.course_id: row.total for row in total_rows}
+
     courses = []
     for rc, ac in rc_rows:
         waitlist_position = None
+        waitlist_total = None
         if rc.status == "waitlist":
             waitlist_position = waitlist_position_map.get(ac.id)
+            waitlist_total = waitlist_total_map.get(ac.id)
         courses.append(
             {
                 "name": ac.name,
@@ -845,6 +868,7 @@ def _build_public_query_payload(session, reg) -> dict:
                 "price": rc.price_snapshot,
                 "status": rc.status,
                 "waitlist_position": waitlist_position,
+                "waitlist_total": waitlist_total,
                 "confirm_deadline": (
                     rc.confirm_deadline.isoformat()
                     if rc.status == "promoted_pending" and rc.confirm_deadline
