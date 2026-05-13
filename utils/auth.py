@@ -306,14 +306,13 @@ def verify_ws_token(token: str) -> dict:
 
 
 def decode_token_allow_expired(token: str) -> dict:
-    """解碼 token，允許在寬限期內的過期 token（用於 refresh）。
-    回傳 payload，若 token 無效或超出寬限期則拋出 401。
+    """解碼 token，允許在寬限期內的過期 token（用於 refresh / end-impersonate / logout）。
+    回傳 payload，若 token 無效、超出寬限期、或 jti 已被廢止則拋出 401。
     """
     _check_token_algorithm(token)
     try:
         # 先嘗試正常解碼（未過期）
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        return payload
     except jwt.ExpiredSignatureError:
         # Token 已過期，跳過 exp 驗證取出 payload
         payload = jwt.decode(
@@ -330,9 +329,14 @@ def decode_token_allow_expired(token: str) -> dict:
             raise HTTPException(
                 status_code=401, detail="Token 已超過可刷新期限，請重新登入"
             )
-        return payload
     except JWTError:
         raise HTTPException(status_code=401, detail="無效的 Token，請重新登入")
+
+    # JTI 廢止檢查：與 decode_token 對齊。logout 廢止後的 token 在寬限期內仍可解碼，
+    # 必須額外擋住才能讓 /refresh / /end-impersonate 不被遺失的 cookie 反覆利用。
+    if is_token_revoked(payload.get("jti", "")):
+        raise HTTPException(status_code=401, detail="Token 已廢止，請重新登入")
+    return payload
 
 
 async def get_current_user(request: Request):

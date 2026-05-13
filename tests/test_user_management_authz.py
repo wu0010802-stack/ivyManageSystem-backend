@@ -362,6 +362,37 @@ class TestUpdateUser:
         assert res.status_code == 400
         assert "停用自己" in res.json()["detail"]
 
+    def test_non_admin_disables_target_with_superset_perms(self, auth_client):
+        """非 admin caller 不可停用權限超過自己的帳號（DoS / 提權鋪墊）。"""
+        client, session_factory = auth_client
+        with session_factory() as session:
+            _create_user(
+                session,
+                username="hr_dis_min",
+                password="HrMin1234",
+                role="hr",
+                permissions=int(Permission.USER_MANAGEMENT_WRITE),
+            )
+            target = _create_user(
+                session,
+                username="hr_dis_full",
+                password="HrFull1234",
+                role="hr",
+                permissions=int(Permission.USER_MANAGEMENT_WRITE)
+                | int(Permission.SALARY_READ),
+            )
+            session.commit()
+            target_id = target.id
+
+        assert _login(client, "hr_dis_min", "HrMin1234").status_code == 200
+
+        res = client.put(
+            f"/api/auth/users/{target_id}",
+            json={"is_active": False},
+        )
+        assert res.status_code == 403
+        assert "管理範圍" in res.json()["detail"]
+
     def test_successful_update_still_bumps_token_version(self, auth_client):
         """成功修改 role/permissions 後 target.token_version 仍會 +1。"""
         client, session_factory = auth_client
@@ -494,6 +525,43 @@ class TestResetPassword:
         )
         assert res.status_code == 200, f"預期 200，實際 {res.status_code}: {res.json()}"
 
+    def test_non_admin_resets_target_with_superset_perms(self, auth_client):
+        """非 admin caller 持較少權限，不可重設權限超過自己的帳號（提權鏈）。
+
+        提權鏈：caller(USER_MANAGEMENT_WRITE) → 重設 HR 密碼 → 登入 HR 取得
+        SALARY_READ/WRITE。修補後應 403。
+        """
+        client, session_factory = auth_client
+        with session_factory() as session:
+            _create_user(
+                session,
+                username="hr_min",
+                password="HrMin1234",
+                role="hr",
+                # 只有 USER_MANAGEMENT_WRITE，無 SALARY_READ
+                permissions=int(Permission.USER_MANAGEMENT_WRITE),
+            )
+            target = _create_user(
+                session,
+                username="hr_full",
+                password="HrFull1234",
+                role="hr",
+                # 多了 SALARY_READ，caller 無此權
+                permissions=int(Permission.USER_MANAGEMENT_WRITE)
+                | int(Permission.SALARY_READ),
+            )
+            session.commit()
+            target_id = target.id
+
+        assert _login(client, "hr_min", "HrMin1234").status_code == 200
+
+        res = client.put(
+            f"/api/auth/users/{target_id}/reset-password",
+            json={"new_password": "Pwned!23456"},
+        )
+        assert res.status_code == 403
+        assert "管理範圍" in res.json()["detail"]
+
 
 # ====================================================================
 # F-040: DELETE /api/auth/users/{user_id}
@@ -555,6 +623,34 @@ class TestDeleteUser:
 
         res = client.delete(f"/api/auth/users/{target_id}")
         assert res.status_code == 200, f"預期 200，實際 {res.status_code}: {res.json()}"
+
+    def test_non_admin_deletes_target_with_superset_perms(self, auth_client):
+        """非 admin caller 不可刪除權限超過自己的帳號（提權鏈 / DoS）。"""
+        client, session_factory = auth_client
+        with session_factory() as session:
+            _create_user(
+                session,
+                username="hr_del_min",
+                password="HrMin1234",
+                role="hr",
+                permissions=int(Permission.USER_MANAGEMENT_WRITE),
+            )
+            target = _create_user(
+                session,
+                username="hr_del_full",
+                password="HrFull1234",
+                role="hr",
+                permissions=int(Permission.USER_MANAGEMENT_WRITE)
+                | int(Permission.SALARY_READ),
+            )
+            session.commit()
+            target_id = target.id
+
+        assert _login(client, "hr_del_min", "HrMin1234").status_code == 200
+
+        res = client.delete(f"/api/auth/users/{target_id}")
+        assert res.status_code == 403
+        assert "管理範圍" in res.json()["detail"]
 
     def test_existing_self_delete_block_still_fires(self, auth_client):
         """既有「不可刪除自己」守衛仍生效（400）。"""
