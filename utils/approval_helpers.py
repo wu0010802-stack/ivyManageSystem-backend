@@ -133,7 +133,8 @@ def _get_finalized_salary_record(session, employee_id: int, year: int, month: in
     """查詢單一月份是否已封存。
 
     找到封存記錄時回傳該 SalaryRecord，否則回傳 None。
-    供 leaves.py（多月份迴圈）與 overtimes.py（單月份）共用。
+    供 meetings / shifts / attendance.records / portal.overtimes 等仍需單月查詢的端點使用；
+    leaves / overtimes / punch_corrections 已改用 services.salary.finalize_guard.assert_months_not_finalized。
     """
     return (
         session.query(SalaryRecord)
