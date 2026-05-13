@@ -149,6 +149,34 @@ def test_parent_lists_ready_report(app_client):
     assert items[0]["status"] == "ready"
 
 
+def test_parent_list_does_not_expose_admin_internal_fields(app_client):
+    """F-V6-06：parent 序列化不暴露 admin 內部欄位（error_message / file_path /
+    generated_by）。攻擊面：admin 對失敗 report 補 patch 後改回 status=READY
+    時 error_message 殘留會經 _row_to_dict reuse 洩漏給家長。
+    """
+    client, session_factory, student_id, _ = app_client
+    with session_factory() as session:
+        session.add(
+            StudentGrowthReport(
+                student_id=student_id,
+                period_label="x",
+                period_start=date(2026, 1, 1),
+                period_end=date(2026, 3, 31),
+                status="ready",
+                file_path="/srv/instance/growth_reports/1/9.pdf",
+                error_message="DEBUG: psycopg2.errors.NotNullViolation table=...",
+                generated_by=None,  # 跳過 FK；測試焦點是 serialization 過濾
+            )
+        )
+        session.commit()
+    resp = client.get(f"/api/parent/growth-reports?student_id={student_id}")
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["items"][0]
+    assert "error_message" not in item, f"家長端不應暴露 error_message，got {item}"
+    assert "file_path" not in item, f"家長端不應暴露 file_path，got {item}"
+    assert "generated_by" not in item, f"家長端不應暴露 generated_by，got {item}"
+
+
 def test_parent_pending_report_excluded(app_client):
     """status=pending 報告不應出現在 parent list."""
     client, session_factory, student_id, _ = app_client
