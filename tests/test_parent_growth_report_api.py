@@ -205,3 +205,57 @@ def test_parent_cannot_download_other_kid(app_client):
         f"/api/parent/growth-reports/1/download?student_id={other_student_id}"
     )
     assert resp.status_code == 403, resp.text
+
+
+def test_parent_download_view_count_increments_atomically(
+    app_client, tmp_path, monkeypatch
+):
+    """REGRESSION: 連續 3 次下載 view_count 必須 == 3 (原子化 INCR)；
+    parent_first_viewed_at 只在第一次設定，後續不被覆寫（agent P2 #10）.
+    """
+    from datetime import datetime as _dt
+
+    from api.portfolio import reports as reports_mod
+
+    client, session_factory, student_id, _ = app_client
+
+    # patch REPORT_ROOT to tmp_path 並建立假 PDF 檔
+    report_root = tmp_path / "growth_reports"
+    report_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(reports_mod, "REPORT_ROOT", report_root)
+    pdf_path = report_root / "1.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    with session_factory() as session:
+        session.add(
+            StudentGrowthReport(
+                id=1,
+                student_id=student_id,
+                period_label="x",
+                period_start=date(2026, 1, 1),
+                period_end=date(2026, 3, 31),
+                status="ready",
+                file_path=str(pdf_path),
+            )
+        )
+        session.commit()
+
+    first_viewed_after_call_1: list = [None]
+    for i in range(3):
+        resp = client.get(
+            f"/api/parent/growth-reports/1/download?student_id={student_id}"
+        )
+        assert resp.status_code == 200, f"call {i + 1}: {resp.text}"
+
+        with session_factory() as session:
+            r = session.query(StudentGrowthReport).filter_by(id=1).first()
+            if i == 0:
+                first_viewed_after_call_1[0] = r.parent_first_viewed_at
+                assert r.parent_first_viewed_at is not None
+                assert r.parent_view_count == 1
+            elif i == 1:
+                # 第 2 次：first_viewed_at 不應被覆寫
+                assert r.parent_first_viewed_at == first_viewed_after_call_1[0]
+                assert r.parent_view_count == 2
+            else:
+                assert r.parent_view_count == 3

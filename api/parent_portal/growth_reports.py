@@ -12,8 +12,9 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlalchemy import func
 
-from api.portfolio.reports import _row_to_dict, _resolve_pdf_path
+from api.portfolio.reports import _resolve_pdf_path, _row_to_dict
 from models.database import StudentGrowthReport, get_session
 from models.portfolio import REPORT_STATUS_READY
 from utils.auth import require_parent_role
@@ -77,9 +78,23 @@ async def parent_download_report(
             path = _resolve_pdf_path(r.file_path)
             if not path.exists():
                 raise HTTPException(status_code=410, detail="報告檔案已遺失")
-            if r.parent_first_viewed_at is None:
-                r.parent_first_viewed_at = datetime.utcnow()
-            r.parent_view_count = (r.parent_view_count or 0) + 1
+            # 原子化 INCR + COALESCE：避免並發雙擊時 read-modify-write 的 lost
+            # update（agent P2 #10，同 dismissal 2026-05-12 round 3 修補 idiom）。
+            # UPDATE ... SET col = col + 1 在 row 層 exclusive lock，無 race。
+            now = datetime.utcnow()
+            session.query(StudentGrowthReport).filter_by(
+                id=report_id, student_id=student_id
+            ).update(
+                {
+                    "parent_view_count": (
+                        func.coalesce(StudentGrowthReport.parent_view_count, 0) + 1
+                    ),
+                    "parent_first_viewed_at": func.coalesce(
+                        StudentGrowthReport.parent_first_viewed_at, now
+                    ),
+                },
+                synchronize_session=False,
+            )
             session.commit()
             return FileResponse(
                 str(path),
