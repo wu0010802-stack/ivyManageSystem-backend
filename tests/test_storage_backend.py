@@ -64,3 +64,28 @@ def test_local_delete_missing_file_is_idempotent(local_root):
     backend = LocalStorage()
     # 應該不 raise
     backend.delete("activity_posters", "never_existed.png")
+
+
+def test_local_public_url_activity_poster(local_root):
+    backend = LocalStorage()
+    url = backend.public_url("activity_posters", "abc123.png")
+    assert url == "/api/activity/public/poster/abc123.png"
+
+
+def test_local_public_url_leave_attachment(local_root):
+    backend = LocalStorage()
+    url = backend.public_url("leave_attachments", "42/photo.jpg")
+    assert url == "/api/leaves/42/photo.jpg"
+
+
+def test_local_signed_url_returns_public_path(local_root):
+    """local 模式下 signed 與 public 等價（後端 JWT 守衛）。"""
+    backend = LocalStorage()
+    url = backend.signed_url("leave_attachments", "42/photo.jpg", ttl_seconds=3600)
+    assert url == "/api/leaves/42/photo.jpg"
+
+
+def test_local_public_url_rejects_unknown_module(local_root):
+    backend = LocalStorage()
+    with pytest.raises(ValueError):
+        backend.public_url("attendance_imports", "x.xlsx")
