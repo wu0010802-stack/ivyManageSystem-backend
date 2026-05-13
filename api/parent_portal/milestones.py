@@ -96,16 +96,19 @@ async def parent_react(
         try:
             user_id = current_user["user_id"]
             _assert_student_owned(session, user_id, student_id)
+            # F-V6-04：with_for_update 鎖 milestone row；同學生兩位 guardian 並發
+            # react 時避免 parent_acknowledged_by attribution 被後贏者覆蓋
             m = (
                 session.query(StudentMilestone)
                 .filter_by(id=milestone_id, student_id=student_id)
                 .filter(StudentMilestone.deleted_at.is_(None))
+                .with_for_update()
                 .first()
             )
             if not m:
                 raise HTTPException(status_code=404, detail="里程碑不存在")
             m.parent_reaction = payload.reaction
-            # 第一次 react 也算 ack
+            # 第一次 react 也算 ack（row lock 下重新判 acknowledged_at 仍 None 才寫）
             if m.parent_acknowledged_at is None:
                 m.parent_acknowledged_at = datetime.utcnow()
                 g = (
@@ -138,10 +141,13 @@ async def parent_acknowledge(
         try:
             user_id = current_user["user_id"]
             _assert_student_owned(session, user_id, student_id)
+            # F-V6-04：with_for_update 鎖 row；同學生兩位 guardian 並發 ack 不會
+            # 重複寫 parent_acknowledged_at（first-ack-wins）與覆蓋 acknowledged_by
             m = (
                 session.query(StudentMilestone)
                 .filter_by(id=milestone_id, student_id=student_id)
                 .filter(StudentMilestone.deleted_at.is_(None))
+                .with_for_update()
                 .first()
             )
             if not m:
