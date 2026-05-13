@@ -48,6 +48,10 @@ from utils.approval_helpers import (
     _write_approval_log,
 )
 from services.salary.utils import lock_and_premark_stale, mark_salary_stale
+from services.salary.finalize_guard import (
+    collect_months_from_range,
+    assert_months_not_finalized,
+)
 from utils.excel_utils import xlsx_streaming_response
 from utils.import_utils import build_employee_lookup, resolve_employee_from_row
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
@@ -93,60 +97,6 @@ def _safe_attach_path(leave_id: int, filename: str) -> Path:
 
 
 logger = logging.getLogger(__name__)
-
-
-def _check_salary_months_not_finalized(session, employee_id: int, months: set) -> None:
-    """commit 前的封存保護守衛。
-
-    若 months 中任何一個月份的薪資記錄已封存（is_finalized=True），
-    拋出 409 阻止整個操作，避免 DB 進入「假單改了、薪資沒改」的矛盾狀態。
-
-    Args:
-        session:     SQLAlchemy session
-        employee_id: 員工 ID
-        months:      待檢查的 {(year, month), ...}，空集合直接返回
-    """
-    if not months:
-        return
-    record = (
-        session.query(SalaryRecord)
-        .filter(
-            SalaryRecord.employee_id == employee_id,
-            SalaryRecord.is_finalized == True,
-            or_(
-                *(
-                    and_(
-                        SalaryRecord.salary_year == yr, SalaryRecord.salary_month == mo
-                    )
-                    for yr, mo in months
-                )
-            ),
-        )
-        .first()
-    )
-    if record:
-        by = record.finalized_by or "系統"
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{record.salary_year} 年 {record.salary_month} 月薪資已封存（結算人：{by}），"
-                "無法修改該月份的假單。請先至薪資管理頁面解除封存後再操作。"
-            ),
-        )
-
-
-def _collect_leave_months(start_date, end_date) -> set:
-    """收集假單所跨越的所有 (year, month)。"""
-    months = set()
-    current = start_date.replace(day=1)
-    end_first = end_date.replace(day=1)
-    while current <= end_first:
-        months.add((current.year, current.month))
-        if current.month == 12:
-            current = current.replace(year=current.year + 1, month=1)
-        else:
-            current = current.replace(month=current.month + 1)
-    return months
 
 
 def _guard_leave_quota(
@@ -983,16 +933,16 @@ def update_leave(
 
         # 封存月薪保護：同時檢查原始月份與更新後月份
         # 跨月假單（理論上 schema 已擋，但歷史資料/直接 DB 寫入仍可能存在）的
-        # 原區間每一個月份都會在 _collect_leave_months 重算迴圈中被觸及，
+        # 原區間每一個月份都會在 collect_months_from_range 重算迴圈中被觸及，
         # 必須涵蓋完整月份集合，與 line 935 的 months_to_recalc 對齊。
         if was_approved:
-            _affected_months = _collect_leave_months(
+            _affected_months = collect_months_from_range(
                 leave.start_date, leave.end_date
-            ) | _collect_leave_months(new_start, new_end)
-            _check_salary_months_not_finalized(
+            ) | collect_months_from_range(new_start, new_end)
+            assert_months_not_finalized(
                 session,
-                leave.employee_id,
-                _affected_months,
+                employee_id=leave.employee_id,
+                months=_affected_months,
             )
             # commit→recalc 鎖延伸：取得 per-emp salary lock 並 pre-mark stale,
             # 確保 commit 釋放鎖後即使 finalize 搶先,看到的也是 needs_recalc=True 而被擋下。
@@ -1045,7 +995,7 @@ def update_leave(
             if _salary_engine is not None:
                 # 跨月修改時,新區間只涵蓋新月份；舊月份的扣款須一併撤銷重算,
                 # 否則 orig_month 的舊扣款仍存在於該月薪資,與新月份合計形成重複扣薪。
-                months_to_recalc = _collect_leave_months(
+                months_to_recalc = collect_months_from_range(
                     leave.start_date, leave.end_date
                 )
                 months_to_recalc.add(orig_month)
@@ -1113,7 +1063,7 @@ def delete_leave(
         # ── 封存保護：已核准假單在封存月份不得刪除 ──────────────────────────
         was_approved = leave.is_approved is True
         # 跨月假單需涵蓋完整月份集合，與 lock_and_premark_stale 的範圍對齊。
-        leave_months = _collect_leave_months(leave.start_date, leave.end_date)
+        leave_months = collect_months_from_range(leave.start_date, leave.end_date)
         emp_id = leave.employee_id
         # 預先 snapshot：刪除後 leave 物件被 expunge，audit_changes 必須在這裡備份
         deleted_snapshot = {
@@ -1128,7 +1078,9 @@ def delete_leave(
             "reason": leave.reason,
         }
         if was_approved:
-            _check_salary_months_not_finalized(session, emp_id, leave_months)
+            assert_months_not_finalized(
+                session, employee_id=emp_id, months=leave_months
+            )
             # commit→recalc 鎖延伸：見 update_leave 同款註解（封 finalize race window）
 
             lock_and_premark_stale(session, emp_id, leave_months)
@@ -1435,10 +1387,10 @@ def approve_leave(
         # 跨月假單需檢查整個跨越區間（中間月份/end_date 月份），與上方 lock_and_premark_stale
         # 的範圍對齊，避免 check 漏放後 stale 標記被 finalize 守衛擋下、假單已 commit 的破口。
         if approval_changed:
-            _check_salary_months_not_finalized(
+            assert_months_not_finalized(
                 session,
-                leave.employee_id,
-                _collect_leave_months(leave.start_date, leave.end_date),
+                employee_id=leave.employee_id,
+                months=collect_months_from_range(leave.start_date, leave.end_date),
             )
 
         # ── V8：防禦性扣款比例同步 ───────────────────────────────────────────
@@ -1784,13 +1736,13 @@ def batch_approve_leaves(
                 affected_months = None
                 if approval_changed:
                     try:
-                        affected_months = _collect_leave_months(
+                        affected_months = collect_months_from_range(
                             leave.start_date, leave.end_date
                         )
-                        _check_salary_months_not_finalized(
+                        assert_months_not_finalized(
                             session,
-                            leave.employee_id,
-                            affected_months,
+                            employee_id=leave.employee_id,
+                            months=affected_months,
                         )
                     except HTTPException as e:
                         failed.append({"id": leave_id, "reason": e.detail})

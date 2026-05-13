@@ -14,9 +14,12 @@ from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import (
     _check_approval_eligibility,
-    _get_finalized_salary_record,
     _get_submitter_role,
     _write_approval_log,
+)
+from services.salary.finalize_guard import (
+    assert_months_not_finalized,
+    collect_months_from_dates,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,22 +186,11 @@ def approve_punch_correction(
         )
 
         # 核准前檢查該月薪資是否已封存（避免改動已結算月份的考勤來源資料）
-        finalized = _get_finalized_salary_record(
+        assert_months_not_finalized(
             session,
-            correction.employee_id,
-            correction.attendance_date.year,
-            correction.attendance_date.month,
+            employee_id=correction.employee_id,
+            months=collect_months_from_dates([correction.attendance_date]),
         )
-        if finalized:
-            by = finalized.finalized_by or "系統"
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"{correction.attendance_date.year} 年 "
-                    f"{correction.attendance_date.month} 月薪資已封存"
-                    f"（結算人：{by}），無法核准補打卡。請先至薪資管理頁面解除封存後再操作。"
-                ),
-            )
 
         # 核准：取得或建立 Attendance 記錄
         att = (

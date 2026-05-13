@@ -61,11 +61,14 @@ from services.salary.utils import (
     lock_and_premark_stale,
     mark_salary_stale as _mark_salary_stale,
 )
+from services.salary.finalize_guard import (
+    collect_months_from_dates,
+    assert_months_not_finalized,
+)
 from utils.approval_helpers import (
     _get_submitter_role,
     _check_approval_eligibility,
     _write_approval_log,
-    _get_finalized_salary_record,
 )
 from utils.excel_utils import xlsx_streaming_response
 from utils.import_utils import build_employee_lookup, resolve_employee_from_row
@@ -94,24 +97,6 @@ MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8�
 
 
 # ============ Helper Functions ============
-
-
-def _check_salary_month_not_finalized(
-    session, employee_id: int, overtime_date: date
-) -> None:
-    """避免修改已封存月份的已核准加班，造成薪資與原始資料不一致。"""
-    record = _get_finalized_salary_record(
-        session, employee_id, overtime_date.year, overtime_date.month
-    )
-    if record:
-        by = record.finalized_by or "系統"
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{overtime_date.year} 年 {overtime_date.month} 月薪資已封存（結算人：{by}），"
-                "無法修改該月份的已核准加班。請先解除封存後再操作。"
-            ),
-        )
 
 
 def _revoke_comp_leave_grant(
@@ -1074,10 +1059,9 @@ def update_overtime(
 
         recalculation_months = {original_month, (check_date.year, check_date.month)}
         if was_approved:
-            for year, month in recalculation_months:
-                _check_salary_month_not_finalized(
-                    session, ot.employee_id, date(year, month, 1)
-                )
+            assert_months_not_finalized(
+                session, employee_id=ot.employee_id, months=recalculation_months
+            )
             # commit→recalc 鎖延伸：取 per-emp salary lock 並 pre-mark stale,
             # 封住 caller commit 與 engine 重新 acquire lock 之間 finalize 搶先封存舊薪資的 race。
 
@@ -1228,7 +1212,11 @@ def delete_overtime(
             "reason": getattr(ot, "reason", None),
         }
         if was_approved:
-            _check_salary_month_not_finalized(session, employee_id, ot.overtime_date)
+            assert_months_not_finalized(
+                session,
+                employee_id=employee_id,
+                months={overtime_month},
+            )
             # commit→recalc 鎖延伸 + pre-mark stale（同 update_overtime 註解）
 
             lock_and_premark_stale(session, employee_id, {overtime_month})
@@ -1346,7 +1334,11 @@ def approve_overtime(
             # 提早取得薪資鎖 + pre-mark stale,封住 commit→recalc 的兩個 race window。
             # caller commit 釋放鎖後,即使 finalize 搶到鎖也會看到 needs_recalc=True 而被擋下;
             # engine 之後在新 session 取鎖重算成功會把 stale 旗標清掉。
-            _check_salary_month_not_finalized(session, ot.employee_id, ot.overtime_date)
+            assert_months_not_finalized(
+                session,
+                employee_id=ot.employee_id,
+                months=collect_months_from_dates([ot.overtime_date]),
+            )
 
             lock_and_premark_stale(
                 session,
@@ -1531,8 +1523,10 @@ def batch_approve_overtimes(
                     continue
 
                 if data.approved or was_approved:
-                    _check_salary_month_not_finalized(
-                        session, ot.employee_id, ot.overtime_date
+                    assert_months_not_finalized(
+                        session,
+                        employee_id=ot.employee_id,
+                        months=collect_months_from_dates([ot.overtime_date]),
                     )
 
                 # 核准最後一致性驗證，防止舊資料 / import 舊版遺留壞紀錄進入薪資

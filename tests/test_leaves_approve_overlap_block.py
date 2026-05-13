@@ -65,7 +65,7 @@ def _patches_for_approve(leave, conflict=None):
         patch("api.leaves.validate_leave_hours_against_schedule"),
         patch("api.leaves._check_leave_limits"),
         patch("api.leaves._guard_leave_quota"),
-        patch("api.leaves._check_salary_months_not_finalized"),
+        patch("api.leaves.assert_months_not_finalized"),
         patch("api.leaves._write_approval_log"),
         patch("api.leaves._salary_engine", None),  # 跳過薪資重算
         patch("api.leaves._check_overlap", return_value=conflict),
@@ -182,7 +182,7 @@ class TestBatchApproveOverlapBlock:
             patch("api.leaves.validate_leave_hours_against_schedule"),
             patch("api.leaves._check_leave_limits"),
             patch("api.leaves._guard_leave_quota"),
-            patch("api.leaves._check_salary_months_not_finalized"),
+            patch("api.leaves.assert_months_not_finalized"),
             patch("api.leaves._write_approval_log"),
             patch("api.leaves._salary_engine", None),
             patch(
