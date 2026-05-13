@@ -3,6 +3,7 @@ api/fees.py — 學費/費用管理 API endpoints
 """
 
 import logging
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -13,14 +14,27 @@ from sqlalchemy.exc import IntegrityError
 
 from api.activity._shared import validate_payment_date
 from models.base import session_scope
-from models.classroom import Classroom, Student
+from models.classroom import (
+    Classroom,
+    LIFECYCLE_ACTIVE,
+    LIFECYCLE_ENROLLED,
+    Student,
+)
 from models.fees import (
     FeeItem,
+    FeeTemplate,
     StudentFeePayment,
     StudentFeeRecord,
     StudentFeeRefund,
 )
+from models.student_leave import StudentLeaveRequest
+from services.fee_refund_calculator import (
+    calc_enrollment_refund,
+    calc_monthly_refund,
+    longest_consecutive_workdays,
+)
 from services.report_cache_service import report_cache_service
+from services.workday_rules import classify_day, load_day_rule_maps
 from utils.audit import write_audit_in_session
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_adjustment_reason, require_finance_approve
@@ -79,6 +93,54 @@ class FeeItemUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class FeeTemplateCreate(BaseModel):
+    grade_id: int = Field(..., gt=0)
+    school_year: int = Field(..., ge=100, le=200)
+    semester: int = Field(..., ge=1, le=2)
+    fee_type: str = Field(..., pattern="^(registration|miscellaneous|monthly)$")
+    name: str = Field(..., min_length=1, max_length=100)
+    amount: int = Field(..., ge=0, le=MAX_FEE_AMOUNT)
+    breakdown: Optional[dict] = None
+    due_date_offset_days: int = Field(14, ge=0, le=365)
+    is_active: bool = True
+
+    @field_validator("breakdown")
+    @classmethod
+    def _validate_breakdown(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, dict) or not v:
+            raise ValueError("breakdown 必須為非空 dict")
+        for k, amt in v.items():
+            if not isinstance(amt, int) or amt < 0:
+                raise ValueError(f"breakdown.{k} 必須為非負整數")
+        return v
+
+
+class FeeTemplateUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    amount: Optional[int] = Field(None, ge=0, le=MAX_FEE_AMOUNT)
+    breakdown: Optional[dict] = None
+    due_date_offset_days: Optional[int] = Field(None, ge=0, le=365)
+    is_active: Optional[bool] = None
+
+
+class GenerateFromTemplatesRequest(BaseModel):
+    school_year: int = Field(..., ge=100, le=200)
+    semester: int = Field(..., ge=1, le=2)
+    fee_types: list[str] = Field(..., min_length=1)
+    dry_run: bool = False
+
+    @field_validator("fee_types")
+    @classmethod
+    def _validate_types(cls, v):
+        allowed = {"registration", "miscellaneous", "monthly"}
+        bad = [t for t in v if t not in allowed]
+        if bad:
+            raise ValueError(f"非法 fee_type: {bad}")
+        return v
+
+
 class GenerateRequest(BaseModel):
     fee_item_id: int
     classroom_id: Optional[int] = None  # None = 全校
@@ -110,6 +172,18 @@ class PayRequest(BaseModel):
         return validate_payment_date(v, back_limit_days=90)
 
 
+class RefundSuggestRequest(BaseModel):
+    """退費建議請求：依學生離園日與費用類型自動計算退費金額。
+
+    `T_total_override` / `T_served_override` 提供給罕見特例（例如手動調整教保日數），
+    一般情況下會由 workday_rules + 學期區間計算得出。
+    """
+
+    withdrawal_date: date
+    T_total_override: Optional[int] = Field(None, gt=0, le=400)
+    T_served_override: Optional[int] = Field(None, ge=0, le=400)
+
+
 class RefundRequest(BaseModel):
     """退款請求。退款走獨立流程，於 StudentFeeRefund 表留下歷史。
 
@@ -132,6 +206,10 @@ class RefundRequest(BaseModel):
         pattern=r"^[A-Za-z0-9_-]+$",
         description="冪等鍵（10 分鐘視窗內同 key 視為重試，避免重複退款）",
     )
+    calc_method: Optional[str] = Field(
+        None, pattern="^(enrollment_ratio|monthly_partial|no_refund|manual)$"
+    )
+    calc_payload: Optional[dict] = None
 
 
 def _apply_fee_record_filters(
@@ -396,8 +474,400 @@ def delete_fee_item(
 
 
 # ---------------------------------------------------------------------------
+# 費用範本 CRUD
+# ---------------------------------------------------------------------------
+
+
+def _validate_template_breakdown(amount: int, breakdown: Optional[dict]) -> None:
+    """月費 breakdown 各鍵總和需 == amount,否則拒絕。"""
+    if not breakdown:
+        return
+    total = sum(int(v) for v in breakdown.values())
+    if total != amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"breakdown 總和 {total} 與 amount {amount} 不符",
+        )
+
+
+def _template_to_dict(t: FeeTemplate) -> dict:
+    return {
+        "id": t.id,
+        "grade_id": t.grade_id,
+        "school_year": t.school_year,
+        "semester": t.semester,
+        "fee_type": t.fee_type,
+        "name": t.name,
+        "amount": t.amount,
+        "breakdown": t.breakdown,
+        "due_date_offset_days": t.due_date_offset_days,
+        "is_active": t.is_active,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+@router.get("/templates")
+def list_fee_templates(
+    school_year: Optional[int] = Query(None),
+    semester: Optional[int] = Query(None, ge=1, le=2),
+    fee_type: Optional[str] = Query(
+        None, pattern="^(registration|miscellaneous|monthly)$"
+    ),
+    is_active: Optional[bool] = Query(None),
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_READ)),
+):
+    with session_scope() as session:
+        q = session.query(FeeTemplate)
+        if school_year is not None:
+            q = q.filter(FeeTemplate.school_year == school_year)
+        if semester is not None:
+            q = q.filter(FeeTemplate.semester == semester)
+        if fee_type is not None:
+            q = q.filter(FeeTemplate.fee_type == fee_type)
+        if is_active is not None:
+            q = q.filter(FeeTemplate.is_active == is_active)
+        items = q.order_by(
+            FeeTemplate.school_year.desc(),
+            FeeTemplate.semester,
+            FeeTemplate.grade_id,
+            FeeTemplate.fee_type,
+        ).all()
+        return [_template_to_dict(t) for t in items]
+
+
+@router.post("/templates")
+def create_fee_template(
+    payload: FeeTemplateCreate,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
+):
+    _validate_template_breakdown(payload.amount, payload.breakdown)
+    with session_scope() as session:
+        existing = (
+            session.query(FeeTemplate)
+            .filter(
+                FeeTemplate.grade_id == payload.grade_id,
+                FeeTemplate.school_year == payload.school_year,
+                FeeTemplate.semester == payload.semester,
+                FeeTemplate.fee_type == payload.fee_type,
+            )
+            .first()
+        )
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"已存在範本(grade={payload.grade_id} "
+                    f"{payload.school_year}-{payload.semester} {payload.fee_type})"
+                ),
+            )
+        t = FeeTemplate(
+            grade_id=payload.grade_id,
+            school_year=payload.school_year,
+            semester=payload.semester,
+            fee_type=payload.fee_type,
+            name=payload.name,
+            amount=payload.amount,
+            breakdown=payload.breakdown,
+            due_date_offset_days=payload.due_date_offset_days,
+            is_active=payload.is_active,
+            created_by=current_user.get("username"),
+            updated_by=current_user.get("username"),
+        )
+        session.add(t)
+        session.flush()
+        result = _template_to_dict(t)
+
+        request.state.audit_entity_id = str(t.id)
+        request.state.audit_summary = f"建立費用範本 {t.name}"
+        request.state.audit_changes = {
+            "action": "fee_template_create",
+            "template": result,
+        }
+        return result
+
+
+@router.put("/templates/{template_id}")
+def update_fee_template(
+    template_id: int,
+    payload: FeeTemplateUpdate,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
+):
+    with session_scope() as session:
+        t = session.query(FeeTemplate).filter(FeeTemplate.id == template_id).first()
+        if not t:
+            raise HTTPException(status_code=404, detail="範本不存在")
+        before = _template_to_dict(t)
+        new_amount = payload.amount if payload.amount is not None else t.amount
+        new_breakdown = (
+            payload.breakdown if payload.breakdown is not None else t.breakdown
+        )
+        _validate_template_breakdown(new_amount, new_breakdown)
+        if payload.name is not None:
+            t.name = payload.name
+        if payload.amount is not None:
+            t.amount = payload.amount
+        if payload.breakdown is not None:
+            t.breakdown = payload.breakdown
+        if payload.due_date_offset_days is not None:
+            t.due_date_offset_days = payload.due_date_offset_days
+        if payload.is_active is not None:
+            t.is_active = payload.is_active
+        t.updated_by = current_user.get("username")
+        session.flush()
+        after = _template_to_dict(t)
+
+        request.state.audit_entity_id = str(template_id)
+        request.state.audit_summary = f"編輯費用範本 {t.name}"
+        request.state.audit_changes = {
+            "action": "fee_template_update",
+            "before": before,
+            "after": after,
+        }
+        return after
+
+
+@router.delete("/templates/{template_id}")
+def delete_fee_template(
+    template_id: int,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
+):
+    """軟刪除(is_active=False),保留歷史記錄。"""
+    with session_scope() as session:
+        t = session.query(FeeTemplate).filter(FeeTemplate.id == template_id).first()
+        if not t:
+            raise HTTPException(status_code=404, detail="範本不存在")
+        t.is_active = False
+        t.updated_by = current_user.get("username")
+        session.flush()
+
+        request.state.audit_entity_id = str(template_id)
+        request.state.audit_summary = f"停用費用範本 {t.name}"
+        request.state.audit_changes = {
+            "action": "fee_template_delete",
+            "template_id": template_id,
+        }
+        return {"ok": True, "template_id": template_id}
+
+
+# ---------------------------------------------------------------------------
 # 批次產生費用記錄
 # ---------------------------------------------------------------------------
+
+
+def _semester_months(school_year: int, semester: int) -> list[str]:
+    """民國年+學期 → YYYY-MM list。
+
+    上學期 (semester=1): 8-12 月本年 + 1 月隔年
+    下學期 (semester=2): 2-7 月本年
+    """
+    western = school_year + 1911
+    if semester == 1:
+        return [f"{western}-{m:02d}" for m in range(8, 13)] + [f"{western + 1}-01"]
+    return [f"{western + 1}-{m:02d}" for m in range(2, 8)]
+
+
+def _ensure_fee_items_for_templates(
+    session, keys: list, template_by_id: dict, period: str
+) -> dict:
+    """為每個 (template, target_month) 確保有對應的 placeholder FeeItem。
+
+    Why: 既有 StudentFeeRecord.fee_item_id 是 NOT NULL,且 (student_id, fee_item_id)
+    有 unique 約束。新流程以 source_template_id+target_month 驅動,但需相容舊欄位。
+    每個 (template, month) 配一個 FeeItem 作為錨點,避免月費 6 筆共用同 fee_item
+    撞 uq_student_fee_item。
+    """
+    out: dict = {}
+    for tpl_id, tm in keys:
+        tpl = template_by_id[tpl_id]
+        fi_name = f"{tpl.name} ({tm})" if tm else tpl.name
+        existing = (
+            session.query(FeeItem)
+            .filter(FeeItem.name == fi_name, FeeItem.period == period)
+            .first()
+        )
+        if existing:
+            out[(tpl_id, tm)] = existing.id
+            continue
+        fi = FeeItem(
+            name=fi_name,
+            amount=tpl.amount,
+            classroom_id=None,
+            period=period,
+            is_active=True,
+        )
+        session.add(fi)
+        session.flush()
+        out[(tpl_id, tm)] = fi.id
+    return out
+
+
+@router.post("/generate-from-templates")
+def generate_from_templates(
+    payload: GenerateFromTemplatesRequest,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
+):
+    """依該學年/學期所有啟用範本,為符合條件的在學學生產生 FeeRecord。
+
+    - 範圍:fee_templates 表 is_active=True 且 (school_year, semester, fee_type) 命中。
+    - 學生過濾:Classroom.school_year/semester 命中 + Student.lifecycle 為
+      active/enrolled + Student.is_active。on_leave/withdrawn/transferred/graduated 跳過。
+    - 月費展開:上學期 8-1 月、下學期 2-7 月 共 6 張單據。
+    - 冪等:已存在 (student_id, source_template_id, target_month) 跳過。
+    - dry_run:回傳 created/skipped 估算但不寫入 DB。
+    """
+    with session_scope() as session:
+        # 1) 載入符合條件的範本
+        templates = (
+            session.query(FeeTemplate)
+            .filter(
+                FeeTemplate.school_year == payload.school_year,
+                FeeTemplate.semester == payload.semester,
+                FeeTemplate.fee_type.in_(payload.fee_types),
+                FeeTemplate.is_active == True,
+            )
+            .all()
+        )
+        template_by_grade_type = {(t.grade_id, t.fee_type): t for t in templates}
+        template_by_id = {t.id: t for t in templates}
+
+        # 2) 載入該學期班級 + 在學學生
+        rows = (
+            session.query(Student, Classroom)
+            .join(Classroom, Student.classroom_id == Classroom.id)
+            .filter(
+                Classroom.school_year == payload.school_year,
+                Classroom.semester == payload.semester,
+                Classroom.is_active == True,
+                Student.is_active == True,
+                Student.lifecycle_status.in_([LIFECYCLE_ACTIVE, LIFECYCLE_ENROLLED]),
+            )
+            .all()
+        )
+
+        # 3) 預載既存 (student_id, source_template_id, target_month) 冪等鍵
+        existing_keys: set = set()
+        if templates:
+            existing = (
+                session.query(
+                    StudentFeeRecord.student_id,
+                    StudentFeeRecord.source_template_id,
+                    StudentFeeRecord.target_month,
+                )
+                .filter(
+                    StudentFeeRecord.source_template_id.in_([t.id for t in templates])
+                )
+                .all()
+            )
+            existing_keys = {(s, tid, m) for s, tid, m in existing}
+
+        period_str = f"{payload.school_year}-{payload.semester}"
+        now = datetime.now()
+        new_records: list = []
+        created = 0
+        skipped = 0
+        preview: list = []
+
+        for student, classroom in rows:
+            if not classroom.grade_id:
+                continue
+            for ft in payload.fee_types:
+                tpl = template_by_grade_type.get((classroom.grade_id, ft))
+                if not tpl:
+                    continue
+
+                months = (
+                    _semester_months(payload.school_year, payload.semester)
+                    if ft == "monthly"
+                    else [None]
+                )
+                for tm in months:
+                    key = (student.id, tpl.id, tm)
+                    if key in existing_keys:
+                        skipped += 1
+                        continue
+                    record_name = f"{tpl.name}{f' ({tm})' if tm else ''}"
+                    due_date_val = date.today() + timedelta(
+                        days=tpl.due_date_offset_days
+                    )
+                    new_records.append(
+                        {
+                            "student_id": student.id,
+                            "student_name": student.name,
+                            "classroom_name": classroom.name,
+                            # fee_item_id 留 None,稍後 (僅非 dry_run) 依
+                            # (source_template_id, target_month) 填入
+                            "fee_item_id": None,
+                            "fee_item_name": record_name,
+                            "amount_due": tpl.amount,
+                            "amount_paid": 0,
+                            "status": "unpaid",
+                            "period": period_str,
+                            "due_date": due_date_val,
+                            "fee_type": tpl.fee_type,
+                            "source_template_id": tpl.id,
+                            "target_month": tm,
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    )
+                    created += 1
+                    if len(preview) < 50:
+                        preview.append(
+                            {
+                                "student_id": student.id,
+                                "student_name": student.name,
+                                "classroom_name": classroom.name,
+                                "fee_item_name": record_name,
+                                "amount_due": tpl.amount,
+                                "target_month": tm,
+                            }
+                        )
+                    existing_keys.add(key)
+
+        if not payload.dry_run and new_records:
+            # 依 (template, target_month) 唯一鍵預先 ensure FeeItem
+            unique_keys = sorted(
+                {(r["source_template_id"], r["target_month"]) for r in new_records},
+                key=lambda x: (x[0], x[1] or ""),
+            )
+            fee_item_map = _ensure_fee_items_for_templates(
+                session, unique_keys, template_by_id, period_str
+            )
+            for r in new_records:
+                r["fee_item_id"] = fee_item_map[
+                    (r["source_template_id"], r["target_month"])
+                ]
+            session.bulk_insert_mappings(StudentFeeRecord, new_records)
+
+        request.state.audit_entity_id = f"{payload.school_year}-{payload.semester}"
+        request.state.audit_summary = (
+            f"批次產生費用({','.join(payload.fee_types)}): "
+            f"created={created} skipped={skipped} dry_run={payload.dry_run}"
+        )
+        request.state.audit_changes = {
+            "action": "fee_generate_from_templates",
+            "school_year": payload.school_year,
+            "semester": payload.semester,
+            "fee_types": payload.fee_types,
+            "dry_run": payload.dry_run,
+            "created": created,
+            "skipped": skipped,
+        }
+
+        if not payload.dry_run:
+            _invalidate_finance_summary_cache()
+
+        return {
+            "created": created,
+            "skipped": skipped,
+            "dry_run": payload.dry_run,
+            "preview": preview,
+        }
 
 
 @router.post("/generate")
@@ -888,6 +1358,186 @@ def fee_summary(
 _REFUND_IDEMPOTENCY_WINDOW_SECONDS = 10 * 60
 
 
+def _semester_date_range(school_year: int, semester: int) -> tuple[date, date]:
+    """民國年+學期 → (start, end) 西元日期。
+
+    上學期: 8/1 ~ 隔年 1/31（學年起始那年 8 月～次年 1 月）
+    下學期: 2/1 ~ 7/31（學年起始那年的次年 2 月～7 月）
+    """
+    western = school_year + 1911
+    if semester == 1:
+        return date(western, 8, 1), date(western + 1, 1, 31)
+    return date(western + 1, 2, 1), date(western + 1, 7, 31)
+
+
+def _count_workdays(start: date, end: date, holiday_map: dict, makeup_map: dict) -> int:
+    """區間內工作日數(排除週末+國定假日,加補班日)。"""
+    if end < start:
+        return 0
+    total = 0
+    d = start
+    while d <= end:
+        info = classify_day(d, holiday_map, makeup_map)
+        if info["kind"] == "workday":
+            total += 1
+        d = d + timedelta(days=1)
+    return total
+
+
+@router.post("/records/{record_id}/refund-suggest")
+def suggest_refund(
+    record_id: int,
+    payload: RefundSuggestRequest,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_READ)),
+):
+    """根據學生離園日與費用類型,自動計算建議退費金額。
+
+    - registration / miscellaneous → 走 enrollment_ratio
+      (T_served/T_total 三段比例 <1/3 退 2/3、1/3..2/3 退 1/3、≥2/3 不退)
+    - monthly → 走 monthly_partial
+      (事先請假連續 ≥5 上課日, 按 meal+transport 比例退;無 breakdown fallback 全額)
+    - material / insurance → no_refund
+    - custom / 其他 → manual（不提供自動建議）
+    """
+    with session_scope() as session:
+        rec = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.id == record_id)
+            .first()
+        )
+        if not rec:
+            raise HTTPException(status_code=404, detail="費用記錄不存在")
+
+        fee_type = rec.fee_type or "custom"
+
+        # 代購品 / 保險費 → 不退
+        if fee_type in ("material", "insurance"):
+            label = "代購品" if fee_type == "material" else "保險費"
+            return {
+                "suggested_amount": 0,
+                "calc_method": "no_refund",
+                "calc_payload": {
+                    "fee_type": fee_type,
+                    "reason": f"{label}依規定不予退費",
+                },
+                "warnings": [f"{label}依規定不予退費"],
+            }
+
+        # 學期區間 (依 period 解析,格式 民國年-學期 e.g. 114-1)
+        if not rec.period or "-" not in rec.period:
+            raise HTTPException(
+                status_code=400,
+                detail=f"record.period 格式錯誤: {rec.period}",
+            )
+        try:
+            sy_str, sem_str = rec.period.split("-", 1)
+            school_year, semester = int(sy_str), int(sem_str)
+        except (ValueError, AttributeError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"record.period 格式錯誤: {rec.period}",
+            )
+        sem_start, sem_end = _semester_date_range(school_year, semester)
+
+        # 註冊費 / 雜費:走 enrollment_ratio
+        if fee_type in ("registration", "miscellaneous"):
+            holiday_map, makeup_map = load_day_rule_maps(session, sem_start, sem_end)
+            T_total = payload.T_total_override or _count_workdays(
+                sem_start, sem_end, holiday_map, makeup_map
+            )
+            served_end = min(payload.withdrawal_date, sem_end)
+            if payload.T_served_override is not None:
+                T_served = payload.T_served_override
+            else:
+                T_served = (
+                    _count_workdays(sem_start, served_end, holiday_map, makeup_map)
+                    if served_end >= sem_start
+                    else 0
+                )
+            return calc_enrollment_refund(
+                amount_due=rec.amount_due,
+                T_total=T_total,
+                T_served=T_served,
+            )
+
+        # 月費:走 monthly_partial
+        if fee_type == "monthly":
+            target_month = rec.target_month
+            if not target_month:
+                raise HTTPException(status_code=400, detail="月費記錄缺 target_month")
+            try:
+                year_str, month_str = target_month.split("-", 1)
+                year, month = int(year_str), int(month_str)
+            except (ValueError, AttributeError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"target_month 格式錯誤: {target_month}",
+                )
+            month_start = date(year, month, 1)
+            month_end = date(year, month, monthrange(year, month)[1])
+            holiday_map, makeup_map = load_day_rule_maps(
+                session, month_start, month_end
+            )
+            work_days = _count_workdays(month_start, month_end, holiday_map, makeup_map)
+
+            # 該學生該月所有 approved leave;判斷 advance_filed 與蒐集請假日
+            leaves = (
+                session.query(StudentLeaveRequest)
+                .filter(
+                    StudentLeaveRequest.student_id == rec.student_id,
+                    StudentLeaveRequest.status == "approved",
+                    StudentLeaveRequest.end_date >= month_start,
+                    StudentLeaveRequest.start_date <= month_end,
+                )
+                .all()
+            )
+            advance_filed = False
+            leave_dates: list[date] = []
+            for lv in leaves:
+                # 「事先」定義: created_at.date() < start_date
+                if lv.created_at and lv.created_at.date() < lv.start_date:
+                    advance_filed = True
+                d = max(lv.start_date, month_start)
+                end = min(lv.end_date, month_end)
+                while d <= end:
+                    leave_dates.append(d)
+                    d = d + timedelta(days=1)
+
+            L_consecutive = longest_consecutive_workdays(
+                leave_dates, holiday_map, makeup_map
+            )
+
+            # 取 breakdown:rec.source_template_id 對應的 FeeTemplate
+            breakdown = None
+            if rec.source_template_id:
+                tpl = (
+                    session.query(FeeTemplate)
+                    .filter(FeeTemplate.id == rec.source_template_id)
+                    .first()
+                )
+                if tpl:
+                    breakdown = tpl.breakdown
+
+            return calc_monthly_refund(
+                amount_due=rec.amount_due,
+                breakdown=breakdown,
+                L_consecutive=L_consecutive,
+                work_days_in_month=work_days,
+                advance_filed=advance_filed,
+            )
+
+        # custom / 其他:不提供自動建議
+        return {
+            "suggested_amount": 0,
+            "calc_method": "manual",
+            "calc_payload": {
+                "fee_type": fee_type,
+                "reason": "此類型無自動計算",
+            },
+            "warnings": ["此費用類型無自動退費規則,請手動填寫"],
+        }
+
+
 def _find_refund_idempotent_hit(
     session, idempotency_key: str
 ) -> Optional[StudentFeeRefund]:
@@ -992,6 +1642,8 @@ def refund_fee_record(
             notes=payload.notes or "",
             refunded_by=operator,
             idempotency_key=payload.idempotency_key,
+            calc_method=payload.calc_method,
+            calc_payload=payload.calc_payload,
         )
         session.add(refund)
 
@@ -1077,6 +1729,8 @@ def refund_fee_record(
                 "refund_id": refund.id,
                 "cumulative_refund_after": cumulative_refund,
                 "idempotency_key": payload.idempotency_key,
+                "calc_method": payload.calc_method,
+                "calc_payload": payload.calc_payload,
                 "operator": operator,
             },
         )

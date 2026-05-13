@@ -15,9 +15,82 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
     Index,
+    JSON,
+    CheckConstraint,
 )
 
 from models.base import Base
+
+FEE_TYPE_REGISTRATION = "registration"
+FEE_TYPE_MISCELLANEOUS = "miscellaneous"
+FEE_TYPE_MONTHLY = "monthly"
+FEE_TYPE_MATERIAL = "material"
+FEE_TYPE_INSURANCE = "insurance"
+FEE_TYPE_CUSTOM = "custom"
+
+FEE_TYPES_TEMPLATE = (
+    FEE_TYPE_REGISTRATION,
+    FEE_TYPE_MISCELLANEOUS,
+    FEE_TYPE_MONTHLY,
+)
+
+FEE_TYPES_ALL = FEE_TYPES_TEMPLATE + (
+    FEE_TYPE_MATERIAL,
+    FEE_TYPE_INSURANCE,
+    FEE_TYPE_CUSTOM,
+)
+
+
+class FeeTemplate(Base):
+    """費用範本：以「年級×學年×學期×費用類型」為唯一鍵，
+    驅動批次產生學期費用記錄。"""
+
+    __tablename__ = "fee_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    grade_id = Column(
+        Integer,
+        ForeignKey("class_grades.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    school_year = Column(Integer, nullable=False, comment="民國年")
+    semester = Column(Integer, nullable=False, comment="1=上, 2=下")
+    fee_type = Column(
+        String(20),
+        nullable=False,
+        comment="registration / miscellaneous / monthly",
+    )
+    name = Column(String(100), nullable=False)
+    amount = Column(Integer, nullable=False)
+    breakdown = Column(
+        JSON,
+        nullable=True,
+        comment="月費組成 e.g. {tuition:8500, meal:3000, transport:1500}",
+    )
+    due_date_offset_days = Column(Integer, default=14, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_by = Column(String(50), nullable=True)
+    updated_by = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "grade_id",
+            "school_year",
+            "semester",
+            "fee_type",
+            name="uq_fee_template",
+        ),
+        CheckConstraint(
+            "fee_type IN ('registration','miscellaneous','monthly')",
+            name="ck_fee_template_type",
+        ),
+        CheckConstraint("amount >= 0", name="ck_fee_template_amount_nonneg"),
+        CheckConstraint("semester IN (1, 2)", name="ck_fee_template_semester"),
+    )
 
 
 class FeeItem(Base):
@@ -84,6 +157,22 @@ class StudentFeeRecord(Base):
     )
     notes = Column(Text, nullable=True, default="")
 
+    fee_type = Column(
+        String(20),
+        nullable=True,
+        comment="費用類型(registration/miscellaneous/monthly/material/insurance/custom)",
+    )
+    source_template_id = Column(
+        Integer,
+        ForeignKey("fee_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    target_month = Column(
+        String(7),
+        nullable=True,
+        comment="僅 monthly 使用,格式 YYYY-MM",
+    )
+
     period = Column(
         String(20), nullable=False, comment="學年學期（denormalized，便於篩選）"
     )
@@ -103,6 +192,7 @@ class StudentFeeRecord(Base):
         Index("ix_fee_records_fee_item", "fee_item_id"),
         Index("ix_fee_records_student_period", "student_id", "period"),
         Index("ix_fee_records_due_date", "due_date"),
+        Index("ix_fee_records_fee_type", "fee_type"),
     )
 
 
@@ -169,6 +259,16 @@ class StudentFeeRefund(Base):
     notes = Column(Text, nullable=True, default="", comment="備註")
     refunded_by = Column(String(50), nullable=False, comment="操作人員 username")
     refunded_at = Column(DateTime, default=datetime.now, nullable=False)
+    calc_method = Column(
+        String(30),
+        nullable=True,
+        comment="enrollment_ratio / monthly_partial / manual",
+    )
+    calc_payload = Column(
+        JSON,
+        nullable=True,
+        comment="計算明細 e.g. {T_total:100,T_served:30,ratio:'<1/3',refund_ratio:'2/3'}",
+    )
     # 冪等鍵：網路重送時同 key 視為重試，避免重複退款（NULL 允許重複，相容舊資料）
     idempotency_key = Column(
         String(64), nullable=True, comment="退款冪等鍵（10 分鐘視窗內同 key 視為重試）"
