@@ -331,3 +331,30 @@ def test_timeline_includes_activity(app_client):
     resp = client.get("/api/students/1/timeline?since=2020-01-01")
     items = resp.json()["items"]
     assert any(it["type"] == "activity" for it in items)
+
+
+def test_timeline_get_writes_read_audit(app_client):
+    """F-V6-03：timeline 跨模組聚合 GET 必須留下 AuditLog action=READ 痕跡。"""
+    import time
+
+    from models.database import AuditLog
+
+    client, session_factory = app_client
+    resp = client.get("/api/students/1/timeline?types=milestone,observation")
+    assert resp.status_code == 200, resp.text
+
+    # write_explicit_audit 是 fire-and-forget；等背景寫入落地
+    time.sleep(0.1)
+    with session_factory() as session:
+        rows = (
+            session.query(AuditLog)
+            .filter(
+                AuditLog.action == "READ",
+                AuditLog.entity_type == "student",
+                AuditLog.entity_id == "1",
+            )
+            .all()
+        )
+    assert any(
+        "portfolio timeline 跨模組聚合" in (r.summary or "") for r in rows
+    ), f"未找到 portfolio timeline READ audit；rows={[(r.entity_id, r.summary) for r in rows]}"

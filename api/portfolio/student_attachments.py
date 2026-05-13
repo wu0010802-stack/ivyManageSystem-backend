@@ -18,7 +18,7 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, or_
 
 from api.attachments import _attachment_to_dict
@@ -37,6 +37,7 @@ from models.portfolio import (
     ATTACHMENT_OWNER_OBSERVATION,
     ATTACHMENT_OWNER_REPORT,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -98,6 +99,7 @@ def _owner_id_subquery(session, owner_type: str, student_id: int):
 @router.get("/{student_id}/attachments")
 async def list_student_attachments(
     student_id: int,
+    request: Request,
     owner_type: Optional[str] = Query(None, description="篩選單一 owner_type"),
     since: Optional[date] = Query(None),
     until: Optional[date] = Query(None),
@@ -114,6 +116,20 @@ async def list_student_attachments(
 
             if owner_type and owner_type not in SUPPORTED_OWNER_TYPES:
                 raise HTTPException(status_code=422, detail="不支援的 owner_type")
+
+            # F-V6-03：跨模組 PII 聚合端點補敏感讀取 audit（對齊 7a25d767）
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student",
+                entity_id=str(student_id),
+                summary=f"portfolio 跨模組附件聚合：student_id={student_id}",
+                changes={
+                    "owner_type_filter": owner_type or "all",
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                },
+            )
 
             target_owner_types = (
                 [owner_type] if owner_type else list(SUPPORTED_OWNER_TYPES)

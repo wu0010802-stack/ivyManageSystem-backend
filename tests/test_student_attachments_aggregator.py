@@ -21,6 +21,7 @@ from api.portfolio.student_attachments import router as student_attachments_rout
 from models.auth import User
 from models.database import (
     Attachment,
+    AuditLog,
     Base,
     Classroom,
     Student,
@@ -198,3 +199,30 @@ def test_until_includes_same_day_uploads(app_client):
     assert (
         len(same_day) == 1
     ), f"當天上傳的圖必須出現在 until=今天 的查詢中, got items={items}"
+
+
+def test_attachments_get_writes_read_audit(app_client):
+    """F-V6-03：跨模組附件聚合 GET 必須留下 AuditLog action=READ 痕跡。"""
+    import time
+
+    client, session_factory, ids = app_client
+    resp = client.get(
+        f"/api/students/{ids['student_id']}/attachments?owner_type=observation"
+    )
+    assert resp.status_code == 200, resp.text
+
+    # write_explicit_audit 是 fire-and-forget；等背景寫入落地
+    time.sleep(0.1)
+    with session_factory() as session:
+        rows = (
+            session.query(AuditLog)
+            .filter(
+                AuditLog.action == "READ",
+                AuditLog.entity_type == "student",
+                AuditLog.entity_id == str(ids["student_id"]),
+            )
+            .all()
+        )
+    assert any(
+        "portfolio 跨模組附件聚合" in (r.summary or "") for r in rows
+    ), f"未找到 portfolio attachments READ audit；rows={[(r.entity_id, r.summary) for r in rows]}"
