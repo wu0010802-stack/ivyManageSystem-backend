@@ -24,6 +24,7 @@ admin 才能最終核），需要：
    的 finalize 條件（從「寫一筆 log 即結案」改成「最後一關才結案」）
 """
 
+import json
 import logging
 
 from models.database import User, ApprovalPolicy, ApprovalLog, SalaryRecord
@@ -80,19 +81,30 @@ def _check_approval_eligibility(
 
 
 def _write_approval_log(
+    *,
+    session,
     doc_type: str,
     doc_id: int,
     action: str,
     approver: dict,
-    comment: str | None,
-    session,
+    comment: str | None = None,
+    metadata: dict | None = None,
 ):
     """寫入簽核記錄並回傳 row（含 id）。日誌寫入失敗時記錄 warning，不阻礙核准主流程。
 
+    Why keyword-only: 三個 router（leaves/overtimes/punch_corrections）共用此 helper，
+        metadata 為新增欄位，強制 keyword 呼叫避免位置混淆。
+    Why metadata-in-comment: 不動 ApprovalLog schema，用 `[META]` 分隔符嵌入 comment 尾段；
+        前端僅顯示 `[META]` 前段，metadata 留給 audit/report 解析。
     Why return row: AuditLog 需在 changes 留下 approval_log_id，方便前端「請假/加班頁的
-    簽核紀錄」與「操作紀錄頁」雙向跳轉，不必各自重新撈一次 ApprovalLog。
+        簽核紀錄」與「操作紀錄頁」雙向跳轉，不必各自重新撈一次 ApprovalLog。
     """
     try:
+        full_comment = comment or ""
+        if metadata:
+            payload = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+            sep = "\n" if full_comment else ""
+            full_comment = f"{full_comment}{sep}[META]{payload}"
         log = ApprovalLog(
             doc_type=doc_type,
             doc_id=doc_id,
@@ -100,7 +112,7 @@ def _write_approval_log(
             approver_id=approver.get("id"),
             approver_username=approver.get("username", ""),
             approver_role=approver.get("role", ""),
-            comment=comment,
+            comment=full_comment or None,
         )
         session.add(log)
         session.flush()  # flush 才會分配 id；同 transaction 內，呼叫端 commit 一次即可
@@ -121,7 +133,8 @@ def _get_finalized_salary_record(session, employee_id: int, year: int, month: in
     """查詢單一月份是否已封存。
 
     找到封存記錄時回傳該 SalaryRecord，否則回傳 None。
-    供 leaves.py（多月份迴圈）與 overtimes.py（單月份）共用。
+    供 meetings / shifts / attendance.records / portal.overtimes 等仍需單月查詢的端點使用；
+    leaves / overtimes / punch_corrections 已改用 services.salary.finalize_guard.assert_months_not_finalized。
     """
     return (
         session.query(SalaryRecord)

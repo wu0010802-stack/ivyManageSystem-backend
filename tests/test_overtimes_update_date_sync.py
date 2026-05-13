@@ -67,14 +67,16 @@ def _common_patches(ot, emp):
         return first_results.pop(0) if first_results else None
 
     session.query.return_value.filter.return_value.first.side_effect = first_side_effect
-    session.query.return_value.filter.return_value.with_for_update.return_value.first.side_effect = first_side_effect
+    session.query.return_value.filter.return_value.with_for_update.return_value.first.side_effect = (
+        first_side_effect
+    )
 
     return session, [
         patch("api.overtimes.get_session", return_value=session),
         patch("api.overtimes._check_overtime_overlap", return_value=None),
         patch("api.overtimes._check_monthly_overtime_cap"),
         patch("api.overtimes._check_overtime_type_calendar"),
-        patch("api.overtimes._check_salary_month_not_finalized"),
+        patch("api.overtimes.assert_months_not_finalized"),
         patch("api.overtimes._revoke_comp_leave_grant"),
         patch("api.overtimes.calculate_overtime_pay", return_value=400.0),
         patch("api.overtimes._recalculate_salary_for_overtime_months"),
@@ -105,9 +107,9 @@ class TestUpdateOvertimeDateSync:
                 p.stop()
 
         assert ot.overtime_date == date(2026, 3, 22)
-        assert ot.start_time.date() == date(2026, 3, 22), (
-            f"start_time 日期未同步:{ot.start_time}"
-        )
+        assert ot.start_time.date() == date(
+            2026, 3, 22
+        ), f"start_time 日期未同步:{ot.start_time}"
         assert ot.start_time.time() == time(18, 0)
         assert ot.end_time.date() == date(2026, 3, 22)
         assert ot.end_time.time() == time(20, 0)
@@ -121,7 +123,9 @@ class TestUpdateOvertimeDateSync:
         session, patches = _common_patches(ot, emp)
         # 把 overlap check 拆出來單獨追蹤
         overlap_mock = MagicMock(return_value=None)
-        patches = [p for p in patches if "_check_overtime_overlap" not in str(p.attribute)]
+        patches = [
+            p for p in patches if "_check_overtime_overlap" not in str(p.attribute)
+        ]
         patches.append(patch("api.overtimes._check_overtime_overlap", overlap_mock))
 
         for p in patches:
@@ -142,9 +146,9 @@ class TestUpdateOvertimeDateSync:
         args = overlap_mock.call_args.args
         # 訊號:_check_overtime_overlap(session, employee_id, check_date, start_dt, end_dt, ...)
         new_start_dt, new_end_dt = args[3], args[4]
-        assert new_start_dt.date() == date(2026, 3, 22), (
-            f"overlap 用了舊日期 datetime:{new_start_dt}"
-        )
+        assert new_start_dt.date() == date(
+            2026, 3, 22
+        ), f"overlap 用了舊日期 datetime:{new_start_dt}"
         assert new_start_dt.time() == time(18, 0)
         assert new_end_dt.date() == date(2026, 3, 22)
         assert new_end_dt.time() == time(20, 0)

@@ -69,7 +69,7 @@ def _common_patches(leave, mock_engine):
         patch("api.leaves.validate_leave_hours_against_schedule"),
         patch("api.leaves._check_leave_limits"),
         patch("api.leaves._guard_leave_quota"),
-        patch("api.leaves._check_salary_months_not_finalized"),
+        patch("api.leaves.assert_months_not_finalized"),
         patch("api.leaves._salary_engine", mock_engine),
     ]
 

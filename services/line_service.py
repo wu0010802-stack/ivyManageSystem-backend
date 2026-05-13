@@ -492,6 +492,20 @@ class LineService:
         text = build_overtime_result_message(name, ot_date, ot_type, approved)
         self._push_to_user(line_user_id, text)
 
+    def notify_punch_correction_result(
+        self,
+        line_user_id: str,
+        name: str,
+        target_date: date,
+        approved: bool,
+        reason: Optional[str] = None,
+    ) -> None:
+        """補打卡審核結果個人推播（失敗時 log warning，不拋出）"""
+        status = "已核准" if approved else "已駁回"
+        suffix = f"\n原因：{reason}" if (not approved and reason) else ""
+        text = f"【補打卡審核結果】{name} {target_date} 的補打卡{status}{suffix}"
+        self._push_to_user(line_user_id, text)
+
     def notify_salary_batch_complete(
         self,
         year: int,

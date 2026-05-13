@@ -5,6 +5,10 @@ api/leaves.py:import_leaves 直接呼叫 _check_quota,
 HR 可用 Excel 大量匯入超過配額的補休假單,主管核准後直接扣薪/占配額。
 
 修復方向:對 compensatory 走 _check_compensatory_quota,其他維持 _check_quota。
+
+2026-05-13 Task 8 後：endpoint 改用 utils.excel_io.parse_excel；
+本測試改 patch `api.leaves.parse_excel` 回傳預先建構的 LeaveImportRow，
+原 pd.read_excel patch 已無效（endpoint 不再呼叫 pandas）。
 """
 
 import sys
@@ -14,26 +18,28 @@ import types
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _build_df(leave_type="compensatory"):
-    return pd.DataFrame(
-        [
-            {
-                "員工編號": "E001",
-                "員工姓名": "員工 A",
-                "假別代碼": leave_type,
-                "開始日期": "2026-03-15",
-                "結束日期": "2026-03-15",
-                "時數(可空)": 4.0,
-                "原因(可空)": "匯入測試",
-            }
-        ]
+def _build_parse_result(leave_type="compensatory"):
+    """模擬 parse_excel 回傳：包一筆 LeaveImportRow（無 parse 錯誤）。"""
+    from api.leaves import LeaveImportRow
+    from utils.excel_io import ImportResult
+
+    row = LeaveImportRow.model_validate(
+        {
+            "員工編號": "E001",
+            "員工姓名": "員工 A",
+            "假別代碼": leave_type,
+            "開始日期": "2026-03-15",
+            "結束日期": "2026-03-15",
+            "時數(可空)": 4.0,
+            "原因(可空)": "匯入測試",
+        }
     )
+    return ImportResult(rows=[row], errors=[])
 
 
 def _make_emp():
@@ -47,7 +53,7 @@ async def _fake_read(_f):
     return b""
 
 
-def _common_patches(emp, df):
+def _common_patches(emp, parse_result):
     """為 import_leaves 準備所有外部依賴 patch。"""
     import api.leaves as leaves_module
 
@@ -56,7 +62,8 @@ def _common_patches(emp, df):
         patch.object(leaves_module, "get_session", return_value=session),
         patch("api.leaves.read_upload_with_size_check", side_effect=_fake_read),
         patch("api.leaves.validate_file_signature"),
-        patch("api.leaves.pd.read_excel", return_value=df),
+        # 2026-05-13 Task 8：endpoint 改用 utils.excel_io.parse_excel
+        patch("api.leaves.parse_excel", return_value=parse_result),
         patch("api.leaves.build_employee_lookup", return_value=({}, {})),
         patch("api.leaves.resolve_employee_from_row", return_value=emp),
         patch("api.leaves.validate_leave_hours_against_schedule"),
@@ -83,9 +90,9 @@ class TestImportLeavesCompensatoryDispatch:
         import api.leaves as leaves_module
 
         emp = _make_emp()
-        df = _build_df(leave_type="compensatory")
+        parse_result = _build_parse_result(leave_type="compensatory")
 
-        patches = _common_patches(emp, df)
+        patches = _common_patches(emp, parse_result)
 
         for p in patches:
             p.start()
@@ -112,8 +119,8 @@ class TestImportLeavesCompensatoryDispatch:
         import api.leaves as leaves_module
 
         emp = _make_emp()
-        df = _build_df(leave_type="annual")
-        patches = _common_patches(emp, df)
+        parse_result = _build_parse_result(leave_type="annual")
+        patches = _common_patches(emp, parse_result)
 
         for p in patches:
             p.start()

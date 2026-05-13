@@ -212,12 +212,20 @@ class TestP0_1BatchApproveTwoPass:
         original_write = leaves_module._write_approval_log
         seen_ids: list[int] = []
 
-        def fake_write(entity_type, entity_id, action, current_user, reason, session):
-            seen_ids.append(entity_id)
-            if entity_id == lv2_id:
+        def fake_write(
+            *, session, doc_type, doc_id, action, approver, comment=None, metadata=None
+        ):
+            seen_ids.append(doc_id)
+            if doc_id == lv2_id:
                 raise RuntimeError("simulated unexpected failure")
             return original_write(
-                entity_type, entity_id, action, current_user, reason, session
+                session=session,
+                doc_type=doc_type,
+                doc_id=doc_id,
+                action=action,
+                approver=approver,
+                comment=comment,
+                metadata=metadata,
             )
 
         mp.setattr(leaves_module, "_write_approval_log", fake_write)
@@ -268,11 +276,19 @@ class TestP0_1BatchApproveTwoPass:
 
         original_write = overtimes_module._write_approval_log
 
-        def fake_write(entity_type, entity_id, action, current_user, reason, session):
-            if entity_id == ot2_id:
+        def fake_write(
+            *, session, doc_type, doc_id, action, approver, comment=None, metadata=None
+        ):
+            if doc_id == ot2_id:
                 raise RuntimeError("simulated")
             return original_write(
-                entity_type, entity_id, action, current_user, reason, session
+                session=session,
+                doc_type=doc_type,
+                doc_id=doc_id,
+                action=action,
+                approver=approver,
+                comment=comment,
+                metadata=metadata,
             )
 
         mp.setattr(overtimes_module, "_write_approval_log", fake_write)

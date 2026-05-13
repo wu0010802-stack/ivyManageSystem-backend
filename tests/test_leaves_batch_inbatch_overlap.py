@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+
 """SQLite 整合測試:批次核准遇到「同批兩張同員工同時段」的 in-batch 重疊。
 
 P2-5 補丁驗證:
@@ -111,7 +112,9 @@ def test_in_batch_same_employee_same_period_blocks_second(
     emp_id, id_a, id_b = _seed_two_overlapping_pending(integration_session)
 
     # 跳過跟本案無關的檢查/副作用
-    monkeypatch.setattr(leaves_module, "_check_approval_eligibility", lambda *a, **k: True)
+    monkeypatch.setattr(
+        leaves_module, "_check_approval_eligibility", lambda *a, **k: True
+    )
     monkeypatch.setattr(leaves_module, "_check_substitute_guard", lambda *a, **k: None)
     monkeypatch.setattr(
         leaves_module, "_check_substitute_leave_conflict", lambda *a, **k: None
@@ -122,7 +125,7 @@ def test_in_batch_same_employee_same_period_blocks_second(
     monkeypatch.setattr(leaves_module, "_check_leave_limits", lambda *a, **k: None)
     monkeypatch.setattr(leaves_module, "_guard_leave_quota", lambda *a, **k: None)
     monkeypatch.setattr(
-        leaves_module, "_check_salary_months_not_finalized", lambda *a, **k: None
+        leaves_module, "assert_months_not_finalized", lambda *a, **k: None
     )
     monkeypatch.setattr(leaves_module, "_write_approval_log", lambda *a, **k: None)
     monkeypatch.setattr(leaves_module, "_salary_engine", None)
@@ -141,9 +144,9 @@ def test_in_batch_same_employee_same_period_blocks_second(
     succeeded = result["succeeded"]
     failed_ids = [f["id"] for f in result["failed"]]
 
-    assert len(succeeded) == 1, (
-        f"in-batch 同員工同時段:應僅一張成功,實際 succeeded={succeeded}, failed={result['failed']}"
-    )
+    assert (
+        len(succeeded) == 1
+    ), f"in-batch 同員工同時段:應僅一張成功,實際 succeeded={succeeded}, failed={result['failed']}"
     assert len(failed_ids) == 1, f"應有一張失敗,實際 failed={result['failed']}"
 
     # 後者(id_b)被擋
