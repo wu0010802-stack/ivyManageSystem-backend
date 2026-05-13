@@ -206,6 +206,10 @@ class RefundRequest(BaseModel):
         pattern=r"^[A-Za-z0-9_-]+$",
         description="冪等鍵（10 分鐘視窗內同 key 視為重試，避免重複退款）",
     )
+    calc_method: Optional[str] = Field(
+        None, pattern="^(enrollment_ratio|monthly_partial|no_refund|manual)$"
+    )
+    calc_payload: Optional[dict] = None
 
 
 def _apply_fee_record_filters(
@@ -1638,6 +1642,8 @@ def refund_fee_record(
             notes=payload.notes or "",
             refunded_by=operator,
             idempotency_key=payload.idempotency_key,
+            calc_method=payload.calc_method,
+            calc_payload=payload.calc_payload,
         )
         session.add(refund)
 
@@ -1723,6 +1729,8 @@ def refund_fee_record(
                 "refund_id": refund.id,
                 "cumulative_refund_after": cumulative_refund,
                 "idempotency_key": payload.idempotency_key,
+                "calc_method": payload.calc_method,
+                "calc_payload": payload.calc_payload,
                 "operator": operator,
             },
         )
