@@ -898,6 +898,8 @@ class ActivityService:
                 final_reminded_count += 1
 
         # 3. T-24h 一般提醒（只發一次，推送成功才寫戳記）
+        #    守衛：confirm_deadline > now+6h，排除已進入 T-6h 區間的候補，
+        #    確保 T-24h 與 T-6h 兩個分支完全互斥，避免同一次 sweep 雙發。
         reminder_offset = timedelta(hours=_get_reminder_offset_hours())
         reminder_threshold = now + reminder_offset
         reminder_rows = (
@@ -911,6 +913,8 @@ class ActivityService:
                 RegistrationCourse.confirm_deadline.isnot(None),
                 RegistrationCourse.confirm_deadline >= now,
                 RegistrationCourse.confirm_deadline <= reminder_threshold,
+                RegistrationCourse.confirm_deadline
+                > now + timedelta(hours=_get_final_reminder_offset_hours()),
                 RegistrationCourse.reminder_sent_at.is_(None),
                 ActivityRegistration.is_active.is_(True),
             )

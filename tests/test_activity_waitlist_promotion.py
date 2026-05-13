@@ -414,6 +414,41 @@ class TestSweepExpired:
         assert rc.final_reminder_sent_at is None  # 失敗則不寫戳記
         assert result["final_reminded"] == 0
 
+    def test_t24_reminder_stamp_not_written_on_line_failure(
+        self, session, svc, monkeypatch
+    ):
+        """T-24h 推送失敗時不應寫 reminder_sent_at（下輪重試）。
+        deadline 剩 20h：進入 T-24h 區間（≤24h），但不在 T-6h 區間（>6h），
+        修完 I-1 後 T-24h 與 T-6h 完全互斥，此筆只走 T-24h 分支。
+        """
+        course = _add_course(session, capacity=1)
+        reg = _add_reg(session)
+        rc = _enroll(session, reg.id, course.id, status="promoted_pending")
+        rc.confirm_deadline = datetime.now() + timedelta(hours=20)
+        # reminder_sent_at=None：讓 T-24h 分支有機會觸發
+        # final_reminder_sent_at=None：T-6h 不會觸發（deadline > 6h）
+        session.flush()
+
+        class StubLineService:
+            def notify_activity_waitlist_promotion_reminder(self, *a, **kw):
+                return False  # 模擬 T-24h 推送失敗
+
+            def notify_activity_waitlist_final_reminder(self, *a, **kw):
+                return False
+
+            def notify_activity_waitlist_promotion_expired(self, *a, **kw):
+                return False
+
+        svc._line_svc = StubLineService()
+
+        result = svc.sweep_expired_pending_promotions(session)
+        session.refresh(rc)
+        assert rc.reminder_sent_at is None  # T-24h 失敗不寫戳記
+        assert result["reminded"] == 0
+        # T-6h 分支不應觸發（deadline 距現在 20h > 6h）
+        assert rc.final_reminder_sent_at is None
+        assert result["final_reminded"] == 0
+
 
 # ------------------------------------------------------------------ #
 # 4. 容量閘：promoted_pending 佔位
