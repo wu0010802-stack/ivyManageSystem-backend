@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from models.classroom import Student
 from utils.permissions import Permission
 from utils.auth import require_staff_permission
+from utils.portfolio_access import student_ids_in_scope
 
 # get_db is exported from disability_documents — reuse to share the same
 # monkey-patched _SessionFactory in tests.
@@ -42,15 +43,22 @@ def disability_expiry_widget(
 ):
     today = date.today()
     end = today + timedelta(days=days)
-    rows = (
+    q = (
         db.query(Student)
         .filter(Student.is_active == True)  # noqa: E712
         .filter(Student.disability_cert_expiry != None)  # noqa: E711
         .filter(Student.disability_cert_expiry >= today)
         .filter(Student.disability_cert_expiry <= end)
-        .order_by(Student.disability_cert_expiry.asc())
-        .all()
     )
+    # 班級 scope：admin/hr/supervisor None 表全放行；teacher 縮到自己班級
+    allowed = student_ids_in_scope(db, current_user)
+    if allowed is None:
+        pass
+    elif not allowed:
+        return DisabilityExpiryResponse(total=0, days_window=days, students=[])
+    else:
+        q = q.filter(Student.id.in_(allowed))
+    rows = q.order_by(Student.disability_cert_expiry.asc()).all()
     students = [
         ExpiringStudentRow(
             id=s.id,

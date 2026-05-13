@@ -259,6 +259,78 @@ def test_iep_scope_班導_only_sees_own_classroom(gov_moe_client):
     assert rows[0]["student_id"] == sid_a
 
 
+def test_iep_create_rejects_cross_classroom_student(gov_moe_client):
+    """班導 不可為其他班學生建立 IEP（IDOR via body.student_id）。
+
+    P1-5 修補目標：原本 create_iep 直接 **payload.model_dump() 入庫，未驗證
+    student_id 是否在 caller scope 內；持 STUDENTS_SPECIAL_NEEDS_WRITE 的班導
+    可為跨班學生建檔污染唯一鍵 / 業務紀錄。
+    """
+    from models.classroom import Classroom, Student
+    from models.employee import Employee
+
+    client, sf = gov_moe_client
+
+    with sf() as s:
+        cls_a = Classroom(name="A 班")
+        cls_b = Classroom(name="B 班")
+        s.add_all([cls_a, cls_b])
+        s.commit()
+        s.refresh(cls_a)
+        s.refresh(cls_b)
+
+        st_b = Student(
+            name="B 班學生",
+            student_id="B900",
+            is_active=True,
+            classroom_id=cls_b.id,
+            disability_type="自閉症",
+        )
+        s.add(st_b)
+        s.commit()
+        s.refresh(st_b)
+
+        emp = Employee(
+            name="A 班班導",
+            employee_id="T900",
+            is_active=True,
+            classroom_id=cls_a.id,
+            supervisor_role=None,
+        )
+        s.add(emp)
+        s.commit()
+        s.refresh(emp)
+
+        s.add(
+            User(
+                username="teacher_a",
+                password_hash=hash_password("Teach123"),
+                role="teacher",
+                permissions=(1 << 48),  # STUDENTS_SPECIAL_NEEDS_WRITE
+                is_active=True,
+                employee_id=emp.id,
+            )
+        )
+        s.commit()
+        sid_b = st_b.id
+
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "teacher_a", "password": "Teach123"},
+    )
+    assert resp.status_code == 200
+    tok = resp.json().get("access_token") or resp.cookies.get("access_token")
+
+    # A 班班導試圖為 B 班學生建 IEP → 必須 403
+    r = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid_b, "school_year": 2026, "semester": 1},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 403, r.text
+    assert "IEP" in r.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # A2 Tests: clone semantics + state transitions
 # ---------------------------------------------------------------------------

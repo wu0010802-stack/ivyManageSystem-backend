@@ -251,3 +251,60 @@ def test_list_filters_by_student(authed_client_admin, sample_disability_doc):
     docs = res.json()
     assert len(docs) >= 1
     assert all(d["student_id"] == student_id for d in docs)
+
+
+# ---------------------------------------------------------------------------
+# P1-6/7 security regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_create_rejects_file_path_traversal(authed_client_admin, sample_student):
+    """P1-7：file_path 含 .. 必須拒絕（pydantic 422）。"""
+    client, _ = authed_client_admin
+    for bad in ("..//etc/passwd", "uploads/../../etc/passwd", "x\0y"):
+        res = client.post(
+            "/api/gov-moe/disability-documents",
+            json={
+                "student_id": sample_student.id,
+                "doc_type": "鑑定證明",
+                "file_path": bad,
+            },
+        )
+        assert res.status_code == 422, f"path={bad!r} 應 422，實際 {res.status_code}"
+
+
+def test_view_only_user_cannot_write(gov_moe_client, sample_student):
+    """P1-6：僅持 GOV_REPORTS_VIEW（無 EXPORT）的 user 不可 POST/PUT/DELETE。"""
+    client, sf = gov_moe_client
+    with sf() as s:
+        s.add(
+            User(
+                username="viewer",
+                password_hash=hash_password("ViewPass1"),
+                role="hr",
+                permissions=int(Permission.GOV_REPORTS_VIEW),
+                is_active=True,
+            )
+        )
+        s.commit()
+    token = _login(client, "viewer", "ViewPass1")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    # POST 應 403
+    res = client.post(
+        "/api/gov-moe/disability-documents",
+        json={
+            "student_id": sample_student.id,
+            "doc_type": "鑑定證明",
+            "file_path": "uploads/x.pdf",
+        },
+        headers=headers,
+    )
+    assert res.status_code == 403, res.text
+
+    # 讀取仍可（VIEW 權限就是給讀的）
+    res = client.get(
+        f"/api/gov-moe/disability-documents?student_id={sample_student.id}",
+        headers=headers,
+    )
+    assert res.status_code == 200
