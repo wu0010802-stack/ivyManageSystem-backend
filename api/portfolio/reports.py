@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -571,6 +571,17 @@ async def send_growth_report_to_line(
                 raise HTTPException(status_code=404, detail="報告不存在")
             if r.status != REPORT_STATUS_READY:
                 raise HTTPException(status_code=409, detail="報告尚未準備好")
+            # 5 分鐘冪等：防前端重複提交或 admin 連點造成家長收重複 LINE
+            if r.line_sent_at and (
+                datetime.utcnow() - r.line_sent_at < timedelta(minutes=5)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"5 分鐘內已推送過（last_sent_at={r.line_sent_at.isoformat()}），"
+                        f"請稍後再試"
+                    ),
+                )
 
             from models.database import Guardian
             from models.auth import User as _UserModel

@@ -268,3 +268,46 @@ def test_send_line_when_not_ready_returns_409(app_client):
         session.commit()
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 409
+
+
+def test_send_line_idempotent_within_5_minutes(app_client):
+    """Why: 5 分鐘內重複推送 (admin 連點 / 前端 bug) 應回 409 防 LINE quota 浪費."""
+    from datetime import datetime, timedelta
+
+    client, session_factory, _ = app_client
+    create = client.post(
+        "/api/students/1/growth-reports",
+        json={
+            "period_label": "Q",
+            "period_start": "2026-01-01",
+            "period_end": "2026-03-31",
+        },
+    )
+    rid = create.json()["id"]
+    _wait_ready(client, rid)
+
+    # 模擬剛剛已推送 + 已綁定 LINE，跳過真實 push 路徑
+    with session_factory() as session:
+        from models.auth import User
+        from models.database import Guardian, StudentGrowthReport
+
+        r = session.query(StudentGrowthReport).filter_by(id=rid).first()
+        r.line_sent_at = datetime.utcnow() - timedelta(minutes=2)
+        # 給家長綁 LINE，否則先撞 "未綁定 LINE" 409 看不出冪等
+        parent = User(
+            id=2,
+            username="p1",
+            password_hash="$2b$12$dummy",
+            role="parent",
+            permissions=0,
+            is_active=True,
+            token_version=0,
+            line_user_id="U_TEST",
+        )
+        session.add(parent)
+        session.add(Guardian(user_id=2, student_id=1, name="家長"))
+        session.commit()
+
+    resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
+    assert resp.status_code == 409
+    assert "5 分鐘內" in resp.json()["detail"]
