@@ -221,10 +221,13 @@ WHERE course_id = :cid
 ```
 
 點擊行為：
-1. 顯示確認 dialog：「將跳過順序，立即升此候補為待確認狀態（48 小時內請家長確認）。系統會自動推送 LINE 通知。確定？」
-2. 確認後呼叫既有 `promoteWaitlist(regId, courseId)`
-3. 成功後 toast「已升位」+ 刷新 Drawer
-4. 失敗（例如該家長已被前一個升位）顯示錯誤
+1. 顯示確認 dialog：「將跳過順序，立即升此候補為正式報名（不需家長 48h 確認）。系統會自動推送 LINE 告知家長。確定？」
+2. 確認後呼叫既有 `promoteWaitlist(regId, courseId)` → 後端 `PUT /registrations/{id}/waitlist?course_id=X`
+3. 後端會將 RC.status 直接設為 `enrolled`（跳過 promoted_pending），並推 LINE「已升正式」通知
+4. 成功後 toast「已升位」+ 刷新 Drawer
+5. 失敗（例如該家長已被前一個升位）顯示錯誤
+
+註：admin 手動升位的後端語意是「跳過 48h 確認窗」（`api/activity/registrations.py:635-678`），與自動升位（會經 promoted_pending）不同。
 
 **新增前端 API 函式**：無（`promoteWaitlist` 已存在於 `src/api/activity.js`）。
 
