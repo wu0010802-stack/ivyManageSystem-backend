@@ -12,7 +12,7 @@ Phase 3 公開查詢碼（query token）— 2026-05-01。
 
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from fastapi import FastAPI
@@ -39,6 +39,7 @@ from models.database import (
     Student,
     User,
 )
+from models.activity import RegistrationCourse
 from utils.auth import hash_password
 from utils.permissions import Permission
 
@@ -383,3 +384,255 @@ class TestRejectInvalidatesToken:
             json={"token": token, "parent_phone": "0912345678"},
         )
         assert gone.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Task 5: waitlist_position / waitlist_total 欄位驗證
+# 測試策略：直接在 DB 植入 RegistrationCourse 以精確控制排位順序，
+#   避免透過 HTTP register 的隱式排位邏輯干擾。
+# ---------------------------------------------------------------------------
+
+
+def _seed_course_and_reg(session, *, phone="0912345678", course_name="積木"):
+    """建立一筆課程 + 一筆基礎報名（無 RegistrationCourse），回傳 (reg, course)。"""
+    sy, sem = _term()
+    course = ActivityCourse(
+        name=course_name, price=800, school_year=sy, semester=sem, is_active=True
+    )
+    session.add(course)
+    session.flush()
+
+    plain_token, token_hash = _make_token()
+    reg = ActivityRegistration(
+        student_name="測試家長",
+        birthday="2019-03-15",
+        class_name="無指定班",
+        parent_phone=phone,
+        school_year=sy,
+        semester=sem,
+        is_active=True,
+        match_status="unmatched",
+        query_token_hash=token_hash,
+        query_token_issued_at=datetime.now(),
+    )
+    session.add(reg)
+    session.flush()
+    return reg, course, plain_token
+
+
+def _make_token():
+    """產生一個明文 token 與其 hash。"""
+    import secrets
+
+    plain = secrets.token_hex(16)
+    return plain, _hash_query_token(plain)
+
+
+def _make_other_reg(session, *, phone, course_id, status, school_year, semester):
+    """建立另一筆報名並加入 RegistrationCourse。"""
+    _, tok_hash = _make_token()
+    reg = ActivityRegistration(
+        student_name="其他家長",
+        birthday="2018-06-01",
+        class_name="無指定班",
+        parent_phone=phone,
+        school_year=school_year,
+        semester=semester,
+        is_active=True,
+        match_status="unmatched",
+        query_token_hash=tok_hash,
+    )
+    session.add(reg)
+    session.flush()
+    rc = RegistrationCourse(
+        registration_id=reg.id,
+        course_id=course_id,
+        status=status,
+        price_snapshot=800,
+    )
+    session.add(rc)
+    session.flush()
+    return reg, rc
+
+
+class TestWaitlistPositionAndTotal:
+    def test_query_by_token_returns_waitlist_position(self, phase3_client):
+        """課程容量 1、已 enrolled 1 人、候補 3 人；自己排第 2。
+        斷言：courses[0]['waitlist_position'] == 2、courses[0]['waitlist_total'] == 3。"""
+        client, sf = phase3_client
+        sy, sem = _term()
+
+        with sf() as s:
+            # 基礎 admin user（_seed 的 User）
+            s.add(
+                User(
+                    username="admin",
+                    password_hash=hash_password("TempPass123"),
+                    role="admin",
+                    permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                    is_active=True,
+                )
+            )
+            s.flush()
+
+            reg, course, plain_token = _seed_course_and_reg(s)
+            course_id = course.id
+
+            # enrolled 1 人
+            _make_other_reg(
+                s,
+                phone="0900000001",
+                course_id=course_id,
+                status="enrolled",
+                school_year=sy,
+                semester=sem,
+            )
+            # waitlist：另外 1 人（排第 1），早於 reg
+            w1_reg, w1_rc = _make_other_reg(
+                s,
+                phone="0900000002",
+                course_id=course_id,
+                status="waitlist",
+                school_year=sy,
+                semester=sem,
+            )
+            # 自己的 RegistrationCourse（排第 2）
+            my_rc = RegistrationCourse(
+                registration_id=reg.id,
+                course_id=course_id,
+                status="waitlist",
+                price_snapshot=800,
+            )
+            s.add(my_rc)
+            # waitlist 第 3 人
+            _make_other_reg(
+                s,
+                phone="0900000003",
+                course_id=course_id,
+                status="waitlist",
+                school_year=sy,
+                semester=sem,
+            )
+            s.commit()
+
+        res = client.post(
+            "/api/activity/public/query-by-token",
+            json={"token": plain_token, "parent_phone": "0912345678"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        courses = body["courses"]
+        assert len(courses) == 1
+        rc = courses[0]
+        assert rc["status"] == "waitlist"
+        assert (
+            rc["waitlist_position"] == 2
+        ), f"expected 2, got {rc.get('waitlist_position')}"
+        assert rc["waitlist_total"] == 3, f"expected 3, got {rc.get('waitlist_total')}"
+
+    def test_query_by_token_waitlist_excludes_promoted_pending(self, phase3_client):
+        """課程容量 1、enrolled 1、promoted_pending 1（不算）、自己 waitlist 排第 1。
+        斷言：waitlist_position == 1、waitlist_total == 1。"""
+        client, sf = phase3_client
+        sy, sem = _term()
+
+        with sf() as s:
+            s.add(
+                User(
+                    username="admin",
+                    password_hash=hash_password("TempPass123"),
+                    role="admin",
+                    permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                    is_active=True,
+                )
+            )
+            s.flush()
+
+            reg, course, plain_token = _seed_course_and_reg(s)
+            course_id = course.id
+
+            # enrolled 1 人
+            _make_other_reg(
+                s,
+                phone="0900000001",
+                course_id=course_id,
+                status="enrolled",
+                school_year=sy,
+                semester=sem,
+            )
+            # promoted_pending — 不應被計入 waitlist 排位
+            _make_other_reg(
+                s,
+                phone="0900000002",
+                course_id=course_id,
+                status="promoted_pending",
+                school_year=sy,
+                semester=sem,
+            )
+            # 自己是唯一 waitlist
+            my_rc = RegistrationCourse(
+                registration_id=reg.id,
+                course_id=course_id,
+                status="waitlist",
+                price_snapshot=800,
+            )
+            s.add(my_rc)
+            s.commit()
+
+        res = client.post(
+            "/api/activity/public/query-by-token",
+            json={"token": plain_token, "parent_phone": "0912345678"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        rc = body["courses"][0]
+        assert rc["status"] == "waitlist"
+        assert (
+            rc["waitlist_position"] == 1
+        ), f"expected 1, got {rc.get('waitlist_position')}"
+        assert rc["waitlist_total"] == 1, f"expected 1, got {rc.get('waitlist_total')}"
+
+    def test_query_by_token_position_null_for_enrolled(self, phase3_client):
+        """自己 status='enrolled'。
+        斷言：waitlist_position is None、waitlist_total is None。"""
+        client, sf = phase3_client
+        sy, sem = _term()
+
+        with sf() as s:
+            s.add(
+                User(
+                    username="admin",
+                    password_hash=hash_password("TempPass123"),
+                    role="admin",
+                    permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                    is_active=True,
+                )
+            )
+            s.flush()
+
+            reg, course, plain_token = _seed_course_and_reg(s)
+            course_id = course.id
+
+            my_rc = RegistrationCourse(
+                registration_id=reg.id,
+                course_id=course_id,
+                status="enrolled",
+                price_snapshot=800,
+            )
+            s.add(my_rc)
+            s.commit()
+
+        res = client.post(
+            "/api/activity/public/query-by-token",
+            json={"token": plain_token, "parent_phone": "0912345678"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        rc = body["courses"][0]
+        assert rc["status"] == "enrolled"
+        assert (
+            rc.get("waitlist_position") is None
+        ), f"enrolled should have None waitlist_position, got {rc.get('waitlist_position')}"
+        assert (
+            rc.get("waitlist_total") is None
+        ), f"enrolled should have None waitlist_total, got {rc.get('waitlist_total')}"
