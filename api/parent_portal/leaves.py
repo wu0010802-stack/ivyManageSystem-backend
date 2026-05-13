@@ -38,6 +38,7 @@ from services.student_leave_service import (
 from utils.auth import require_parent_role
 from utils.file_upload import (
     read_upload_with_size_check,
+    safe_attachment_filename,
     validate_file_signature,
 )
 from utils.portfolio_storage import (
@@ -306,13 +307,15 @@ async def upload_leave_attachment(
         storage = get_portfolio_storage()
         stored = storage.put_attachment(content, ext)
 
+        # P1-9：sanitize 後再入庫，與 medications / events 對齊。
+        safe_name = safe_attachment_filename(filename, ext)
         att = Attachment(
             owner_type=ATTACHMENT_OWNER_STUDENT_LEAVE,
             owner_id=item.id,
             storage_key=stored.storage_key,
             display_key=stored.display_key,
             thumb_key=stored.thumb_key,
-            original_filename=filename,
+            original_filename=safe_name,
             mime_type=stored.mime_type,
             size_bytes=len(content),
             uploaded_by=user_id,

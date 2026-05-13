@@ -178,6 +178,26 @@ def test_parent_acknowledge_idempotent(app_client):
     assert second_ack_time == first_ack_time
 
 
+def test_parent_react_rate_limit_blocks_spam(app_client):
+    """F-V6-07：parent_react 10/60s/IP；第 11 次同 IP react 在 60 秒內應回 429。"""
+    from api.parent_portal.milestones import _react_limiter
+
+    # limiter 是 module-level singleton；其他測試可能累計過 count
+    _react_limiter._timestamps.clear()
+
+    client, _, student_id, _, milestone_id = app_client
+    url = f"/api/parent/milestones/{milestone_id}/react?student_id={student_id}"
+
+    # 10 次都應成功
+    for i in range(10):
+        resp = client.post(url, json={"reaction": "love"})
+        assert resp.status_code == 200, f"call {i + 1}: {resp.text}"
+
+    # 第 11 次應被 limiter 擋下
+    resp = client.post(url, json={"reaction": "celebrate"})
+    assert resp.status_code == 429, resp.text
+
+
 def test_second_guardian_ack_does_not_overwrite_first(app_client):
     """F-V6-04：first-ack-wins semantic — 同學生兩位 guardian（爸/媽）依序 ack
     時，第二位的 ack 不應覆蓋 parent_acknowledged_at 與 parent_acknowledged_by。

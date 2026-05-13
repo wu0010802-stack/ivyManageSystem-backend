@@ -19,12 +19,22 @@ from models.database import Guardian, StudentMilestone, get_session
 from models.portfolio import MILESTONE_REACTIONS
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
+from utils.rate_limit import SlidingWindowLimiter
 
 from ._shared import _assert_student_owned
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/milestones", tags=["parent-milestones"])
+
+# F-V6-07：react 端點防 spam（家長對自己 milestone 連點 emoji 也會狂寫 audit log
+# + DB UPDATE）。正常使用 1 分鐘最多按 3-5 次；10/60s/IP 留出合理緩衝。
+_react_limiter = SlidingWindowLimiter(
+    max_calls=10,
+    window_seconds=60,
+    name="parent_milestone_react",
+    error_detail="reaction 操作過於頻繁，請稍後再試",
+)
 
 
 def _milestone_to_dict(m: StudentMilestone) -> dict:
@@ -79,7 +89,10 @@ class ReactPayload(BaseModel):
     reaction: str = Field(..., description="like / love / celebrate")
 
 
-@router.post("/{milestone_id}/react")
+@router.post(
+    "/{milestone_id}/react",
+    dependencies=[Depends(_react_limiter.as_dependency())],
+)
 async def parent_react(
     milestone_id: int,
     payload: ReactPayload,
