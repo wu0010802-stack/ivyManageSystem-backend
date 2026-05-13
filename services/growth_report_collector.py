@@ -84,3 +84,36 @@ def measurements_to_series(measurements) -> dict[str, list[tuple]]:
         if m.weight_kg is not None:
             out["weight"].append((d, float(m.weight_kg)))
     return out
+
+
+def format_activity_names(activity_registrations, course_name_lookup) -> list[dict]:
+    """把 ActivityRegistration 加上課程名稱.
+
+    Args:
+        activity_registrations: iterable of ActivityRegistration ORM rows
+        course_name_lookup: dict[course_id, str] — 課程名稱對照（caller 傳入）
+
+    Returns:
+        list of {"name": str, "registered_at": str}
+    """
+    out = []
+    for r in activity_registrations:
+        # 嘗試從 registration_courses 抓 course_id；多筆時取第一筆
+        course_id = None
+        rc_list = getattr(r, "registration_courses", None) or []
+        if rc_list:
+            course_id = getattr(rc_list[0], "course_id", None)
+        name = course_name_lookup.get(course_id) if course_id else None
+        if not name:
+            name = f"報名 #{r.id}"
+        out.append(
+            {
+                "name": name,
+                "registered_at": (
+                    r.created_at.date().isoformat()
+                    if getattr(r, "created_at", None)
+                    else ""
+                ),
+            }
+        )
+    return out

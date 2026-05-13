@@ -29,7 +29,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from models.database import (
+    ActivityCourse,
     ActivityRegistration,
+    RegistrationCourse,
     Student,
     StudentAssessment,
     StudentAttendance,
@@ -104,6 +106,57 @@ def _row_to_dict(r: StudentGrowthReport) -> dict:
         "parent_view_count": r.parent_view_count,
         "teacher_narrative": r.teacher_narrative,
     }
+
+
+def _build_activities_payload(activity_rows, session) -> list[dict]:
+    """Join ActivityCourse.name for each ActivityRegistration via RegistrationCourse.
+
+    P4 cleanup T2: replaces the simplified f"報名 #{r.id}" fallback with the
+    actual course name looked up from activity_courses.
+    """
+    reg_ids = [r.id for r in activity_rows]
+    if reg_ids:
+        pairs = (
+            session.query(
+                RegistrationCourse.registration_id, RegistrationCourse.course_id
+            )
+            .filter(RegistrationCourse.registration_id.in_(reg_ids))
+            .all()
+        )
+    else:
+        pairs = []
+
+    all_course_ids = list({cid for _, cid in pairs if cid})
+    if all_course_ids:
+        course_rows = (
+            session.query(ActivityCourse.id, ActivityCourse.name)
+            .filter(ActivityCourse.id.in_(all_course_ids))
+            .all()
+        )
+    else:
+        course_rows = []
+    course_name_lookup = dict(course_rows)
+
+    # Map each registration to its first course_id (first row wins)
+    reg_first_course: dict[int, int] = {}
+    for reg_id, course_id in pairs:
+        reg_first_course.setdefault(reg_id, course_id)
+
+    out = []
+    for r in activity_rows:
+        cid = reg_first_course.get(r.id)
+        name = course_name_lookup.get(cid) if cid else None
+        if not name:
+            name = f"報名 #{r.id}"
+        out.append(
+            {
+                "name": name,
+                "registered_at": (
+                    r.created_at.date().isoformat() if r.created_at else ""
+                ),
+            }
+        )
+    return out
 
 
 def _collect_report_data(
@@ -222,15 +275,7 @@ def _collect_report_data(
             }
             for a in assessment_rows
         ],
-        "activities": [
-            {
-                "name": f"報名 #{r.id}",
-                "registered_at": (
-                    r.created_at.date().isoformat() if r.created_at else ""
-                ),
-            }
-            for r in activity_rows
-        ],
+        "activities": _build_activities_payload(activity_rows, session),
         "institution_name": "義華幼兒園",
     }
 
@@ -554,7 +599,7 @@ async def send_growth_report_to_line(
             )
             sent_count = 0
             for uid in line_user_ids:
-                ok = _line_service._push_to_user(uid, base_text)
+                ok = _line_service.push_to_user(uid, base_text)
                 if ok:
                     sent_count += 1
 

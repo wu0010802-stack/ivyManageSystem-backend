@@ -216,6 +216,19 @@ def today_taipei() -> date:
     return datetime.now(TAIPEI_TZ).date()
 
 
+def now_taipei_naive() -> datetime:
+    """統一取「現在時刻」(Asia/Taipei naive) 的工具函式。
+
+    Why: `ActivityPaymentRecord.created_at` 已用 `_now_taipei_naive` 寫入台灣時間；
+    日結簽核 `approved_at` / unlock `unlocked_at` / pending 審核 `reviewed_at` / query
+    token `issued_at` 若用裸 `datetime.now()`，server 部署在 UTC 時會比同檔的
+    `today = datetime.now(TAIPEI_TZ).date()` 慢 8 小時，造成稽核時序錯位
+    （例：簽核紀錄落在 close_date 前一日、unlock 事件 cutoff 過濾窗口偏移）。
+    任何寫入或對比 naive datetime 欄位的端點都應改用本函式以保持一致。
+    """
+    return datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+
+
 # ── 服務注入 ──────────────────────────────────────────────────────────────
 
 _line_service = None

@@ -91,3 +91,49 @@ def test_measurements_to_series_returns_sorted_tuples():
     assert series["height"][0][0] == "2026-02-01"
     assert series["height"][-1][0] == "2026-05-01"
     assert series["weight"][0][1] == 18.0
+
+
+def test_format_activity_names_uses_lookup():
+    from datetime import datetime
+    from services.growth_report_collector import format_activity_names
+
+    class _RC:
+        course_id = 7
+
+    class _R:
+        id = 100
+        registration_courses = [_RC()]
+        created_at = datetime(2026, 3, 1, 10, 0)
+
+    out = format_activity_names([_R()], {7: "兒童繪畫班"})
+    assert out[0]["name"] == "兒童繪畫班"
+    assert out[0]["registered_at"] == "2026-03-01"
+
+
+def test_format_activity_names_fallback_when_no_course():
+    from services.growth_report_collector import format_activity_names
+
+    class _R:
+        id = 200
+        registration_courses = []
+        created_at = None
+
+    out = format_activity_names([_R()], {})
+    assert out[0]["name"] == "報名 #200"
+    assert out[0]["registered_at"] == ""
+
+
+def test_format_activity_names_no_match_in_lookup_uses_fallback():
+    from datetime import datetime
+    from services.growth_report_collector import format_activity_names
+
+    class _RC:
+        course_id = 99  # not in lookup
+
+    class _R:
+        id = 300
+        registration_courses = [_RC()]
+        created_at = datetime(2026, 4, 1)
+
+    out = format_activity_names([_R()], {})  # empty lookup
+    assert out[0]["name"] == "報名 #300"

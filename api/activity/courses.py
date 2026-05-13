@@ -327,11 +327,16 @@ async def update_course(
             raise _not_found("課程")
 
         if body.name and body.name != course.name:
+            # 限定同學期 + is_active，與 UniqueConstraint (name, school_year, semester)
+            # 一致；跨學期同名是允許的，不該在此誤報衝突
             dup = (
                 session.query(ActivityCourse)
                 .filter(
                     ActivityCourse.name == body.name,
                     ActivityCourse.id != course_id,
+                    ActivityCourse.school_year == course.school_year,
+                    ActivityCourse.semester == course.semester,
+                    ActivityCourse.is_active.is_(True),
                 )
                 .first()
             )

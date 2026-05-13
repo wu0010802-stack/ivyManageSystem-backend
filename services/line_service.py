@@ -249,6 +249,15 @@ class LineService:
             logger.warning("LINE 推送失敗: %s", exc)
             return False
 
+    def push_to_user(self, line_user_id: str, text: str) -> bool:
+        """Public API：發送純文字訊息給單一 LINE user.
+
+        P4 cleanup: exposes _push_to_user as the public API. Existing internal
+        callers of _push_to_user remain working (no rename), but new callers
+        should use this public name.
+        """
+        return self._push_to_user(line_user_id, text)
+
     def _push_to_user(self, line_user_id: str, text: str) -> bool:
         """推送純文字訊息給個人 LINE 用戶，成功回傳 True，失敗回傳 False"""
         if not self._enabled or not self._token or not line_user_id:

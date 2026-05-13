@@ -140,11 +140,16 @@ async def update_supply(
             raise _not_found("用品")
 
         if body.name and body.name != supply.name:
+            # 與 UniqueConstraint (name, school_year, semester) 對齊；
+            # 跨學期同名允許，不該在此誤報衝突
             dup = (
                 session.query(ActivitySupply)
                 .filter(
                     ActivitySupply.name == body.name,
                     ActivitySupply.id != supply_id,
+                    ActivitySupply.school_year == supply.school_year,
+                    ActivitySupply.semester == supply.semester,
+                    ActivitySupply.is_active.is_(True),
                 )
                 .first()
             )
