@@ -5,6 +5,7 @@ LINE Messaging API 通知服務
 import logging
 from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -523,12 +524,15 @@ class LineService:
         student_name: str,
         course_name: str,
         deadline: datetime,
-    ) -> None:
-        """候補轉正剩餘時間提醒（failsafe log warning）。"""
+    ) -> bool:
+        """候補轉正剩餘時間提醒；回傳是否推送成功（True=成功，False=失敗或未啟用）。
+
+        失敗時 caller 不應寫 reminder_sent_at，下輪再重試。
+        """
         text = build_activity_waitlist_promotion_reminder_message(
             student_name, course_name, deadline
         )
-        self._push(text)
+        return self._push(text)
 
     def notify_activity_waitlist_promotion_expired(
         self,
@@ -552,7 +556,7 @@ class LineService:
         失敗時 caller 不應寫 final_reminder_sent_at，下輪再重試。
         """
         try:
-            now = datetime.now()
+            now = datetime.now(ZoneInfo("Asia/Taipei")).replace(tzinfo=None)
             delta_seconds = (confirm_deadline - now).total_seconds()
             hours_left = max(1, int(delta_seconds // 3600))
             text = build_activity_waitlist_final_reminder_message(

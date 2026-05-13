@@ -689,6 +689,7 @@ class ActivityService:
         # 管理員直升視同已確認，清掉待確認計時欄位
         rc.confirm_deadline = None
         rc.reminder_sent_at = None
+        rc.final_reminder_sent_at = None
         return (student_name or str(registration_id), course.name)
 
     # ------------------------------------------------------------------ #
@@ -937,9 +938,9 @@ class ActivityService:
                         course_name,
                         rc.confirm_deadline,
                     )
-                    # notify_activity_waitlist_promotion_reminder 回傳 None（既有）
-                    # 視 None 或 True 為成功；False 為失敗
-                    success = result is None or bool(result)
+                    # notify_activity_waitlist_promotion_reminder 回傳 bool
+                    # True=成功；False=失敗（不寫戳記，下輪重試）
+                    success = bool(result)
                 except Exception:
                     logger.exception(
                         "發送候補轉正提醒失敗 reg=%s course=%s",
@@ -1113,6 +1114,7 @@ class ActivityService:
         rc.promoted_at = now
         rc.confirm_deadline = deadline
         rc.reminder_sent_at = None
+        rc.final_reminder_sent_at = None
 
         self.log_change(
             session,

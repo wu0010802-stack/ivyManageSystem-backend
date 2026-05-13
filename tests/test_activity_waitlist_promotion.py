@@ -449,6 +449,36 @@ class TestSweepExpired:
         assert rc.final_reminder_sent_at is None
         assert result["final_reminded"] == 0
 
+    def test_t24_real_path_no_stamp_on_line_failure(self, session, svc, monkeypatch):
+        """C-1 回歸測試：使用真實 LineService（而非 stub）驗證 T-24h 路徑。
+
+        修復前：notify_activity_waitlist_promotion_reminder 回傳 None，
+        caller 用 `result is None or bool(result)` → success 永遠 True，
+        即使 _push 回 False 也會寫 reminder_sent_at（此測試在修復前會失敗）。
+        修復後：方法改回 bool；caller 改用 `bool(result)`；
+        _push 回 False → success=False → 不寫戳記。
+        """
+        from services.line_service import LineService
+
+        course = _add_course(session, capacity=1)
+        reg = _add_reg(session)
+        rc = _enroll(session, reg.id, course.id, status="promoted_pending")
+        rc.confirm_deadline = datetime.now() + timedelta(hours=20)
+        # reminder_sent_at=None：讓 T-24h 分支觸發
+        # final_reminder_sent_at=None：T-6h 不觸發（deadline > 6h）
+        session.flush()
+
+        real_line_svc = LineService()
+        # 不呼叫 configure，故 _enabled=False、_push 直接回 False（未啟用）
+        # 但為確保路徑是真實 _push 失敗（而非 enable 短路），mock _push 回 False
+        monkeypatch.setattr(real_line_svc, "_push", lambda *a, **kw: False)
+        svc._line_svc = real_line_svc
+
+        result = svc.sweep_expired_pending_promotions(session)
+        session.refresh(rc)
+        assert rc.reminder_sent_at is None, "T-24h LINE 失敗不應寫 reminder_sent_at"
+        assert result["reminded"] == 0
+
 
 # ------------------------------------------------------------------ #
 # 4. 容量閘：promoted_pending 佔位
