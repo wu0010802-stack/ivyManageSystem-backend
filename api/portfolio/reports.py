@@ -28,6 +28,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     ActivityCourse,
@@ -394,8 +395,31 @@ async def create_growth_report(
                 generated_by=_emp_id,
                 status=REPORT_STATUS_PENDING,
             )
-            session.add(r)
-            session.flush()
+            # F-V6-02：用 SAVEPOINT + partial unique 接住並發雙擊；存在 active
+            # 同 period 報告時 → 409 帶 existing report_id；'failed' 不擋（容許 retry）
+            try:
+                with session.begin_nested():
+                    session.add(r)
+                    session.flush()
+            except IntegrityError:
+                existing = (
+                    session.query(StudentGrowthReport)
+                    .filter(
+                        StudentGrowthReport.student_id == student_id,
+                        StudentGrowthReport.period_label == payload.period_label,
+                        StudentGrowthReport.period_start == payload.period_start,
+                        StudentGrowthReport.period_end == payload.period_end,
+                        StudentGrowthReport.status != REPORT_STATUS_FAILED,
+                    )
+                    .first()
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"同 period 已有報告（report_id={existing.id if existing else '?'}, "
+                        f"status={existing.status if existing else 'unknown'}）"
+                    ),
+                )
             session.refresh(r)
             report_id = r.id
             row_dict = _row_to_dict(r)

@@ -127,6 +127,51 @@ def test_period_start_must_precede_end(app_client):
     assert resp.status_code == 422
 
 
+def test_create_report_dedup_blocks_duplicate_active_period(app_client):
+    """F-V6-02：同 (student_id, period_label, period_start, period_end) 在非 failed
+    狀態下僅允許一筆。模擬 admin 連點 POST，第二筆應 409 並含 existing report_id。"""
+    client, _, _ = app_client
+    payload = {
+        "period_label": "2026 春季",
+        "period_start": "2026-02-01",
+        "period_end": "2026-05-31",
+    }
+    first = client.post("/api/students/1/growth-reports", json=payload)
+    assert first.status_code == 201, first.text
+    first_id = first.json()["id"]
+
+    second = client.post("/api/students/1/growth-reports", json=payload)
+    assert second.status_code == 409, second.text
+    assert f"report_id={first_id}" in second.json()["detail"]
+
+
+def test_create_report_dedup_allows_retry_after_failed(app_client):
+    """F-V6-02：已 failed 的 report 不擋同 period 重建（容許 retry）。"""
+    client, session_factory, _ = app_client
+    payload = {
+        "period_label": "2026 秋季",
+        "period_start": "2026-09-01",
+        "period_end": "2026-12-31",
+    }
+    first = client.post("/api/students/1/growth-reports", json=payload)
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+
+    # 把第一筆強制改成 failed，模擬 PDF 生成失敗
+    from models.database import StudentGrowthReport
+
+    with session_factory() as session:
+        r = session.query(StudentGrowthReport).filter_by(id=first_id).first()
+        r.status = "failed"
+        r.error_message = "test forced failure"
+        session.commit()
+
+    # 同 period 應可再建一筆
+    retry = client.post("/api/students/1/growth-reports", json=payload)
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["id"] != first_id
+
+
 def _wait_ready(client, rid, max_secs: float = 5.0) -> str:
     for _ in range(int(max_secs * 10)):
         st = client.get(f"/api/students/1/growth-reports/{rid}").json()
