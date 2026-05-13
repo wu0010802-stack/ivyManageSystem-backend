@@ -5,6 +5,7 @@ Portal - leave management endpoints
 import calendar as cal_module
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import date, datetime
@@ -22,7 +23,6 @@ _attach_upload_limiter = SlidingWindowLimiter(
     name="leave_attachment_upload",
     error_detail="附件上傳過於頻繁，請稍後再試",
 )
-from fastapi.responses import FileResponse
 from sqlalchemy import func, case
 
 
@@ -442,8 +442,9 @@ async def upload_leave_attachments(
                 status_code=400, detail=f"附件總數不可超過 {_MAX_FILES} 個"
             )
 
-        dir_path = _upload_base() / str(leave_id)
-        dir_path.mkdir(parents=True, exist_ok=True)
+        from utils.storage import get_backend
+
+        backend = get_backend()
 
         saved = []
         for f in files:
@@ -462,8 +463,19 @@ async def upload_leave_attachments(
             validate_file_signature(content, raw_ext)
 
             safe_name = f"{uuid.uuid4().hex}{raw_ext}"
-            with open(dir_path / safe_name, "wb") as fp:
-                fp.write(content)
+            content_type = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".heic": "image/heic",
+                ".heif": "image/heif",
+                ".pdf": "application/pdf",
+            }.get(raw_ext, "application/octet-stream")
+            # key 結構：<leave_id>/<safe_name>，與 local 模式目錄結構一致
+            backend.save(
+                _UPLOAD_MODULE, f"{leave_id}/{safe_name}", content, content_type
+            )
             saved.append(safe_name)
 
         all_paths = existing + saved
@@ -520,9 +532,10 @@ def delete_leave_attachment(
         if filename not in paths:
             raise HTTPException(status_code=404, detail="找不到附件")
 
-        file_path = _safe_attach_path(leave_id, filename)
-        if file_path.exists():
-            file_path.unlink()
+        from utils.storage import get_backend
+
+        backend = get_backend()
+        backend.delete(_UPLOAD_MODULE, f"{leave_id}/{filename}")
 
         paths.remove(filename)
         leave.attachment_paths = json.dumps(paths) if paths else None
@@ -555,7 +568,14 @@ def get_leave_attachment(
     filename: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """取得個人假單附件（僅限本人）"""
+    """取得個人假單附件（僅限本人）。
+
+    backend 為 local：直接 stream bytes（既有行為）
+    backend 為 supabase：302 redirect 到 signed URL（TTL 預設 1 小時）
+    """
+    from fastapi.responses import RedirectResponse, Response as _Response
+    from utils.storage import LocalStorage, get_backend
+
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
@@ -574,11 +594,18 @@ def get_leave_attachment(
         if filename not in paths:
             raise HTTPException(status_code=404, detail="找不到附件")
 
-        file_path = _safe_attach_path(leave_id, filename)
-        if not file_path.exists():
+        backend = get_backend()
+        key = f"{leave_id}/{filename}"
+        if not backend.exists(_UPLOAD_MODULE, key):
             raise HTTPException(status_code=404, detail="檔案不存在")
 
-        return FileResponse(str(file_path))
+        if isinstance(backend, LocalStorage):
+            data = backend.read(_UPLOAD_MODULE, key)
+            return _Response(content=data, media_type="application/octet-stream")
+
+        ttl = int(os.getenv("SUPABASE_STORAGE_SIGNED_URL_TTL", "3600"))
+        url = backend.signed_url(_UPLOAD_MODULE, key, ttl)
+        return RedirectResponse(url, status_code=302)
     finally:
         session.close()
 
