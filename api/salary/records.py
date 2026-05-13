@@ -14,6 +14,8 @@ monkeypatch 仍生效。
 """
 
 import io
+from calendar import monthrange
+from datetime import date as _date
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -22,6 +24,7 @@ from sqlalchemy.orm import joinedload
 from api.salary_fields import calculate_display_bonus_total
 from models.base import session_scope
 from models.database import Employee, SalaryRecord
+from services.salary.breakdown_enrollment import compute_enrollment_breakdown
 from utils.auth import require_permission, require_staff_permission
 from utils.permissions import Permission
 from utils.salary_access import (
@@ -63,6 +66,10 @@ def get_salary_records(
             query = query.filter(SalaryRecord.employee_id == viewer_employee_id)
         records = query.order_by(Employee.name).offset(skip).limit(limit).all()
 
+        # 一個 request 共用一個月底快照日；以下迴圈每列再呼叫 helper（< 30 員工的規模可接受）。
+        last_day = monthrange(year, month)[1]
+        snapshot_date = _date(year, month, last_day)
+
         results = []
         for record, emp in records:
             job_title = ""
@@ -70,6 +77,8 @@ def get_salary_records(
                 job_title = emp.job_title_rel.name
             elif emp.title:
                 job_title = emp.title
+
+            breakdown = compute_enrollment_breakdown(session, emp.id, snapshot_date)
 
             results.append(
                 {
@@ -120,6 +129,7 @@ def get_salary_records(
                     "pension_self": record.pension_employee or 0,
                     "total_deductions": record.total_deduction or 0,
                     "net_pay": record.net_salary or 0,
+                    "breakdown": breakdown,
                 }
             )
 
