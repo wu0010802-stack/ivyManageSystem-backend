@@ -161,3 +161,40 @@ def test_unsupported_owner_type_422(app_client):
         f"/api/students/{ids['student_id']}/attachments?owner_type=message"
     )
     assert resp.status_code == 422
+
+
+def test_until_includes_same_day_uploads(app_client):
+    """REGRESSION: until=YYYY-MM-DD 必須涵蓋當天 23:59:59 上傳的圖.
+
+    Bug: Attachment.created_at <= date 會被 cast 成 <= date 00:00:00，當天的
+    timestamp（如 14:30:00）會被排除（agent P2 #8）。
+    """
+    client, session_factory, ids = app_client
+    today = datetime.now().date()
+    with session_factory() as s:
+        obs = s.query(StudentObservation).first()
+        # 加一張今天 14:30 上傳的圖
+        s.add(
+            Attachment(
+                owner_type="observation",
+                owner_id=obs.id,
+                storage_key="t/today.jpg",
+                original_filename="today.jpg",
+                mime_type="image/jpeg",
+                size_bytes=500,
+                created_at=datetime.combine(today, datetime.min.time()).replace(
+                    hour=14, minute=30
+                ),
+            )
+        )
+        s.commit()
+
+    resp = client.get(
+        f"/api/students/{ids['student_id']}/attachments?until={today.isoformat()}"
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    same_day = [i for i in items if i.get("original_filename") == "today.jpg"]
+    assert (
+        len(same_day) == 1
+    ), f"當天上傳的圖必須出現在 until=今天 的查詢中, got items={items}"
