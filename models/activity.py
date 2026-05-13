@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Date,
+    Time,
     Text,
     ForeignKey,
     UniqueConstraint,
@@ -53,6 +54,14 @@ class ActivityCourse(Base):
     # 學期欄位（民國學年 + 1上學期/2下學期）
     school_year = Column(Integer, nullable=True, comment="民國學年度")
     semester = Column(Integer, nullable=True, comment="1=上學期, 2=下學期")
+
+    # Phase 3 適齡 + 結構化時段（前台 advisory：不適齡/衝堂警告，不阻擋報名）
+    # migration: 20260507_q2r3s4t5u6v7_activity_course_schedule_age
+    min_age_months = Column(Integer, nullable=True, comment="建議最小月齡")
+    max_age_months = Column(Integer, nullable=True, comment="建議最大月齡")
+    meeting_weekday = Column(Integer, nullable=True, comment="上課星期（0=Mon, 6=Sun）")
+    meeting_start_time = Column(Time, nullable=True, comment="上課起始時刻")
+    meeting_end_time = Column(Time, nullable=True, comment="上課結束時刻")
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

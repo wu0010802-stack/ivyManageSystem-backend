@@ -107,6 +107,20 @@ async def get_courses(
                     "description": c.description or "",
                     "school_year": c.school_year,
                     "semester": c.semester,
+                    # Phase 3 — time 序列化為 "HH:MM" 給前端 advisory 使用
+                    "min_age_months": c.min_age_months,
+                    "max_age_months": c.max_age_months,
+                    "meeting_weekday": c.meeting_weekday,
+                    "meeting_start_time": (
+                        c.meeting_start_time.strftime("%H:%M")
+                        if c.meeting_start_time
+                        else None
+                    ),
+                    "meeting_end_time": (
+                        c.meeting_end_time.strftime("%H:%M")
+                        if c.meeting_end_time
+                        else None
+                    ),
                     "enrolled": enrolled,
                     "promoted_pending": promoted_pending,
                     "waitlist_count": waitlist,
@@ -192,6 +206,11 @@ async def create_course(
             description=body.description,
             school_year=sy,
             semester=sem,
+            min_age_months=body.min_age_months,
+            max_age_months=body.max_age_months,
+            meeting_weekday=body.meeting_weekday,
+            meeting_start_time=body.meeting_start_time,
+            meeting_end_time=body.meeting_end_time,
         )
         session.add(course)
         session.commit()
