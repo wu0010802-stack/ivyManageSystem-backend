@@ -86,7 +86,10 @@ def app_client(monkeypatch):
     )
     client.headers.update({"Authorization": f"Bearer {token}"})
     yield client, TestingSession
-    Base.metadata.drop_all(engine)
+    # in-memory SQLite + StaticPool：dispose 即釋放連線、DB 隨之消失。
+    # 不可用 drop_all：appraisal_cycles 等表存在 FK cycle，SQLite 不支援
+    # ALTER TABLE DROP CONSTRAINT，drop_all 拓撲排序解不出循環會炸。
+    engine.dispose()
 
 
 def test_timeline_empty_returns_empty_items(app_client):

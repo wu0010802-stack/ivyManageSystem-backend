@@ -79,7 +79,10 @@ def app_client(tmp_path, monkeypatch):
 
     yield client, TestingSession
 
-    Base.metadata.drop_all(engine)
+    # in-memory SQLite + StaticPool：dispose 即釋放連線、DB 隨之消失。
+    # 不可用 drop_all：appraisal_cycles 等表存在 FK cycle，SQLite 不支援
+    # ALTER TABLE DROP CONSTRAINT，drop_all 解不出循環會炸。
+    engine.dispose()
 
 
 def _make_test_token(role: str, user_id: int, username: str) -> str:
