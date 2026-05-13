@@ -3,6 +3,7 @@ api/fees.py — 學費/費用管理 API endpoints
 """
 
 import logging
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -26,7 +27,14 @@ from models.fees import (
     StudentFeeRecord,
     StudentFeeRefund,
 )
+from models.student_leave import StudentLeaveRequest
+from services.fee_refund_calculator import (
+    calc_enrollment_refund,
+    calc_monthly_refund,
+    longest_consecutive_workdays,
+)
 from services.report_cache_service import report_cache_service
+from services.workday_rules import classify_day, load_day_rule_maps
 from utils.audit import write_audit_in_session
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_adjustment_reason, require_finance_approve
@@ -162,6 +170,18 @@ class PayRequest(BaseModel):
     @classmethod
     def _validate_payment_date(cls, v: date) -> date:
         return validate_payment_date(v, back_limit_days=90)
+
+
+class RefundSuggestRequest(BaseModel):
+    """退費建議請求：依學生離園日與費用類型自動計算退費金額。
+
+    `T_total_override` / `T_served_override` 提供給罕見特例（例如手動調整教保日數），
+    一般情況下會由 workday_rules + 學期區間計算得出。
+    """
+
+    withdrawal_date: date
+    T_total_override: Optional[int] = Field(None, gt=0, le=400)
+    T_served_override: Optional[int] = Field(None, ge=0, le=400)
 
 
 class RefundRequest(BaseModel):
@@ -1332,6 +1352,186 @@ def fee_summary(
 
 # 冪等視窗：同 idempotency_key 於視窗內視為重試（避免網路重送導致重複退款）
 _REFUND_IDEMPOTENCY_WINDOW_SECONDS = 10 * 60
+
+
+def _semester_date_range(school_year: int, semester: int) -> tuple[date, date]:
+    """民國年+學期 → (start, end) 西元日期。
+
+    上學期: 8/1 ~ 隔年 1/31（學年起始那年 8 月～次年 1 月）
+    下學期: 2/1 ~ 7/31（學年起始那年的次年 2 月～7 月）
+    """
+    western = school_year + 1911
+    if semester == 1:
+        return date(western, 8, 1), date(western + 1, 1, 31)
+    return date(western + 1, 2, 1), date(western + 1, 7, 31)
+
+
+def _count_workdays(start: date, end: date, holiday_map: dict, makeup_map: dict) -> int:
+    """區間內工作日數(排除週末+國定假日,加補班日)。"""
+    if end < start:
+        return 0
+    total = 0
+    d = start
+    while d <= end:
+        info = classify_day(d, holiday_map, makeup_map)
+        if info["kind"] == "workday":
+            total += 1
+        d = d + timedelta(days=1)
+    return total
+
+
+@router.post("/records/{record_id}/refund-suggest")
+def suggest_refund(
+    record_id: int,
+    payload: RefundSuggestRequest,
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_READ)),
+):
+    """根據學生離園日與費用類型,自動計算建議退費金額。
+
+    - registration / miscellaneous → 走 enrollment_ratio
+      (T_served/T_total 三段比例 <1/3 退 2/3、1/3..2/3 退 1/3、≥2/3 不退)
+    - monthly → 走 monthly_partial
+      (事先請假連續 ≥5 上課日, 按 meal+transport 比例退;無 breakdown fallback 全額)
+    - material / insurance → no_refund
+    - custom / 其他 → manual（不提供自動建議）
+    """
+    with session_scope() as session:
+        rec = (
+            session.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.id == record_id)
+            .first()
+        )
+        if not rec:
+            raise HTTPException(status_code=404, detail="費用記錄不存在")
+
+        fee_type = rec.fee_type or "custom"
+
+        # 代購品 / 保險費 → 不退
+        if fee_type in ("material", "insurance"):
+            label = "代購品" if fee_type == "material" else "保險費"
+            return {
+                "suggested_amount": 0,
+                "calc_method": "no_refund",
+                "calc_payload": {
+                    "fee_type": fee_type,
+                    "reason": f"{label}依規定不予退費",
+                },
+                "warnings": [f"{label}依規定不予退費"],
+            }
+
+        # 學期區間 (依 period 解析,格式 民國年-學期 e.g. 114-1)
+        if not rec.period or "-" not in rec.period:
+            raise HTTPException(
+                status_code=400,
+                detail=f"record.period 格式錯誤: {rec.period}",
+            )
+        try:
+            sy_str, sem_str = rec.period.split("-", 1)
+            school_year, semester = int(sy_str), int(sem_str)
+        except (ValueError, AttributeError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"record.period 格式錯誤: {rec.period}",
+            )
+        sem_start, sem_end = _semester_date_range(school_year, semester)
+
+        # 註冊費 / 雜費:走 enrollment_ratio
+        if fee_type in ("registration", "miscellaneous"):
+            holiday_map, makeup_map = load_day_rule_maps(session, sem_start, sem_end)
+            T_total = payload.T_total_override or _count_workdays(
+                sem_start, sem_end, holiday_map, makeup_map
+            )
+            served_end = min(payload.withdrawal_date, sem_end)
+            if payload.T_served_override is not None:
+                T_served = payload.T_served_override
+            else:
+                T_served = (
+                    _count_workdays(sem_start, served_end, holiday_map, makeup_map)
+                    if served_end >= sem_start
+                    else 0
+                )
+            return calc_enrollment_refund(
+                amount_due=rec.amount_due,
+                T_total=T_total,
+                T_served=T_served,
+            )
+
+        # 月費:走 monthly_partial
+        if fee_type == "monthly":
+            target_month = rec.target_month
+            if not target_month:
+                raise HTTPException(status_code=400, detail="月費記錄缺 target_month")
+            try:
+                year_str, month_str = target_month.split("-", 1)
+                year, month = int(year_str), int(month_str)
+            except (ValueError, AttributeError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"target_month 格式錯誤: {target_month}",
+                )
+            month_start = date(year, month, 1)
+            month_end = date(year, month, monthrange(year, month)[1])
+            holiday_map, makeup_map = load_day_rule_maps(
+                session, month_start, month_end
+            )
+            work_days = _count_workdays(month_start, month_end, holiday_map, makeup_map)
+
+            # 該學生該月所有 approved leave;判斷 advance_filed 與蒐集請假日
+            leaves = (
+                session.query(StudentLeaveRequest)
+                .filter(
+                    StudentLeaveRequest.student_id == rec.student_id,
+                    StudentLeaveRequest.status == "approved",
+                    StudentLeaveRequest.end_date >= month_start,
+                    StudentLeaveRequest.start_date <= month_end,
+                )
+                .all()
+            )
+            advance_filed = False
+            leave_dates: list[date] = []
+            for lv in leaves:
+                # 「事先」定義: created_at.date() < start_date
+                if lv.created_at and lv.created_at.date() < lv.start_date:
+                    advance_filed = True
+                d = max(lv.start_date, month_start)
+                end = min(lv.end_date, month_end)
+                while d <= end:
+                    leave_dates.append(d)
+                    d = d + timedelta(days=1)
+
+            L_consecutive = longest_consecutive_workdays(
+                leave_dates, holiday_map, makeup_map
+            )
+
+            # 取 breakdown:rec.source_template_id 對應的 FeeTemplate
+            breakdown = None
+            if rec.source_template_id:
+                tpl = (
+                    session.query(FeeTemplate)
+                    .filter(FeeTemplate.id == rec.source_template_id)
+                    .first()
+                )
+                if tpl:
+                    breakdown = tpl.breakdown
+
+            return calc_monthly_refund(
+                amount_due=rec.amount_due,
+                breakdown=breakdown,
+                L_consecutive=L_consecutive,
+                work_days_in_month=work_days,
+                advance_filed=advance_filed,
+            )
+
+        # custom / 其他:不提供自動建議
+        return {
+            "suggested_amount": 0,
+            "calc_method": "manual",
+            "calc_payload": {
+                "fee_type": fee_type,
+                "reason": "此類型無自動計算",
+            },
+            "warnings": ["此費用類型無自動退費規則,請手動填寫"],
+        }
 
 
 def _find_refund_idempotent_hit(
