@@ -149,6 +149,15 @@ def test_parent_403_for_other_kid(app_client):
     assert resp.status_code == 403, resp.text
 
 
+def test_parent_months_capped_at_36(app_client):
+    """REGRESSION: months 上限 36，超過應回 422 防 10 年資料一次性 dump."""
+    client, _, student_id, _ = app_client
+    resp = client.get(f"/api/parent/measurements?student_id={student_id}&months=120")
+    assert resp.status_code == 422, resp.text
+    resp36 = client.get(f"/api/parent/measurements?student_id={student_id}&months=36")
+    assert resp36.status_code == 200, resp36.text
+
+
 def test_parent_chart_data_asc_sorted(app_client):
     client, _, student_id, _ = app_client
     resp = client.get(f"/api/parent/measurements/chart-data?student_id={student_id}")
