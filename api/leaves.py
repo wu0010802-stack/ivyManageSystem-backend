@@ -69,6 +69,7 @@ from api.leaves_quota import (
 from api.leaves_workday import workday_router, validate_leave_hours_against_schedule
 from services.leave_policy import requires_supporting_document
 from services.notification.approval_notifier import notify_approval
+from services.approval.cross_type_offset import resolve_cross_type_offset
 
 _UPLOAD_MODULE = "leave_attachments"
 
@@ -1449,6 +1450,40 @@ def approve_leave(
             approver=current_user,
             comment=approval_comment,
         )
+
+        # ── leave↔OT 跨類抵扣（feature flag gated, v1 metadata-only）─────────
+        # 條件：(1) 由 pending/rejected → approved 的真實變動 (2) feature flag 開啟
+        # v1 行為：偵測到同員工同日已核准 OT 時，僅在 ApprovalLog 留下 metadata 軌跡；
+        # 不動 OvertimeRecord schema、不影響 salary engine。詳見 RELEASE_NOTES.md。
+        cross_offset_ot_id = None
+        if data.approved and approval_changed:
+            try:
+                offset_ot = resolve_cross_type_offset(session, leave)
+                if offset_ot is not None:
+                    cross_offset_ot_id = offset_ot.id
+                    _write_approval_log(
+                        session=session,
+                        doc_type="overtime",
+                        doc_id=offset_ot.id,
+                        action="update",
+                        approver=current_user,
+                        comment="leave 跨類抵扣（auto, v1 metadata-only）",
+                        metadata={
+                            "offset_by_leave_id": leave_id,
+                            "offset_date": str(leave.start_date),
+                        },
+                    )
+                    logger.info(
+                        "leave↔OT 跨類抵扣 v1：leave #%d 偵測到同日 OT #%d，已寫 ApprovalLog metadata",
+                        leave_id,
+                        offset_ot.id,
+                    )
+            except Exception as exc:
+                # 跨類抵扣失敗不阻斷主流程；僅留 warning 由 audit 後續追查
+                logger.warning(
+                    "leave #%d 跨類抵扣偵測失敗：%s", leave_id, exc, exc_info=True
+                )
+
         session.commit()
 
         # AuditLog changes：留下完整的 before/after + ApprovalLog 連結
@@ -1488,6 +1523,7 @@ def approve_leave(
             "rejection_reason": data.rejection_reason,
             "warning": warning,
             "risk_tags": risk_tags,
+            "cross_offset_ot_id": cross_offset_ot_id,
         }
 
         result = {"message": "已核准" if data.approved else "已駁回"}
