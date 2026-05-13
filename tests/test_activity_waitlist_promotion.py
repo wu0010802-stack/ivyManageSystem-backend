@@ -479,3 +479,10 @@ def test_final_reminder_sent_at_field_exists(session):
     )
     assert hasattr(rc, "final_reminder_sent_at")
     assert rc.final_reminder_sent_at is None
+
+
+def test_line_service_has_final_reminder_method():
+    """LineService 應有 notify_activity_waitlist_final_reminder 方法。"""
+    from services.line_service import LineService
+
+    assert hasattr(LineService, "notify_activity_waitlist_final_reminder")
