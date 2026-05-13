@@ -108,6 +108,28 @@ def _assert_can_manage_user(
         )
         raise HTTPException(status_code=403, detail="不可指定 admin 角色")
 
+    # target 的現有權限必須是 caller 的子集；防止 caller 透過 reset_password /
+    # delete / is_active 等不帶 permissions 的操作，間接管理其實沒權限管的對象後
+    # 透過接管密碼登入該帳號取得超額權限（提權鏈）。
+    if target_user is not None and target_user.id != caller_id:
+        target_perms = (
+            target_user.permissions
+            if target_user.permissions is not None
+            else get_role_default_permissions(target_user.role)
+        )
+        target_perms_int = int(target_perms or 0)
+        if (target_perms_int & ~caller_perms) != 0:
+            logger.warning(
+                "user-management 拒絕：caller user_id=%s 權限 %s 不足以管理 target user_id=%s 權限 %s",
+                caller_id,
+                caller_perms,
+                target_user.id,
+                target_perms_int,
+            )
+            raise HTTPException(
+                status_code=403, detail="目標帳號的權限超出您的管理範圍"
+            )
+
     final_perms = payload_permissions
     if final_perms is None and payload_role is not None:
         final_perms = get_role_default_permissions(payload_role)
@@ -518,6 +540,20 @@ def refresh_token(request: Request):
     寬限期內的過期 token 仍可刷新，超過則需重新登入。
     Token 來源：httpOnly Cookie 或 Authorization header。
     """
+    # 與 login 對稱：IP 滑動視窗限流，避免拿無效 token 壓 DB / 暴力試 jti。
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _check_ip_rate_limit(client_ip)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH_FAILED",
+            username=None,
+            user_id=None,
+            extras={"reason": "ip_rate_limited", "ip": client_ip},
+        )
+        raise
+
     # 從 Cookie 或 header 取得舊 token
     token = request.cookies.get("access_token")
     if not token:
@@ -683,14 +719,18 @@ def logout(request: Request):
 
     if token:
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime, timezone, timedelta
             from utils.auth import (
                 JWT_REFRESH_GRACE_HOURS,
-                decode_token,
+                decode_token_allow_expired,
                 revoke_token,
             )
 
-            payload = decode_token(token)
+            # 允許過期 token：access_token 15min 即過期，但 refresh grace 達 2h；
+            # 若此處只認未過期 token，過期但在 grace 內的登出就會 silently no-op，
+            # token_version 不會 bump、jti 不會入 blocklist，攻擊者拿被遺失的 cookie
+            # 仍能透過 /refresh 換新。
+            payload = decode_token_allow_expired(token)
             user_id = payload.get("user_id")
             if user_id:
                 session = get_session()
@@ -701,22 +741,24 @@ def logout(request: Request):
                         session.commit()
                 finally:
                     session.close()
-            # LOW-2：除了 token_version 整批廢止外，把當前 jti 寫入黑名單
-            #   防護精細到單一 token，且涵蓋無 user_id 的 guest token 場景
+            # 除了 token_version 整批廢止外，把當前 jti 寫入黑名單；防護精細到
+            # 單一 token，且涵蓋無 user_id 的 guest token 場景。
             jti = payload.get("jti")
             exp = payload.get("exp")
             if jti and exp:
                 exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
                 # 寬限期內仍可換發，所以 expires_at 設為 exp + grace
-                from datetime import timedelta
-
                 revoke_token(
                     jti,
                     exp_dt + timedelta(hours=JWT_REFRESH_GRACE_HOURS),
                     reason="logout",
                 )
-        except Exception:
-            pass  # token 已過期或無效，無需廢止
+        except HTTPException:
+            # token 超出 grace 或已被廢止：登出本身仍要成功（清 cookie），
+            # 但因 token 早已失效，無需再次廢止。
+            pass
+        except Exception as e:
+            logger.warning("logout 廢止 token 失敗（將仍清 cookie）：%s", e)
 
     # 只有 token 存在時才寫 LOGOUT audit
     # Why: 無 token 的 /logout 請求（爬蟲/curl 探測）會產生 username=None 的雜訊
@@ -868,6 +910,9 @@ def change_password(
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = False  # 使用者主動修改後清除強制旗標
+        # 與 reset_password 對齊：密碼變更後遞增 token_version，使所有現有 session
+        # 在下次 refresh 時即被拒絕；防止帳號疑似外洩後舊 token 在 grace 期內仍可用。
+        user.token_version = (user.token_version or 0) + 1
         session.commit()
         return {"message": "密碼修改成功"}
     except HTTPException:

@@ -193,7 +193,24 @@ async def get_public_courses(request: Request, response: Response):
             .all()
         )
         payload = [
-            {"name": c.name, "price": c.price, "sessions": c.sessions, "frequency": ""}
+            {
+                "name": c.name,
+                "price": c.price,
+                "sessions": c.sessions,
+                "frequency": "",
+                # Phase 3 — time 序列化為 "HH:MM" 給家長公開報名頁 advisory
+                "min_age_months": c.min_age_months,
+                "max_age_months": c.max_age_months,
+                "meeting_weekday": c.meeting_weekday,
+                "meeting_start_time": (
+                    c.meeting_start_time.strftime("%H:%M")
+                    if c.meeting_start_time
+                    else None
+                ),
+                "meeting_end_time": (
+                    c.meeting_end_time.strftime("%H:%M") if c.meeting_end_time else None
+                ),
+            }
             for c in courses
         ]
         return _public_etag_response(request, response, payload)

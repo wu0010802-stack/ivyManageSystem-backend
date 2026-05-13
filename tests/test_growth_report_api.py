@@ -127,6 +127,51 @@ def test_period_start_must_precede_end(app_client):
     assert resp.status_code == 422
 
 
+def test_create_report_dedup_blocks_duplicate_active_period(app_client):
+    """F-V6-02：同 (student_id, period_label, period_start, period_end) 在非 failed
+    狀態下僅允許一筆。模擬 admin 連點 POST，第二筆應 409 並含 existing report_id。"""
+    client, _, _ = app_client
+    payload = {
+        "period_label": "2026 春季",
+        "period_start": "2026-02-01",
+        "period_end": "2026-05-31",
+    }
+    first = client.post("/api/students/1/growth-reports", json=payload)
+    assert first.status_code == 201, first.text
+    first_id = first.json()["id"]
+
+    second = client.post("/api/students/1/growth-reports", json=payload)
+    assert second.status_code == 409, second.text
+    assert f"report_id={first_id}" in second.json()["detail"]
+
+
+def test_create_report_dedup_allows_retry_after_failed(app_client):
+    """F-V6-02：已 failed 的 report 不擋同 period 重建（容許 retry）。"""
+    client, session_factory, _ = app_client
+    payload = {
+        "period_label": "2026 秋季",
+        "period_start": "2026-09-01",
+        "period_end": "2026-12-31",
+    }
+    first = client.post("/api/students/1/growth-reports", json=payload)
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+
+    # 把第一筆強制改成 failed，模擬 PDF 生成失敗
+    from models.database import StudentGrowthReport
+
+    with session_factory() as session:
+        r = session.query(StudentGrowthReport).filter_by(id=first_id).first()
+        r.status = "failed"
+        r.error_message = "test forced failure"
+        session.commit()
+
+    # 同 period 應可再建一筆
+    retry = client.post("/api/students/1/growth-reports", json=payload)
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["id"] != first_id
+
+
 def _wait_ready(client, rid, max_secs: float = 5.0) -> str:
     for _ in range(int(max_secs * 10)):
         st = client.get(f"/api/students/1/growth-reports/{rid}").json()
@@ -268,3 +313,214 @@ def test_send_line_when_not_ready_returns_409(app_client):
         session.commit()
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 409
+
+
+def test_send_line_all_failed_releases_idempotency_lock(app_client, monkeypatch):
+    """Why: 推送全部失敗 (network/token 過期) 時不可寫 line_sent_at，否則 admin
+    被卡 5 分鐘無法重試，且 200 OK + sent_count=0 容易被忽略。應回 502 並釋放鎖。"""
+    client, session_factory, _ = app_client
+    create = client.post(
+        "/api/students/1/growth-reports",
+        json={
+            "period_label": "F",
+            "period_start": "2026-01-01",
+            "period_end": "2026-03-31",
+        },
+    )
+    rid = create.json()["id"]
+    _wait_ready(client, rid)
+
+    # 綁定家長 LINE
+    with session_factory() as session:
+        from models.auth import User as _U
+        from models.database import Guardian
+
+        session.add(
+            _U(
+                id=2,
+                username="p_fail",
+                password_hash="$2b$12$dummy",
+                role="parent",
+                permissions=0,
+                is_active=True,
+                token_version=0,
+                line_user_id="U_FAIL",
+            )
+        )
+        session.add(Guardian(user_id=2, student_id=1, name="家長"))
+        session.commit()
+
+    # patch line service：全失敗
+    from api.portfolio import reports as reports_mod
+
+    class _FailLine:
+        def push_to_user(self, *_a, **_k):
+            return False
+
+    monkeypatch.setattr(reports_mod, "_line_service", _FailLine())
+
+    resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
+    assert resp.status_code == 502, resp.text
+
+    # line_sent_at 必須仍為 None，admin 可立即重試
+    with session_factory() as session:
+        from models.database import StudentGrowthReport
+
+        r = session.query(StudentGrowthReport).filter_by(id=rid).first()
+        assert r.line_sent_at is None, "失敗時不可佔用冪等鎖"
+
+
+def test_send_line_partial_success_keeps_idempotency_lock(app_client, monkeypatch):
+    """部份家長成功 → 至少一份送達，line_sent_at 應寫入避免重複推送已收到的家長."""
+    client, session_factory, _ = app_client
+    create = client.post(
+        "/api/students/1/growth-reports",
+        json={
+            "period_label": "G",
+            "period_start": "2026-01-01",
+            "period_end": "2026-03-31",
+        },
+    )
+    rid = create.json()["id"]
+    _wait_ready(client, rid)
+
+    with session_factory() as session:
+        from models.auth import User as _U
+        from models.database import Guardian
+
+        for uid, line_id in [(2, "U_OK"), (3, "U_BAD")]:
+            session.add(
+                _U(
+                    id=uid,
+                    username=f"p{uid}",
+                    password_hash="$2b$12$dummy",
+                    role="parent",
+                    permissions=0,
+                    is_active=True,
+                    token_version=0,
+                    line_user_id=line_id,
+                )
+            )
+            session.add(Guardian(user_id=uid, student_id=1, name="家長"))
+        session.commit()
+
+    from api.portfolio import reports as reports_mod
+
+    class _MixLine:
+        def push_to_user(self, line_user_id, _text):
+            return line_user_id == "U_OK"
+
+    monkeypatch.setattr(reports_mod, "_line_service", _MixLine())
+
+    resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["sent_count"] == 1
+
+    with session_factory() as session:
+        from models.database import StudentGrowthReport
+
+        r = session.query(StudentGrowthReport).filter_by(id=rid).first()
+        assert r.line_sent_at is not None, "至少一人成功時應佔用冪等鎖"
+
+
+def test_send_line_does_not_block_under_session_scope(app_client, monkeypatch):
+    """REGRESSION: 推送 IO 不可在 session_scope 內進行（測試方式：偵測推送被呼叫
+    時 session 是否仍開著；由 push 函式在被呼叫時發起獨立 session 寫入並 commit
+    若被外層 session_scope 的鎖卡住會 hang，此測試靠 timeout 檢測）。
+    """
+    client, session_factory, _ = app_client
+    create = client.post(
+        "/api/students/1/growth-reports",
+        json={
+            "period_label": "S",
+            "period_start": "2026-01-01",
+            "period_end": "2026-03-31",
+        },
+    )
+    rid = create.json()["id"]
+    _wait_ready(client, rid)
+
+    with session_factory() as session:
+        from models.auth import User as _U
+        from models.database import Guardian
+
+        session.add(
+            _U(
+                id=2,
+                username="p_io",
+                password_hash="$2b$12$dummy",
+                role="parent",
+                permissions=0,
+                is_active=True,
+                token_version=0,
+                line_user_id="U_IO",
+            )
+        )
+        session.add(Guardian(user_id=2, student_id=1, name="家長"))
+        session.commit()
+
+    from api.portfolio import reports as reports_mod
+
+    pushed_during_outer_txn = []
+
+    class _ProbeLine:
+        def push_to_user(self, _uid, _text):
+            # 推送時 line_sent_at 應已 commit（claim slot 完成），可從另一 session 讀到
+            from models.database import StudentGrowthReport, session_scope
+
+            with session_scope() as s2:
+                r = s2.query(StudentGrowthReport).filter_by(id=rid).first()
+                pushed_during_outer_txn.append(r.line_sent_at is not None)
+            return True
+
+    monkeypatch.setattr(reports_mod, "_line_service", _ProbeLine())
+
+    resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
+    assert resp.status_code == 200
+    assert pushed_during_outer_txn == [
+        True
+    ], "推送時 line_sent_at 應已先 commit，代表推送發生在 session_scope 之外"
+
+
+def test_send_line_idempotent_within_5_minutes(app_client):
+    """Why: 5 分鐘內重複推送 (admin 連點 / 前端 bug) 應回 409 防 LINE quota 浪費."""
+    from datetime import datetime, timedelta
+
+    client, session_factory, _ = app_client
+    create = client.post(
+        "/api/students/1/growth-reports",
+        json={
+            "period_label": "Q",
+            "period_start": "2026-01-01",
+            "period_end": "2026-03-31",
+        },
+    )
+    rid = create.json()["id"]
+    _wait_ready(client, rid)
+
+    # 模擬剛剛已推送 + 已綁定 LINE，跳過真實 push 路徑
+    with session_factory() as session:
+        from models.auth import User
+        from models.database import Guardian, StudentGrowthReport
+
+        r = session.query(StudentGrowthReport).filter_by(id=rid).first()
+        r.line_sent_at = datetime.utcnow() - timedelta(minutes=2)
+        # 給家長綁 LINE，否則先撞 "未綁定 LINE" 409 看不出冪等
+        parent = User(
+            id=2,
+            username="p1",
+            password_hash="$2b$12$dummy",
+            role="parent",
+            permissions=0,
+            is_active=True,
+            token_version=0,
+            line_user_id="U_TEST",
+        )
+        session.add(parent)
+        session.add(Guardian(user_id=2, student_id=1, name="家長"))
+        session.commit()
+
+    resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
+    assert resp.status_code == 409
+    assert "5 分鐘內" in resp.json()["detail"]

@@ -10,9 +10,10 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +28,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     ActivityCourse,
@@ -393,8 +395,31 @@ async def create_growth_report(
                 generated_by=_emp_id,
                 status=REPORT_STATUS_PENDING,
             )
-            session.add(r)
-            session.flush()
+            # F-V6-02：用 SAVEPOINT + partial unique 接住並發雙擊；存在 active
+            # 同 period 報告時 → 409 帶 existing report_id；'failed' 不擋（容許 retry）
+            try:
+                with session.begin_nested():
+                    session.add(r)
+                    session.flush()
+            except IntegrityError:
+                existing = (
+                    session.query(StudentGrowthReport)
+                    .filter(
+                        StudentGrowthReport.student_id == student_id,
+                        StudentGrowthReport.period_label == payload.period_label,
+                        StudentGrowthReport.period_start == payload.period_start,
+                        StudentGrowthReport.period_end == payload.period_end,
+                        StudentGrowthReport.status != REPORT_STATUS_FAILED,
+                    )
+                    .first()
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"同 period 已有報告（report_id={existing.id if existing else '?'}, "
+                        f"status={existing.status if existing else 'unknown'}）"
+                    ),
+                )
             session.refresh(r)
             report_id = r.id
             row_dict = _row_to_dict(r)
@@ -558,19 +583,45 @@ async def send_growth_report_to_line(
     request: Request,
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_PUBLISH)),
 ) -> dict:
-    """推送報告通知給該學生綁定家長 LINE."""
+    """推送報告通知給該學生綁定家長 LINE.
+
+    並發/失敗策略：
+    - Phase 1 in session_scope：with_for_update 鎖 row、檢查 5 分鐘冪等、
+      預先寫入 line_sent_at（claim slot），避免兩個 request 同時通過檢查雙推。
+    - Phase 2 在 session 外執行 LINE 推送（asyncio.to_thread 避免 sync requests
+      阻塞 event loop；DB connection 也不會被外網延遲卡住）。
+    - Phase 3 若 sent_count == 0（網路掛 / token 過期 / 全部失敗），開新 session
+      回滾 line_sent_at 至原值並回 502，admin 可立即重試而非卡 5 分鐘。
+    """
     try:
+        # Phase 1: lock row + claim idempotency slot inside session_scope
+        line_user_ids: list[str] = []
+        previous_sent_at: Optional[datetime] = None
+        claimed_sent_at: Optional[datetime] = None
+        period_label: str = ""
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)
+                .with_for_update()
                 .first()
             )
             if not r:
                 raise HTTPException(status_code=404, detail="報告不存在")
             if r.status != REPORT_STATUS_READY:
                 raise HTTPException(status_code=409, detail="報告尚未準備好")
+            # 5 分鐘冪等：防前端重複提交或 admin 連點造成家長收重複 LINE
+            if r.line_sent_at and (
+                datetime.utcnow() - r.line_sent_at < timedelta(minutes=5)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"5 分鐘內已推送過（last_sent_at={r.line_sent_at.isoformat()}），"
+                        f"請稍後再試"
+                    ),
+                )
 
             from models.database import Guardian
             from models.auth import User as _UserModel
@@ -592,27 +643,69 @@ async def send_growth_report_to_line(
             if _line_service is None:
                 raise HTTPException(status_code=503, detail="LINE 服務尚未初始化")
 
-            base_text = (
-                payload.message
-                or f"您孩子的成長報告（{r.period_label}）已備好，"
-                f"請至家長 App 查看下載。"
-            )
-            sent_count = 0
+            # Pre-claim：搶占 5 分鐘窗口；推送失敗會在 Phase 3 回滾
+            previous_sent_at = r.line_sent_at
+            r.line_sent_at = datetime.utcnow()
+            claimed_sent_at = r.line_sent_at
+            period_label = r.period_label
+        # session_scope 出 with 區塊，pre-claim 已 commit 並釋放 row lock
+
+        # Phase 2: 在 session 外執行 sync LINE push；用 to_thread 避免阻塞 event loop
+        base_text = (
+            payload.message
+            or f"您孩子的成長報告（{period_label}）已備好，請至家長 App 查看下載。"
+        )
+        sent_count = 0
+        push_error: Optional[BaseException] = None
+        try:
             for uid in line_user_ids:
-                ok = _line_service.push_to_user(uid, base_text)
+                ok = await asyncio.to_thread(_line_service.push_to_user, uid, base_text)
                 if ok:
                     sent_count += 1
+        except Exception as exc:  # noqa: BLE001
+            push_error = exc
 
-            r.line_sent_at = datetime.utcnow()
-            request.state.audit_entity_id = str(student_id)
-            request.state.audit_summary = (
-                f"LINE 推送成長報告：student_id={student_id} report_id={report_id} "
-                f"to {sent_count}/{len(line_user_ids)} 位家長"
+        # Phase 3: 全部失敗 → 回滾 claim，回 502 讓 admin 立即重試
+        if sent_count == 0:
+            with session_scope() as session2:
+                r2 = (
+                    session2.query(StudentGrowthReport)
+                    .filter_by(id=report_id, student_id=student_id)
+                    .with_for_update()
+                    .first()
+                )
+                if r2 is not None:
+                    r2.line_sent_at = previous_sent_at
+            if push_error is not None:
+                logger.warning(
+                    "LINE 推送對 report_id=%s 全失敗（含例外）：%s",
+                    report_id,
+                    push_error,
+                )
+            else:
+                logger.warning(
+                    "LINE 推送對 report_id=%s 全失敗（共 %s 位家長）",
+                    report_id,
+                    len(line_user_ids),
+                )
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"LINE 推送全部失敗（共 {len(line_user_ids)} 位家長），"
+                    f"已釋放冪等鎖可立即重試"
+                ),
             )
-            return {
-                "sent_count": sent_count,
-                "line_sent_at": r.line_sent_at.isoformat(),
-            }
+
+        # Phase 4: 全成功或部份成功 — claim 已生效，記稽核並回應
+        request.state.audit_entity_id = str(student_id)
+        request.state.audit_summary = (
+            f"LINE 推送成長報告：student_id={student_id} report_id={report_id} "
+            f"to {sent_count}/{len(line_user_ids)} 位家長"
+        )
+        return {
+            "sent_count": sent_count,
+            "line_sent_at": claimed_sent_at.isoformat() if claimed_sent_at else None,
+        }
     except HTTPException:
         raise
     except Exception as e:

@@ -40,10 +40,17 @@ def _to_dict(m: StudentMeasurement) -> dict:
     }
 
 
+# months 上限 36（3 年足以涵蓋一個小孩的整個幼兒園生涯：學齡前 0-6 歲）；
+# 原本 le=120 = 10 年資料一次性 dump，無 limit/skip 屬於 DoS 面（agent P2 #9）。
+# limit cap 防單一學生意外累積大量量測時整批送出。
+_MONTHS_MAX = 36
+_HARD_ROW_LIMIT = 500
+
+
 @router.get("")
 async def parent_list_measurements(
     student_id: int = Query(...),
-    months: int = Query(24, ge=1, le=120),
+    months: int = Query(24, ge=1, le=_MONTHS_MAX),
     current_user: dict = Depends(require_parent_role()),
 ) -> dict:
     try:
@@ -59,6 +66,7 @@ async def parent_list_measurements(
                     StudentMeasurement.measured_on >= since,
                 )
                 .order_by(StudentMeasurement.measured_on.desc())
+                .limit(_HARD_ROW_LIMIT)
                 .all()
             )
             return {"items": [_to_dict(r) for r in rows]}
@@ -73,7 +81,7 @@ async def parent_list_measurements(
 @router.get("/chart-data")
 async def parent_measurement_chart(
     student_id: int = Query(...),
-    months: int = Query(24, ge=1, le=120),
+    months: int = Query(24, ge=1, le=_MONTHS_MAX),
     current_user: dict = Depends(require_parent_role()),
 ) -> dict:
     """回傳 admin chart-data 同結構 (asc by date)."""
@@ -90,6 +98,7 @@ async def parent_measurement_chart(
                     StudentMeasurement.measured_on >= since,
                 )
                 .order_by(StudentMeasurement.measured_on.asc())
+                .limit(_HARD_ROW_LIMIT)
                 .all()
             )
             series: dict[str, list[dict]] = {

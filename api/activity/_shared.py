@@ -10,7 +10,7 @@ import re
 import logging
 import secrets as _secrets_module
 from collections import defaultdict
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta
 from typing import Optional, List, Literal
 from zoneinfo import ZoneInfo
 
@@ -277,6 +277,28 @@ class CourseCreate(BaseModel):
     # 學期（不指定時 API 端會用當前學期填入）
     school_year: Optional[int] = Field(None, ge=100, le=200)
     semester: Optional[int] = Field(None, ge=1, le=2)
+    # Phase 3 適齡 + 結構化時段（前台 advisory）
+    min_age_months: Optional[int] = Field(None, ge=0, le=360)
+    max_age_months: Optional[int] = Field(None, ge=0, le=360)
+    meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
+    meeting_start_time: Optional[time] = None
+    meeting_end_time: Optional[time] = None
+
+    @model_validator(mode="after")
+    def _validate_phase3(self):
+        if (
+            self.min_age_months is not None
+            and self.max_age_months is not None
+            and self.min_age_months > self.max_age_months
+        ):
+            raise ValueError("min_age_months 不可大於 max_age_months")
+        if (
+            self.meeting_start_time is not None
+            and self.meeting_end_time is not None
+            and self.meeting_start_time >= self.meeting_end_time
+        ):
+            raise ValueError("meeting_start_time 必須早於 meeting_end_time")
+        return self
 
 
 class CourseUpdate(BaseModel):
@@ -287,6 +309,28 @@ class CourseUpdate(BaseModel):
     video_url: Optional[str] = None
     allow_waitlist: Optional[bool] = None
     description: Optional[str] = None
+    # Phase 3 同上
+    min_age_months: Optional[int] = Field(None, ge=0, le=360)
+    max_age_months: Optional[int] = Field(None, ge=0, le=360)
+    meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
+    meeting_start_time: Optional[time] = None
+    meeting_end_time: Optional[time] = None
+
+    @model_validator(mode="after")
+    def _validate_phase3(self):
+        if (
+            self.min_age_months is not None
+            and self.max_age_months is not None
+            and self.min_age_months > self.max_age_months
+        ):
+            raise ValueError("min_age_months 不可大於 max_age_months")
+        if (
+            self.meeting_start_time is not None
+            and self.meeting_end_time is not None
+            and self.meeting_start_time >= self.meeting_end_time
+        ):
+            raise ValueError("meeting_start_time 必須早於 meeting_end_time")
+        return self
 
 
 class SupplyCreate(BaseModel):

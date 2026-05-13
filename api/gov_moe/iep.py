@@ -73,6 +73,51 @@ class IepOut(IepBase):
 # ---------------------------------------------------------------------------
 
 
+def _student_ids_in_scope(db: Session, current_user: dict):
+    """回傳 caller 可存取的 student_id 集合；None 表示全部放行（admin / 園長 / 主任）。
+
+    與 _scoped_query 共享同一條 scope 規則：班導/副班導 只看自己班級，主任以上看全部。
+    """
+    if current_user.get("role") == "admin":
+        return None
+
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        return set()
+
+    from models.employee import Employee
+
+    emp = db.query(Employee).filter(Employee.id == employee_id).first()
+    if not emp:
+        return set()
+
+    if emp.supervisor_role in ("園長", "主任"):
+        return None
+
+    if emp.classroom_id:
+        return {
+            sid
+            for (sid,) in db.query(Student.id)
+            .filter(Student.classroom_id == emp.classroom_id)
+            .all()
+        }
+
+    return set()
+
+
+def _assert_student_in_scope(db: Session, current_user: dict, student_id: int) -> None:
+    """寫入端點用：student_id 來自 body 時必須驗證該學生在 caller scope 內。
+
+    沒這層守衛則持 STUDENTS_SPECIAL_NEEDS_WRITE 的班導可為跨班學生建檔，
+    既污染他班 IEP、又會佔用 (student, year, semester) 唯一鍵。
+    """
+    allowed = _student_ids_in_scope(db, current_user)
+    if allowed is None:
+        return
+    if student_id not in allowed:
+        raise HTTPException(status_code=403, detail="無權為此學生建立或操作 IEP 記錄")
+
+
 def _scoped_query(db: Session, current_user: dict):
     """班導/副班導 只看自己班級的 IEP；主任以上看全部。
 
@@ -82,34 +127,12 @@ def _scoped_query(db: Session, current_user: dict):
     q = db.query(StudentIEPRecord).filter(
         StudentIEPRecord.deleted_at == None  # noqa: E711
     )
-    if current_user.get("role") == "admin":
+    allowed = _student_ids_in_scope(db, current_user)
+    if allowed is None:
         return q
-
-    # Non-admin: look up employee record for supervisor_role + classroom_id
-    employee_id = current_user.get("employee_id")
-    if not employee_id:
-        return q.filter(False)  # no employee record → no access
-
-    from models.employee import Employee
-
-    emp = db.query(Employee).filter(Employee.id == employee_id).first()
-    if not emp:
+    if not allowed:
         return q.filter(False)
-
-    if emp.supervisor_role in ("園長", "主任"):
-        return q
-
-    # 班導/副班導: restrict to own classroom's students
-    if emp.classroom_id:
-        student_ids = [
-            sid
-            for (sid,) in db.query(Student.id)
-            .filter(Student.classroom_id == emp.classroom_id)
-            .all()
-        ]
-        return q.filter(StudentIEPRecord.student_id.in_(student_ids))
-
-    return q.filter(False)  # employee exists but no classroom assignment
+    return q.filter(StudentIEPRecord.student_id.in_(allowed))
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +168,10 @@ def create_iep(
         require_permission(Permission.STUDENTS_SPECIAL_NEEDS_WRITE)
     ),
 ):
+    # student_id 來自 body：必須驗證該學生在 caller 的班級 scope 內，
+    # 否則持 STUDENTS_SPECIAL_NEEDS_WRITE 的班導可為跨班學生建檔並佔唯一鍵。
+    _assert_student_in_scope(db, current_user, payload.student_id)
+
     row = StudentIEPRecord(
         **payload.model_dump(exclude_none=False),
         status="draft",

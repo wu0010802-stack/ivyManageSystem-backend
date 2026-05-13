@@ -176,3 +176,93 @@ def test_parent_acknowledge_idempotent(app_client):
     assert resp2.status_code == 200, resp2.text
     second_ack_time = resp2.json()["parent_acknowledged_at"]
     assert second_ack_time == first_ack_time
+
+
+def test_parent_react_rate_limit_blocks_spam(app_client):
+    """F-V6-07：parent_react 10/60s/IP；第 11 次同 IP react 在 60 秒內應回 429。"""
+    from api.parent_portal.milestones import _react_limiter
+
+    # limiter 是 module-level singleton；其他測試可能累計過 count
+    _react_limiter._timestamps.clear()
+
+    client, _, student_id, _, milestone_id = app_client
+    url = f"/api/parent/milestones/{milestone_id}/react?student_id={student_id}"
+
+    # 10 次都應成功
+    for i in range(10):
+        resp = client.post(url, json={"reaction": "love"})
+        assert resp.status_code == 200, f"call {i + 1}: {resp.text}"
+
+    # 第 11 次應被 limiter 擋下
+    resp = client.post(url, json={"reaction": "celebrate"})
+    assert resp.status_code == 429, resp.text
+
+
+def test_second_guardian_ack_does_not_overwrite_first(app_client):
+    """F-V6-04：first-ack-wins semantic — 同學生兩位 guardian（爸/媽）依序 ack
+    時，第二位的 ack 不應覆蓋 parent_acknowledged_at 與 parent_acknowledged_by。
+    SQLite 環境下 with_for_update 為 no-op；本測試驗 sequential semantic（避免
+    race fix 退化為「都寫」）。
+    """
+    client, session_factory, student_id, _, milestone_id = app_client
+
+    # 取 fixture 已建的 guardian id（父親）
+    with session_factory() as session:
+        first_g = (
+            session.query(Guardian).filter(Guardian.student_id == student_id).first()
+        )
+        first_guardian_id = first_g.id
+
+        # 建第二位 user + guardian（母親）
+        second_user = User(
+            username="parent_mother",
+            password_hash="$2b$12$dummy",
+            role="parent",
+            permissions=0,
+            is_active=True,
+            token_version=0,
+        )
+        session.add(second_user)
+        session.flush()
+        second_g = Guardian(
+            user_id=second_user.id,
+            student_id=student_id,
+            name="王媽媽",
+            relation="母親",
+            is_primary=False,
+        )
+        session.add(second_g)
+        session.commit()
+        second_user_id = second_user.id
+        second_guardian_id = second_g.id
+
+    # 父親先 ack
+    resp1 = client.post(
+        f"/api/parent/milestones/{milestone_id}/acknowledge?student_id={student_id}"
+    )
+    assert resp1.status_code == 200, resp1.text
+    first_ack_at = resp1.json()["parent_acknowledged_at"]
+    assert first_ack_at is not None
+
+    # 母親隨後 ack：換 token
+    mother_token = create_access_token(
+        data={
+            "sub": "parent_mother",
+            "user_id": second_user_id,
+            "role": "parent",
+            "permissions": 0,
+            "token_version": 0,
+        }
+    )
+    client.headers.update({"Authorization": f"Bearer {mother_token}"})
+    resp2 = client.post(
+        f"/api/parent/milestones/{milestone_id}/acknowledge?student_id={student_id}"
+    )
+    assert resp2.status_code == 200, resp2.text
+
+    # parent_acknowledged_at 不變；attribution 仍指父親
+    with session_factory() as session:
+        m = session.query(StudentMilestone).filter_by(id=milestone_id).first()
+        assert m.parent_acknowledged_at.isoformat() == first_ack_at
+        assert m.parent_acknowledged_by == first_guardian_id
+        assert m.parent_acknowledged_by != second_guardian_id

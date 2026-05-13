@@ -14,6 +14,7 @@ monkeypatch 仍生效。
 """
 
 import io
+import logging
 from calendar import monthrange
 from datetime import date as _date
 
@@ -25,6 +26,8 @@ from api.salary_fields import calculate_display_bonus_total
 from models.base import session_scope
 from models.database import Employee, SalaryRecord
 from services.salary.breakdown_enrollment import compute_enrollment_breakdown
+
+logger = logging.getLogger(__name__)
 from utils.auth import require_permission, require_staff_permission
 from utils.permissions import Permission
 from utils.salary_access import (
@@ -78,7 +81,18 @@ def get_salary_records(
             elif emp.title:
                 job_title = emp.title
 
-            breakdown = compute_enrollment_breakdown(session, emp.id, snapshot_date)
+            try:
+                breakdown = compute_enrollment_breakdown(session, emp.id, snapshot_date)
+            except Exception:
+                logger.warning(
+                    "compute_enrollment_breakdown 失敗 employee_id=%s year=%s "
+                    "month=%s；breakdown 設為 None 不影響薪資列表",
+                    emp.id,
+                    year,
+                    month,
+                    exc_info=True,
+                )
+                breakdown = None
 
             results.append(
                 {
@@ -130,6 +144,10 @@ def get_salary_records(
                     "total_deductions": record.total_deduction or 0,
                     "net_pay": record.net_salary or 0,
                     "breakdown": breakdown,
+                    # breakdown 是即時從當前 Classroom + 月底快照算出，未隨薪資封存。
+                    # 當 record.needs_recalc=True 表示薪資金額本身已 stale，breakdown
+                    # 與顯示金額的口徑可能不一致；前端可據此標示「待重算」。
+                    "breakdown_stale": bool(record.needs_recalc),
                 }
             )
 

@@ -5,15 +5,21 @@ Endpoint:
 
 回傳該學生跨 owner_type (observation / contact_book_entry / medication_order / report)
 的所有 image/* attachments。
+
+實作走單一 SQL：
+- mime_type LIKE 'image/%' 在 SQL 端過濾（避免 Python-side filter）
+- 4 個 owner_type 用 OR + IN(subquery) 一次查完，total/offset/limit 全在 SQL 端
+- until 用 < (until + 1 day) 才能涵蓋當天 23:59:59 的 timestamp
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import and_, or_
 
 from api.attachments import _attachment_to_dict
 from models.database import (
@@ -31,6 +37,7 @@ from models.portfolio import (
     ATTACHMENT_OWNER_OBSERVATION,
     ATTACHMENT_OWNER_REPORT,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -53,43 +60,46 @@ def _is_image(mime: Optional[str]) -> bool:
     return bool(mime) and mime.startswith("image/")
 
 
-def _student_owner_ids(session, owner_type: str, student_id: int) -> list[int]:
-    """回傳該 owner_type 下，屬於這位學生的 owner_id list."""
+def _owner_id_subquery(session, owner_type: str, student_id: int):
+    """回傳該 owner_type 下，屬於這位學生的 owner_id subquery（admin 視角）.
+
+    admin 端不過濾 published / deleted；家長端有獨立 _parent_owner_ids 在
+    api/parent_portal/photos.py，請勿在此模組共用。
+    """
     if owner_type == ATTACHMENT_OWNER_OBSERVATION:
-        rows = (
+        return (
             session.query(StudentObservation.id)
             .filter(
                 StudentObservation.student_id == student_id,
                 StudentObservation.deleted_at.is_(None),
             )
-            .all()
+            .scalar_subquery()
         )
-    elif owner_type == ATTACHMENT_OWNER_CONTACT_BOOK:
-        rows = (
+    if owner_type == ATTACHMENT_OWNER_CONTACT_BOOK:
+        return (
             session.query(StudentContactBookEntry.id)
             .filter(StudentContactBookEntry.student_id == student_id)
-            .all()
+            .scalar_subquery()
         )
-    elif owner_type == ATTACHMENT_OWNER_MEDICATION_ORDER:
-        rows = (
+    if owner_type == ATTACHMENT_OWNER_MEDICATION_ORDER:
+        return (
             session.query(StudentMedicationOrder.id)
             .filter(StudentMedicationOrder.student_id == student_id)
-            .all()
+            .scalar_subquery()
         )
-    elif owner_type == ATTACHMENT_OWNER_REPORT:
-        rows = (
+    if owner_type == ATTACHMENT_OWNER_REPORT:
+        return (
             session.query(StudentGrowthReport.id)
             .filter(StudentGrowthReport.student_id == student_id)
-            .all()
+            .scalar_subquery()
         )
-    else:
-        return []
-    return [r[0] for r in rows]
+    return None
 
 
 @router.get("/{student_id}/attachments")
 async def list_student_attachments(
     student_id: int,
+    request: Request,
     owner_type: Optional[str] = Query(None, description="篩選單一 owner_type"),
     since: Optional[date] = Query(None),
     until: Optional[date] = Query(None),
@@ -107,36 +117,56 @@ async def list_student_attachments(
             if owner_type and owner_type not in SUPPORTED_OWNER_TYPES:
                 raise HTTPException(status_code=422, detail="不支援的 owner_type")
 
+            # F-V6-03：跨模組 PII 聚合端點補敏感讀取 audit（對齊 7a25d767）
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student",
+                entity_id=str(student_id),
+                summary=f"portfolio 跨模組附件聚合：student_id={student_id}",
+                changes={
+                    "owner_type_filter": owner_type or "all",
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                },
+            )
+
             target_owner_types = (
                 [owner_type] if owner_type else list(SUPPORTED_OWNER_TYPES)
             )
 
-            all_items: list[dict] = []
+            owner_clauses = []
             for ot in target_owner_types:
-                owner_ids = _student_owner_ids(session, ot, student_id)
-                if not owner_ids:
+                sq = _owner_id_subquery(session, ot, student_id)
+                if sq is None:
                     continue
-                q = session.query(Attachment).filter(
-                    Attachment.owner_type == ot,
-                    Attachment.owner_id.in_(owner_ids),
-                    Attachment.deleted_at.is_(None),
+                owner_clauses.append(
+                    and_(
+                        Attachment.owner_type == ot,
+                        Attachment.owner_id.in_(sq),
+                    )
                 )
-                if since:
-                    q = q.filter(Attachment.created_at >= since)
-                if until:
-                    q = q.filter(Attachment.created_at <= until)
-                rows = q.order_by(Attachment.created_at.desc()).all()
-                for a in rows:
-                    if not _is_image(a.mime_type):
-                        continue
-                    all_items.append(_attachment_to_dict(a))
+            if not owner_clauses:
+                return {"total": 0, "items": []}
 
-            all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-            paged = all_items[skip : skip + limit]
-            return {
-                "total": len(all_items),
-                "items": paged,
-            }
+            q = session.query(Attachment).filter(
+                Attachment.deleted_at.is_(None),
+                Attachment.mime_type.like("image/%"),
+                or_(*owner_clauses),
+            )
+            if since:
+                q = q.filter(Attachment.created_at >= since)
+            if until:
+                # date 比較會被 cast 成 00:00:00；用 < (until + 1 day) 才能涵蓋
+                # 當天上傳的 timestamp（agent P2 #8）
+                q = q.filter(Attachment.created_at < until + timedelta(days=1))
+
+            total = q.count()
+            rows = (
+                q.order_by(Attachment.created_at.desc()).offset(skip).limit(limit).all()
+            )
+            items = [_attachment_to_dict(a) for a in rows]
+            return {"total": total, "items": items}
     except HTTPException:
         raise
     except Exception as e:

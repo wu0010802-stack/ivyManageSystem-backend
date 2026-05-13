@@ -21,6 +21,7 @@ from api.portfolio.student_attachments import router as student_attachments_rout
 from models.auth import User
 from models.database import (
     Attachment,
+    AuditLog,
     Base,
     Classroom,
     Student,
@@ -161,3 +162,67 @@ def test_unsupported_owner_type_422(app_client):
         f"/api/students/{ids['student_id']}/attachments?owner_type=message"
     )
     assert resp.status_code == 422
+
+
+def test_until_includes_same_day_uploads(app_client):
+    """REGRESSION: until=YYYY-MM-DD 必須涵蓋當天 23:59:59 上傳的圖.
+
+    Bug: Attachment.created_at <= date 會被 cast 成 <= date 00:00:00，當天的
+    timestamp（如 14:30:00）會被排除（agent P2 #8）。
+    """
+    client, session_factory, ids = app_client
+    today = datetime.now().date()
+    with session_factory() as s:
+        obs = s.query(StudentObservation).first()
+        # 加一張今天 14:30 上傳的圖
+        s.add(
+            Attachment(
+                owner_type="observation",
+                owner_id=obs.id,
+                storage_key="t/today.jpg",
+                original_filename="today.jpg",
+                mime_type="image/jpeg",
+                size_bytes=500,
+                created_at=datetime.combine(today, datetime.min.time()).replace(
+                    hour=14, minute=30
+                ),
+            )
+        )
+        s.commit()
+
+    resp = client.get(
+        f"/api/students/{ids['student_id']}/attachments?until={today.isoformat()}"
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    same_day = [i for i in items if i.get("original_filename") == "today.jpg"]
+    assert (
+        len(same_day) == 1
+    ), f"當天上傳的圖必須出現在 until=今天 的查詢中, got items={items}"
+
+
+def test_attachments_get_writes_read_audit(app_client):
+    """F-V6-03：跨模組附件聚合 GET 必須留下 AuditLog action=READ 痕跡。"""
+    import time
+
+    client, session_factory, ids = app_client
+    resp = client.get(
+        f"/api/students/{ids['student_id']}/attachments?owner_type=observation"
+    )
+    assert resp.status_code == 200, resp.text
+
+    # write_explicit_audit 是 fire-and-forget；等背景寫入落地
+    time.sleep(0.1)
+    with session_factory() as session:
+        rows = (
+            session.query(AuditLog)
+            .filter(
+                AuditLog.action == "READ",
+                AuditLog.entity_type == "student",
+                AuditLog.entity_id == str(ids["student_id"]),
+            )
+            .all()
+        )
+    assert any(
+        "portfolio 跨模組附件聚合" in (r.summary or "") for r in rows
+    ), f"未找到 portfolio attachments READ audit；rows={[(r.entity_id, r.summary) for r in rows]}"

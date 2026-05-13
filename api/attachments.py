@@ -158,13 +158,22 @@ async def upload_attachment(
             detail="伺服器未安裝 HEIC 解碼套件，請將照片轉成 JPG/PNG 後再上傳",
         )
 
-    # 讀檔 + size check（影片 50MB、其他 10MB）+ magic bytes 驗證
-    content = await read_upload_with_size_check(file, extension=ext)
-    validate_file_signature(content, ext)
-
     try:
+        # F-V6-08：先反查 owner_id → student_id 並 assert_student_access；非自己班
+        # 的 teacher 即會在此 403，省下後續 magic_bytes / PIL 變體生成的 CPU。
+        # multipart body 仍會被 starlette 預先 buffer（FastAPI 預設），IO 已吃下；
+        # 此修補只是把 CPU-heavy 路徑（PIL.Image.open + 兩個變體 resize）擋在
+        # 權限檢查之後。
         with session_scope() as session:
-            # 反查 owner 的 student_id + 班級 scope 檢查
+            student_id = _resolve_owner_student_id(session, owner_type, owner_id)
+            assert_student_access(session, current_user, student_id)
+
+        # 通過 ACL 後才讀檔 + size + magic bytes，再開新 session 寫入
+        content = await read_upload_with_size_check(file, extension=ext)
+        validate_file_signature(content, ext)
+
+        with session_scope() as session:
+            # owner 反查可能在 race 下 stale（owner 已被 delete），保守再驗一次
             student_id = _resolve_owner_student_id(session, owner_type, owner_id)
             assert_student_access(session, current_user, student_id)
 

@@ -492,4 +492,17 @@ class StudentGrowthReport(Base):
             "period_end",
         ),
         Index("ix_growth_reports_status", "status"),
+        # F-V6-02：同 (student_id, period_label, period_start, period_end) 在
+        # 非 failed 範圍內僅可有一筆，防 admin 連點 POST 雙建報告繞過 LINE
+        # 推送 5 分鐘冪等（F-V6-01）。failed 允許重建以供 retry。
+        Index(
+            "uq_growth_reports_period_active",
+            "student_id",
+            "period_label",
+            "period_start",
+            "period_end",
+            unique=True,
+            postgresql_where=text("status != 'failed'"),
+            sqlite_where=text("status != 'failed'"),
+        ),
     )

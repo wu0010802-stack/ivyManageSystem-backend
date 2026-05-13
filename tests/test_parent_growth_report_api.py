@@ -149,6 +149,34 @@ def test_parent_lists_ready_report(app_client):
     assert items[0]["status"] == "ready"
 
 
+def test_parent_list_does_not_expose_admin_internal_fields(app_client):
+    """F-V6-06：parent 序列化不暴露 admin 內部欄位（error_message / file_path /
+    generated_by）。攻擊面：admin 對失敗 report 補 patch 後改回 status=READY
+    時 error_message 殘留會經 _row_to_dict reuse 洩漏給家長。
+    """
+    client, session_factory, student_id, _ = app_client
+    with session_factory() as session:
+        session.add(
+            StudentGrowthReport(
+                student_id=student_id,
+                period_label="x",
+                period_start=date(2026, 1, 1),
+                period_end=date(2026, 3, 31),
+                status="ready",
+                file_path="/srv/instance/growth_reports/1/9.pdf",
+                error_message="DEBUG: psycopg2.errors.NotNullViolation table=...",
+                generated_by=None,  # 跳過 FK；測試焦點是 serialization 過濾
+            )
+        )
+        session.commit()
+    resp = client.get(f"/api/parent/growth-reports?student_id={student_id}")
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["items"][0]
+    assert "error_message" not in item, f"家長端不應暴露 error_message，got {item}"
+    assert "file_path" not in item, f"家長端不應暴露 file_path，got {item}"
+    assert "generated_by" not in item, f"家長端不應暴露 generated_by，got {item}"
+
+
 def test_parent_pending_report_excluded(app_client):
     """status=pending 報告不應出現在 parent list."""
     client, session_factory, student_id, _ = app_client
@@ -205,3 +233,57 @@ def test_parent_cannot_download_other_kid(app_client):
         f"/api/parent/growth-reports/1/download?student_id={other_student_id}"
     )
     assert resp.status_code == 403, resp.text
+
+
+def test_parent_download_view_count_increments_atomically(
+    app_client, tmp_path, monkeypatch
+):
+    """REGRESSION: 連續 3 次下載 view_count 必須 == 3 (原子化 INCR)；
+    parent_first_viewed_at 只在第一次設定，後續不被覆寫（agent P2 #10）.
+    """
+    from datetime import datetime as _dt
+
+    from api.portfolio import reports as reports_mod
+
+    client, session_factory, student_id, _ = app_client
+
+    # patch REPORT_ROOT to tmp_path 並建立假 PDF 檔
+    report_root = tmp_path / "growth_reports"
+    report_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(reports_mod, "REPORT_ROOT", report_root)
+    pdf_path = report_root / "1.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    with session_factory() as session:
+        session.add(
+            StudentGrowthReport(
+                id=1,
+                student_id=student_id,
+                period_label="x",
+                period_start=date(2026, 1, 1),
+                period_end=date(2026, 3, 31),
+                status="ready",
+                file_path=str(pdf_path),
+            )
+        )
+        session.commit()
+
+    first_viewed_after_call_1: list = [None]
+    for i in range(3):
+        resp = client.get(
+            f"/api/parent/growth-reports/1/download?student_id={student_id}"
+        )
+        assert resp.status_code == 200, f"call {i + 1}: {resp.text}"
+
+        with session_factory() as session:
+            r = session.query(StudentGrowthReport).filter_by(id=1).first()
+            if i == 0:
+                first_viewed_after_call_1[0] = r.parent_first_viewed_at
+                assert r.parent_first_viewed_at is not None
+                assert r.parent_view_count == 1
+            elif i == 1:
+                # 第 2 次：first_viewed_at 不應被覆寫
+                assert r.parent_first_viewed_at == first_viewed_after_call_1[0]
+                assert r.parent_view_count == 2
+            else:
+                assert r.parent_view_count == 3

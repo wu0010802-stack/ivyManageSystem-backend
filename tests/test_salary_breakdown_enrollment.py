@@ -74,6 +74,7 @@ def test_compute_breakdown_head_teacher(test_db_session):
         "classroom_id": classroom.id,
         "classroom_name": "大班 A",
         "grade_name": "大班",
+        "multi_head": False,
     }
     assert result["assistant"] is None
 
@@ -152,6 +153,90 @@ def test_compute_breakdown_no_grade_yields_null_grade_name(test_db_session):
     result = compute_enrollment_breakdown(session, teacher.id, date(2026, 5, 31))
 
     assert result["enrollment"]["grade_name"] is None
+
+
+def test_compute_breakdown_picks_current_term_over_other_term(test_db_session):
+    """REGRESSION: 老師跨學期帶不同班，breakdown 必須挑「target_date 當期」班級.
+
+    target_date=2026-05-31 → 學年度 114 學期 2；若同 head 在 (114,1) 與 (114,2)
+    都有班，必須回 (114,2) 的班，不是 (114,1)。Bug 起源：commit 01bba028 標題說
+    對齊 engine date-snapshot 但 head_classroom 沒帶 school_year/semester。
+    """
+    session = test_db_session
+    grade = _make_grade(session)
+    teacher = _make_teacher(session, code="T_TERM", name="跨學期老師")
+    # 上學期班（不應該被選中）
+    c_prev = Classroom(
+        name="上學期班",
+        school_year=114,
+        semester=1,
+        grade_id=grade.id,
+        head_teacher_id=teacher.id,
+        is_active=True,
+    )
+    # 當期班（應被選中）
+    c_curr = Classroom(
+        name="當期班",
+        school_year=114,
+        semester=2,
+        grade_id=grade.id,
+        head_teacher_id=teacher.id,
+        is_active=True,
+    )
+    session.add_all([c_prev, c_curr])
+    session.flush()
+    _make_students(session, c_prev.id, n=10)
+    _make_students(session, c_curr.id, n=20)
+
+    result = compute_enrollment_breakdown(session, teacher.id, date(2026, 5, 31))
+
+    assert result["enrollment"]["classroom_name"] == "當期班"
+    assert result["enrollment"]["total"] == 20
+
+
+def test_compute_breakdown_falls_back_when_no_term_match(test_db_session):
+    """老師當期無班時 fallback 至跨期任一 active（與 engine 同行為）."""
+    session = test_db_session
+    grade = _make_grade(session)
+    teacher = _make_teacher(session, code="T_FB", name="只有上學期班")
+    c = Classroom(
+        name="僅上學期班",
+        school_year=114,
+        semester=1,
+        grade_id=grade.id,
+        head_teacher_id=teacher.id,
+        is_active=True,
+    )
+    session.add(c)
+    session.flush()
+    _make_students(session, c.id, n=15)
+
+    # target_date 2026-05-31 → (114,2)；應 fallback
+    result = compute_enrollment_breakdown(session, teacher.id, date(2026, 5, 31))
+
+    assert result["enrollment"]["classroom_name"] == "僅上學期班"
+    assert result["enrollment"]["total"] == 15
+
+
+def test_compute_breakdown_multi_head_flag(test_db_session, caplog):
+    """同一老師同時為多 active head_teacher 時，breakdown 補 multi_head=True 旗標."""
+    import logging
+
+    session = test_db_session
+    grade = _make_grade(session)
+    teacher = _make_teacher(session, code="T_MH", name="多頭老師")
+    c1 = _make_classroom(session, "甲班", grade.id, head_id=teacher.id)
+    c2 = _make_classroom(session, "乙班", grade.id, head_id=teacher.id)
+    _make_students(session, c1.id, n=10)
+    _make_students(session, c2.id, n=12)
+
+    with caplog.at_level(logging.WARNING):
+        result = compute_enrollment_breakdown(session, teacher.id, date(2026, 5, 31))
+
+    # 取 id 升冪第一個（c1=甲班）
+    assert result["enrollment"]["classroom_name"] == "甲班"
+    assert result["enrollment"]["multi_head"] is True
+    assert any("多個 active 班級" in rec.message for rec in caplog.records)
 
 
 def test_compute_breakdown_inactive_classroom_excluded(test_db_session):

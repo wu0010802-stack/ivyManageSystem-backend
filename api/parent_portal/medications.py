@@ -51,6 +51,7 @@ from services.medication_service import (
 from utils.auth import require_parent_role
 from utils.file_upload import (
     read_upload_with_size_check,
+    safe_attachment_filename,
     validate_file_signature,
 )
 from utils.portfolio_storage import (
@@ -373,13 +374,16 @@ async def upload_medication_photo(
         storage = get_portfolio_storage()
         stored = storage.put_attachment(content, ext)
 
+        # P1-9：safe_attachment_filename 移除路徑成分 / 雙副檔名 / 控制字元；
+        # 避免管理後台 download Content-Disposition 與 UI 顯示時被誤導執行。
+        safe_name = safe_attachment_filename(filename, ext)
         att = Attachment(
             owner_type=ATTACHMENT_OWNER_MEDICATION_ORDER,
             owner_id=order.id,
             storage_key=stored.storage_key,
             display_key=stored.display_key,
             thumb_key=stored.thumb_key,
-            original_filename=filename,
+            original_filename=safe_name,
             mime_type=stored.mime_type,
             size_bytes=len(content),
             uploaded_by=user_id,

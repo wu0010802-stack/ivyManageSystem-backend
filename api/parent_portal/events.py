@@ -31,7 +31,7 @@ from models.database import (
 )
 from models.portfolio import ATTACHMENT_OWNER_EVENT_ACK
 from utils.auth import require_parent_role
-from utils.file_upload import validate_file_signature
+from utils.file_upload import safe_attachment_filename, validate_file_signature
 
 from ._shared import _assert_student_owned, _get_parent_student_ids
 
@@ -311,13 +311,16 @@ async def upload_ack_signature(
 
         storage = get_portfolio_storage()
         stored = storage.put_attachment(content, ext)
+        # P1-9：sanitize 後再入庫，避免 download Content-Disposition 顯示
+        # 雙副檔名 / 路徑成分 / 控制字元。
+        safe_name = safe_attachment_filename(filename, ext)
         att = Attachment(
             owner_type=ATTACHMENT_OWNER_EVENT_ACK,
             owner_id=ack.id,
             storage_key=stored.storage_key,
             display_key=stored.display_key,
             thumb_key=stored.thumb_key,
-            original_filename=filename,
+            original_filename=safe_name,
             mime_type=stored.mime_type,
             size_bytes=len(content),
             uploaded_by=user_id,

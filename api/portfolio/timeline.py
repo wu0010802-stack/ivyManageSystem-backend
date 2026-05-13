@@ -12,7 +12,7 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from models.activity import ActivityRegistration
 from models.database import (
@@ -40,6 +40,7 @@ from services.timeline_aggregator import (
     observation_to_timeline_item,
     sort_and_paginate,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -177,6 +178,7 @@ def _by_type_count(items: list[dict]) -> dict[str, int]:
 @router.get("/{student_id}/timeline")
 async def get_timeline(
     student_id: int,
+    request: Request,
     since: Optional[date] = Query(None),
     until: Optional[date] = Query(None),
     types: Optional[str] = Query(None, description="comma-separated source types"),
@@ -188,6 +190,20 @@ async def get_timeline(
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
             requested_types = _parse_types(types)
+            # F-V6-03：跨模組 timeline 聚合端點補敏感讀取 audit；含 incident /
+            # contact_book / communication / assessment 等高 PII 來源
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student",
+                entity_id=str(student_id),
+                summary=f"portfolio timeline 跨模組聚合：student_id={student_id}",
+                changes={
+                    "types_filter": types or "all",
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                },
+            )
             # Multi-source cursor pagination is TBD; signal "no more pages" rather
             # than re-fetching head and looping the client (frontend uses next_cursor
             # to drive infinite scroll).

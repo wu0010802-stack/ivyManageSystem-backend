@@ -19,12 +19,22 @@ from models.database import Guardian, StudentMilestone, get_session
 from models.portfolio import MILESTONE_REACTIONS
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
+from utils.rate_limit import SlidingWindowLimiter
 
 from ._shared import _assert_student_owned
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/milestones", tags=["parent-milestones"])
+
+# F-V6-07：react 端點防 spam（家長對自己 milestone 連點 emoji 也會狂寫 audit log
+# + DB UPDATE）。正常使用 1 分鐘最多按 3-5 次；10/60s/IP 留出合理緩衝。
+_react_limiter = SlidingWindowLimiter(
+    max_calls=10,
+    window_seconds=60,
+    name="parent_milestone_react",
+    error_detail="reaction 操作過於頻繁，請稍後再試",
+)
 
 
 def _milestone_to_dict(m: StudentMilestone) -> dict:
@@ -79,7 +89,10 @@ class ReactPayload(BaseModel):
     reaction: str = Field(..., description="like / love / celebrate")
 
 
-@router.post("/{milestone_id}/react")
+@router.post(
+    "/{milestone_id}/react",
+    dependencies=[Depends(_react_limiter.as_dependency())],
+)
 async def parent_react(
     milestone_id: int,
     payload: ReactPayload,
@@ -96,16 +109,19 @@ async def parent_react(
         try:
             user_id = current_user["user_id"]
             _assert_student_owned(session, user_id, student_id)
+            # F-V6-04：with_for_update 鎖 milestone row；同學生兩位 guardian 並發
+            # react 時避免 parent_acknowledged_by attribution 被後贏者覆蓋
             m = (
                 session.query(StudentMilestone)
                 .filter_by(id=milestone_id, student_id=student_id)
                 .filter(StudentMilestone.deleted_at.is_(None))
+                .with_for_update()
                 .first()
             )
             if not m:
                 raise HTTPException(status_code=404, detail="里程碑不存在")
             m.parent_reaction = payload.reaction
-            # 第一次 react 也算 ack
+            # 第一次 react 也算 ack（row lock 下重新判 acknowledged_at 仍 None 才寫）
             if m.parent_acknowledged_at is None:
                 m.parent_acknowledged_at = datetime.utcnow()
                 g = (
@@ -138,10 +154,13 @@ async def parent_acknowledge(
         try:
             user_id = current_user["user_id"]
             _assert_student_owned(session, user_id, student_id)
+            # F-V6-04：with_for_update 鎖 row；同學生兩位 guardian 並發 ack 不會
+            # 重複寫 parent_acknowledged_at（first-ack-wins）與覆蓋 acknowledged_by
             m = (
                 session.query(StudentMilestone)
                 .filter_by(id=milestone_id, student_id=student_id)
                 .filter(StudentMilestone.deleted_at.is_(None))
+                .with_for_update()
                 .first()
             )
             if not m:
