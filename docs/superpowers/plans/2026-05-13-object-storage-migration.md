@@ -409,7 +409,7 @@ Expected: 全 12 個 PASS
 
 - [ ] **Step 3：跑全部 backend 測試確認 0 regression**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest -q --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest -q`
 Expected: 全綠（既有 815+ 條 + 新增 12 條）
 
 - [ ] **Step 4：commit**
@@ -674,7 +674,7 @@ Expected: 全 6 個 PASS
 
 - [ ] **Step 3：跑全部測試確認 0 regression**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest -q --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest -q`
 Expected: 全綠
 
 - [ ] **Step 4：commit**
@@ -785,7 +785,7 @@ git commit -m "feat(storage): 實作 SupabaseStorage（save/read/delete/public_u
 
 - [ ] **Step 3：跑活動測試確認綠**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "activity" --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "activity"`
 Expected: 活動相關測試全綠
 
 - [ ] **Step 4：commit**
@@ -888,7 +888,7 @@ async def get_public_poster(filename: str, response: Response):
 
 - [ ] **Step 3：跑活動測試確認綠**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "activity" --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "activity"`
 Expected: 全綠
 
 - [ ] **Step 4：commit**
@@ -976,7 +976,7 @@ git commit -m "refactor(activity): 海報讀取改用 StorageBackend；supabase 
 
 - [ ] **Step 2：跑 portal leave 測試確認綠**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/test_parent_leave_attachments.py -v --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/test_parent_leave_attachments.py -v`
 Expected: 全綠
 
 - [ ] **Step 3：commit**
@@ -1013,7 +1013,7 @@ git commit -m "refactor(portal/leaves): 假單附件上傳改用 StorageBackend"
 
 - [ ] **Step 2：跑 portal leave 測試**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/test_parent_leave_attachments.py -v --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/test_parent_leave_attachments.py -v`
 Expected: 全綠
 
 - [ ] **Step 3：commit**
@@ -1129,7 +1129,7 @@ Run: `grep "^import os" /Users/yilunwu/Desktop/ivy-backend/api/portal/leaves.py`
 
 - [ ] **Step 3：跑 portal leave 測試**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/test_parent_leave_attachments.py -v --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/test_parent_leave_attachments.py -v`
 Expected: 全綠（測試在 local backend 模式跑，行為等同既有）
 
 - [ ] **Step 4：commit**
@@ -1227,7 +1227,7 @@ Run: `grep "^import os" /Users/yilunwu/Desktop/ivy-backend/api/leaves.py`
 
 - [ ] **Step 3：跑 admin leave 測試**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "leave" --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "leave"`
 Expected: 全綠
 
 - [ ] **Step 4：commit**
@@ -1309,12 +1309,12 @@ git commit -m "refactor(leaves): admin 假單附件下載改用 StorageBackend"
 
 - [ ] **Step 3：跑 attendance 測試**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "attendance" --timeout=60`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest tests/ -q -k "attendance"`
 Expected: 全綠
 
 - [ ] **Step 4：跑全部測試確認 0 regression**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest -q --timeout=120`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest -q`
 Expected: 全綠（815+ 條 + Phase 1~2 新增 18 條）
 
 - [ ] **Step 5：commit**
@@ -1573,7 +1573,7 @@ axios.interceptors.request.use((config) => {
 
 - [ ] **Step 1：全綠驗證**
 
-Run: `cd ~/Desktop/ivy-backend && python -m pytest -q --timeout=120`
+Run: `cd ~/Desktop/ivy-backend && python -m pytest -q`
 Expected: 全綠（815+ 既有條 + 新增 ≈18 條 storage 相關）
 
 - [ ] **Step 2：確認沒有 service role key 留在 repo**
