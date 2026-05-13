@@ -18,6 +18,9 @@ import models.base as base_module
 from api.auth import _account_failures, _ip_attempts
 from api.parent_portal.photos import router as parent_photos_router
 from models.auth import User
+from datetime import date as _date
+
+from models.contact_book import StudentContactBookEntry
 from models.database import (
     Attachment,
     Base,
@@ -212,3 +215,113 @@ def test_pdf_not_included_in_photos(app_client):
     items = resp.json()["items"]
     for item in items:
         assert item["mime_type"].startswith("image/")
+
+
+def _add_contact_book_image(session, student_id, classroom_id, *, published, deleted):
+    entry = StudentContactBookEntry(
+        student_id=student_id,
+        classroom_id=classroom_id,
+        log_date=_date.today(),
+        teacher_note="x",
+        published_at=datetime.utcnow() if published else None,
+        deleted_at=datetime.utcnow() if deleted else None,
+    )
+    session.add(entry)
+    session.flush()
+    img = Attachment(
+        owner_type="contact_book_entry",
+        owner_id=entry.id,
+        storage_key=f"cb/{entry.id}.jpg",
+        original_filename="cb.jpg",
+        mime_type="image/jpeg",
+        size_bytes=1234,
+    )
+    session.add(img)
+    session.commit()
+    return entry.id
+
+
+def _photos_count_for(client, ids, owner_type=None):
+    url = f"/api/parent/photos?student_id={ids['student_id']}"
+    resp = client.get(url)
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    if owner_type:
+        items = [i for i in items if i.get("owner_type") == owner_type]
+    return len(items)
+
+
+def test_contact_book_draft_attachment_hidden(app_client):
+    """REGRESSION: 草稿聯絡簿（published_at=NULL）的照片不可洩漏給家長."""
+    client, session_factory, ids, make_token = app_client
+    token = make_token(ids["parent_id"], "parent_a")
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    with session_factory() as s:
+        classroom = s.query(Classroom).first()
+        _add_contact_book_image(
+            s,
+            ids["student_id"],
+            classroom.id,
+            published=False,
+            deleted=False,
+        )
+    assert _photos_count_for(client, ids, owner_type="contact_book_entry") == 0
+
+
+def test_contact_book_published_attachment_visible(app_client):
+    """已發布聯絡簿照片要對家長可見."""
+    client, session_factory, ids, make_token = app_client
+    token = make_token(ids["parent_id"], "parent_a")
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    with session_factory() as s:
+        classroom = s.query(Classroom).first()
+        _add_contact_book_image(
+            s, ids["student_id"], classroom.id, published=True, deleted=False
+        )
+    assert _photos_count_for(client, ids, owner_type="contact_book_entry") == 1
+
+
+def test_contact_book_softdeleted_attachment_hidden(app_client):
+    """軟刪聯絡簿照片不可繼續露出."""
+    client, session_factory, ids, make_token = app_client
+    token = make_token(ids["parent_id"], "parent_a")
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    with session_factory() as s:
+        classroom = s.query(Classroom).first()
+        _add_contact_book_image(
+            s, ids["student_id"], classroom.id, published=True, deleted=True
+        )
+    assert _photos_count_for(client, ids, owner_type="contact_book_entry") == 0
+
+
+def test_observation_softdeleted_attachment_hidden(app_client):
+    """軟刪觀察的照片不可露出（已存在防護，加 explicit 測試守住回歸）."""
+    client, session_factory, ids, make_token = app_client
+    token = make_token(ids["parent_id"], "parent_a")
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    with session_factory() as s:
+        obs = StudentObservation(
+            student_id=ids["student_id"],
+            observation_date=_date.today(),
+            narrative="d",
+            deleted_at=datetime.utcnow(),
+        )
+        s.add(obs)
+        s.flush()
+        s.add(
+            Attachment(
+                owner_type="observation",
+                owner_id=obs.id,
+                storage_key="obs/d.jpg",
+                original_filename="d.jpg",
+                mime_type="image/jpeg",
+                size_bytes=10,
+            )
+        )
+        s.commit()
+    # baseline test 已有 1 張 obs 圖；新加軟刪的不應出現
+    body = client.get(f"/api/parent/photos?student_id={ids['student_id']}").json()
+    obs_items = [i for i in body["items"] if i.get("owner_type") == "observation"]
+    assert (
+        len(obs_items) == 1
+    ), f"only the non-deleted obs image should show, got {obs_items}"
