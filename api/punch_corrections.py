@@ -154,12 +154,12 @@ def approve_punch_correction(
             correction.rejection_reason = body.rejection_reason.strip()
             correction.approved_by = current_user.get("username", "")
             _write_approval_log(
-                "punch_correction",
-                correction_id,
-                "rejected",
-                current_user,
-                body.rejection_reason,
-                session,
+                session=session,
+                doc_type="punch_correction",
+                doc_id=correction_id,
+                action="rejected",
+                approver=current_user,
+                comment=body.rejection_reason,
             )
             session.commit()
             logger.warning(
@@ -243,7 +243,11 @@ def approve_punch_correction(
         correction.is_approved = True
         correction.approved_by = current_user.get("username", "")
         _write_approval_log(
-            "punch_correction", correction_id, "approved", current_user, None, session
+            session=session,
+            doc_type="punch_correction",
+            doc_id=correction_id,
+            action="approved",
+            approver=current_user,
         )
 
         # 補打卡修改 punch_in/out 與缺卡旗標 → 影響遲到/早退/缺打卡扣款。

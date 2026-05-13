@@ -1489,7 +1489,12 @@ def approve_leave(
                 f"{approval_comment}\n{warning}" if approval_comment else warning
             )
         approval_log_row = _write_approval_log(
-            "leave", leave_id, action, current_user, approval_comment, session
+            session=session,
+            doc_type="leave",
+            doc_id=leave_id,
+            action=action,
+            approver=current_user,
+            comment=approval_comment,
         )
         session.commit()
 
@@ -1874,12 +1879,12 @@ def batch_approve_leaves(
                 )
                 action = "approved" if data.approved else "rejected"
                 approval_log_row = _write_approval_log(
-                    "leave",
-                    leave_id,
-                    action,
-                    current_user,
-                    data.rejection_reason if not data.approved else None,
-                    session,
+                    session=session,
+                    doc_type="leave",
+                    doc_id=leave_id,
+                    action=action,
+                    approver=current_user,
+                    comment=data.rejection_reason if not data.approved else None,
                 )
                 applied.append(
                     (

@@ -186,12 +186,12 @@ def _revoke_comp_leave_grant(
             f"來源加班申請（#{ot.id}，{ot.overtime_date}）已被撤銷，補休資格取消"
         )
         _write_approval_log(
-            "leave",
-            lv.id,
-            "rejected",
-            _audit_actor,
-            f"auto_revoked_by_overtime_rollback (#{ot.id})",
-            session,
+            session=session,
+            doc_type="leave",
+            doc_id=lv.id,
+            action="rejected",
+            approver=_audit_actor,
+            comment=f"auto_revoked_by_overtime_rollback (#{ot.id})",
         )
         logger.info(
             "補休假單 #%d 因來源加班 #%d 被撤銷而自動駁回（員工 ID=%d）",
@@ -1414,7 +1414,12 @@ def approve_overtime(
 
         action = "approved" if approved else "rejected"
         approval_log_row = _write_approval_log(
-            "overtime", overtime_id, action, current_user, cleaned_reason, session
+            session=session,
+            doc_type="overtime",
+            doc_id=overtime_id,
+            action=action,
+            approver=current_user,
+            comment=cleaned_reason,
         )
         session.commit()
 
@@ -1617,7 +1622,11 @@ def batch_approve_overtimes(
 
                 action = "approved" if data.approved else "rejected"
                 approval_log_row = _write_approval_log(
-                    "overtime", ot_id, action, current_user, None, session
+                    session=session,
+                    doc_type="overtime",
+                    doc_id=ot_id,
+                    action=action,
+                    approver=current_user,
                 )
                 applied.append(
                     (
