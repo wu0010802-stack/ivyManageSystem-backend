@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from models.database import get_session
+from models.database import get_session_dep
 from services.portal_class_hub_service import (
     SLOT_DEFINITIONS,
     classify_time_to_slot,
@@ -88,7 +88,7 @@ class ClassHubTodayResponse(BaseModel):
 @router.get("/class-hub/today", response_model=ClassHubTodayResponse)
 def get_class_hub_today(
     current_user: dict = Depends(get_current_user),
-    sess: Session = Depends(get_session),
+    sess: Session = Depends(get_session_dep),
 ) -> ClassHubTodayResponse:
     """教師今日工作台彙整：4 段時段卡 + sticky_next + counts。
 

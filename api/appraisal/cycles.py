@@ -1,13 +1,13 @@
 """考核學期週期 router。
 
 Import 路徑慣例（grep 驗證）：
-  - DB session:      from models.database import get_session  （re-export from models.base）
+  - DB session:      from models.database import get_session_dep  （re-export from models.base）
   - 權限守衛:        from utils.auth import require_staff_permission（管理端限定）
   - 當前使用者:      require_staff_permission 回傳 current_user dict
   - Session 型別:    from sqlalchemy.orm import Session
 
-get_session() 回傳普通 Session（非 generator），作為 Depends 使用時
-FastAPI 直接以回傳值注入，session 生命週期由呼叫方管理（與 api/portal/class_hub.py 一致）。
+get_session_dep() 是 generator（yield + finally close），FastAPI Depends 自動 cleanup。
+切勿改用 get_session()（普通回傳值），那會造成 session 洩漏撐爆連線池。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from models.appraisal import (
     CycleStatus,
     SummaryStatus,
 )
-from models.database import get_session
+from models.database import get_session_dep
 from schemas.appraisal import (
     CycleCreate,
     CycleOut,
@@ -44,7 +44,7 @@ router = APIRouter()
 @router.get("/cycles", response_model=list[CycleOut])
 def list_cycles(
     status_filter: Optional[CycleStatus] = Query(default=None, alias="status"),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     """列出所有考核學期週期，可依 status 篩選。"""
@@ -59,7 +59,7 @@ def list_cycles(
 @router.post("/cycles", response_model=CycleOut, status_code=status.HTTP_201_CREATED)
 def create_cycle(
     payload: CycleCreate,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     """建立新的考核學期週期；start_date / end_date / base_score_calc_date 依學年自動帶入。
@@ -93,7 +93,7 @@ def create_cycle(
 def patch_cycle(
     cycle_id: int,
     payload: CyclePatch,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     """修改週期設定（目前僅允許調整 base_score_calc_date）。CLOSED 週期不可修改。"""
@@ -113,7 +113,7 @@ def patch_cycle(
 def lock_cycle(
     cycle_id: int,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_FINALIZE)
     ),
@@ -144,7 +144,7 @@ def unlock_cycle(
     cycle_id: int,
     payload: CycleUnlockRequest,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_FINALIZE)
     ),
@@ -180,7 +180,7 @@ def unlock_cycle(
 def close_cycle(
     cycle_id: int,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_FINALIZE)
     ),

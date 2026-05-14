@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models.appraisal import AppraisalPenaltyCatalogItem, CatalogCategory
-from models.database import get_session
+from models.database import get_session_dep
 from schemas.appraisal import CatalogOut, CatalogPatch
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -21,7 +21,7 @@ router = APIRouter()
 def list_catalog(
     active_only: bool = True,
     category: Optional[CatalogCategory] = None,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     stmt = select(AppraisalPenaltyCatalogItem).order_by(
@@ -40,7 +40,7 @@ def patch_catalog(
     item_id: int,
     payload: CatalogPatch,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     item = db.get(AppraisalPenaltyCatalogItem, item_id)

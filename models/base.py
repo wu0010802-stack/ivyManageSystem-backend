@@ -111,8 +111,22 @@ def get_session_factory():
 
 
 def get_session():
-    """取得資料庫 session（向下相容）"""
+    """取得資料庫 session（向下相容；呼叫方需自行 close）"""
     return get_session_factory()()
+
+
+def get_session_dep():
+    """FastAPI Depends 專用 session generator；request 結束自動 close。
+
+    Why: get_session() 是普通 return（非 generator），FastAPI 對「回傳值型」依賴
+    不會做 cleanup → 每次 request 漏一個 session、撐爆連線池。所有 router 的
+    `Depends(...)` 都必須改用此函式。
+    """
+    session = get_session_factory()()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 @contextmanager

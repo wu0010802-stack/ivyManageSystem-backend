@@ -11,7 +11,7 @@ from models.appraisal import (
     AppraisalParticipant,
     AppraisalSummary,
 )
-from models.database import get_session
+from models.database import get_session_dep
 from services.appraisal_excel import (
     build_cycle_report,
     build_participant_sheet,
@@ -28,7 +28,7 @@ XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml
 @router.get("/cycles/{cycle_id}/report")
 def cycle_report_json(
     cycle_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     cycle = db.get(AppraisalCycle, cycle_id)
@@ -66,7 +66,7 @@ def cycle_report_json(
 @router.get("/cycles/{cycle_id}/report.xlsx")
 def cycle_report_xlsx(
     cycle_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     cycle = db.get(AppraisalCycle, cycle_id)
@@ -85,7 +85,7 @@ def cycle_report_xlsx(
 @router.get("/cycles/{cycle_id}/penalty_log.xlsx")
 def penalty_log_xlsx(
     cycle_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     cycle = db.get(AppraisalCycle, cycle_id)
@@ -104,7 +104,7 @@ def penalty_log_xlsx(
 @router.get("/participants/{participant_id}/sheet.xlsx")
 def participant_sheet_xlsx(
     participant_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     p = db.get(AppraisalParticipant, participant_id)
