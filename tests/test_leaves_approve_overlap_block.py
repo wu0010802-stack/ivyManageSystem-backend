@@ -58,8 +58,7 @@ def _patches_for_approve(leave, conflict=None):
     session.query.return_value.filter.return_value.first.return_value = None
     return session, [
         patch("api.leaves.get_session", return_value=session),
-        patch("api.leaves._get_submitter_role", return_value="teacher"),
-        patch("api.leaves._check_approval_eligibility", return_value=True),
+        patch("api.leaves.assert_approver_eligible", return_value="teacher"),
         patch("api.leaves._check_substitute_guard"),
         patch("api.leaves._check_substitute_leave_conflict"),
         patch("api.leaves.validate_leave_hours_against_schedule"),
