@@ -162,7 +162,9 @@ def _fetch_activity(session, student_id, since, until) -> list[dict]:
     if since:
         q = q.filter(ActivityRegistration.created_at >= since)
     if until:
-        q = q.filter(ActivityRegistration.created_at <= until)
+        # round 5 P1：created_at 是 DateTime，until 是 Date；<= until 等於
+        # <= until 00:00:00 → 吃掉 until 當天活動。半開區間 +1 day。
+        q = q.filter(ActivityRegistration.created_at < (until + timedelta(days=1)))
     rows = q.order_by(ActivityRegistration.created_at.desc()).limit(100).all()
     return [activity_to_timeline_item(r) for r in rows]
 

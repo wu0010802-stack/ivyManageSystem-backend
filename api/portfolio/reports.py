@@ -238,7 +238,11 @@ def _collect_report_data(
         .filter(
             ActivityRegistration.student_id == student.id,
             ActivityRegistration.created_at >= period_start,
-            ActivityRegistration.created_at <= period_end,
+            # round 5 P1：created_at 是 DateTime，period_end 是 Date；
+            # PG cast 後 <= period_end 等於 <= period_end 00:00:00，
+            # 會吃掉期間結束當天的活動。改半開區間 +1 day 與
+            # student_attachments.py:162 同 idiom。
+            ActivityRegistration.created_at < (period_end + timedelta(days=1)),
         )
         .all()
     )
