@@ -26,6 +26,9 @@ admin 才能最終核），需要：
 
 import json
 import logging
+from datetime import date
+
+from fastapi import HTTPException
 
 from models.database import User, ApprovalPolicy, ApprovalLog, SalaryRecord
 
@@ -146,3 +149,75 @@ def _get_finalized_salary_record(session, employee_id: int, year: int, month: in
         )
         .first()
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# leaves / overtimes / punch_corrections 共用守衛 helpers
+# ──────────────────────────────────────────────────────────────────────
+# Why: 單側加 guard 漏同步另一側的 P1 bug 多次出現
+# （memory project_leaves_overtimes_bug_batch_2026_05_12 P1-5 即此 pattern）。
+# 集中於本檔，新增規則只改一處，三條 router 同步。
+
+
+def is_self_approval(approver: dict, owner_employee_id: int) -> bool:
+    """申請人與核准人是否為同一員工。
+
+    純管理員（無 employee_id）本身不會提出申請，不構成自我核准風險，回傳 False。
+    用於 leaves / overtimes / punch_corrections 單筆與批次核准守衛。
+    """
+    approver_eid = approver.get("employee_id")
+    return bool(approver_eid and owner_employee_id == approver_eid)
+
+
+def assert_approver_eligible(
+    session,
+    *,
+    doc_type: str,
+    doc_label: str,
+    submitter_employee_id: int,
+    approver_role: str,
+) -> str:
+    """整合「查申請人角色 → 檢查 approver 資格 → 不符則 403」三步驟。
+
+    用於 leaves / overtimes / punch_corrections 單筆核准端點。
+    批次端點因需 cache submitter_role → eligibility 重複查詢，仍呼叫
+    _get_submitter_role + _check_approval_eligibility 低階 helper。
+
+    回傳 submitter_role 供 caller 後續記錄稽核欄位使用。
+    """
+    submitter_role = _get_submitter_role(submitter_employee_id, session)
+    if not _check_approval_eligibility(
+        doc_type, submitter_role, approver_role, session
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）"
+                f"的{doc_label}申請"
+            ),
+        )
+    return submitter_role
+
+
+def collect_months_from_date_range(start: date, end: date) -> set[tuple[int, int]]:
+    """蒐集 [start, end] 區間涵蓋的所有 (year, month) tuple。
+
+    跨月假單 / 跨日加班會橫跨多個薪資月份，呼叫端需取得完整集合做：
+    - assert_months_not_finalized（封存守衛）
+    - lock_and_premark_stale（薪資鎖 + needs_recalc 預標）
+
+    Why: api/leaves.py L1261 原為 inline while 迴圈 12 行；overtimes 用
+    services.salary.utils.collect_months_from_dates 單日輸入。本 helper
+    統一跨日場景，single-date 場景仍可呼叫（start=end）。
+    """
+    months: set[tuple[int, int]] = set()
+    cur = date(start.year, start.month, 1)
+    end_first = date(end.year, end.month, 1)
+    while cur <= end_first:
+        months.add((cur.year, cur.month))
+        cur = (
+            date(cur.year + 1, 1, 1)
+            if cur.month == 12
+            else date(cur.year, cur.month + 1, 1)
+        )
+    return months
