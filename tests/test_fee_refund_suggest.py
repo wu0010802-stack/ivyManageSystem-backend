@@ -296,3 +296,73 @@ def test_suggest_record_not_found(client_admin):
         json={"withdrawal_date": "2025-09-15"},
     )
     assert r.status_code == 404
+
+
+def test_suggest_non_admin_blocked_by_assert_student_access(_backend, setup_fee_record):
+    """Bug sweep round 4 (2026-05-14) B7：非 admin/hr/supervisor 的 caller
+    必須通過 assert_student_access 才能拿到該學生月費 breakdown / 請假計算結果。
+    """
+    from utils.permissions import Permission
+
+    # 用 ID 捕獲，避免 detached SQLAlchemy 物件跨 session 觸發 lazy load
+    rec_id = setup_fee_record["record"].id
+    student_classroom_id = setup_fee_record["student"].classroom_id
+
+    with _backend["session_factory"]() as s:
+        # 另開一班，把假帳號的 employee 掛到「不是學生那班」的 head_teacher 上
+        from models.classroom import ClassGrade, Classroom
+        from models.database import Employee
+
+        other_grade = ClassGrade(name="中班", is_active=True, sort_order=2)
+        s.add(other_grade)
+        s.flush()
+        other_cr = Classroom(
+            name="中A",
+            school_year=114,
+            semester=1,
+            grade_id=other_grade.id,
+            is_active=True,
+        )
+        s.add(other_cr)
+        s.flush()
+        emp = Employee(employee_id="T999", name="財務人員", is_active=True)
+        s.add(emp)
+        s.flush()
+        other_cr.head_teacher_id = emp.id
+        s.flush()
+        u = User(
+            username="refund_finance",
+            password_hash=hash_password("Temp123456"),
+            # 自訂財務角色：require_staff_permission 不擋（非 teacher/parent），
+            # is_unrestricted 也不放行（非 admin/hr/supervisor）→ 走
+            # assert_student_access 班級 scope 守衛
+            role="finance",
+            permissions=int(Permission.FEES_READ),
+            employee_id=emp.id,
+            is_active=True,
+        )
+        s.add(u)
+        s.commit()
+        other_cr_id = other_cr.id
+
+    # 確認該 student 不在 finance 的班級
+    assert student_classroom_id != other_cr_id
+
+    client = TestClient(_backend["app"])
+    try:
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "refund_finance", "password": "Temp123456"},
+        )
+        assert r.status_code == 200, f"login failed: {r.text}"
+
+        r = client.post(
+            f"/api/fees/records/{rec_id}/refund-suggest",
+            json={"withdrawal_date": "2025-09-15"},
+        )
+        # 修補前：200 + breakdown 洩漏
+        # 修補後：assert_student_access 擋 403「您無權存取此學生」
+        assert r.status_code == 403, r.text
+        assert "無權" in r.json().get("detail", "")
+    finally:
+        client.close()

@@ -1408,6 +1408,13 @@ def suggest_refund(
         if not rec:
             raise HTTPException(status_code=404, detail="費用記錄不存在")
 
+        # F-034 同 list_fee_records:1003 — 非 admin/hr/supervisor caller
+        # 必須通過 assert_student_access 才能拿到該學生月費 breakdown 與請假
+        # 計算結果（refund-suggest 會 SELECT StudentLeaveRequest）。
+        # bug sweep round 4 (2026-05-14) B7。
+        if not is_unrestricted(current_user):
+            assert_student_access(session, current_user, rec.student_id)
+
         fee_type = rec.fee_type or "custom"
 
         # 代購品 / 保險費 → 不退
