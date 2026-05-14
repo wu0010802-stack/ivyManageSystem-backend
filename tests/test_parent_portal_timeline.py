@@ -146,3 +146,55 @@ def test_parent_sees_milestone(app_client):
     items = resp.json()["items"]
     assert len(items) == 1
     assert items[0]["type"] == "milestone"
+
+
+def test_parent_timeline_hides_contact_book_drafts_and_soft_deleted(app_client):
+    """round 5 P1：timeline 不得吐老師草稿（published_at IS NULL）或軟刪
+    （deleted_at IS NOT NULL）的聯絡簿。"""
+    from datetime import datetime, timedelta
+
+    from models.contact_book import StudentContactBookEntry
+    from models.database import Student
+
+    client, session_factory, student_id, _ = app_client
+    with session_factory() as session:
+        classroom_id = session.get(Student, student_id).classroom_id
+        today = date.today()
+        session.add_all(
+            [
+                # 已發布 — 應出現
+                StudentContactBookEntry(
+                    student_id=student_id,
+                    classroom_id=classroom_id,
+                    log_date=today,
+                    teacher_note="今天表現很好",
+                    published_at=datetime.utcnow(),
+                ),
+                # 草稿 — 不應出現
+                StudentContactBookEntry(
+                    student_id=student_id,
+                    classroom_id=classroom_id,
+                    log_date=today - timedelta(days=1),
+                    teacher_note="老師還在寫，未發布",
+                    published_at=None,
+                ),
+                # 已發布但軟刪 — 不應出現
+                StudentContactBookEntry(
+                    student_id=student_id,
+                    classroom_id=classroom_id,
+                    log_date=today - timedelta(days=2),
+                    teacher_note="已撤回",
+                    published_at=datetime.utcnow(),
+                    deleted_at=datetime.utcnow(),
+                ),
+            ]
+        )
+        session.commit()
+    resp = client.get(
+        f"/api/parent/timeline?student_id={student_id}&types=contact_book"
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 1, items
+    # 只剩已發布那筆
+    assert "今天表現很好" in items[0]["summary"]

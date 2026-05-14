@@ -195,8 +195,14 @@ async def parent_get_timeline(
                 )
 
             if "contact_book" in requested_types:
+                # round 5 P1：家長端 timeline 不應吐老師草稿/軟刪。
+                # 對偶 endpoint photos / family / contact_book._get_entry_for_parent
+                # 均已過濾 deleted_at IS NULL + published_at IS NOT NULL，
+                # 此處原本漏網。
                 q = session.query(StudentContactBookEntry).filter(
-                    StudentContactBookEntry.student_id == student_id
+                    StudentContactBookEntry.student_id == student_id,
+                    StudentContactBookEntry.deleted_at.is_(None),
+                    StudentContactBookEntry.published_at.isnot(None),
                 )
                 if since:
                     q = q.filter(StudentContactBookEntry.log_date >= since)
