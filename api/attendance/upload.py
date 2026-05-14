@@ -576,7 +576,8 @@ async def upload_attendance(
             # 舊格式：使用原有解析器
             from services.attendance_parser import parse_attendance_file
 
-            results, anomaly_df, summary_df = parse_attendance_file(file_path)
+            # storage 遷移後不再有實體 file_path，改用 BytesIO（pd.read_excel 接受）
+            results, anomaly_df, summary_df = parse_attendance_file(io.BytesIO(content))
 
             session = get_session()
             try:
