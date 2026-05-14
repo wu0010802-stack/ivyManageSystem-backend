@@ -22,11 +22,19 @@ from datetime import date
 from pathlib import Path
 from typing import Optional, Protocol
 
+from fastapi import HTTPException
 from PIL import Image
 
 from utils.storage import get_storage_root
 
 logger = logging.getLogger(__name__)
+
+# 防 decompression bomb：超過此像素數的影像會在 LANCZOS resize 階段大量分配
+# RAM（一張宣告 50000x50000 的 PNG 壓縮後 < 5 MB 通過 size + magic bytes，但解
+# 析時需要約 7.5 GB），導致 worker OOM。Pillow 預設僅在 >2x MAX_IMAGE_PIXELS
+# 才 raise DecompressionBombError，1-2x 區間僅 warn → 此處於 open 後主動檢查。
+MAX_IMAGE_PIXELS = 30_000_000
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 # 延遲偵測 pillow-heif（避免部署環境無 libheif 時 import 失敗）
 _HEIF_REGISTERED = False
@@ -203,9 +211,32 @@ class LocalStorage:
         """生成 display (1024px q85) 與 thumb (256px q75) 兩個 JPG 變體。"""
         try:
             image = Image.open(io.BytesIO(content))
+        except Image.DecompressionBombError as exc:
+            logger.warning("拒絕 decompression bomb 影像（%s）：%s", ext, exc)
+            raise HTTPException(
+                status_code=400,
+                detail="影像尺寸超過上限，請壓縮後重新上傳",
+            )
         except Exception as exc:  # pragma: no cover — 上游應已 magic bytes 驗證
             logger.warning("無法解析影像（%s）：%s", ext, exc)
             raise
+
+        # Pillow header 解析後 size 已可讀；主動擋掉 1-2x MAX_IMAGE_PIXELS 區間
+        # （Pillow 在此區間僅 warn，仍會在 LANCZOS resize 時分配像素導致 OOM）。
+        width, height = image.size
+        if width * height > MAX_IMAGE_PIXELS:
+            logger.warning(
+                "拒絕超大影像（%s）：%d x %d = %d px > %d",
+                ext,
+                width,
+                height,
+                width * height,
+                MAX_IMAGE_PIXELS,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="影像尺寸超過上限，請壓縮後重新上傳",
+            )
 
         image = _apply_exif_orientation(image)
         if image.mode not in ("RGB", "L"):
