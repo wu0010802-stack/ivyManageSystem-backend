@@ -415,6 +415,118 @@ def test_iep_state_transitions(gov_moe_client):
     assert r.json()["status"] == "closed"
 
 
+def test_iep_supervisor_can_approve_and_close(gov_moe_client):
+    """round 5 P1：園長/主任 可批核並結案 IEP。
+
+    舊版 approve/close 直接讀 JWT current_user.get('supervisor_role')，但
+    api/auth.py create_access_token 不寫入此欄 — 結果園長/主任 100% 卡 403。
+    修補：改 DB lookup Employee.supervisor_role（_is_supervisor_or_above）。
+    """
+    from models.classroom import Classroom
+    from models.employee import Employee
+
+    client, sf = gov_moe_client
+    admin_tok = _login_admin(client, sf)
+    sid, cls_id = _seed_student_and_classroom(sf)
+
+    # 建立「主任」員工 + 對應帳號（非 admin 角色，僅靠 supervisor_role 取得權限）
+    with sf() as s:
+        emp = Employee(
+            name="主任王",
+            employee_id="D001",
+            is_active=True,
+            classroom_id=cls_id,
+            supervisor_role="主任",
+        )
+        s.add(emp)
+        s.commit()
+        s.refresh(emp)
+        u = User(
+            username="dir1",
+            password_hash=hash_password("DirPass1"),
+            role="teacher",
+            permissions=(1 << 48),  # STUDENTS_SPECIAL_NEEDS_WRITE
+            is_active=True,
+            employee_id=emp.id,
+        )
+        s.add(u)
+        s.commit()
+
+    # admin 建 IEP + submit
+    auth_admin = {"Authorization": f"Bearer {admin_tok}"}
+    iep = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 1},
+        headers=auth_admin,
+    ).json()
+    client.put(f"/api/gov-moe/iep/{iep['id']}/submit", headers=auth_admin)
+
+    # 主任登入 → approve / close 皆應成功
+    resp = client.post(
+        "/api/auth/login", json={"username": "dir1", "password": "DirPass1"}
+    )
+    dir_tok = resp.json().get("access_token") or resp.cookies.get("access_token")
+    auth_dir = {"Authorization": f"Bearer {dir_tok}"}
+
+    r = client.put(f"/api/gov-moe/iep/{iep['id']}/approve", headers=auth_dir)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved"
+
+    r = client.put(f"/api/gov-moe/iep/{iep['id']}/close", headers=auth_dir)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "closed"
+
+
+def test_iep_班導_cannot_approve(gov_moe_client):
+    """round 5 P1：純班導（無 supervisor_role）不得批核 IEP，仍 403。"""
+    from models.classroom import Classroom
+    from models.employee import Employee
+
+    client, sf = gov_moe_client
+    admin_tok = _login_admin(client, sf)
+    sid, cls_id = _seed_student_and_classroom(sf)
+
+    with sf() as s:
+        emp = Employee(
+            name="陳老師",
+            employee_id="T001",
+            is_active=True,
+            classroom_id=cls_id,
+            supervisor_role=None,
+        )
+        s.add(emp)
+        s.commit()
+        s.refresh(emp)
+        u = User(
+            username="t1",
+            password_hash=hash_password("Teach123"),
+            role="teacher",
+            permissions=(1 << 48),
+            is_active=True,
+            employee_id=emp.id,
+        )
+        s.add(u)
+        s.commit()
+
+    auth_admin = {"Authorization": f"Bearer {admin_tok}"}
+    iep = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 1},
+        headers=auth_admin,
+    ).json()
+    client.put(f"/api/gov-moe/iep/{iep['id']}/submit", headers=auth_admin)
+
+    resp = client.post(
+        "/api/auth/login", json={"username": "t1", "password": "Teach123"}
+    )
+    teacher_tok = resp.json().get("access_token") or resp.cookies.get("access_token")
+    r = client.put(
+        f"/api/gov-moe/iep/{iep['id']}/approve",
+        headers={"Authorization": f"Bearer {teacher_tok}"},
+    )
+    assert r.status_code == 403, r.text
+
+
 def test_iep_cannot_edit_after_approved(gov_moe_client):
     client, sf = gov_moe_client
     tok = _login_admin(client, sf)
