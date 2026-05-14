@@ -65,7 +65,6 @@ def list_fee_records(
     period: Optional[str] = Query(None),
     classroom_name: Optional[str] = Query(None),
     status: Optional[str] = Query(None, pattern="^(unpaid|partial|paid)$"),
-    fee_item_id: Optional[int] = Query(None),
     student_name: Optional[str] = Query(None),
     student_id: Optional[int] = Query(None, gt=0),
     page: int = Query(1, ge=1),
@@ -92,7 +91,6 @@ def list_fee_records(
             period=period,
             classroom_name=classroom_name,
             status=status,
-            fee_item_id=fee_item_id,
             student_name=student_name,
             student_id=student_id,
         )
@@ -118,7 +116,6 @@ def list_fee_records(
                     "student_id": r.student_id,
                     "student_name": r.student_name,
                     "classroom_name": r.classroom_name,
-                    "fee_item_id": r.fee_item_id,
                     "fee_item_name": r.fee_item_name,
                     "amount_due": r.amount_due,
                     "amount_paid": r.amount_paid,
@@ -343,7 +340,6 @@ def pay_fee_record(
                 "student_id": record.student_id,
                 "student_name": student_name,
                 "period": record.period,
-                "fee_item_id": record.fee_item_id,
                 "previous_paid": previous_paid,
                 "new_paid": amount_paid,
                 "delta": delta,
@@ -390,7 +386,6 @@ def fee_summary(
     period: Optional[str] = Query(None),
     classroom_name: Optional[str] = Query(None),
     status: Optional[str] = Query(None, pattern="^(unpaid|partial|paid)$"),
-    fee_item_id: Optional[int] = Query(None),
     student_name: Optional[str] = Query(None),
     _: None = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
@@ -401,7 +396,6 @@ def fee_summary(
             period=period,
             classroom_name=classroom_name,
             status=status,
-            fee_item_id=fee_item_id,
             student_name=student_name,
         )
 

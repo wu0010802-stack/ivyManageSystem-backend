@@ -1,11 +1,11 @@
 """tests/test_fees_security_fixes.py — 學費端點安全修復回歸測試。
 
 涵蓋：
-- FeeItem.amount 上限 MAX_FEE_AMOUNT
-- PayRequest.amount_paid 上限
+- PayRequest.amount_paid 上限 MAX_FEE_AMOUNT
 - 拒絕調降 amount_paid（除非 allow_decrease=True）
 - 稽核 summary 包含前後值
 - InsuranceService 拒絕負薪資
+（c2: FeeItem.amount cap 隨 /api/fees/items endpoint 一同退場）
 """
 
 import os
@@ -26,7 +26,7 @@ from api.auth import router as auth_router
 from api.fees import MAX_FEE_AMOUNT, router as fees_router
 from models.base import Base
 from models.classroom import Classroom, Student
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.database import User
 from utils.auth import hash_password
 from utils.permissions import Permission
@@ -92,19 +92,15 @@ def _seed_record(session, *, amount_due=1000, amount_paid=0, status="unpaid"):
     )
     session.add(st)
     session.flush()
-    item = FeeItem(name="學費", amount=amount_due, period="2025-1", is_active=True)
-    session.add(item)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=st.id,
         student_name=st.name,
         classroom_name=cls.name,
-        fee_item_id=item.id,
-        fee_item_name=item.name,
+        fee_item_name="學費",
         amount_due=amount_due,
         amount_paid=amount_paid,
         status=status,
-        period=item.period,
+        period="2025-1",
     )
     session.add(rec)
     session.flush()

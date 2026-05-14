@@ -36,7 +36,7 @@ from models.database import (
     RegistrationCourse,
     User,
 )
-from models.fees import FeeItem, StudentFeePayment, StudentFeeRecord, StudentFeeRefund
+from models.fees import StudentFeePayment, StudentFeeRecord, StudentFeeRefund
 from utils.auth import hash_password
 from utils.permissions import Permission
 
@@ -143,24 +143,15 @@ def _setup_fee_record(session, *, amount_due=1000, amount_paid=1000):
     )
     session.add(st)
     session.flush()
-    item = FeeItem(
-        name="學費",
-        amount=amount_due,
-        period="2026-1",
-        is_active=True,
-    )
-    session.add(item)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=st.id,
         student_name=st.name,
         classroom_name=cls.name,
-        fee_item_id=item.id,
-        fee_item_name=item.name,
+        fee_item_name="學費",
         amount_due=amount_due,
         amount_paid=amount_paid,
         status="paid" if amount_paid >= amount_due else "partial",
-        period=item.period,
+        period="2026-1",
         payment_date=date(2026, 3, 1),
         payment_method="現金",
     )
@@ -305,19 +296,15 @@ class TestFeeRefundIdempotency:
             )
             s.add(st2)
             s.flush()
-            item2 = FeeItem(name="雜費", amount=800, period="2026-1", is_active=True)
-            s.add(item2)
-            s.flush()
             r2 = StudentFeeRecord(
                 student_id=st2.id,
                 student_name=st2.name,
                 classroom_name=cls.name,
-                fee_item_id=item2.id,
-                fee_item_name=item2.name,
+                fee_item_name="雜費",
                 amount_due=800,
                 amount_paid=800,
                 status="paid",
-                period=item2.period,
+                period="2026-1",
                 payment_date=date(2026, 3, 1),
                 payment_method="現金",
             )

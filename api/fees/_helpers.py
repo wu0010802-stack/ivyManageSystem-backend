@@ -181,7 +181,6 @@ def _apply_fee_record_filters(
     period: Optional[str] = None,
     classroom_name: Optional[str] = None,
     status: Optional[str] = None,
-    fee_item_id: Optional[int] = None,
     student_name: Optional[str] = None,
     student_id: Optional[int] = None,
 ):
@@ -191,8 +190,6 @@ def _apply_fee_record_filters(
         query = query.filter(StudentFeeRecord.classroom_name == classroom_name)
     if status:
         query = query.filter(StudentFeeRecord.status == status)
-    if fee_item_id:
-        query = query.filter(StudentFeeRecord.fee_item_id == fee_item_id)
     if student_id:
         query = query.filter(StudentFeeRecord.student_id == student_id)
     keyword = (student_name or "").strip()

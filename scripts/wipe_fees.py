@@ -40,14 +40,13 @@ def wipe_fees() -> dict:
     """有序刪除學費四表並重置 PK 序列。回傳各表刪除筆數。"""
     counts: dict[str, int] = {}
     with session_scope() as session:
-        # 順序：refunds / payments → records → items
+        # 順序：refunds / payments → records
         # （payments 與 refunds 都靠 record_id FK 到 records；
-        #  records 靠 fee_item_id FK 到 items）
+        #  c2 已 DROP TABLE fee_items；c3 已 DROP COLUMN fee_item_id）
         for table in (
             "student_fee_refunds",
             "student_fee_payments",
             "student_fee_records",
-            "fee_items",
         ):
             try:
                 res = session.execute(text(f"DELETE FROM {table}"))

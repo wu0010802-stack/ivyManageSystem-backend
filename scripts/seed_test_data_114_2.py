@@ -65,7 +65,7 @@ from models.event import (
     SchoolEvent,
     WorkdayOverride,
 )
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.guardian import Guardian
 from models.leave import LeaveQuota, LeaveRecord
 from models.overtime import OvertimeRecord, PunchCorrectionRequest
@@ -396,31 +396,13 @@ FEE_TEMPLATES = [
 
 
 def step_fees():
-    """建立學費項目並為每個學生產生繳費記錄"""
-    logger.info("=== Step 3: 學費 ===")
-    with session_scope() as session:
-        # 3a) Fee items
-        for tpl in FEE_TEMPLATES:
-            existing = (
-                session.query(FeeItem)
-                .filter_by(name=tpl["name"], period=PERIOD)
-                .first()
-            )
-            if not existing:
-                session.add(
-                    FeeItem(
-                        name=tpl["name"],
-                        amount=tpl["amount"],
-                        classroom_id=tpl["classroom_id"],
-                        period=PERIOD,
-                        is_active=True,
-                    )
-                )
-        session.flush()
-        items = session.query(FeeItem).filter_by(period=PERIOD).all()
-        logger.info("FeeItem 總數:%d", len(items))
+    """為每個學生產生學費繳費記錄（c3 後 FeeItem 已退場，直接寫 StudentFeeRecord）。
 
-        # 3b) student_fee_records
+    c3：fee_items 表已 DROP、fee_item_id column 已 DROP。本步驟改為以
+    FEE_TEMPLATES 為來源直接造 StudentFeeRecord，不再走 FeeItem 中介。
+    """
+    logger.info("=== Step 3: 學費（c3：直接造 StudentFeeRecord） ===")
+    with session_scope() as session:
         students = (
             session.query(Student)
             .filter(
@@ -435,12 +417,18 @@ def step_fees():
                 if stu.classroom_id
                 else None
             )
-            for it in items:
+            for tpl in FEE_TEMPLATES:
+                # 班級限定的項目跳過不符班級
+                if tpl.get("classroom_id") and (
+                    not stu.classroom_id or stu.classroom_id != tpl["classroom_id"]
+                ):
+                    continue
                 exists = (
                     session.query(StudentFeeRecord)
                     .filter_by(
                         student_id=stu.id,
-                        fee_item_id=it.id,
+                        fee_item_name=tpl["name"],
+                        period=PERIOD,
                     )
                     .first()
                 )
@@ -449,12 +437,12 @@ def step_fees():
                 # 70% 已繳、25% 部分繳、5% 未繳
                 roll = random.random()
                 if roll < 0.7:
-                    paid = it.amount
+                    paid = tpl["amount"]
                     status = "paid"
                     pay_date = date(2026, 2, random.randint(10, 28))
                     method = random.choice(["現金", "轉帳"])
                 elif roll < 0.95:
-                    paid = it.amount // 2
+                    paid = tpl["amount"] // 2
                     status = "unpaid"
                     pay_date = date(2026, 2, random.randint(10, 28))
                     method = "現金"
@@ -468,9 +456,8 @@ def step_fees():
                         student_id=stu.id,
                         student_name=stu.name,
                         classroom_name=cls.name if cls else None,
-                        fee_item_id=it.id,
-                        fee_item_name=it.name,
-                        amount_due=it.amount,
+                        fee_item_name=tpl["name"],
+                        amount_due=tpl["amount"],
                         amount_paid=paid,
                         status=status,
                         payment_date=pay_date,

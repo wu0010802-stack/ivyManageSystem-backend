@@ -407,7 +407,6 @@ def refund_fee_record(
                 "student_id": record.student_id,
                 "student_name": student_name_snapshot,
                 "period": record.period,
-                "fee_item_id": record.fee_item_id,
                 "paid_before": paid,
                 "refund_amount": payload.amount,
                 "paid_after": new_paid,

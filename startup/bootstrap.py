@@ -96,7 +96,7 @@ def run_startup_bootstrap(salary_engine, line_service, *, insurance_service=None
         RecruitmentAreaInsightCache,
         RecruitmentSyncState,
     )
-    from models.fees import FeeItem, StudentFeeRecord
+    from models.fees import StudentFeeRecord
     from models.student_log import StudentChangeLog
     from models.config import PositionSalaryConfig
 
@@ -141,7 +141,6 @@ def run_startup_bootstrap(salary_engine, line_service, *, insurance_service=None
     RecruitmentCampusSetting.__table__.create(engine, checkfirst=True)
     RecruitmentAreaInsightCache.__table__.create(engine, checkfirst=True)
     RecruitmentSyncState.__table__.create(engine, checkfirst=True)
-    FeeItem.__table__.create(engine, checkfirst=True)
     StudentFeeRecord.__table__.create(engine, checkfirst=True)
     StudentChangeLog.__table__.create(engine, checkfirst=True)
     migrate_school_year_to_roc()

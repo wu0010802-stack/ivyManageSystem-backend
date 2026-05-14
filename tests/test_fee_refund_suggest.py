@@ -19,7 +19,7 @@ from api.fees import router as fees_router
 from models.base import Base
 from models.classroom import ClassGrade, Classroom, Student, LIFECYCLE_ACTIVE
 from models.database import User
-from models.fees import FeeItem, FeeTemplate, StudentFeeRecord
+from models.fees import FeeTemplate, StudentFeeRecord
 from models.student_leave import StudentLeaveRequest
 from utils.auth import hash_password
 
@@ -117,14 +117,11 @@ def setup_fee_record(session):
         enrollment_date=date(2025, 8, 1),
     )
     session.add(s)
-    fi = FeeItem(name="114-1 註冊費", amount=19000, period="114-1", is_active=True)
-    session.add(fi)
     session.flush()
     rec = StudentFeeRecord(
         student_id=s.id,
         student_name="小明",
         classroom_name="大A",
-        fee_item_id=fi.id,
         fee_item_name="114-1 註冊費",
         amount_due=19000,
         amount_paid=19000,
@@ -174,14 +171,10 @@ def test_suggest_monthly_with_consecutive_leave(
     """月費 + 該月連續請假 ≥5 上課日 → 算建議退費。"""
     s = setup_fee_record["student"]
     # 建月費 record
-    fi = FeeItem(name="114-1 9月 月費", amount=13000, period="114-1")
-    session.add(fi)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=s.id,
         student_name=s.name,
         classroom_name="大A",
-        fee_item_id=fi.id,
         fee_item_name="114-1 9月 月費",
         amount_due=13000,
         amount_paid=13000,
@@ -219,14 +212,10 @@ def test_suggest_monthly_with_consecutive_leave(
 def test_suggest_monthly_not_advance_filed(client_admin, session, setup_fee_record):
     """當天才補請假 → advance_filed=False → 退 0。"""
     s = setup_fee_record["student"]
-    fi = FeeItem(name="114-1 9月 月費", amount=13000, period="114-1")
-    session.add(fi)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=s.id,
         student_name=s.name,
         classroom_name="大A",
-        fee_item_id=fi.id,
         fee_item_name="114-1 9月 月費",
         amount_due=13000,
         amount_paid=13000,
@@ -262,14 +251,10 @@ def test_suggest_monthly_not_advance_filed(client_admin, session, setup_fee_reco
 def test_suggest_material_fee_blocked(client_admin, session, setup_fee_record):
     """代購品 → 不退,suggested_amount=0 + warning。"""
     s = setup_fee_record["student"]
-    fi = FeeItem(name="教材費", amount=2000, period="114-1")
-    session.add(fi)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=s.id,
         student_name=s.name,
         classroom_name="大A",
-        fee_item_id=fi.id,
         fee_item_name="教材費",
         amount_due=2000,
         amount_paid=2000,

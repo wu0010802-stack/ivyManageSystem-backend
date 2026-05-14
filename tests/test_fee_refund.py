@@ -26,7 +26,7 @@ from api.fees import router as fees_router
 from models.base import Base
 from models.classroom import Classroom, Student
 from models.database import User
-from models.fees import FeeItem, StudentFeeRecord, StudentFeeRefund
+from models.fees import StudentFeeRecord, StudentFeeRefund
 from utils.auth import hash_password
 from utils.permissions import Permission
 
@@ -88,15 +88,11 @@ def _seed(session, *, amount_due=1000, amount_paid=800, status="partial"):
     st = Student(student_id="R0001", name="李小華", is_active=True, classroom_id=cls.id)
     session.add(st)
     session.flush()
-    item = FeeItem(name="學費", amount=amount_due, period="2025-1", is_active=True)
-    session.add(item)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=st.id,
         student_name=st.name,
         classroom_name=cls.name,
-        fee_item_id=item.id,
-        fee_item_name=item.name,
+        fee_item_name="學費",
         amount_due=amount_due,
         amount_paid=amount_paid,
         status=status,

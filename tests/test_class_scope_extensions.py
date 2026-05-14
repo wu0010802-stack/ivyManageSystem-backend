@@ -46,7 +46,7 @@ from models.database import (
     StudentIncident,
     User,
 )
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.guardian import Guardian
 from models.student_log import StudentChangeLog
 from utils.auth import hash_password
@@ -671,21 +671,12 @@ class TestF025_GuardiansList:
 
 class TestF034_FeesRecords:
     def _seed_fee_records(self, session, st_a_id: int, st_b_id: int):
-        item = FeeItem(
-            name="月費",
-            amount=3000,
-            period="114-2",
-            is_active=True,
-        )
-        session.add(item)
-        session.flush()
         session.add_all(
             [
                 StudentFeeRecord(
                     student_id=st_a_id,
                     student_name="A 班學生",
                     classroom_name="A 班",
-                    fee_item_id=item.id,
                     fee_item_name="月費",
                     amount_due=3000,
                     amount_paid=0,
@@ -696,7 +687,6 @@ class TestF034_FeesRecords:
                     student_id=st_b_id,
                     student_name="B 班學生",
                     classroom_name="B 班",
-                    fee_item_id=item.id,
                     fee_item_name="月費",
                     amount_due=3000,
                     amount_paid=0,

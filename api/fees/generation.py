@@ -4,7 +4,7 @@ c2 後僅保留 POST /generate（原 /generate-from-templates 改名）：
 - 學年/學期+多 fee_types 範本驅動
 - 月費自動展 6 月
 - 冪等鍵：(student_id, source_template_id, target_month)
-- 不再寫入 FeeItem（c2 已 DROP TABLE fee_items）；fee_item_id 留 NULL。
+- 不再寫入 FeeItem（c2 已 DROP TABLE fee_items；c3 已 DROP COLUMN fee_item_id）。
 """
 
 import logging
@@ -138,8 +138,6 @@ def generate_from_templates(
                             "student_id": student.id,
                             "student_name": student.name,
                             "classroom_name": classroom.name,
-                            # c2: fee_item_id 永遠 None（fee_items 表已 DROP）
-                            "fee_item_id": None,
                             "fee_item_name": record_name,
                             "amount_due": tpl.amount,
                             "amount_paid": 0,

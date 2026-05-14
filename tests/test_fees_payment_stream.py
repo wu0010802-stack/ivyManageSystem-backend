@@ -26,7 +26,6 @@ from models.base import Base
 from models.classroom import Classroom, Student
 from models.database import User
 from models.fees import (
-    FeeItem,
     StudentFeePayment,
     StudentFeeRecord,
     StudentFeeRefund,
@@ -96,19 +95,15 @@ def _seed_record(session, *, amount_due=1000):
     )
     session.add(st)
     session.flush()
-    item = FeeItem(name="學費", amount=amount_due, period="2026-1", is_active=True)
-    session.add(item)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=st.id,
         student_name=st.name,
         classroom_name=cls.name,
-        fee_item_id=item.id,
-        fee_item_name=item.name,
+        fee_item_name="學費",
         amount_due=amount_due,
         amount_paid=0,
         status="unpaid",
-        period=item.period,
+        period="2026-1",
     )
     session.add(rec)
     session.flush()
@@ -301,19 +296,15 @@ class TestPayFeeRecordIdempotency:
             # 第二個 record：不同 fee_item 避免 uniqueness
             cls = s.query(Classroom).first()
             st = s.query(Student).first()
-            item2 = FeeItem(name="雜費", amount=500, period="2026-1", is_active=True)
-            s.add(item2)
-            s.flush()
             rec2 = StudentFeeRecord(
                 student_id=st.id,
                 student_name=st.name,
                 classroom_name=cls.name,
-                fee_item_id=item2.id,
-                fee_item_name=item2.name,
+                fee_item_name="雜費",
                 amount_due=500,
                 amount_paid=0,
                 status="unpaid",
-                period=item2.period,
+                period="2026-1",
             )
             s.add(rec2)
             s.flush()

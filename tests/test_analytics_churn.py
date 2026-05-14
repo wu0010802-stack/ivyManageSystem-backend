@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 from models.base import Base
 from models.classroom import Classroom, Student, StudentAttendance
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.student_log import StudentChangeLog
 
 
@@ -191,15 +191,11 @@ def test_fee_overdue_triggers(session):
     cls = _classroom(session)
     s = _student(session, name="欠費學生", classroom=cls)
 
-    fi = FeeItem(name="月費", amount=5000, period="2025-2", is_active=True)
-    session.add(fi)
-    session.commit()
     rec = StudentFeeRecord(
         student_id=s.id,
         student_name=s.name,
         classroom_name="小班A",
-        fee_item_id=fi.id,
-        fee_item_name=fi.name,
+        fee_item_name="月費",
         amount_due=5000,
         payment_date=None,  # 未繳
         period="2025-2",
@@ -218,15 +214,11 @@ def test_fee_paid_no_trigger(session):
 
     cls = _classroom(session)
     s = _student(session, name="已繳學生", classroom=cls)
-    fi = FeeItem(name="月費", amount=5000, period="2025-2", is_active=True)
-    session.add(fi)
-    session.commit()
     rec = StudentFeeRecord(
         student_id=s.id,
         student_name=s.name,
         classroom_name="小班A",
-        fee_item_id=fi.id,
-        fee_item_name=fi.name,
+        fee_item_name="月費",
         amount_due=5000,
         payment_date=date(2026, 2, 10),  # 已繳
         period="2025-2",
@@ -251,15 +243,11 @@ def test_at_risk_merges_signals_and_takes_max_severity(session):
         _attendance(session, student=other, day=d, status="出席")
 
     # D 訊號：欠費
-    fi = FeeItem(name="月費", amount=5000, period="2025-2", is_active=True)
-    session.add(fi)
-    session.commit()
     rec = StudentFeeRecord(
         student_id=s.id,
         student_name=s.name,
         classroom_name="小班A",
-        fee_item_id=fi.id,
-        fee_item_name=fi.name,
+        fee_item_name="月費",
         amount_due=5000,
         period="2025-2",
         payment_date=None,
