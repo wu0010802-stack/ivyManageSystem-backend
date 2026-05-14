@@ -312,6 +312,7 @@ def get_my_students(
 
 @router.get("/students/measurements-latest")
 def get_students_measurements_latest(
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """回傳教師班級內所有學生 + 每位的「上次量測」摘要。
@@ -409,6 +410,18 @@ def get_students_measurements_latest(
                     ),
                 }
             )
+        # 顯式 audit：回傳全班學生身高/體重/頭圍/視力（健康資料），與
+        # /students/{id}/detail (line 634) 同等敏感；middleware 不審 GET。
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student_measurement",
+            summary=f"教師端量測快照（n={len(result)}）",
+            changes={
+                "row_count": len(result),
+                "has_data": sum(1 for r in result if r.get("last_measurement")),
+            },
+        )
         return result
     finally:
         session.close()

@@ -37,7 +37,7 @@ from models.database import (
     SalaryRecord,
     User,
 )
-from models.fees import FeeItem, StudentFeeRecord, StudentFeeRefund
+from models.fees import StudentFeeRecord, StudentFeeRefund
 from utils.auth import hash_password
 from utils.permissions import Permission
 
@@ -214,19 +214,15 @@ def _seed_fee_record(session, *, amount_due=5000, amount_paid=0) -> StudentFeeRe
     )
     session.add(st)
     session.flush()
-    item = FeeItem(name="學費", amount=amount_due, period="2025-1", is_active=True)
-    session.add(item)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=st.id,
         student_name=st.name,
         classroom_name=cls.name,
-        fee_item_id=item.id,
-        fee_item_name=item.name,
+        fee_item_name="學費",
         amount_due=amount_due,
         amount_paid=amount_paid,
         status="unpaid" if amount_paid == 0 else "paid",
-        period=item.period,
+        period="2025-1",
     )
     session.add(rec)
     session.flush()

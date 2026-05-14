@@ -35,7 +35,7 @@ from models.database import (
     Student,
     User,
 )
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from utils.auth import create_access_token
 
 
@@ -110,14 +110,10 @@ def _add_child(session, user: User, *, name: str, classroom: Classroom) -> Stude
 
 def _add_unpaid_fee(session, student: Student, *, amount=5000, due_offset_days=None):
     """新增 1 筆未繳費 record。due_offset_days 為相對今天的天數（None=無到期日）。"""
-    item = FeeItem(name="學費", amount=amount, period="2026-1", is_active=True)
-    session.add(item)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=student.id,
         student_name=student.name,
         classroom_name="向日葵",
-        fee_item_id=item.id,
         fee_item_name="學費",
         amount_due=amount,
         amount_paid=0,

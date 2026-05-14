@@ -899,7 +899,14 @@ def get_me(current_user: dict = Depends(get_current_user)):
 def change_password(
     data: ChangePasswordRequest, current_user: dict = Depends(get_current_user)
 ):
-    """修改密碼"""
+    """修改密碼
+
+    Why issue new token on success：使用者自己改密碼後 token_version 遞增，
+    若 response 不發新 token 則 client 帶舊 token 立刻 401，被迫 re-login
+    （bug sweep round 4 F-PRE-1，pre-existing 自 2026-05-13 commit 3e728d2b）。
+    管理員代為重設（reset_password）則維持「強制當事人下次登入」語意，不發
+    新 token。
+    """
     session = get_session()
     try:
         user = session.query(User).filter(User.id == current_user["user_id"]).first()
@@ -913,8 +920,34 @@ def change_password(
         # 與 reset_password 對齊：密碼變更後遞增 token_version，使所有現有 session
         # 在下次 refresh 時即被拒絕；防止帳號疑似外洩後舊 token 在 grace 期內仍可用。
         user.token_version = (user.token_version or 0) + 1
+
+        # 為當事人發新 token（同步新 token_version + must_change_password=False），
+        # 避免「改完密碼立刻被踢」。其他 session 的舊 token 仍會在下次 refresh 被拒。
+        permissions = (
+            user.permissions
+            if user.permissions is not None
+            else get_role_default_permissions(user.role)
+        )
+        emp = (
+            session.query(Employee).filter(Employee.id == user.employee_id).first()
+            if user.employee_id
+            else None
+        )
+        new_token = create_access_token(
+            {
+                "user_id": user.id,
+                "employee_id": user.employee_id,
+                "role": user.role,
+                "name": emp.name if emp else "",
+                "permissions": permissions,
+                "token_version": user.token_version,
+            }
+        )
         session.commit()
-        return {"message": "密碼修改成功"}
+
+        response = JSONResponse(content={"message": "密碼修改成功"})
+        set_access_token_cookie(response, new_token)
+        return response
     except HTTPException:
         raise
     except Exception as e:

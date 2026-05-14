@@ -30,7 +30,7 @@ from api.fees import router as fees_router
 from models.base import Base
 from models.classroom import Classroom, Student
 from models.database import AuditLog, User
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from utils.audit import AuditMiddleware
 from utils.auth import hash_password
 
@@ -82,19 +82,17 @@ def _seed(session):
     st = Student(
         student_id="S00099", name="陳大明", is_active=True, classroom_id=cls.id
     )
-    item = FeeItem(name="學費", amount=2000, period="2026-1", is_active=True)
-    session.add_all([st, item])
+    session.add(st)
     session.flush()
     rec = StudentFeeRecord(
         student_id=st.id,
         student_name=st.name,
         classroom_name=cls.name,
-        fee_item_id=item.id,
-        fee_item_name=item.name,
+        fee_item_name="學費",
         amount_due=2000,
         amount_paid=0,
         status="unpaid",
-        period=item.period,
+        period="2026-1",
     )
     session.add(rec)
     session.flush()

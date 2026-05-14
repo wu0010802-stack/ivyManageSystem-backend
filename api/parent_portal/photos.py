@@ -19,7 +19,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.attachments import _attachment_to_dict
 from api.portfolio.student_attachments import SUPPORTED_OWNER_TYPES, _is_image
 from models.contact_book import StudentContactBookEntry
 from models.database import (
@@ -38,12 +37,45 @@ from models.portfolio import (
 )
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
+from utils.portfolio_storage import PORTFOLIO_MODULE
 
 from ._shared import _assert_student_owned
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/photos", tags=["parent-photos"])
+
+
+def _parent_url_for_key(key: str) -> str:
+    """生成家長端附件 URL。
+
+    與 api/attachments.py:_url_for_key 對偶；但 staff 端走
+    `/api/uploads/portfolio/{key}`（需 PORTFOLIO_READ），家長 permissions=0
+    沒此 bit，故必須改走 `/api/parent/uploads/portfolio/{key}` 即
+    api/parent_portal/parent_downloads.py 提供的家長專用下載路由。
+
+    bug sweep round 4 (2026-05-14) B8：原本 photos.py 直接 reuse
+    `_attachment_to_dict` 生成 admin URL，所有 <img> 對家長一律 403 變破圖。
+    """
+    return f"/api/parent/uploads/{PORTFOLIO_MODULE}/{key}"
+
+
+def _parent_attachment_to_dict(att: Attachment) -> dict:
+    return {
+        "id": att.id,
+        "owner_type": att.owner_type,
+        "owner_id": att.owner_id,
+        "original_filename": att.original_filename,
+        "mime_type": att.mime_type,
+        "size_bytes": att.size_bytes,
+        "url": _parent_url_for_key(att.storage_key),
+        "display_url": (
+            _parent_url_for_key(att.display_key) if att.display_key else None
+        ),
+        "thumb_url": (_parent_url_for_key(att.thumb_key) if att.thumb_key else None),
+        "uploaded_by": att.uploaded_by,
+        "created_at": att.created_at.isoformat() if att.created_at else None,
+    }
 
 
 def _parent_owner_ids(session, owner_type: str, student_id: int) -> list[int]:
@@ -121,7 +153,7 @@ async def parent_list_photos(
                 for a in rows:
                     if not _is_image(a.mime_type):
                         continue
-                    all_items.append(_attachment_to_dict(a))
+                    all_items.append(_parent_attachment_to_dict(a))
 
             all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
             return {

@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from models.classroom import Classroom, Student, StudentAttendance
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.student_log import StudentChangeLog
 from services.analytics.constants import (
     CHURN_CONSECUTIVE_ABSENCE_DAYS,
@@ -194,26 +194,28 @@ def detect_signal_fee_overdue(
     """D 訊號：當期未繳費 ≥ 14 天。
 
     當期：utils.academic.resolve_current_academic_term(today) 回傳 (year_民國, semester)
-    轉成 FeeItem.period 西元字串 "{year+1911}-{semester}" 進行比對。
+    轉成 StudentFeeRecord.period 西元字串 "{year+1911}-{semester}" 進行比對。
+
+    c2: 拿掉 FeeItem JOIN（fee_items 已 DROP），改用 StudentFeeRecord.period
+    直接過濾（denormalized NOT NULL 欄位，等價結果但無需 JOIN）。
     """
     year_roc, semester = resolve_current_academic_term(today)
     current_period = f"{year_roc + 1911}-{semester}"
 
     overdue_records = (
-        session.query(StudentFeeRecord, FeeItem)
-        .join(FeeItem, StudentFeeRecord.fee_item_id == FeeItem.id)
+        session.query(StudentFeeRecord)
         .join(Student, StudentFeeRecord.student_id == Student.id)
         .filter(
             StudentFeeRecord.payment_date.is_(None),
-            FeeItem.period == current_period,
+            StudentFeeRecord.period == current_period,
             Student.lifecycle_status.in_(("active", "on_leave")),
         )
         .all()
     )
 
     triggered_by_student: dict[int, dict] = {}
-    for rec, item in overdue_records:
-        start = term_start_date(item.period)
+    for rec in overdue_records:
+        start = term_start_date(rec.period)
         if start is None:
             continue
         # 已逾期天數需 ≥ 14（threshold = start + 14；today >= threshold 即觸發）
@@ -230,7 +232,7 @@ def detect_signal_fee_overdue(
                 "student_id": rec.student_id,
                 "type": "fee_overdue",
                 "severity": severity,
-                "detail": f"學費逾期 {actual_overdue_days} 天，項目：{item.name}",
+                "detail": f"學費逾期 {actual_overdue_days} 天，項目：{rec.fee_item_name}",
             }
     return list(triggered_by_student.values())
 

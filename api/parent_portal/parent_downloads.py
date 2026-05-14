@@ -4,7 +4,11 @@ staff 端走 /api/uploads/portfolio/{key}（utils PORTFOLIO_READ 權限），家
 mask=0 無此 bit；故另開家長下載路徑：/api/parent/uploads/portfolio/{key}
 走 require_parent_role + IDOR（owner 反查 student → _assert_student_owned）。
 
-支援的 owner_type：medication_order、event_acknowledgment、message（Phase 3）。
+支援的 owner_type：
+- medication_order / event_acknowledgment / message / student_leave（Phase 2/3）
+- observation / contact_book_entry / report（成長檔案 P4 照片牆，
+  bug sweep round 4 2026-05-14 B8 補；photos.py 暴露這三種 owner 給
+  家長，但本檔之前不認，所以家長端 <img> 全 403 變破圖）
 """
 
 from __future__ import annotations
@@ -14,20 +18,27 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
 
+from models.contact_book import StudentContactBookEntry
 from models.database import (
     Attachment,
     EventAcknowledgment,
     ParentMessage,
     ParentMessageThread,
+    StudentGrowthReport,
     StudentLeaveRequest,
     StudentMedicationOrder,
+    StudentObservation,
     get_session,
 )
 from models.portfolio import (
+    ATTACHMENT_OWNER_CONTACT_BOOK,
     ATTACHMENT_OWNER_EVENT_ACK,
     ATTACHMENT_OWNER_MEDICATION_ORDER,
     ATTACHMENT_OWNER_MESSAGE,
+    ATTACHMENT_OWNER_OBSERVATION,
+    ATTACHMENT_OWNER_REPORT,
     ATTACHMENT_OWNER_STUDENT_LEAVE,
+    REPORT_STATUS_READY,
 )
 from utils.auth import require_parent_role
 from utils.portfolio_storage import get_portfolio_storage
@@ -87,6 +98,49 @@ def _resolve_student_id_for_parent(session, owner_type: str, owner_id: int) -> i
         if not lr:
             raise HTTPException(status_code=404, detail="對應的請假申請不存在")
         return lr.student_id
+
+    # 成長檔案 P4：照片牆需求（bug sweep round 4 2026-05-14 B8）
+    # observation / contact_book_entry / report 的能見性已在 photos.py
+    # `_parent_owner_ids` 階段過濾（軟刪 / 草稿 / 未 ready 報告皆排除），
+    # 此處只需 owner → student_id 反查供 _assert_student_owned 比對。
+    if owner_type == ATTACHMENT_OWNER_OBSERVATION:
+        obs = (
+            session.query(StudentObservation)
+            .filter(StudentObservation.id == owner_id)
+            .first()
+        )
+        if not obs:
+            raise HTTPException(status_code=404, detail="對應的觀察紀錄不存在")
+        if obs.deleted_at is not None:
+            raise HTTPException(status_code=410, detail="觀察紀錄已刪除")
+        return obs.student_id
+
+    if owner_type == ATTACHMENT_OWNER_CONTACT_BOOK:
+        cb = (
+            session.query(StudentContactBookEntry)
+            .filter(StudentContactBookEntry.id == owner_id)
+            .first()
+        )
+        if not cb:
+            raise HTTPException(status_code=404, detail="對應的聯絡簿不存在")
+        if cb.deleted_at is not None:
+            raise HTTPException(status_code=410, detail="聯絡簿已刪除")
+        if cb.published_at is None:
+            # 草稿不可給家長存取（與 photos.py `_parent_owner_ids` 一致）
+            raise HTTPException(status_code=404, detail="聯絡簿尚未發布")
+        return cb.student_id
+
+    if owner_type == ATTACHMENT_OWNER_REPORT:
+        rpt = (
+            session.query(StudentGrowthReport)
+            .filter(StudentGrowthReport.id == owner_id)
+            .first()
+        )
+        if not rpt:
+            raise HTTPException(status_code=404, detail="對應的成長報告不存在")
+        if rpt.status != REPORT_STATUS_READY:
+            raise HTTPException(status_code=404, detail="成長報告尚未就緒")
+        return rpt.student_id
 
     raise HTTPException(status_code=400, detail=f"不支援的 owner_type：{owner_type}")
 

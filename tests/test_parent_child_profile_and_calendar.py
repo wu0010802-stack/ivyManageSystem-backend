@@ -32,7 +32,7 @@ from models.database import (
     Student,
     User,
 )
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.portfolio import StudentAllergy
 from utils.auth import create_access_token
 
@@ -198,15 +198,11 @@ class TestCalendarWeek:
                 )
             )
             # 5 天後到期的費用
-            item = FeeItem(name="學費", amount=5000, period="2026-1", is_active=True)
-            session.add(item)
-            session.flush()
             session.add(
                 StudentFeeRecord(
                     student_id=student.id,
                     student_name=student.name,
                     classroom_name="C",
-                    fee_item_id=item.id,
                     fee_item_name="學費",
                     amount_due=5000,
                     amount_paid=0,
@@ -289,14 +285,10 @@ class TestCalendarWeek:
             session.add(classroom)
             session.flush()
             student = _add_child(session, parent, classroom=classroom)
-            item = FeeItem(name="餐費", amount=1000, period="2026-1", is_active=True)
-            session.add(item)
-            session.flush()
             session.add(
                 StudentFeeRecord(
                     student_id=student.id,
                     student_name=student.name,
-                    fee_item_id=item.id,
                     fee_item_name="餐費",
                     amount_due=1000,
                     amount_paid=1000,

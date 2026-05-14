@@ -16,7 +16,7 @@ from models.appraisal import (
     AppraisalSummary,
     SummaryStatus,
 )
-from models.database import get_session
+from models.database import get_session_dep
 from schemas.appraisal import (
     FinalizeRequest,
     RejectRequest,
@@ -50,7 +50,7 @@ def _check_stage(summary: AppraisalSummary, expected: SummaryStatus) -> None:
 def list_summaries(
     cycle_id: Optional[int] = None,
     status_filter: Optional[SummaryStatus] = None,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     stmt = select(AppraisalSummary).order_by(AppraisalSummary.id)
@@ -64,7 +64,7 @@ def list_summaries(
 @router.get("/summaries/{summary_id}", response_model=SummaryOut)
 def get_summary(
     summary_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     s = db.get(AppraisalSummary, summary_id)
@@ -79,7 +79,7 @@ def get_summary(
 )
 def recompute_cycle_summaries(
     cycle_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_REVIEW)),
 ):
     cycle = db.get(AppraisalCycle, cycle_id)
@@ -132,7 +132,7 @@ def sign_supervisor(
     summary_id: int,
     payload: SignRequest,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_REVIEW)),
 ):
     s = db.get(AppraisalSummary, summary_id)
@@ -154,7 +154,7 @@ def sign_accounting(
     summary_id: int,
     payload: SignRequest,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_ACCOUNTING)
     ),
@@ -178,7 +178,7 @@ def finalize_summary(
     summary_id: int,
     payload: FinalizeRequest,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_FINALIZE)
     ),
@@ -209,7 +209,7 @@ def reject_summary(
     summary_id: int,
     payload: RejectRequest,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     # READ 守衛先擋；本 endpoint 再依 stage 動態檢查更高權限
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):

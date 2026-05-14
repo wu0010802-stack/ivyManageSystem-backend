@@ -46,7 +46,7 @@ from models.database import (
     StudentIncident,
     User,
 )
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.guardian import Guardian
 from models.student_log import StudentChangeLog
 from utils.auth import hash_password
@@ -198,6 +198,7 @@ def _seed_two_classrooms(session) -> dict:
 _BASIC_STUDENT_PERMS = int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE)
 _GUARDIANS_READ_PERMS = int(Permission.STUDENTS_READ | Permission.GUARDIANS_READ)
 _FEES_READ_PERMS = int(Permission.FEES_READ)
+_FEES_RW_PERMS = int(Permission.FEES_READ | Permission.FEES_WRITE)
 
 
 # ---------------------------------------------------------------------------
@@ -671,21 +672,12 @@ class TestF025_GuardiansList:
 
 class TestF034_FeesRecords:
     def _seed_fee_records(self, session, st_a_id: int, st_b_id: int):
-        item = FeeItem(
-            name="月費",
-            amount=3000,
-            period="114-2",
-            is_active=True,
-        )
-        session.add(item)
-        session.flush()
         session.add_all(
             [
                 StudentFeeRecord(
                     student_id=st_a_id,
                     student_name="A 班學生",
                     classroom_name="A 班",
-                    fee_item_id=item.id,
                     fee_item_name="月費",
                     amount_due=3000,
                     amount_paid=0,
@@ -696,7 +688,6 @@ class TestF034_FeesRecords:
                     student_id=st_b_id,
                     student_name="B 班學生",
                     classroom_name="B 班",
-                    fee_item_id=item.id,
                     fee_item_name="月費",
                     amount_due=3000,
                     amount_paid=0,
@@ -783,3 +774,114 @@ class TestF034_FeesRecords:
         r2 = client.get(f"/api/fees/records?student_id={other_st}")
         assert r2.status_code == 200
         assert all(it["student_id"] == other_st for it in r2.json()["items"])
+
+    def _get_other_record_id(self, s, st_b_id):
+        return (
+            s.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.student_id == st_b_id)
+            .first()
+            .id
+        )
+
+    def test_teacher_pay_other_class_record_rejected(self, scope_app):
+        # round 5 P0：PUT /records/{id}/pay 補 scope 守衛
+        client, factory = scope_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            _create_user(
+                s,
+                username="fee_tA_pay",
+                password="Pass1234",
+                role="staff",
+                permissions=_FEES_RW_PERMS,
+                employee=seed["emp_a"],
+            )
+            self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
+            other_rec_id = self._get_other_record_id(s, seed["st_b"].id)
+        assert _login(client, "fee_tA_pay", "Pass1234").status_code == 200
+        r = client.put(
+            f"/api/fees/records/{other_rec_id}/pay",
+            json={
+                "amount_paid": 3000,
+                "payment_method": "現金",
+                "payment_date": "2026-05-14",
+            },
+        )
+        assert r.status_code == 403, r.text
+
+    def test_teacher_refund_other_class_record_rejected(self, scope_app):
+        # round 5 P1：POST /records/{id}/refund 補 scope 守衛
+        client, factory = scope_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            _create_user(
+                s,
+                username="fee_tA_refund",
+                password="Pass1234",
+                role="staff",
+                permissions=_FEES_RW_PERMS,
+                employee=seed["emp_a"],
+            )
+            self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
+            other_rec_id = self._get_other_record_id(s, seed["st_b"].id)
+        assert _login(client, "fee_tA_refund", "Pass1234").status_code == 200
+        r = client.post(
+            f"/api/fees/records/{other_rec_id}/refund",
+            json={"amount": 100, "reason": "測試退款守衛"},
+        )
+        assert r.status_code == 403, r.text
+
+    def test_teacher_refunds_list_other_class_rejected(self, scope_app):
+        # round 5 P1：GET /records/{id}/refunds 補 scope 守衛
+        client, factory = scope_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            _create_user(
+                s,
+                username="fee_tA_refunds_list",
+                password="Pass1234",
+                role="staff",
+                permissions=_FEES_READ_PERMS,
+                employee=seed["emp_a"],
+            )
+            self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
+            other_rec_id = self._get_other_record_id(s, seed["st_b"].id)
+        assert _login(client, "fee_tA_refunds_list", "Pass1234").status_code == 200
+        r = client.get(f"/api/fees/records/{other_rec_id}/refunds")
+        assert r.status_code == 403, r.text
+
+    def test_teacher_summary_rejected(self, scope_app):
+        # round 5 P1：GET /summary 非 unrestricted 一律 403
+        client, factory = scope_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            _create_user(
+                s,
+                username="fee_tA_summary",
+                password="Pass1234",
+                role="staff",
+                permissions=_FEES_READ_PERMS,
+                employee=seed["emp_a"],
+            )
+            self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
+        assert _login(client, "fee_tA_summary", "Pass1234").status_code == 200
+        r = client.get("/api/fees/summary")
+        assert r.status_code == 403, r.text
+
+    def test_admin_summary_ok(self, scope_app):
+        client, factory = scope_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            _create_user(
+                s,
+                username="fee_admin_summary",
+                password="Pass1234",
+                role="admin",
+                permissions=_FEES_READ_PERMS,
+                employee=None,
+            )
+            self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
+        assert _login(client, "fee_admin_summary", "Pass1234").status_code == 200
+        r = client.get("/api/fees/summary")
+        assert r.status_code == 200, r.text
+        assert r.json()["total_count"] == 2

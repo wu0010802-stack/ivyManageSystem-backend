@@ -333,6 +333,34 @@ def test_timeline_includes_activity(app_client):
     assert any(it["type"] == "activity" for it in items)
 
 
+def test_timeline_activity_includes_until_day(app_client):
+    """round 5 P1：until=今天 應含今天的活動報名。
+
+    bug：created_at(DateTime) <= until(Date) 等於 <= until 00:00:00，
+    當天活動全被排除。fix：改半開區間 < until + 1 day。
+    """
+    from datetime import datetime
+
+    client, session_factory = app_client
+    with session_factory() as session:
+        from models.activity import ActivityRegistration
+
+        # 今天 14:30 報名（DateTime）
+        now = datetime.utcnow().replace(hour=14, minute=30, second=0, microsecond=0)
+        session.add(
+            ActivityRegistration(
+                student_id=1,
+                student_name="王小明",
+                created_at=now,
+            )
+        )
+        session.commit()
+    today_iso = date.today().isoformat()
+    resp = client.get(f"/api/students/1/timeline?since=2020-01-01&until={today_iso}")
+    items = resp.json()["items"]
+    assert any(it["type"] == "activity" for it in items), items
+
+
 def test_timeline_get_writes_read_audit(app_client):
     """F-V6-03：timeline 跨模組聚合 GET 必須留下 AuditLog action=READ 痕跡。"""
     import time

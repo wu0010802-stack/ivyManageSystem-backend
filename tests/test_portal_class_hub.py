@@ -797,7 +797,7 @@ def hub_client(in_mem_session):
     sess = in_mem_session
     app = FastAPI()
     app.include_router(portal_router)
-    from models.database import get_session as real_get_session
+    from models.database import get_session_dep as real_get_session_dep
 
     def override():
         try:
@@ -805,7 +805,7 @@ def hub_client(in_mem_session):
         finally:
             pass
 
-    app.dependency_overrides[real_get_session] = override
+    app.dependency_overrides[real_get_session_dep] = override
     return TestClient(app), sess
 
 

@@ -133,16 +133,16 @@ ENTITY_PATTERNS = [
     (r"/api/parent/contact-book", "contact_book_entry"),
     (r"/api/portal/parent-messages", "parent_message"),
     (r"/api/portal/contact-book", "contact_book_entry"),
+    # 家長端 milestone react / acknowledge（GET 由 endpoint 顯式 audit；
+    # POST 互動寫入 parent_reaction / parent_acknowledged_* 三欄，必留 audit
+    # 與其他 parent write 等同）。bug sweep round 4 (2026-05-14) B9。
+    (r"/api/parent/milestones", "parent_milestone"),
     # 教育部申報模組 Phase 1 — 身障/特教文件 CRUD 必須留 audit，
     # 否則鑑定證明異動（影響補助/IEP）會無稽核痕跡。
     (r"/api/gov-moe/disability-documents", "disability_document"),
     (r"/api/gov-moe/certificates", "enrollment_certificate"),
     (r"/api/gov-moe/subsidies", "special_subsidy"),
     (r"/api/gov-moe/iep", "iep_record"),
-    # 政府資料同步：promote/dismiss staging 寫入級距/基本工資（影響全員保費）；
-    # sync-now 觸發 fetch。原 ENTITY_PATTERNS 漏，middleware 視為 entity_type=None
-    # 整批跳過 audit。Refs: bug sweep round 4 (2026-05-12) DB 完整性檢查發現。
-    (r"/api/gov-data", "gov_data_sync"),
     # 學生輔導：發展評估 / 事件紀錄 / 班級點名。原 /api/students 不會匹配子路徑，
     # middleware 跳過 audit。學生事件紀錄涉及衝突/受傷等敏感資訊，必留稽核。
     # 注意：student-attendance 是教師日常 batch 點名，量大；若上 prod 後 audit_logs
@@ -221,8 +221,6 @@ ENTITY_LABELS = {
     "special_subsidy": "特教加給/助理鐘點費",
     # 教育部申報 Phase 4A
     "iep_record": "IEP 個別化教育計畫",
-    # 政府資料同步（bug sweep round 4 2026-05-12 補）
-    "gov_data_sync": "政府資料同步",
     # 學生輔導/招生（bug sweep round 4 2026-05-12 補）
     "student_assessment": "學生發展評估",
     "student_incident": "學生事件紀錄",
@@ -235,6 +233,13 @@ ENTITY_LABELS = {
     "appraisal_summary": "考核結算",
     "appraisal_bonus_rate": "考核獎金率",
     "appraisal_catalog": "懲處目錄",
+    # 教師端跨功能搜尋 / 量測快照（bug sweep round 4 2026-05-14 補）
+    # 兩者都是 GET 但回傳跨班 PII 或健康資料，必留稽核。
+    "portal_search": "教師端跨功能搜尋",
+    "student_measurement": "學生量測",
+    # 家長端 milestone 互動（react/acknowledge）— middleware 透過
+    # ENTITY_PATTERNS 攔截 POST 寫入 audit_logs。
+    "parent_milestone": "家長端里程碑互動",
 }
 
 ACTION_LABELS = {

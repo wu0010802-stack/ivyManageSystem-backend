@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models.appraisal import AppraisalBonusRate
-from models.database import get_session
+from models.database import get_session_dep
 from schemas.appraisal import BonusRateCreate, BonusRateOut
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.get("/bonus_rates", response_model=list[BonusRateOut])
 def list_rates(
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     return (
@@ -38,7 +38,7 @@ def list_rates(
 def create_rate(
     payload: BonusRateCreate,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     r = AppraisalBonusRate(

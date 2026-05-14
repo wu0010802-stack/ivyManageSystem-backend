@@ -31,7 +31,7 @@ FUNNEL_STAGE_LABELS = {
 
 RETENTION_WINDOWS_DAYS = {"1m": 30, "6m": 180}
 
-# === 學期起始日（FeeItem.due_date proxy） =============================
+# === 學期起始日（StudentFeeRecord.due_date proxy） ====================
 # (term_no, (month, day))
 _TERM_START_MD = {
     1: (9, 1),  # 上學期 9/1
@@ -60,7 +60,7 @@ def parse_roc_month(raw: Optional[str]) -> Optional[Tuple[int, int]]:
 
 
 def term_start_date(period: Optional[str]) -> Optional[date]:
-    """解析 FeeItem.period e.g. '2025-1' → date(2025, 9, 1)；'2025-2' → date(2026, 2, 1)。
+    """解析 StudentFeeRecord.period e.g. '2025-1' → date(2025, 9, 1)；'2025-2' → date(2026, 2, 1)。
 
     無效格式回 None。
     """

@@ -120,7 +120,6 @@ class TestTuitionProvider:
                 [
                     StudentFeeRecord(
                         student_id=1,
-                        fee_item_id=1,
                         period="2026-1",
                         amount_due=5000,
                         amount_paid=5000,
@@ -131,7 +130,6 @@ class TestTuitionProvider:
                     ),
                     StudentFeeRecord(
                         student_id=2,
-                        fee_item_id=1,
                         period="2026-1",
                         amount_due=5000,
                         amount_paid=0,
@@ -253,7 +251,6 @@ class TestAggregator:
                 [
                     StudentFeeRecord(
                         student_id=1,
-                        fee_item_id=1,
                         period="2026-1",
                         amount_due=10000,
                         amount_paid=10000,
@@ -295,7 +292,6 @@ class TestAggregator:
             s.add(
                 StudentFeeRecord(
                     student_id=1,
-                    fee_item_id=1,
                     period="2025-2",
                     amount_due=5000,
                     amount_paid=5000,
@@ -365,7 +361,6 @@ class TestFinanceSummaryEndpoint:
                 [
                     StudentFeeRecord(
                         student_id=1,
-                        fee_item_id=1,
                         period="2026-1",
                         amount_due=5000,
                         amount_paid=5000,
@@ -418,7 +413,6 @@ class TestSummaryCaching:
             s.add(
                 StudentFeeRecord(
                     student_id=1,
-                    fee_item_id=1,
                     period="2026-1",
                     amount_due=9999,
                     amount_paid=9999,
@@ -474,7 +468,6 @@ class TestDetailEndpoint:
                 [
                     StudentFeeRecord(
                         student_id=1,
-                        fee_item_id=1,
                         period="2026-1",
                         amount_due=5000,
                         amount_paid=5000,

@@ -8,6 +8,7 @@ models/database.py — 向下相容 re-export hub
 from models.base import (
     Base,
     get_session,
+    get_session_dep,
     session_scope,
     get_engine,
     get_session_factory,
@@ -139,6 +140,7 @@ __all__ = [
     # base
     "Base",
     "get_session",
+    "get_session_dep",
     "session_scope",
     "get_engine",
     "get_session_factory",

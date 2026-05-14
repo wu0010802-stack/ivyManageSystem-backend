@@ -174,6 +174,29 @@ def test_parent_lists_own_photos(app_client):
     assert body["items"][0]["mime_type"] == "image/jpeg"
 
 
+def test_parent_photo_urls_use_parent_route_not_admin(app_client):
+    """Bug sweep round 4 (2026-05-14) B8：照片牆 URL 必須走家長專用下載路徑。
+
+    舊 bug：reuse api/attachments._attachment_to_dict 產出
+    `/api/uploads/portfolio/{key}`，該路由守衛 PORTFOLIO_READ，家長 permissions=0
+    沒此 bit → 所有 <img> 一律 403 變破圖。
+    修補：local `_parent_attachment_to_dict` 改用 `/api/parent/uploads/...`
+    （由 parent_downloads.py 認可家長 owner_type 反查）。
+    """
+    client, _, ids, make_token = app_client
+    token = make_token(ids["parent_id"], "parent_a")
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    resp = client.get(f"/api/parent/photos?student_id={ids['student_id']}")
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["items"][0]
+    assert item["url"].startswith("/api/parent/uploads/portfolio/"), item["url"]
+    # 修補前會是 /api/uploads/portfolio/...，撞到 admin route 403
+    assert not item["url"].startswith("/api/uploads/"), (
+        "URL 不可走 admin route /api/uploads/，"
+        "家長 permissions=0 無 PORTFOLIO_READ bit 會 403"
+    )
+
+
 def test_parent_403_for_other_kid(app_client):
     client, _, ids, make_token = app_client
     token = make_token(ids["parent_id"], "parent_a")

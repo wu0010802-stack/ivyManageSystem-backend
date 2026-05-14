@@ -15,7 +15,7 @@ from models.appraisal import (
     AppraisalParticipant,
     CycleStatus,
 )
-from models.database import get_session
+from models.database import get_session_dep
 from models.employee import Employee, JobTitle
 from schemas.appraisal import (
     ParticipantBulkInit,
@@ -36,7 +36,7 @@ router = APIRouter()
 @router.get("/cycles/{cycle_id}/participants", response_model=list[ParticipantOut])
 def list_participants(
     cycle_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     rows = (
@@ -59,7 +59,7 @@ def bulk_init_participants(
     cycle_id: int,
     payload: ParticipantBulkInit,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     cycle = db.get(AppraisalCycle, cycle_id)
@@ -139,7 +139,7 @@ def bulk_init_participants(
 @router.get("/participants/{participant_id}", response_model=ParticipantOut)
 def get_participant(
     participant_id: int,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     p = db.get(AppraisalParticipant, participant_id)
@@ -153,7 +153,7 @@ def patch_participant(
     participant_id: int,
     payload: ParticipantPatch,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     p = db.get(AppraisalParticipant, participant_id)
@@ -194,7 +194,7 @@ def patch_participant(
 def delete_participant(
     participant_id: int,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
     p = db.get(AppraisalParticipant, participant_id)
