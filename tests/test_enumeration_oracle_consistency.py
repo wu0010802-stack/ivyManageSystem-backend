@@ -45,7 +45,7 @@ from models.database import (
     User,
 )
 from models.dismissal import StudentDismissalCall
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from utils.auth import create_access_token, hash_password
 from utils.permissions import Permission
 
@@ -212,14 +212,10 @@ class TestF002_FeesRecordsPayments:
         user_b, _, student_b, _ = _setup_parent(
             session, line_user_id="UB", student_name="B", classroom_name="B班"
         )
-        item = FeeItem(name="學費", amount=10000, period="2026-1", is_active=True)
-        session.add(item)
-        session.flush()
         record_b = StudentFeeRecord(
             student_id=student_b.id,
             student_name=student_b.name,
             classroom_name="B班",
-            fee_item_id=item.id,
             fee_item_name="學費",
             amount_due=10000,
             amount_paid=0,
@@ -262,14 +258,10 @@ class TestF002_FeesRecordsPayments:
         client, sf = parent_client
         with sf() as s:
             user, _, student, _ = _setup_parent(s, line_user_id="UC", student_name="C")
-            item = FeeItem(name="學費2", amount=5000, period="2026-1", is_active=True)
-            s.add(item)
-            s.flush()
             record = StudentFeeRecord(
                 student_id=student.id,
                 student_name=student.name,
                 classroom_name="向日葵",
-                fee_item_id=item.id,
                 fee_item_name="學費",
                 amount_due=5000,
                 amount_paid=0,

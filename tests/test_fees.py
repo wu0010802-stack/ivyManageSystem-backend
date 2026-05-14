@@ -2,14 +2,19 @@
 tests/test_fees.py — 學費管理邏輯單元測試
 
 使用 SQLite in-memory 資料庫，測試：
-- 批次產生：同一 student + fee_item 不重複建立
+- 批次產生：同一 student + fee_item_name + period 不重複建立
 - 繳費狀態更新
 - summary 計算正確性
+
+c3 後：fee_items 表已 DROP、fee_item_id column 已 DROP。
+本檔以 SimpleNamespace 模擬 fee_item snapshot（提供 name/amount/period/classroom_id）；
+dedup key 由 (student_id, fee_item_id) 改為 (student_id, fee_item_name, period)。
 """
 
 import os
 import sys
 from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -20,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from api.fees import _apply_fee_record_filters
 from models.base import Base
 from models.classroom import Classroom, Student
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 
 
 @pytest.fixture
@@ -59,19 +64,26 @@ def _add_student(session, name="王小明", classroom_id=None) -> Student:
     return s
 
 
+_FEE_ITEM_COUNTER = {"value": 0}
+
+
 def _add_fee_item(
     session, name="學費", amount=3000, period="2025-1", classroom_id=None
-) -> FeeItem:
-    item = FeeItem(
+):
+    """c3 後 FeeItem 表不存在；改回傳 SimpleNamespace 作為 snapshot 來源。
+
+    保留 id 欄位作為單純的序號（測試需要區分多個 stub），
+    但不再用於 StudentFeeRecord.fee_item_id（該 column 已 DROP）。
+    """
+    _FEE_ITEM_COUNTER["value"] += 1
+    return SimpleNamespace(
+        id=_FEE_ITEM_COUNTER["value"],
         name=name,
         amount=amount,
         period=period,
         classroom_id=classroom_id,
         is_active=True,
     )
-    session.add(item)
-    session.flush()
-    return item
 
 
 def _add_record(session, student, fee_item) -> StudentFeeRecord:
@@ -79,7 +91,6 @@ def _add_record(session, student, fee_item) -> StudentFeeRecord:
         student_id=student.id,
         student_name=student.name,
         classroom_name="",
-        fee_item_id=fee_item.id,
         fee_item_name=fee_item.name,
         amount_due=fee_item.amount,
         amount_paid=0,
@@ -109,7 +120,10 @@ class TestGenerateFeeRecords:
         existing = {
             r.student_id
             for r in session.query(StudentFeeRecord.student_id)
-            .filter(StudentFeeRecord.fee_item_id == item.id)
+            .filter(
+                StudentFeeRecord.fee_item_name == item.name,
+                StudentFeeRecord.period == item.period,
+            )
             .all()
         }
 
@@ -121,7 +135,6 @@ class TestGenerateFeeRecords:
                         student_id=s.id,
                         student_name=s.name,
                         classroom_name="",
-                        fee_item_id=item.id,
                         fee_item_name=item.name,
                         amount_due=item.amount,
                         amount_paid=0,
@@ -136,7 +149,7 @@ class TestGenerateFeeRecords:
         assert session.query(StudentFeeRecord).count() == 2
 
     def test_generate_skips_existing_records(self, session):
-        """同一 student+fee_item 組合若已存在，應跳過不重複建立"""
+        """同一 student+fee_item_name+period 組合若已存在，應跳過不重複建立"""
         cls = _add_classroom(session)
         s1 = _add_student(session, "學生甲", cls.id)
         item = _add_fee_item(session)
@@ -146,7 +159,10 @@ class TestGenerateFeeRecords:
         existing = {
             r.student_id
             for r in session.query(StudentFeeRecord.student_id)
-            .filter(StudentFeeRecord.fee_item_id == item.id)
+            .filter(
+                StudentFeeRecord.fee_item_name == item.name,
+                StudentFeeRecord.period == item.period,
+            )
             .all()
         }
 
@@ -161,7 +177,6 @@ class TestGenerateFeeRecords:
                         student_id=s.id,
                         student_name=s.name,
                         classroom_name="",
-                        fee_item_id=item.id,
                         fee_item_name=item.name,
                         amount_due=item.amount,
                         amount_paid=0,
@@ -188,7 +203,10 @@ class TestGenerateFeeRecords:
         existing = {
             r.student_id
             for r in session.query(StudentFeeRecord.student_id)
-            .filter(StudentFeeRecord.fee_item_id == item.id)
+            .filter(
+                StudentFeeRecord.fee_item_name == item.name,
+                StudentFeeRecord.period == item.period,
+            )
             .all()
         }
 
@@ -202,7 +220,6 @@ class TestGenerateFeeRecords:
                         student_id=s.id,
                         student_name=s.name,
                         classroom_name="",
-                        fee_item_id=item.id,
                         fee_item_name=item.name,
                         amount_due=item.amount,
                         amount_paid=0,
@@ -341,7 +358,6 @@ class TestFeeSummary:
             student_id=s.id,
             student_name=s.name,
             classroom_name="",
-            fee_item_id=item_2026.id,
             fee_item_name=item_2026.name,
             amount_due=4000,
             amount_paid=0,
@@ -424,9 +440,7 @@ class TestStudentFeeRecordFKRestrict:
 class TestFeeSummarySQLAggregation:
     """驗證 fee_summary 改用 SQL 聚合後，結果與逐筆 Python 計算一致。"""
 
-    def _sql_summary(
-        self, session, period=None, classroom_name=None, status=None, fee_item_id=None
-    ):
+    def _sql_summary(self, session, period=None, classroom_name=None, status=None):
         """複製 fees.py fee_summary 的 SQL 聚合邏輯。"""
         from sqlalchemy import func, case
 
@@ -435,7 +449,6 @@ class TestFeeSummarySQLAggregation:
             period=period,
             classroom_name=classroom_name,
             status=status,
-            fee_item_id=fee_item_id,
         )
 
         agg_q = q.with_entities(
@@ -467,16 +480,13 @@ class TestFeeSummarySQLAggregation:
             "total_unpaid": total_due - total_paid,
         }
 
-    def _python_summary(
-        self, session, period=None, classroom_name=None, status=None, fee_item_id=None
-    ):
+    def _python_summary(self, session, period=None, classroom_name=None, status=None):
         """原始 Python 端計算（作為比對基準）。"""
         q = _apply_fee_record_filters(
             session.query(StudentFeeRecord),
             period=period,
             classroom_name=classroom_name,
             status=status,
-            fee_item_id=fee_item_id,
         )
         records = q.all()
         total_count = len(records)

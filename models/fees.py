@@ -32,13 +32,11 @@ FEE_TYPES_TEMPLATE = (
     FEE_TYPE_REGISTRATION,
     FEE_TYPE_MISCELLANEOUS,
     FEE_TYPE_MONTHLY,
-)
-
-FEE_TYPES_ALL = FEE_TYPES_TEMPLATE + (
     FEE_TYPE_MATERIAL,
     FEE_TYPE_INSURANCE,
-    FEE_TYPE_CUSTOM,
 )
+
+FEE_TYPES_ALL = FEE_TYPES_TEMPLATE + (FEE_TYPE_CUSTOM,)
 
 
 class FeeTemplate(Base):
@@ -85,39 +83,11 @@ class FeeTemplate(Base):
             name="uq_fee_template",
         ),
         CheckConstraint(
-            "fee_type IN ('registration','miscellaneous','monthly')",
+            "fee_type IN ('registration','miscellaneous','monthly','material','insurance')",
             name="ck_fee_template_type",
         ),
         CheckConstraint("amount >= 0", name="ck_fee_template_amount_nonneg"),
         CheckConstraint("semester IN (1, 2)", name="ck_fee_template_semester"),
-    )
-
-
-class FeeItem(Base):
-    """費用項目：定義一種費用的名稱、金額、適用班級與學期"""
-
-    __tablename__ = "fee_items"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(
-        String(100), nullable=False, comment="費用名稱（學費/雜費/材料費...）"
-    )
-    amount = Column(Integer, nullable=False, comment="金額（元）")
-    classroom_id = Column(
-        Integer,
-        ForeignKey("classrooms.id", ondelete="SET NULL"),
-        nullable=True,
-        comment="適用班級（NULL=全校適用）",
-    )
-    period = Column(String(20), nullable=False, comment="學年學期（e.g. 2025-1）")
-    is_active = Column(Boolean, default=True)
-
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    __table_args__ = (
-        Index("ix_fee_items_period_active", "period", "is_active"),
-        Index("ix_fee_items_classroom", "classroom_id"),
     )
 
 
@@ -138,11 +108,6 @@ class StudentFeeRecord(Base):
     student_name = Column(String(50), nullable=False, comment="學生姓名（snapshot）")
     classroom_name = Column(String(50), nullable=True, comment="班級名稱（snapshot）")
 
-    fee_item_id = Column(
-        Integer,
-        ForeignKey("fee_items.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
     fee_item_name = Column(
         String(100), nullable=False, comment="費用項目名稱（snapshot）"
     )
@@ -186,10 +151,10 @@ class StudentFeeRecord(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        UniqueConstraint("student_id", "fee_item_id", name="uq_student_fee_item"),
+        # c2: uq_student_fee_item 已 DROP（fee_item_id 變 nullable 後唯一鍵失效）
+        # c3: fee_item_id column 已 DROP；monthly 冪等改靠 ix_fee_records_monthly_unique
         Index("ix_fee_records_period_status", "period", "status"),
         Index("ix_fee_records_student", "student_id"),
-        Index("ix_fee_records_fee_item", "fee_item_id"),
         Index("ix_fee_records_student_period", "student_id", "period"),
         Index("ix_fee_records_due_date", "due_date"),
         Index("ix_fee_records_fee_type", "fee_type"),

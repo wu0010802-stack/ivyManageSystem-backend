@@ -23,7 +23,6 @@ import models.base as base_module
 from api.parent_portal import parent_router as parent_portal_router
 from models.database import Base, Classroom, Guardian, Student, User
 from models.fees import (
-    FeeItem,
     StudentFeePayment,
     StudentFeeRecord,
     StudentFeeRefund,
@@ -53,7 +52,9 @@ def fees_client(tmp_path):
     db_engine.dispose()
 
 
-def _setup_family(session, *, line_user_id="UF", student_name="小明", classroom_name="向日葵"):
+def _setup_family(
+    session, *, line_user_id="UF", student_name="小明", classroom_name="向日葵"
+):
     user = User(
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
@@ -103,14 +104,10 @@ def _create_fee_record(
     due_date=None,
     status="unpaid",
 ):
-    item = FeeItem(name=fee_item_name, amount=amount_due, period=period, is_active=True)
-    session.add(item)
-    session.flush()
     record = StudentFeeRecord(
         student_id=student.id,
         student_name=student.name,
         classroom_name="向日葵",
-        fee_item_id=item.id,
         fee_item_name=fee_item_name,
         amount_due=amount_due,
         amount_paid=amount_paid,
@@ -143,16 +140,28 @@ class TestSummary:
         with session_factory() as session:
             user, _, student, _ = _setup_family(session)
             _create_fee_record(
-                session, student, fee_item_name="學費", amount_due=10000,
-                amount_paid=0, due_date=today - timedelta(days=2),
+                session,
+                student,
+                fee_item_name="學費",
+                amount_due=10000,
+                amount_paid=0,
+                due_date=today - timedelta(days=2),
             )
             _create_fee_record(
-                session, student, fee_item_name="材料費", amount_due=2000,
-                amount_paid=0, due_date=today + timedelta(days=3),
+                session,
+                student,
+                fee_item_name="材料費",
+                amount_due=2000,
+                amount_paid=0,
+                due_date=today + timedelta(days=3),
             )
             _create_fee_record(
-                session, student, fee_item_name="制服費", amount_due=1500,
-                amount_paid=1500, status="paid",
+                session,
+                student,
+                fee_item_name="制服費",
+                amount_due=1500,
+                amount_paid=1500,
+                status="paid",
             )
             session.commit()
             token = _parent_token(user)

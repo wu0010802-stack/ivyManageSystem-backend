@@ -23,7 +23,7 @@ from models.classroom import (
     StudentAttendance,
     StudentIncident,
 )
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from models.guardian import Guardian
 from models.student_log import StudentChangeLog
 from services.student_profile import (
@@ -101,16 +101,12 @@ def seed(session):
     )
     session.add_all([g1, g2, g3_deleted])
 
-    # Fee items + records
-    fee_item = FeeItem(name="學費", amount=10000, period="114-2")
-    session.add(fee_item)
-    session.flush()
+    # Fee records（c3：fee_items 表已退場，直接寫 record snapshot）
     r1 = StudentFeeRecord(
         student_id=student.id,
         student_name=student.name,
         classroom_name=c.name,
-        fee_item_id=fee_item.id,
-        fee_item_name=fee_item.name,
+        fee_item_name="學費",
         amount_due=10000,
         amount_paid=6000,
         status="unpaid",
@@ -233,15 +229,11 @@ class TestFeeSummary:
 
     def test_none_period_sums_all(self, session, seed):
         # 加一筆他期費用
-        fi = FeeItem(name="才藝費", amount=2000, period="114-1")
-        session.add(fi)
-        session.flush()
         session.add(
             StudentFeeRecord(
                 student_id=seed["student"].id,
                 student_name=seed["student"].name,
-                fee_item_id=fi.id,
-                fee_item_name=fi.name,
+                fee_item_name="才藝費",
                 amount_due=2000,
                 amount_paid=2000,
                 status="paid",

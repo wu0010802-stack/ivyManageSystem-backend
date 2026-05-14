@@ -34,7 +34,6 @@ from models.guardian import Guardian
 from models.student_log import StudentChangeLog
 from utils.academic import resolve_current_academic_term
 
-
 DEFAULT_TIMELINE_LIMIT = 20
 DEFAULT_INCIDENT_LIMIT = 5
 DEFAULT_ASSESSMENT_LIMIT = 5
@@ -62,7 +61,9 @@ def get_guardians(session: Session, student_id: int) -> list[dict[str, Any]]:
             Guardian.student_id == student_id,
             Guardian.deleted_at.is_(None),
         )
-        .order_by(Guardian.is_primary.desc(), Guardian.sort_order.asc(), Guardian.id.asc())
+        .order_by(
+            Guardian.is_primary.desc(), Guardian.sort_order.asc(), Guardian.id.asc()
+        )
         .all()
     )
     return [_serialize_guardian(g) for g in rows]
@@ -96,7 +97,7 @@ def get_fee_summary(
 ) -> dict[str, Any]:
     """回傳指定 period 的費用摘要。period=None 則聚合全部歷史。
 
-    注意：FeeItem.period 是使用者自由輸入字串（如 "114-1"、"2025上"），
+    注意：StudentFeeRecord.period 是使用者自由輸入字串（如 "114-1"、"2025上"），
     沒有固定格式，所以預設不限制。
     """
     query = session.query(
@@ -161,7 +162,9 @@ def get_assessment_summary(
             "rating": r.rating,
             "content": r.content,
             "suggestions": r.suggestions,
-            "assessment_date": r.assessment_date.isoformat() if r.assessment_date else None,
+            "assessment_date": (
+                r.assessment_date.isoformat() if r.assessment_date else None
+            ),
         }
         for r in rows
     ]
@@ -192,7 +195,13 @@ def _merged_timeline(
                 "record_id": it["id"],
                 "occurred_at": it["assessment_date"],
                 "summary": "｜".join(
-                    p for p in [it.get("assessment_type"), it.get("domain"), it.get("rating")] if p
+                    p
+                    for p in [
+                        it.get("assessment_type"),
+                        it.get("domain"),
+                        it.get("rating"),
+                    ]
+                    if p
                 ),
                 "payload": it,
             }
@@ -247,7 +256,9 @@ def get_timeline(
     ]
 
 
-def _serialize_basic(student: Student, classroom: Optional[Classroom]) -> dict[str, Any]:
+def _serialize_basic(
+    student: Student, classroom: Optional[Classroom]
+) -> dict[str, Any]:
     return {
         "id": student.id,
         "student_id": student.student_id,
@@ -334,16 +345,16 @@ def assemble_profile(
     classroom = None
     if student.classroom_id:
         classroom = (
-            session.query(Classroom).filter(Classroom.id == student.classroom_id).first()
+            session.query(Classroom)
+            .filter(Classroom.id == student.classroom_id)
+            .first()
         )
 
-    # fee_period=None 表示聚合所有歷史費用（FeeItem.period 為自由字串無固定格式）
+    # fee_period=None 表示聚合所有歷史費用（StudentFeeRecord.period 為自由字串無固定格式）
     period = fee_period
     att_start, att_end = attendance_window or _default_attendance_window()
 
-    incident_summary = get_incident_summary(
-        session, student_id, limit=incident_limit
-    )
+    incident_summary = get_incident_summary(session, student_id, limit=incident_limit)
     assessment_summary = get_assessment_summary(
         session, student_id, limit=DEFAULT_ASSESSMENT_LIMIT
     )

@@ -190,7 +190,7 @@ def test_generate_registration_creates_for_active_and_enrolled_only(
     session.commit()
 
     r = client_admin.post(
-        "/api/fees/generate-from-templates",
+        "/api/fees/generate",
         json={
             "school_year": 114,
             "semester": 1,
@@ -219,7 +219,7 @@ def test_generate_dry_run_does_not_persist(client_admin, setup_school, session):
     session.commit()
 
     r = client_admin.post(
-        "/api/fees/generate-from-templates",
+        "/api/fees/generate",
         json={
             "school_year": 114,
             "semester": 1,
@@ -240,7 +240,7 @@ def test_generate_idempotent(client_admin, setup_school, session):
 
     # 第一次
     client_admin.post(
-        "/api/fees/generate-from-templates",
+        "/api/fees/generate",
         json={
             "school_year": 114,
             "semester": 1,
@@ -250,7 +250,7 @@ def test_generate_idempotent(client_admin, setup_school, session):
     )
     # 第二次:全跳過
     r = client_admin.post(
-        "/api/fees/generate-from-templates",
+        "/api/fees/generate",
         json={
             "school_year": 114,
             "semester": 1,
@@ -276,7 +276,7 @@ def test_generate_monthly_expands_six_months(client_admin, setup_school, session
     session.commit()
 
     r = client_admin.post(
-        "/api/fees/generate-from-templates",
+        "/api/fees/generate",
         json={
             "school_year": 114,
             "semester": 1,
@@ -333,7 +333,7 @@ def test_generate_monthly_lower_semester(client_admin, setup_school, session):
     session.commit()
 
     r = client_admin.post(
-        "/api/fees/generate-from-templates",
+        "/api/fees/generate",
         json={
             "school_year": 114,
             "semester": 2,
@@ -362,7 +362,7 @@ def test_generate_no_template_for_grade_skipped(client_admin, setup_school, sess
     session.commit()
 
     r = client_admin.post(
-        "/api/fees/generate-from-templates",
+        "/api/fees/generate",
         json={
             "school_year": 114,
             "semester": 1,

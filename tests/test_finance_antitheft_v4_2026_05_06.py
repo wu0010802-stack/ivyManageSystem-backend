@@ -34,7 +34,7 @@ from api.portal.salary import router as portal_salary_router
 from models.base import Base
 from models.classroom import Classroom, Student
 from models.database import AttendancePolicy, Employee, SalaryRecord, User
-from models.fees import FeeItem, StudentFeeRecord
+from models.fees import StudentFeeRecord
 from utils.auth import hash_password
 from utils.permissions import Permission
 
@@ -133,19 +133,15 @@ def _seed_fee_record(session, *, amount_due, amount_paid=0, status="unpaid"):
     )
     session.add(st)
     session.flush()
-    item = FeeItem(name="學費", amount=amount_due, period="2025-1", is_active=True)
-    session.add(item)
-    session.flush()
     rec = StudentFeeRecord(
         student_id=st.id,
         student_name=st.name,
         classroom_name=cls.name,
-        fee_item_id=item.id,
-        fee_item_name=item.name,
+        fee_item_name="學費",
         amount_due=amount_due,
         amount_paid=amount_paid,
         status=status,
-        period=item.period,
+        period="2025-1",
     )
     session.add(rec)
     session.flush()
