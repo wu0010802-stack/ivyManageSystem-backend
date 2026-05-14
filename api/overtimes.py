@@ -70,6 +70,8 @@ from utils.approval_helpers import (
     _get_submitter_role,
     _check_approval_eligibility,
     _write_approval_log,
+    assert_approver_eligible,
+    is_self_approval,
 )
 from utils.excel_utils import xlsx_streaming_response
 from utils.import_utils import build_employee_lookup, resolve_employee_from_row
@@ -1307,22 +1309,18 @@ def approve_overtime(
         # 可改判」，硬擋會破壞合法 TestApprovedOvertimeRollback 路徑。
 
         # ── 自我核准防護 ─────────────────────────────────────────────────────────
-        # 僅在 approver 確實擁有 employee_id 且與申請人相同時才拒絕。
-        # 無 employee_id 的帳號（如純管理員）本身無法提出加班單，不構成自我核准風險。
-        approver_eid = current_user.get("employee_id")
-        if approver_eid and ot.employee_id == approver_eid:
+        if is_self_approval(current_user, ot.employee_id):
             raise HTTPException(status_code=403, detail="不可自我核准加班單")
 
         # ── 角色資格檢查 ──────────────────────────────────────────────────────
-        submitter_role = _get_submitter_role(ot.employee_id, session)
         approver_role = current_user.get("role", "")
-        if not _check_approval_eligibility(
-            "overtime", submitter_role, approver_role, session
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的加班申請",
-            )
+        submitter_role = assert_approver_eligible(
+            session,
+            doc_type="overtime",
+            doc_label="加班",
+            submitter_employee_id=ot.employee_id,
+            approver_role=approver_role,
+        )
 
         if approved or was_approved:
             # 提早取得薪資鎖 + pre-mark stale,封住 commit→recalc 的兩個 race window。
@@ -1497,8 +1495,7 @@ def batch_approve_overtimes(
                 was_approved = ot.is_approved is True
 
                 # 防止自我核准
-                approver_eid = current_user.get("employee_id")
-                if approver_eid and ot.employee_id == approver_eid:
+                if is_self_approval(current_user, ot.employee_id):
                     failed.append({"id": ot_id, "reason": "不可自我核准"})
                     continue
 
