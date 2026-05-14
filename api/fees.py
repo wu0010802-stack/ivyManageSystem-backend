@@ -1142,6 +1142,9 @@ def pay_fee_record(
         )
         if not record:
             raise HTTPException(status_code=404, detail="費用記錄不存在")
+        # F-034：班級 scope 守衛 — 非 admin/hr/supervisor 不得對他班學生登記繳費
+        if not is_unrestricted(current_user):
+            assert_student_access(session, current_user, record.student_id)
         if record.status == "paid":
             raise HTTPException(status_code=400, detail="此記錄已完成繳費")
 
@@ -1306,9 +1309,15 @@ def fee_summary(
     status: Optional[str] = Query(None, pattern="^(unpaid|partial|paid)$"),
     fee_item_id: Optional[int] = Query(None),
     student_name: Optional[str] = Query(None),
-    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
     """統計摘要：總應繳金額、已繳、未繳人數/金額"""
+    # F-034：班級 scope 守衛 — 全校聚合僅限 admin/hr/supervisor
+    if not is_unrestricted(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="非管理角色不得讀取全校費用統計",
+        )
     with session_scope() as session:
         q = _apply_fee_record_filters(
             session.query(StudentFeeRecord),
@@ -1614,6 +1623,9 @@ def refund_fee_record(
         )
         if not record:
             raise HTTPException(status_code=404, detail="費用記錄不存在")
+        # F-034：班級 scope 守衛 — 非 admin/hr/supervisor 不得對他班學生建立退款
+        if not is_unrestricted(current_user):
+            assert_student_access(session, current_user, record.student_id)
 
         paid = record.amount_paid or 0
         if paid <= 0:
@@ -1766,7 +1778,7 @@ def refund_fee_record(
 @router.get("/records/{record_id}/refunds")
 def list_fee_refunds(
     record_id: int,
-    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
     """列出某筆學費記錄的退款歷史（按時間新→舊）"""
     with session_scope() as session:
@@ -1777,6 +1789,9 @@ def list_fee_refunds(
         )
         if not rec:
             raise HTTPException(status_code=404, detail="費用記錄不存在")
+        # F-034：班級 scope 守衛 — 非 admin/hr/supervisor 不得看他班退款歷史
+        if not is_unrestricted(current_user):
+            assert_student_access(session, current_user, rec.student_id)
         refunds = (
             session.query(StudentFeeRefund)
             .filter(StudentFeeRefund.record_id == record_id)
