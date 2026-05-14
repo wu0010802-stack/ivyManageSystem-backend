@@ -18,7 +18,7 @@ memory `feedback_plan_template_codebase_drift` 與 `project_quality_refactor_bat
 
 不能 → 業務邏輯卡在裡面，不該抽。
 
-## 要抽的 helper（4 個，全部落在 `utils/approval_helpers.py`）
+## 要抽的 helper（原規劃 4 個，實作落地 3 個，全部在 `utils/approval_helpers.py`）
 
 ### 1. `assert_not_self_approval`
 
@@ -75,25 +75,17 @@ def collect_months_from_date_range(
 - `api/leaves.py` L1261-1270 inline loop
 - overtimes 維持 `collect_months_from_dates`（單日已是正確語意，不動）
 
-### 4. `apply_approval_salary_guards`
+### 4. `apply_approval_salary_guards` — **實作時放棄**
 
-```python
-def apply_approval_salary_guards(
-    session, employee_id: int,
-    months: set[tuple[int, int]], *, approval_changed: bool
-) -> None:
-    """approval_changed 為 True 時，連發 assert_months_not_finalized
-    + lock_and_premark_stale，封住 commit→recalc 兩個 race window。
+原規劃將 `assert_months_not_finalized + lock_and_premark_stale` 收成單一
+helper。實作驗證後放棄：
 
-    Why: 兩檔皆做此事，但 leaves 在 outer `if approval_changed:` 內，
-    overtimes 在 `if approved or was_approved:` 條件下。呼叫端條件
-    判斷保留給 caller，helper 只做「兩個動作合一」。
-    """
-```
+- `api/leaves.py` L1259-1271 在此處**只做 lock**（assert 在其他 path 上做）
+- `api/overtimes.py` L1331-1341 同時做 assert + lock
 
-替換點：
-- `api/leaves.py` L1259-1271
-- `api/overtimes.py` L1327-1341
+兩者不對稱。若強行合成「assert + lock 二合一」會改變 leaves 此處的守衛時序
+（多出一個 assert），屬於行為變更而非 refactor。保留 `lock_and_premark_stale`
+單獨 helper 已足夠；不抽。
 
 ## 不抽的（防止反向過度設計）
 
