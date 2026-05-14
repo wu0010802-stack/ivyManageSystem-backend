@@ -132,9 +132,15 @@ def approve_punch_correction(
     """核准或駁回補打卡申請"""
     session = get_session()
     try:
+        # 列鎖 serialize 兩位 approver 並發審核同一筆。bug sweep round 5
+        # (2026-05-14) P1：line 218 advisory salary lock 是月度級（同員工同月
+        # serialize），無法防止「兩位 approver 同時核准 / 一核准一駁回」造成
+        # 雙寫 ApprovalLog / 雙推 LINE / attendance 雙寫的問題。與 leaves.py:1190
+        # / overtimes approve（已加 with_for_update）對齊。
         correction = (
             session.query(PunchCorrectionRequest)
             .filter(PunchCorrectionRequest.id == correction_id)
+            .with_for_update()
             .first()
         )
         if not correction:

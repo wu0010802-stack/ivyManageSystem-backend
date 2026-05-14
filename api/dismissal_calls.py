@@ -173,7 +173,17 @@ def _db_create_dismissal_call(
     """同步 DB 操作：建立接送通知，回傳 (out_dict, classroom_id)。"""
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == body.student_id).first()
+        # 對 students.id 列鎖，serialize 同一學生並發的 create 流程。
+        # 沒有此鎖時 SELECT-then-INSERT 會 race（READ COMMITTED 下兩個 tx
+        # 都看到「無進行中通知」→ 都 INSERT，同學生 2 筆 pending call、
+        # WebSocket 廣播 2 次、LINE 推播 2 次。bug sweep round 5 (2026-05-14)
+        # P1：與 cancel/acknowledge/complete 路徑（已有 with_for_update）一致。
+        student = (
+            session.query(Student)
+            .filter(Student.id == body.student_id)
+            .with_for_update()
+            .first()
+        )
         if not student:
             raise HTTPException(status_code=404, detail="找不到學生")
         if student.classroom_id != body.classroom_id:

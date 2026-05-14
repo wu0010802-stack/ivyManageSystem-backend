@@ -25,6 +25,7 @@ from models.activity import (
     RegistrationSupply,
 )
 from models.database import Guardian, Student, get_session
+from services.activity_service import activity_service
 from utils.auth import require_parent_role
 
 from ._shared import _assert_student_owned, _get_parent_student_ids
@@ -318,23 +319,43 @@ def confirm_promotion(
         ):
             raise HTTPException(status_code=403, detail="查無此資料或無權存取")
 
-        rc = (
-            session.query(RegistrationCourse)
-            .filter(
-                RegistrationCourse.registration_id == registration_id,
-                RegistrationCourse.course_id == payload.course_id,
+        # 改用 services.activity_service.confirm_waitlist_promotion：
+        # 與公開端 api/activity/public.py 共用同一 helper（已加 with_for_update
+        # on rc + course）。原 parent_portal 自寫 SELECT-then-UPDATE 無鎖、
+        # 沒呼叫 log_change，與公開端行為不對稱；雙裝置並發確認時兩個 commit
+        # 都會 200 而沒留稽核軌跡（bug sweep round 5 P2，2026-05-14）。
+        try:
+            student_name, course_name = activity_service.confirm_waitlist_promotion(
+                session, registration_id, payload.course_id
             )
-            .first()
+        except ValueError as e:
+            code = str(e)
+            if code == "NOT_FOUND":
+                raise HTTPException(status_code=404, detail="找不到該報名課程")
+            if code == "ALREADY_CONFIRMED":
+                raise HTTPException(status_code=409, detail="此課程已是正式報名")
+            if code == "NOT_PENDING":
+                raise HTTPException(
+                    status_code=400, detail="此課程非待確認狀態，無法確認"
+                )
+            if code == "EXPIRED":
+                raise HTTPException(
+                    status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
+                )
+            raise
+        # 與公開端 api/activity/public.py 對齊：confirm 後寫一筆業務 audit 軌跡，
+        # operator 標 "parent" 區別於公開頁的 "parent-public"。
+        activity_service.log_change(
+            session,
+            registration_id,
+            student_name,
+            "候補轉正確認",
+            f"課程「{course_name}」家長確認接受升正式（parent-portal）",
+            "parent",
         )
-        if rc is None:
-            raise HTTPException(status_code=404, detail="找不到該報名課程")
-        if rc.status != "promoted_pending":
-            raise HTTPException(status_code=400, detail=f"狀態為 {rc.status}，無法確認")
-        if rc.confirm_deadline and rc.confirm_deadline < datetime.now():
-            raise HTTPException(status_code=400, detail="確認期限已過")
-        rc.status = "enrolled"
         session.commit()
-        return {"status": "ok", "registration_course_id": rc.id}
+        # rc.id 取得需重查；多數呼叫端只看 status:ok 故不必回傳。
+        return {"status": "ok"}
     finally:
         session.close()
 
