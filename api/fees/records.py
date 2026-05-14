@@ -1,8 +1,7 @@
-"""api/fees/records.py — 費用項目、學期清單、學費紀錄查詢/繳費/摘要
+"""api/fees/records.py — 學期清單、學費紀錄查詢/繳費/摘要。
 
-包含：
-- FeeItem CRUD（c2 將整批移除，c1 暫保留）
-- /periods、/records、/summary、/records/{id}/pay
+c2 後：FeeItem CRUD（/items 4 endpoints）已退場；/periods 改從
+student_fee_records.period 取 distinct（fee_items 表已 DROP）。
 """
 
 import logging
@@ -14,8 +13,7 @@ from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 
 from models.base import session_scope
-from models.classroom import Classroom
-from models.fees import FeeItem, StudentFeePayment, StudentFeeRecord
+from models.fees import StudentFeePayment, StudentFeeRecord
 from utils.audit import write_audit_in_session
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_finance_approve
@@ -24,8 +22,6 @@ from utils.portfolio_access import assert_student_access, is_unrestricted
 
 from ._helpers import (
     FEE_PAYMENT_APPROVAL_THRESHOLD,
-    FeeItemCreate,
-    FeeItemUpdate,
     PayRequest,
     _apply_fee_record_filters,
     _invalidate_finance_summary_cache,
@@ -37,233 +33,26 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# 費用項目
+# 學期清單
 # ---------------------------------------------------------------------------
-
-
-@router.get("/items")
-def list_fee_items(
-    period: Optional[str] = Query(None),
-    is_active: Optional[bool] = Query(None),
-    _: None = Depends(require_staff_permission(Permission.FEES_READ)),
-):
-    """取得費用項目清單（JOIN classroom，一次查詢）"""
-    with session_scope() as session:
-        q = session.query(FeeItem, Classroom).outerjoin(
-            Classroom, FeeItem.classroom_id == Classroom.id
-        )
-        if period:
-            q = q.filter(FeeItem.period == period)
-        if is_active is not None:
-            q = q.filter(FeeItem.is_active == is_active)
-
-        rows = q.order_by(FeeItem.period.desc(), FeeItem.id).all()
-        return [
-            {
-                "id": item.id,
-                "name": item.name,
-                "amount": item.amount,
-                "classroom_id": item.classroom_id,
-                "classroom_name": cls.name if cls else None,
-                "period": item.period,
-                "is_active": item.is_active,
-                "created_at": item.created_at.isoformat() if item.created_at else None,
-            }
-            for item, cls in rows
-        ]
 
 
 @router.get("/periods")
 def list_fee_periods(
     _: None = Depends(require_staff_permission(Permission.FEES_READ)),
 ):
-    """取得所有已建立的學期列表（供前端下拉選單使用）"""
+    """取得所有已建立的學期列表（供前端下拉選單使用）。
+
+    c2 後改從 student_fee_records.period 取 distinct（fee_items 表已 DROP）。
+    """
     with session_scope() as session:
         rows = (
-            session.query(FeeItem.period)
+            session.query(StudentFeeRecord.period)
             .distinct()
-            .order_by(FeeItem.period.desc())
+            .order_by(StudentFeeRecord.period.desc())
             .all()
         )
-        return [r.period for r in rows]
-
-
-@router.post("/items", status_code=201)
-def create_fee_item(
-    payload: FeeItemCreate,
-    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
-):
-    """新增費用項目"""
-    with session_scope() as session:
-        if payload.classroom_id:
-            cls = (
-                session.query(Classroom)
-                .filter(Classroom.id == payload.classroom_id)
-                .first()
-            )
-            if not cls:
-                raise HTTPException(status_code=404, detail="班級不存在")
-
-        item = FeeItem(
-            name=payload.name,
-            amount=payload.amount,
-            classroom_id=payload.classroom_id,
-            period=payload.period,
-            is_active=payload.is_active,
-        )
-        session.add(item)
-        session.flush()
-        result = {
-            "id": item.id,
-            "name": item.name,
-            "amount": item.amount,
-            "period": item.period,
-        }
-
-    logger.info(
-        "新增費用項目 id=%s name=%s period=%s",
-        result["id"],
-        result["name"],
-        result["period"],
-    )
-    return result
-
-
-@router.put("/items/{item_id}")
-def update_fee_item(
-    item_id: int,
-    payload: FeeItemUpdate,
-    request: Request,
-    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
-):
-    """更新費用項目"""
-    with session_scope() as session:
-        item = session.query(FeeItem).filter(FeeItem.id == item_id).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="費用項目不存在")
-
-        # 預先 snapshot 舊值，方便組 audit_changes diff
-        before = {
-            "name": item.name,
-            "amount": item.amount,
-            "classroom_id": item.classroom_id,
-            "period": item.period,
-            "is_active": item.is_active,
-        }
-        diff = {}
-
-        if payload.name is not None and payload.name != item.name:
-            diff["name"] = {"before": item.name, "after": payload.name}
-            item.name = payload.name
-        if payload.amount is not None and payload.amount != item.amount:
-            diff["amount"] = {"before": item.amount, "after": payload.amount}
-            item.amount = payload.amount
-        if (
-            payload.classroom_id is not None
-            and payload.classroom_id != item.classroom_id
-        ):
-            cls = (
-                session.query(Classroom)
-                .filter(Classroom.id == payload.classroom_id)
-                .first()
-            )
-            if not cls:
-                raise HTTPException(status_code=404, detail="班級不存在")
-            diff["classroom_id"] = {
-                "before": item.classroom_id,
-                "after": payload.classroom_id,
-            }
-            item.classroom_id = payload.classroom_id
-        if payload.period is not None and payload.period != item.period:
-            diff["period"] = {"before": item.period, "after": payload.period}
-            item.period = payload.period
-        if payload.is_active is not None and payload.is_active != item.is_active:
-            diff["is_active"] = {"before": item.is_active, "after": payload.is_active}
-            item.is_active = payload.is_active
-
-        item.updated_at = datetime.now()
-
-        # 統計受影響的學生費用紀錄數，amount 異動時揭露衝擊面積
-        affected_records = 0
-        if "amount" in diff:
-            affected_records = (
-                session.query(StudentFeeRecord)
-                .filter(StudentFeeRecord.fee_item_id == item_id)
-                .count()
-            )
-
-        request.state.audit_entity_id = str(item_id)
-        request.state.audit_summary = f"更新費用項目 #{item_id}（{item.name}）" + (
-            f"：金額 {diff['amount']['before']} → {diff['amount']['after']}"
-            if "amount" in diff
-            else ""
-        )
-        request.state.audit_changes = {
-            "action": "fee_item_update",
-            "item_id": item_id,
-            "before": before,
-            "diff": diff,
-            "affected_fee_records": affected_records,
-        }
-
-    logger.info("更新費用項目 id=%s diff=%s", item_id, list(diff.keys()))
-    return {"ok": True}
-
-
-@router.delete("/items/{item_id}")
-def delete_fee_item(
-    item_id: int,
-    request: Request,
-    _: None = Depends(require_staff_permission(Permission.FEES_WRITE)),
-):
-    """刪除費用項目（若有關聯記錄則拒絕）"""
-    with session_scope() as session:
-        # with_for_update：與 count linked + delete 同 transaction 持鎖，
-        # 避免「檢查無關聯 → 他人 INSERT StudentFeeRecord → 刪除成功」造成 FK 違反或孤兒。
-        item = (
-            session.query(FeeItem)
-            .filter(FeeItem.id == item_id)
-            .with_for_update()
-            .first()
-        )
-        if not item:
-            raise HTTPException(status_code=404, detail="費用項目不存在")
-
-        linked = (
-            session.query(StudentFeeRecord)
-            .filter(StudentFeeRecord.fee_item_id == item_id)
-            .count()
-        )
-        if linked > 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"此費用項目已有 {linked} 筆學生記錄，無法刪除。請先刪除相關記錄或改為停用。",
-            )
-
-        snapshot = {
-            "id": item.id,
-            "name": item.name,
-            "amount": item.amount,
-            "classroom_id": item.classroom_id,
-            "period": item.period,
-            "is_active": item.is_active,
-        }
-        name = item.name
-        session.delete(item)
-
-        # 金流項目刪除必須留 audit；同 session 寫入確保與 delete 共生死
-        write_audit_in_session(
-            session,
-            request,
-            action="DELETE",
-            entity_type="fee",
-            entity_id=item_id,
-            summary=f"刪除費用項目 #{item_id}（{name}，金額 {snapshot['amount']}）",
-            changes={"action": "fee_item_delete", "snapshot": snapshot},
-        )
-
-    logger.warning("刪除費用項目 id=%s name=%s", item_id, name)
-    return {"ok": True}
+        return [r.period for r in rows if r.period]
 
 
 # ---------------------------------------------------------------------------

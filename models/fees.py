@@ -32,13 +32,11 @@ FEE_TYPES_TEMPLATE = (
     FEE_TYPE_REGISTRATION,
     FEE_TYPE_MISCELLANEOUS,
     FEE_TYPE_MONTHLY,
-)
-
-FEE_TYPES_ALL = FEE_TYPES_TEMPLATE + (
     FEE_TYPE_MATERIAL,
     FEE_TYPE_INSURANCE,
-    FEE_TYPE_CUSTOM,
 )
+
+FEE_TYPES_ALL = FEE_TYPES_TEMPLATE + (FEE_TYPE_CUSTOM,)
 
 
 class FeeTemplate(Base):
@@ -85,7 +83,7 @@ class FeeTemplate(Base):
             name="uq_fee_template",
         ),
         CheckConstraint(
-            "fee_type IN ('registration','miscellaneous','monthly')",
+            "fee_type IN ('registration','miscellaneous','monthly','material','insurance')",
             name="ck_fee_template_type",
         ),
         CheckConstraint("amount >= 0", name="ck_fee_template_amount_nonneg"),
@@ -140,8 +138,8 @@ class StudentFeeRecord(Base):
 
     fee_item_id = Column(
         Integer,
-        ForeignKey("fee_items.id", ondelete="RESTRICT"),
-        nullable=False,
+        # c2: fee_items 表已 DROP；FK 與 NOT NULL 一同卸除（c3 將砍 column 本身）。
+        nullable=True,
     )
     fee_item_name = Column(
         String(100), nullable=False, comment="費用項目名稱（snapshot）"
@@ -186,7 +184,8 @@ class StudentFeeRecord(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        UniqueConstraint("student_id", "fee_item_id", name="uq_student_fee_item"),
+        # c2: uq_student_fee_item 已 DROP（fee_item_id 變 nullable 後唯一鍵失效）
+        # monthly 冪等改靠 ix_fee_records_monthly_unique（partial unique index）
         Index("ix_fee_records_period_status", "period", "status"),
         Index("ix_fee_records_student", "student_id"),
         Index("ix_fee_records_fee_item", "fee_item_id"),

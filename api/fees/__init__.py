@@ -2,9 +2,11 @@
 
 原 1797 行 `api/fees.py` 已依資源粒度拆為：
 - `templates.py`：費用範本 CRUD
-- `generation.py`：批次產生 FeeRecord（範本驅動 + 舊單 fee_item 入口）
-- `records.py`：FeeItem CRUD + 學期清單 + 學費紀錄查詢/繳費/摘要
+- `generation.py`：批次產生 FeeRecord（範本驅動單一入口）
+- `records.py`：學期清單 + 學費紀錄查詢/繳費/摘要
 - `refunds.py`：退款建議 / 退款 / 退款歷史
+
+c2 後：FeeItem CRUD 與舊版指定班級 /generate 已退場（DROP TABLE fee_items）。
 
 子 router 各自定義 `router = APIRouter()`（無 prefix），由本檔 aggregate 到
 `/api/fees` 前綴。同名 `router` 變數仍由 `from api.fees import router as fees_router`
@@ -22,12 +24,9 @@ from fastapi import APIRouter
 from ._helpers import (  # noqa: F401
     FEE_PAYMENT_APPROVAL_THRESHOLD,
     MAX_FEE_AMOUNT,
-    FeeItemCreate,
-    FeeItemUpdate,
     FeeTemplateCreate,
     FeeTemplateUpdate,
     GenerateFromTemplatesRequest,
-    GenerateRequest,
     PayRequest,
     RefundRequest,
     RefundSuggestRequest,

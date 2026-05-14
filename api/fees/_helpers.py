@@ -52,27 +52,14 @@ def _invalidate_finance_summary_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
-class FeeItemCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    amount: int = Field(..., ge=0, le=MAX_FEE_AMOUNT)
-    classroom_id: Optional[int] = None
-    period: str = Field(..., min_length=1, max_length=20)
-    is_active: bool = True
-
-
-class FeeItemUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    amount: Optional[int] = Field(None, ge=0, le=MAX_FEE_AMOUNT)
-    classroom_id: Optional[int] = None
-    period: Optional[str] = Field(None, min_length=1, max_length=20)
-    is_active: Optional[bool] = None
-
-
 class FeeTemplateCreate(BaseModel):
     grade_id: int = Field(..., gt=0)
     school_year: int = Field(..., ge=100, le=200)
     semester: int = Field(..., ge=1, le=2)
-    fee_type: str = Field(..., pattern="^(registration|miscellaneous|monthly)$")
+    fee_type: str = Field(
+        ...,
+        pattern="^(registration|miscellaneous|monthly|material|insurance)$",
+    )
     name: str = Field(..., min_length=1, max_length=100)
     amount: int = Field(..., ge=0, le=MAX_FEE_AMOUNT)
     breakdown: Optional[dict] = None
@@ -109,16 +96,17 @@ class GenerateFromTemplatesRequest(BaseModel):
     @field_validator("fee_types")
     @classmethod
     def _validate_types(cls, v):
-        allowed = {"registration", "miscellaneous", "monthly"}
+        allowed = {
+            "registration",
+            "miscellaneous",
+            "monthly",
+            "material",
+            "insurance",
+        }
         bad = [t for t in v if t not in allowed]
         if bad:
             raise ValueError(f"非法 fee_type: {bad}")
         return v
-
-
-class GenerateRequest(BaseModel):
-    fee_item_id: int
-    classroom_id: Optional[int] = None  # None = 全校
 
 
 class PayRequest(BaseModel):

@@ -111,36 +111,9 @@ def _seed_record(session, *, amount_due=1000, amount_paid=0, status="unpaid"):
     return rec
 
 
-class TestFeeItemAmountCap:
-    def test_fee_item_above_cap_rejected(self, client):
-        c, sf = client
-        with sf() as s:
-            _admin(s)
-            s.commit()
-
-        assert _login(c).status_code == 200
-        res = c.post(
-            "/api/fees/items",
-            json={
-                "name": "超額學費",
-                "amount": MAX_FEE_AMOUNT + 1,
-                "period": "2025-1",
-            },
-        )
-        assert res.status_code == 422
-
-    def test_fee_item_at_cap_accepted(self, client):
-        c, sf = client
-        with sf() as s:
-            _admin(s)
-            s.commit()
-
-        assert _login(c).status_code == 200
-        res = c.post(
-            "/api/fees/items",
-            json={"name": "最高學費", "amount": MAX_FEE_AMOUNT, "period": "2025-1"},
-        )
-        assert res.status_code in (200, 201)
+# c2: TestFeeItemAmountCap 已隨 /api/fees/items endpoint 一同退場
+# MAX_FEE_AMOUNT 的 schema-level 守衛改由 PayRequest.amount_paid 的 422 cap 驗證
+# （見 TestPayRecordAmountCap.test_amount_above_cap_rejected）。
 
 
 class TestPayRecordDecreaseBlocked:
