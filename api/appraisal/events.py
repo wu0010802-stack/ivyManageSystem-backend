@@ -18,7 +18,7 @@ from models.appraisal import (
     CycleStatus,
     EventType,
 )
-from models.database import get_session
+from models.database import get_session_dep
 from schemas.appraisal import EventCreate, EventOut, EventPatch, EventRevert
 from services.appraisal_service import (
     check_termination_threshold,
@@ -77,7 +77,7 @@ def list_events(
     participant_id: Optional[int] = None,
     event_type: Optional[EventType] = None,
     limit: int = Query(default=200, le=1000),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
 ):
     """列出事件。可依 cycle_id / participant_id / event_type 篩選。"""
@@ -102,7 +102,7 @@ def list_events(
 def create_event(
     payload: EventCreate,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
     ),
@@ -192,7 +192,7 @@ def patch_event(
     event_id: int,
     payload: EventPatch,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
     ),
@@ -244,7 +244,7 @@ def revert_event(
     event_id: int,
     payload: EventRevert,
     request: Request,
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_session_dep),
     current_user: dict = Depends(
         require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
     ),
