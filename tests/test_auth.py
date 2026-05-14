@@ -1,11 +1,16 @@
 """認證工具單元測試"""
+
 import pytest
 from datetime import timedelta
 from fastapi import HTTPException
 from utils.auth import (
-    hash_password, verify_password,
-    create_access_token, decode_token,
-    JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES,
+    hash_password,
+    verify_password,
+    create_access_token,
+    decode_token,
+    JWT_SECRET_KEY,
+    JWT_ALGORITHM,
+    JWT_EXPIRE_MINUTES,
 )
 
 
@@ -94,10 +99,7 @@ class TestDecodeToken:
 
     def test_expired_token(self):
         """過期 token 拋出 401"""
-        token = create_access_token(
-            {"id": "1"},
-            expires_delta=timedelta(seconds=-1)
-        )
+        token = create_access_token({"id": "1"}, expires_delta=timedelta(seconds=-1))
         with pytest.raises(HTTPException) as exc_info:
             decode_token(token)
         assert exc_info.value.status_code == 401
@@ -107,14 +109,15 @@ class TestTokenExpiry:
 
     def test_expire_minutes_is_short(self):
         """Access token 有效期必須 ≤ 60 分鐘，防止帳號停用後長期暴露"""
-        assert JWT_EXPIRE_MINUTES <= 60, (
-            f"JWT_EXPIRE_MINUTES={JWT_EXPIRE_MINUTES}，應設為 ≤ 60 分鐘"
-        )
+        assert (
+            JWT_EXPIRE_MINUTES <= 60
+        ), f"JWT_EXPIRE_MINUTES={JWT_EXPIRE_MINUTES}，應設為 ≤ 60 分鐘"
 
     def test_default_expiry_used(self):
         """不傳 expires_delta 時使用 JWT_EXPIRE_MINUTES 預設值"""
         import time
         from jose import jwt as _jwt
+
         token = create_access_token({"id": "1"})
         payload = _jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         expected_exp = time.time() + JWT_EXPIRE_MINUTES * 60
@@ -149,3 +152,40 @@ class TestTokenVersion:
         payload = decode_token(token)
         db_version = 0  # 從未被撤銷過的帳號
         assert payload.get("token_version", 0) == db_version
+
+
+class TestScopeRestrictedTokenGuard:
+    """get_current_user 必須拒絕 scope-restricted token（例如 parent_portal
+    bind temp token），否則該 token 會繞過 require_non_parent_role 黑名單，
+    撞到 /api/portal/calendar 等內部資料端點。"""
+
+    def _client(self):
+        from fastapi import Depends, FastAPI
+        from fastapi.testclient import TestClient
+
+        from utils.auth import get_current_user
+
+        app = FastAPI()
+
+        @app.get("/__whoami")
+        async def whoami(user: dict = Depends(get_current_user)):
+            return {"ok": True, "scope": user.get("scope")}
+
+        return TestClient(app)
+
+    def test_bind_scope_token_rejected_via_get_current_user(self):
+        client = self._client()
+        bind_token = create_access_token(
+            {"scope": "bind", "line_user_id": "U_evil_attacker"}
+        )
+        r = client.get("/__whoami", headers={"Authorization": f"Bearer {bind_token}"})
+        assert r.status_code == 401
+        assert "受限用途" in r.json()["detail"]
+
+    def test_normal_access_token_without_scope_still_accepted(self):
+        """確保 scope 守衛不會誤殺正常 access token（無 scope 欄位的 payload）。"""
+        client = self._client()
+        token = create_access_token({"role": "admin", "name": "test"})
+        r = client.get("/__whoami", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert r.json()["scope"] is None

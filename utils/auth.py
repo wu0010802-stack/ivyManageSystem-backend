@@ -358,6 +358,15 @@ async def get_current_user(request: Request):
     payload = decode_token(token)
     if is_token_revoked(payload.get("jti", "")):
         raise HTTPException(status_code=401, detail="Token 已廢止，請重新登入")
+    # scope-restricted token（例如 parent_portal bind temp token，scope='bind'）
+    # 必須由各自的 _decode_*_token 驗證並僅限其專屬端點，禁止經由此通用
+    # dependency 進入後台/教師端 router（否則會繞過 require_non_parent_role 的
+    # 黑名單守衛，洩漏例如 /api/portal/calendar 的內部會議資料）。
+    if payload.get("scope") is not None:
+        raise HTTPException(
+            status_code=401,
+            detail="此 token 為受限用途，不可用於資源存取",
+        )
     user_id = payload.get("user_id")
     if user_id is None:
         return payload
