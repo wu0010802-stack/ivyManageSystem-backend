@@ -45,6 +45,9 @@ from utils.approval_helpers import (
     _get_submitter_role,
     _check_approval_eligibility,
     _write_approval_log,
+    assert_approver_eligible,
+    collect_months_from_date_range,
+    is_self_approval,
 )
 from services.salary.utils import lock_and_premark_stale, mark_salary_stale
 from services.salary.finalize_guard import (
@@ -1197,30 +1200,23 @@ def approve_leave(
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
         # ── 自我核准防護 ─────────────────────────────────────────────────────────
-        # 僅在 approver 確實擁有 employee_id 且與申請人相同時才拒絕。
-        # 無 employee_id 的帳號（如純管理員）本身無法提出假單，不構成自我核准風險。
-        approver_eid = current_user.get("employee_id")
-        if approver_eid and leave.employee_id == approver_eid:
+        if is_self_approval(current_user, leave.employee_id):
             raise HTTPException(status_code=403, detail="不可自我核准請假單")
 
         # ── 角色資格檢查 ────────────────────────────────────────────────────────
         # 既有設計允許「已核准 → 駁回」的合法業務路徑（例如發現超時數需撤銷），
-        # 由 risk_tags="reject_of_approved" 在 audit_summary 顯式打標記，於
-        # AuditLogView 可篩。撤回 audit 2026-05-07 P1 hard-block flip-flop 提案：
-        # 業主既有業務模型即是「approver 可改判」，硬擋會破壞合法 reject_of_approved
-        # 路徑（test_leave_reject_approved_regression / TestApprovedOvertimeRollback
-        # 既有測試）。如未來需要更嚴限制，應改成「reject_of_approved 強制需要
-        # ACTIVITY_PAYMENT_APPROVE + force_reason ≥ 10 字」軟擋方案。
-
-        submitter_role = _get_submitter_role(leave.employee_id, session)
+        # 由 risk_tags="reject_of_approved" 在 audit_summary 顯式打標記。撤回 audit
+        # 2026-05-07 P1 hard-block flip-flop 提案：業主業務模型即是「approver 可改判」，
+        # 硬擋會破壞合法 reject_of_approved 路徑（test_leave_reject_approved_regression
+        # / TestApprovedOvertimeRollback 既有測試）。
         approver_role = current_user.get("role", "")
-        if not _check_approval_eligibility(
-            "leave", submitter_role, approver_role, session
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的請假申請",
-            )
+        submitter_role = assert_approver_eligible(
+            session,
+            doc_type="leave",
+            doc_label="請假",
+            submitter_employee_id=leave.employee_id,
+            approver_role=approver_role,
+        )
 
         # 核准/駁回狀態是否實質變動；True→False、False→True、None→True 都屬於
         # 會影響 SalaryRecord 扣款的轉換，必須觸發封存守衛與薪資重算。
@@ -1257,17 +1253,9 @@ def approve_leave(
         #   - mark_salary_stale 把該員工受影響月份預標 needs_recalc=True
         #     → commit 後即使 finalize 搶到鎖也會被 stale 守衛擋下(關 race window 2)
         if approval_changed:
-
-            _months_for_lock: set[tuple[int, int]] = set()
-            _cur = date(leave.start_date.year, leave.start_date.month, 1)
-            _end = date(leave.end_date.year, leave.end_date.month, 1)
-            while _cur <= _end:
-                _months_for_lock.add((_cur.year, _cur.month))
-                _cur = (
-                    date(_cur.year + 1, 1, 1)
-                    if _cur.month == 12
-                    else date(_cur.year, _cur.month + 1, 1)
-                )
+            _months_for_lock = collect_months_from_date_range(
+                leave.start_date, leave.end_date
+            )
             lock_and_premark_stale(session, leave.employee_id, _months_for_lock)
 
         warning = None
@@ -1664,8 +1652,7 @@ def batch_approve_leaves(
                     continue
 
                 # 防止自我核准
-                approver_eid = current_user.get("employee_id")
-                if approver_eid and leave.employee_id == approver_eid:
+                if is_self_approval(current_user, leave.employee_id):
                     failed.append({"id": leave_id, "reason": "不可自我核准"})
                     continue
 
