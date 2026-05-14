@@ -3,7 +3,9 @@
 GET /api/portal/search?q=xxx → 一次回 5 個 entity 各 ≤ 5 筆。
 
 權限：portal 路由級 `require_non_parent_role`（在 __init__.py aggregator 掛）。
-不寫 audit（純 read）。
+回傳含跨班/跨人 PII（家長對話 snippet、聯絡簿原文、監護人姓名/遮罩電話），
+依 codebase canon（commit 7a25d767/d998214e/b72a87bf 建立的「敏感 GET 必補
+READ audit」原則）必須顯式寫 audit；AuditMiddleware 只審計寫操作。
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import logging
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import or_
 
 from models.classroom import (
@@ -27,8 +29,9 @@ from models.database import (
     StudentContactBookEntry,
     get_session,
 )
-from models.event import Announcement
+from models.event import Announcement, AnnouncementRecipient
 from models.parent_message import ParentMessage, ParentMessageThread
+from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
 from utils.masking import mask_phone
 from utils.portfolio_access import is_unrestricted
@@ -58,6 +61,7 @@ def _make_snippet(*parts: Optional[str]) -> str:
 
 @router.get("/search")
 def portal_search(
+    request: Request,
     q: str = Query(..., min_length=0, max_length=100),
     current_user: dict = Depends(get_current_user),
 ):
@@ -281,13 +285,30 @@ def portal_search(
             ]
 
         # ── announcements ──────────────────────────────────────────
+        # 必須套 recipient 過濾，否則教師可用關鍵字探勘僅發給 HR/supervisor 的定向公告
+        # （AnnouncementRecipient 空代表全員可見；同 pattern 已用於
+        # api/portal/announcements.py:50-63）。
+        no_recipients_subq = (
+            ~session.query(AnnouncementRecipient)
+            .filter(AnnouncementRecipient.announcement_id == Announcement.id)
+            .exists()
+        )
+        targeted_to_me_subq = (
+            session.query(AnnouncementRecipient)
+            .filter(
+                AnnouncementRecipient.announcement_id == Announcement.id,
+                AnnouncementRecipient.employee_id == emp.id,
+            )
+            .exists()
+        )
         ann_rows = (
             session.query(Announcement)
             .filter(
+                no_recipients_subq | targeted_to_me_subq,
                 or_(
                     Announcement.title.ilike(pattern),
                     Announcement.content.ilike(pattern),
-                )
+                ),
             )
             .order_by(Announcement.created_at.desc())
             .limit(SECTION_LIMIT)
@@ -302,7 +323,7 @@ def portal_search(
             for a in ann_rows
         ]
 
-        return {
+        result = {
             "q": q,
             "students": student_results,
             "guardians": guardian_results,
@@ -310,5 +331,23 @@ def portal_search(
             "contact_book": contact_book_results,
             "announcements": announcement_results,
         }
+        # 顯式 audit：回傳跨班/跨人 PII，必留稽核軌跡（q 截 32 字避免 audit 表爆）
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="portal_search",
+            summary=f"教師端跨功能搜尋（q={q_stripped[:32]}）",
+            changes={
+                "q": q_stripped[:64],
+                "result_counts": {
+                    "students": len(student_results),
+                    "guardians": len(guardian_results),
+                    "messages": len(message_results),
+                    "contact_book": len(contact_book_results),
+                    "announcements": len(announcement_results),
+                },
+            },
+        )
+        return result
     finally:
         session.close()
