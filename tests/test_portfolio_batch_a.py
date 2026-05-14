@@ -314,6 +314,54 @@ class TestAttachments:
         assert r.status_code == 400
         assert "10MB" in r.json()["detail"]
 
+    def test_upload_rejects_decompression_bomb(self, app_with_db, storage_root):
+        """構造一張宣告 50000x50000 的 PNG（IDAT 壓縮後 < 5 MB 通過 magic bytes
+        + size 上限），確認 _generate_image_variants 主動拒收避免 worker OOM。
+        """
+        import struct
+        import zlib
+
+        client, factory, _ = app_with_db
+        with factory() as s:
+            seed = _seed_classrooms_and_students(s)
+            _add_user(s, "admin", "Pass1234")
+            from models.database import StudentObservation
+
+            obs = StudentObservation(
+                student_id=seed["st_a"].id,
+                observation_date=date.today(),
+                narrative="觀察",
+            )
+            s.add(obs)
+            s.commit()
+            obs_id = obs.id
+        _login(client, "admin", "Pass1234")
+
+        def _chunk(tag: bytes, data: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(data))
+                + tag
+                + data
+                + struct.pack(">I", zlib.crc32(tag + data))
+            )
+
+        signature = b"\x89PNG\r\n\x1a\n"
+        ihdr = _chunk(
+            b"IHDR",
+            struct.pack(">IIBBBBB", 50000, 50000, 8, 0, 0, 0, 0),  # 50000x50000 灰階
+        )
+        idat = _chunk(b"IDAT", zlib.compress(b"\x00" * 100))  # 真實內容極小
+        iend = _chunk(b"IEND", b"")
+        bomb = signature + ihdr + idat + iend
+
+        r = client.post(
+            "/api/attachments",
+            files={"file": ("bomb.png", bomb, "image/png")},
+            data={"owner_type": "observation", "owner_id": str(obs_id)},
+        )
+        assert r.status_code == 400
+        assert "影像尺寸" in r.json()["detail"]
+
     def test_soft_delete_and_download(self, app_with_db, storage_root):
         client, factory, _ = app_with_db
         with factory() as s:
