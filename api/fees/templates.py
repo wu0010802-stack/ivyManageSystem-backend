@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from models.base import session_scope
 from models.fees import FeeTemplate
 from utils.auth import require_staff_permission
+from utils.finance_guards import require_finance_approve
 from utils.permissions import Permission
 
 from ._helpers import FeeTemplateCreate, FeeTemplateUpdate
@@ -83,6 +84,9 @@ def create_fee_template(
     current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     _validate_template_breakdown(payload.amount, payload.breakdown)
+    require_finance_approve(
+        payload.amount, current_user, action_label="建立費用範本（單筆金額）"
+    )
     with session_scope() as session:
         existing = (
             session.query(FeeTemplate)
@@ -145,6 +149,17 @@ def update_fee_template(
             payload.breakdown if payload.breakdown is not None else t.breakdown
         )
         _validate_template_breakdown(new_amount, new_breakdown)
+        # 漲價守衛：amount 上調幅度超過金流門檻需 ACTIVITY_PAYMENT_APPROVE。
+        # Why: 範本 amount 上調會在下次 /generate 全班批量寫入；單筆 50K
+        # 收款門檻只在收款時觸發，不會在此時被檢查。
+        old_amount = int(t.amount or 0)
+        new_amount_int = int(new_amount or 0)
+        if new_amount_int > old_amount:
+            require_finance_approve(
+                new_amount_int - old_amount,
+                current_user,
+                action_label="調漲費用範本金額",
+            )
         if payload.name is not None:
             t.name = payload.name
         if payload.amount is not None:

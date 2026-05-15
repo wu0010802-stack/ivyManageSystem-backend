@@ -21,6 +21,7 @@ from models.classroom import (
 )
 from models.fees import FeeTemplate, StudentFeeRecord
 from utils.auth import require_staff_permission
+from utils.finance_guards import require_finance_approve
 from utils.permissions import Permission
 
 from ._helpers import (
@@ -165,7 +166,17 @@ def generate_from_templates(
                         )
                     existing_keys.add(key)
 
+        # 批量寫入前的金流守衛：Σ amount_due 大於門檻需 ACTIVITY_PAYMENT_APPROVE。
+        # Why: 單筆收款門檻只在收款時觸發；範本 amount × 全班學生 × 月份
+        # 可一次寫入數百萬，但每筆 amount_due < 50K 永遠不會觸發單筆守衛。
+        # dry_run 不寫入故不檢查，給操作者預估數字的機會。
         if not payload.dry_run and new_records:
+            total_amount_due = sum(int(r["amount_due"] or 0) for r in new_records)
+            require_finance_approve(
+                total_amount_due,
+                current_user,
+                action_label=f"批次產生費用記錄（{len(new_records)} 筆合計）",
+            )
             session.bulk_insert_mappings(StudentFeeRecord, new_records)
 
         request.state.audit_entity_id = f"{payload.school_year}-{payload.semester}"
