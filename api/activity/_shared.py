@@ -227,51 +227,15 @@ def _require_active_classroom(session, classroom_name: str):
 _ACTIVITY_TOKEN_DOMAIN = b"activity_query_token:v1"
 
 
-def _query_token_ttl_days() -> int:
-    """讀環境變數 ACTIVITY_QUERY_TOKEN_TTL_DAYS（預設 180 天）。
-
-    180 天涵蓋一個學期完整活動期 + 部分緩衝；業主可調為更短（例 90）強化。
-    invalid 值 fallback 預設值，不 raise（避免一個壞 env 卡住整個公開報名頁）。
-    """
-    raw = os.getenv("ACTIVITY_QUERY_TOKEN_TTL_DAYS", "180")
-    try:
-        v = int(raw)
-        return v if v > 0 else 180
-    except (TypeError, ValueError):
-        return 180
-
-
-def is_query_token_expired(issued_at) -> bool:
-    """判斷查詢碼是否已過期。
-
-    issued_at 為 None（舊資料未發 token / backfill 期）一律視為過期。
-    這樣攻擊者拿到舊 reg 的偽造 token 也無法用，必須走 /public/query 三欄比對。
-    """
-    if issued_at is None:
-        return True
-    ttl = timedelta(days=_query_token_ttl_days())
-    return datetime.now() - issued_at > ttl
-
-
-def _generate_query_token() -> str:
-    """產生公開查詢碼明文（32-char URL-safe）。
-
-    僅在 register 真實成功 / reject rotate 當下回給呼叫端。
-    silent-success path 用同函式產一個「假」token（不寫 DB），維持 response shape
-    一致避免 F-030 enumeration oracle。
-    """
-    return _secrets_module.token_urlsafe(24)
-
-
-def _hash_query_token(token: str) -> str:
-    """HMAC-SHA256(JWT_SECRET_KEY, domain || token) → hex digest（64 chars）。
-
-    domain salt（_ACTIVITY_TOKEN_DOMAIN）做用途隔離 — 即使 JWT_SECRET_KEY 被
-    其他模組借用，產生的 hash 不會撞號。
-    """
-    msg = _ACTIVITY_TOKEN_DOMAIN + token.encode("utf-8")
-    key = (JWT_SECRET_KEY or "").encode("utf-8")
-    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+# F2 第六階段：query token helper 抽到 services/activity_query_token.py。
+# 本檔 re-export 維持既有 import surface（api/activity/public.py / registrations.py
+# 等模組仍可 `from api.activity._shared import _hash_query_token` 取得）。
+from services.activity_query_token import (  # noqa: E402, F401
+    _query_token_ttl_days,
+    is_query_token_expired,
+    _generate_query_token,
+    _hash_query_token,
+)
 
 
 def _build_public_query_payload(session, reg) -> dict:
