@@ -22,7 +22,8 @@ import models.base as base_module
 from api.auth import router as auth_router, _account_failures, _ip_attempts
 import api.salary as salary_module
 from api.salary import router as salary_router, _recalculate_salary_record_totals
-from models.database import Base, Employee, User, SalaryRecord
+from models.database import Base, Employee, User, SalaryRecord, AuditLog
+from utils.audit import AuditMiddleware
 from utils.auth import hash_password
 
 
@@ -49,6 +50,8 @@ def salary_client(tmp_path):
     salary_module.init_salary_services(fake_salary_engine, fake_insurance_service)
 
     app = FastAPI()
+    # T7: 掛 AuditMiddleware 才能驗證 manual_adjust 是否真的寫 AuditLog
+    app.add_middleware(AuditMiddleware)
     app.include_router(auth_router)
     app.include_router(salary_router)
 
@@ -313,3 +316,41 @@ class TestRecalculatePreservesHourlyTotal:
             rec["gross_salary"] == 24000
         ), f"時薪制 gross_salary 不應被歸零，得到 {rec['gross_salary']}"
         assert rec["net_salary"] == 23500
+
+    # ------------------------------------------------------------------
+    # T7：AuditLog 寫入斷言（manual_adjust 必須留稽核軌跡）
+    # ------------------------------------------------------------------
+    def test_manual_adjust_writes_audit_row(self, salary_client):
+        """每次手動調整都必須寫一筆 AuditLog，summary 含 record_id、employee_id、
+        年月與變更欄位描述。Regression: 早期 audit_summary 用通用「修改薪資」
+        無法事後追責。"""
+        client, sf = salary_client
+        record_id = _seed_with_meeting_absence(sf)
+        _login(client)
+
+        res = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={
+                "adjustment_reason": "audit 斷言測試用",
+                "meeting_absence_deduction": 0,
+            },
+        )
+        assert res.status_code == 200
+
+        with sf() as session:
+            rows = (
+                session.query(AuditLog)
+                .filter(
+                    AuditLog.entity_id == str(record_id),
+                    AuditLog.summary.like("%手動調整薪資%"),
+                )
+                .order_by(AuditLog.id.desc())
+                .all()
+            )
+            assert (
+                rows
+            ), "manual_adjust 未寫入任何 AuditLog（過濾 entity_id + 手動調整薪資 summary）"
+            summary = rows[0].summary or ""
+            assert f"#{record_id}" in summary, f"summary 缺 record_id：{summary!r}"
+            # 至少含一個欄位變動描述
+            assert "→" in summary, f"summary 缺欄位變動格式：{summary!r}"
