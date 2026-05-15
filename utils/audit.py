@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from models.database import get_session, AuditLog
+from utils.request_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +379,7 @@ def write_audit_in_session(
     呼叫此 helper 後會設置 request.state.audit_skip = True，避免 middleware 二次寫入。
     """
     user_id, username = _extract_user_from_header(request)
-    ip = request.client.host if request.client else None
+    ip = get_client_ip(request)
 
     changes_json = None
     if changes is not None:
@@ -427,7 +428,7 @@ def write_explicit_audit(
     """
     try:
         user_id, username = _extract_user_from_header(request)
-        ip = request.client.host if request.client else None
+        ip = get_client_ip(request)
         changes_json = None
         if changes is not None:
             try:
@@ -486,7 +487,7 @@ def write_login_audit(
     Refs: spec 2026-05-11-audit-coverage-gap-design §3.2 / §3.3。
     """
     try:
-        ip = request.client.host if request.client else None
+        ip = get_client_ip(request)
         changes: dict = {}
         if extras:
             changes.update(extras)
@@ -559,7 +560,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         # 資安 P1 (2026-05-07)：401/403 dedup 防灌爆。同 (ip, method, path) 60s 內只記一筆
         if is_auth_block:
-            ip_for_dedup = request.client.host if request.client else None
+            ip_for_dedup = get_client_ip(request)
             if not _should_audit_block(ip_for_dedup, method, path):
                 return response
 
@@ -580,7 +581,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 summary = getattr(
                     request.state, "audit_summary", None
                 ) or _build_summary(method, path, entity_type)
-            ip = request.client.host if request.client else None
+            ip = get_client_ip(request)
 
             changes_raw = getattr(request.state, "audit_changes", None)
             changes_json = None

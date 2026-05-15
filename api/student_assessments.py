@@ -10,7 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
-from models.database import session_scope, Student, StudentAssessment, Classroom
+from models.database import (
+    session_scope,
+    Student,
+    StudentAssessment,
+    StudentIncident,
+    Classroom,
+)
 from utils.auth import require_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
@@ -35,6 +41,7 @@ class AssessmentCreate(BaseModel):
     content: str
     suggestions: Optional[str] = None
     assessment_date: date
+    related_incident_id: Optional[int] = None
 
 
 class AssessmentUpdate(BaseModel):
@@ -45,9 +52,32 @@ class AssessmentUpdate(BaseModel):
     content: Optional[str] = None
     suggestions: Optional[str] = None
     assessment_date: Optional[date] = None
+    related_incident_id: Optional[int] = None
 
 
 # ============ Helpers ============
+
+
+def _validate_related_incident(
+    session, student_id: int, related_incident_id: Optional[int]
+) -> Optional[StudentIncident]:
+    """驗證 related_incident_id 確實屬於同一位學生；不存在或他生 → 422。
+
+    回傳 incident 物件（用於 serializer 帶 summary），None 表示未指定。
+    """
+    if related_incident_id is None:
+        return None
+    incident = (
+        session.query(StudentIncident)
+        .filter(StudentIncident.id == related_incident_id)
+        .first()
+    )
+    if not incident or incident.student_id != student_id:
+        raise HTTPException(
+            status_code=422,
+            detail="關聯事件不存在或不屬於同一位學生",
+        )
+    return incident
 
 
 def _require_classroom_access(session, current_user: dict, classroom_id: int) -> None:
@@ -134,10 +164,26 @@ async def list_assessments(
             .all()
         )
 
+        incident_ids = [a.related_incident_id for a, _ in rows if a.related_incident_id]
+        incidents_map = {}
+        if incident_ids:
+            incidents_map = {
+                inc.id: inc
+                for inc in session.query(StudentIncident)
+                .filter(StudentIncident.id.in_(incident_ids))
+                .all()
+            }
+
         return {
             "total": total,
             "items": [
-                assessment_to_dict(a, s, include_updated_at=True) for a, s in rows
+                assessment_to_dict(
+                    a,
+                    s,
+                    include_updated_at=True,
+                    related_incident=incidents_map.get(a.related_incident_id),
+                )
+                for a, s in rows
             ],
         }
 
@@ -164,6 +210,10 @@ async def create_assessment(
             if student.classroom_id:
                 _require_classroom_access(session, current_user, student.classroom_id)
 
+            related_incident = _validate_related_incident(
+                session, payload.student_id, payload.related_incident_id
+            )
+
             assessment = StudentAssessment(
                 student_id=payload.student_id,
                 semester=payload.semester,
@@ -174,6 +224,7 @@ async def create_assessment(
                 suggestions=payload.suggestions,
                 assessment_date=payload.assessment_date,
                 recorded_by=current_user.get("user_id"),
+                related_incident_id=payload.related_incident_id,
             )
             session.add(assessment)
             session.flush()
@@ -186,7 +237,12 @@ async def create_assessment(
                 payload.assessment_type,
                 current_user.get("username"),
             )
-            return assessment_to_dict(assessment, student, include_updated_at=True)
+            return assessment_to_dict(
+                assessment,
+                student,
+                include_updated_at=True,
+                related_incident=related_incident,
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -224,7 +280,24 @@ async def update_assessment(
                 rating=payload.rating,
             )
 
-            for field, value in payload.model_dump(exclude_unset=True).items():
+            update_fields = payload.model_dump(exclude_unset=True)
+
+            # 處理 related_incident_id：顯式為 None 代表解除關聯
+            related_incident = None
+            if "related_incident_id" in update_fields:
+                new_id = update_fields.pop("related_incident_id")
+                related_incident = _validate_related_incident(
+                    session, assessment.student_id, new_id
+                )
+                assessment.related_incident_id = new_id
+            elif assessment.related_incident_id:
+                related_incident = (
+                    session.query(StudentIncident)
+                    .filter(StudentIncident.id == assessment.related_incident_id)
+                    .first()
+                )
+
+            for field, value in update_fields.items():
                 if value is not None:
                     setattr(assessment, field, value)
 
@@ -237,7 +310,12 @@ async def update_assessment(
                 assessment_id,
                 current_user.get("username"),
             )
-            return assessment_to_dict(assessment, student, include_updated_at=True)
+            return assessment_to_dict(
+                assessment,
+                student,
+                include_updated_at=True,
+                related_incident=related_incident,
+            )
     except HTTPException:
         raise
     except Exception as e:

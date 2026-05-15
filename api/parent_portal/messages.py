@@ -548,6 +548,18 @@ def recall_message(
         )
         if not msg:
             raise HTTPException(status_code=404, detail="訊息不存在")
+        # S6: 先驗 thread 參與權，再驗 sender 與時間視窗。
+        # Why: 原本只看 can_recall(sender + 30 分鐘)，解綁後家長仍可竄改舊
+        # thread 訊息，因 sender_user_id 仍然是該家長 user_id，但 thread
+        # 已不屬於該家長。新增 assert_thread_participant 把這條路堵住。
+        thread = (
+            session.query(ParentMessageThread)
+            .filter(ParentMessageThread.id == msg.thread_id)
+            .first()
+        )
+        if not thread:
+            raise HTTPException(status_code=404, detail="thread 不存在")
+        assert_thread_participant(thread, user_id=user_id, role="parent")
         if not can_recall(msg, user_id=user_id):
             raise HTTPException(status_code=403, detail="只有 sender 30 分鐘內可撤回")
         msg.deleted_at = datetime.now()

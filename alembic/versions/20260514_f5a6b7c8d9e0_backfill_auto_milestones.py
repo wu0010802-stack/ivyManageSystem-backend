@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 def upgrade() -> None:
+    """M1 改造：原 N+1 SELECT attendance（每位學生一次）改為單發批撈 + group by。
+    Production 1000+ 學生 × 數年資料原本可能跑數十分鐘並鎖 student_attendances。
+    本版預期 < 1 分鐘完成，且每 100 學生 commit 一次，支援中斷後重跑（ON CONFLICT
+    DO NOTHING 保證冪等）。
+    """
     # 確保可以 import services.milestone_detector
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     if repo_root not in sys.path:
@@ -61,6 +66,21 @@ def upgrade() -> None:
             self.graduation_date = row[3]
             self.lifecycle_status = row[4]
 
+    # M1 改造：一次撈完所有 lifecycle in ('active', 'graduated') 學生的考勤紀錄，
+    # group by student_id 取代原本每位學生獨立 SELECT 的 N+1。
+    att_by_student: dict[int, list[dict]] = {}
+    if student_rows:
+        all_att = conn.execute(text("""
+                SELECT sa.student_id, sa.date, sa.status
+                FROM student_attendances sa
+                JOIN students s ON s.id = sa.student_id
+                WHERE s.lifecycle_status IN ('active', 'graduated')
+                ORDER BY sa.student_id, sa.date
+            """)).fetchall()
+        for sid, d, status in all_att:
+            att_by_student.setdefault(sid, []).append({"date": d, "status": status})
+
+    BATCH_COMMIT_SIZE = 100
     total_attempted = 0
     total_inserted = 0
     for i, row in enumerate(student_rows, 1):
@@ -70,14 +90,7 @@ def upgrade() -> None:
         payloads.extend(detect_birthdays(s, today))
         payloads.extend(detect_graduation(s))
 
-        att_rows = conn.execute(
-            text(
-                "SELECT date, status FROM student_attendances "
-                "WHERE student_id = :sid"
-            ),
-            {"sid": s.id},
-        ).fetchall()
-        att_records = [{"date": a[0], "status": a[1]} for a in att_rows]
+        att_records = att_by_student.get(s.id, [])
         payloads.extend(detect_perfect_attendance_months(s.id, att_records, today))
 
         for p in payloads:
@@ -86,9 +99,17 @@ def upgrade() -> None:
             if inserted:
                 total_inserted += 1
 
-        if i % 100 == 0:
-            logger.info("backfill auto milestones: 已處理 %d 學生", i)
+        # 每 BATCH_COMMIT_SIZE 學生 commit 一次：分散長交易，中斷後可重跑
+        # （INSERT ... ON CONFLICT DO NOTHING 保證冪等）。
+        if i % BATCH_COMMIT_SIZE == 0:
+            conn.commit()
+            logger.info(
+                "backfill auto milestones: 已處理 %d 學生（小計 inserted=%d）",
+                i,
+                total_inserted,
+            )
 
+    conn.commit()
     logger.info(
         "backfill auto milestones done: 共嘗試 %d 筆，實際插入 %d 筆",
         total_attempted,

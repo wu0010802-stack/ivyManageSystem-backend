@@ -27,6 +27,7 @@ from utils.portfolio_access import (
     filter_student_ids_by_access,
     is_unrestricted,
 )
+from services.student_leave_service import REMARK_PREFIX
 from api.exports import (
     SafeWorksheet,
     _sanitize_excel_value,
@@ -44,6 +45,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["student-attendance"])
 
 VALID_STATUSES = {"出席", "缺席", "病假", "事假", "遲到"}
+
+
+def _extract_source_leave_id(remark: Optional[str]) -> Optional[int]:
+    """從 attendance.remark 解析家長申請的 leave id。
+
+    請假核准會以 `家長申請#<id>` 寫入 remark（services/student_leave_service.py
+    REMARK_PREFIX）；非該前綴或解析失敗時回傳 None，使前端能反查請假來源。
+    """
+    if not remark:
+        return None
+    text = remark.strip()
+    if not text.startswith(REMARK_PREFIX):
+        return None
+    try:
+        return int(text[len(REMARK_PREFIX) :])
+    except (ValueError, TypeError):
+        return None
+
 
 # ============ Export Helpers ============
 
@@ -403,6 +422,7 @@ async def get_attendance_by_student(
                     "date": r.date.isoformat() if r.date else None,
                     "status": r.status,
                     "remark": r.remark,
+                    "source_leave_id": _extract_source_leave_id(r.remark),
                 }
             )
             if r.status in counts:

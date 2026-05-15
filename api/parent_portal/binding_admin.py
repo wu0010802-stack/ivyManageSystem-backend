@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from models.database import AuditLog, Guardian, GuardianBindingCode, get_session
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.request_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,14 @@ router = APIRouter(prefix="/guardians", tags=["parent-bind-admin"])
 
 
 _CODE_TTL_HOURS = 24
-_CODE_LENGTH = 8  # 8 位英數，~47 bits entropy；搭 sha256 + 一次性 + rate limit 已夠
+# S4: 8 → 12 位英數，熵度從 ~40 bits 提高到 ~60 bits（32^12）。
+# 搭 sha256 + 一次性 + IP rate limit + per-guardian active cap 後遠超暴力可行範圍。
+_CODE_LENGTH = 12
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 去掉 I/O/0/1 防誤讀
+# S4: 單一 guardian 同時 active 上限；超過時拒簽避免「行政員批量先發、攻擊者
+# 暴力試所有 active code 撞 hash」的情境（即便 sha256 已 collision-resistant，
+# 仍降低成功通過 atomic UPDATE 的攻擊面）。
+_MAX_ACTIVE_CODES_PER_GUARDIAN = 3
 
 
 def _generate_plain_code() -> str:
@@ -59,6 +66,26 @@ def create_binding_code(
         if guardian is None:
             raise HTTPException(status_code=404, detail="找不到監護人")
 
+        # S4 per-guardian active cap：避免單一 guardian 累積過多 unused active code。
+        now = datetime.now()
+        active_count = (
+            session.query(GuardianBindingCode)
+            .filter(
+                GuardianBindingCode.guardian_id == guardian.id,
+                GuardianBindingCode.used_at.is_(None),
+                GuardianBindingCode.expires_at > now,
+            )
+            .count()
+        )
+        if active_count >= _MAX_ACTIVE_CODES_PER_GUARDIAN:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"此監護人已有 {active_count} 個未使用的綁定碼，"
+                    f"請先讓家長使用既有碼或等失效後再簽發新碼"
+                ),
+            )
+
         plain_code = _generate_plain_code()
         code_hash = _hash_code(plain_code)
         expires_at = datetime.now() + timedelta(hours=_CODE_TTL_HOURS)
@@ -71,7 +98,7 @@ def create_binding_code(
         )
         session.add(binding)
 
-        ip = request.client.host if request.client else None
+        ip = get_client_ip(request)
         session.add(
             AuditLog(
                 user_id=current_user["user_id"],

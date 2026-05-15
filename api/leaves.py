@@ -330,81 +330,12 @@ def _check_substitute_guard(leave, *, allow_without_substitute: bool = False) ->
         )
 
 
-def _find_overlapping_leave(
-    session,
-    employee_id: int,
-    start_date: date,
-    end_date: date,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    exclude_id: int = None,
-    include_pending: bool = False,
-) -> "LeaveRecord | None":
-    """檢查員工在指定日期區間（含時段）是否已有重疊假單。
-
-    預設只檢查已核准假單；`include_pending=True` 時，待審假單也視為衝突。
-
-    時段重疊規則：
-    - 若任一方跨多天 → 純日期重疊即視為衝突
-    - 若雙方都是同一天的單日假單，且雙方都提供了 start_time/end_time
-      → 做時間區間精確比對，不重疊則放行
-      （不重疊條件：new_end <= exist_start 或 exist_end <= new_start）
-    - 其餘情況（缺乏時間資訊）→ 同日即視為衝突
-    """
-    q = session.query(LeaveRecord).filter(
-        LeaveRecord.employee_id == employee_id,
-        LeaveRecord.start_date <= end_date,
-        LeaveRecord.end_date >= start_date,
-    )
-    if include_pending:
-        q = q.filter(
-            or_(LeaveRecord.is_approved == True, LeaveRecord.is_approved.is_(None))
-        )
-    else:
-        q = q.filter(LeaveRecord.is_approved == True)
-    if exclude_id is not None:
-        q = q.filter(LeaveRecord.id != exclude_id)
-
-    is_new_single_day = start_date == end_date
-
-    # 只有新假單是單日且提供時間資訊時，才能在 DB 層排除確定不重疊的單日記錄
-    # HH:MM 字串字典序與時間順序一致，可直接在 SQL 比較
-    if is_new_single_day and start_time and end_time:
-        q = q.filter(
-            ~and_(
-                LeaveRecord.start_date == LeaveRecord.end_date,
-                LeaveRecord.start_time.isnot(None),
-                LeaveRecord.end_time.isnot(None),
-                or_(
-                    LeaveRecord.end_time <= start_time,
-                    LeaveRecord.start_time >= end_time,
-                ),
-            )
-        )
-
-    return q.first()
-
-
-def _check_overlap(
-    session,
-    employee_id: int,
-    start_date: date,
-    end_date: date,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    exclude_id: int = None,
-) -> "LeaveRecord | None":
-    """檢查員工在指定日期區間（含時段）是否已有「已核准」的請假記錄。"""
-    return _find_overlapping_leave(
-        session,
-        employee_id,
-        start_date,
-        end_date,
-        start_time=start_time,
-        end_time=end_time,
-        exclude_id=exclude_id,
-        include_pending=False,
-    )
+# F1 第一波：_find_overlapping_leave / _check_overlap 抽到 services/leave_overlap_service.py
+# 維持本檔既有 import surface（api/portal/leaves.py 仍 `from api.leaves import _check_overlap`）。
+from services.leave_overlap_service import (
+    find_overlapping_leave as _find_overlapping_leave,
+    find_approved_overlapping_leave as _check_overlap,
+)
 
 
 def _check_employee_has_conflicting_overtime(
@@ -2034,26 +1965,7 @@ def batch_approve_leaves(
     return {"succeeded": succeeded, "failed": failed}
 
 
-_LV_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
-_LV_HEADER_FILL = PatternFill(
-    start_color="4472C4", end_color="4472C4", fill_type="solid"
-)
-_LV_THIN_BORDER = Border(
-    left=Side(style="thin"),
-    right=Side(style="thin"),
-    top=Side(style="thin"),
-    bottom=Side(style="thin"),
-)
-_LV_CENTER_ALIGN = Alignment(horizontal="center")
-
-
-def _lv_write_header(ws, row, headers):
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=row, column=col, value=h)
-        cell.font = _LV_HEADER_FONT
-        cell.fill = _LV_HEADER_FILL
-        cell.border = _LV_THIN_BORDER
-        cell.alignment = _LV_CENTER_ALIGN
+from utils.excel_writer import write_header_row as _lv_write_header  # noqa: E402
 
 
 @router.get("/leaves/import-template")

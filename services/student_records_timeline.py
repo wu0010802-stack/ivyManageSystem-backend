@@ -189,6 +189,7 @@ def _build_assessment_item(asm: StudentAssessment) -> dict[str, Any]:
             "assessment_date": (
                 asm.assessment_date.isoformat() if asm.assessment_date else None
             ),
+            "related_incident_id": asm.related_incident_id,
         },
     }
 

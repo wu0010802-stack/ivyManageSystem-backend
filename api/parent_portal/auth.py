@@ -54,6 +54,7 @@ from utils.auth import (
     require_parent_role,
     JWT_EXPIRE_MINUTES,
 )
+from utils.request_ip import get_client_ip
 from utils.cookie import (
     clear_access_token_cookie,
     get_cookie_samesite,
@@ -422,7 +423,7 @@ def liff_login(
     response: Response,
 ):
     """LIFF 登入。家長前端先取得 id_token 再 POST。"""
-    ip = request.client.host if request.client else "unknown"
+    ip = get_client_ip(request) or "unknown"
     _check_ip_rate_limit(ip)
 
     service = _get_line_login_service()
@@ -448,7 +449,7 @@ def liff_login(
                 response,
                 user_id=user.id,
                 user_agent=request.headers.get("user-agent"),
-                ip=request.client.host if request.client else None,
+                ip=get_client_ip(request),
             )
             user.last_login = _now()
             display_name = resolve_parent_display_name(session, user)
@@ -547,7 +548,7 @@ def bind_first_child(
             response,
             user_id=user.id,
             user_agent=request.headers.get("user-agent"),
-            ip=request.client.host if request.client else None,
+            ip=get_client_ip(request),
         )
         session.commit()
         session.refresh(user)
@@ -746,7 +747,7 @@ def parent_refresh(request: Request, response: Response):
             family_id=row.family_id,
             parent_token_id=row.id,
             user_agent=request.headers.get("user-agent"),
-            ip=request.client.host if request.client else None,
+            ip=get_client_ip(request),
         )
         user.last_login = _now()
         _issue_access_token(response, user)

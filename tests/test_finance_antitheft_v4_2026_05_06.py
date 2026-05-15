@@ -63,8 +63,10 @@ def app_client(tmp_path):
     _account_failures.clear()
 
     # config update_attendance_policy 會呼叫 _salary_engine.load_config_from_db()
-    # 用 mock 注入,避免測試啟動真正的 SalaryEngine
-    config_module.init_config_services(salary_engine=MagicMock())
+    # 用 mock 注入,避免測試啟動真正的 SalaryEngine;mock 暴露給測試以便斷言
+    # cache reload 真的被觸發(T2 回歸:之前僅 mock 但不檢查互動,reload 漏接無感知)
+    salary_engine_mock = MagicMock()
+    config_module.init_config_services(salary_engine=salary_engine_mock)
 
     app = FastAPI()
     app.include_router(auth_router)
@@ -73,7 +75,7 @@ def app_client(tmp_path):
     app.include_router(portal_salary_router, prefix="/api/portal")
 
     with TestClient(app) as client:
-        yield client, session_factory
+        yield client, session_factory, salary_engine_mock
 
     _ip_attempts.clear()
     _account_failures.clear()
@@ -172,7 +174,7 @@ class TestPortalSalaryDraftLeak:
 
     def test_draft_salary_does_not_expose_amounts(self, app_client):
         """未封存薪資 → salary=None, salary_status='draft'。"""
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             emp = self._seed_self_employee_user(s)
             s.add(
@@ -202,7 +204,7 @@ class TestPortalSalaryDraftLeak:
 
     def test_recalc_pending_salary_does_not_expose_amounts(self, app_client):
         """已封存但 needs_recalc=True → 視為待重算,不顯示金額。"""
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             emp = self._seed_self_employee_user(s)
             s.add(
@@ -228,7 +230,7 @@ class TestPortalSalaryDraftLeak:
 
     def test_finalized_salary_returns_full_details(self, app_client):
         """已封存且非 stale → 完整薪資細節。"""
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             emp = self._seed_self_employee_user(s)
             s.add(
@@ -259,7 +261,7 @@ class TestPortalSalaryDraftLeak:
 
     def test_no_record_returns_none_status(self, app_client):
         """沒有 SalaryRecord → salary=None, salary_status='none'。"""
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             self._seed_self_employee_user(s)
             s.commit()
@@ -282,7 +284,7 @@ class TestPortalSalaryDraftLeak:
 class TestFestivalBonusMonthsCap:
     def test_above_cap_rejected(self, app_client):
         """festival_bonus_months > 24 → 422。"""
-        client, session_factory = app_client
+        client, session_factory, salary_engine_mock = app_client
         with session_factory() as s:
             _create_user(
                 session=s,
@@ -293,6 +295,9 @@ class TestFestivalBonusMonthsCap:
             s.commit()
 
         assert _login(client, "cfg_admin").status_code == 200
+        # 422 路徑下 reload 不應被觸發,先紀錄基線
+        baseline_reload_count = salary_engine_mock.load_config_from_db.call_count
+
         res = client.put(
             "/api/config/attendance-policy",
             json={"festival_bonus_months": 25},
@@ -302,10 +307,14 @@ class TestFestivalBonusMonthsCap:
         # 設定不應被建立(無新版 AttendancePolicy)
         with session_factory() as s:
             assert s.query(AttendancePolicy).count() == 0
+        # T2: 422 fail-path 不應誤觸 cache reload
+        assert (
+            salary_engine_mock.load_config_from_db.call_count == baseline_reload_count
+        ), "422 失敗路徑不應觸發 _salary_engine.load_config_from_db()"
 
     def test_at_cap_accepted(self, app_client):
-        """festival_bonus_months = 24 → 200。"""
-        client, session_factory = app_client
+        """festival_bonus_months = 24 → 200,且 cache reload 被觸發。"""
+        client, session_factory, salary_engine_mock = app_client
         with session_factory() as s:
             _create_user(
                 session=s,
@@ -316,15 +325,21 @@ class TestFestivalBonusMonthsCap:
             s.commit()
 
         assert _login(client, "cfg_admin").status_code == 200
+        baseline_reload_count = salary_engine_mock.load_config_from_db.call_count
+
         res = client.put(
             "/api/config/attendance-policy",
             json={"festival_bonus_months": 24},
         )
         assert res.status_code == 200, res.text
+        # T2: 成功路徑必觸發 SalaryEngine 重載新版設定,避免引擎讀到 stale 快照
+        assert (
+            salary_engine_mock.load_config_from_db.call_count > baseline_reload_count
+        ), "成功更新 attendance-policy 後 _salary_engine.load_config_from_db() 必須被呼叫"
 
     def test_zero_still_accepted(self, app_client):
         """0 仍合法(下限 ge=0 不變)。"""
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             _create_user(
                 session=s,
@@ -352,7 +367,7 @@ class TestFeePaymentLargeApproval:
         """delta = 20,000 (< 50,000) 無 ACTIVITY_PAYMENT_APPROVE → 200。
         確保日常月費收款流程不被簽核擋住。
         """
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             _create_user(
                 session=s,
@@ -382,7 +397,7 @@ class TestFeePaymentLargeApproval:
         """delta = 60,000 (> 50,000) 無 ACTIVITY_PAYMENT_APPROVE → 403。
         DB 不應被改動。
         """
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             _create_user(
                 session=s,
@@ -416,7 +431,7 @@ class TestFeePaymentLargeApproval:
 
     def test_large_delta_passes_with_approver(self, app_client):
         """delta = 60,000 持 ACTIVITY_PAYMENT_APPROVE → 200。"""
-        client, session_factory = app_client
+        client, session_factory, _salary_engine_mock = app_client
         with session_factory() as s:
             _create_user(
                 session=s,

@@ -21,9 +21,11 @@ from models.classroom import (
 )
 from models.fees import FeeTemplate, StudentFeeRecord
 from utils.auth import require_staff_permission
+from utils.finance_guards import require_finance_approve
 from utils.permissions import Permission
 
 from ._helpers import (
+    FEE_PAYMENT_APPROVAL_THRESHOLD,
     GenerateFromTemplatesRequest,
     _invalidate_finance_summary_cache,
 )
@@ -165,13 +167,16 @@ def generate_from_templates(
                         )
                     existing_keys.add(key)
 
-        if not payload.dry_run and new_records:
-            session.bulk_insert_mappings(StudentFeeRecord, new_records)
+        # 不論 dry_run 都先算 Σ amount_due,讓事後稽核能對照預估與實寫金額。
+        total_amount_due = sum(int(r["amount_due"] or 0) for r in new_records)
 
+        # 先寫 audit context（含 total_amount_due），讓守衛擋下時 AuditMiddleware
+        # 仍能記錄「誰想批次寫入多少錢但被擋」。
         request.state.audit_entity_id = f"{payload.school_year}-{payload.semester}"
         request.state.audit_summary = (
             f"批次產生費用({','.join(payload.fee_types)}): "
-            f"created={created} skipped={skipped} dry_run={payload.dry_run}"
+            f"created={created} skipped={skipped} "
+            f"total=NT${total_amount_due:,} dry_run={payload.dry_run}"
         )
         request.state.audit_changes = {
             "action": "fee_generate_from_templates",
@@ -181,7 +186,21 @@ def generate_from_templates(
             "dry_run": payload.dry_run,
             "created": created,
             "skipped": skipped,
+            "total_amount_due": total_amount_due,
         }
+
+        # 批量寫入前的金流守衛：Σ amount_due 大於門檻需 ACTIVITY_PAYMENT_APPROVE。
+        # Why: 單筆收款門檻只在收款時觸發；範本 amount × 全班學生 × 月份
+        # 可一次寫入數百萬，但每筆 amount_due < 50K 永遠不會觸發單筆守衛。
+        # dry_run 不寫入故不檢查，給操作者預估數字的機會。
+        if not payload.dry_run and new_records:
+            require_finance_approve(
+                total_amount_due,
+                current_user,
+                threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
+                action_label=f"批次產生費用記錄（{len(new_records)} 筆合計）",
+            )
+            session.bulk_insert_mappings(StudentFeeRecord, new_records)
 
         if not payload.dry_run:
             _invalidate_finance_summary_cache()

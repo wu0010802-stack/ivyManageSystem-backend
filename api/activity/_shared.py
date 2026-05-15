@@ -42,12 +42,9 @@ from utils.permissions import Permission
 logger = logging.getLogger(__name__)
 
 
-def _invalidate_finance_summary_cache() -> None:
-    """金流寫入後失效 /finance-summary 快取（TTL 30 分，否則看到舊值）。"""
-    try:
-        report_cache_service.invalidate_category(None, "reports_finance_summary")
-    except Exception:
-        logger.warning("invalidate finance_summary cache failed", exc_info=True)
+from utils.finance_cache import (
+    invalidate_finance_summary_cache as _invalidate_finance_summary_cache,
+)
 
 
 def _lock_registration(session, registration_id: int):
@@ -64,129 +61,39 @@ def _lock_registration(session, registration_id: int):
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
-# 金額上限統一常數（同步 pos.py 的 _MAX_ITEM_AMOUNT）
-MAX_PAYMENT_AMOUNT = 999_999
+# F2-aux：金額 / 字數 / 天數常數抽到 utils/activity_constants.py 單一來源
+from utils.activity_constants import (  # noqa: E402
+    MAX_PAYMENT_AMOUNT,
+    MIN_REFUND_REASON_LENGTH,
+    MIN_VOID_REASON_LENGTH,
+    PAYMENT_DATE_BACK_LIMIT_DAYS,
+)
 
 # 系統補齊標記：用於 batch/update_payment 與退課自動沖帳。
 # 目的：避免把「系統自動生成的繳/退費紀錄」誤算入 POS 日結的「現金」欄。
 SYSTEM_RECONCILE_METHOD = "系統補齊"
 
-# payment_date 合理範圍：最多回補 30 天、不得指定未來。
-# POS checkout 與後台 /registrations/{id}/payments 共用，避免管理員透過後者繞過 POS 管制。
-PAYMENT_DATE_BACK_LIMIT_DAYS = 30
+# F2 第五階段：5 個金流簽核守衛抽到 services/activity_payment_guards.py。
+# 閾值常數同步抽到 utils/activity_constants.py，本檔 re-export 維持 callers 不需動。
+from utils.activity_constants import (  # noqa: E402, F401
+    ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD,
+    REFUND_APPROVAL_THRESHOLD,
+)
+from services.activity_payment_guards import (  # noqa: E402, F401
+    has_payment_approve,
+    require_refund_reason,
+    require_approve_for_high_price,
+    require_approve_for_large_refund,
+    require_approve_for_cumulative_refund,
+)
 
-# 退費必填原因最短字數（避免「客人退」等敷衍；15 字強迫填寫具體事由）
-MIN_REFUND_REASON_LENGTH = 15
-
-# 退費金額閾值：超過此金額的單筆退費必須具備 ACTIVITY_PAYMENT_APPROVE 權限
-# Why: 小額退費允許一線櫃檯彈性處理；大額退費強制雙簽以防內部舞弊
-REFUND_APPROVAL_THRESHOLD = 1000
-
-# 課程/用品單品價格高額閾值：超過此金額的設定/異動必須具備 ACTIVITY_PAYMENT_APPROVE。
-# Why: 課程價格會被寫入 price_snapshot 進入應繳總額，搭配「補齊收入」路徑可建立異常高額
-# 應收。一般幼稚園單品價格遠低於 30,000，超過視為設定錯誤或舞弊嘗試。
-ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD = 30_000
-
-# 軟刪除 payment 原因最短字數
-MIN_VOID_REASON_LENGTH = 5
-
-
-def has_payment_approve(current_user: dict) -> bool:
-    """檢查使用者是否具備 ACTIVITY_PAYMENT_APPROVE 權限（老闆/高階簽核）。
-
-    用於：大額退費審批、DELETE payment 軟刪審批。避免只有 ACTIVITY_WRITE 的一線員工
-    直接執行敏感金流動作。
-    """
-    from utils.permissions import has_permission
-
-    perms = current_user.get("permissions", 0)
-    return has_permission(perms, Permission.ACTIVITY_PAYMENT_APPROVE)
-
-
-def require_refund_reason(notes: Optional[str]) -> str:
-    """驗證退費 notes（原因）必填且 ≥ MIN_REFUND_REASON_LENGTH 字。
-
-    供 POS refund / add_registration_payment(type=refund) 共用。
-    """
-    cleaned = (notes or "").strip()
-    if len(cleaned) < MIN_REFUND_REASON_LENGTH:
-        raise HTTPException(
-            status_code=400,
-            detail=f"退費必須填寫原因（至少 {MIN_REFUND_REASON_LENGTH} 個字）",
-        )
-    return cleaned
-
-
-def require_approve_for_high_price(
-    amount: int, current_user: dict, *, label: str = "單品價格"
-) -> None:
-    """若單品價格超過 ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD，檢查 ACTIVITY_PAYMENT_APPROVE。
-
-    用於 Course/Supply create/update：避免 ACTIVITY_WRITE 一線權限可任意設定極端
-    高價，搭配補齊收入路徑放大舞弊金額。
-    """
-    if amount > ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD and not has_payment_approve(
-        current_user
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"{label} NT${amount:,} 超過 NT${ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD:,} 審批閾值，"
-                f"需由具備『才藝課收款簽核』權限者執行"
-            ),
-        )
-
-
-def require_approve_for_large_refund(
-    amount: int, current_user: dict, *, label: str = "單筆退費金額"
-) -> None:
-    """若退費金額超過 REFUND_APPROVAL_THRESHOLD，檢查 ACTIVITY_PAYMENT_APPROVE 權限。
-
-    `amount` 可為單筆金額或「累積後總額」；`label` 控制錯誤訊息語意，
-    呼叫端傳累積值時請覆寫為「累積退費總額」等清楚字樣。
-    不足即 403。供 POS refund / add_registration_payment(type=refund) 共用。
-    """
-    if amount > REFUND_APPROVAL_THRESHOLD and not has_payment_approve(current_user):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"{label} NT${amount} 超過 NT${REFUND_APPROVAL_THRESHOLD} 審批閾值，"
-                f"需由具備『才藝課收款簽核』權限者執行"
-            ),
-        )
-
-
-def require_approve_for_cumulative_refund(
-    session,
-    registration_id: int,
-    this_refund_amount: int,
-    current_user: dict,
-    *,
-    label: str,
-) -> None:
-    """以「該 reg 已存在 voided=NULL 的 refund 累積 + 本次」判斷是否跨閾值。
-
-    Why: 與 add_registration_payment / pos.refund 既有累積判斷對齊。
-    退課自動沖帳、刪除報名自動沖帳、標記未繳全額沖帳這三條 legacy 路徑只用
-    「本次金額」過 require_approve_for_large_refund，可拆單跨閾值繞過簽核
-    （reg 已退 NT$600 → 再退 NT$900 兩筆都 < NT$1000，但累積 NT$1500 應簽核）。
-
-    Refs: 邏輯漏洞 audit 2026-05-07 P0 (#8)。
-    """
-    from sqlalchemy import func
-    from models.database import ActivityPaymentRecord
-
-    prior = (
-        session.query(func.coalesce(func.sum(ActivityPaymentRecord.amount), 0))
-        .filter(
-            ActivityPaymentRecord.registration_id == registration_id,
-            ActivityPaymentRecord.type == "refund",
-            ActivityPaymentRecord.voided_at.is_(None),
-        )
-        .scalar()
-    ) or 0
-    cumulative = int(prior) + int(this_refund_amount)
-    require_approve_for_large_refund(cumulative, current_user, label=label)
+# F2 第一階段：時區 helper 抽到 utils/taipei_time.py 共用（fees / activity / portal
+# 都需要同一條台灣時區邏輯）。本檔保留 re-export 維持既有 import surface。
+from utils.taipei_time import (  # noqa: F401
+    TAIPEI_TZ as _TAIPEI_TZ_CANONICAL,  # 避免遮蔽本檔 line 62 既有變數
+    now_taipei_naive,
+    today_taipei,
+)
 
 
 def validate_payment_date(
@@ -195,38 +102,11 @@ def validate_payment_date(
     """驗證 payment_date 必須在今日回補窗內，不得指定未來。
 
     `back_limit_days` 預設 30（活動 POS 場景）；學費跨月分期需放寬，
-    呼叫端可覆寫此參數。
+    呼叫端可覆寫此參數。delegated to utils.taipei_time。
     """
-    today = datetime.now(TAIPEI_TZ).date()
-    if value > today:
-        raise ValueError("繳費日期不可指定未來日期")
-    earliest = today - timedelta(days=back_limit_days)
-    if value < earliest:
-        raise ValueError(f"繳費日期超出範圍，最多回補 {back_limit_days} 天")
-    return value
+    from utils.taipei_time import validate_payment_date as _impl
 
-
-def today_taipei() -> date:
-    """統一取「今日」的工具函式（Asia/Taipei）。
-
-    Why: 部分端點寫入 refund/payment 時使用 naive datetime.now().date()；
-    server 若部署在 UTC，近午夜台灣時間會落帳到昨天，與日結 snapshot 錯位。
-    本函式確保所有 activity 相關寫入都以台灣時間為準。
-    """
-    return datetime.now(TAIPEI_TZ).date()
-
-
-def now_taipei_naive() -> datetime:
-    """統一取「現在時刻」(Asia/Taipei naive) 的工具函式。
-
-    Why: `ActivityPaymentRecord.created_at` 已用 `_now_taipei_naive` 寫入台灣時間；
-    日結簽核 `approved_at` / unlock `unlocked_at` / pending 審核 `reviewed_at` / query
-    token `issued_at` 若用裸 `datetime.now()`，server 部署在 UTC 時會比同檔的
-    `today = datetime.now(TAIPEI_TZ).date()` 慢 8 小時，造成稽核時序錯位
-    （例：簽核紀錄落在 close_date 前一日、unlock 事件 cutoff 過濾窗口偏移）。
-    任何寫入或對比 naive datetime 欄位的端點都應改用本函式以保持一致。
-    """
-    return datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+    return _impl(value, back_limit_days=back_limit_days)
 
 
 # ── 服務注入 ──────────────────────────────────────────────────────────────
@@ -266,506 +146,76 @@ def _item_not_found_in_list(resource: str, name: str) -> HTTPException:
 # ── Pydantic Schemas ────────────────────────────────────────────────────────
 
 
-class CourseCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    price: int = Field(..., ge=0, le=MAX_PAYMENT_AMOUNT)
-    sessions: Optional[int] = Field(None, ge=1)
-    capacity: int = Field(30, ge=1)
-    video_url: Optional[str] = None
-    allow_waitlist: bool = True
-    description: Optional[str] = None
-    # 學期（不指定時 API 端會用當前學期填入）
-    school_year: Optional[int] = Field(None, ge=100, le=200)
-    semester: Optional[int] = Field(None, ge=1, le=2)
-    # Phase 3 適齡 + 結構化時段（前台 advisory）
-    min_age_months: Optional[int] = Field(None, ge=0, le=360)
-    max_age_months: Optional[int] = Field(None, ge=0, le=360)
-    meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
-    meeting_start_time: Optional[time] = None
-    meeting_end_time: Optional[time] = None
-
-    @model_validator(mode="after")
-    def _validate_phase3(self):
-        if (
-            self.min_age_months is not None
-            and self.max_age_months is not None
-            and self.min_age_months > self.max_age_months
-        ):
-            raise ValueError("min_age_months 不可大於 max_age_months")
-        if (
-            self.meeting_start_time is not None
-            and self.meeting_end_time is not None
-            and self.meeting_start_time >= self.meeting_end_time
-        ):
-            raise ValueError("meeting_start_time 必須早於 meeting_end_time")
-        return self
-
-
-class CourseUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    price: Optional[int] = Field(None, ge=0, le=MAX_PAYMENT_AMOUNT)
-    sessions: Optional[int] = Field(None, ge=1)
-    capacity: Optional[int] = Field(None, ge=1)
-    video_url: Optional[str] = None
-    allow_waitlist: Optional[bool] = None
-    description: Optional[str] = None
-    # Phase 3 同上
-    min_age_months: Optional[int] = Field(None, ge=0, le=360)
-    max_age_months: Optional[int] = Field(None, ge=0, le=360)
-    meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
-    meeting_start_time: Optional[time] = None
-    meeting_end_time: Optional[time] = None
-
-    @model_validator(mode="after")
-    def _validate_phase3(self):
-        if (
-            self.min_age_months is not None
-            and self.max_age_months is not None
-            and self.min_age_months > self.max_age_months
-        ):
-            raise ValueError("min_age_months 不可大於 max_age_months")
-        if (
-            self.meeting_start_time is not None
-            and self.meeting_end_time is not None
-            and self.meeting_start_time >= self.meeting_end_time
-        ):
-            raise ValueError("meeting_start_time 必須早於 meeting_end_time")
-        return self
-
-
-class SupplyCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    price: int = Field(..., ge=0, le=MAX_PAYMENT_AMOUNT)
-    school_year: Optional[int] = Field(None, ge=100, le=200)
-    semester: Optional[int] = Field(None, ge=1, le=2)
-
-
-class SupplyUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    price: Optional[int] = Field(None, ge=0, le=MAX_PAYMENT_AMOUNT)
-
-
-class CopyCoursesRequest(BaseModel):
-    """一鍵複製上學期課程到新學期的請求。"""
-
-    source_school_year: int = Field(..., ge=100, le=200)
-    source_semester: int = Field(..., ge=1, le=2)
-    target_school_year: int = Field(..., ge=100, le=200)
-    target_semester: int = Field(..., ge=1, le=2)
-
-
-class PaymentUpdate(BaseModel):
-    is_paid: bool
-    # is_paid=False 時必填，且必須等於當前 paid_amount；避免誤觸按鈕一次把該筆全退
-    confirm_refund_amount: Optional[int] = Field(
-        None,
-        ge=0,
-        le=MAX_PAYMENT_AMOUNT,
-        description=(
-            "當 is_paid=False 時必填，且需等於當前 paid_amount；"
-            "供前端明確二次確認沖帳金額，避免誤操作整筆退費"
-        ),
-    )
-    refund_reason: Optional[str] = Field(
-        None,
-        max_length=200,
-        description="當 is_paid=False 時必填，≥ 5 字；留於沖帳紀錄 notes",
-    )
-    # is_paid=True 補齊路徑（shortfall > 0）時必填：人工收款方式（不可 SYSTEM_RECONCILE_METHOD）
-    # 與 ≥5 字原因；handler 端會檢查並在大額時要求 ACTIVITY_PAYMENT_APPROVE。
-    # Why: 原設計 is_paid=True 直接寫一筆「系統補齊」payment 補上欠費，沒有 method/原因/
-    # 簽核，會計可逐筆把欠費轉成收入流水。對齊 is_paid=False 路徑的嚴格度。
-    payment_method: Optional[Literal["現金"]] = Field(
-        None,
-        description=(
-            "is_paid=True 補齊欠費時必填，必須為「現金」"
-            "（目前才藝僅收現金），不接受『系統補齊』；handler 端會驗證"
-        ),
-    )
-    payment_reason: Optional[str] = Field(
-        None,
-        max_length=200,
-        description="is_paid=True 補齊欠費時必填，≥ 5 字；會寫進補齊紀錄 notes",
-    )
-
-
-class RemarkUpdate(BaseModel):
-    remark: str
-
-
-class VoidPaymentRequest(BaseModel):
-    """軟刪除 payment 紀錄的請求；reason 必填且 ≥ MIN_VOID_REASON_LENGTH 字。
-
-    不接受 DELETE 直接 body-less，避免一線員工順手按到就抹掉稽核。
-    """
-
-    reason: str = Field(
-        ...,
-        min_length=1,
-        max_length=200,
-        description=f"軟刪原因，最少 {MIN_VOID_REASON_LENGTH} 個字",
-    )
-
-    @field_validator("reason")
-    @classmethod
-    def _validate_reason(cls, v: str) -> str:
-        cleaned = (v or "").strip()
-        if len(cleaned) < MIN_VOID_REASON_LENGTH:
-            raise ValueError(f"軟刪原因需至少 {MIN_VOID_REASON_LENGTH} 個字，不可敷衍")
-        return cleaned
-
-
-class InquiryReply(BaseModel):
-    reply: str = Field(..., min_length=1, max_length=2000)
-
-
-class RegistrationTimeSettings(BaseModel):
-    is_open: bool
-    open_at: Optional[str] = None
-    close_at: Optional[str] = None
-    # 前台顯示客製化（全部可選；為 None 時前端 fallback 至預設）
-    page_title: Optional[str] = Field(None, max_length=200)
-    term_label: Optional[str] = Field(None, max_length=50)
-    event_date_label: Optional[str] = Field(None, max_length=50)
-    target_audience: Optional[str] = Field(None, max_length=100)
-    form_card_title: Optional[str] = Field(None, max_length=200)
-    poster_url: Optional[str] = Field(None, max_length=500)
-
-    @field_validator("open_at", "close_at")
-    @classmethod
-    def validate_iso_format(cls, v):
-        if v is not None:
-            pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$"
-            if not re.match(pattern, v):
-                raise ValueError("時間格式必須為 ISO 8601（YYYY-MM-DDTHH:MM）")
-        return v
-
-    @model_validator(mode="after")
-    def validate_close_after_open(self):
-        if self.open_at and self.close_at and self.close_at <= self.open_at:
-            raise ValueError("close_at 必須晚於 open_at")
-        return self
-
-
-class BatchPaymentUpdate(BaseModel):
-    ids: List[int] = Field(..., min_length=1, max_length=500)
-    # 只允許 True（批次補齊已繳費）；False 全額沖帳路徑已被收緊，改走單筆端點
-    # 並附明確 confirm_refund_amount，避免誤操作一次沖一批
-    is_paid: Literal[True]
-    # 批次補齊會把欠費直接寫成系統 payment 流水，金額槓桿大；強制填原因防止濫用
-    # （例如「2026-04-25 期末補繳整批，已收齊現金，老闆確認」）
-    reason: str = Field(
-        ...,
-        min_length=MIN_REFUND_REASON_LENGTH,
-        max_length=200,
-        description=f"批次標記原因（≥ {MIN_REFUND_REASON_LENGTH} 字），會寫進每筆系統補齊紀錄的 notes",
-    )
-
-    @field_validator("reason")
-    @classmethod
-    def _validate_reason(cls, v: str) -> str:
-        cleaned = (v or "").strip()
-        if len(cleaned) < MIN_REFUND_REASON_LENGTH:
-            raise ValueError(
-                f"批次標記原因需至少 {MIN_REFUND_REASON_LENGTH} 個字，不可敷衍"
-            )
-        return cleaned
-
-
-class AddPaymentRequest(BaseModel):
-    type: Literal["payment", "refund"] = "payment"
-    amount: int = Field(
-        ...,
-        gt=0,
-        le=MAX_PAYMENT_AMOUNT,
-        description=f"金額（正整數，上限 NT${MAX_PAYMENT_AMOUNT:,}；type 決定方向）",
-    )
-    payment_date: date
-    payment_method: Literal["現金"] = Field(
-        "現金",
-        description="目前才藝 POS 僅支援現金；保留欄位供未來擴充",
-    )
-    notes: str = Field("", max_length=200)
-
-    @model_validator(mode="after")
-    def _refund_requires_reason(self):
-        """type=refund 時 notes（原因）必填且 ≥ MIN_REFUND_REASON_LENGTH 字。"""
-        if self.type == "refund":
-            cleaned = (self.notes or "").strip()
-            if len(cleaned) < MIN_REFUND_REASON_LENGTH:
-                raise ValueError(
-                    f"退費必須於 notes 填寫原因（至少 {MIN_REFUND_REASON_LENGTH} 個字）"
-                )
-        return self
-
-    idempotency_key: Optional[str] = Field(
-        None,
-        description="冪等 key（8-64 英數/底線/連字號）；同 key 在 10 分鐘內視為重試並回傳先前結果",
-    )
-
-    @field_validator("payment_date")
-    @classmethod
-    def _validate_payment_date(cls, v: date) -> date:
-        return validate_payment_date(v)
-
-    @field_validator("idempotency_key")
-    @classmethod
-    def _validate_idk(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v == "":
-            return None
-        if not re.match(r"^[A-Za-z0-9_-]{8,64}$", v):
-            raise ValueError("idempotency_key 格式不合（需 8-64 英數/底線/連字號）")
-        return v
-
-
-class PublicCourseItem(BaseModel):
-    # 只收 name：價格一律以後端 ActivityCourse.price 為準。
-    # 前端若仍送 price 欄位，Pydantic 預設 extra='ignore' 會自動丟棄，
-    # 避免維護者誤把 client 傳入金額當作實價使用（過去此處曾保留 price
-    # 欄位，後端忽略它，但留下 code smell）。
-    name: str
-
-
-class PublicSupplyItem(BaseModel):
-    # 同 PublicCourseItem：只收 name，價格一律以 DB 為準
-    name: str
-
-
-class PublicInquiryPayload(BaseModel):
-    """LOW-4：附 honeypot（hp）+ 時間戳（ts）兩個 alias 欄位。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    name: str = Field(..., min_length=1, max_length=50)
-    phone: str = Field(..., min_length=1, max_length=30)
-    question: str = Field(..., min_length=1, max_length=2000)
-    hp: str = Field(default="", alias="_hp", max_length=200)
-    ts: Optional[int] = Field(default=None, alias="_ts")
-
-
-def should_silent_reject_bot(hp: str, ts: Optional[int]) -> bool:
-    """LOW-4：honeypot + 時序檢查。回 True 表示「請當作機器人 silent reject」。
-
-    判定條件（任一命中即視為 bot）：
-    - 隱形 _hp 欄位被填入任何字元 → 真人看不到該欄位，bot 表單填充器會填
-    - 提交時間距離頁面載入不到 3 秒 → 真人讀題作答幾乎不可能這麼快
-
-    呼叫端應在判定為 bot 時：
-    - 不寫 DB
-    - 不發 LINE 推播
-    - 仍回 200/201 + 正常成功訊息（不洩漏偵測）
-    - log.warning 留痕方便事後分析
-    """
-    if hp:
-        return True
-    if ts is not None:
-        try:
-            now_ms = int(datetime.now(TAIPEI_TZ).timestamp() * 1000)
-            elapsed_ms = now_ms - int(ts)
-            if 0 <= elapsed_ms < 3000:
-                return True
-        except (ValueError, TypeError):
-            pass
-    return False
-
-
-_TW_MOBILE_RE = re.compile(r"^09\d{8}$")
-
-
-def _validate_birthday_str(v: str) -> str:
-    """共用：生日格式 + 合理範圍檢查。
-
-    - 格式必須為 YYYY-MM-DD
-    - 不得為未來日期
-    - 不得早於 20 年前（幼稚園/才藝學生涵蓋 0-18 歲，留 2 年緩衝）
-    Why: 原本僅檢格式，家長可誤填 2099-01-01 或 1900 年之類資料，後續年齡/報表計算會錯亂。
-    """
-    try:
-        bday = date.fromisoformat(v)
-    except ValueError:
-        raise ValueError("生日格式必須為 YYYY-MM-DD")
-    today = datetime.now(TAIPEI_TZ).date()
-    if bday > today:
-        raise ValueError("生日不可為未來日期")
-    if (today - bday).days > 20 * 366:
-        raise ValueError("生日超出合理範圍")
-    return v
-
-
-def _normalize_phone(raw: Optional[str]) -> Optional[str]:
-    """台灣手機正規化：去除空白/連字號/括號/點，保留數字；空字串回 None。"""
-    if raw is None:
-        return None
-    digits = re.sub(r"[\s\-().]", "", str(raw))
-    return digits or None
-
-
-def _validate_tw_mobile(raw: Optional[str]) -> str:
-    digits = _normalize_phone(raw)
-    if not digits or not _TW_MOBILE_RE.match(digits):
-        raise ValueError("家長手機格式錯誤（請輸入 09 開頭 10 碼）")
-    return digits
-
-
-class PublicRegistrationPayload(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    name: str = Field(..., min_length=1, max_length=50)
-    birthday: str
-    class_: str = Field(..., min_length=1, alias="class")
-    parent_phone: str = Field(..., min_length=8, max_length=30)
-    courses: list[PublicCourseItem] = Field(..., max_length=20)
-    supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
-    remark: str = Field(default="", max_length=500)
-    # 前端可選擇性傳入；不傳時 API 端用當前學期
-    school_year: Optional[int] = Field(None, ge=100, le=200)
-    semester: Optional[int] = Field(None, ge=1, le=2)
-    # LOW-4：honeypot + 提交時間戳（ms epoch）
-    hp: str = Field(default="", alias="_hp", max_length=200)
-    ts: Optional[int] = Field(default=None, alias="_ts")
-
-    @field_validator("birthday")
-    @classmethod
-    def validate_birthday(cls, v: str) -> str:
-        return _validate_birthday_str(v)
-
-    @field_validator("name", "class_", mode="before")
-    @classmethod
-    def strip_whitespace(cls, v):
-        return v.strip() if isinstance(v, str) else v
-
-    @field_validator("parent_phone", mode="before")
-    @classmethod
-    def normalize_parent_phone(cls, v):
-        return _validate_tw_mobile(v)
-
-
-class PublicUpdatePayload(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: int
-    name: str = Field(..., min_length=1, max_length=50)
-    birthday: str
-    class_: str = Field(..., min_length=1, alias="class")
-    parent_phone: str = Field(..., min_length=8, max_length=30)
-    # 選填：家長換號碼。提供時以 parent_phone（舊號）做身份驗證，
-    # 通過後 reg.parent_phone 改為 new_parent_phone。
-    new_parent_phone: Optional[str] = Field(None, min_length=8, max_length=30)
-    courses: list[PublicCourseItem] = Field(..., max_length=20)
-    supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
-    remark: str = ""
-    # 選填：樂觀鎖 token，由 /public/query 回傳的 updated_at（ISO 字串）。
-    # 提供時若與 reg.updated_at 不符即拒；不提供則沿用舊行為（向後相容）。
-    if_unmodified_since: Optional[str] = Field(None, max_length=64)
-
-    @field_validator("birthday")
-    @classmethod
-    def validate_birthday(cls, v: str) -> str:
-        return _validate_birthday_str(v)
-
-    @field_validator("name", "class_", mode="before")
-    @classmethod
-    def strip_whitespace(cls, v):
-        return v.strip() if isinstance(v, str) else v
-
-    @field_validator("parent_phone", mode="before")
-    @classmethod
-    def normalize_parent_phone(cls, v):
-        return _validate_tw_mobile(v)
-
-    @field_validator("new_parent_phone", mode="before")
-    @classmethod
-    def normalize_new_parent_phone(cls, v):
-        if v is None or (isinstance(v, str) and not v.strip()):
-            return None
-        return _validate_tw_mobile(v)
-
-
-class AdminRegistrationBasicUpdate(BaseModel):
-    """後台編輯報名基本欄位（不含課程/用品/備註）。"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    name: str = Field(..., min_length=1, max_length=50)
-    birthday: str
-    class_: str = Field(..., min_length=1, alias="class")
-    email: Optional[str] = Field(None, max_length=200)
-
-    @field_validator("birthday")
-    @classmethod
-    def validate_birthday(cls, v: str) -> str:
-        return _validate_birthday_str(v)
-
-    @field_validator("name", "class_", mode="before")
-    @classmethod
-    def strip_whitespace(cls, v):
-        return v.strip() if isinstance(v, str) else v
-
-
-class AddCourseRequest(BaseModel):
-    """後台為既有報名新增一筆課程。"""
-
-    course_id: int = Field(..., gt=0)
-
-
-class AddSupplyRequest(BaseModel):
-    """後台為既有報名新增一筆用品。"""
-
-    supply_id: int = Field(..., gt=0)
-
-
-class AdminRegistrationPayload(BaseModel):
-    """後台手動新增報名的 payload。
-
-    與 PublicRegistrationPayload 差異：
-    - 不強制檢查報名開放時間（後台可隨時建立）
-    - 額外可選填 email / remark
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    name: str = Field(..., min_length=1, max_length=50)
-    birthday: str
-    class_: str = Field(..., min_length=1, alias="class")
-    courses: list[PublicCourseItem] = Field(default=[], max_length=20)
-    supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
-    email: Optional[str] = Field(None, max_length=200)
-    remark: str = ""
-    school_year: Optional[int] = Field(None, ge=100, le=200)
-    semester: Optional[int] = Field(None, ge=1, le=2)
-
-    @field_validator("birthday")
-    @classmethod
-    def validate_birthday(cls, v: str) -> str:
-        return _validate_birthday_str(v)
-
-    @field_validator("name", "class_", mode="before")
-    @classmethod
-    def strip_whitespace(cls, v):
-        return v.strip() if isinstance(v, str) else v
-
+# F2 第三階段：Course / Supply CRUD schemas 抽到 schemas/activity_admin.py 共用。
+# 本檔保留 re-export 維持 api/activity/courses.py / supplies.py 既有 import surface。
+from schemas.activity_admin import (  # noqa: F401
+    CourseCreate,
+    CourseUpdate,
+    SupplyCreate,
+    SupplyUpdate,
+    CopyCoursesRequest,
+)
+
+# F2 第四階段：剩餘 admin schemas（Payment / Void / Inquiry / Settings / Batch / Add）
+# 抽到 schemas/activity_admin.py 共用。本檔保留 re-export 維持既有 import surface。
+from schemas.activity_admin import (  # noqa: F401, E402
+    PaymentUpdate,
+    RemarkUpdate,
+    VoidPaymentRequest,
+    InquiryReply,
+    RegistrationTimeSettings,
+    BatchPaymentUpdate,
+    AddPaymentRequest,
+)
+
+# F2 第二階段：公開報名 schemas + 驗證 helper 抽到 schemas/activity_public.py 共用。
+# 本檔保留 re-export 維持既有 import surface（api/activity/public.py 等 6 模組不需動）。
+from schemas.activity_public import (  # noqa: F401
+    PublicCourseItem,
+    PublicSupplyItem,
+    PublicInquiryPayload,
+    PublicRegistrationPayload,
+    PublicUpdatePayload,
+    should_silent_reject_bot,
+    _validate_birthday_str,
+    _normalize_phone,
+    _validate_tw_mobile,
+    _TW_MOBILE_RE,
+)
+
+# F2 第四階段：AdminRegistration* + AddCourse/Supply schemas 抽到 schemas/activity_admin.py。
+from schemas.activity_admin import (  # noqa: F401, E402
+    AdminRegistrationBasicUpdate,
+    AddCourseRequest,
+    AddSupplyRequest,
+    AdminRegistrationPayload,
+)
+
+# F2 第七階段：學生主檔同步 helper 抽到 services/activity_student_sync.py。
+# 本檔保留 re-export 維持 students.py / public.py / registrations.py 既有 import surface。
+from services.activity_student_sync import (  # noqa: F401, E402
+    _match_student_id,
+    _match_student_with_parent_phone,
+    sync_registrations_on_student_transfer,
+    sync_registrations_on_student_deactivate,
+)
+
+# F2 第八階段：POS 日結與每日快照 helper 抽到 services/activity_daily_snapshot.py。
+# 本檔保留 re-export 維持 pos.py / public.py / registrations.py 等既有 import surface。
+from services.activity_daily_snapshot import (  # noqa: F401, E402
+    _is_daily_closed,
+    _require_daily_close_unlocked,
+    compute_daily_snapshot,
+)
+
+# F2 第九階段：班級反查 helper 抽到 services/activity_classroom_lookup.py。
+# 本檔保留 re-export 維持 registrations.py / public.py / settings.py 等既有 import surface。
+from services.activity_classroom_lookup import (  # noqa: F401, E402
+    _get_active_classroom,
+    _require_active_classroom,
+)
 
 # ── DB 輔助函式 ─────────────────────────────────────────────────────────────
-
-
-def _get_active_classroom(session, classroom_name: str):
-    """依名稱取得啟用中的班級。"""
-    return (
-        session.query(Classroom)
-        .filter(
-            Classroom.name == classroom_name.strip(),
-            Classroom.is_active.is_(True),
-        )
-        .first()
-    )
-
-
-def _require_active_classroom(session, classroom_name: str):
-    """取得啟用中班級，不存在則拋 HTTPException(400)。"""
-    c = _get_active_classroom(session, classroom_name)
-    if not c:
-        raise _invalid_class()
-    return c
 
 
 # ── Phase 3 公開查詢碼（query token） ──────────────────────────────────────
@@ -781,51 +231,15 @@ def _require_active_classroom(session, classroom_name: str):
 _ACTIVITY_TOKEN_DOMAIN = b"activity_query_token:v1"
 
 
-def _query_token_ttl_days() -> int:
-    """讀環境變數 ACTIVITY_QUERY_TOKEN_TTL_DAYS（預設 180 天）。
-
-    180 天涵蓋一個學期完整活動期 + 部分緩衝；業主可調為更短（例 90）強化。
-    invalid 值 fallback 預設值，不 raise（避免一個壞 env 卡住整個公開報名頁）。
-    """
-    raw = os.getenv("ACTIVITY_QUERY_TOKEN_TTL_DAYS", "180")
-    try:
-        v = int(raw)
-        return v if v > 0 else 180
-    except (TypeError, ValueError):
-        return 180
-
-
-def is_query_token_expired(issued_at) -> bool:
-    """判斷查詢碼是否已過期。
-
-    issued_at 為 None（舊資料未發 token / backfill 期）一律視為過期。
-    這樣攻擊者拿到舊 reg 的偽造 token 也無法用，必須走 /public/query 三欄比對。
-    """
-    if issued_at is None:
-        return True
-    ttl = timedelta(days=_query_token_ttl_days())
-    return datetime.now() - issued_at > ttl
-
-
-def _generate_query_token() -> str:
-    """產生公開查詢碼明文（32-char URL-safe）。
-
-    僅在 register 真實成功 / reject rotate 當下回給呼叫端。
-    silent-success path 用同函式產一個「假」token（不寫 DB），維持 response shape
-    一致避免 F-030 enumeration oracle。
-    """
-    return _secrets_module.token_urlsafe(24)
-
-
-def _hash_query_token(token: str) -> str:
-    """HMAC-SHA256(JWT_SECRET_KEY, domain || token) → hex digest（64 chars）。
-
-    domain salt（_ACTIVITY_TOKEN_DOMAIN）做用途隔離 — 即使 JWT_SECRET_KEY 被
-    其他模組借用，產生的 hash 不會撞號。
-    """
-    msg = _ACTIVITY_TOKEN_DOMAIN + token.encode("utf-8")
-    key = (JWT_SECRET_KEY or "").encode("utf-8")
-    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+# F2 第六階段：query token helper 抽到 services/activity_query_token.py。
+# 本檔 re-export 維持既有 import surface（api/activity/public.py / registrations.py
+# 等模組仍可 `from api.activity._shared import _hash_query_token` 取得）。
+from services.activity_query_token import (  # noqa: E402, F401
+    _query_token_ttl_days,
+    is_query_token_expired,
+    _generate_query_token,
+    _hash_query_token,
+)
 
 
 def _build_public_query_payload(session, reg) -> dict:
@@ -1171,108 +585,6 @@ def _compute_is_paid(paid_amount: int, total_amount: int) -> bool:
     return total_amount > 0 and paid_amount >= total_amount
 
 
-def _is_daily_closed(session, target_date: date) -> bool:
-    """判斷 target_date 是否已完成 POS 日結簽核。供 service / router 共用。"""
-    if target_date is None:
-        return False
-    closed = (
-        session.query(ActivityPosDailyClose.close_date)
-        .filter(ActivityPosDailyClose.close_date == target_date)
-        .first()
-    )
-    return closed is not None
-
-
-def _require_daily_close_unlocked(session, target_date: date) -> None:
-    """拒絕寫入 payment_date 落在已 daily-close 的紀錄。
-
-    Why: payment_date 允許回補 30 天，但若該日已被老闆簽核，snapshot 已凍結。
-    此時新增交易會讓 DB 實際值與 snapshot 永久失準（reconciliation 永遠用 snapshot）。
-    """
-    if _is_daily_closed(session, target_date):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"日期 {target_date.isoformat()} 已完成日結簽核，"
-                f"無法再新增/修改該日交易。請先解鎖日結後再操作。"
-            ),
-        )
-
-
-def compute_daily_snapshot(session, target_date: date) -> dict:
-    """某日 POS 流水即時快照：payment_total / refund_total / net_total / transaction_count / by_method。
-
-    供 POS daily-summary 端點與日結簽核共用，避免邏輯雙寫。
-    by_method 為 dict：員工輸入只可能是「現金」（POS schema 收口）；
-    系統內部沖帳會出現「系統補齊」；method 為 NULL 者歸類為「未指定」（歷史資料）。
-
-    Voided 紀錄（軟刪）一律排除，避免讓老闆簽核的總額包含已被作廢的交易。
-    """
-    rows = (
-        session.query(
-            ActivityPaymentRecord.type,
-            ActivityPaymentRecord.payment_method,
-            func.count(ActivityPaymentRecord.id),
-            func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
-        )
-        .filter(
-            ActivityPaymentRecord.payment_date == target_date,
-            ActivityPaymentRecord.voided_at.is_(None),
-        )
-        .group_by(
-            ActivityPaymentRecord.type,
-            ActivityPaymentRecord.payment_method,
-        )
-        .all()
-    )
-
-    payment_total = 0
-    refund_total = 0
-    payment_count = 0
-    refund_count = 0
-    by_method_map: dict = defaultdict(lambda: {"payment": 0, "refund": 0, "count": 0})
-    for rec_type, method, cnt, amt in rows:
-        amt_int = int(amt or 0)
-        cnt_int = int(cnt or 0)
-        method_key = method or "未指定"
-        if rec_type == "payment":
-            payment_total += amt_int
-            payment_count += cnt_int
-            by_method_map[method_key]["payment"] += amt_int
-        else:
-            refund_total += amt_int
-            refund_count += cnt_int
-            by_method_map[method_key]["refund"] += amt_int
-        by_method_map[method_key]["count"] += cnt_int
-
-    by_method_list = [
-        {
-            "method": method_key,
-            "payment": data["payment"],
-            "refund": data["refund"],
-            "count": data["count"],
-        }
-        for method_key, data in sorted(by_method_map.items())
-    ]
-    # by_method_net：簽核 snapshot 只需要淨額分佈，不需要 payment/refund 拆分
-    by_method_net = {
-        method_key: data["payment"] - data["refund"]
-        for method_key, data in by_method_map.items()
-    }
-
-    return {
-        "date": target_date.isoformat(),
-        "payment_total": payment_total,
-        "refund_total": refund_total,
-        "net": payment_total - refund_total,
-        "payment_count": payment_count,
-        "refund_count": refund_count,
-        "transaction_count": payment_count + refund_count,
-        "by_method": by_method_list,
-        "by_method_net": by_method_net,
-    }
-
-
 def _batch_calc_total_amounts(session, reg_ids: list) -> dict:
     """批次計算多筆報名的應繳總金額（2 次 GROUP BY，避免 N+1 查詢）"""
     course_totals = dict(
@@ -1377,213 +689,6 @@ def _build_registration_filter_query(
     if classroom_name:
         q = q.filter(ActivityRegistration.class_name == classroom_name)
     return q
-
-
-def _match_student_id(session, name: str, birthday: str) -> Optional[int]:
-    """public 報名時以 (name, birthday) 嘗試匹配 students.id。
-
-    同時匹配到多個學生則回 None（避免錯誤關聯）。
-    """
-    from models.database import Student
-    from datetime import date as _date
-
-    try:
-        bday = _date.fromisoformat(birthday)
-    except (ValueError, TypeError):
-        return None
-
-    q = session.query(Student.id).filter(
-        Student.name == name.strip(),
-        Student.birthday == bday,
-        Student.is_active.is_(True),
-    )
-    rows = q.limit(2).all()
-    if len(rows) == 1:
-        return rows[0][0]
-    return None
-
-
-def _match_student_with_parent_phone(
-    session, name: str, birthday: str, parent_phone: Optional[str]
-) -> tuple[Optional[int], Optional[int]]:
-    """三欄比對（姓名 + 生日 + 家長手機）取得在籍學生。
-
-    - phone 同時與 Student.parent_phone、Student.emergency_contact_phone 比對
-      （任一正規化後相符即匹配）
-    - 先以 (name, birthday, is_active=True) 篩出候選（通常 0-2 筆），再
-      Python 端正規化比對 phone，避開 SQL regex 全表掃描
-    - 多筆匹配（歧義）→ 回 (None, None)，讓上游進入 pending_review
-    - 無匹配 → 回 (None, None)
-    - 成功 → 回 (student_id, classroom_id)
-    """
-    from models.database import Student
-    from datetime import date as _date
-
-    normalized_input = _normalize_phone(parent_phone)
-    if not normalized_input:
-        return (None, None)
-
-    try:
-        bday = _date.fromisoformat(birthday)
-    except (ValueError, TypeError):
-        return (None, None)
-
-    candidates = (
-        session.query(
-            Student.id,
-            Student.classroom_id,
-            Student.parent_phone,
-            Student.emergency_contact_phone,
-        )
-        .filter(
-            Student.name == name.strip(),
-            Student.birthday == bday,
-            Student.is_active.is_(True),
-        )
-        .limit(10)
-        .all()
-    )
-
-    matches: list[tuple[int, Optional[int]]] = []
-    for sid, classroom_id, pp, ep in candidates:
-        if (
-            _normalize_phone(pp) == normalized_input
-            or _normalize_phone(ep) == normalized_input
-        ):
-            matches.append((sid, classroom_id))
-
-    if len(matches) == 1:
-        return matches[0]
-    return (None, None)
-
-
-def sync_registrations_on_student_transfer(
-    session, student_id: int, new_classroom_id: Optional[int]
-) -> int:
-    """學生轉班時，同步更新該生當前學期仍啟用的 ActivityRegistration 班級資訊。
-
-    - 只處理 is_active=True 的報名（rejected / 軟刪除的不動）
-    - 只處理當前學期（不回頭改歷史，歷史才藝名單應保持原樣）
-    - classroom_id 改寫為 new_classroom_id；class_name 改為新班級的 Classroom.name（當前）
-      若 new_classroom_id 為 None 或查不到班級，只更新 classroom_id，保留原 class_name 字串
-    - 回傳更新筆數
-    """
-    from utils.academic import resolve_current_academic_term
-
-    sy, sem = resolve_current_academic_term()
-
-    regs = (
-        session.query(ActivityRegistration)
-        .filter(
-            ActivityRegistration.student_id == student_id,
-            ActivityRegistration.is_active.is_(True),
-            ActivityRegistration.school_year == sy,
-            ActivityRegistration.semester == sem,
-        )
-        .all()
-    )
-    if not regs:
-        return 0
-
-    new_classroom_name: Optional[str] = None
-    if new_classroom_id is not None:
-        new_classroom = (
-            session.query(Classroom).filter(Classroom.id == new_classroom_id).first()
-        )
-        if new_classroom:
-            new_classroom_name = new_classroom.name
-
-    for r in regs:
-        r.classroom_id = new_classroom_id
-        if new_classroom_name:
-            r.class_name = new_classroom_name
-
-    return len(regs)
-
-
-def sync_registrations_on_student_deactivate(
-    session, student_id: int, *, current_user: Optional[dict] = None
-) -> int:
-    """學生畢業 / 退學 / 刪除時，軟刪該生當前學期啟用中 ActivityRegistration。
-
-    - 把 is_active 設為 False；保留原 match_status（供後台稽核）
-    - 只處理當前學期（歷史學期的報名維持原狀，仍可供報表追溯）
-    - **若 paid_amount > 0**：自動寫一筆「系統補齊」退費沖帳紀錄並清零，
-      並以 logger.warning 留痕提醒管理員處理實體退款；避免幽靈金額留存
-    - **金流守衛**：若有任何 paid_amount > 0 且呼叫者未具 ACTIVITY_PAYMENT_APPROVE
-      則 403。避免具 STUDENTS_WRITE/STUDENTS_LIFECYCLE_WRITE 但無金流簽核者
-      透過學生狀態變更繞過活動退費端點的金流控管。
-      呼叫端在 pure-system 場景（如背景任務、無 user 上下文）可省略 current_user，
-      但生產 API handler 必須傳入；省略視為內部呼叫。
-    - 回傳影響筆數
-    """
-    from utils.academic import resolve_current_academic_term
-
-    sy, sem = resolve_current_academic_term()
-
-    regs = (
-        session.query(ActivityRegistration)
-        .filter(
-            ActivityRegistration.student_id == student_id,
-            ActivityRegistration.is_active.is_(True),
-            ActivityRegistration.school_year == sy,
-            ActivityRegistration.semester == sem,
-        )
-        .all()
-    )
-    today = datetime.now(TAIPEI_TZ).date()
-    has_paid = any((r.paid_amount or 0) > 0 for r in regs)
-    # 若今日已簽核且有任何一筆需沖帳，直接拋以維持 snapshot 一致性
-    # （上層 students.py 的刪除流程會因此回 400；需先解鎖日結再刪學生）
-    if has_paid:
-        _require_daily_close_unlocked(session, today)
-        # 金流守衛：要求呼叫者具備 ACTIVITY_PAYMENT_APPROVE
-        if current_user is not None and not has_payment_approve(current_user):
-            paid_total = sum(r.paid_amount or 0 for r in regs)
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"該生有 {sum(1 for r in regs if (r.paid_amount or 0) > 0)} 筆"
-                    f"已繳費才藝報名（合計 NT${paid_total:,}）。"
-                    "離園/刪除學生會自動沖帳全額退費，需具備『才藝課收款簽核』權限"
-                    "（ACTIVITY_PAYMENT_APPROVE）。請改由具該權限者執行，或先至活動退費端點"
-                    "個別處理退款後再刪除學生。"
-                ),
-            )
-    for r in regs:
-        current_paid = r.paid_amount or 0
-        if current_paid > 0:
-            session.add(
-                ActivityPaymentRecord(
-                    registration_id=r.id,
-                    type="refund",
-                    amount=current_paid,
-                    payment_date=today,
-                    payment_method=SYSTEM_RECONCILE_METHOD,
-                    notes="（學生離園同步軟刪自動沖帳）",
-                    operator="system",
-                )
-            )
-            r.paid_amount = 0
-            r.is_paid = False
-            logger.warning(
-                "學生離園同步軟刪報名自動沖帳：reg_id=%s student_id=%s refunded=NT$%d，"
-                "請管理員跟進實體退款",
-                r.id,
-                student_id,
-                current_paid,
-            )
-            # 補 RegistrationChange 軌跡：前台 Dashboard「異動紀錄」才能看到這類被動退費事件
-            activity_service.log_change(
-                session,
-                r.id,
-                r.student_name,
-                "學生離園自動沖帳",
-                f"學生離園同步軟刪，系統寫退費紀錄 NT${current_paid}，請跟進實體退款",
-                "system",
-            )
-        r.is_active = False
-    return len(regs)
 
 
 def _fetch_reg_course_names(session, reg_ids: list) -> dict:

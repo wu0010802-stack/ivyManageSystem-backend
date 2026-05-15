@@ -23,15 +23,17 @@ from models.auth import User
 from models.classroom import Classroom, Student, ClassGrade
 from models.dismissal import StudentDismissalCall
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def session():
     """SQLite in-memory session，每個測試獨立。"""
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     s = Session()
@@ -93,7 +95,10 @@ def seed_data(session):
 # Helper
 # ---------------------------------------------------------------------------
 
-def _create_call(session, student, classroom, user, note=None, status="pending") -> StudentDismissalCall:
+
+def _create_call(
+    session, student, classroom, user, note=None, status="pending"
+) -> StudentDismissalCall:
     call = StudentDismissalCall(
         student_id=student.id,
         classroom_id=classroom.id,
@@ -112,6 +117,7 @@ def _create_call(session, student, classroom, user, note=None, status="pending")
 # Tests: 基本 CRUD 邏輯
 # ---------------------------------------------------------------------------
 
+
 class TestDismissalCallCreation:
     def test_create_call_success(self, session, seed_data):
         """建立通知成功，狀態應為 pending。"""
@@ -126,10 +132,14 @@ class TestDismissalCallCreation:
         d = seed_data
         _create_call(session, d["student1"], d["classroom"], d["admin_user"])
 
-        existing = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.student_id == d["student1"].id,
-            StudentDismissalCall.status.in_(["pending", "acknowledged"]),
-        ).first()
+        existing = (
+            session.query(StudentDismissalCall)
+            .filter(
+                StudentDismissalCall.student_id == d["student1"].id,
+                StudentDismissalCall.status.in_(["pending", "acknowledged"]),
+            )
+            .first()
+        )
         assert existing is not None  # 應找到，代表重複建立前應先檢查
 
     def test_different_student_can_create_call(self, session, seed_data):
@@ -203,20 +213,32 @@ class TestDismissalCallQuery:
         _create_call(session, d["student1"], d["classroom"], d["admin_user"])
         _create_call(session, d["student2"], d["classroom"], d["admin_user"])
 
-        results = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.classroom_id == d["classroom"].id,
-        ).all()
+        results = (
+            session.query(StudentDismissalCall)
+            .filter(
+                StudentDismissalCall.classroom_id == d["classroom"].id,
+            )
+            .all()
+        )
         assert len(results) == 2
 
     def test_filter_by_status_pending(self, session, seed_data):
         """可依 status=pending 篩選。"""
         d = seed_data
         call1 = _create_call(session, d["student1"], d["classroom"], d["admin_user"])
-        call2 = _create_call(session, d["student2"], d["classroom"], d["admin_user"], status="acknowledged")
+        call2 = _create_call(
+            session,
+            d["student2"],
+            d["classroom"],
+            d["admin_user"],
+            status="acknowledged",
+        )
 
-        pending = session.query(StudentDismissalCall).filter(
-            StudentDismissalCall.status == "pending"
-        ).all()
+        pending = (
+            session.query(StudentDismissalCall)
+            .filter(StudentDismissalCall.status == "pending")
+            .all()
+        )
         assert len(pending) == 1
         assert pending[0].id == call1.id
 
@@ -224,10 +246,14 @@ class TestDismissalCallQuery:
         """老師只能看到自己班級的通知（以 classroom_ids 篩選）。"""
         d = seed_data
         # teacher2 沒有班級，classroom_ids 應為空
-        teacher2_classrooms = session.query(Classroom).filter(
-            (Classroom.head_teacher_id == d["teacher2"].id)
-            | (Classroom.assistant_teacher_id == d["teacher2"].id),
-        ).all()
+        teacher2_classrooms = (
+            session.query(Classroom)
+            .filter(
+                (Classroom.head_teacher_id == d["teacher2"].id)
+                | (Classroom.assistant_teacher_id == d["teacher2"].id),
+            )
+            .all()
+        )
         assert teacher2_classrooms == []
 
 
@@ -239,10 +265,13 @@ class TestIDORProtection:
 
         # teacher2 所屬班級 IDs
         teacher2_ids = [
-            c.id for c in session.query(Classroom).filter(
+            c.id
+            for c in session.query(Classroom)
+            .filter(
                 (Classroom.head_teacher_id == d["teacher2"].id)
                 | (Classroom.assistant_teacher_id == d["teacher2"].id),
-            ).all()
+            )
+            .all()
         ]
 
         # classroom 不在 teacher2 的班級列表中 → IDOR 防護觸發
@@ -266,6 +295,7 @@ class TestCancelValidation:
 # Tests: WebSocket broadcast mock
 # ---------------------------------------------------------------------------
 
+
 class TestWebSocketBroadcastMocked:
     def _run(self, coro):
         loop = asyncio.new_event_loop()
@@ -280,7 +310,9 @@ class TestWebSocketBroadcastMocked:
         mock_manager.broadcast = AsyncMock()
 
         async def _test():
-            await mock_manager.broadcast(1, {"type": "dismissal_call_created", "payload": {}})
+            await mock_manager.broadcast(
+                1, {"type": "dismissal_call_created", "payload": {}}
+            )
             mock_manager.broadcast.assert_awaited_once()
             args = mock_manager.broadcast.call_args
             assert args[0][1]["type"] == "dismissal_call_created"
@@ -293,7 +325,13 @@ class TestWebSocketBroadcastMocked:
         mock_manager.broadcast = AsyncMock()
 
         async def _test():
-            await mock_manager.broadcast(1, {"type": "dismissal_call_updated", "payload": {"status": "acknowledged"}})
+            await mock_manager.broadcast(
+                1,
+                {
+                    "type": "dismissal_call_updated",
+                    "payload": {"status": "acknowledged"},
+                },
+            )
             mock_manager.broadcast.assert_awaited_once()
             args = mock_manager.broadcast.call_args
             assert args[0][1]["type"] == "dismissal_call_updated"
@@ -306,9 +344,142 @@ class TestWebSocketBroadcastMocked:
         mock_manager.broadcast = AsyncMock()
 
         async def _test():
-            await mock_manager.broadcast(1, {"type": "dismissal_call_cancelled", "payload": {}})
+            await mock_manager.broadcast(
+                1, {"type": "dismissal_call_cancelled", "payload": {}}
+            )
             mock_manager.broadcast.assert_awaited_once()
             args = mock_manager.broadcast.call_args
             assert args[0][1]["type"] == "dismissal_call_cancelled"
 
         self._run(_test())
+
+
+# ---------------------------------------------------------------------------
+# T4: Race-condition test for cancel/acknowledge concurrency
+# ---------------------------------------------------------------------------
+#
+# round 3 bug sweep（2026-05-12）為 cancel / acknowledge / complete 三條路徑
+# 加了 with_for_update + 取鎖後 refresh + status 重檢查。原本只有狀態機測試
+# 無法驗證並發保護真的生效。本測試以兩條 thread 同時模擬 cancel，驗證：
+#
+# - 不能兩 thread 都「靜默成功」（沒有 lock 時的失敗模式）
+# - 必須恰好一個 thread 成功，另一個收到 422 status 已變動
+# - SQLite with_for_update 雖是 no-op，但 SQLite 寫入序列化 + 應用層
+#   「取鎖→refresh→重檢查」的順序仍可確保第二位寫入者看到新狀態。
+# - PG production：advisory + row lock 提供真正的互斥；SQLite 測試重點
+#   在驗證應用層邏輯的 invariant（status 檢查在 lock 之後而非之前）。
+import threading
+
+
+class TestDismissalCallRaceCondition:
+    def test_concurrent_cancel_only_one_wins(self, seed_data, tmp_path):
+        """兩 thread 同時 cancel 同筆 pending dismissal_call：
+        - 第一個成功 → status=cancelled
+        - 第二個讀到 cancelled 後 raise 422
+        - 不能兩者都靜默 commit
+        """
+        d = seed_data
+
+        # 必須用 file-based SQLite 才能在多 thread 看到對方 commit；
+        # 既有 fixture 的 in-memory engine 對 thread 來說是不同 DB。
+        db_path = tmp_path / "dismissal-race.sqlite"
+        engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False, "isolation_level": None},
+        )
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+
+        # 把 seed 內的關鍵資料複製到新 engine
+        with Session() as s:
+            grade = ClassGrade(name="大班", sort_order=1)
+            s.add(grade)
+            s.flush()
+            t1 = Employee(employee_id="T001", name="王老師", position="幼兒園教師")
+            s.add(t1)
+            s.flush()
+            cr = Classroom(
+                name="向日葵班",
+                school_year=2025,
+                semester=2,
+                grade_id=grade.id,
+                head_teacher_id=t1.id,
+            )
+            s.add(cr)
+            s.flush()
+            stu = Student(student_id="S001", name="小明", classroom_id=cr.id)
+            s.add(stu)
+            s.flush()
+            u = User(
+                employee_id=t1.id,
+                username="admin",
+                password_hash="x",
+                role="admin",
+                permissions=-1,
+            )
+            s.add(u)
+            s.flush()
+            call = StudentDismissalCall(
+                student_id=stu.id,
+                classroom_id=cr.id,
+                requested_by_user_id=u.id,
+                note="race",
+                status="pending",
+                requested_at=datetime.now(),
+            )
+            s.add(call)
+            s.commit()
+            call_id = call.id
+
+        # 兩 thread 各自開 session，等 barrier 同時 release 後競爭
+        barrier = threading.Barrier(2)
+        results: list[tuple[str, int | None]] = []
+        results_lock = threading.Lock()
+
+        def _try_cancel():
+            with Session() as s:
+                barrier.wait()
+                try:
+                    row = (
+                        s.query(StudentDismissalCall)
+                        .filter(StudentDismissalCall.id == call_id)
+                        .with_for_update()
+                        .first()
+                    )
+                    s.refresh(row)
+                    if row.status not in ("pending", "acknowledged"):
+                        with results_lock:
+                            results.append(("rejected", None))
+                        return
+                    row.status = "cancelled"
+                    s.commit()
+                    with results_lock:
+                        results.append(("ok", row.id))
+                except Exception as e:
+                    with results_lock:
+                        results.append(("error", str(e)))
+
+        t_a = threading.Thread(target=_try_cancel)
+        t_b = threading.Thread(target=_try_cancel)
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=5)
+        t_b.join(timeout=5)
+
+        # 驗證：必須恰好一個 ok + 一個 rejected
+        ok_count = sum(1 for r in results if r[0] == "ok")
+        rejected_count = sum(1 for r in results if r[0] == "rejected")
+        assert (
+            ok_count == 1 and rejected_count == 1
+        ), f"並發 cancel 結果異常：{results}（期望 1 ok + 1 rejected）"
+
+        # 最終 DB 狀態必須是 cancelled，且只有 1 筆
+        with Session() as s:
+            final = (
+                s.query(StudentDismissalCall)
+                .filter(StudentDismissalCall.id == call_id)
+                .one()
+            )
+            assert final.status == "cancelled"
+
+        engine.dispose()

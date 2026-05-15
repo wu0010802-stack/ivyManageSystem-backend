@@ -108,6 +108,7 @@ class EventPatch(BaseModel):
     parent_reaction: Optional[ParentReaction] = None
     title: Optional[str] = Field(default=None, max_length=120)
     detail: Optional[str] = None
+    catalog_item_id: Optional[int] = None
 
     @field_validator("score_delta")
     @classmethod

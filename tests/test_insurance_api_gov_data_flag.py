@@ -60,10 +60,6 @@ def test_brackets_response_flag_true_when_staging_promoted(client, test_db_sessi
         s.flush()
 
     resp = client.get("/api/insurance/brackets?year=2027")
-    if resp.status_code == 404:
-        pytest.skip(
-            "GET /api/insurance/brackets endpoint not at expected path; test needs path adjustment"
-        )
     assert resp.status_code == 200, resp.text
     assert resp.json().get("latest_promoted_from_gov_data") is True
 
@@ -83,9 +79,7 @@ def test_brackets_response_flag_false_when_no_staging(client, test_db_session):
         )
         s.flush()
     resp = client.get("/api/insurance/brackets?year=2028")
-    if resp.status_code == 404:
-        pytest.skip("path mismatch")
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     assert resp.json().get("latest_promoted_from_gov_data") is False
 
 
@@ -117,7 +111,5 @@ def test_brackets_response_flag_false_when_only_dismissed(client, test_db_sessio
         )
         s.flush()
     resp = client.get("/api/insurance/brackets?year=2029")
-    if resp.status_code == 404:
-        pytest.skip("path mismatch")
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     assert resp.json().get("latest_promoted_from_gov_data") is False

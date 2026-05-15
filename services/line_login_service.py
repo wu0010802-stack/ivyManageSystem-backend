@@ -48,6 +48,33 @@ class LineLoginService:
     def is_configured(self) -> bool:
         return bool(self.channel_id)
 
+    # S5: id_token 反 replay cache。
+    # LINE /verify 只擋過期，未擋 retention 內重放；同一 id_token 在有效期
+    # 內可重複登入。記住最近用過的 token hash（5 分鐘 TTL）即可封住。
+    # 多 worker 部署仍會有 N× 通過率，配合 IP rate limit 已足夠。
+    _ID_TOKEN_SEEN: dict[str, float] = {}
+    _ID_TOKEN_TTL_SECONDS: int = 5 * 60
+
+    def _check_id_token_replay(self, id_token: str) -> None:
+        import hashlib
+        import time
+
+        now = time.time()
+        # GC：每次呼叫順手清過期項，避免無界成長
+        expired = [k for k, exp in LineLoginService._ID_TOKEN_SEEN.items() if exp < now]
+        for k in expired:
+            LineLoginService._ID_TOKEN_SEEN.pop(k, None)
+
+        digest = hashlib.sha256(id_token.encode("utf-8")).hexdigest()
+        if digest in LineLoginService._ID_TOKEN_SEEN:
+            logger.warning("LINE id_token 重放偵測：拒絕（hash=%s...）", digest[:8])
+            raise HTTPException(
+                status_code=401, detail="此 LINE 登入已使用過，請重新從 LIFF 開啟"
+            )
+        LineLoginService._ID_TOKEN_SEEN[digest] = (
+            now + LineLoginService._ID_TOKEN_TTL_SECONDS
+        )
+
     def verify_id_token(self, id_token: str) -> dict:
         """呼叫 LINE /verify 驗證 id_token。
 
@@ -97,4 +124,6 @@ class LineLoginService:
         sub = payload.get("sub")
         if not sub or not isinstance(sub, str):
             raise HTTPException(status_code=401, detail="LINE id_token 缺少 sub")
+        # S5: 在最末一刻才標記 used，避免格式錯誤的 token 占用 dedup 槽。
+        self._check_id_token_replay(id_token)
         return payload

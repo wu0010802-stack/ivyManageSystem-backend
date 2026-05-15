@@ -347,267 +347,25 @@ def _notify_and_recalc_overtime(
                 session.rollback()
 
 
-def _to_time(val) -> dt_time:
-    """str / datetime.time / datetime.datetime 統一正規化為 datetime.time。
+# F5: 抽到 utils/leave_overtime_conflict.py 共用（leaves.py 與 overtimes.py
+# 原本各自有一份）。保留本檔 alias 維持既有 import surface。
+from utils.leave_overtime_conflict import (
+    to_time as _to_time,
+    times_overlap as _times_overlap,
+)
 
-    DB 欄位依設定不同可能回傳 datetime.time（Time 欄位）或 datetime.datetime（DateTime 欄位）；
-    外部輸入則為 'HH:MM' 字串。直接混型比較（str < time、datetime < time 等）會
-    觸發 TypeError，本函式確保任何輸入都能安全轉換為可比較的 datetime.time。
-    """
-    if isinstance(val, str):
-        h, m = map(int, val.strip().split(":")[:2])
-        return dt_time(h, m)
-    if isinstance(val, datetime):  # datetime 是 date 的子類別，必須在 date 之前檢查
-        return val.time()
-    if isinstance(val, dt_time):
-        return val
-    raise TypeError(f"無法將 {type(val).__name__!r} 轉為 datetime.time")
-
-
-def _times_overlap(start1, end1, start2, end2) -> bool:
-    """判斷兩個時間區間是否重疊（開放端點：端點相接不視為重疊）。
-
-    接受 str ('HH:MM')、datetime.time 或 datetime.datetime，
-    透過 _to_time() 統一轉換後再比較，不受傳入型別影響。
-
-    公式：start1 < end2 AND start2 < end1
-    """
-    return _to_time(start1) < _to_time(end2) and _to_time(start2) < _to_time(end1)
-
-
-def calculate_overtime_pay(
-    base_salary: float, hours: float, overtime_type: str
-) -> float:
-    """依勞基法計算加班費（時薪 = 月薪 ÷ 30 ÷ 8）"""
-    if not base_salary or base_salary <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="該員工底薪未設定或為 0，無法計算加班費，請先完成薪資設定。",
-        )
-    # 防禦縱深：即使前端驗證被繞過，也不允許負數或零時數計算
-    if hours <= 0:
-        return 0.0
-    hours = min(hours, MAX_OVERTIME_HOURS)
-    hourly_base = base_salary / MONTHLY_BASE_DAYS / DAILY_WORK_HOURS
-
-    if overtime_type == "weekday":
-        # 平日：前2h × 1.34，超過 × 1.67
-        if hours <= WEEKDAY_THRESHOLD_HOURS:
-            return round(hourly_base * hours * WEEKDAY_FIRST_2H_RATE)
-        return round(
-            hourly_base * WEEKDAY_THRESHOLD_HOURS * WEEKDAY_FIRST_2H_RATE
-            + hourly_base * (hours - WEEKDAY_THRESHOLD_HOURS) * WEEKDAY_AFTER_2H_RATE
-        )
-    elif overtime_type == "weekend":
-        # 休息日：最低計 2h，前2h × 1.33，3~8h × 1.67，超8h × 2.67
-        billable = max(hours, RESTDAY_MIN_HOURS)
-        if billable <= RESTDAY_FIRST_SEGMENT:
-            return round(hourly_base * billable * RESTDAY_FIRST_2H_RATE)
-        elif billable <= RESTDAY_SECOND_SEGMENT:
-            return round(
-                hourly_base * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
-                + hourly_base * (billable - RESTDAY_FIRST_SEGMENT) * RESTDAY_MID_RATE
-            )
-        return round(
-            hourly_base * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
-            + hourly_base
-            * (RESTDAY_SECOND_SEGMENT - RESTDAY_FIRST_SEGMENT)
-            * RESTDAY_MID_RATE
-            + hourly_base * (billable - RESTDAY_SECOND_SEGMENT) * RESTDAY_AFTER_8H_RATE
-        )
-    else:
-        # 例假日 / 國定假日：全部 × 2.0
-        return round(hourly_base * hours * HOLIDAY_RATE)
-
-
-def _check_employee_has_conflicting_leave(
-    session,
-    employee_id: int,
-    overtime_date: date,
-    start_time,  # datetime | None
-    end_time,  # datetime | None
-) -> None:
-    """申請加班時檢查同員工同時段是否已有 approved/pending 請假。
-
-    修補 2026-05-11 P1-5：請假與加班不互查重疊，導致同日扣款 + 加班費雙重溢付。
-
-    時段比對規則：
-    - OT 全日（start_time/end_time 為 None）→ 與 leave 同日就衝突
-    - OT 半日 → 與 leave 時段比對；leave 缺時段視為全日衝突
-
-    NOTE: 目前只在 create 路徑使用。若未來在 update 路徑也呼叫此 helper，需新增
-    exclude_leave_id 參數避免自我衝突；同步調整 _check_employee_has_conflicting_overtime。
-    """
-    from models.database import LeaveRecord  # avoid circular import at module load
-
-    candidates = (
-        session.query(LeaveRecord)
-        .filter(
-            LeaveRecord.employee_id == employee_id,
-            LeaveRecord.is_approved.in_([None, True]),
-            LeaveRecord.start_date <= overtime_date,
-            LeaveRecord.end_date >= overtime_date,
-        )
-        .all()
-    )
-    for lv in candidates:
-        # OT 全日 → 同日有 leave 即衝突
-        if start_time is None or end_time is None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"員工於 {overtime_date} 已有請假申請 #{lv.id}"
-                    f"（{lv.leave_type}），加班時段與請假重疊"
-                ),
-            )
-        # leave 全日 → 衝突
-        if not lv.start_time or not lv.end_time:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"員工於 {overtime_date} 已有全日請假 #{lv.id}"
-                    f"（{lv.leave_type}），加班時段與請假重疊"
-                ),
-            )
-        # 半日 vs 半日：時段精比
-        ot_start_str = start_time.strftime("%H:%M")
-        ot_end_str = end_time.strftime("%H:%M")
-        if max(ot_start_str, lv.start_time) < min(ot_end_str, lv.end_time):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"員工於 {overtime_date} 已有請假 #{lv.id}"
-                    f"（{lv.start_time}~{lv.end_time}），加班時段與其重疊"
-                ),
-            )
-
-
-def _check_overtime_overlap(
-    session,
-    employee_id: int,
-    overtime_date: date,
-    start_time,
-    end_time,
-    exclude_id: int = None,
-) -> "OvertimeRecord | None":
-    """
-    檢查員工在指定日期是否已有時間重疊的加班申請（待審核或已核准）。
-
-    重疊規則：
-    - 已駁回的申請不列入，允許重新申請
-    - 若新申請或現有記錄缺少時間資訊，同日即視為重疊
-    - 若雙方都有 start/end time，做時間區間重疊判斷（start1 < end2 AND start2 < end1）
-    """
-    q = session.query(OvertimeRecord).filter(
-        OvertimeRecord.employee_id == employee_id,
-        OvertimeRecord.overtime_date == overtime_date,
-        or_(OvertimeRecord.is_approved.is_(None), OvertimeRecord.is_approved == True),
-    )
-    if exclude_id is not None:
-        q = q.filter(OvertimeRecord.id != exclude_id)
-
-    # 若新申請缺少時間，同日任何記錄均視為重疊（維持原邏輯）
-    if start_time is None or end_time is None:
-        return q.first()
-
-    # 有明確時間：DB 端排除「確定不重疊」的記錄
-    # 保留：既有記錄缺少時間（無法比對，視為重疊），或時間區間重疊
-    q = q.filter(
-        or_(
-            OvertimeRecord.start_time.is_(None),
-            OvertimeRecord.end_time.is_(None),
-            and_(
-                OvertimeRecord.start_time < end_time,
-                OvertimeRecord.end_time > start_time,
-            ),
-        )
-    )
-    return q.first()
-
-
-def _assert_within_monthly_cap(
-    existing_hours: float, new_hours: float, year: int, month: int
-) -> None:
-    """純函式：驗證既存 + 新加班時數不超過勞基法第 32 條第 2 項 46h/月上限。"""
-    existing = float(existing_hours or 0)
-    new = float(new_hours or 0)
-    total = existing + new
-    if total > MAX_MONTHLY_OVERTIME_HOURS + 1e-9:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"該員工 {year}/{month} 已申請加班 {existing:.1f} 小時，"
-                f"加上此筆 {new:.1f} 小時合計 {total:.1f} 小時，"
-                f"超過勞基法第 32 條每月延長工時上限 {MAX_MONTHLY_OVERTIME_HOURS:.0f} 小時。"
-            ),
-        )
-
-
-def _validate_overtime_type_matches_calendar(
-    overtime_type: str, is_statutory_holiday: bool
-) -> None:
-    """純函式：overtime_type 與該日是否為國定假日需一致（勞基法第 37 條）。
-
-    - "holiday" 但日期非國定假日 → 400（防止溢付）
-    - "weekday"/"weekend" 但日期為國定假日 → 400（防止短付違反第 37 條）
-    """
-    if overtime_type == "holiday" and not is_statutory_holiday:
-        raise HTTPException(
-            status_code=400,
-            detail="該日期不在國定假日清單，請改用 weekday 或 weekend",
-        )
-    if overtime_type in ("weekday", "weekend") and is_statutory_holiday:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "該日期為國定假日，加班類型須為 holiday 以加倍發給工資"
-                "（勞基法第 37 條）"
-            ),
-        )
-
-
-def _check_overtime_type_calendar(
-    session, target_date: date, overtime_type: str
-) -> None:
-    """查詢 Holiday 表後呼叫純函式驗證。"""
-    is_holiday = (
-        session.query(Holiday)
-        .filter(Holiday.date == target_date, Holiday.is_active == True)
-        .first()
-        is not None
-    )
-    _validate_overtime_type_matches_calendar(overtime_type, is_holiday)
-
-
-def _check_monthly_overtime_cap(
-    session,
-    employee_id: int,
-    target_date: date,
-    new_hours: float,
-    exclude_id: int = None,
-) -> None:
-    """查詢員工指定月份已申請（待審+已核准）加班時數，加上新時數後驗證不超過月上限。
-
-    已駁回的申請不計入（釋放時數額度）。
-    """
-    year, month = target_date.year, target_date.month
-    _, last_day = cal_module.monthrange(year, month)
-    start = date(year, month, 1)
-    end = date(year, month, last_day)
-    q = session.query(func.coalesce(func.sum(OvertimeRecord.hours), 0)).filter(
-        OvertimeRecord.employee_id == employee_id,
-        OvertimeRecord.overtime_date >= start,
-        OvertimeRecord.overtime_date <= end,
-        or_(
-            OvertimeRecord.is_approved.is_(None),
-            OvertimeRecord.is_approved == True,
-        ),
-    )
-    if exclude_id is not None:
-        q = q.filter(OvertimeRecord.id != exclude_id)
-    existing = float(q.scalar() or 0)
-    _assert_within_monthly_cap(existing, new_hours, year, month)
-
+# F1 第二/三波：calculate_overtime_pay + 4 衝突檢查 helper 全部抽到 services。
+# 本檔保留 alias 維持既有 import surface 不變（api/portal/overtimes.py 與
+# 其他模組已透過 `from api.overtimes import _check_*` 取得；改用 alias 不需動）。
+from services.overtime_pay_calculator import calculate_overtime_pay  # noqa: E402,F401
+from services.overtime_conflict_service import (  # noqa: E402,F401
+    _assert_within_monthly_cap,
+    _validate_overtime_type_matches_calendar,
+    check_employee_has_conflicting_leave as _check_employee_has_conflicting_leave,
+    check_monthly_overtime_cap as _check_monthly_overtime_cap,
+    check_overtime_overlap as _check_overtime_overlap,
+    check_overtime_type_calendar as _check_overtime_type_calendar,
+)
 
 # ============ Pydantic Models ============
 
@@ -729,27 +487,7 @@ class OvertimeBatchApproveRequest(BaseModel):
 # ============ Excel Helpers (local) ============
 
 
-_OT_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
-_OT_HEADER_FILL = PatternFill(
-    start_color="4472C4", end_color="4472C4", fill_type="solid"
-)
-_OT_THIN_BORDER = Border(
-    left=Side(style="thin"),
-    right=Side(style="thin"),
-    top=Side(style="thin"),
-    bottom=Side(style="thin"),
-)
-_OT_CENTER_ALIGN = Alignment(horizontal="center")
-
-
-def _ot_write_header(ws, row, headers):
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=row, column=col, value=h)
-        cell.font = _OT_HEADER_FONT
-        cell.fill = _OT_HEADER_FILL
-        cell.border = _OT_THIN_BORDER
-        cell.alignment = _OT_CENTER_ALIGN
-
+from utils.excel_writer import write_header_row as _ot_write_header  # noqa: E402
 
 # ============ Routes ============
 

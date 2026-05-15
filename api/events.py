@@ -276,26 +276,7 @@ def delete_event(
 # ============ 假日批次匯入（Holiday 表） ============
 
 
-_EV_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
-_EV_HEADER_FILL = PatternFill(
-    start_color="4472C4", end_color="4472C4", fill_type="solid"
-)
-_EV_THIN_BORDER = Border(
-    left=Side(style="thin"),
-    right=Side(style="thin"),
-    top=Side(style="thin"),
-    bottom=Side(style="thin"),
-)
-_EV_CENTER_ALIGN = Alignment(horizontal="center")
-
-
-def _ev_write_header(ws, row, headers):
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=row, column=col, value=h)
-        cell.font = _EV_HEADER_FONT
-        cell.fill = _EV_HEADER_FILL
-        cell.border = _EV_THIN_BORDER
-        cell.alignment = _EV_CENTER_ALIGN
+from utils.excel_writer import write_header_row as _ev_write_header  # noqa: E402
 
 
 @router.get("/events/holidays/import-template")

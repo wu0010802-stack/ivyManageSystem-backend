@@ -178,7 +178,8 @@ def _should_mount_dev_router() -> bool:
 
 # Services (singletons)
 insurance_service = InsuranceService()
-salary_engine = SalaryEngine(load_from_db=True)
+# F3: 注入既有 InsuranceService singleton，避免 engine 自建第二份造成狀態分歧
+salary_engine = SalaryEngine(load_from_db=True, insurance_service=insurance_service)
 line_service = LineService()
 # 家長入口 LIFF 認證；channel_id 可為空，端點會回 503 直到正確設定
 line_login_service = LineLoginService(
@@ -682,6 +683,22 @@ from utils.request_logging import RequestLoggingMiddleware
 
 app.add_middleware(RequestLoggingMiddleware)
 
+# TrustedHost 必須最後 add（成為最外層），在所有處理前先驗證 Host header。
+# 防 Host header injection / 開放重新導向 / 快取毒化。
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
+_allowed_hosts_env = os.environ.get("ALLOWED_HOSTS", "")
+if _allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+elif _is_prod_env:
+    raise RuntimeError(
+        "ALLOWED_HOSTS 環境變數未設定，正式環境必須明列允許的 Host header（防 Host header 攻擊）。"
+    )
+else:
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver", "*.zeabur.app"]
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+
 # ---------------------------------------------------------------------------
 # Root
 # ---------------------------------------------------------------------------
@@ -695,4 +712,15 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 反向代理感知：在 LB / nginx / cloudflare 後面時，讓 uvicorn 從
+    # X-Forwarded-For / Forwarded 標頭重寫 request.client.host。
+    # forwarded_allow_ips 可由 TRUSTED_PROXY_IPS 控制；預設 "*" 接受任何
+    # 前代理（dev 友善）。Prod 應設為 LB 內網 IP / CIDR。
+    forwarded_allow = os.getenv("TRUSTED_PROXY_IPS", "*")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow,
+    )

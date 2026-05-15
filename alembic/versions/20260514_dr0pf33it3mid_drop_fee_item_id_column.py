@@ -9,8 +9,15 @@ upgrade：
 1. DROP INDEX ix_fee_records_fee_item（若還在）
 2. DROP COLUMN student_fee_records.fee_item_id
 
-downgrade 對稱還原（ADD COLUMN nullable + 重建 INDEX；不需 FK 也不需 unique，
-因 c2 已卸除；fee_items 表本身由 tu1ti0nr3f4ct 的 downgrade 重建）。
+⚠️ DOWNGRADE 不可逆警告：
+production 已執行 upgrade 後，downgrade 只能還原 schema（重建欄位 + index），
+無法還原欄位內已 DROP 的歷史值（PostgreSQL DROP COLUMN 永久丟資料）。
+事後重建只能得到全 NULL 的 fee_item_id 欄位。
+若 production 仍有需要保留的 fee_item_id 對應關係，務必先：
+  1. 從 audit log / 備份 dump 出 (student_fee_record_id, fee_item_id) 對應表
+  2. upgrade 後若決定 downgrade，先重建欄位再從備份回填
+本 downgrade 僅對稱還原 schema（ADD COLUMN nullable + 重建 INDEX；不需 FK
+也不需 unique，因 c2 已卸除；fee_items 表本身由 tu1ti0nr3f4ct 的 downgrade 重建）。
 
 Revision ID: dr0pf33it3mid
 Revises: tu1ti0nr3f4ct

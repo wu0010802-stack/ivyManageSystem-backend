@@ -559,6 +559,119 @@ async def get_student_records_timeline(
         session.close()
 
 
+# ============ 教務紀錄摘要（出席率 / 請假天 / 評量數 / 事件數）============
+
+
+def _semester_date_range(school_year: int, semester: int) -> tuple[date, date]:
+    """學年度 + 學期 → 對應日期區間（學年度為民國年）。
+
+    semester=1 上學期：當年 8/1 ~ 隔年 1/31
+    semester=2 下學期：當年 2/1 ~ 7/31
+    """
+    ad_year = school_year + 1911
+    if semester == 1:
+        return date(ad_year, 8, 1), date(ad_year + 1, 1, 31)
+    return date(ad_year + 1, 2, 1), date(ad_year + 1, 7, 31)
+
+
+@router.get("/students/{student_id}/academic-summary")
+async def get_academic_summary(
+    student_id: int,
+    school_year: Optional[int] = Query(None, ge=100, le=200),
+    semester: Optional[int] = Query(None, ge=1, le=2),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+):
+    """單一學生教務摘要：本學期 4 指標。
+
+    回傳：attendance_rate（出席率 0~1）、leave_days（請假天）、
+    assessment_count（評量筆數）、incident_count（事件筆數）。
+    未指定 school_year/semester 時自動採用當前學期。
+    """
+    from models.database import (
+        StudentAttendance,
+        StudentAssessment,
+        StudentIncident,
+        StudentLeaveRequest,
+    )
+
+    sy, sem = resolve_academic_term_filters(school_year, semester)
+    period_from, period_to = _semester_date_range(sy, sem)
+
+    session = get_session()
+    try:
+        assert_student_access(session, current_user, student_id)
+
+        # 出席率：以本學期區間內所有出席紀錄計算
+        att_rows = (
+            session.query(StudentAttendance.status)
+            .filter(
+                StudentAttendance.student_id == student_id,
+                StudentAttendance.date >= period_from,
+                StudentAttendance.date <= period_to,
+            )
+            .all()
+        )
+        total_att = len(att_rows)
+        present_count = sum(1 for (s,) in att_rows if s == "出席")
+        attendance_rate = (present_count / total_att) if total_att else 0.0
+
+        # 請假天：approved 狀態請假覆蓋本學期區間的天數總和
+        leave_days = 0
+        leaves = (
+            session.query(StudentLeaveRequest)
+            .filter(
+                StudentLeaveRequest.student_id == student_id,
+                StudentLeaveRequest.status == "approved",
+                StudentLeaveRequest.start_date <= period_to,
+                StudentLeaveRequest.end_date >= period_from,
+            )
+            .all()
+        )
+        for lv in leaves:
+            start = max(lv.start_date, period_from)
+            end = min(lv.end_date, period_to)
+            leave_days += (end - start).days + 1
+
+        assessment_count = (
+            session.query(func.count(StudentAssessment.id))
+            .filter(
+                StudentAssessment.student_id == student_id,
+                StudentAssessment.assessment_date >= period_from,
+                StudentAssessment.assessment_date <= period_to,
+            )
+            .scalar()
+        ) or 0
+
+        incident_count = (
+            session.query(func.count(StudentIncident.id))
+            .filter(
+                StudentIncident.student_id == student_id,
+                StudentIncident.occurred_at
+                >= datetime.combine(period_from, datetime.min.time()),
+                StudentIncident.occurred_at
+                <= datetime.combine(period_to, datetime.max.time()),
+            )
+            .scalar()
+        ) or 0
+
+        return {
+            "school_year": sy,
+            "semester": sem,
+            "period": {
+                "from": period_from.isoformat(),
+                "to": period_to.isoformat(),
+            },
+            "attendance_rate": round(attendance_rate, 4),
+            "attendance_total": total_att,
+            "attendance_present": present_count,
+            "leave_days": leave_days,
+            "assessment_count": int(assessment_count),
+            "incident_count": int(incident_count),
+        }
+    finally:
+        session.close()
+
+
 @router.get("/students/{student_id}")
 async def get_student(
     student_id: int,

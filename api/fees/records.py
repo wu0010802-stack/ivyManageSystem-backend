@@ -126,6 +126,7 @@ def list_fee_records(
                     "payment_method": r.payment_method,
                     "notes": r.notes,
                     "period": r.period,
+                    "fee_type": r.fee_type,
                 }
                 for r in records
             ],

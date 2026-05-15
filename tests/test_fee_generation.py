@@ -372,3 +372,97 @@ def test_generate_no_template_for_grade_skipped(client_admin, setup_school, sess
     )
     body = r.json()
     assert body["created"] == 1  # 只有大班 A1
+
+
+# ---------------------------------------------------------------------------
+# 金流守衛：批次 Σ amount_due > 50K 需 ACTIVITY_PAYMENT_APPROVE
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client_fees_writer(_backend):
+    """FEES_WRITE 但無 ACTIVITY_PAYMENT_APPROVE 的 admin。"""
+    from utils.permissions import Permission
+
+    perms = int(Permission.FEES_READ | Permission.FEES_WRITE)
+    with _backend["session_factory"]() as s:
+        u = User(
+            username="gen_fees_only",
+            password_hash=hash_password("Temp123456"),
+            role="admin",
+            permissions=perms,
+            is_active=True,
+        )
+        s.add(u)
+        s.commit()
+
+    client = TestClient(_backend["app"])
+    r = client.post(
+        "/api/auth/login",
+        json={"username": "gen_fees_only", "password": "Temp123456"},
+    )
+    assert r.status_code == 200, f"fees-only login failed: {r.text}"
+    yield client
+    client.close()
+
+
+def test_generate_dry_run_skips_finance_guard(
+    client_fees_writer, setup_school, session
+):
+    """dry_run 不寫入,守衛應跳過,讓無 approve 權者也能預估金額。"""
+    grades = setup_school["grades"]
+    _make_template(session, grades["大班"], "registration", 19000)
+    _make_template(session, grades["中班"], "registration", 19000)
+    session.commit()
+
+    r = client_fees_writer.post(
+        "/api/fees/generate",
+        json={
+            "school_year": 114,
+            "semester": 1,
+            "fee_types": ["registration"],
+            "dry_run": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_generate_bulk_sum_over_50k_requires_finance_approve(
+    client_fees_writer, setup_school, session
+):
+    """Σ amount_due > 50K 需 ACTIVITY_PAYMENT_APPROVE,否則 403。
+
+    Regression: 早期錯用 finance_guards 預設閾值 1K,守衛任何寫入都觸發。
+    應沿用 fees 模組的 FEE_PAYMENT_APPROVAL_THRESHOLD (50K)。
+    """
+    grades = setup_school["grades"]
+    _make_template(session, grades["大班"], "registration", 19000)
+    _make_template(session, grades["中班"], "registration", 19000)
+    # 2 學生 × 19000 = 38000 < 50K,不觸發
+    session.commit()
+    r1 = client_fees_writer.post(
+        "/api/fees/generate",
+        json={
+            "school_year": 114,
+            "semester": 1,
+            "fee_types": ["registration"],
+            "dry_run": False,
+        },
+    )
+    assert r1.status_code == 200, r1.text
+
+    # 加月費展開 6 月 × 2 學生 × 10000 = 120000 > 50K,需 approve
+    _make_template(session, grades["大班"], "monthly", 10000)
+    _make_template(session, grades["中班"], "monthly", 10000)
+    session.commit()
+    r2 = client_fees_writer.post(
+        "/api/fees/generate",
+        json={
+            "school_year": 114,
+            "semester": 1,
+            "fee_types": ["monthly"],
+            "dry_run": False,
+        },
+    )
+    assert r2.status_code == 403, r2.text
+    assert "50,000" in r2.json()["detail"]

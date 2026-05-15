@@ -34,15 +34,9 @@ from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
 
 
-def _invalidate_finance_summary_cache() -> None:
-    """薪資寫入後失效 /finance-summary 快取（TTL 30 分）。失敗不影響交易。"""
-    try:
-        report_cache_service.invalidate_category(None, "reports_finance_summary")
-    except Exception:
-        logging.getLogger(__name__).warning(
-            "invalidate finance_summary cache failed", exc_info=True
-        )
-
+from utils.finance_cache import (
+    invalidate_finance_summary_cache as _invalidate_finance_summary_cache,
+)
 
 # _salary_calc_limiter / MAX_BULK_EMPLOYEES_SYNC 已搬到 .calculate 子檔。
 from fastapi import BackgroundTasks

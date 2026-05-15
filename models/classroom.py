@@ -283,6 +283,11 @@ class StudentAssessment(Base):
     suggestions = Column(Text, nullable=True)  # 改善建議
     assessment_date = Column(Date, nullable=False)  # 評量日期
     recorded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    related_incident_id = Column(
+        Integer,
+        ForeignKey("student_incidents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -290,4 +295,5 @@ class StudentAssessment(Base):
     __table_args__ = (
         Index("ix_student_assessments_student", "student_id"),
         Index("ix_student_assessments_semester", "semester"),
+        Index("ix_student_assessments_related_incident", "related_incident_id"),
     )

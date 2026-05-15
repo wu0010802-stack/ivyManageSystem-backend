@@ -310,7 +310,7 @@ class TestAdminBindingCodeAndParentBind:
         )
         assert admin_resp.status_code == 200
         plain_code = admin_resp.json()["code"]
-        assert len(plain_code) == 8
+        assert len(plain_code) == 12  # S4: 提升至 12 位 ~60 bits entropy
 
         # DB 內只存 hash，不存明碼
         with session_factory() as session:
