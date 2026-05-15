@@ -683,6 +683,22 @@ from utils.request_logging import RequestLoggingMiddleware
 
 app.add_middleware(RequestLoggingMiddleware)
 
+# TrustedHost 必須最後 add（成為最外層），在所有處理前先驗證 Host header。
+# 防 Host header injection / 開放重新導向 / 快取毒化。
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
+_allowed_hosts_env = os.environ.get("ALLOWED_HOSTS", "")
+if _allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+elif _is_prod_env:
+    raise RuntimeError(
+        "ALLOWED_HOSTS 環境變數未設定，正式環境必須明列允許的 Host header（防 Host header 攻擊）。"
+    )
+else:
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver", "*.zeabur.app"]
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+
 # ---------------------------------------------------------------------------
 # Root
 # ---------------------------------------------------------------------------
