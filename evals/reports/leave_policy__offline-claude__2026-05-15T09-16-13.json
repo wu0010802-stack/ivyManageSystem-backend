@@ -1,0 +1,376 @@
+{
+  "target": "leave_policy",
+  "attacker": "offline-claude",
+  "started_at": "2026-05-15T09:16:13",
+  "finished_at": "2026-05-15T09:16:13",
+  "totals": {
+    "seed_cases": 3,
+    "attack_cases": 14,
+    "violations": 0,
+    "unexpected_exceptions": 0
+  },
+  "seed_results": [
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ],
+  "attack_results": [
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 24)",
+        "end_date": "datetime.date(2026, 5, 24)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "同日請假 1 天,requires_doc 應為 False(boundary check at days+1=1)",
+        "_attacker_target_invariant": "IV1_calendar_days"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 24)",
+        "end_date": "datetime.date(2026, 5, 25)",
+        "leave_hours": 16,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "兩日請假 days+1=2,requires_doc 應為 False(剛好不超過 2)",
+        "_attacker_target_invariant": "IV1_calendar_days"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 24)",
+        "end_date": "datetime.date(2026, 5, 26)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "三日請假 days+1=3,requires_doc 應為 True(剛好超過 2)",
+        "_attacker_target_invariant": "IV1_calendar_days"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 25)",
+        "end_date": "datetime.date(2026, 5, 24)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "end < start 會給負天數;requires_doc 應 False(負 > 2 為 False),但函式可能沒處理此情況",
+        "_attacker_target_invariant": "IV1_calendar_days"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "事假提前 1 日(< 提前 2 日門檻),應 raise",
+        "_attacker_target_invariant": "IV2_personal_advance_blocks"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "事假當日提出,應 raise",
+        "_attacker_target_invariant": "IV2_personal_advance_blocks"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 13)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 16,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "事假事後補(start 在過去),提前不足 2 日,應 raise",
+        "_attacker_target_invariant": "IV2_personal_advance_blocks"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "事假剛好 today+2(邊界),應通過",
+        "_attacker_target_invariant": "IV3_personal_advance_ok"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4.0000000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "病假 hours = 4.0000000001(浮點略偏離 4 倍),% 4 != 0 應 raise;若程式做了 isclose 容差就會放行",
+        "_attacker_target_invariant": "IV4_sick_non_multiple_blocks"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": NaN,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "hours=NaN:nan%4=nan, nan!=0 為 True → 應 raise;但若改成 isclose 或 == 0 容易意外通過",
+        "_attacker_target_invariant": "IV4_sick_non_multiple_blocks"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 3.999999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "病假 hours = 3.999... < 4,% 4 = 3.999,應 raise",
+        "_attacker_target_invariant": "IV4_sick_non_multiple_blocks"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-4"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "Python -4 % 4 == 0 → 規則通過!但負數時數無業務意義;代表規則沒檢查 hours > 0,可能允許負時數請假",
+        "_attacker_target_invariant": "IV5_sick_multiple_ok"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "0 % 4 == 0 → 規則通過,但 0 小時請假有意義嗎?(我的 IV5 已排除 hours>0)",
+        "_attacker_target_invariant": "IV5_sick_multiple_ok"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": Infinity,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "hours=inf:inf%4=nan, !=0 為 True → 應 raise",
+        "_attacker_target_invariant": "IV4_sick_non_multiple_blocks"
+      },
+      "violations": []
+    }
+  ]
+}

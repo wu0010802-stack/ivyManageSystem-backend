@@ -1,0 +1,371 @@
+{
+  "target": "proration",
+  "attacker": "offline-claude",
+  "started_at": "2026-05-15T10:13:15",
+  "finished_at": "2026-05-15T10:13:15",
+  "totals": {
+    "seed_cases": 3,
+    "attack_cases": 11,
+    "violations": 0,
+    "unexpected_exceptions": 0
+  },
+  "seed_results": [
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 16451.612903225807
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ],
+  "attack_results": [
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 12, 1)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "hire 在計算月份的下半年,應回 0(避免補算歷史月發整月薪)",
+        "_attacker_target_invariant": "IV5_future_hire_zero"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2027, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "hire 在隔年才入職,當月應 0",
+        "_attacker_target_invariant": "IV9_future_hire_period_zero"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 20)",
+        "resign_date_raw": "datetime.date(2026, 5, 10)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: 同月內 resign(2026-05-10) 早於 hire(2026-05-20),資料異常",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 124, in _prorate_for_period\n    raise ValueError(f\"同月內 resign({resign_d}) 早於 hire({hire_d}),資料異常\")\nValueError: 同月內 resign(2026-05-10) 早於 hire(2026-05-20),資料異常\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "資料異常 resign<hire 同月:start=20 end=10 → worked_days=-9 → 薪資 -9/31 = 負值。invariant 抓 nonneg 應該 fire",
+        "_attacker_target_invariant": "IV7_resign_before_hire"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": "datetime.date(2026, 3, 31)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "三月底離職算五月薪,應 0(不補算歷史薪)",
+        "_attacker_target_invariant": "IV8_already_resigned_zero"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 1)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "1 號入職應回全額(boundary day=1)",
+        "_attacker_target_invariant": "IV6_day_one_full"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "2026-13-99",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "_to_date 對無效字串回 None,函式 fallback 全額;確認此 fallback 行為與 IV4(None=全額)是否一致",
+        "_attacker_target_invariant": "IV4_no_hire_full"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": -30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: contracted_base 不可為負數:-30000(原 truthy 守衛 silent 通過)",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 51, in _prorate_base_salary\n    raise ValueError(\n        f\"contracted_base 不可為負數:{contracted_base}(原 truthy 守衛 silent 通過)\"\n    )\nValueError: contracted_base 不可為負數:-30000(原 truthy 守衛 silent 通過)\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "Python: `if not contracted_base:` 對 -30000 為 truthy(非 0)→ 進入計算;結果 = -30000 × 17/31 ≈ -16451 為負(真 bug)",
+        "_attacker_target_invariant": "IV1_nonneg"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 13,
+        "holiday_set": [],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 12, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12，收到 13",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 65, in _runner\n    result = _build_expected_workdays(\n        case[\"year\"],\n    ...<6 lines>...\n        makeup_set=case.get(\"makeup_set\"),\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 180, in _build_expected_workdays\n    raise ValueError(f\"month 必須介於 1–12，收到 {month!r}\")\nValueError: month 必須介於 1–12，收到 13\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "month=13 應 raise ValueError(_build_expected_workdays 已加守衛)",
+        "_attacker_target_invariant": "IV11_invalid_month_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 13
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 13",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 13\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "month=13 餵 _prorate_base_salary:目前丟 IllegalMonthError 而非 ValueError(API 不一致,_build_expected_workdays 有守衛但這支沒)",
+        "_attacker_target_invariant": "IV11_invalid_month_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 4)",
+          "datetime.date(2026, 5, 1)",
+          "datetime.date(2026, 5, 5)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "確認多個 holiday 全被排除",
+        "_attacker_target_invariant": "IV12_no_holiday_in_result"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 2,
+        "holiday_set": [],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 2, 28)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 2, 2)",
+            "datetime.date(2026, 2, 3)",
+            "datetime.date(2026, 2, 4)",
+            "datetime.date(2026, 2, 5)",
+            "datetime.date(2026, 2, 6)",
+            "datetime.date(2026, 2, 9)",
+            "datetime.date(2026, 2, 10)",
+            "datetime.date(2026, 2, 11)",
+            "datetime.date(2026, 2, 12)",
+            "datetime.date(2026, 2, 13)",
+            "datetime.date(2026, 2, 16)",
+            "datetime.date(2026, 2, 17)",
+            "datetime.date(2026, 2, 18)",
+            "datetime.date(2026, 2, 19)",
+            "datetime.date(2026, 2, 20)",
+            "datetime.date(2026, 2, 23)",
+            "datetime.date(2026, 2, 24)",
+            "datetime.date(2026, 2, 25)",
+            "datetime.date(2026, 2, 26)",
+            "datetime.date(2026, 2, 27)"
+          ]
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "2026 是平年,2 月應只有 28 天,結果集中無 2/29",
+        "_attacker_target_invariant": "IV10_within_month"
+      },
+      "violations": []
+    }
+  ]
+}

@@ -41,6 +41,16 @@ def _prorate_base_salary(
     """
     import calendar as _cal
 
+    # eval framework IV11:統一 month 守衛訊息(原本依賴 calendar.IllegalMonthError,
+    # 雖然是 ValueError 子類但訊息含 implementation detail)
+    if not isinstance(month, int) or not 1 <= month <= 12:
+        raise ValueError(f"month 必須介於 1–12,收到 {month!r}")
+    # eval framework IV1:`if not contracted_base` 對 -30000 為 truthy → 算出負薪。
+    # 業務上負契約底薪不存在,reject。
+    if isinstance(contracted_base, (int, float)) and contracted_base < 0:
+        raise ValueError(
+            f"contracted_base 不可為負數:{contracted_base}(原 truthy 守衛 silent 通過)"
+        )
     if not contracted_base:
         return 0.0
     if not hire_date_raw:
@@ -87,6 +97,11 @@ def _prorate_for_period(
     """
     import calendar as _cal
 
+    # eval framework 揭露:統一 month 守衛 + 負契約底薪 reject
+    if not isinstance(month, int) or not 1 <= month <= 12:
+        raise ValueError(f"month 必須介於 1–12,收到 {month!r}")
+    if isinstance(contracted_base, (int, float)) and contracted_base < 0:
+        raise ValueError(f"contracted_base 不可為負數:{contracted_base}")
     if not contracted_base:
         return 0.0
 
@@ -94,6 +109,19 @@ def _prorate_for_period(
 
     hire_d = _to_date(hire_date_raw)
     resign_d = _to_date(resign_date_raw)
+
+    # eval framework IV7:同月內 resign 早於 hire 視為資料異常,
+    # 否則 worked_days = end - start + 1 為負,算出負薪流回給員工帳單。
+    if (
+        hire_d
+        and resign_d
+        and hire_d.year == year
+        and hire_d.month == month
+        and resign_d.year == year
+        and resign_d.month == month
+        and resign_d < hire_d
+    ):
+        raise ValueError(f"同月內 resign({resign_d}) 早於 hire({hire_d}),資料異常")
 
     # 非在職月份守衛：補算歷史薪資時若 caller 用 current is_active 選人，
     # 對「當月尚未到職」或「當月已離職」者若不擋，會落到下方「全額」分支。

@@ -53,3 +53,41 @@ class TestLeavePolicyHelpers:
             8,
             today=date(2026, 3, 1),
         )
+
+
+class TestLeavePolicyInputValidation:
+    """eval framework 揭露:hours=-4 與 hours=0 因 `-4 % 4 == 0` 與 `0 % 4 == 0`
+    通過 sick 規則檢查;雖 API layer 已擋 < 0.5,helper 自身仍應防禦深度。
+    """
+
+    def test_sick_hours_zero_raises(self):
+        with pytest.raises(ValueError, match="必須.*大於.*0|時數.*必須.*正"):
+            validate_portal_leave_rules(
+                "sick",
+                date(2026, 3, 12),
+                date(2026, 3, 12),
+                0,
+                today=date(2026, 3, 1),
+            )
+
+    def test_sick_hours_negative_raises(self):
+        """`-4 % 4 == 0` 在 Python 為 True,但負時數無業務意義"""
+        with pytest.raises(ValueError, match="必須.*大於.*0|時數.*必須.*正"):
+            validate_portal_leave_rules(
+                "sick",
+                date(2026, 3, 12),
+                date(2026, 3, 12),
+                -4,
+                today=date(2026, 3, 1),
+            )
+
+    def test_personal_hours_zero_raises(self):
+        """事假同樣不應允許 0 時數"""
+        with pytest.raises(ValueError, match="必須.*大於.*0|時數.*必須.*正"):
+            validate_portal_leave_rules(
+                "personal",
+                date(2026, 3, 15),
+                date(2026, 3, 15),
+                0,
+                today=date(2026, 3, 1),
+            )

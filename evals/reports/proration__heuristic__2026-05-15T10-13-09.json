@@ -1,0 +1,2397 @@
+{
+  "target": "proration",
+  "attacker": "heuristic",
+  "started_at": "2026-05-15T10:13:09",
+  "finished_at": "2026-05-15T10:13:09",
+  "totals": {
+    "seed_cases": 3,
+    "attack_cases": 100,
+    "violations": 0,
+    "unexpected_exceptions": 0
+  },
+  "seed_results": [
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 16451.612903225807
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ],
+  "attack_results": [
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 10000
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 10000",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 10000\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": -2147483648,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": 30000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 16451.612903225807
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "__not_in_enum__",
+        "contracted_base": -1e-06,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "resign_date_raw": "datetime.date(1900, 1, 1)",
+        "year": 2025,
+        "month": 9223372036854775807,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: __not_in_enum__",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: __not_in_enum__\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 999999999.999999,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 999999999.999999
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "../../etc/passwd",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: ../../etc/passwd",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: ../../etc/passwd\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": " ",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn:  ",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn:  \n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 100000.000001,
+        "hire_date_raw": "datetime.date(1900, 1, 1)",
+        "resign_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2028,
+        "month": 7,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 100000.000001
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2024,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 16)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 15483.870967741936
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "你好",
+        "contracted_base": -1.000001,
+        "hire_date_raw": "datetime.date(1900, 1, 1)",
+        "resign_date_raw": "datetime.date(2027, 5, 15)",
+        "year": 2026,
+        "month": -1,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: 你好",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: 你好\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 14
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 14",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 14\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": -1e-09,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: contracted_base 不可為負數:-1e-09",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 104, in _prorate_for_period\n    raise ValueError(f\"contracted_base 不可為負數:{contracted_base}\")\nValueError: contracted_base 不可為負數:-1e-09\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": " ",
+        "contracted_base": 100000.000001,
+        "hire_date_raw": "datetime.date(9999, 12, 31)",
+        "resign_date_raw": "datetime.date(1900, 1, 1)",
+        "year": -2,
+        "month": 6,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn:  ",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn:  \n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "<script>alert(1)</script>",
+        "contracted_base": 0.5,
+        "hire_date_raw": "datetime.date(1900, 1, 1)",
+        "resign_date_raw": "datetime.date(2026, 5, 14)",
+        "year": 1,
+        "month": -1,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: <script>alert(1)</script>",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: <script>alert(1)</script>\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": -0.999999
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 9223372036854775807
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 9223372036854775807",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 102, in _prorate_for_period\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 9223372036854775807\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": 1000000000.000001
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": -1000000000.0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 10000,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 0,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "__not_in_enum__",
+        "contracted_base": 29999.999999,
+        "hire_date_raw": "datetime.date(2025, 5, 15)",
+        "resign_date_raw": "datetime.date(2027, 5, 15)",
+        "year": -2,
+        "month": 13,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: __not_in_enum__",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: __not_in_enum__\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 29999.999999,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 16451.612902677418
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "contracted_base": -1.000001,
+        "hire_date_raw": "datetime.date(2025, 5, 15)",
+        "resign_date_raw": "datetime.date(2027, 5, 15)",
+        "year": 0,
+        "month": 13,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": -1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "'; DROP TABLE x; --",
+        "contracted_base": -0.5,
+        "hire_date_raw": "datetime.date(2025, 5, 15)",
+        "resign_date_raw": "datetime.date(9999, 12, 31)",
+        "year": 2028,
+        "month": 0,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: '; DROP TABLE x; --",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: '; DROP TABLE x; --\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": 1.000001
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 2147483647
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 2147483647",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 102, in _prorate_for_period\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 2147483647\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": -0.5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 100
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 100",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 102, in _prorate_for_period\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 100\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2027, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 0.5,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.5
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 10000,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": -10000
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 -10000",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 102, in _prorate_for_period\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 -10000\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": -2147483648
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 -2147483648",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 -2147483648\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2147483647,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": 0.999999
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": -1,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "🎉",
+        "contracted_base": -1.000001,
+        "hire_date_raw": "datetime.date(1900, 1, 1)",
+        "resign_date_raw": "datetime.date(2026, 5, 16)",
+        "year": 9999,
+        "month": 0,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: 🎉",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: 🎉\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": -2
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 -2",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 102, in _prorate_for_period\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 -2\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": -2
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 -2",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 -2\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "'; DROP TABLE x; --",
+        "contracted_base": -1,
+        "hire_date_raw": "datetime.date(2027, 5, 15)",
+        "resign_date_raw": "datetime.date(9999, 12, 31)",
+        "year": 2026,
+        "month": 13,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: '; DROP TABLE x; --",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: '; DROP TABLE x; --\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 9223372036854775807
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 9223372036854775807",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 9223372036854775807\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "'; DROP TABLE x; --",
+        "contracted_base": 100000.000001,
+        "hire_date_raw": "datetime.date(1900, 1, 1)",
+        "resign_date_raw": "datetime.date(2027, 5, 15)",
+        "year": 2026,
+        "month": 12,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: '; DROP TABLE x; --",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: '; DROP TABLE x; --\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": -1e-09
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": 100000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 0
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 0",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 0\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": -1000000000.0,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: contracted_base 不可為負數:-1000000000.0",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 104, in _prorate_for_period\n    raise ValueError(f\"contracted_base 不可為負數:{contracted_base}\")\nValueError: contracted_base 不可為負數:-1000000000.0\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 0
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 0",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 102, in _prorate_for_period\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 0\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "'; DROP TABLE x; --",
+        "contracted_base": 0.0,
+        "hire_date_raw": "datetime.date(9999, 12, 31)",
+        "resign_date_raw": "datetime.date(2027, 5, 15)",
+        "year": -2147483648,
+        "month": 1,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: '; DROP TABLE x; --",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: '; DROP TABLE x; --\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "__not_in_enum__",
+        "contracted_base": -1000000000.0,
+        "hire_date_raw": "datetime.date(2027, 5, 15)",
+        "resign_date_raw": "datetime.date(2026, 5, 15)",
+        "year": -2,
+        "month": 7,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: __not_in_enum__",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: __not_in_enum__\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 12
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": -1e-06
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2024,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "__not_in_enum__",
+        "contracted_base": -1,
+        "hire_date_raw": "datetime.date(9999, 12, 31)",
+        "resign_date_raw": "datetime.date(2026, 5, 16)",
+        "year": -1,
+        "month": 0,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: __not_in_enum__",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: __not_in_enum__\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 100000.000001,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 54838.70967796774
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5,
+        "resign_date_raw": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 16451.612903225807
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": -0.0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 14)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 17419.354838709678
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5,
+        "resign_date_raw": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 16451.612903225807
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 0,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "hire_date_raw": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2027,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 0,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": "datetime.date(2027, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": -0.999999,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: contracted_base 不可為負數:-0.999999",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 56, in _runner\n    result = _prorate_for_period(\n        case[\"contracted_base\"],\n    ...<3 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 104, in _prorate_for_period\n    raise ValueError(f\"contracted_base 不可為負數:{contracted_base}\")\nValueError: contracted_base 不可為負數:-0.999999\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "'; DROP TABLE x; --",
+        "contracted_base": 1000000000.0,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "resign_date_raw": "datetime.date(2026, 5, 14)",
+        "year": 2026,
+        "month": 7,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: '; DROP TABLE x; --",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: '; DROP TABLE x; --\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": -100
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 -100",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 -100\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 9223372036854775807,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 29999.999999,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 29999.999999
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "<script>alert(1)</script>",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: <script>alert(1)</script>",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: <script>alert(1)</script>\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "'; DROP TABLE x; --",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: '; DROP TABLE x; --",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: '; DROP TABLE x; --\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": -0.0,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "<script>alert(1)</script>",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: <script>alert(1)</script>",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: <script>alert(1)</script>\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": -1,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: contracted_base 不可為負數:-1(原 truthy 守衛 silent 通過)",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 51, in _prorate_base_salary\n    raise ValueError(\n        f\"contracted_base 不可為負數:{contracted_base}(原 truthy 守衛 silent 通過)\"\n    )\nValueError: contracted_base 不可為負數:-1(原 truthy 守衛 silent 通過)\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": "datetime.date(9999, 12, 31)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2025,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 100
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: month 必須介於 1–12,收到 100",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 47, in _prorate_base_salary\n    raise ValueError(f\"month 必須介於 1–12,收到 {month!r}\")\nValueError: month 必須介於 1–12,收到 100\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "🎉",
+        "contracted_base": 1000000000.0,
+        "hire_date_raw": "datetime.date(2027, 5, 15)",
+        "resign_date_raw": "datetime.date(2025, 5, 15)",
+        "year": -2,
+        "month": 1,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: 🎉",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: 🎉\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 7
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": 1000000000.0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 16451.612903225807
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(1900, 1, 1)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 30000
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": " ",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn:  ",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn:  \n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 1,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": 100000,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_base",
+          "value": 54838.709677419356
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "contracted_base": 30000.000001
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 4)",
+            "datetime.date(2026, 5, 5)",
+            "datetime.date(2026, 5, 6)",
+            "datetime.date(2026, 5, 7)",
+            "datetime.date(2026, 5, 8)",
+            "datetime.date(2026, 5, 11)",
+            "datetime.date(2026, 5, 12)",
+            "datetime.date(2026, 5, 13)",
+            "datetime.date(2026, 5, 14)",
+            "datetime.date(2026, 5, 15)",
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "'; DROP TABLE x; --",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": null,
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: '; DROP TABLE x; --",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: '; DROP TABLE x; --\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "\u0000",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: unknown fn: \u0000",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 76, in _runner\n    raise ValueError(f\"unknown fn: {fn}\")\nValueError: unknown fn: \u0000\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_base",
+        "contracted_base": -0.999999,
+        "hire_date_raw": "datetime.date(2026, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: contracted_base 不可為負數:-0.999999(原 truthy 守衛 silent 通過)",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/proration_target.py\", line 48, in _runner\n    result = _prorate_base_salary(\n        case[\"contracted_base\"],\n    ...<2 lines>...\n        case[\"month\"],\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/salary/proration.py\", line 51, in _prorate_base_salary\n    raise ValueError(\n        f\"contracted_base 不可為負數:{contracted_base}(原 truthy 守衛 silent 通過)\"\n    )\nValueError: contracted_base 不可為負數:-0.999999(原 truthy 守衛 silent 通過)\n",
+        "expected_exception": true
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "build_workdays",
+        "year": 2026,
+        "month": 5,
+        "holiday_set": [
+          "datetime.date(2026, 5, 1)"
+        ],
+        "daily_shift_map": {},
+        "today": "datetime.date(2026, 5, 31)",
+        "hire_date_raw": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "build_workdays",
+          "value": [
+            "datetime.date(2026, 5, 18)",
+            "datetime.date(2026, 5, 19)",
+            "datetime.date(2026, 5, 20)",
+            "datetime.date(2026, 5, 21)",
+            "datetime.date(2026, 5, 22)",
+            "datetime.date(2026, 5, 25)",
+            "datetime.date(2026, 5, 26)",
+            "datetime.date(2026, 5, 27)",
+            "datetime.date(2026, 5, 28)",
+            "datetime.date(2026, 5, 29)"
+          ]
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "fn": "prorate_period",
+        "contracted_base": 30000,
+        "hire_date_raw": "datetime.date(2026, 1, 1)",
+        "resign_date_raw": "datetime.date(2025, 5, 15)",
+        "year": 2026,
+        "month": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "fn": "prorate_period",
+          "value": 0.0
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ]
+}

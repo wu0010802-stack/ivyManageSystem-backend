@@ -1,0 +1,3943 @@
+{
+  "target": "leave_policy",
+  "attacker": "heuristic",
+  "started_at": "2026-05-15T09:16:13",
+  "finished_at": "2026-05-15T09:16:13",
+  "totals": {
+    "seed_cases": 3,
+    "attack_cases": 200,
+    "violations": 1,
+    "unexpected_exceptions": 1
+  },
+  "seed_results": [
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ],
+  "attack_results": [
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 8,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": -0.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 3.999,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 0.500001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "'; DROP TABLE x; --",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 3.999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 16,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 15.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": -1000000000.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1000000000.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 7.999999,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "'; DROP TABLE x; --",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -Infinity,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-inf"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 1e-06,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 1.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": -1e-06,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-06"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4.001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": -0.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": " ",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -Infinity,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-inf"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "OverflowError: date value out of range",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/leave_policy_target.py\", line 53, in _runner\n    validate_portal_leave_rules(leave_type, start, end, hours, today=today)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/leave_policy.py\", line 41, in validate_portal_leave_rules\n    earliest_allowed = today + timedelta(days=PERSONAL_ADVANCE_NOTICE_DAYS)\n                       ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nOverflowError: date value out of range\n",
+        "expected_exception": false
+      },
+      "violations": [
+        {
+          "invariant": "no_unexpected_exception",
+          "reason": "OverflowError: date value out of range"
+        }
+      ]
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": -1000000000.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1000000000.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": -1e-09,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-09"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 4.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 16.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -1e-09,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-09"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "'; DROP TABLE x; --",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 0.500001,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 16,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4.000999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 3.9990010000000002,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 16,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 4.001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -0.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 8.000001,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 1,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 0,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 4.0010010000000005,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 3.998999,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": -1e-09,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-09"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "<script>alert(1)</script>",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 1e-09,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 4.0010010000000005,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 1.000001,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4.0010010000000005,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 1.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "'; DROP TABLE x; --",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 1e-06,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 0.499999,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 4.0010010000000005,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 3.9990010000000002,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": " ",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -0.5,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.5"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": -0.0,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": " ",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -1e-09,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-09"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 16,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 3.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 3.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 3.9990010000000002,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 3.998999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": -1e-09,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-09"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 1e-06,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": -Infinity,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-inf"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 16.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 16,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 1e-06,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": Infinity,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 3.999999,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": -0.0,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 3.998999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 1,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 1000000000.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 15.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": -0.5,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.5"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 4.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4.0010010000000005,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "'; DROP TABLE x; --",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "<script>alert(1)</script>",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": -Infinity,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-inf"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 1,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 1.000001,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 0.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -0.5,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.5"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 16.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 1e-06,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": -1e-06,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-06"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 0.500001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4.000001,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": -Infinity,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-inf"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 0.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": -0.5,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.5"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0.5,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": -1000000000.0,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1000000000.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 1e-09,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": -0.0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 4.000999,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 4.000999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 7.999999,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 16,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": -0.0,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": -Infinity,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-inf"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 7.999999,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 1,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 7.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "<script>alert(1)</script>",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": " ",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0.499999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 4.0010010000000005,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 1e-06,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 7.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 0.500001,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 4.000001,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 0.0,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0.0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 0.999999,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 0.499999,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 0,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:0"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": -1e-09,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-1e-09"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "<script>alert(1)</script>",
+        "start_date": "datetime.date(1900, 1, 1)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": -0.5,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.5"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(2026, 5, 15)",
+        "leave_hours": 1e-09,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2027, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 4,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 16,
+        "today": "datetime.date(9999, 12, 31)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 8,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": -0.5,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "請假時數必須大於 0:-0.5"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "'; DROP TABLE x; --",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 16)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "annual",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(9999, 12, 31)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 7.999999,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "\u0000",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 3.998999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 15.999999,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 0.499999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "__not_in_enum__",
+        "start_date": "datetime.date(2027, 5, 15)",
+        "end_date": "datetime.date(2025, 5, 15)",
+        "leave_hours": 15.999999,
+        "today": "datetime.date(1900, 1, 1)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(1900, 1, 1)",
+        "leave_hours": 3.999999,
+        "today": "datetime.date(2025, 5, 15)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "你好",
+        "start_date": "datetime.date(2026, 5, 20)",
+        "end_date": "datetime.date(2026, 5, 20)",
+        "leave_hours": 8,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "🎉",
+        "start_date": "datetime.date(2026, 5, 15)",
+        "end_date": "datetime.date(9999, 12, 31)",
+        "leave_hours": 0.499999,
+        "today": "datetime.date(2026, 5, 16)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "sick",
+        "start_date": "datetime.date(2026, 5, 14)",
+        "end_date": "datetime.date(2026, 5, 14)",
+        "leave_hours": 3.999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": false,
+          "validate_ok": false,
+          "validate_error": "病假必須以 4 小時為單位申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "../../etc/passwd",
+        "start_date": "datetime.date(2026, 5, 16)",
+        "end_date": "datetime.date(2026, 5, 18)",
+        "leave_hours": 24,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "leave_type": "personal",
+        "start_date": "datetime.date(2025, 5, 15)",
+        "end_date": "datetime.date(2027, 5, 15)",
+        "leave_hours": 3.999999,
+        "today": "datetime.date(2026, 5, 14)"
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "requires_doc": true,
+          "validate_ok": false,
+          "validate_error": "事假需至少提前 2 日提出申請"
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ]
+}

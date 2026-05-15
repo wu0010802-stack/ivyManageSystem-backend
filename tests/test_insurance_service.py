@@ -1,5 +1,7 @@
 """InsuranceService 單元測試"""
 
+import math
+
 import pytest
 from services.insurance_service import InsuranceService, InsuranceCalculation
 
@@ -129,6 +131,59 @@ class TestNegativeDependents:
         """負眷屬數不得讓 total_employee（勞+健+退）小於零"""
         result = service.calculate(salary=30000, dependents=-5)
         assert result.total_employee >= 0
+
+
+class TestCalculateInputValidation:
+    """eval framework 揭露的 input validation 漏洞回歸測試。
+
+    `salary < 0` 的 guard 會被 NaN bypass(NaN 比較永遠 False),導致 NaN
+    傳染所有保費計算。同樣 dependents 非整數(如 1.5)會讓 health 乘子變
+    非整,業務無意義。修補:reject NaN salary;reject 非整 dependents。
+    """
+
+    def test_salary_nan_raises(self, service):
+        with pytest.raises(ValueError, match="不可為 NaN|不可為 nan|非有限"):
+            service.calculate(salary=float("nan"), dependents=0)
+
+    def test_salary_negative_still_raises(self, service):
+        """確認 NaN 修補不破壞 negative guard"""
+        with pytest.raises(ValueError, match="不可為負"):
+            service.calculate(salary=-100, dependents=0)
+
+    def test_salary_inf_accepted_caps_to_max(self, service):
+        """+inf 視為「超大薪資」,cap 到最高級距(graceful degradation,by design)"""
+        result = service.calculate(salary=float("inf"), dependents=0)
+        assert result.insured_amount == 313000
+
+    def test_salary_neg_inf_raises(self, service):
+        """-inf < 0 為 True,沿用既有 negative guard"""
+        with pytest.raises(ValueError, match="不可為負|不可為負數"):
+            service.calculate(salary=float("-inf"), dependents=0)
+
+    def test_dependents_float_raises(self, service):
+        """dependents=1.5 應被 reject(整數欄位語意)"""
+        with pytest.raises((ValueError, TypeError), match="必須為整數|非整數"):
+            service.calculate(salary=30000, dependents=1.5)
+
+    def test_dependents_int_float_accepted(self, service):
+        """dependents=2.0(整數值的 float)允許,等同 dependents=2"""
+        result_float = service.calculate(salary=30000, dependents=2.0)
+        result_int = service.calculate(salary=30000, dependents=2)
+        assert result_float.health_employee == result_int.health_employee
+
+    def test_dependents_bool_treated_as_int(self, service):
+        """Python bool 是 int 子類:True == 1, False == 0;允許"""
+        result_true = service.calculate(salary=30000, dependents=True)
+        result_one = service.calculate(salary=30000, dependents=1)
+        assert result_true.health_employee == result_one.health_employee
+
+    def test_pension_rate_nan_raises(self, service):
+        """NaN pension_self_rate:既有 `0 <= rate <= 0.06` 對 NaN 為 False,
+        所以已會 raise(本測試鎖住此行為)"""
+        with pytest.raises(ValueError):
+            service.calculate(
+                salary=30000, dependents=0, pension_self_rate=float("nan")
+            )
 
 
 class TestPensionSelfContributionBracket:

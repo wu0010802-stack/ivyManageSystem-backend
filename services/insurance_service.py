@@ -7,6 +7,7 @@
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date
 
@@ -930,8 +931,26 @@ class InsuranceService:
                 各制度可獨立指定投保金額；None=沿用 `salary`（既有單一投保語意）。
                 各自仍套用其上限 clamp 與級距 lookup。
         """
+        # NaN bypass guard: NaN < 0 在 Python 為 False,會繞過 negative 檢查並
+        # 傳染所有保費計算。eval framework IV10 揭露此攻擊面(/insurance/calculate?salary=NaN)
+        if isinstance(salary, float) and math.isnan(salary):
+            raise ValueError(f"投保薪資不可為 NaN：{salary}")
         if salary < 0:
             raise ValueError(f"投保薪資不可為負數：{salary}")
+        # dependents 整數性檢查:eval framework IV11 揭露 dependents=1.5 會讓
+        # health_emp 乘子變非整數(business 無意義)。允許 bool(Python int 子類)
+        # 與整數值的 float(如 2.0)以保 backward compat。
+        if not isinstance(dependents, (int, bool)):
+            if (
+                isinstance(dependents, float)
+                and dependents == int(dependents)
+                and not math.isnan(dependents)
+            ):
+                dependents = int(dependents)
+            else:
+                raise ValueError(f"眷屬人數必須為整數：{dependents!r}")
+        if isinstance(pension_self_rate, float) and math.isnan(pension_self_rate):
+            raise ValueError(f"勞退自提比例不可為 NaN：{pension_self_rate}")
         if not 0 <= pension_self_rate <= 0.06:
             raise ValueError(f"勞退自提比例必須介於 0～6%：{pension_self_rate}")
         bracket = self.get_bracket(salary)
@@ -944,6 +963,13 @@ class InsuranceService:
         labor_amount = labor_insured if labor_insured else salary
         health_amount = health_insured if health_insured else salary
         pension_amount = pension_insured if pension_insured else salary
+        for name, val in (
+            ("labor", labor_amount),
+            ("health", health_amount),
+            ("pension", pension_amount),
+        ):
+            if isinstance(val, float) and math.isnan(val):
+                raise ValueError(f"{name} 投保金額不可為 NaN：{val}")
         if labor_amount < 0 or health_amount < 0 or pension_amount < 0:
             raise ValueError("分項投保金額不可為負數")
 
