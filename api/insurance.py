@@ -164,7 +164,12 @@ async def calculate_insurance(
     dependents: int = Query(0),
 ):
     """計算勞健保"""
-    result = _insurance_service.calculate(salary, dependents)
+    # eval framework 揭露:service 對 NaN salary / 負薪資 / 越界 dependents
+    # 等都 raise ValueError;原 endpoint 沒 catch 會漏成 500。
+    try:
+        result = _insurance_service.calculate(salary, dependents)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return {
         "insured_amount": result.insured_amount,
         "labor_employee": result.labor_employee,
