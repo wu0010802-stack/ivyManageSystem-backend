@@ -104,6 +104,7 @@ from api.parent_portal import (
 )
 from api.student_leaves import router as student_leaves_router
 from api.appraisal import appraisal_router
+from api.year_end import year_end_router
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -649,6 +650,7 @@ app.include_router(parent_portal_router)
 app.include_router(parent_admin_router)
 app.include_router(student_leaves_router)
 app.include_router(appraisal_router)
+app.include_router(year_end_router)
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）
