@@ -40,7 +40,13 @@ def now_taipei_naive() -> datetime:
     return datetime.now(TAIPEI_TZ).replace(tzinfo=None)
 
 
-def validate_payment_date(value: date, *, back_limit_days: int = 30) -> date:
+def validate_payment_date(value: date, *, back_limit_days: int = None) -> date:
+    # F2-aux：default 從 magic number 30 改用 utils.activity_constants 單一來源。
+    # lazy import 避免 module-level 循環：activity_constants 不 import taipei_time。
+    if back_limit_days is None:
+        from utils.activity_constants import PAYMENT_DATE_BACK_LIMIT_DAYS
+
+        back_limit_days = PAYMENT_DATE_BACK_LIMIT_DAYS
     """金流端點共用守衛：禁未來日、限制回補天數，比對基準為台灣時區今日。
 
     Why: 缺此守衛會計可填未來日造帳或回填遠古日期搬動財報歸月；裸

@@ -61,19 +61,17 @@ def _lock_registration(session, registration_id: int):
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
-# 金額上限統一常數（同步 pos.py 的 _MAX_ITEM_AMOUNT）
-MAX_PAYMENT_AMOUNT = 999_999
+# F2-aux：金額 / 字數 / 天數常數抽到 utils/activity_constants.py 單一來源
+from utils.activity_constants import (  # noqa: E402
+    MAX_PAYMENT_AMOUNT,
+    MIN_REFUND_REASON_LENGTH,
+    MIN_VOID_REASON_LENGTH,
+    PAYMENT_DATE_BACK_LIMIT_DAYS,
+)
 
 # 系統補齊標記：用於 batch/update_payment 與退課自動沖帳。
 # 目的：避免把「系統自動生成的繳/退費紀錄」誤算入 POS 日結的「現金」欄。
 SYSTEM_RECONCILE_METHOD = "系統補齊"
-
-# payment_date 合理範圍：最多回補 30 天、不得指定未來。
-# POS checkout 與後台 /registrations/{id}/payments 共用，避免管理員透過後者繞過 POS 管制。
-PAYMENT_DATE_BACK_LIMIT_DAYS = 30
-
-# 退費必填原因最短字數（避免「客人退」等敷衍；15 字強迫填寫具體事由）
-MIN_REFUND_REASON_LENGTH = 15
 
 # 退費金額閾值：超過此金額的單筆退費必須具備 ACTIVITY_PAYMENT_APPROVE 權限
 # Why: 小額退費允許一線櫃檯彈性處理；大額退費強制雙簽以防內部舞弊
@@ -83,9 +81,6 @@ REFUND_APPROVAL_THRESHOLD = 1000
 # Why: 課程價格會被寫入 price_snapshot 進入應繳總額，搭配「補齊收入」路徑可建立異常高額
 # 應收。一般幼稚園單品價格遠低於 30,000，超過視為設定錯誤或舞弊嘗試。
 ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD = 30_000
-
-# 軟刪除 payment 原因最短字數
-MIN_VOID_REASON_LENGTH = 5
 
 
 def has_payment_approve(current_user: dict) -> bool:

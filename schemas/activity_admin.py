@@ -14,11 +14,13 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-# 與 api/activity/_shared.py 內既有常數對齊。schemas 層獨立 constant 避免雙向 import。
-MAX_PAYMENT_AMOUNT = 999_999
-# F2 第三/四階段：reason 字數下限。Refund 嚴於 Void（小心避免一線員工逐筆撤銷）。
-MIN_REFUND_REASON_LENGTH = 15
-MIN_VOID_REASON_LENGTH = 5
+# F2-aux：常數集中到 utils/activity_constants.py，避免重複宣告與 typo regression
+# （第三階段曾因雙份宣告把 999_999 typo 成 99_999 → 課程/用品價超 99K 被誤拒）。
+from utils.activity_constants import (
+    MAX_PAYMENT_AMOUNT,
+    MIN_REFUND_REASON_LENGTH,
+    MIN_VOID_REASON_LENGTH,
+)
 
 
 class CourseCreate(BaseModel):
