@@ -1,8 +1,4 @@
-"""year_end package — 年終獎金 6-step 計算引擎與 Excel I/O。
-
-入口模組：
-- engine：6-step 結算流程（純函式，無 DB 依賴）
-"""
+"""year_end package — 年終獎金 6-step 計算引擎 + Excel I/O。"""
 
 from .engine import (
     DeductionBreakdown,
@@ -17,8 +13,22 @@ from .engine import (
     compute_subtotal_amount,
     compute_total_amount,
 )
+from .excel_io import (
+    ParsedClassEnrollmentTarget,
+    ParsedSettlementRow,
+    ParsedSpecialBonus,
+    ParsedYearEndExcel,
+    SummaryExportRow,
+    TransferRow,
+    YearEndImportResult,
+    export_year_end_summary_xlsx,
+    export_year_end_transfer_xlsx,
+    import_year_end_to_db,
+    parse_year_end_excel,
+)
 
 __all__ = [
+    # engine
     "DeductionBreakdown",
     "PerformanceRates",
     "SettlementComputed",
@@ -30,4 +40,16 @@ __all__ = [
     "compute_settlement",
     "compute_subtotal_amount",
     "compute_total_amount",
+    # excel_io
+    "ParsedClassEnrollmentTarget",
+    "ParsedSettlementRow",
+    "ParsedSpecialBonus",
+    "ParsedYearEndExcel",
+    "SummaryExportRow",
+    "TransferRow",
+    "YearEndImportResult",
+    "export_year_end_summary_xlsx",
+    "export_year_end_transfer_xlsx",
+    "import_year_end_to_db",
+    "parse_year_end_excel",
 ]
