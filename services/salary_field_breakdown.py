@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 import calendar as cal_module
 
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from models.database import (
@@ -635,18 +636,15 @@ def build_salary_debug_snapshot(
     prior_sick_hours = 0.0
     if start_date > year_start:
         prior_sick_hours = float(
-            sum(
-                lv.leave_hours or 0
-                for lv in session.query(LeaveRecord)
-                .filter(
-                    LeaveRecord.employee_id == emp.id,
-                    LeaveRecord.is_approved == True,
-                    LeaveRecord.leave_type == "sick",
-                    LeaveRecord.start_date >= year_start,
-                    LeaveRecord.end_date < start_date,
-                )
-                .all()
+            session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0))
+            .filter(
+                LeaveRecord.employee_id == emp.id,
+                LeaveRecord.is_approved == True,
+                LeaveRecord.leave_type == "sick",
+                LeaveRecord.start_date >= year_start,
+                LeaveRecord.end_date < start_date,
             )
+            .scalar()
         )
     lv_result = _calc_leave_deductions(
         approved_leaves, daily_salary, ytd_sick_hours_before_month=prior_sick_hours
