@@ -49,6 +49,14 @@ from services.year_end.excel_io import (
     import_year_end_to_db,
     parse_year_end_excel,
 )
+from services.year_end.print_pdf import (
+    PersonalBonusSlipData,
+    SummaryTableRow as PdfSummaryRow,
+    TransferEntry,
+    generate_personal_bonus_slip_pdf,
+    generate_summary_table_pdf,
+    generate_transfer_roster_pdf,
+)
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -465,6 +473,139 @@ def export_transfer(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
             "Content-Disposition": f'attachment; filename="year_end_transfer_{cycle.academic_year}.xlsx"'
+        },
+    )
+
+
+# ===== PDF 列印 =====
+
+
+def _aggregate_bonus_by_type(
+    session: Session, cycle_id: int
+) -> dict[int, dict[SpecialBonusType, Decimal]]:
+    out: dict[int, dict[SpecialBonusType, Decimal]] = defaultdict(dict)
+    for sb in (
+        session.query(SpecialBonusItem).filter_by(year_end_cycle_id=cycle_id).all()
+    ):
+        current = out[sb.employee_id].get(sb.bonus_type, Decimal("0"))
+        out[sb.employee_id][sb.bonus_type] = current + sb.amount
+    return out
+
+
+@year_end_router.get(
+    "/cycles/{cycle_id}/settlements/{settlement_id}/slip.pdf",
+    response_class=Response,
+)
+def export_personal_slip_pdf(
+    cycle_id: int,
+    settlement_id: int,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """匯出個人年終獎金條 PDF（對應 Excel「New年終獎金條」）。"""
+    settlement = session.get(YearEndSettlement, settlement_id)
+    if settlement is None or settlement.year_end_cycle_id != cycle_id:
+        raise HTTPException(404, "settlement 不存在")
+    cycle = session.get(YearEndCycle, cycle_id)
+    emp = session.get(Employee, settlement.employee_id)
+    if emp is None:
+        raise HTTPException(404, "員工不存在")
+    bonuses = _aggregate_bonus_by_type(session, cycle_id).get(emp.id, {})
+
+    from datetime import datetime
+
+    pdf = generate_personal_bonus_slip_pdf(
+        PersonalBonusSlipData(
+            employee_name=emp.name,
+            academic_year=cycle.academic_year,
+            print_date=datetime.now().strftime("%Y.%m.%d"),
+            year_end_amount=settlement.payable_amount,
+            bonus_by_type=bonuses,
+        )
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="bonus_slip_{emp.name}_{cycle.academic_year}.pdf"'
+        },
+    )
+
+
+@year_end_router.get("/cycles/{cycle_id}/transfer_roster.pdf", response_class=Response)
+def export_transfer_roster_pdf_endpoint(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    cycle = session.get(YearEndCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404)
+    settlements = (
+        session.query(YearEndSettlement)
+        .filter(
+            YearEndSettlement.year_end_cycle_id == cycle_id,
+            YearEndSettlement.total_amount > 0,
+        )
+        .all()
+    )
+    emp_idx = {e.id: e for e in session.query(Employee).all()}
+    entries = []
+    for s in settlements:
+        e = emp_idx.get(s.employee_id)
+        if e is None:
+            continue
+        entries.append(
+            TransferEntry(
+                bank_account=e.bank_account or "",
+                name=e.bank_account_name or e.name,
+                amount=s.total_amount,
+            )
+        )
+    pdf = generate_transfer_roster_pdf(
+        entries=entries, academic_year=cycle.academic_year
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="year_end_transfer_{cycle.academic_year}.pdf"'
+        },
+    )
+
+
+@year_end_router.get("/cycles/{cycle_id}/summary.pdf", response_class=Response)
+def export_summary_pdf(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    cycle = session.get(YearEndCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404)
+    settlements = (
+        session.query(YearEndSettlement).filter_by(year_end_cycle_id=cycle_id).all()
+    )
+    emp_idx = {e.id: e for e in session.query(Employee).all()}
+    bonus_idx = _aggregate_bonus_by_type(session, cycle_id)
+    rows = []
+    for s in settlements:
+        emp = emp_idx.get(s.employee_id)
+        name = emp.name if emp else f"emp#{s.employee_id}"
+        rows.append(
+            PdfSummaryRow(
+                name=name,
+                year_end_amount=s.payable_amount,
+                bonus_by_type=bonus_idx.get(s.employee_id, {}),
+                total=s.total_amount,
+            )
+        )
+    pdf = generate_summary_table_pdf(rows=rows, academic_year=cycle.academic_year)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="year_end_summary_{cycle.academic_year}.pdf"'
         },
     )
 
