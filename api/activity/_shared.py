@@ -208,27 +208,14 @@ from services.activity_daily_snapshot import (  # noqa: F401, E402
     compute_daily_snapshot,
 )
 
+# F2 第九階段：班級反查 helper 抽到 services/activity_classroom_lookup.py。
+# 本檔保留 re-export 維持 registrations.py / public.py / settings.py 等既有 import surface。
+from services.activity_classroom_lookup import (  # noqa: F401, E402
+    _get_active_classroom,
+    _require_active_classroom,
+)
+
 # ── DB 輔助函式 ─────────────────────────────────────────────────────────────
-
-
-def _get_active_classroom(session, classroom_name: str):
-    """依名稱取得啟用中的班級。"""
-    return (
-        session.query(Classroom)
-        .filter(
-            Classroom.name == classroom_name.strip(),
-            Classroom.is_active.is_(True),
-        )
-        .first()
-    )
-
-
-def _require_active_classroom(session, classroom_name: str):
-    """取得啟用中班級，不存在則拋 HTTPException(400)。"""
-    c = _get_active_classroom(session, classroom_name)
-    if not c:
-        raise _invalid_class()
-    return c
 
 
 # ── Phase 3 公開查詢碼（query token） ──────────────────────────────────────
@@ -596,7 +583,6 @@ def _compute_is_paid(paid_amount: int, total_amount: int) -> bool:
     `total > 0 and paid >= total`），易漂移。以 helper 集中。
     """
     return total_amount > 0 and paid_amount >= total_amount
-
 
 
 def _batch_calc_total_amounts(session, reg_ids: list) -> dict:
