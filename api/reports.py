@@ -81,6 +81,7 @@ def _query_attendance_by_classroom(session, start: date, end: date) -> list:
     """查詢並整理各班級年度考勤出勤率。"""
     rows = (
         session.query(
+            Classroom.id.label("classroom_id"),
             Classroom.name.label("classroom"),
             func.count(Attendance.id).label("total"),
             func.sum(func.cast(Attendance.is_late, Integer)).label("late"),
@@ -101,7 +102,7 @@ def _query_attendance_by_classroom(session, start: date, end: date) -> list:
             Attendance.attendance_date <= end,
             Classroom.is_active == True,
         )
-        .group_by(Classroom.name)
+        .group_by(Classroom.id, Classroom.name)
         .order_by(Classroom.name)
         .all()
     )
@@ -115,6 +116,7 @@ def _query_attendance_by_classroom(session, start: date, end: date) -> list:
         rate = round((total - anomaly) / total * 100, 1) if total > 0 else 0
         result.append(
             {
+                "classroom_id": int(row.classroom_id),
                 "classroom": row.classroom,
                 "total_records": total,
                 "late": late,
@@ -462,3 +464,235 @@ def export_finance_summary(
 
     suffix = f"{year}" + (f"-{month:02d}" if month else "-全年")
     return xlsx_streaming_response(wb, f"收支彙總_{suffix}.xlsx")
+
+
+# ---------------------------------------------------------------------------
+# P2 drill-down：考勤異常明細
+# ---------------------------------------------------------------------------
+
+ATTENDANCE_DETAIL_CACHE_TTL_SECONDS = 1800  # 30 分鐘
+ATTENDANCE_DETAIL_LIMIT = 200
+
+
+def _build_attendance_detail(
+    session,
+    year: int,
+    month: Optional[int],
+    classroom_id: Optional[int],
+) -> dict:
+    """查詢指定年份/月份/班級的考勤異常記錄。"""
+    from calendar import monthrange
+
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
+    if month is not None:
+        start = date(year, month, 1)
+        end = date(year, month, monthrange(year, month)[1])
+
+    query = (
+        session.query(
+            Attendance.attendance_date.label("date"),
+            Employee.id.label("employee_id"),
+            Employee.name.label("employee_name"),
+            Classroom.id.label("classroom_id"),
+            Classroom.name.label("classroom_name"),
+            Attendance.is_late,
+            Attendance.is_early_leave,
+            Attendance.is_missing_punch_in,
+            Attendance.is_missing_punch_out,
+            Attendance.late_minutes,
+            Attendance.early_leave_minutes,
+            Attendance.remark,
+        )
+        .join(Employee, Employee.id == Attendance.employee_id)
+        .outerjoin(Classroom, Classroom.id == Employee.classroom_id)
+        .filter(
+            Attendance.attendance_date >= start,
+            Attendance.attendance_date <= end,
+            (
+                Attendance.is_late.is_(True)
+                | Attendance.is_early_leave.is_(True)
+                | Attendance.is_missing_punch_in.is_(True)
+                | Attendance.is_missing_punch_out.is_(True)
+            ),
+        )
+    )
+    if classroom_id is not None:
+        query = query.filter(Employee.classroom_id == classroom_id)
+
+    total = query.count()
+    rows = (
+        query.order_by(Attendance.attendance_date.desc(), Employee.id)
+        .limit(ATTENDANCE_DETAIL_LIMIT)
+        .all()
+    )
+
+    records = []
+    for row in rows:
+        anomaly_types = []
+        if row.is_late:
+            anomaly_types.append("late")
+        if row.is_early_leave:
+            anomaly_types.append("early_leave")
+        if row.is_missing_punch_in:
+            anomaly_types.append("missing_punch_in")
+        if row.is_missing_punch_out:
+            anomaly_types.append("missing_punch_out")
+        records.append(
+            {
+                "date": row.date.isoformat(),
+                "employee_id": int(row.employee_id),
+                "employee_name": row.employee_name,
+                "classroom_id": int(row.classroom_id) if row.classroom_id else None,
+                "classroom_name": row.classroom_name,
+                "anomaly_types": anomaly_types,
+                "late_minutes": int(row.late_minutes or 0),
+                "early_minutes": int(row.early_leave_minutes or 0),
+                "missing_punch_in": bool(row.is_missing_punch_in),
+                "missing_punch_out": bool(row.is_missing_punch_out),
+                "note": row.remark,
+            }
+        )
+
+    return {
+        "year": year,
+        "month": month,
+        "classroom_id": classroom_id,
+        "records": records,
+        "total_records": total,
+        "truncated": total > ATTENDANCE_DETAIL_LIMIT,
+    }
+
+
+@router.get("/attendance/detail")
+def get_attendance_detail(
+    year: int = Query(..., ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    classroom_id: Optional[int] = Query(None, ge=1),
+    current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
+):
+    """考勤異常記錄列表（drill-down）。
+
+    任一旗標 (is_late / is_early_leave / is_missing_punch_in/out) 為 true 即列入。
+    LIMIT 200；total_records 為 filter 後總數，前端據 truncated 顯提示。
+    """
+    session = get_session()
+    try:
+        return report_cache_service.get_or_build(
+            session,
+            category="reports_attendance_detail",
+            ttl_seconds=ATTENDANCE_DETAIL_CACHE_TTL_SECONDS,
+            params={"year": year, "month": month, "classroom_id": classroom_id},
+            builder=lambda: _build_attendance_detail(
+                session, year, month, classroom_id
+            ),
+        )
+    finally:
+        session.close()
+
+
+SALARY_CONTRIBUTORS_CACHE_TTL_SECONDS = 1800
+SALARY_CONTRIBUTORS_LIMIT = 5
+
+
+def _build_salary_contributors(session, year: int, month: int) -> dict:
+    """查指定月份 top 5 gross + top 5 overtime（只認 finalized 非 stale）。"""
+    base_filter = (
+        SalaryRecord.salary_year == year,
+        SalaryRecord.salary_month == month,
+        SalaryRecord.is_finalized == True,  # noqa: E712
+        SalaryRecord.needs_recalc == False,  # noqa: E712
+    )
+
+    top_gross_rows = (
+        session.query(
+            SalaryRecord.employee_id,
+            Employee.name.label("employee_name"),
+            SalaryRecord.gross_salary,
+            SalaryRecord.is_finalized,
+        )
+        .join(Employee, Employee.id == SalaryRecord.employee_id)
+        .filter(*base_filter)
+        .order_by(SalaryRecord.gross_salary.desc())
+        .limit(SALARY_CONTRIBUTORS_LIMIT)
+        .all()
+    )
+
+    top_overtime_rows = (
+        session.query(
+            SalaryRecord.employee_id,
+            Employee.name.label("employee_name"),
+            SalaryRecord.overtime_pay,
+            SalaryRecord.is_finalized,
+        )
+        .join(Employee, Employee.id == SalaryRecord.employee_id)
+        .filter(
+            *base_filter,
+            func.coalesce(SalaryRecord.overtime_pay, 0) > 0,
+        )
+        .order_by(SalaryRecord.overtime_pay.desc())
+        .limit(SALARY_CONTRIBUTORS_LIMIT)
+        .all()
+    )
+
+    return {
+        "year": year,
+        "month": month,
+        "top_gross": [
+            {
+                "employee_id": int(r.employee_id),
+                "employee_name": r.employee_name,
+                "gross_salary": int(r.gross_salary or 0),
+                "is_finalized": bool(r.is_finalized),
+            }
+            for r in top_gross_rows
+        ],
+        "top_overtime": [
+            {
+                "employee_id": int(r.employee_id),
+                "employee_name": r.employee_name,
+                "overtime_pay": int(r.overtime_pay or 0),
+                "is_finalized": bool(r.is_finalized),
+            }
+            for r in top_overtime_rows
+        ],
+    }
+
+
+@router.get("/salary/contributors")
+def get_salary_contributors(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
+):
+    """指定月份的薪資 top contributors（top 5 應發 + top 5 加班費）。
+
+    F-031：非 admin/hr 看不到金額，gross_salary / overtime_pay 遮罩為 null。
+    只認 is_finalized=True AND needs_recalc=False 的薪資。
+    """
+    from utils.salary_access import has_full_salary_view, mask_dict_fields
+
+    session = get_session()
+    try:
+        result = report_cache_service.get_or_build(
+            session,
+            category="reports_salary_contributors",
+            ttl_seconds=SALARY_CONTRIBUTORS_CACHE_TTL_SECONDS,
+            params={"year": year, "month": month},
+            builder=lambda: _build_salary_contributors(session, year, month),
+        )
+
+        if not has_full_salary_view(current_user):
+            # 遮罩在 cache 外做：dict copy + list 重建避免污染 cache payload
+            result = dict(result)
+            result["top_gross"] = [
+                mask_dict_fields(r, ("gross_salary",), placeholder=None)
+                for r in result.get("top_gross", [])
+            ]
+            result["top_overtime"] = [
+                mask_dict_fields(r, ("overtime_pay",), placeholder=None)
+                for r in result.get("top_overtime", [])
+            ]
+        return result
+    finally:
+        session.close()
