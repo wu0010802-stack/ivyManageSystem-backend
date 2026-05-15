@@ -35,8 +35,8 @@ from services.attendance_parser import AttendanceResult
 import models.base as base_module
 from models.database import Base
 
-# 載入考核系統 fixtures（test_appraisal_*.py 所需）
-pytest_plugins = ["tests.conftest_appraisal"]
+# 載入考核系統 fixtures — M1 重構：暫時停用，待 M2 重寫 conftest_appraisal.py
+# pytest_plugins = ["tests.conftest_appraisal"]
 
 
 @pytest.fixture

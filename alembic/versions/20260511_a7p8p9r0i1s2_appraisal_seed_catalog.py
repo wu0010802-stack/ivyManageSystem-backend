@@ -1,14 +1,13 @@
-"""appraisal: seed 29 條懲處事由目錄
+"""appraisal: seed 15 筆 score_item_catalog（M1 重構）
 
-來源：第八篇 員工懲處事由 115.01.01 + 第六篇考核辦法第五條第（十）（十一）款。
+對應 Excel「114(上)年度考核統計表」16 欄位中編號 2-16（編號 1「9/15 分數」即基礎分數，
+存於 appraisal_cycles.base_score，不屬於 score_items）。
 
-29 條 = 5 大類懲處（管教不當 8 / 餵藥 3 / 幼兒意外 3 / 員工爭執 3 / 人員疏失 5）
-     + 功類 3（嘉獎/小功/大功）
-     + 特別辦法 4（主管推薦/特教生/種子講師/才藝班全期）
+display_order 對齊 Excel 欄位順序；data_source 註記是否可從其他模組自動帶入。
 
 Revision ID: a7p8p9r0i1s2
 Revises: a1p2p3r4i5s6
-Create Date: 2026-05-11
+Create Date: 2026-05-11 (rewritten 2026-05-15 for M1)
 """
 
 import sqlalchemy as sa
@@ -19,307 +18,200 @@ down_revision = "a1p2p3r4i5s6"
 branch_labels = None
 depends_on = None
 
-CATALOG = [
-    # (code, category, subcategory, description,
-    #  default_event_type, default_score_delta, severity_max, display_order)
-    # === MISCONDUCT 管教不當 ===
+
+# (code, label, sign, default_weight, data_source, description, display_order)
+CATALOG_ITEMS = [
     (
-        "MISCONDUCT_LEAVE_CLASSROOM",
-        "MISCONDUCT",
-        "離開教室",
-        "離開教室時未委請其他老師代為看顧，將幼生獨留在教室",
-        "WARNING",
-        -2.0,
+        "LEAVE",
+        "請休假",
+        "NEGATIVE",
+        0,
+        "leave",
+        "請假與休假合併扣分；公式於 engine 計算",
         1,
+    ),
+    (
+        "LATE_EARLY",
+        "遲到/早退",
+        "NEGATIVE",
+        -0.25,
+        "attendance",
+        "每次 -0.25；可從 attendance 模組自動匯入",
+        2,
+    ),
+    (
+        "NO_CLOCK",
+        "未打卡",
+        "NEGATIVE",
+        -0.25,
+        "attendance",
+        "每次 -0.25",
+        3,
+    ),
+    (
+        "MISS_PRESCHOOL_MEETING",
+        "園務會議未參加",
+        "NEGATIVE",
+        -1,
+        "manual",
+        "每次 -1；由主管手動登錄",
+        4,
+    ),
+    (
+        "ORG_MEETING_0913",
+        "9/13 機構會議研習",
+        "NEGATIVE",
+        -2,
+        "manual",
+        "未參加扣 -2",
+        5,
+    ),
+    (
+        "ORG_MEETING_1115",
+        "11/15 機構會議研習",
+        "NEGATIVE",
+        -2,
+        "manual",
+        "未參加扣 -2",
+        6,
+    ),
+    (
+        "TEAM_ACTIVITY_1115",
+        "11/15 自強活動",
+        "NEGATIVE",
+        -2,
+        "manual",
+        "未參加扣 -2",
+        7,
+    ),
+    (
+        "DROPOUT_0915",
+        "9/15 休學人數",
+        "NEGATIVE",
+        0,
+        "manual",
+        "休學人數扣分 = 休學人數×係數，公式於 engine 計算",
+        8,
+    ),
+    (
+        "DROPOUT_0315",
+        "3/15 休學人數",
+        "NEGATIVE",
+        0,
+        "manual",
+        "公式：(全園休學×2 + 試讀休學×1 - 回園×1)/班級數",
+        9,
+    ),
+    (
+        "CHILD_INCIDENT",
+        "幼兒意外",
+        "NEGATIVE",
+        0,
+        "manual",
+        "依嚴重度扣分；note 存事件明細",
         10,
     ),
     (
-        "MISCONDUCT_PARENT_COMPLAINT_WITHDRAWAL",
-        "MISCONDUCT",
-        "親師溝通無果致退學",
-        "家長抱怨老師教保不力，親師溝通無果，導致家長決定讓幼生休退學",
-        "WARNING",
-        -2.0,
-        1,
+        "RETURNING_RATE_0315",
+        "3/15 舊生註冊率",
+        "NEUTRAL",
+        0,
+        "monthly_enrollment_snapshots",
+        "舊生註冊率達標加分、未達扣分",
         11,
     ),
     (
-        "MISCONDUCT_INTIMIDATION_VOLUME",
-        "MISCONDUCT",
-        "恐嚇-音量過大",
-        "對孩子說話的音量大至樓上(下)都知悉",
-        "WARNING",
-        -2.0,
-        1,
+        "CLASS_SIZE",
+        "帶班人數",
+        "NEUTRAL",
+        0,
+        "monthly_enrollment_snapshots",
+        "編制以上加、以下扣；公式於 engine 計算",
         12,
     ),
     (
-        "MISCONDUCT_INTIMIDATION_VERBAL",
-        "MISCONDUCT",
-        "恐嚇-言語",
-        "言語恐嚇孩子（如：你再說話把你趕出去等等）",
-        "MINOR_DEMERIT",
-        -3.0,
-        1,
+        "AFTER_CLASS_RATE",
+        "才藝班參加率",
+        "POSITIVE",
+        0,
+        "activity_service",
+        "達 100% 加 2 分；可從 activity 模組自動帶入",
         13,
     ),
     (
-        "MISCONDUCT_INTIMIDATION_ISOLATION",
-        "MISCONDUCT",
-        "隔離至教室外",
-        "為處罰而隔離孩子到教室以外的空間",
-        "MINOR_DEMERIT",
-        -3.0,
-        1,
+        "SPED",
+        "特別辦法（特教生）",
+        "POSITIVE",
+        2,
+        "manual",
+        "每位特教生 +2",
         14,
     ),
     (
-        "MISCONDUCT_PHYSICAL_HARM",
-        "MISCONDUCT",
-        "身心痛苦/侵害",
-        "讓幼兒身心遭遇痛苦或侵害（最重大過乙次）",
-        "WARNING",
-        -2.0,
-        3,
+        "REWARD_PUNISH",
+        "獎懲",
+        "NEUTRAL",
+        0,
+        "disciplinary",
+        "可多筆並列；note 存大過/嘉獎明細",
         15,
-    ),
-    (
-        "MISCONDUCT_CORPORAL_PUNISHMENT",
-        "MISCONDUCT",
-        "體罰",
-        "依家長知情/反應遞增；幼生無受傷且家長不知道→扣考核分數；公開申訴→記大過",
-        "SCORE_ADJUST",
-        -3.0,
-        5,
-        16,
-    ),
-    (
-        "MISCONDUCT_VIOLENCE",
-        "MISCONDUCT",
-        "暴力管教",
-        "以暴力管教小孩（依勞基法 12.1.4 終止僱傭）",
-        "MAJOR_DEMERIT",
-        -6.0,
-        1,
-        17,
-    ),
-    # === MEDICATION 餵藥 ===
-    (
-        "MEDICATION_SELF_SERVE",
-        "MEDICATION",
-        "讓幼生自行服藥",
-        "未依規定協助餵藥，讓幼生自行服藥",
-        "ORAL_WARNING",
-        0.0,
-        1,
-        20,
-    ),
-    (
-        "MEDICATION_WRONG_NO_SYMPTOM",
-        "MEDICATION",
-        "餵錯藥-無症狀",
-        "未依指示餵藥或餵錯藥，幼生無症狀；視家長反應遞增",
-        "ORAL_WARNING",
-        0.0,
-        3,
-        21,
-    ),
-    (
-        "MEDICATION_WRONG_WITH_SYMPTOM",
-        "MEDICATION",
-        "餵錯藥-有症狀",
-        "未依指示餵藥或餵錯藥，幼生有症狀；視告知方式與家長反應遞增",
-        "SCORE_ADJUST",
-        -3.0,
-        5,
-        22,
-    ),
-    # === ACCIDENT 幼兒意外 ===
-    (
-        "ACCIDENT_MINOR_NO_SUTURE",
-        "ACCIDENT",
-        "輕傷無縫合",
-        "幼生意外送醫無縫合",
-        "SCORE_ADJUST",
-        -1.0,
-        5,
-        30,
-    ),
-    (
-        "ACCIDENT_MINOR_WITH_SUTURE",
-        "ACCIDENT",
-        "輕傷有縫合",
-        "幼生意外送醫有縫合（依情節 1-10 分）",
-        "SCORE_ADJUST",
-        -5.0,
-        5,
-        31,
-    ),
-    (
-        "ACCIDENT_SEVERE",
-        "ACCIDENT",
-        "重傷需就醫",
-        "幼生受重傷（需就醫）",
-        "WARNING",
-        -2.0,
-        5,
-        32,
-    ),
-    # === DISPUTE 員工爭執 ===
-    (
-        "DISPUTE_VERBAL_RESOLVED",
-        "DISPUTE",
-        "口角和解",
-        "口頭吵架未影響校譽，雙方和解",
-        "ORAL_WARNING",
-        0.0,
-        1,
-        40,
-    ),
-    (
-        "DISPUTE_VERBAL_DAMAGE",
-        "DISPUTE",
-        "口角影響校譽",
-        "口頭吵架有影響校譽",
-        "SCORE_ADJUST",
-        -2.0,
-        1,
-        41,
-    ),
-    (
-        "DISPUTE_PHYSICAL",
-        "DISPUTE",
-        "肢體衝突",
-        "肢體衝突，依是否影響校譽/退學遞增",
-        "SCORE_ADJUST",
-        -2.0,
-        4,
-        42,
-    ),
-    # === NEGLIGENCE 人員疏失 ===
-    (
-        "NEGLIGENCE_ACCOUNTING",
-        "NEGLIGENCE",
-        "行政會計疏失",
-        "薪資核算錯誤、加退保延誤、教育局報聘辭聘錯誤",
-        "WARNING",
-        -2.0,
-        1,
-        50,
-    ),
-    (
-        "NEGLIGENCE_KITCHEN",
-        "NEGLIGENCE",
-        "廚房疏失",
-        "餐點量不足、食材剩餘、地板濕滑致受傷",
-        "WARNING",
-        -2.0,
-        3,
-        51,
-    ),
-    (
-        "NEGLIGENCE_DRIVER",
-        "NEGLIGENCE",
-        "司機疏失",
-        "違反交通條例、行車事故之虞、車內遺留幼兒等",
-        "MINOR_DEMERIT",
-        -3.0,
-        4,
-        52,
-    ),
-    (
-        "NEGLIGENCE_DRESS_CODE",
-        "NEGLIGENCE",
-        "未依規定穿著",
-        "員工未依規定穿著服裝",
-        "ORAL_WARNING",
-        0.0,
-        1,
-        53,
-    ),
-    (
-        "NEGLIGENCE_DOC_LATE",
-        "NEGLIGENCE",
-        "文件未按時繳交",
-        "員工文件未按時繳交",
-        "ORAL_WARNING",
-        0.0,
-        1,
-        54,
-    ),
-    # === MERIT 功類 ===
-    ("MERIT_COMMENDATION", "MERIT", "嘉獎", "嘉獎", "COMMENDATION", 2.0, 1, 60),
-    ("MERIT_MINOR", "MERIT", "小功", "小功", "MINOR_MERIT", 3.0, 1, 61),
-    ("MERIT_MAJOR", "MERIT", "大功", "大功", "MAJOR_MERIT", 6.0, 1, 62),
-    # === SPECIAL 特別辦法 ===
-    (
-        "SPECIAL_RECOMMENDATION",
-        "SPECIAL",
-        "主管推薦優異",
-        "單位主管呈報表現優異人員（有具體行為），經執行長及總園長核定",
-        "SCORE_ADJUST",
-        2.0,
-        1,
-        70,
-    ),
-    (
-        "SPECIAL_SPECIAL_NEEDS",
-        "SPECIAL",
-        "班級特教生",
-        "班級有政府核定有補助園所的特教生（幼生在園需超過 4 個月）",
-        "SCORE_ADJUST",
-        2.0,
-        1,
-        71,
-    ),
-    (
-        "SPECIAL_SEED_INSTRUCTOR",
-        "SPECIAL",
-        "內部種子講師",
-        "經機構檢定為內部種子講師",
-        "SCORE_ADJUST",
-        2.0,
-        1,
-        72,
-    ),
-    (
-        "SPECIAL_ART_CLASS_FULL_TERM",
-        "SPECIAL",
-        "才藝班全期授課",
-        "參與課後才藝課全期授課者（未帶班人員除外）",
-        "SCORE_ADJUST",
-        2.0,
-        1,
-        73,
     ),
 ]
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    for row in CATALOG:
-        bind.execute(
-            sa.text(
-                "INSERT INTO appraisal_penalty_catalog "
-                "(code, category, subcategory, description, "
-                " default_event_type, default_score_delta, severity_max, "
-                " display_order, is_active) "
-                "VALUES (:code, :cat, :sub, :desc, :evt, :score, :sev, :ord, true) "
-                "ON CONFLICT (code) DO NOTHING"
-            ),
-            dict(
-                zip(
-                    ["code", "cat", "sub", "desc", "evt", "score", "sev", "ord"],
-                    row,
-                )
-            ),
+    inspector = sa.inspect(bind)
+    if "appraisal_score_item_catalog" not in inspector.get_table_names():
+        return
+
+    catalog_table = sa.table(
+        "appraisal_score_item_catalog",
+        sa.column("code", sa.String),
+        sa.column("label", sa.String),
+        sa.column("sign", sa.String),
+        sa.column("default_weight", sa.Numeric),
+        sa.column("data_source", sa.String),
+        sa.column("description", sa.Text),
+        sa.column("display_order", sa.Integer),
+        sa.column("is_active", sa.Boolean),
+    )
+
+    existing_codes = {
+        row[0]
+        for row in bind.execute(
+            sa.text("SELECT code FROM appraisal_score_item_catalog")
+        ).fetchall()
+    }
+    rows_to_insert = []
+    for code, label, sign, weight, data_source, desc, order in CATALOG_ITEMS:
+        if code in existing_codes:
+            continue
+        rows_to_insert.append(
+            {
+                "code": code,
+                "label": label,
+                "sign": sign,
+                "default_weight": weight,
+                "data_source": data_source,
+                "description": desc,
+                "display_order": order,
+                "is_active": True,
+            }
         )
+    if rows_to_insert:
+        op.bulk_insert(catalog_table, rows_to_insert)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
-    codes = tuple(row[0] for row in CATALOG)
+    inspector = sa.inspect(bind)
+    if "appraisal_score_item_catalog" not in inspector.get_table_names():
+        return
+    codes = [c[0] for c in CATALOG_ITEMS]
     bind.execute(
-        sa.text("DELETE FROM appraisal_penalty_catalog WHERE code = ANY(:codes)"),
-        {"codes": list(codes)},
+        sa.text(
+            "DELETE FROM appraisal_score_item_catalog WHERE code = ANY(:codes)"
+        ),
+        {"codes": codes},
     )

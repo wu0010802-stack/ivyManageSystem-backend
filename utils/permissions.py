@@ -91,6 +91,12 @@ class Permission(IntFlag):
     APPRAISAL_ACCOUNTING = 1 << 58  # 行政會計核數字（第二階）
     APPRAISAL_FINALIZE = 1 << 59  # 最高主管核定（第三階）+ cycle lock/unlock/close
 
+    # --- 年終獎金結算（M1 重構新增）---
+    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
+    YEAR_END_READ = 1 << 52  # 年終結算檢視（個人/全部）
+    YEAR_END_WRITE = 1 << 60  # 年終 cycle / settlements / special_bonus_items 編輯
+    YEAR_END_FINALIZE = 1 << 61  # 年終最高主管核定 + cycle lock/close
+
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
 
@@ -122,6 +128,7 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "RECRUITMENT": {"read": "RECRUITMENT_READ", "write": "RECRUITMENT_WRITE"},
     "GUARDIANS": {"read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
     "APPRAISAL": {"read": "APPRAISAL_READ", "write": "APPRAISAL_EVENT_WRITE"},
+    "YEAR_END": {"read": "YEAR_END_READ", "write": "YEAR_END_WRITE"},
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -169,6 +176,9 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.APPRAISAL_READ
         | Permission.APPRAISAL_EVENT_WRITE
         | Permission.APPRAISAL_ACCOUNTING
+        # 年終獎金：人事可檢視與編輯（會計核數字流程）
+        | Permission.YEAR_END_READ
+        | Permission.YEAR_END_WRITE
     ),
     "supervisor": (
         Permission.DASHBOARD
@@ -214,6 +224,10 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.APPRAISAL_EVENT_WRITE
         | Permission.APPRAISAL_REVIEW
         | Permission.APPRAISAL_FINALIZE
+        # 年終獎金：主管全程權限（檢視+編輯+核定）
+        | Permission.YEAR_END_READ
+        | Permission.YEAR_END_WRITE
+        | Permission.YEAR_END_FINALIZE
     ),
     "teacher": (
         Permission.DASHBOARD
@@ -317,6 +331,10 @@ PERMISSION_LABELS: Dict[str, str] = {
     "APPRAISAL_REVIEW": "考核簽核 (主管第一階)",
     "APPRAISAL_ACCOUNTING": "考核核數字 (會計第二階)",
     "APPRAISAL_FINALIZE": "考核核定 (最高主管第三階)",
+    # 年終獎金結算
+    "YEAR_END_READ": "年終結算 (檢視)",
+    "YEAR_END_WRITE": "年終結算 (編輯)",
+    "YEAR_END_FINALIZE": "年終核定 (最高主管)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -385,13 +403,19 @@ PERMISSION_GROUPS: List[Dict] = [
             "APPRAISAL_REVIEW",
             "APPRAISAL_ACCOUNTING",
             "APPRAISAL_FINALIZE",
+            "YEAR_END_FINALIZE",
         ],
         "split_permissions": [
             {
                 "module": "考核資料",
                 "read": "APPRAISAL_READ",
                 "write": "APPRAISAL_EVENT_WRITE",
-            }
+            },
+            {
+                "module": "年終結算",
+                "read": "YEAR_END_READ",
+                "write": "YEAR_END_WRITE",
+            },
         ],
     },
     {
