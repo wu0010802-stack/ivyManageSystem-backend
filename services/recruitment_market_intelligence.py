@@ -1681,13 +1681,16 @@ def sync_market_intelligence(session, *, hotspot_limit: int = 200) -> dict[str, 
             .limit(hotspot_limit)
             .all()
         ]
+        # 批次查既有快取，避免逐一 first() 造成 N 次 round-trip
+        existing_cache = {
+            cache.address: cache
+            for cache in session.query(RecruitmentGeocodeCache)
+            .filter(RecruitmentGeocodeCache.address.in_(hotspot_addresses))
+            .all()
+        } if hotspot_addresses else {}
         hotspot_rows = []
         for address in hotspot_addresses:
-            row = (
-                session.query(RecruitmentGeocodeCache)
-                .filter_by(address=address)
-                .first()
-            )
+            row = existing_cache.get(address)
             if not row:
                 row = RecruitmentGeocodeCache(address=address)
                 session.add(row)
