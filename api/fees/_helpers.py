@@ -52,7 +52,10 @@ class FeeTemplateCreate(BaseModel):
         pattern="^(registration|miscellaneous|monthly|material|insurance)$",
     )
     name: str = Field(..., min_length=1, max_length=100)
-    amount: int = Field(..., ge=0, le=MAX_FEE_AMOUNT)
+    # 下限 ge=1：0 元範本無明確業務語意，「該年級該學期免收某類費用」應用
+    # is_active=False 表達；保留 ge=0 會在 update 路徑出現「0 → 門檻」單步繞過
+    # 守衛的灰色地帶（max rule 對 0 起點仍允許跳到剛好 threshold 一次）。
+    amount: int = Field(..., ge=1, le=MAX_FEE_AMOUNT)
     breakdown: Optional[dict] = None
     due_date_offset_days: int = Field(14, ge=0, le=365)
     is_active: bool = True
@@ -72,7 +75,8 @@ class FeeTemplateCreate(BaseModel):
 
 class FeeTemplateUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    amount: Optional[int] = Field(None, ge=0, le=MAX_FEE_AMOUNT)
+    # 下限 ge=1：同 FeeTemplateCreate 理由，禁止 amount=0；要免收請改 is_active=False。
+    amount: Optional[int] = Field(None, ge=1, le=MAX_FEE_AMOUNT)
     breakdown: Optional[dict] = None
     due_date_offset_days: Optional[int] = Field(None, ge=0, le=365)
     is_active: Optional[bool] = None

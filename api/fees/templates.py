@@ -88,6 +88,19 @@ def create_fee_template(
     current_user: dict = Depends(require_staff_permission(Permission.FEES_WRITE)),
 ):
     _validate_template_breakdown(payload.amount, payload.breakdown)
+    # 先寫 attempted audit，讓守衛擋下時 AuditMiddleware 仍能記錄
+    # 「誰想用什麼 payload 建範本但被擋」（BLOCKED_CREATE）。
+    request.state.audit_entity_id = (
+        f"{payload.grade_id}/{payload.school_year}-{payload.semester}/"
+        f"{payload.fee_type}"
+    )
+    request.state.audit_summary = (
+        f"建立費用範本 {payload.name}（NT${int(payload.amount or 0):,}）"
+    )
+    request.state.audit_changes = {
+        "action": "fee_template_create",
+        "attempted": payload.model_dump(),
+    }
     require_finance_approve(
         payload.amount,
         current_user,
@@ -165,6 +178,18 @@ def update_fee_template(
         old_amount = int(t.amount or 0)
         new_amount_int = int(new_amount or 0)
         guard_basis = max(new_amount_int, old_amount, abs(new_amount_int - old_amount))
+        # 先寫 attempted audit（被擋時也留下 before+attempted_after 供事後追查）。
+        attempted_after = {**before, **payload.model_dump(exclude_unset=True)}
+        request.state.audit_entity_id = str(template_id)
+        request.state.audit_summary = (
+            f"編輯費用範本 {t.name}（{old_amount:,} → {new_amount_int:,}）"
+        )
+        request.state.audit_changes = {
+            "action": "fee_template_update",
+            "before": before,
+            "attempted_after": attempted_after,
+            "guard_basis": guard_basis,
+        }
         if guard_basis > FEE_PAYMENT_APPROVAL_THRESHOLD:
             require_finance_approve(
                 guard_basis,
@@ -207,11 +232,23 @@ def delete_fee_template(
         t = session.query(FeeTemplate).filter(FeeTemplate.id == template_id).first()
         if not t:
             raise HTTPException(status_code=404, detail="範本不存在")
+        # 先寫 attempted audit（被擋時也記下「誰想停用哪個範本」）。
+        template_amount = int(t.amount or 0)
+        request.state.audit_entity_id = str(template_id)
+        request.state.audit_summary = (
+            f"停用費用範本 {t.name}（amount=NT${template_amount:,}）"
+        )
+        request.state.audit_changes = {
+            "action": "fee_template_delete",
+            "template_id": template_id,
+            "template_amount": template_amount,
+            "template_snapshot": _template_to_dict(t),
+        }
         # 停用守衛：對大額範本（amount > 門檻）的停用需 ACTIVITY_PAYMENT_APPROVE。
         # Why: 範本停用 → 下次 /generate 該年級該費用類型全班不出帳 → 收入靜默流失。
         # 「沒發帳」比「發錯帳」更難察覺，必須與漲價/降價同等級守衛。
         require_finance_approve(
-            int(t.amount or 0),
+            template_amount,
             current_user,
             threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
             action_label=f"停用費用範本 {t.name}",
@@ -219,11 +256,4 @@ def delete_fee_template(
         t.is_active = False
         t.updated_by = current_user.get("username")
         session.flush()
-
-        request.state.audit_entity_id = str(template_id)
-        request.state.audit_summary = f"停用費用範本 {t.name}"
-        request.state.audit_changes = {
-            "action": "fee_template_delete",
-            "template_id": template_id,
-        }
         return {"ok": True, "template_id": template_id}
