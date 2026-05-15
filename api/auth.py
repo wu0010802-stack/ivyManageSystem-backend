@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
 from utils.audit import write_login_audit
+from utils.request_ip import get_client_ip
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
 from utils.auth import (
     hash_password,
@@ -350,7 +351,7 @@ def impersonate_user(
                 admin_token = authorization.split(" ", 1)[1]
 
         # 7. 寫入審計日誌（明確標記操作者與被冒充對象，供事後追查）
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request) or "unknown"
         logger.warning(
             "冒充操作：操作者 user_id=%s 切換為 user_id=%s（role=%s）來源 IP=%s",
             current_user.get("user_id"),
@@ -394,7 +395,7 @@ def impersonate_user(
 @router.post("/login")
 def login(data: LoginRequest, request: Request):
     """教師/管理員登入"""
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request) or "unknown"
     # 層級一：IP 滑動視窗（不分成敗，防 Credential Stuffing）
     try:
         _check_ip_rate_limit(client_ip)
@@ -541,7 +542,7 @@ def refresh_token(request: Request):
     Token 來源：httpOnly Cookie 或 Authorization header。
     """
     # 與 login 對稱：IP 滑動視窗限流，避免拿無效 token 壓 DB / 暴力試 jti。
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request) or "unknown"
     try:
         _check_ip_rate_limit(client_ip)
     except HTTPException:

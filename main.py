@@ -695,4 +695,15 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 反向代理感知：在 LB / nginx / cloudflare 後面時，讓 uvicorn 從
+    # X-Forwarded-For / Forwarded 標頭重寫 request.client.host。
+    # forwarded_allow_ips 可由 TRUSTED_PROXY_IPS 控制；預設 "*" 接受任何
+    # 前代理（dev 友善）。Prod 應設為 LB 內網 IP / CIDR。
+    forwarded_allow = os.getenv("TRUSTED_PROXY_IPS", "*")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow,
+    )

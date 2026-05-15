@@ -30,6 +30,8 @@ from collections import defaultdict
 
 from fastapi import HTTPException, Request
 
+from utils.request_ip import get_client_ip
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +51,7 @@ class BaseLimiter(ABC):
         limiter = self
 
         def _check(request: Request) -> None:
-            key = request.client.host if request.client else "unknown"
+            key = get_client_ip(request) or "unknown"
             limiter.check(key)
 
         return _check

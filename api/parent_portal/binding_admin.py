@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from models.database import AuditLog, Guardian, GuardianBindingCode, get_session
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.request_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def create_binding_code(
         )
         session.add(binding)
 
-        ip = request.client.host if request.client else None
+        ip = get_client_ip(request)
         session.add(
             AuditLog(
                 user_id=current_user["user_id"],
