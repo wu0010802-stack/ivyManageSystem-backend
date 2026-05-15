@@ -464,3 +464,128 @@ def export_finance_summary(
 
     suffix = f"{year}" + (f"-{month:02d}" if month else "-全年")
     return xlsx_streaming_response(wb, f"收支彙總_{suffix}.xlsx")
+
+
+# ---------------------------------------------------------------------------
+# P2 drill-down：考勤異常明細
+# ---------------------------------------------------------------------------
+
+ATTENDANCE_DETAIL_CACHE_TTL_SECONDS = 1800  # 30 分鐘
+ATTENDANCE_DETAIL_LIMIT = 200
+
+
+def _build_attendance_detail(
+    session,
+    year: int,
+    month: Optional[int],
+    classroom_id: Optional[int],
+) -> dict:
+    """查詢指定年份/月份/班級的考勤異常記錄。"""
+    from calendar import monthrange
+
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
+    if month is not None:
+        start = date(year, month, 1)
+        end = date(year, month, monthrange(year, month)[1])
+
+    query = (
+        session.query(
+            Attendance.attendance_date.label("date"),
+            Employee.id.label("employee_id"),
+            Employee.name.label("employee_name"),
+            Classroom.id.label("classroom_id"),
+            Classroom.name.label("classroom_name"),
+            Attendance.is_late,
+            Attendance.is_early_leave,
+            Attendance.is_missing_punch_in,
+            Attendance.is_missing_punch_out,
+            Attendance.late_minutes,
+            Attendance.early_leave_minutes,
+            Attendance.remark,
+        )
+        .join(Employee, Employee.id == Attendance.employee_id)
+        .outerjoin(Classroom, Classroom.id == Employee.classroom_id)
+        .filter(
+            Attendance.attendance_date >= start,
+            Attendance.attendance_date <= end,
+            (
+                Attendance.is_late.is_(True)
+                | Attendance.is_early_leave.is_(True)
+                | Attendance.is_missing_punch_in.is_(True)
+                | Attendance.is_missing_punch_out.is_(True)
+            ),
+        )
+    )
+    if classroom_id is not None:
+        query = query.filter(Employee.classroom_id == classroom_id)
+
+    total = query.count()
+    rows = (
+        query.order_by(Attendance.attendance_date.desc(), Employee.id)
+        .limit(ATTENDANCE_DETAIL_LIMIT)
+        .all()
+    )
+
+    records = []
+    for row in rows:
+        anomaly_types = []
+        if row.is_late:
+            anomaly_types.append("late")
+        if row.is_early_leave:
+            anomaly_types.append("early_leave")
+        if row.is_missing_punch_in:
+            anomaly_types.append("missing_punch_in")
+        if row.is_missing_punch_out:
+            anomaly_types.append("missing_punch_out")
+        records.append(
+            {
+                "date": row.date.isoformat(),
+                "employee_id": int(row.employee_id),
+                "employee_name": row.employee_name,
+                "classroom_id": int(row.classroom_id) if row.classroom_id else None,
+                "classroom_name": row.classroom_name,
+                "anomaly_types": anomaly_types,
+                "late_minutes": int(row.late_minutes or 0),
+                "early_minutes": int(row.early_leave_minutes or 0),
+                "missing_punch_in": bool(row.is_missing_punch_in),
+                "missing_punch_out": bool(row.is_missing_punch_out),
+                "note": row.remark,
+            }
+        )
+
+    return {
+        "year": year,
+        "month": month,
+        "classroom_id": classroom_id,
+        "records": records,
+        "total_records": total,
+        "truncated": total > ATTENDANCE_DETAIL_LIMIT,
+    }
+
+
+@router.get("/attendance/detail")
+def get_attendance_detail(
+    year: int = Query(..., ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    classroom_id: Optional[int] = Query(None, ge=1),
+    current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
+):
+    """考勤異常記錄列表（drill-down）。
+
+    任一旗標 (is_late / is_early_leave / is_missing_punch_in/out) 為 true 即列入。
+    LIMIT 200；total_records 為 filter 後總數，前端據 truncated 顯提示。
+    """
+    session = get_session()
+    try:
+        return report_cache_service.get_or_build(
+            session,
+            category="reports_attendance_detail",
+            ttl_seconds=ATTENDANCE_DETAIL_CACHE_TTL_SECONDS,
+            params={"year": year, "month": month, "classroom_id": classroom_id},
+            builder=lambda: _build_attendance_detail(
+                session, year, month, classroom_id
+            ),
+        )
+    finally:
+        session.close()
