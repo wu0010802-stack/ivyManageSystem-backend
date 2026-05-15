@@ -589,3 +589,110 @@ def get_attendance_detail(
         )
     finally:
         session.close()
+
+
+SALARY_CONTRIBUTORS_CACHE_TTL_SECONDS = 1800
+SALARY_CONTRIBUTORS_LIMIT = 5
+
+
+def _build_salary_contributors(session, year: int, month: int) -> dict:
+    """查指定月份 top 5 gross + top 5 overtime（只認 finalized 非 stale）。"""
+    base_filter = (
+        SalaryRecord.salary_year == year,
+        SalaryRecord.salary_month == month,
+        SalaryRecord.is_finalized == True,  # noqa: E712
+        SalaryRecord.needs_recalc == False,  # noqa: E712
+    )
+
+    top_gross_rows = (
+        session.query(
+            SalaryRecord.employee_id,
+            Employee.name.label("employee_name"),
+            SalaryRecord.gross_salary,
+            SalaryRecord.is_finalized,
+        )
+        .join(Employee, Employee.id == SalaryRecord.employee_id)
+        .filter(*base_filter)
+        .order_by(SalaryRecord.gross_salary.desc())
+        .limit(SALARY_CONTRIBUTORS_LIMIT)
+        .all()
+    )
+
+    top_overtime_rows = (
+        session.query(
+            SalaryRecord.employee_id,
+            Employee.name.label("employee_name"),
+            SalaryRecord.overtime_pay,
+            SalaryRecord.is_finalized,
+        )
+        .join(Employee, Employee.id == SalaryRecord.employee_id)
+        .filter(
+            *base_filter,
+            func.coalesce(SalaryRecord.overtime_pay, 0) > 0,
+        )
+        .order_by(SalaryRecord.overtime_pay.desc())
+        .limit(SALARY_CONTRIBUTORS_LIMIT)
+        .all()
+    )
+
+    return {
+        "year": year,
+        "month": month,
+        "top_gross": [
+            {
+                "employee_id": int(r.employee_id),
+                "employee_name": r.employee_name,
+                "gross_salary": int(r.gross_salary or 0),
+                "is_finalized": bool(r.is_finalized),
+            }
+            for r in top_gross_rows
+        ],
+        "top_overtime": [
+            {
+                "employee_id": int(r.employee_id),
+                "employee_name": r.employee_name,
+                "overtime_pay": int(r.overtime_pay or 0),
+                "is_finalized": bool(r.is_finalized),
+            }
+            for r in top_overtime_rows
+        ],
+    }
+
+
+@router.get("/salary/contributors")
+def get_salary_contributors(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
+):
+    """指定月份的薪資 top contributors（top 5 應發 + top 5 加班費）。
+
+    F-031：非 admin/hr 看不到金額，gross_salary / overtime_pay 遮罩為 null。
+    只認 is_finalized=True AND needs_recalc=False 的薪資。
+    """
+    from utils.salary_access import has_full_salary_view, mask_dict_fields
+
+    session = get_session()
+    try:
+        result = report_cache_service.get_or_build(
+            session,
+            category="reports_salary_contributors",
+            ttl_seconds=SALARY_CONTRIBUTORS_CACHE_TTL_SECONDS,
+            params={"year": year, "month": month},
+            builder=lambda: _build_salary_contributors(session, year, month),
+        )
+
+        if not has_full_salary_view(current_user):
+            # 遮罩在 cache 外做：dict copy + list 重建避免污染 cache payload
+            result = dict(result)
+            result["top_gross"] = [
+                mask_dict_fields(r, ("gross_salary",), placeholder=None)
+                for r in result.get("top_gross", [])
+            ]
+            result["top_overtime"] = [
+                mask_dict_fields(r, ("overtime_pay",), placeholder=None)
+                for r in result.get("top_overtime", [])
+            ]
+        return result
+    finally:
+        session.close()

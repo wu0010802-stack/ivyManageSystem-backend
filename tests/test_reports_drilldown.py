@@ -201,3 +201,142 @@ def test_attendance_detail_truncates_at_200(client, monkeypatch):
     assert data["total_records"] == 5
     assert len(data["records"]) == 3
     assert data["truncated"] is True
+
+
+def _seed_salary_contributors(sf):
+    """造 6 筆 2026/3 已封存薪資 + 1 筆草稿（不入榜）。"""
+    with sf() as s:
+        s.add_all(
+            [
+                Employee(id=11, employee_id="C11", name="王老師", position="老師"),
+                Employee(id=12, employee_id="C12", name="陳老師", position="老師"),
+                Employee(id=13, employee_id="C13", name="李老師", position="老師"),
+                Employee(id=14, employee_id="C14", name="林老師", position="老師"),
+                Employee(id=15, employee_id="C15", name="張老師", position="老師"),
+                Employee(id=16, employee_id="C16", name="黃老師", position="老師"),
+                Employee(
+                    id=17, employee_id="C17", name="周老師（草稿）", position="老師"
+                ),
+            ]
+        )
+        s.commit()
+        s.add_all(
+            [
+                SalaryRecord(
+                    employee_id=11,
+                    salary_year=2026,
+                    salary_month=3,
+                    gross_salary=70000,
+                    net_salary=60000,
+                    overtime_pay=5000,
+                    is_finalized=True,
+                    needs_recalc=False,
+                ),
+                SalaryRecord(
+                    employee_id=12,
+                    salary_year=2026,
+                    salary_month=3,
+                    gross_salary=65000,
+                    net_salary=55000,
+                    overtime_pay=12000,
+                    is_finalized=True,
+                    needs_recalc=False,
+                ),
+                SalaryRecord(
+                    employee_id=13,
+                    salary_year=2026,
+                    salary_month=3,
+                    gross_salary=60000,
+                    net_salary=50000,
+                    overtime_pay=8000,
+                    is_finalized=True,
+                    needs_recalc=False,
+                ),
+                SalaryRecord(
+                    employee_id=14,
+                    salary_year=2026,
+                    salary_month=3,
+                    gross_salary=55000,
+                    net_salary=45000,
+                    overtime_pay=3000,
+                    is_finalized=True,
+                    needs_recalc=False,
+                ),
+                SalaryRecord(
+                    employee_id=15,
+                    salary_year=2026,
+                    salary_month=3,
+                    gross_salary=50000,
+                    net_salary=42000,
+                    overtime_pay=0,
+                    is_finalized=True,
+                    needs_recalc=False,
+                ),
+                SalaryRecord(
+                    employee_id=16,
+                    salary_year=2026,
+                    salary_month=3,
+                    gross_salary=45000,
+                    net_salary=38000,
+                    overtime_pay=2000,
+                    is_finalized=True,
+                    needs_recalc=False,
+                ),
+                SalaryRecord(
+                    employee_id=17,
+                    salary_year=2026,
+                    salary_month=3,
+                    gross_salary=999999,
+                    net_salary=999999,
+                    overtime_pay=999999,
+                    is_finalized=False,
+                    needs_recalc=True,
+                ),
+            ]
+        )
+        s.commit()
+
+
+def test_salary_contributors_top5_gross_and_overtime(client):
+    c, sf = client
+    _login(c, sf)
+    _seed_salary_contributors(sf)
+    r = c.get("/api/reports/salary/contributors?year=2026&month=3")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["year"] == 2026
+    assert data["month"] == 3
+    assert len(data["top_gross"]) == 5
+    gross_amounts = [rec["gross_salary"] for rec in data["top_gross"]]
+    assert gross_amounts == [70000, 65000, 60000, 55000, 50000]
+    assert len(data["top_overtime"]) == 5
+    ot_amounts = [rec["overtime_pay"] for rec in data["top_overtime"]]
+    assert ot_amounts == [12000, 8000, 5000, 3000, 2000]
+    all_ids = {r["employee_id"] for r in data["top_gross"] + data["top_overtime"]}
+    assert 17 not in all_ids
+
+
+def test_salary_contributors_masks_amount_for_non_admin(client):
+    c, sf = client
+    _login(c, sf, username="viewer", role="staff", permissions=1 << 13)
+    _seed_salary_contributors(sf)
+    r = c.get("/api/reports/salary/contributors?year=2026&month=3")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    for rec in data["top_gross"]:
+        assert rec["gross_salary"] is None
+        assert rec["employee_name"]
+    for rec in data["top_overtime"]:
+        assert rec["overtime_pay"] is None
+
+
+def test_salary_contributors_excludes_draft_salaries(client):
+    c, sf = client
+    _login(c, sf)
+    _seed_salary_contributors(sf)
+    r = c.get("/api/reports/salary/contributors?year=2026&month=3")
+    data = r.json()
+    all_employee_ids = {
+        rec["employee_id"] for rec in data["top_gross"] + data["top_overtime"]
+    }
+    assert 17 not in all_employee_ids
