@@ -81,6 +81,7 @@ def _query_attendance_by_classroom(session, start: date, end: date) -> list:
     """查詢並整理各班級年度考勤出勤率。"""
     rows = (
         session.query(
+            Classroom.id.label("classroom_id"),
             Classroom.name.label("classroom"),
             func.count(Attendance.id).label("total"),
             func.sum(func.cast(Attendance.is_late, Integer)).label("late"),
@@ -101,7 +102,7 @@ def _query_attendance_by_classroom(session, start: date, end: date) -> list:
             Attendance.attendance_date <= end,
             Classroom.is_active == True,
         )
-        .group_by(Classroom.name)
+        .group_by(Classroom.id, Classroom.name)
         .order_by(Classroom.name)
         .all()
     )
@@ -115,6 +116,7 @@ def _query_attendance_by_classroom(session, start: date, end: date) -> list:
         rate = round((total - anomaly) / total * 100, 1) if total > 0 else 0
         result.append(
             {
+                "classroom_id": int(row.classroom_id),
                 "classroom": row.classroom,
                 "total_records": total,
                 "late": late,
