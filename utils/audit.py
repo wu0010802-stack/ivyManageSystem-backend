@@ -159,12 +159,15 @@ ENTITY_PATTERNS = [
     # summaries 之前，確保更具體路徑優先匹配。
     # /api/appraisal/cycles/{id}/summaries:recompute 歸 appraisal_cycle，
     # 因為 recompute 由 cycle 觸發；個別 summary sign/finalize/reject 由 /summaries/{id} 端點產生。
-    (r"/api/appraisal/penalty_catalog", "appraisal_catalog"),
+    (r"/api/appraisal/score_item_catalog", "appraisal_catalog"),
     (r"/api/appraisal/bonus_rates", "appraisal_bonus_rate"),
     (r"/api/appraisal/cycles", "appraisal_cycle"),
     (r"/api/appraisal/participants", "appraisal_participant"),
-    (r"/api/appraisal/events", "appraisal_event"),
+    (r"/api/appraisal/score_items", "appraisal_score_item"),
     (r"/api/appraisal/summaries", "appraisal_summary"),
+    (r"/api/year_end/cycles", "year_end_cycle"),
+    (r"/api/year_end/settlements", "year_end_settlement"),
+    (r"/api/year_end/special_bonuses", "year_end_special_bonus"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -230,10 +233,14 @@ ENTITY_LABELS = {
     # 考核系統
     "appraisal_cycle": "考核週期",
     "appraisal_participant": "考核參與者",
-    "appraisal_event": "考核事件",
+    "appraisal_score_item": "考核項目",
     "appraisal_summary": "考核結算",
     "appraisal_bonus_rate": "考核獎金率",
-    "appraisal_catalog": "懲處目錄",
+    "appraisal_catalog": "考核項目目錄",
+    # 年終獎金
+    "year_end_cycle": "年終週期",
+    "year_end_settlement": "年終結算",
+    "year_end_special_bonus": "年終特別獎金",
     # 教師端跨功能搜尋 / 量測快照（bug sweep round 4 2026-05-14 補）
     # 兩者都是 GET 但回傳跨班 PII 或健康資料，必留稽核。
     "portal_search": "教師端跨功能搜尋",

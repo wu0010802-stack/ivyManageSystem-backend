@@ -33,7 +33,7 @@ from schemas.appraisal import (
     CyclePatch,
     CycleUnlockRequest,
 )
-from services.appraisal_service import default_cycle_dates
+from services.appraisal import default_cycle_dates
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -104,6 +104,8 @@ def patch_cycle(
         raise HTTPException(status_code=400, detail="cycle_closed:已封存週期不可修改")
     if payload.base_score_calc_date is not None:
         cycle.base_score_calc_date = payload.base_score_calc_date
+    if payload.base_score is not None:
+        cycle.base_score = payload.base_score
     db.commit()
     db.refresh(cycle)
     return cycle
