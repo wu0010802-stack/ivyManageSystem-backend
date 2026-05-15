@@ -265,8 +265,11 @@ class SalaryEngine:
                 "禁止覆寫。如需重新計算，請先至薪資管理頁面解除該月封存。"
             )
 
-    def __init__(self, load_from_db: bool = False):
-        self.insurance_service = InsuranceService()
+    def __init__(self, load_from_db: bool = False, insurance_service=None):
+        # F3: 允許注入 InsuranceService 以共用 main.py 的 singleton。
+        # 不傳時建新實例維持向下相容（既有 unit test 不需改）；
+        # production 入口（main.py）改為傳入既有 singleton 避免狀態分歧。
+        self.insurance_service = insurance_service or InsuranceService()
         # 記錄目前載入的設定版本 ID，供薪資紀錄稽核用
         self._bonus_config_id: Optional[int] = None
         self._attendance_policy_id: Optional[int] = None

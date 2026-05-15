@@ -178,7 +178,8 @@ def _should_mount_dev_router() -> bool:
 
 # Services (singletons)
 insurance_service = InsuranceService()
-salary_engine = SalaryEngine(load_from_db=True)
+# F3: 注入既有 InsuranceService singleton，避免 engine 自建第二份造成狀態分歧
+salary_engine = SalaryEngine(load_from_db=True, insurance_service=insurance_service)
 line_service = LineService()
 # 家長入口 LIFF 認證；channel_id 可為空，端點會回 503 直到正確設定
 line_login_service = LineLoginService(
