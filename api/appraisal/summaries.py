@@ -23,10 +23,7 @@ from schemas.appraisal import (
     SignRequest,
     SummaryOut,
 )
-from services.appraisal_service import (
-    load_active_rates_map,
-    recompute_summary,
-)
+from services.appraisal import load_active_rates_map, recompute_summary
 from utils.auth import require_staff_permission
 from utils.permissions import Permission, has_permission
 

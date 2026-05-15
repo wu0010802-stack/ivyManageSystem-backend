@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,10 +12,11 @@ from models.appraisal import (
     AppraisalSummary,
 )
 from models.database import get_session_dep
-from services.appraisal_excel import (
+from services.appraisal.excel_io import (
     build_cycle_report,
     build_participant_sheet,
-    build_penalty_log,
+    build_transfer_roster,
+    import_cycle_excel,
 )
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -82,8 +83,8 @@ def cycle_report_xlsx(
     )
 
 
-@router.get("/cycles/{cycle_id}/penalty_log.xlsx")
-def penalty_log_xlsx(
+@router.get("/cycles/{cycle_id}/transfer_roster.xlsx")
+def transfer_roster_xlsx(
     cycle_id: int,
     db: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
@@ -91,14 +92,45 @@ def penalty_log_xlsx(
     cycle = db.get(AppraisalCycle, cycle_id)
     if not cycle:
         raise HTTPException(404, "cycle_not_found")
-    content = build_penalty_log(db, cycle)
+    content = build_transfer_roster(db, cycle)
     return Response(
         content=content,
         media_type=XLSX_CONTENT_TYPE,
         headers={
-            "Content-Disposition": f'attachment; filename="appraisal_penalty_log_{cycle_id}.xlsx"',
+            "Content-Disposition": f'attachment; filename="appraisal_transfer_roster_{cycle_id}.xlsx"',
         },
     )
+
+
+@router.post("/cycles/{cycle_id}/import.xlsx")
+async def import_cycle_xlsx(
+    cycle_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_session_dep),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
+):
+    """匯入半年考核 Excel，將每行映射為 participant + score_items。
+
+    冪等：UNIQUE(participant, item_code) 走 upsert。
+    """
+    cycle = db.get(AppraisalCycle, cycle_id)
+    if not cycle:
+        raise HTTPException(404, "cycle_not_found")
+    if cycle.status.value != "OPEN":
+        raise HTTPException(400, f"cycle_status_invalid:{cycle.status.value}")
+    body = await file.read()
+    if not body:
+        raise HTTPException(400, "empty_file")
+    stats = import_cycle_excel(
+        db, cycle, body, actor_user_id=current_user.get("user_id")
+    )
+    db.commit()
+    request.state.audit_entity_id = cycle_id
+    request.state.audit_changes = stats
+    return stats
 
 
 @router.get("/participants/{participant_id}/sheet.xlsx")

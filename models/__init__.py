@@ -10,16 +10,26 @@ from models.gov_moe import (
 from .appraisal import (
     AppraisalCycle,
     AppraisalParticipant,
-    AppraisalEvent,
+    AppraisalScoreItem,
+    AppraisalScoreItemCatalog,
     AppraisalSummary,
     AppraisalBonusRate,
-    AppraisalPenaltyCatalogItem,
     Semester as AppraisalSemester,
     CycleStatus as AppraisalCycleStatus,
     RoleGroup as AppraisalRoleGroup,
-    EventType as AppraisalEventType,
-    ParentReaction as AppraisalParentReaction,
     Grade as AppraisalGrade,
     SummaryStatus as AppraisalSummaryStatus,
-    CatalogCategory as AppraisalCatalogCategory,
+    ScoreItemSign as AppraisalScoreItemSign,
+)
+
+from .year_end import (
+    YearEndCycle,
+    YearEndOrgSettings,
+    YearEndClassTarget,
+    YearEndEmployeeSnapshot,
+    YearEndSettlement,
+    YearEndSpecialBonusItem,
+    YearEndCycleStatus,
+    SpecialBonusType,
+    SettlementStatus as YearEndSettlementStatus,
 )

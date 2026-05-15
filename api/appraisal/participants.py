@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 
 from models.appraisal import (
     AppraisalCycle,
-    AppraisalEvent,
     AppraisalParticipant,
+    AppraisalScoreItem,
     CycleStatus,
 )
 from models.database import get_session_dep
@@ -22,10 +22,8 @@ from schemas.appraisal import (
     ParticipantOut,
     ParticipantPatch,
 )
-from services.appraisal_service import (
-    mark_summary_stale,
-    suggest_role_group,
-)
+from services.appraisal import suggest_role_group
+from services.appraisal.summary_ops import mark_summary_stale
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -175,6 +173,8 @@ def patch_participant(
         p.target_enrollment = payload.target_enrollment
     if payload.actual_enrollment is not None:
         p.actual_enrollment = payload.actual_enrollment
+    if payload.hire_months_in_cycle is not None:
+        p.hire_months_in_cycle = payload.hire_months_in_cycle
 
     db.flush()
     if changed_base_score:
@@ -200,13 +200,15 @@ def delete_participant(
     p = db.get(AppraisalParticipant, participant_id)
     if not p:
         raise HTTPException(404, "participant_not_found")
-    has_event = db.execute(
-        select(AppraisalEvent.id)
-        .where(AppraisalEvent.participant_id == participant_id)
+    has_items = db.execute(
+        select(AppraisalScoreItem.id)
+        .where(AppraisalScoreItem.participant_id == participant_id)
         .limit(1)
     ).scalar_one_or_none()
-    if has_event:
-        raise HTTPException(409, "participant_has_events:無法刪除有事件的參與者")
+    if has_items:
+        raise HTTPException(
+            409, "participant_has_score_items:無法刪除有考核項目的參與者"
+        )
     db.delete(p)
     db.commit()
     request.state.audit_entity_id = participant_id

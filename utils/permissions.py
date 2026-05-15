@@ -83,6 +83,12 @@ class Permission(IntFlag):
     GOV_REPORTS_VIEW = 1 << 50  # 政府申報資料 (檢視)
     GOV_REPORTS_EXPORT = 1 << 51  # 政府申報匯出 (執行)
 
+    # --- 年終獎金 ---
+    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
+    YEAR_END_READ = 1 << 52  # 年終獎金 (檢視)
+    YEAR_END_WRITE = 1 << 53  # 年終獎金 (計算/編輯)
+    YEAR_END_FINALIZE = 1 << 54  # 年終獎金 (核定/發放)
+
     # --- 教職員考核（Phase 1）---
     # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
     APPRAISAL_READ = 1 << 55  # 考核資料檢視（自己/屬下/全部三層 visibility）
@@ -169,6 +175,9 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.APPRAISAL_READ
         | Permission.APPRAISAL_EVENT_WRITE
         | Permission.APPRAISAL_ACCOUNTING
+        # 年終獎金：人事可檢視 + 計算（核定/發放仍由 admin/supervisor）
+        | Permission.YEAR_END_READ
+        | Permission.YEAR_END_WRITE
     ),
     "supervisor": (
         Permission.DASHBOARD
@@ -214,6 +223,10 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.APPRAISAL_EVENT_WRITE
         | Permission.APPRAISAL_REVIEW
         | Permission.APPRAISAL_FINALIZE
+        # 年終獎金：主管全程權限
+        | Permission.YEAR_END_READ
+        | Permission.YEAR_END_WRITE
+        | Permission.YEAR_END_FINALIZE
     ),
     "teacher": (
         Permission.DASHBOARD
@@ -313,10 +326,14 @@ PERMISSION_LABELS: Dict[str, str] = {
     "GOV_REPORTS_EXPORT": "政府申報匯出 (執行)",
     # 教職員考核
     "APPRAISAL_READ": "考核資料 (檢視)",
-    "APPRAISAL_EVENT_WRITE": "考核事件 (登錄)",
+    "APPRAISAL_EVENT_WRITE": "考核項目 (登錄/編輯)",
     "APPRAISAL_REVIEW": "考核簽核 (主管第一階)",
     "APPRAISAL_ACCOUNTING": "考核核數字 (會計第二階)",
     "APPRAISAL_FINALIZE": "考核核定 (最高主管第三階)",
+    # 年終獎金
+    "YEAR_END_READ": "年終獎金 (檢視)",
+    "YEAR_END_WRITE": "年終獎金 (計算/編輯)",
+    "YEAR_END_FINALIZE": "年終獎金 (核定/發放)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -385,13 +402,19 @@ PERMISSION_GROUPS: List[Dict] = [
             "APPRAISAL_REVIEW",
             "APPRAISAL_ACCOUNTING",
             "APPRAISAL_FINALIZE",
+            "YEAR_END_FINALIZE",
         ],
         "split_permissions": [
             {
                 "module": "考核資料",
                 "read": "APPRAISAL_READ",
                 "write": "APPRAISAL_EVENT_WRITE",
-            }
+            },
+            {
+                "module": "年終獎金",
+                "read": "YEAR_END_READ",
+                "write": "YEAR_END_WRITE",
+            },
         ],
     },
     {

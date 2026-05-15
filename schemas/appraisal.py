@@ -1,4 +1,4 @@
-"""教職員考核（appraisal）API 請求 / 回應 schema（Pydantic v2）。
+"""半年考核 API 請求 / 回應 schema（Pydantic v2）。
 
 對應 api/appraisal/* 各 router 端點。
 """
@@ -7,17 +7,15 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from models.appraisal import (
-    CatalogCategory,
     CycleStatus,
-    EventType,
     Grade,
-    ParentReaction,
     RoleGroup,
+    ScoreItemSign,
     Semester,
     SummaryStatus,
 )
@@ -33,6 +31,7 @@ class CycleCreate(BaseModel):
 
 class CyclePatch(BaseModel):
     base_score_calc_date: Optional[date] = None
+    base_score: Optional[Decimal] = Field(default=None, ge=0, le=110)
 
 
 class CycleOut(BaseModel):
@@ -43,6 +42,7 @@ class CycleOut(BaseModel):
     start_date: date
     end_date: date
     base_score_calc_date: date
+    base_score: Decimal
     status: CycleStatus
     created_at: datetime
 
@@ -61,9 +61,10 @@ class ParticipantBulkInit(BaseModel):
 class ParticipantPatch(BaseModel):
     role_group: Optional[RoleGroup] = None
     classroom_id: Optional[int] = None
-    base_score: Optional[Decimal] = None
-    target_enrollment: Optional[int] = None
-    actual_enrollment: Optional[int] = None
+    base_score: Optional[Decimal] = Field(default=None, ge=0, le=110)
+    target_enrollment: Optional[int] = Field(default=None, ge=0)
+    actual_enrollment: Optional[int] = Field(default=None, ge=0)
+    hire_months_in_cycle: Optional[Decimal] = Field(default=None, ge=0, le=6)
 
 
 class ParticipantOut(BaseModel):
@@ -76,21 +77,18 @@ class ParticipantOut(BaseModel):
     base_score: Decimal
     target_enrollment: Optional[int] = None
     actual_enrollment: Optional[int] = None
+    hire_months_in_cycle: Decimal
 
 
-# ===== Event =====
+# ===== Score Item =====
 
 
-class EventCreate(BaseModel):
+class ScoreItemUpsert(BaseModel):
     participant_id: int
-    catalog_item_id: Optional[int] = None
-    event_type: EventType
-    event_date: date
+    item_code: str = Field(min_length=1, max_length=40)
     score_delta: Decimal
-    severity_level: Optional[int] = Field(default=None, ge=1, le=5)
-    parent_reaction: Optional[ParentReaction] = None
-    title: str = Field(min_length=1, max_length=120)
-    detail: str = ""
+    raw_value: Optional[Decimal] = None
+    note: str = ""
 
     @field_validator("score_delta")
     @classmethod
@@ -100,15 +98,10 @@ class EventCreate(BaseModel):
         return v
 
 
-class EventPatch(BaseModel):
-    event_type: Optional[EventType] = None
-    event_date: Optional[date] = None
+class ScoreItemPatch(BaseModel):
     score_delta: Optional[Decimal] = None
-    severity_level: Optional[int] = Field(default=None, ge=1, le=5)
-    parent_reaction: Optional[ParentReaction] = None
-    title: Optional[str] = Field(default=None, max_length=120)
-    detail: Optional[str] = None
-    catalog_item_id: Optional[int] = None
+    raw_value: Optional[Decimal] = None
+    note: Optional[str] = None
 
     @field_validator("score_delta")
     @classmethod
@@ -118,28 +111,17 @@ class EventPatch(BaseModel):
         return v
 
 
-class EventRevert(BaseModel):
-    # min_length=2 讓 2 字繁體中文（如「誤登」）可通過；空字串仍被擋
-    reason: str = Field(min_length=2, max_length=200)
-
-
-class EventOut(BaseModel):
+class ScoreItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     participant_id: int
-    cycle_id: int
-    catalog_item_id: Optional[int] = None
-    event_type: EventType
-    event_date: date
+    item_code: str
     score_delta: Decimal
-    severity_level: Optional[int] = None
-    parent_reaction: Optional[ParentReaction] = None
-    title: str
-    detail: str
-    attachments: list[dict[str, Any]]
-    created_by: int
+    raw_value: Optional[Decimal] = None
+    note: str
+    created_by: Optional[int] = None
     created_at: datetime
-    reverted_at: Optional[datetime] = None
+    updated_at: datetime
 
 
 # ===== Summary =====
@@ -151,7 +133,7 @@ class SignRequest(BaseModel):
 
 class FinalizeRequest(BaseModel):
     comment: str = Field(default="", max_length=500)
-    reason: str = Field(min_length=4, max_length=200)  # 第三階雙簽 reason
+    reason: str = Field(min_length=4, max_length=200)
 
 
 class RejectRequest(BaseModel):
@@ -164,10 +146,11 @@ class SummaryOut(BaseModel):
     participant_id: int
     cycle_id: int
     base_score: Decimal
-    event_score_sum: Decimal
+    item_score_sum: Decimal
     total_score: Decimal
     grade: Grade
     bonus_amount: Decimal
+    leave_note: Optional[str] = None
     status: SummaryStatus
     supervisor_signed_at: Optional[datetime] = None
     supervisor_comment: Optional[str] = None
@@ -197,12 +180,13 @@ class BonusRateOut(BaseModel):
     base_amount: Decimal
 
 
-# ===== Penalty Catalog =====
+# ===== Score Item Catalog =====
 
 
 class CatalogPatch(BaseModel):
-    default_score_delta: Optional[Decimal] = None
-    severity_max: Optional[int] = Field(default=None, ge=1, le=5)
+    label: Optional[str] = Field(default=None, max_length=80)
+    default_weight: Optional[Decimal] = None
+    data_source: Optional[str] = Field(default=None, max_length=40)
     is_active: Optional[bool] = None
     display_order: Optional[int] = None
 
@@ -211,11 +195,9 @@ class CatalogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     code: str
-    category: CatalogCategory
-    subcategory: str
-    description: str
-    default_event_type: EventType
-    default_score_delta: Decimal
-    severity_max: int
+    label: str
+    sign: ScoreItemSign
+    default_weight: Decimal
+    data_source: str
     display_order: int
     is_active: bool
