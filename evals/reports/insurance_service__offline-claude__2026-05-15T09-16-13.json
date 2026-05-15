@@ -1,0 +1,519 @@
+{
+  "target": "insurance_service",
+  "attacker": "offline-claude",
+  "started_at": "2026-05-15T09:16:13",
+  "finished_at": "2026-05-15T09:16:13",
+  "totals": {
+    "seed_cases": 3,
+    "attack_cases": 16,
+    "violations": 0,
+    "unexpected_exceptions": 0
+  },
+  "seed_results": [
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 30300,
+          "salary_range": "30,300",
+          "labor_employee": 758,
+          "labor_employer": 2651,
+          "labor_government": 379,
+          "health_employee": 470,
+          "health_employer": 1466,
+          "pension_employer": 1818,
+          "pension_employee": 0,
+          "total_employee": 1228,
+          "total_employer": 5935,
+          "labor_insured_amount": 30300,
+          "health_insured_amount": 30300,
+          "pension_insured_amount": 30300
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 2,
+        "pension_self_rate": 0.06
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 45800,
+          "salary_range": "45,800",
+          "labor_employee": 1145,
+          "labor_employer": 4008,
+          "labor_government": 572,
+          "health_employee": 2130,
+          "health_employer": 2216,
+          "pension_employer": 2748,
+          "pension_employee": 2748,
+          "total_employee": 6023,
+          "total_employer": 8972,
+          "labor_insured_amount": 45800,
+          "health_insured_amount": 45800,
+          "pension_insured_amount": 45800
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 25250,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 25250,
+          "salary_range": "25,250",
+          "labor_employee": 632,
+          "labor_employer": 2210,
+          "labor_government": 316,
+          "health_employee": 458,
+          "health_employer": 1428,
+          "pension_employer": 1515,
+          "pension_employee": 0,
+          "total_employee": 1090,
+          "total_employer": 5153,
+          "labor_insured_amount": 25250,
+          "health_insured_amount": 25250,
+          "pension_insured_amount": 25250
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ],
+  "attack_results": [
+    {
+      "input": {
+        "salary": -0.0,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 1500,
+          "salary_range": "1,500",
+          "labor_employee": 277,
+          "labor_employer": 972,
+          "labor_government": 19,
+          "health_employee": 458,
+          "health_employer": 1428,
+          "pension_employer": 90,
+          "pension_employee": 0,
+          "total_employee": 735,
+          "total_employer": 2490,
+          "labor_insured_amount": 1500,
+          "health_insured_amount": 1500,
+          "pension_insured_amount": 1500
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "Python: -0.0 < 0 為 False → 繞過 negative guard。我的 IV1 也許不會觸發(因 salary == 0),但這標誌規則有 silent 通過風險",
+        "_attacker_target_invariant": "IV1_negative_salary_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": NaN,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: 投保薪資不可為 NaN：nan",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/insurance_target.py\", line 31, in _runner\n    result = _svc.calculate(\n        salary=case[\"salary\"],\n    ...<6 lines>...\n        pension_insured=case.get(\"pension_insured\"),\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/insurance_service.py\", line 937, in calculate\n    raise ValueError(f\"投保薪資不可為 NaN：{salary}\")\nValueError: 投保薪資不可為 NaN：nan\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "Python: NaN < 0 為 False → 繞過 negative guard,calculate 繼續執行;get_bracket 走到 fallback last entry,後續 NaN 傳染所有保費",
+        "_attacker_target_invariant": "IV1_negative_salary_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -Infinity,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: 投保薪資不可為負數：-inf",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/insurance_target.py\", line 31, in _runner\n    result = _svc.calculate(\n        salary=case[\"salary\"],\n    ...<6 lines>...\n        pension_insured=case.get(\"pension_insured\"),\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/insurance_service.py\", line 939, in calculate\n    raise ValueError(f\"投保薪資不可為負數：{salary}\")\nValueError: 投保薪資不可為負數：-inf\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "-inf < 0 為 True → 應 raise(對照組,確認 inf 異於 NaN)",
+        "_attacker_target_invariant": "IV1_negative_salary_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": Infinity,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 313000,
+          "salary_range": "313,000",
+          "labor_employee": 1145,
+          "labor_employer": 4008,
+          "labor_government": 572,
+          "health_employee": 3404,
+          "health_employer": 10622,
+          "pension_employer": 9000,
+          "pension_employee": 0,
+          "total_employee": 4549,
+          "total_employer": 23630,
+          "labor_insured_amount": 45800,
+          "health_insured_amount": 219500,
+          "pension_insured_amount": 150000
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "+inf 通過 negative guard,走最高級距 cap;產出應為有限數(level 8 必然非負)",
+        "_attacker_target_invariant": "IV8_no_negative_premium"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 0,
+        "pension_self_rate": NaN
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: 勞退自提比例不可為 NaN：nan",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/insurance_target.py\", line 31, in _runner\n    result = _svc.calculate(\n        salary=case[\"salary\"],\n    ...<6 lines>...\n        pension_insured=case.get(\"pension_insured\"),\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/insurance_service.py\", line 953, in calculate\n    raise ValueError(f\"勞退自提比例不可為 NaN：{pension_self_rate}\")\nValueError: 勞退自提比例不可為 NaN：nan\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "Python: 0 <= NaN <= 0.06 兩邊都 False → not False = True → 確實 raise。對照組,確認 NaN 在這個寫法下不會 silent 通過",
+        "_attacker_target_invariant": "IV2_invalid_pension_rate_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 0,
+        "pension_self_rate": -0.0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 30300,
+          "salary_range": "30,300",
+          "labor_employee": 758,
+          "labor_employer": 2651,
+          "labor_government": 379,
+          "health_employee": 470,
+          "health_employer": 1466,
+          "pension_employer": 1818,
+          "pension_employee": 0,
+          "total_employee": 1228,
+          "total_employer": 5935,
+          "labor_insured_amount": 30300,
+          "health_insured_amount": 30300,
+          "pension_insured_amount": 30300
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "-0.0 == 0,通過 guard;後續 -0.0 * salary = -0.0 round 到 0;不算違反",
+        "_attacker_target_invariant": "IV2_invalid_pension_rate_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 0,
+        "pension_self_rate": 0.0600000001
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: 勞退自提比例必須介於 0～6%：0.0600000001",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/insurance_target.py\", line 31, in _runner\n    result = _svc.calculate(\n        salary=case[\"salary\"],\n    ...<6 lines>...\n        pension_insured=case.get(\"pension_insured\"),\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/insurance_service.py\", line 955, in calculate\n    raise ValueError(f\"勞退自提比例必須介於 0～6%：{pension_self_rate}\")\nValueError: 勞退自提比例必須介於 0～6%：0.0600000001\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "略大於 0.06 邊界;應 raise(若用 isclose 會 silent 通過)",
+        "_attacker_target_invariant": "IV2_invalid_pension_rate_raises"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 100,
+        "pension_self_rate": 0,
+        "health_exempt": true
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 30300,
+          "salary_range": "30,300",
+          "labor_employee": 758,
+          "labor_employer": 2651,
+          "labor_government": 379,
+          "health_employee": 0,
+          "health_employer": 0,
+          "pension_employer": 1818,
+          "pension_employee": 0,
+          "total_employee": 758,
+          "total_employer": 4469,
+          "labor_insured_amount": 30300,
+          "health_insured_amount": 30300,
+          "pension_insured_amount": 30300
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "極大 dependents + exempt;確認 dependents 的乘子被 exempt 完全覆蓋",
+        "_attacker_target_invariant": "IV9_health_exempt_overrides_deps"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": NaN,
+        "dependents": 2,
+        "pension_self_rate": 0.06
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: 投保薪資不可為 NaN：nan",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/insurance_target.py\", line 31, in _runner\n    result = _svc.calculate(\n        salary=case[\"salary\"],\n    ...<6 lines>...\n        pension_insured=case.get(\"pension_insured\"),\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/insurance_service.py\", line 937, in calculate\n    raise ValueError(f\"投保薪資不可為 NaN：{salary}\")\nValueError: 投保薪資不可為 NaN：nan\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "salary=NaN 進到 calculate,total_employee 與三項 sum 都會 NaN;abs(NaN-NaN)>0.5 為 False → IV4 silent 通過。代表 IV4 自身對 NaN 不健全,需加 finite 檢查",
+        "_attacker_target_invariant": "IV4_total_consistency"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 1.5,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": false,
+        "result": null,
+        "exception": "ValueError: 眷屬人數必須為整數：1.5",
+        "traceback": "Traceback (most recent call last):\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/core/target.py\", line 94, in run_one_case\n    result = target.runner(case_input)\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/evals/targets/insurance_target.py\", line 31, in _runner\n    result = _svc.calculate(\n        salary=case[\"salary\"],\n    ...<6 lines>...\n        pension_insured=case.get(\"pension_insured\"),\n    )\n  File \"/Users/yilunwu/.config/superpowers/worktrees/ivy-backend/eval-framework-2026-05-14/services/insurance_service.py\", line 951, in calculate\n    raise ValueError(f\"眷屬人數必須為整數：{dependents!r}\")\nValueError: 眷屬人數必須為整數：1.5\n",
+        "expected_exception": true,
+        "_attacker_hypothesis": "dependents=1.5(float 而非 int):程式 min(max(0, 1.5), 3) = 1.5,health_emp = base * 2.5(非整數眷屬乘子!);應該 reject 非整數",
+        "_attacker_target_invariant": "IV5_dependents_clamp_high"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": true,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 30300,
+          "salary_range": "30,300",
+          "labor_employee": 758,
+          "labor_employer": 2651,
+          "labor_government": 379,
+          "health_employee": 940,
+          "health_employer": 1466,
+          "pension_employer": 1818,
+          "pension_employee": 0,
+          "total_employee": 1698,
+          "total_employer": 5935,
+          "labor_insured_amount": 30300,
+          "health_insured_amount": 30300,
+          "pension_insured_amount": 30300
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "Python bool 是 int;True 應與 dependents=1 等價",
+        "_attacker_target_invariant": "IV4_total_consistency"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 4,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 30300,
+          "salary_range": "30,300",
+          "labor_employee": 758,
+          "labor_employer": 2651,
+          "labor_government": 379,
+          "health_employee": 1880,
+          "health_employer": 1466,
+          "pension_employer": 1818,
+          "pension_employee": 0,
+          "total_employee": 2638,
+          "total_employer": 5935,
+          "labor_insured_amount": 30300,
+          "health_insured_amount": 30300,
+          "pension_insured_amount": 30300
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "dependents=4 邊界 +1,確認與 dependents=3 同結果",
+        "_attacker_target_invariant": "IV5_dependents_clamp_high"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 25250,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 25250,
+          "salary_range": "25,250",
+          "labor_employee": 632,
+          "labor_employer": 2210,
+          "labor_government": 316,
+          "health_employee": 458,
+          "health_employer": 1428,
+          "pension_employer": 1515,
+          "pension_employee": 0,
+          "total_employee": 1090,
+          "total_employer": 5153,
+          "labor_insured_amount": 25250,
+          "health_insured_amount": 25250,
+          "pension_insured_amount": 25250
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "級距邊界值,bracket 是 <=,確認 25250 落入該級距而非下一級",
+        "_attacker_target_invariant": "IV7_monotone_insured"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 25251,
+        "dependents": 0,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 26400,
+          "salary_range": "26,400",
+          "labor_employee": 660,
+          "labor_employer": 2310,
+          "labor_government": 330,
+          "health_employee": 458,
+          "health_employer": 1428,
+          "pension_employer": 1584,
+          "pension_employee": 0,
+          "total_employee": 1118,
+          "total_employer": 5322,
+          "labor_insured_amount": 26400,
+          "health_insured_amount": 26400,
+          "pension_insured_amount": 26400
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "級距邊界 +1,確認跳到下一級;與 25250 結果應遞增",
+        "_attacker_target_invariant": "IV7_monotone_insured"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 2,
+        "pension_self_rate": 0.06,
+        "labor_insured": 0,
+        "health_insured": 50000,
+        "pension_insured": 200000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 30300,
+          "salary_range": "30,300",
+          "labor_employee": 758,
+          "labor_employer": 2651,
+          "labor_government": 379,
+          "health_employee": 2355,
+          "health_employer": 2449,
+          "pension_employer": 9000,
+          "pension_employee": 9000,
+          "total_employee": 12113,
+          "total_employer": 14100,
+          "labor_insured_amount": 30300,
+          "health_insured_amount": 50600,
+          "pension_insured_amount": 150000
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "labor_insured=0 在 docstring 寫明視同 None;確認三制度獨立 cap 後 IV4 仍成立",
+        "_attacker_target_invariant": "IV4_total_consistency"
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": -5,
+        "pension_self_rate": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "insured_amount": 30300,
+          "salary_range": "30,300",
+          "labor_employee": 758,
+          "labor_employer": 2651,
+          "labor_government": 379,
+          "health_employee": 470,
+          "health_employer": 1466,
+          "pension_employer": 1818,
+          "pension_employee": 0,
+          "total_employee": 1228,
+          "total_employer": 5935,
+          "labor_insured_amount": 30300,
+          "health_insured_amount": 30300,
+          "pension_insured_amount": 30300
+        },
+        "exception": null,
+        "traceback": null,
+        "_attacker_hypothesis": "dependents 大負數,確認 clamp 到 0 與 dependents=0 同結果",
+        "_attacker_target_invariant": "IV6_dependents_clamp_low"
+      },
+      "violations": []
+    }
+  ]
+}

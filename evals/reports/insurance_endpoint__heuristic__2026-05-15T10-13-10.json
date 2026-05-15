@@ -1,0 +1,2615 @@
+{
+  "target": "insurance_endpoint",
+  "attacker": "heuristic",
+  "started_at": "2026-05-15T10:13:10",
+  "finished_at": "2026-05-15T10:13:12",
+  "totals": {
+    "seed_cases": 2,
+    "attack_cases": 100,
+    "violations": 0,
+    "unexpected_exceptions": 0
+  },
+  "seed_results": [
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2130,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3275,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ],
+  "attack_results": [
+    {
+      "input": {
+        "salary": 1e-06,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 999999999.999999,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "NaN",
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為 NaN：nan"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 29999.999999,
+        "dependents": -2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 9223372036854775807
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 1420,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 2565,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0.999999,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 10000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.999999,
+        "dependents": -2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-0.999999"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": -10000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 99
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1.000001,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1.000001,
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 916,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1193,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2840,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3985,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2130,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3275,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1,
+        "dependents": 4
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1.0"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1e-09,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1410,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2168,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0.999999,
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 916,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1193,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": null,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": [
+              {
+                "type": "missing",
+                "loc": [
+                  "query",
+                  "salary"
+                ],
+                "msg": "Field required",
+                "input": null
+              }
+            ]
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.0,
+        "dependents": -2147483648
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1e-06,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1e-06"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "-Infinity",
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-inf"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.999999,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-0.999999"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 3
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2840,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3985,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.0,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000.000001,
+        "dependents": 10000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1.000001,
+        "dependents": null
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1.000001"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 10000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2840,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3985,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "-Infinity",
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-inf"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1.000001,
+        "dependents": 101
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1.000001"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 29999.999999,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1410,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2168,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 999999999.999999,
+        "dependents": -1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0.5,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000.000001,
+        "dependents": -1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1e-09,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "-Infinity",
+        "dependents": -2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-inf"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": -2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1.0"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.0,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1.0"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0.0,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": -1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 710,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 1855,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1.000001,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1.000001"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1000000000.000001,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 10212,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 11357,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0.5,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1000000000.000001,
+        "dependents": null
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 99
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2840,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3985,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1000000000.0,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1000000000.0"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 999999999.999999,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 10212,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 11357,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -Infinity,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-inf"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": -1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 710,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 1855,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.999999,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-0.999999"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 9223372036854775807
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2840,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3985,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": -2147483648
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000.000001,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1410,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2168,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1000000000.0,
+        "dependents": -100
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1e-06,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": -10000
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 710,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 1855,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1e-09,
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1e-09"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1000000000.0,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 10212,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 11357,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 3
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": null
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1e-06,
+        "dependents": -1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 458,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 735,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000.000001,
+        "dependents": 9223372036854775807
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": Infinity,
+        "dependents": -2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.5,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-0.5"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 29999.999999,
+        "dependents": -1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 4
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0.5,
+        "dependents": 3
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1832,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 2109,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": Infinity,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 10212,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 11357,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 101
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2840,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3985,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "NaN",
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為 NaN：nan"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 5
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 1880,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 2638,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 940,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1698,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1.000001,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1.000001"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1,
+        "dependents": 1
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 916,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1193,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -0.999999,
+        "dependents": 4
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-0.999999"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1.000001,
+        "dependents": 9223372036854775807
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1832,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 2109,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": -100
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 710,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 1855,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": -1e-09,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-1e-09"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 1.000001,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 29999.999999,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": null,
+        "dependents": 100
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": [
+              {
+                "type": "missing",
+                "loc": [
+                  "query",
+                  "salary"
+                ],
+                "msg": "Field required",
+                "input": null
+              }
+            ]
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "-Infinity",
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 422,
+          "headers_ct": "application/json",
+          "body": {
+            "detail": "投保薪資不可為負數：-inf"
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "Infinity",
+        "dependents": -2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 30000,
+        "dependents": -100
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 30300,
+            "labor_employee": 758,
+            "labor_employer": 2651,
+            "health_employee": 470,
+            "health_employer": 1466,
+            "pension_employer": 1818,
+            "total_employee": 1228,
+            "total_employer": 5935
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": -2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 710,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 1855,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": -2147483648
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 710,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 1855,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": 4
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 2840,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 3985,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 45800,
+        "dependents": null
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 45800,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 710,
+            "health_employer": 2216,
+            "pension_employer": 2748,
+            "total_employee": 1855,
+            "total_employer": 8972
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": 0.0,
+        "dependents": 2
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 1500,
+            "labor_employee": 277,
+            "labor_employer": 972,
+            "health_employee": 1374,
+            "health_employer": 1428,
+            "pension_employer": 90,
+            "total_employee": 1651,
+            "total_employer": 2490
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": "Infinity",
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    },
+    {
+      "input": {
+        "salary": Infinity,
+        "dependents": 0
+      },
+      "outcome": {
+        "ok": true,
+        "result": {
+          "status_code": 200,
+          "headers_ct": "application/json",
+          "body": {
+            "insured_amount": 313000,
+            "labor_employee": 1145,
+            "labor_employer": 4008,
+            "health_employee": 3404,
+            "health_employer": 10622,
+            "pension_employer": 9000,
+            "total_employee": 4549,
+            "total_employer": 23630
+          },
+          "body_parse_ok": true
+        },
+        "exception": null,
+        "traceback": null
+      },
+      "violations": []
+    }
+  ]
+}
