@@ -44,9 +44,25 @@ jobs:
           pip install pip-audit
           pip-audit -r requirements.txt --strict
 
-      - name: Run tests
+      - name: Run tests with coverage
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
           ENV: development
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-        run: pytest tests/ -v --tb=short -q
+        # T9: 加 coverage gate（pyproject.toml [tool.coverage.run] 已設定 source）。
+        # 起步門檻 60%：給既有覆蓋率不至於立即 fail，未來逐步提升。
+        # --cov-fail-under 用 ratchet 風格：每次提升只能升不能降。
+        run: |
+          pytest tests/ -v --tb=short -q \
+            --cov \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=60
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 14

@@ -66,19 +66,21 @@ class TestPortalCreateOvertimeGuards:
             patch.object(portal_ot, "get_session", return_value=session),
             patch.object(portal_ot, "_get_employee", return_value=emp),
             patch(
-                "api.overtimes._check_overtime_overlap", return_value=None
+                "services.overtime_conflict_service.check_overtime_overlap",
+                return_value=None,
             ),
             patch(
-                "api.overtimes.calculate_overtime_pay", return_value=400.0
+                "services.overtime_pay_calculator.calculate_overtime_pay",
+                return_value=400.0,
             ),
             patch(
-                "api.overtimes._check_monthly_overtime_cap"
+                "services.overtime_conflict_service.check_monthly_overtime_cap"
             ) as mock_monthly,
-            patch(
-                "api.overtimes._check_overtime_type_calendar"
-            ),
+            patch("services.overtime_conflict_service.check_overtime_type_calendar"),
         ):
-            portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
+            portal_ot.create_my_overtime(
+                data=data, request=MagicMock(), current_user=current_user
+            )
 
         assert mock_monthly.called, "月上限檢查未被呼叫"
         # 第一個位置參數應是 session,第二個是 emp.id,第三個是 overtime_date
@@ -101,19 +103,21 @@ class TestPortalCreateOvertimeGuards:
             patch.object(portal_ot, "get_session", return_value=session),
             patch.object(portal_ot, "_get_employee", return_value=emp),
             patch(
-                "api.overtimes._check_overtime_overlap", return_value=None
+                "services.overtime_conflict_service.check_overtime_overlap",
+                return_value=None,
             ),
             patch(
-                "api.overtimes.calculate_overtime_pay", return_value=400.0
+                "services.overtime_pay_calculator.calculate_overtime_pay",
+                return_value=400.0,
             ),
+            patch("services.overtime_conflict_service.check_monthly_overtime_cap"),
             patch(
-                "api.overtimes._check_monthly_overtime_cap"
-            ),
-            patch(
-                "api.overtimes._check_overtime_type_calendar"
+                "services.overtime_conflict_service.check_overtime_type_calendar"
             ) as mock_cal,
         ):
-            portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
+            portal_ot.create_my_overtime(
+                data=data, request=MagicMock(), current_user=current_user
+            )
 
         assert mock_cal.called, "國定假日類型檢查未被呼叫"
 
@@ -130,21 +134,23 @@ class TestPortalCreateOvertimeGuards:
             patch.object(portal_ot, "get_session", return_value=session),
             patch.object(portal_ot, "_get_employee", return_value=emp),
             patch(
-                "api.overtimes._check_overtime_overlap", return_value=None
+                "services.overtime_conflict_service.check_overtime_overlap",
+                return_value=None,
             ),
             patch(
-                "api.overtimes.calculate_overtime_pay", return_value=400.0
+                "services.overtime_pay_calculator.calculate_overtime_pay",
+                return_value=400.0,
             ),
             patch(
-                "api.overtimes._check_monthly_overtime_cap",
+                "services.overtime_conflict_service.check_monthly_overtime_cap",
                 side_effect=HTTPException(status_code=400, detail="超過 46h 月上限"),
             ),
-            patch(
-                "api.overtimes._check_overtime_type_calendar"
-            ),
+            patch("services.overtime_conflict_service.check_overtime_type_calendar"),
         ):
             with pytest.raises(HTTPException) as exc:
-                portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
+                portal_ot.create_my_overtime(
+                    data=data, request=MagicMock(), current_user=current_user
+                )
         assert exc.value.status_code == 400
         assert "46" in exc.value.detail
 
@@ -161,22 +167,24 @@ class TestPortalCreateOvertimeGuards:
             patch.object(portal_ot, "get_session", return_value=session),
             patch.object(portal_ot, "_get_employee", return_value=emp),
             patch(
-                "api.overtimes._check_overtime_overlap", return_value=None
+                "services.overtime_conflict_service.check_overtime_overlap",
+                return_value=None,
             ),
             patch(
-                "api.overtimes.calculate_overtime_pay", return_value=400.0
+                "services.overtime_pay_calculator.calculate_overtime_pay",
+                return_value=400.0,
             ),
+            patch("services.overtime_conflict_service.check_monthly_overtime_cap"),
             patch(
-                "api.overtimes._check_monthly_overtime_cap"
-            ),
-            patch(
-                "api.overtimes._check_overtime_type_calendar",
+                "services.overtime_conflict_service.check_overtime_type_calendar",
                 side_effect=HTTPException(
                     status_code=400, detail="該日期為國定假日,加班類型須為 holiday"
                 ),
             ),
         ):
             with pytest.raises(HTTPException) as exc:
-                portal_ot.create_my_overtime(data=data, request=MagicMock(), current_user=current_user)
+                portal_ot.create_my_overtime(
+                    data=data, request=MagicMock(), current_user=current_user
+                )
         assert exc.value.status_code == 400
         assert "holiday" in exc.value.detail

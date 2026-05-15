@@ -98,14 +98,14 @@ def create_my_overtime(
                 status_code=400, detail=f"無效的加班類型: {data.overtime_type}"
             )
 
-        # F1 第二波：calculate_overtime_pay 已抽 service；其他 4 個 helper
-        # 仍在 admin router，待 F1 第三波繼續處理。
+        # F1 第二/三波：calculate_overtime_pay + 4 衝突檢查 helper 全部抽到 services；
+        # 不再 lazy import admin router 私有 helper。
         from services.overtime_pay_calculator import calculate_overtime_pay
-        from api.overtimes import (
-            _check_employee_has_conflicting_leave,
-            _check_overtime_overlap,
-            _check_monthly_overtime_cap,
-            _check_overtime_type_calendar,
+        from services.overtime_conflict_service import (
+            check_employee_has_conflicting_leave as _check_employee_has_conflicting_leave,
+            check_overtime_overlap as _check_overtime_overlap,
+            check_monthly_overtime_cap as _check_monthly_overtime_cap,
+            check_overtime_type_calendar as _check_overtime_type_calendar,
         )
 
         pay = (
