@@ -29,6 +29,7 @@ from models.database import (
     Student,
 )
 from schemas.activity_public import _normalize_phone
+from services.activity_daily_snapshot import _require_daily_close_unlocked
 from services.activity_payment_guards import has_payment_approve
 from services.activity_service import activity_service
 from utils.academic import resolve_current_academic_term
@@ -169,8 +170,6 @@ def sync_registrations_on_student_deactivate(
       但生產 API handler 必須傳入；省略視為內部呼叫。
     - 回傳影響筆數
     """
-    from api.activity._shared import _require_daily_close_unlocked
-
     sy, sem = resolve_current_academic_term()
 
     regs = (
