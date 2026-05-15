@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Optional
 
@@ -21,20 +22,24 @@ from services.gov_data.utils import sha256_of_payload
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_SEC = 30
-DEFAULT_MAX_RETRIES = 3
-RETRY_BACKOFF_SEC = 2
+DEFAULT_TIMEOUT_SEC = int(os.getenv("GOV_DATA_FETCH_TIMEOUT_SEC", "30"))
+DEFAULT_MAX_RETRIES = int(os.getenv("GOV_DATA_FETCH_MAX_RETRIES", "3"))
+RETRY_BACKOFF_SEC = int(os.getenv("GOV_DATA_FETCH_BACKOFF_SEC", "2"))
 
 # source -> URL 對照
-# 注意：T0 fixture 使用的真實 URL 在 tests/fixtures/gov_data/_README.md 內有記錄。
-# 此 dict 的初始值由 ops 在部署前以實際可用的 URL 填入；測試環境用 fetch_one 直接傳 url 不依賴此 dict。
+# 部署時以環境變數 GOV_DATA_URL_<SOURCE_UPPER> 設定（例：GOV_DATA_URL_MOL_LABOR_BRACKETS）。
+# 未設定的 source 會被 fetch_all 跳過並 log warning；測試環境用 fetch_one 直接傳 url 不依賴此 dict。
+_SOURCE_ENV_KEYS = {
+    "mol_labor_brackets": "GOV_DATA_URL_MOL_LABOR_BRACKETS",
+    "mol_labor_premium": "GOV_DATA_URL_MOL_LABOR_PREMIUM",
+    "mol_pension": "GOV_DATA_URL_MOL_PENSION",
+    "nhi_brackets": "GOV_DATA_URL_NHI_BRACKETS",
+    "nhi_premium": "GOV_DATA_URL_NHI_PREMIUM",
+    "mol_minimum_wage": "GOV_DATA_URL_MOL_MINIMUM_WAGE",
+}
+
 SOURCE_URLS: dict[str, str] = {
-    "mol_labor_brackets": "",
-    "mol_labor_premium": "",
-    "mol_pension": "",
-    "nhi_brackets": "",
-    "nhi_premium": "",
-    "mol_minimum_wage": "",
+    source: os.getenv(env_key, "") for source, env_key in _SOURCE_ENV_KEYS.items()
 }
 
 
