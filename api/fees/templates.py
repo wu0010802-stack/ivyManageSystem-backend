@@ -14,7 +14,11 @@ from utils.auth import require_staff_permission
 from utils.finance_guards import require_finance_approve
 from utils.permissions import Permission
 
-from ._helpers import FeeTemplateCreate, FeeTemplateUpdate
+from ._helpers import (
+    FEE_PAYMENT_APPROVAL_THRESHOLD,
+    FeeTemplateCreate,
+    FeeTemplateUpdate,
+)
 
 router = APIRouter()
 
@@ -85,7 +89,10 @@ def create_fee_template(
 ):
     _validate_template_breakdown(payload.amount, payload.breakdown)
     require_finance_approve(
-        payload.amount, current_user, action_label="建立費用範本（單筆金額）"
+        payload.amount,
+        current_user,
+        threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
+        action_label="建立費用範本（單筆金額）",
     )
     with session_scope() as session:
         existing = (
@@ -158,6 +165,7 @@ def update_fee_template(
             require_finance_approve(
                 new_amount_int - old_amount,
                 current_user,
+                threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
                 action_label="調漲費用範本金額",
             )
         if payload.name is not None:

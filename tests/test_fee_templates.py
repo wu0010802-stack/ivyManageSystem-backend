@@ -263,3 +263,104 @@ def test_template_endpoint_requires_fees_write(client_teacher, grade_da):
     """teacher 沒有 FEES_WRITE,應 403。"""
     r = client_teacher.post("/api/fees/templates", json=_payload(grade_da.id))
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# 金流守衛：FEES_WRITE 但無 ACTIVITY_PAYMENT_APPROVE 的 user 受限於 50K 門檻
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client_fees_writer(_backend):
+    """只有 FEES_WRITE / 沒有 ACTIVITY_PAYMENT_APPROVE 的 admin。"""
+    from utils.permissions import Permission
+
+    perms = int(Permission.FEES_READ | Permission.FEES_WRITE)
+    with _backend["session_factory"]() as s:
+        u = User(
+            username="tpl_fees_only",
+            password_hash=hash_password("Temp123456"),
+            role="admin",
+            permissions=perms,
+            is_active=True,
+        )
+        s.add(u)
+        s.commit()
+
+    client = TestClient(_backend["app"])
+    r = client.post(
+        "/api/auth/login",
+        json={"username": "tpl_fees_only", "password": "Temp123456"},
+    )
+    assert r.status_code == 200, f"fees-only login failed: {r.text}"
+    yield client
+    client.close()
+
+
+def test_create_template_under_50k_no_finance_approve_required(
+    client_fees_writer, grade_da
+):
+    """單筆範本金額 ≤ 50K 不需金流簽核（一般月費 NT$10K~30K 走得通）。"""
+    r = client_fees_writer.post(
+        "/api/fees/templates",
+        json=_payload(grade_da.id, amount=50_000),
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_create_template_over_50k_requires_finance_approve(
+    client_fees_writer, grade_da
+):
+    """單筆範本金額 > 50K 需 ACTIVITY_PAYMENT_APPROVE,否則 403。
+
+    Regression: 早期錯用 finance_guards 預設閾值 1000,造成任何月費範本都要二簽。
+    應沿用 fees 模組的 FEE_PAYMENT_APPROVAL_THRESHOLD (50K)。
+    """
+    r = client_fees_writer.post(
+        "/api/fees/templates",
+        json=_payload(grade_da.id, amount=50_001),
+    )
+    assert r.status_code == 403, r.text
+    assert "50,000" in r.json()["detail"]
+
+
+def test_update_template_small_raise_no_finance_approve(
+    client_fees_writer, grade_da, session
+):
+    """漲幅 ≤ 50K 不需金流簽核。"""
+    t = FeeTemplate(
+        grade_id=grade_da.id,
+        school_year=114,
+        semester=1,
+        fee_type="registration",
+        name="x",
+        amount=10_000,
+    )
+    session.add(t)
+    session.commit()
+    r = client_fees_writer.put(
+        f"/api/fees/templates/{t.id}",
+        json={"amount": 30_000},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_update_template_big_raise_requires_finance_approve(
+    client_fees_writer, grade_da, session
+):
+    """漲幅 > 50K 需 ACTIVITY_PAYMENT_APPROVE。"""
+    t = FeeTemplate(
+        grade_id=grade_da.id,
+        school_year=114,
+        semester=1,
+        fee_type="registration",
+        name="x",
+        amount=10_000,
+    )
+    session.add(t)
+    session.commit()
+    r = client_fees_writer.put(
+        f"/api/fees/templates/{t.id}",
+        json={"amount": 100_000},
+    )
+    assert r.status_code == 403, r.text

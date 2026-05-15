@@ -25,6 +25,7 @@ from utils.finance_guards import require_finance_approve
 from utils.permissions import Permission
 
 from ._helpers import (
+    FEE_PAYMENT_APPROVAL_THRESHOLD,
     GenerateFromTemplatesRequest,
     _invalidate_finance_summary_cache,
 )
@@ -175,6 +176,7 @@ def generate_from_templates(
             require_finance_approve(
                 total_amount_due,
                 current_user,
+                threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
                 action_label=f"批次產生費用記錄（{len(new_records)} 筆合計）",
             )
             session.bulk_insert_mappings(StudentFeeRecord, new_records)

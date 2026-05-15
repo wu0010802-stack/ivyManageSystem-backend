@@ -34,6 +34,13 @@ JWT_SECRET_KEY = _jwt_secret
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 15  # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
 JWT_REFRESH_GRACE_HOURS = 2  # 過期後仍允許刷新的寬限時間（2 小時）；搭配 token_version 機制，帳號停用後舊 token 立即失效
+# S2: staff 端 absolute session lifetime。
+# 從首次登入算起，整段 session（含多次 refresh）不得超過此小時數。
+# 超過時 /refresh 拒絕，需重新登入。
+# Why: 原本只要 refresh 不過 grace（2h），偷 cookie 可永久 /refresh 延期；
+# 家長端已有 ParentRefreshToken family rotation，staff 端用較簡化的
+# absolute lifetime 起步，先把「永續延期」窗口封死。
+JWT_ABSOLUTE_LIFETIME_HOURS = int(os.getenv("JWT_ABSOLUTE_LIFETIME_HOURS", "12"))
 _PASSWORD_CHANGE_ALLOWED_PATHS = {
     "/api/auth/change-password",
     "/api/auth/logout",
@@ -142,12 +149,21 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     """簽發 access token；自動產生 jti 以支援 LOW-2 黑名單機制。
 
     呼叫端可以自行傳 `jti` 覆寫（測試用）；多數情境讓本函數產生即可。
+
+    iat / original_iat：
+    - `iat` 為本次 token 簽發時間（每次 refresh 重置），unix epoch 秒。
+    - `original_iat` 為「整段登入 session」最早的 iat，refresh 時呼叫端必須
+      把舊 token 的 original_iat 帶進來，本函數會保留；首次登入時呼叫端
+      不傳，本函數會用 iat 預填。S2 absolute lifetime 用此欄位判斷
+      session 總長是否已超出強制重登門檻。
     """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES)
-    )
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
+    iat_ts = int(now.timestamp())
+    to_encode.setdefault("iat", iat_ts)
+    to_encode.setdefault("original_iat", iat_ts)
     to_encode.setdefault("jti", secrets.token_urlsafe(16))
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 

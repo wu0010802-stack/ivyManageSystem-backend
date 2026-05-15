@@ -584,6 +584,33 @@ def refresh_token(request: Request):
         )
         raise
 
+    # S2: absolute session lifetime — 從 original_iat 起算超過設定小時數即拒絕 refresh。
+    # 缺欄位（舊 token 過渡）時不擋，待此次 refresh 後新 token 會帶上 original_iat。
+    original_iat = payload.get("original_iat")
+    if original_iat:
+        from utils.auth import JWT_ABSOLUTE_LIFETIME_HOURS
+
+        session_age_hours = (time.time() - int(original_iat)) / 3600
+        if session_age_hours > JWT_ABSOLUTE_LIFETIME_HOURS:
+            write_login_audit(
+                request,
+                action="TOKEN_REFRESH_FAILED",
+                username=payload.get("name"),
+                user_id=payload.get("user_id"),
+                extras={
+                    "reason": "absolute_lifetime_exceeded",
+                    "session_age_hours": round(session_age_hours, 2),
+                    "limit_hours": JWT_ABSOLUTE_LIFETIME_HOURS,
+                },
+            )
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"登入工作階段已超過 {JWT_ABSOLUTE_LIFETIME_HOURS} 小時上限，"
+                    "請重新登入"
+                ),
+            )
+
     user_id = payload.get("user_id")
     if not user_id:
         write_login_audit(
@@ -643,16 +670,19 @@ def refresh_token(request: Request):
             else get_role_default_permissions(user.role)
         )
 
-        new_token = create_access_token(
-            {
-                "user_id": user.id,
-                "employee_id": user.employee_id,
-                "role": user.role,
-                "name": emp.name if emp else "",
-                "permissions": permissions,
-                "token_version": user.token_version,
-            }
-        )
+        # S2: 把舊 token 的 original_iat 帶進新 token，讓 absolute lifetime
+        # 從首次登入算起，而非從本次 refresh 算起。
+        new_token_payload = {
+            "user_id": user.id,
+            "employee_id": user.employee_id,
+            "role": user.role,
+            "name": emp.name if emp else "",
+            "permissions": permissions,
+            "token_version": user.token_version,
+        }
+        if original_iat:
+            new_token_payload["original_iat"] = int(original_iat)
+        new_token = create_access_token(new_token_payload)
 
         write_login_audit(
             request,
