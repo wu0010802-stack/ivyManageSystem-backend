@@ -42,12 +42,9 @@ from utils.permissions import Permission
 logger = logging.getLogger(__name__)
 
 
-def _invalidate_finance_summary_cache() -> None:
-    """金流寫入後失效 /finance-summary 快取（TTL 30 分，否則看到舊值）。"""
-    try:
-        report_cache_service.invalidate_category(None, "reports_finance_summary")
-    except Exception:
-        logger.warning("invalidate finance_summary cache failed", exc_info=True)
+from utils.finance_cache import (
+    invalidate_finance_summary_cache as _invalidate_finance_summary_cache,
+)
 
 
 def _lock_registration(session, registration_id: int):

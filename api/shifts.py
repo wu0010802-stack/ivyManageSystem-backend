@@ -712,26 +712,7 @@ def get_swap_history(
 # ---------------------------------------------------------------------------
 
 
-_SH_HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
-_SH_HEADER_FILL = PatternFill(
-    start_color="4472C4", end_color="4472C4", fill_type="solid"
-)
-_SH_THIN_BORDER = Border(
-    left=Side(style="thin"),
-    right=Side(style="thin"),
-    top=Side(style="thin"),
-    bottom=Side(style="thin"),
-)
-_SH_CENTER_ALIGN = Alignment(horizontal="center")
-
-
-def _sh_write_header(ws, row, headers):
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=row, column=col, value=h)
-        cell.font = _SH_HEADER_FONT
-        cell.fill = _SH_HEADER_FILL
-        cell.border = _SH_THIN_BORDER
-        cell.alignment = _SH_CENTER_ALIGN
+from utils.excel_writer import write_header_row as _sh_write_header  # noqa: E402
 
 
 @router.get("/import-template")

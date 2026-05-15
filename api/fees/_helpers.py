@@ -34,18 +34,9 @@ MAX_FEE_AMOUNT = 999_999
 FEE_PAYMENT_APPROVAL_THRESHOLD = 50_000
 
 
-def _invalidate_finance_summary_cache() -> None:
-    """money write path 結束後呼叫，讓 finance-summary 下次請求重算。
-
-    invalidate_categories 內部自開 session，不依賴當前 session，也不會因
-    cache 寫入失敗而影響主交易（例外被 service 自行 log+swallow）。
-    """
-    try:
-        report_cache_service.invalidate_category(None, _FINANCE_SUMMARY_CACHE_CATEGORY)
-    except Exception:
-        # 守衛：快取失效失敗不應影響金流交易
-        logger.warning("invalidate finance_summary cache failed", exc_info=True)
-
+from utils.finance_cache import (
+    invalidate_finance_summary_cache as _invalidate_finance_summary_cache,
+)
 
 # ---------------------------------------------------------------------------
 # Pydantic Schemas

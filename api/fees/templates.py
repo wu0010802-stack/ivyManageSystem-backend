@@ -207,6 +207,15 @@ def delete_fee_template(
         t = session.query(FeeTemplate).filter(FeeTemplate.id == template_id).first()
         if not t:
             raise HTTPException(status_code=404, detail="範本不存在")
+        # 停用守衛：對大額範本（amount > 門檻）的停用需 ACTIVITY_PAYMENT_APPROVE。
+        # Why: 範本停用 → 下次 /generate 該年級該費用類型全班不出帳 → 收入靜默流失。
+        # 「沒發帳」比「發錯帳」更難察覺，必須與漲價/降價同等級守衛。
+        require_finance_approve(
+            int(t.amount or 0),
+            current_user,
+            threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
+            action_label=f"停用費用範本 {t.name}",
+        )
         t.is_active = False
         t.updated_by = current_user.get("username")
         session.flush()

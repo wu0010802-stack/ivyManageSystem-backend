@@ -167,12 +167,14 @@ def generate_from_templates(
                         )
                     existing_keys.add(key)
 
+        # 不論 dry_run 都先算 Σ amount_due,讓事後稽核能對照預估與實寫金額。
+        total_amount_due = sum(int(r["amount_due"] or 0) for r in new_records)
+
         # 批量寫入前的金流守衛：Σ amount_due 大於門檻需 ACTIVITY_PAYMENT_APPROVE。
         # Why: 單筆收款門檻只在收款時觸發；範本 amount × 全班學生 × 月份
         # 可一次寫入數百萬，但每筆 amount_due < 50K 永遠不會觸發單筆守衛。
         # dry_run 不寫入故不檢查，給操作者預估數字的機會。
         if not payload.dry_run and new_records:
-            total_amount_due = sum(int(r["amount_due"] or 0) for r in new_records)
             require_finance_approve(
                 total_amount_due,
                 current_user,
@@ -184,7 +186,8 @@ def generate_from_templates(
         request.state.audit_entity_id = f"{payload.school_year}-{payload.semester}"
         request.state.audit_summary = (
             f"批次產生費用({','.join(payload.fee_types)}): "
-            f"created={created} skipped={skipped} dry_run={payload.dry_run}"
+            f"created={created} skipped={skipped} "
+            f"total=NT${total_amount_due:,} dry_run={payload.dry_run}"
         )
         request.state.audit_changes = {
             "action": "fee_generate_from_templates",
@@ -194,6 +197,7 @@ def generate_from_templates(
             "dry_run": payload.dry_run,
             "created": created,
             "skipped": skipped,
+            "total_amount_due": total_amount_due,
         }
 
         if not payload.dry_run:

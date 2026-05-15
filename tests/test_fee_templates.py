@@ -364,3 +364,116 @@ def test_update_template_big_raise_requires_finance_approve(
         json={"amount": 100_000},
     )
     assert r.status_code == 403, r.text
+
+
+def test_update_template_slow_walk_bypass_closed(client_fees_writer, grade_da, session):
+    """『慢漲到一次到位』需被擋:既存 50K → 51K 雖 delta=1K,
+    但 new=51K > 50K 仍應觸發守衛。
+
+    Regression: 早期只看 delta,可分多次小幅漲到任意金額繞過守衛。
+    """
+    t = FeeTemplate(
+        grade_id=grade_da.id,
+        school_year=114,
+        semester=1,
+        fee_type="registration",
+        name="x",
+        amount=50_000,
+    )
+    session.add(t)
+    session.commit()
+    r = client_fees_writer.put(
+        f"/api/fees/templates/{t.id}",
+        json={"amount": 51_000},
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_update_template_big_drop_requires_finance_approve(
+    client_fees_writer, grade_da, session
+):
+    """大降同樣需 ACTIVITY_PAYMENT_APPROVE:80K → 0 等同靜默免收,
+    比漲價更難察覺,必須同等級守衛。
+
+    Regression: 早期只擋 new > old,降價路徑完全無守衛。
+    """
+    t = FeeTemplate(
+        grade_id=grade_da.id,
+        school_year=114,
+        semester=1,
+        fee_type="registration",
+        name="x",
+        amount=80_000,
+    )
+    session.add(t)
+    session.commit()
+    r = client_fees_writer.put(
+        f"/api/fees/templates/{t.id}",
+        json={"amount": 0},
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_update_big_template_no_amount_change_still_guarded(
+    client_fees_writer, grade_da, session
+):
+    """既存大額範本（80K）即使只改 name/breakdown,仍應觸發守衛。
+
+    Why: 既存大額範本的任何屬性修改都可能間接影響收費（例: breakdown 替換）。
+    """
+    t = FeeTemplate(
+        grade_id=grade_da.id,
+        school_year=114,
+        semester=1,
+        fee_type="registration",
+        name="原名",
+        amount=80_000,
+    )
+    session.add(t)
+    session.commit()
+    r = client_fees_writer.put(
+        f"/api/fees/templates/{t.id}",
+        json={"name": "改名"},  # 不動 amount
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_delete_small_template_no_finance_approve(
+    client_fees_writer, grade_da, session
+):
+    """停用小額範本（amount ≤ 50K）不需金流簽核。"""
+    t = FeeTemplate(
+        grade_id=grade_da.id,
+        school_year=114,
+        semester=1,
+        fee_type="registration",
+        name="x",
+        amount=19_000,
+    )
+    session.add(t)
+    session.commit()
+    r = client_fees_writer.delete(f"/api/fees/templates/{t.id}")
+    assert r.status_code == 200, r.text
+
+
+def test_delete_big_template_requires_finance_approve(
+    client_fees_writer, grade_da, session
+):
+    """停用大額範本（amount > 50K）需 ACTIVITY_PAYMENT_APPROVE。
+
+    Regression: 早期 delete_fee_template 完全無守衛,可靜默停用月費範本,
+    下次 /generate 該年級全班不出帳 → 收入流失。
+    """
+    t = FeeTemplate(
+        grade_id=grade_da.id,
+        school_year=114,
+        semester=1,
+        fee_type="monthly",
+        name="高班月費",
+        amount=80_000,
+    )
+    session.add(t)
+    session.commit()
+    r = client_fees_writer.delete(f"/api/fees/templates/{t.id}")
+    assert r.status_code == 403, r.text
+    assert "50,000" in r.json()["detail"]
