@@ -129,12 +129,6 @@ from models.contact_book import (
     StudentContactBookAck,
     StudentContactBookReply,
 )
-from models.gov_data import (
-    GovDataSnapshot,
-    InsuranceBracketsStaging,
-    MinimumWageHistory,
-    MinimumWageStaging,
-)
 
 __all__ = [
     # base
@@ -269,9 +263,4 @@ __all__ = [
     "ParentNotificationPreference",
     # LINE webhook reply context (Phase 5)
     "LineReplyContext",
-    # gov data sync
-    "GovDataSnapshot",
-    "InsuranceBracketsStaging",
-    "MinimumWageHistory",
-    "MinimumWageStaging",
 ]

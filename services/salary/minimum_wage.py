@@ -1,9 +1,4 @@
-"""法定基本工資（勞基法第 21 條）合規驗證。
-
-> ⚠ 自 2026-05 起改為查 `minimum_wage_history` 表。
-> 排程同步：services/gov_data + admin 在 /admin/gov-data-sync 套用。
-> 兩個常數 MINIMUM_MONTHLY_WAGE / MINIMUM_HOURLY_WAGE 保留作為 DB 失靈時的 fallback。
-"""
+"""法定基本工資（勞基法第 21 條）合規驗證。"""
 
 from __future__ import annotations
 
@@ -15,45 +10,14 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-# Fallback 常數（DB 查詢失敗時回退用；正式取值請呼叫 get_minimum_wage）
 MINIMUM_MONTHLY_WAGE = 29500
 MINIMUM_HOURLY_WAGE = 196
 
 
-def _query_history(at_date: date) -> Tuple[int, int]:
-    """查 minimum_wage_history 取「effective_date ≤ at_date 中最新一筆」。
-
-    可被測試 monkeypatch（模擬 DB down）。
-    """
-    from models.database import MinimumWageHistory, session_scope
-
-    with session_scope() as s:
-        row = (
-            s.query(MinimumWageHistory)
-            .filter(MinimumWageHistory.effective_date <= at_date)
-            .order_by(MinimumWageHistory.effective_date.desc())
-            .first()
-        )
-        if row is None:
-            raise LookupError(f"minimum_wage_history empty at {at_date}")
-        return row.monthly, row.hourly
-
-
 def get_minimum_wage(at_date: date) -> Tuple[int, int]:
-    """取指定日期適用之基本工資 (monthly, hourly)。
-
-    DB 查詢失敗時 log warning + 回退常數，避免薪資模組整個掛掉。
-    """
-    try:
-        return _query_history(at_date)
-    except Exception as exc:
-        logger.warning(
-            "minimum_wage_history 查詢失敗 (%s)，fallback 常數 monthly=%d hourly=%d",
-            exc,
-            MINIMUM_MONTHLY_WAGE,
-            MINIMUM_HOURLY_WAGE,
-        )
-        return MINIMUM_MONTHLY_WAGE, MINIMUM_HOURLY_WAGE
+    """取指定日期適用之基本工資 (monthly, hourly)。"""
+    del at_date
+    return MINIMUM_MONTHLY_WAGE, MINIMUM_HOURLY_WAGE
 
 
 def validate_minimum_wage(

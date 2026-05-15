@@ -67,25 +67,6 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 
 ---
 
-## 業務不變式 — 政府開放資料同步（`services/gov_data/`）
-
-每年勞健保級距與基本工資**不再需要 code change**：排程從 data.gov.tw / 健保署 API 拉資料 → staging → admin 在 `/admin/gov-data-sync` 審核 promote。
-
-- **6 個資料源**：勞保金額分級（dataset 6258）/ 勞保費分擔（6259）/ 勞退月提繳 / 健保金額分級（20251）/ 健保費負擔 / 基本工資調整（6281）。實際 URL 記在 `tests/fixtures/gov_data/_README.md`，部署前由 ops 填入 `services/gov_data/fetcher.py:SOURCE_URLS`。
-- **排程**：`services/gov_data_scheduler.py`，沿用既有 `asyncio.create_task` pattern；環境變數 `GOV_DATA_SYNC_ENABLED=1` 啟用。每 24h 檢查、上次成功 fetch > 30 天才實際 sync。
-- **合成規則**（`services/gov_data/composer.py`）：
-  - amount 列 = labor_brackets ∪ pension ∪ nhi_brackets，去重排序
-  - labor_employee/employer：clamp amount 至 [11100, 45800] 後查 labor_premium
-  - pension：`round(min(amount, 150000) × 0.06)`
-  - health_employee/employer：直接取政府表「投保單位負擔金額」**不加權**眷屬（fixture 反推結論，詳見 `tests/fixtures/gov_data/_COMPOSER_JOIN_RULES.md`）
-  - **Oracle**：餵 2026 真實 raw → 必須合成出與 `INSURANCE_TABLE_2026`（82 列）完全一致；不一致就修 composer，**不可改 oracle**。
-- **promote 守衛**：`Permission.SALARY_WRITE` + reason ≥ 10 字 + 冪等（status 已非 pending 回 409）。promote 副作用：寫入 `insurance_brackets` / `minimum_wage_history`、觸發既有 `_bulk_mark_salary_stale_for_year`、嘗試 reload `InsuranceService` singleton。
-- **基本工資**：`services/salary/minimum_wage.py` 已改 thin wrapper：`get_minimum_wage(at_date)` 查 `minimum_wage_history`；DB 失敗時 fallback 兩個常數（保留作 safety net）。`validate_minimum_wage()` 改用 DB 值。
-- **fixture 是政府事實**：`tests/fixtures/gov_data/*.json` 從真實 API 凍結。若 parser 預期 schema 與 fixture 不符，**改 parser 不改 fixture**。
-- 詳見 `docs/superpowers/specs/2026-05-07-gov-data-sync-design.md` + `docs/superpowers/plans/2026-05-07-gov-data-sync.md`。
-
----
-
 ## 開發規範
 
 ### 回應語言

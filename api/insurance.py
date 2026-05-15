@@ -16,7 +16,6 @@ from models.database import (
     get_session,
     session_scope,
     InsuranceBracket,
-    InsuranceBracketsStaging,
     SalaryRecord,
 )
 
@@ -194,8 +193,6 @@ async def list_brackets(
 
     無資料時 fallback 到 ≤year 中最新的年度（與 service load_brackets_from_db 同邏輯），
     便於行政在新年度尚未公告時還能看到目前生效級距。
-
-    回應包含 `latest_promoted_from_gov_data` 旗標，表示該年度的級距是否由政府資料 promote 流程寫入。
     """
     target_year = year or date.today().year
     session = get_session()
@@ -222,20 +219,9 @@ async def list_brackets(
                     .order_by(InsuranceBracket.amount.asc())
                     .all()
                 )
-        # 判斷 effective_year 的資料是否來自政府資料 promote 流程
-        promoted_staging = (
-            session.query(InsuranceBracketsStaging)
-            .filter(
-                InsuranceBracketsStaging.effective_year == actual_year,
-                InsuranceBracketsStaging.status == "promoted",
-            )
-            .first()
-        )
-        latest_promoted_from_gov_data = promoted_staging is not None
         return {
             "requested_year": target_year,
             "effective_year": actual_year if rows else None,
-            "latest_promoted_from_gov_data": latest_promoted_from_gov_data,
             "brackets": [
                 {
                     "id": r.id,
