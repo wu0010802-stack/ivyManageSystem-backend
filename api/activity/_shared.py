@@ -186,44 +186,26 @@ def require_approve_for_cumulative_refund(
     require_approve_for_large_refund(cumulative, current_user, label=label)
 
 
+# F2 第一階段：時區 helper 抽到 utils/taipei_time.py 共用（fees / activity / portal
+# 都需要同一條台灣時區邏輯）。本檔保留 re-export 維持既有 import surface。
+from utils.taipei_time import (  # noqa: F401
+    TAIPEI_TZ as _TAIPEI_TZ_CANONICAL,  # 避免遮蔽本檔 line 62 既有變數
+    now_taipei_naive,
+    today_taipei,
+)
+
+
 def validate_payment_date(
     value: date, *, back_limit_days: int = PAYMENT_DATE_BACK_LIMIT_DAYS
 ) -> date:
     """驗證 payment_date 必須在今日回補窗內，不得指定未來。
 
     `back_limit_days` 預設 30（活動 POS 場景）；學費跨月分期需放寬，
-    呼叫端可覆寫此參數。
+    呼叫端可覆寫此參數。delegated to utils.taipei_time。
     """
-    today = datetime.now(TAIPEI_TZ).date()
-    if value > today:
-        raise ValueError("繳費日期不可指定未來日期")
-    earliest = today - timedelta(days=back_limit_days)
-    if value < earliest:
-        raise ValueError(f"繳費日期超出範圍，最多回補 {back_limit_days} 天")
-    return value
+    from utils.taipei_time import validate_payment_date as _impl
 
-
-def today_taipei() -> date:
-    """統一取「今日」的工具函式（Asia/Taipei）。
-
-    Why: 部分端點寫入 refund/payment 時使用 naive datetime.now().date()；
-    server 若部署在 UTC，近午夜台灣時間會落帳到昨天，與日結 snapshot 錯位。
-    本函式確保所有 activity 相關寫入都以台灣時間為準。
-    """
-    return datetime.now(TAIPEI_TZ).date()
-
-
-def now_taipei_naive() -> datetime:
-    """統一取「現在時刻」(Asia/Taipei naive) 的工具函式。
-
-    Why: `ActivityPaymentRecord.created_at` 已用 `_now_taipei_naive` 寫入台灣時間；
-    日結簽核 `approved_at` / unlock `unlocked_at` / pending 審核 `reviewed_at` / query
-    token `issued_at` 若用裸 `datetime.now()`，server 部署在 UTC 時會比同檔的
-    `today = datetime.now(TAIPEI_TZ).date()` 慢 8 小時，造成稽核時序錯位
-    （例：簽核紀錄落在 close_date 前一日、unlock 事件 cutoff 過濾窗口偏移）。
-    任何寫入或對比 naive datetime 欄位的端點都應改用本函式以保持一致。
-    """
-    return datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+    return _impl(value, back_limit_days=back_limit_days)
 
 
 # ── 服務注入 ──────────────────────────────────────────────────────────────
