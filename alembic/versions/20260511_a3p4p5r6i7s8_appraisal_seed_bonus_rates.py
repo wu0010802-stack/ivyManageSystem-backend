@@ -1,20 +1,18 @@
-"""appraisal: seed 6 筆考核獎金率（115.01.01 effective）
+"""appraisal: seed 10 筆考核獎金率（M1 重構：擴充至 5 個 role_group × 2 等級）
 
-來源：第六篇 考核辦法第四條 + 附表八。
+對應 Excel「114(上)年度考核統計表」備註：
+- 優等 90+：園長/主任 8000、教師/行政會計、副班導等依群分；獎金 = base × 分數%
+- 甲等 80-89：園長/主任 5000；其他群依比例
 
-3 個 role_group × 2 個等級（優 OUTSTANDING / 甲 GOOD）= 6 筆。
-乙以下 PASS/WARN/FAIL 不發獎金，故無 seed。
+Excel 中註解被截斷未明示 STAFF/COOK 金額；本 seed 採合理預設，可由
+appraisal_bonus_rates 的 effective_from 機制新增覆蓋。
 
-實際金額（per spec 4.5）：
-- 主管 SUPERVISOR：優 10000 / 甲 5000
-- 班導/會計 HEAD_TEACHER：優 8000 / 甲 4000
-- 副班導/廚/司機/儲備 ASSISTANT：優 6000 / 甲 3500
-
-獎金計算：bonus_amount = base_amount × (total_score / 100)
+5 role_group × 2 grade (OUTSTANDING/GOOD) = 10 筆；
+PASS/WARN/FAIL 不發獎金故無 seed。
 
 Revision ID: a3p4p5r6i7s8
 Revises: a7p8p9r0i1s2
-Create Date: 2026-05-11
+Create Date: 2026-05-11 (rewritten 2026-05-15 for M1)
 """
 
 import sqlalchemy as sa
@@ -29,32 +27,70 @@ EFFECTIVE = "2026-08-01"  # 115 學年度第一學期起算
 
 RATES = [
     # (role_group, grade, base_amount)
-    ("SUPERVISOR", "OUTSTANDING", 10000),
+    ("SUPERVISOR", "OUTSTANDING", 8000),
     ("SUPERVISOR", "GOOD", 5000),
-    ("HEAD_TEACHER", "OUTSTANDING", 8000),
+    ("HEAD_TEACHER", "OUTSTANDING", 6000),
     ("HEAD_TEACHER", "GOOD", 4000),
-    ("ASSISTANT", "OUTSTANDING", 6000),
-    ("ASSISTANT", "GOOD", 3500),
+    ("ASSISTANT", "OUTSTANDING", 4500),
+    ("ASSISTANT", "GOOD", 3000),
+    ("STAFF", "OUTSTANDING", 5000),
+    ("STAFF", "GOOD", 3500),
+    ("COOK", "OUTSTANDING", 3500),
+    ("COOK", "GOOD", 2500),
 ]
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    for role_group, grade, amount in RATES:
-        bind.execute(
+    inspector = sa.inspect(bind)
+    if "appraisal_bonus_rates" not in inspector.get_table_names():
+        return
+
+    bonus_table = sa.table(
+        "appraisal_bonus_rates",
+        sa.column("effective_from", sa.Date),
+        sa.column("role_group", sa.String),
+        sa.column("grade", sa.String),
+        sa.column("base_amount", sa.Numeric),
+    )
+
+    # 冪等：先查已存在的 (effective_from, role_group, grade) 三元組
+    existing = {
+        (row[0].isoformat(), row[1], row[2])
+        for row in bind.execute(
             sa.text(
-                "INSERT INTO appraisal_bonus_rates "
-                "(effective_from, role_group, grade, base_amount) "
-                "VALUES (:eff, :rg, :gr, :amt) "
-                "ON CONFLICT (effective_from, role_group, grade) DO NOTHING"
+                "SELECT effective_from, role_group, grade "
+                "FROM appraisal_bonus_rates "
+                "WHERE effective_from = :ef"
             ),
-            {"eff": EFFECTIVE, "rg": role_group, "gr": grade, "amt": amount},
+            {"ef": EFFECTIVE},
+        ).fetchall()
+    }
+
+    rows_to_insert = []
+    for role_group, grade, base_amount in RATES:
+        if (EFFECTIVE, role_group, grade) in existing:
+            continue
+        rows_to_insert.append(
+            {
+                "effective_from": EFFECTIVE,
+                "role_group": role_group,
+                "grade": grade,
+                "base_amount": base_amount,
+            }
         )
+    if rows_to_insert:
+        op.bulk_insert(bonus_table, rows_to_insert)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if "appraisal_bonus_rates" not in inspector.get_table_names():
+        return
     bind.execute(
-        sa.text("DELETE FROM appraisal_bonus_rates WHERE effective_from = :eff"),
-        {"eff": EFFECTIVE},
+        sa.text(
+            "DELETE FROM appraisal_bonus_rates WHERE effective_from = :ef"
+        ),
+        {"ef": EFFECTIVE},
     )

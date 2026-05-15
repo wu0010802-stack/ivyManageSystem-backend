@@ -4,6 +4,7 @@ sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
 pandas>=2.0.0
 openpyxl>=3.1.0
+xlrd>=2.0  # 讀取 .xls (Excel 97-2003) 用於匯入舊版考核 / 年終經營績效表
 python-multipart>=0.0.27  # CVE-2026-40347, CVE-2026-42561
 reportlab>=4.0.0
 Pillow>=12.2.0  # CVE-2026-25990, CVE-2026-40192, CVE-2026-42308/9/10/11
