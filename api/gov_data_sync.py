@@ -1,15 +1,21 @@
 """政府開放資料同步 API。
 
 權限：所有 endpoint 要求 Permission.SALARY_WRITE（與 api/insurance.py 級距 bulk upsert 一致）。
+
+歷史背景（為何不用 Pydantic Field(min_length=...)）：
+    舊版 promote/dismiss endpoint 用 Pydantic `Field(min_length=10)` 驗 reason，
+    使用者輸入太短時 FastAPI 回 422，且 detail 是英文 "String should have at
+    least 10 characters"。前端遇 422 通常無法翻譯，造成「為什麼一直 422」的
+    UX 問題。現改為接 dict 後手動驗證，超短時回 400 + 中文 message，
+    讓前端能直接 toast。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from models.database import (
     GovDataSnapshot,
@@ -29,9 +35,56 @@ router = APIRouter(prefix="/api/gov-data", tags=["gov-data"])
 # 一次建立 dependency 實例，方便測試 override
 _DEP_SALARY_WRITE = require_staff_permission(Permission.SALARY_WRITE)
 
+REASON_MIN_LEN = promoter.REASON_MIN_LEN
+REASON_MAX_LEN = 500
 
-class PromoteRequest(BaseModel):
-    reason: str = Field(min_length=10, max_length=500)
+
+def _extract_reason(payload: Any) -> str:
+    """從 request body 取出 reason 並驗證；失敗一律回 400（避免 Pydantic 422）。"""
+    if payload is None:
+        raise HTTPException(
+            400,
+            {
+                "code": "REASON_REQUIRED",
+                "message": "缺少 request body；請傳 JSON：{\"reason\": \"...\"}",
+            },
+        )
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            400,
+            {
+                "code": "REASON_INVALID",
+                "message": "request body 必須是 JSON 物件",
+            },
+        )
+    reason = payload.get("reason")
+    if not isinstance(reason, str):
+        raise HTTPException(
+            400,
+            {
+                "code": "REASON_REQUIRED",
+                "message": f"缺少 reason 欄位；必須是 {REASON_MIN_LEN}–{REASON_MAX_LEN} 字的字串",
+            },
+        )
+    reason = reason.strip()
+    n = len(reason)
+    if n < REASON_MIN_LEN:
+        raise HTTPException(
+            400,
+            {
+                "code": "REASON_TOO_SHORT",
+                "message": f"reason 必須 ≥ {REASON_MIN_LEN} 字（目前 {n} 字）；外部資料寫入需稽核軌跡。",
+            },
+        )
+    if n > REASON_MAX_LEN:
+        raise HTTPException(
+            400,
+            {
+                "code": "REASON_TOO_LONG",
+                "message": f"reason 不可超過 {REASON_MAX_LEN} 字（目前 {n} 字）。",
+            },
+        )
+    return reason
 
 
 @router.get("/staging")
@@ -119,14 +172,15 @@ def _username(current_user: dict) -> str:
 @router.post("/staging/brackets/{staging_id}/promote")
 async def promote_brackets(
     staging_id: int,
-    payload: PromoteRequest,
+    payload: dict = Body(default=None),
     current_user: dict = Depends(_DEP_SALARY_WRITE),
 ) -> dict:
+    reason = _extract_reason(payload)
     try:
         promoter.promote_brackets(
             staging_id=staging_id,
             decided_by=_username(current_user),
-            reason=payload.reason,
+            reason=reason,
         )
     except promoter.PromoteError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
@@ -136,14 +190,15 @@ async def promote_brackets(
 @router.post("/staging/brackets/{staging_id}/dismiss")
 async def dismiss_brackets(
     staging_id: int,
-    payload: PromoteRequest,
+    payload: dict = Body(default=None),
     current_user: dict = Depends(_DEP_SALARY_WRITE),
 ) -> dict:
+    reason = _extract_reason(payload)
     try:
         promoter.dismiss_brackets(
             staging_id=staging_id,
             decided_by=_username(current_user),
-            reason=payload.reason,
+            reason=reason,
         )
     except promoter.PromoteError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
@@ -153,14 +208,15 @@ async def dismiss_brackets(
 @router.post("/staging/minimum-wage/{staging_id}/promote")
 async def promote_minimum_wage(
     staging_id: int,
-    payload: PromoteRequest,
+    payload: dict = Body(default=None),
     current_user: dict = Depends(_DEP_SALARY_WRITE),
 ) -> dict:
+    reason = _extract_reason(payload)
     try:
         promoter.promote_minimum_wage(
             staging_id=staging_id,
             decided_by=_username(current_user),
-            reason=payload.reason,
+            reason=reason,
         )
     except promoter.PromoteError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
@@ -170,14 +226,15 @@ async def promote_minimum_wage(
 @router.post("/staging/minimum-wage/{staging_id}/dismiss")
 async def dismiss_minimum_wage(
     staging_id: int,
-    payload: PromoteRequest,
+    payload: dict = Body(default=None),
     current_user: dict = Depends(_DEP_SALARY_WRITE),
 ) -> dict:
+    reason = _extract_reason(payload)
     try:
         promoter.dismiss_minimum_wage(
             staging_id=staging_id,
             decided_by=_username(current_user),
-            reason=payload.reason,
+            reason=reason,
         )
     except promoter.PromoteError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
@@ -186,7 +243,34 @@ async def dismiss_minimum_wage(
 
 @router.post("/sync-now")
 async def sync_now_endpoint(current_user: dict = Depends(_DEP_SALARY_WRITE)) -> dict:
-    return gov_data_scheduler.sync_now()
+    """手動觸發一次完整同步。
+
+    回傳除了原本的 snapshot_ids，多兩個欄位讓前端能直接顯示「為什麼沒抓到」：
+    - configured: 每個 source 是否設定 URL（環境變數）
+    - warning: 若全部 source 都沒 URL，提示要設環境變數
+    這裡刻意不回 400，因為手動觸發的 UX 是「即使部分失敗也想看 partial 結果」。
+    """
+    from services.gov_data import fetcher as _fetcher
+
+    configured = {k: bool(v) for k, v in _fetcher.SOURCE_URLS.items()}
+    try:
+        result = gov_data_scheduler.sync_now()
+    except Exception as exc:  # noqa: BLE001 — 同步失敗統一吃下去回 502，避免 500
+        logger.exception("sync_now 失敗")
+        raise HTTPException(
+            502,
+            {"code": "SYNC_FAILED", "message": f"同步失敗：{exc}"},
+        )
+
+    response: dict = {**result, "configured": configured}
+    if not any(configured.values()):
+        response["warning"] = (
+            "未設定任何資料源 URL；請設定環境變數 "
+            "GOV_DATA_URL_MOL_LABOR_BRACKETS、GOV_DATA_URL_MOL_LABOR_PREMIUM、"
+            "GOV_DATA_URL_MOL_PENSION、GOV_DATA_URL_NHI_BRACKETS、"
+            "GOV_DATA_URL_NHI_PREMIUM、GOV_DATA_URL_MOL_MINIMUM_WAGE 後重啟服務。"
+        )
+    return response
 
 
 @router.get("/snapshots")
