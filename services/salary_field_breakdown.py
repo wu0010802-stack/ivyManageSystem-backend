@@ -30,12 +30,15 @@ from services.salary.utils import (
 from services.student_enrollment import count_students_active_on
 
 FIELD_LABELS = {
+    "base_salary": "底薪",
     "festival_bonus": "節慶獎金",
     "overtime_bonus": "超額獎金",
     "overtime_pay": "加班津貼",
     "supervisor_dividend": "主管紅利",
     "meeting_overtime_pay": "會議加班",
     "birthday_bonus": "生日禮金",
+    "labor_insurance": "勞保",
+    "health_insurance": "健保",
     "leave_deduction": "請假扣款",
     "late_deduction": "遲到扣款",
     "early_leave_deduction": "早退扣款",
@@ -43,9 +46,30 @@ FIELD_LABELS = {
     "absence_deduction": "曠職扣款",
 }
 
+QUARTERLY_DEDUCTION_MONTHS = (1, 4, 7, 10)
+
 
 def _to_iso(value):
     return value.isoformat() if value else None
+
+
+def _calc_worked_days(hire_date_iso, resign_date_iso, year: int, month: int):
+    """回傳 (worked_days, month_days)，僅供顯示用，邏輯與 _prorate_for_period 一致。"""
+    month_days = cal_module.monthrange(year, month)[1]
+    start_day, end_day = 1, month_days
+    if hire_date_iso:
+        hire_d = date.fromisoformat(hire_date_iso)
+        if hire_d.year == year and hire_d.month == month and hire_d.day >= 2:
+            start_day = hire_d.day
+    if resign_date_iso:
+        resign_d = date.fromisoformat(resign_date_iso)
+        if (
+            resign_d.year == year
+            and resign_d.month == month
+            and resign_d.day < month_days
+        ):
+            end_day = resign_d.day
+    return max(0, end_day - start_day + 1), month_days
 
 
 def _calc_attendance_stats(attendances: list) -> dict:
@@ -228,7 +252,22 @@ def _calc_insurance_details(emp: Employee, ins_service) -> dict:
         emp.dependents or 0,
         pension_self_rate=emp.pension_self_rate or 0,
     )
-    return {"insured_salary_raw": insured_salary_raw, "ins": ins}
+    return {
+        "insured_salary_raw": insured_salary_raw,
+        "ins": ins,
+        # 議題 B 三制度分項投保（NULL 表示沿用 insurance_salary_level）
+        "labor_insured_salary": getattr(emp, "labor_insured_salary", None),
+        "health_insured_salary": getattr(emp, "health_insured_salary", None),
+        "pension_insured_salary": getattr(emp, "pension_insured_salary", None),
+        # 階段 2-C 特殊欄位（影響保費計算的旗標）
+        "no_employment_insurance": bool(
+            getattr(emp, "no_employment_insurance", False)
+        ),
+        "health_exempt": bool(getattr(emp, "health_exempt", False)),
+        "extra_dependents_quarterly": int(
+            getattr(emp, "extra_dependents_quarterly", 0) or 0
+        ),
+    }
 
 
 def _build_meeting_stats(
@@ -768,6 +807,16 @@ def build_salary_debug_snapshot(
             "classroom_id": emp.classroom_id,
             "insurance_salary_level": getattr(emp, "insurance_salary_level", None),
             "dependents": emp.dependents,
+            "extra_dependents_quarterly": int(
+                getattr(emp, "extra_dependents_quarterly", 0) or 0
+            ),
+            "no_employment_insurance": bool(
+                getattr(emp, "no_employment_insurance", False)
+            ),
+            "health_exempt": bool(getattr(emp, "health_exempt", False)),
+            "labor_insured_salary": getattr(emp, "labor_insured_salary", None),
+            "health_insured_salary": getattr(emp, "health_insured_salary", None),
+            "resign_date": _to_iso(resign_date),
             "work_start_time": emp.work_start_time,
             "work_end_time": emp.work_end_time,
         },
@@ -815,6 +864,13 @@ def build_salary_debug_snapshot(
             "health_employee": ins.health_employee,
             "pension_employee": ins.pension_employee,
             "total_employee_deduction": ins.total_employee,
+            "labor_insured_salary": ins_result["labor_insured_salary"],
+            "health_insured_salary": ins_result["health_insured_salary"],
+            "pension_insured_salary": ins_result["pension_insured_salary"],
+            "no_employment_insurance": ins_result["no_employment_insurance"],
+            "health_exempt": ins_result["health_exempt"],
+            "extra_dependents_quarterly": ins_result["extra_dependents_quarterly"],
+            "is_quarterly_deduction_month": int(month) in QUARTERLY_DEDUCTION_MONTHS,
         },
         "salary_summary": {
             "prorated_base_salary": round(prorated_base),
@@ -849,7 +905,12 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
         "year": record.salary_year,
         "month": record.salary_month,
     }
-    amount = round(getattr(record, field) or 0)
+    # 勞健保的 record 欄位含 _employee 後綴；其它欄位名與 record 欄位同名。
+    record_attr = {
+        "labor_insurance": "labor_insurance_employee",
+        "health_insurance": "health_insurance_employee",
+    }.get(field, field)
+    amount = round(getattr(record, record_attr) or 0)
     data = {
         "title": title,
         "field": field,
@@ -860,7 +921,192 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
         "note": "",
     }
 
-    if field == "festival_bonus":
+    if field == "base_salary":
+        emp_snap = snapshot["employee"]
+        summary = snapshot["salary_summary"]
+        contracted = int(emp_snap["base_salary"] or 0)
+        prorated_display = int(summary.get("prorated_base_salary") or 0)
+        proration_applied = bool(summary.get("proration_applied"))
+        data["columns"] = [
+            {"key": "item", "label": "項目"},
+            {"key": "value", "label": "內容"},
+            {"key": "remark", "label": "備註"},
+        ]
+        rows = [
+            {
+                "item": "合約底薪",
+                "value": contracted,
+                "remark": (
+                    f"到職 {emp_snap['hire_date']}" if emp_snap.get("hire_date") else ""
+                ),
+            }
+        ]
+        if proration_applied:
+            worked_days, total_days = _calc_worked_days(
+                emp_snap.get("hire_date"),
+                emp_snap.get("resign_date"),
+                record.salary_year,
+                record.salary_month,
+            )
+            rows.append(
+                {
+                    "item": "在職天數",
+                    "value": f"{worked_days} / {total_days} 天",
+                    "remark": "依到/離職日折算",
+                }
+            )
+        rows.append(
+            {
+                "item": "本月實領底薪",
+                "value": int(record.base_salary or 0),
+                "remark": (
+                    "依在職比例折算"
+                    if proration_applied
+                    else "全月在職，無折算"
+                ),
+            }
+        )
+        data["rows"] = rows
+        data["summary"]["amount"] = int(record.base_salary or 0)
+        data["note"] = (
+            f"合約底薪源自員工資料；實領 = 合約底薪 × 在職天數 / 當月天數 "
+            f"= {contracted} × {worked_days}/{total_days} = {prorated_display}"
+            if proration_applied
+            else "員工本月全月在職，未做比例折算。"
+        )
+    elif field == "labor_insurance":
+        emp_snap = snapshot["employee"]
+        ins = snapshot["insurance"]
+        data["columns"] = [
+            {"key": "item", "label": "項目"},
+            {"key": "value", "label": "內容"},
+            {"key": "remark", "label": "備註"},
+        ]
+        rows = [
+            {
+                "item": "投保級距",
+                "value": int(ins["insured_amount"] or 0),
+                "remark": (
+                    (
+                        f"員工資料投保金額 {int(emp_snap['insurance_salary_level']):,}"
+                        if emp_snap.get("insurance_salary_level")
+                        else "員工資料投保金額未設定"
+                    )
+                ),
+            }
+        ]
+        if ins.get("labor_insured_salary") is not None:
+            rows.append(
+                {
+                    "item": "勞保獨立投保",
+                    "value": int(ins["labor_insured_salary"] or 0),
+                    "remark": "三制度分項投保（蓋過級距）",
+                }
+            )
+        if ins.get("no_employment_insurance"):
+            rows.append(
+                {
+                    "item": "免就保",
+                    "value": "是",
+                    "remark": "勞保扣款比例改 11.5%（不含就保 1%）",
+                }
+            )
+        rows.append(
+            {
+                "item": "員工自付",
+                "value": int(record.labor_insurance_employee or 0),
+                "remark": "= 級距 × 勞保費率 × 員工負擔比例",
+            }
+        )
+        rows.append(
+            {
+                "item": "雇主負擔",
+                "value": int(record.labor_insurance_employer or 0),
+                "remark": "公司支出，員工薪資不扣",
+            }
+        )
+        data["rows"] = rows
+        data["summary"]["amount"] = int(record.labor_insurance_employee or 0)
+        data["note"] = "勞保金額依政府最新級距表計算，可至「政府資料同步」頁查看版本。"
+    elif field == "health_insurance":
+        emp_snap = snapshot["employee"]
+        ins = snapshot["insurance"]
+        dependents = int(emp_snap.get("dependents") or 0)
+        extra_q = int(ins.get("extra_dependents_quarterly") or 0)
+        is_quarterly = bool(ins.get("is_quarterly_deduction_month"))
+        data["columns"] = [
+            {"key": "item", "label": "項目"},
+            {"key": "value", "label": "內容"},
+            {"key": "remark", "label": "備註"},
+        ]
+        rows = [
+            {
+                "item": "投保級距",
+                "value": int(ins["insured_amount"] or 0),
+                "remark": (
+                    (
+                        f"員工資料投保金額 {int(emp_snap['insurance_salary_level']):,}"
+                        if emp_snap.get("insurance_salary_level")
+                        else "員工資料投保金額未設定"
+                    )
+                ),
+            }
+        ]
+        if ins.get("health_insured_salary") is not None:
+            rows.append(
+                {
+                    "item": "健保獨立投保",
+                    "value": int(ins["health_insured_salary"] or 0),
+                    "remark": "三制度分項投保（蓋過級距）",
+                }
+            )
+        rows.append(
+            {
+                "item": "本人 + 眷屬",
+                "value": f"本人 + {dependents} 名眷屬",
+                "remark": "健保員工自付 × (1 + 眷屬數)，最多 3 名眷屬",
+            }
+        )
+        if extra_q > 0:
+            rows.append(
+                {
+                    "item": "季扣眷屬",
+                    "value": f"{extra_q} 名",
+                    "remark": (
+                        f"本月為 1/4/7/10 月：加扣 {extra_q} × 3 個月"
+                        if is_quarterly
+                        else "1/4/7/10 月才會加扣"
+                    ),
+                }
+            )
+        if ins.get("health_exempt"):
+            rows.append(
+                {
+                    "item": "健保豁免",
+                    "value": "是",
+                    "remark": "公保／老人健保等：本人 + 眷屬均不扣",
+                }
+            )
+        rows.append(
+            {
+                "item": "員工自付",
+                "value": int(record.health_insurance_employee or 0),
+                "remark": "已計入眷屬倍率、季扣與補充保費",
+            }
+        )
+        rows.append(
+            {
+                "item": "雇主負擔",
+                "value": int(record.health_insurance_employer or 0),
+                "remark": "公司支出，員工薪資不扣",
+            }
+        )
+        data["rows"] = rows
+        data["summary"]["amount"] = int(record.health_insurance_employee or 0)
+        data["note"] = (
+            "健保金額依政府最新級距表計算；時薪制每月給付達門檻會加收補充保費。"
+        )
+    elif field == "festival_bonus":
         detail = snapshot["festival_bonus_detail"] or {}
         data["columns"] = [
             {"key": "name", "label": "姓名"},
