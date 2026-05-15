@@ -69,6 +69,15 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
     except Exception:
         raise HTTPException(status_code=400, detail="無效的 JSON")
 
+    # S7: 攔截 event.timestamp 過老的事件，防 replay。
+    # Why: 既有 dedup 用 webhookEventId UNIQUE 在 retention 內有效，但
+    # retention 政策外的舊事件仍可重放（含被解綁 LIFF id_token 偽造的事件）。
+    # LINE timestamp 為 unix ms，與本機時間偏差超過 ±5 分鐘即視為可疑。
+    import time
+
+    LINE_WEBHOOK_MAX_SKEW_MS = 5 * 60 * 1000
+    now_ms = int(time.time() * 1000)
+
     for event in payload.get("events", []):
         event_type = event.get("type")
         source = event.get("source", {})
@@ -77,6 +86,16 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
         source_room_id = source.get("roomId", "")
         reply_token = event.get("replyToken", "")
         webhook_event_id = event.get("webhookEventId", "")
+
+        ts = event.get("timestamp")
+        if isinstance(ts, int) and abs(now_ms - ts) > LINE_WEBHOOK_MAX_SKEW_MS:
+            logger.warning(
+                "LINE webhook 拒收 stale event：timestamp=%s skew=%.1fs type=%s",
+                ts,
+                (now_ms - ts) / 1000,
+                event_type,
+            )
+            continue
 
         if source_group_id or source_room_id:
             logger.info(
