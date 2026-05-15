@@ -5,7 +5,13 @@
 from models.database import StudentAssessment, StudentIncident, Student
 
 
-def assessment_to_dict(assessment: StudentAssessment, student: Student, *, include_updated_at: bool = False) -> dict:
+def assessment_to_dict(
+    assessment: StudentAssessment,
+    student: Student,
+    *,
+    include_updated_at: bool = False,
+    related_incident: "StudentIncident | None" = None,
+) -> dict:
     result = {
         "id": assessment.id,
         "student_id": assessment.student_id,
@@ -18,16 +24,40 @@ def assessment_to_dict(assessment: StudentAssessment, student: Student, *, inclu
         "rating": assessment.rating,
         "content": assessment.content,
         "suggestions": assessment.suggestions,
-        "assessment_date": assessment.assessment_date.isoformat() if assessment.assessment_date else None,
+        "assessment_date": (
+            assessment.assessment_date.isoformat()
+            if assessment.assessment_date
+            else None
+        ),
         "recorded_by": assessment.recorded_by,
-        "created_at": assessment.created_at.isoformat() if assessment.created_at else None,
+        "related_incident_id": assessment.related_incident_id,
+        "related_incident": (
+            {
+                "id": related_incident.id,
+                "incident_type": related_incident.incident_type,
+                "occurred_at": (
+                    related_incident.occurred_at.isoformat()
+                    if related_incident.occurred_at
+                    else None
+                ),
+            }
+            if related_incident
+            else None
+        ),
+        "created_at": (
+            assessment.created_at.isoformat() if assessment.created_at else None
+        ),
     }
     if include_updated_at:
-        result["updated_at"] = assessment.updated_at.isoformat() if assessment.updated_at else None
+        result["updated_at"] = (
+            assessment.updated_at.isoformat() if assessment.updated_at else None
+        )
     return result
 
 
-def incident_to_dict(incident: StudentIncident, student: Student, *, include_updated_at: bool = False) -> dict:
+def incident_to_dict(
+    incident: StudentIncident, student: Student, *, include_updated_at: bool = False
+) -> dict:
     result = {
         "id": incident.id,
         "student_id": incident.student_id,
@@ -36,14 +66,22 @@ def incident_to_dict(incident: StudentIncident, student: Student, *, include_upd
         "classroom_id": student.classroom_id if student else None,
         "incident_type": incident.incident_type,
         "severity": incident.severity,
-        "occurred_at": incident.occurred_at.isoformat() if incident.occurred_at else None,
+        "occurred_at": (
+            incident.occurred_at.isoformat() if incident.occurred_at else None
+        ),
         "description": incident.description,
         "action_taken": incident.action_taken,
         "parent_notified": incident.parent_notified,
-        "parent_notified_at": incident.parent_notified_at.isoformat() if incident.parent_notified_at else None,
+        "parent_notified_at": (
+            incident.parent_notified_at.isoformat()
+            if incident.parent_notified_at
+            else None
+        ),
         "recorded_by": incident.recorded_by,
         "created_at": incident.created_at.isoformat() if incident.created_at else None,
     }
     if include_updated_at:
-        result["updated_at"] = incident.updated_at.isoformat() if incident.updated_at else None
+        result["updated_at"] = (
+            incident.updated_at.isoformat() if incident.updated_at else None
+        )
     return result
