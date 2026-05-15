@@ -156,17 +156,21 @@ def update_fee_template(
             payload.breakdown if payload.breakdown is not None else t.breakdown
         )
         _validate_template_breakdown(new_amount, new_breakdown)
-        # 漲價守衛：amount 上調幅度超過金流門檻需 ACTIVITY_PAYMENT_APPROVE。
-        # Why: 範本 amount 上調會在下次 /generate 全班批量寫入；單筆 50K
-        # 收款門檻只在收款時觸發，不會在此時被檢查。
+        # 範本金額守衛：新值/舊值/變動量 任一超過金流門檻即需 ACTIVITY_PAYMENT_APPROVE。
+        # Why: 範本 amount 任一面向超門檻都會在 /generate 時放大為全班全月寫入。
+        # - 新值 > 門檻：直接建貴範本（含「慢漲」一次到位）
+        # - 舊值 > 門檻：對大額範本的任何修改（含降價、breakdown 替換）都應審視
+        # - |變動| > 門檻：避免一次性大跳，含「降到 0 等同停收」走 update 而非 delete
+        # 三條件合起來封死「分多次 delta < 門檻 慢漲」與「降到 0 靜默免收」兩條路。
         old_amount = int(t.amount or 0)
         new_amount_int = int(new_amount or 0)
-        if new_amount_int > old_amount:
+        guard_basis = max(new_amount_int, old_amount, abs(new_amount_int - old_amount))
+        if guard_basis > FEE_PAYMENT_APPROVAL_THRESHOLD:
             require_finance_approve(
-                new_amount_int - old_amount,
+                guard_basis,
                 current_user,
                 threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
-                action_label="調漲費用範本金額",
+                action_label="調整費用範本（新值/舊值/變動 任一超門檻）",
             )
         if payload.name is not None:
             t.name = payload.name
