@@ -43,6 +43,12 @@ def salary_export_client(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
 
+    # 清除模組層 snapshot cache，避免不同測試重複使用同一 record_id 時讀到舊資料。
+    from api.salary import detail as salary_detail
+
+    with salary_detail._snapshot_cache_lock:
+        salary_detail._snapshot_cache.clear()
+
     init_salary_services(SalaryEngine(load_from_db=False), MagicMock())
 
     app = FastAPI()
@@ -376,6 +382,160 @@ class TestSalaryFieldBreakdownApi:
         )
 
         assert response.status_code == 404
+
+    def test_base_salary_breakdown_full_month(self, salary_export_client):
+        """底薪明細：全月在職時顯示合約底薪 == 實領底薪。"""
+        client, session_factory = salary_export_client
+
+        with session_factory() as session:
+            employee = _create_employee(session, "E101", "全月老師")
+            employee.base_salary = 36000
+            employee.hire_date = date(2024, 1, 1)
+            _create_user(
+                session, "salary_base_full", int(Permission.SALARY_READ)
+            )
+            record = SalaryRecord(
+                employee_id=employee.id,
+                salary_year=2026,
+                salary_month=3,
+                base_salary=36000,
+            )
+            session.add(record)
+            session.commit()
+            record_id = record.id
+
+        login_res = _login(client, "salary_base_full")
+        assert login_res.status_code == 200
+
+        response = client.get(
+            f"/api/salaries/{record_id}/field-breakdown?field=base_salary"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["field"] == "base_salary"
+        assert payload["summary"]["amount"] == 36000
+        items = {row["item"]: row for row in payload["rows"]}
+        assert items["合約底薪"]["value"] == 36000
+        assert items["本月實領底薪"]["value"] == 36000
+        assert "比例折算" not in items
+
+    def test_base_salary_breakdown_with_proration(self, salary_export_client):
+        """底薪明細：月中入職須顯示在職天數比例與實領底薪。"""
+        client, session_factory = salary_export_client
+
+        with session_factory() as session:
+            employee = _create_employee(session, "E102", "月中入職老師")
+            employee.base_salary = 31000
+            employee.hire_date = date(2026, 3, 16)  # 2026/3 共 31 天，做 16 天
+            _create_user(
+                session, "salary_base_proration", int(Permission.SALARY_READ)
+            )
+            record = SalaryRecord(
+                employee_id=employee.id,
+                salary_year=2026,
+                salary_month=3,
+                base_salary=16000,  # 31000 × 16/31
+            )
+            session.add(record)
+            session.commit()
+            record_id = record.id
+
+        login_res = _login(client, "salary_base_proration")
+        assert login_res.status_code == 200
+
+        response = client.get(
+            f"/api/salaries/{record_id}/field-breakdown?field=base_salary"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        items = {row["item"]: row for row in payload["rows"]}
+        assert payload["summary"]["amount"] == 16000
+        assert items["合約底薪"]["value"] == 31000
+        assert "在職天數" in items
+        assert items["在職天數"]["value"] == "16 / 31 天"
+        assert items["本月實領底薪"]["value"] == 16000
+
+    def test_labor_insurance_breakdown_shows_bracket(self, salary_export_client):
+        """勞保明細：顯示投保級距、是否免就保與員工自付金額。"""
+        client, session_factory = salary_export_client
+
+        with session_factory() as session:
+            employee = _create_employee(session, "E103", "勞保老師")
+            employee.base_salary = 36000
+            employee.insurance_salary_level = 36300
+            employee.dependents = 0
+            _create_user(
+                session, "salary_labor_ins", int(Permission.SALARY_READ)
+            )
+            record = SalaryRecord(
+                employee_id=employee.id,
+                salary_year=2026,
+                salary_month=3,
+                base_salary=36000,
+                labor_insurance_employee=812,
+            )
+            session.add(record)
+            session.commit()
+            record_id = record.id
+
+        login_res = _login(client, "salary_labor_ins")
+        assert login_res.status_code == 200
+
+        response = client.get(
+            f"/api/salaries/{record_id}/field-breakdown?field=labor_insurance"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["field"] == "labor_insurance"
+        assert payload["summary"]["amount"] == 812
+        items = {row["item"]: row for row in payload["rows"]}
+        assert "投保級距" in items
+        assert items["投保級距"]["value"] >= 36300
+        assert items["員工自付"]["value"] == 812
+
+    def test_health_insurance_breakdown_shows_dependents(self, salary_export_client):
+        """健保明細：顯示眷屬人數、季扣眷屬、是否健保豁免，員工自付以 record 為準。"""
+        client, session_factory = salary_export_client
+
+        with session_factory() as session:
+            employee = _create_employee(session, "E104", "健保老師")
+            employee.base_salary = 36000
+            employee.insurance_salary_level = 36300
+            employee.dependents = 2
+            employee.extra_dependents_quarterly = 1
+            _create_user(
+                session, "salary_health_ins", int(Permission.SALARY_READ)
+            )
+            record = SalaryRecord(
+                employee_id=employee.id,
+                salary_year=2026,
+                salary_month=3,
+                base_salary=36000,
+                health_insurance_employee=1700,
+            )
+            session.add(record)
+            session.commit()
+            record_id = record.id
+
+        login_res = _login(client, "salary_health_ins")
+        assert login_res.status_code == 200
+
+        response = client.get(
+            f"/api/salaries/{record_id}/field-breakdown?field=health_insurance"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["field"] == "health_insurance"
+        assert payload["summary"]["amount"] == 1700
+        items = {row["item"]: row for row in payload["rows"]}
+        assert "投保級距" in items
+        assert items["本人 + 眷屬"]["value"] == "本人 + 2 名眷屬"
+        assert items["季扣眷屬"]["value"] == "1 名"
+        assert items["員工自付"]["value"] == 1700
 
 
 class TestSalaryManualAdjustApi:
