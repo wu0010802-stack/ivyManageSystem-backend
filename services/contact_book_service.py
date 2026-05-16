@@ -104,9 +104,13 @@ def publish_entry(
         ),
     }
 
-    # WS broadcasting：fire-and-forget；單筆失敗不影響交易
+    # WS broadcasting：fire-and-forget；單筆失敗不影響交易。
+    # 跨 event loop 守則：sync 路由（threadpool）不可 asyncio.run(_fanout())，
+    # 新 loop 上呼叫綁在主 loop 的 WebSocket → unsubscribe 誤踢訂閱者。
+    # 一律把 coroutine 用 run_coroutine_threadsafe 丟回主 loop。
     try:
         from api.contact_book_ws import broadcast_classroom, broadcast_parent
+        from utils.main_loop import get_main_loop
 
         async def _fanout():
             await broadcast_classroom(entry.classroom_id, event_payload)
@@ -114,13 +118,21 @@ def publish_entry(
                 await broadcast_parent(uid, event_payload)
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_fanout())
-            else:
-                loop.run_until_complete(_fanout())
+            running = asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(_fanout())
+            running = None
+
+        if running is not None:
+            # 已在 async 路由內：直接於當前 loop 排 task
+            running.create_task(_fanout())
+        else:
+            main_loop = get_main_loop()
+            if main_loop is not None:
+                asyncio.run_coroutine_threadsafe(_fanout(), main_loop)
+            else:
+                logger.warning(
+                    "contact_book WS 廣播跳過：主事件迴圈未註冊（lifespan 尚未啟動?）"
+                )
     except Exception as exc:
         logger.warning("contact_book WS 廣播失敗（不阻斷）：%s", exc)
 

@@ -325,11 +325,14 @@ def mark_read(
             f"parent_user={user_id}"
         )
 
-        # WS 推回班級教師端，讓老師看到 ack 計數即時更新
+        # WS 推回班級教師端，讓老師看到 ack 計數即時更新。
+        # 同 services/contact_book_service.publish_entry 的處理原則：sync 路由
+        # 必須把 coroutine 丟回主 loop，禁止 asyncio.run() 新建 loop（會誤踢訂閱者）。
         try:
-            from api.contact_book_ws import broadcast_classroom
-
             import asyncio
+
+            from api.contact_book_ws import broadcast_classroom
+            from utils.main_loop import get_main_loop
 
             async def _push():
                 await broadcast_classroom(
@@ -344,13 +347,18 @@ def mark_read(
                 )
 
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(_push())
-                else:
-                    loop.run_until_complete(_push())
+                running = asyncio.get_running_loop()
             except RuntimeError:
-                asyncio.run(_push())
+                running = None
+
+            if running is not None:
+                running.create_task(_push())
+            else:
+                main_loop = get_main_loop()
+                if main_loop is not None:
+                    asyncio.run_coroutine_threadsafe(_push(), main_loop)
+                else:
+                    logger.warning("contact_book ack WS 推送跳過：主事件迴圈未註冊")
         except Exception as exc:
             logger.warning("contact_book ack WS 推送失敗（不阻斷）：%s", exc)
 

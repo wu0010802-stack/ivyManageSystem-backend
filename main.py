@@ -234,6 +234,15 @@ async def _activity_waitlist_sweeper():
 async def app_lifespan(app_instance: FastAPI):
     import asyncio
 
+    # 註冊主事件迴圈：sync 路由（在 threadpool 中執行）可透過此 loop
+    # 用 run_coroutine_threadsafe 排 WS 廣播，避免新建 loop 操作主 loop 綁定的 WS。
+    try:
+        from utils import main_loop as _main_loop_module
+
+        _main_loop_module.set_main_loop(asyncio.get_running_loop())
+    except Exception:
+        logger.exception("註冊主事件迴圈失敗（contact_book WS 廣播將降級）")
+
     on_startup()
     # 只有 env 啟用時才跑 sweeper（避免多 worker 重複發送通知）
     sweeper_task = None
