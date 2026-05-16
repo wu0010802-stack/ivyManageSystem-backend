@@ -310,17 +310,38 @@ def add_special_bonus(
 ):
     if not session.get(YearEndCycle, cycle_id):
         raise HTTPException(404, "cycle 不存在")
+    # bug sweep 2026-05-16 P0-3：
+    # (a) 反向 race：若 settlement 還未建，_recompute 會 silently no-op，
+    #     special_bonus 寫入但 total_amount 不會反映，造成漏算。要求 settlement 先在。
+    # (b) FINALIZED 不可改：核定後再加 special_bonus 會改 total_amount，等於事後加錢。
+    # 取 settlement 時加 with_for_update 防 race（與 sign 端點對齊）。
+    settlement = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle_id, employee_id=payload.employee_id)
+        .with_for_update()
+        .first()
+    )
+    if settlement is None:
+        raise HTTPException(
+            status_code=400,
+            detail="該員工尚未建立年終結算單，請先建立 settlement 再加 special_bonus",
+        )
+    if settlement.status == YearEndSettlementStatus.FINALIZED:
+        raise HTTPException(
+            status_code=400,
+            detail="年終結算已 FINALIZED，不允許新增 special_bonus（會改變 total_amount）",
+        )
     item = SpecialBonusItem(
         year_end_cycle_id=cycle_id,
         **payload.model_dump(),
         created_by=current_user.get("user_id"),
     )
     session.add(item)
-    session.commit()
-    session.refresh(item)
+    session.flush()
     # 重算對應 settlement.special_bonus_total
     _recompute_settlement_special_total(session, cycle_id, payload.employee_id)
     session.commit()
+    session.refresh(item)
     return item
 
 
@@ -339,9 +360,27 @@ def _recompute_settlement_special_total(
         .filter_by(year_end_cycle_id=cycle_id, employee_id=employee_id)
         .first()
     )
-    if s is not None:
-        s.special_bonus_total = total_sum
-        s.total_amount = s.payable_amount + total_sum
+    if s is None:
+        # add_special_bonus 已守住此 race；只剩 import_excel 批次 path 可能撞到，
+        # 那條另案處理（bug sweep P2-7）。
+        logger.warning(
+            "_recompute_settlement_special_total: settlement 不存在 cycle=%s emp=%s，"
+            "special_bonus 寫入但 total_amount 未同步",
+            cycle_id,
+            employee_id,
+        )
+        return
+    if s.status == YearEndSettlementStatus.FINALIZED:
+        # 防呆：caller add_special_bonus 已守 FINALIZED，但 import_excel 批次可能繞過。
+        # 不靜默改 total_amount，留 warning 讓事後可審。
+        logger.warning(
+            "_recompute_settlement_special_total: settlement FINALIZED 不可改 cycle=%s emp=%s",
+            cycle_id,
+            employee_id,
+        )
+        return
+    s.special_bonus_total = total_sum
+    s.total_amount = s.payable_amount + total_sum
 
 
 # ===== Excel I/O =====
