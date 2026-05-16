@@ -165,6 +165,15 @@ ENTITY_PATTERNS = [
     (r"/api/appraisal/participants", "appraisal_participant"),
     (r"/api/appraisal/events", "appraisal_event"),
     (r"/api/appraisal/summaries", "appraisal_summary"),
+    # 年終獎金結算（2026-05-16 P0-1c）。三層簽核 + special_bonus 全部金流類，
+    # 端點本身已透過 *_signed_by 留 user_id（見 P0-1b fix），但若不在 ENTITY_PATTERNS
+    # AuditMiddleware 不會落 audit_logs，事後無法用「誰加 special_bonus、誰 finalize」
+    # 在 audit-logs 篩。Refs: bug sweep 2026-05-16。
+    # 順序：special_bonuses 路徑形如 /api/year_end/cycles/{id}/special_bonuses，
+    # 必須排在 /api/year_end/cycles 之前，first-match wins 才能歸到 year_end_special_bonus。
+    (r"/api/year_end/cycles/.*/special_bonuses", "year_end_special_bonus"),
+    (r"/api/year_end/cycles", "year_end_cycle"),
+    (r"/api/year_end/settlements", "year_end_settlement"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -234,6 +243,10 @@ ENTITY_LABELS = {
     "appraisal_summary": "考核結算",
     "appraisal_bonus_rate": "考核獎金率",
     "appraisal_catalog": "懲處目錄",
+    # 年終獎金結算（2026-05-16 P0-1c）
+    "year_end_cycle": "年終週期",
+    "year_end_settlement": "年終結算",
+    "year_end_special_bonus": "年終特別獎金",
     # 教師端跨功能搜尋 / 量測快照（bug sweep round 4 2026-05-14 補）
     # 兩者都是 GET 但回傳跨班 PII 或健康資料，必留稽核。
     "portal_search": "教師端跨功能搜尋",

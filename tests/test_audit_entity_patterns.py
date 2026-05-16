@@ -43,3 +43,45 @@ class TestUnaffectedEntityPatterns:
 
     def test_unmatched_path_returns_none(self):
         assert _parse_entity_type("/api/health") is None
+
+
+class TestYearEndAuditCoverage:
+    """bug sweep 2026-05-16 P0-1c：年終獎金結算三模組必須有 audit 規則。
+
+    缺規則 = AuditMiddleware 不會落 audit_logs（誰 finalize、誰加 special_bonus 不可追）。
+    """
+
+    def test_year_end_cycles_post_mapped(self):
+        assert _parse_entity_type("/api/year_end/cycles") == "year_end_cycle"
+
+    def test_year_end_cycle_org_settings_mapped(self):
+        """POST /api/year_end/cycles/{id}/org_settings 仍歸 year_end_cycle。"""
+        assert (
+            _parse_entity_type("/api/year_end/cycles/5/org_settings")
+            == "year_end_cycle"
+        )
+
+    def test_year_end_special_bonuses_more_specific_than_cycles(self):
+        """special_bonuses 必須在 cycles 之前（first-match wins）。"""
+        assert (
+            _parse_entity_type("/api/year_end/cycles/5/special_bonuses")
+            == "year_end_special_bonus"
+        )
+
+    def test_year_end_settlements_sign_supervisor_mapped(self):
+        assert (
+            _parse_entity_type("/api/year_end/settlements/12/sign_supervisor")
+            == "year_end_settlement"
+        )
+
+    def test_year_end_settlements_finalize_mapped(self):
+        assert (
+            _parse_entity_type("/api/year_end/settlements/12/finalize")
+            == "year_end_settlement"
+        )
+
+    def test_year_end_entity_labels_present(self):
+        """ENTITY_LABELS 必須有對應中文 label，供 audit-logs/meta 端點。"""
+        assert ENTITY_LABELS.get("year_end_cycle") == "年終週期"
+        assert ENTITY_LABELS.get("year_end_settlement") == "年終結算"
+        assert ENTITY_LABELS.get("year_end_special_bonus") == "年終特別獎金"
