@@ -83,7 +83,10 @@ class FeeTemplate(Base):
             name="uq_fee_template",
         ),
         CheckConstraint(
-            "fee_type IN ('registration','miscellaneous','monthly','material','insurance')",
+            "fee_type IN ("
+            "'registration','miscellaneous','monthly','material','insurance',"
+            "'tuition','transport','summer_uniform','summer_sports'"
+            ")",
             name="ck_fee_template_type",
         ),
         CheckConstraint("amount >= 0", name="ck_fee_template_amount_nonneg"),
@@ -249,9 +252,9 @@ class StudentFeeRefund(Base):
 
 # adjustment_type 列舉（折抵類，從應收中扣除）
 ADJUSTMENT_TYPE_SIBLING_DISCOUNT = "sibling_discount"  # 同胞優惠
-ADJUSTMENT_TYPE_PREPAYMENT = "prepayment"              # 預繳折抵
-ADJUSTMENT_TYPE_LEAVE_DEDUCTION = "leave_deduction"    # 請假扣款
-ADJUSTMENT_TYPE_OTHER = "other"                        # 其他
+ADJUSTMENT_TYPE_PREPAYMENT = "prepayment"  # 預繳折抵
+ADJUSTMENT_TYPE_LEAVE_DEDUCTION = "leave_deduction"  # 請假扣款
+ADJUSTMENT_TYPE_OTHER = "other"  # 其他
 
 
 class StudentFeeAdjustment(Base):
