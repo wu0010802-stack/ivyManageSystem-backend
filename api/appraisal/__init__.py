@@ -77,6 +77,7 @@ from services.appraisal.status_aggregator import (
     aggregate_cycle_status,
 )
 from utils.academic import resolve_current_academic_term, semester_int_to_enum
+from utils.approval_helpers import assert_not_self_approval
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -297,6 +298,22 @@ def update_cycle(
     cycle = session.get(AppraisalCycle, cycle_id)
     if cycle is None:
         raise HTTPException(404, "週期不存在")
+    # bug sweep 2026-05-16 P0-2：cycle 進入 LOCKED/CLOSED 後，base_score 與 enrollment
+    # 是 recompute 的輸入；放任修改會讓已 FINALIZED 的 summary 與「重新打開重算」結果
+    # 不一致，等於事後改獎金基數。狀態切換（payload.status）本身仍允許（例如 OPEN → LOCKED）。
+    score_or_enrollment_changing = (
+        payload.base_score is not None
+        or payload.enrollment_target is not None
+        or payload.enrollment_actual is not None
+    )
+    if score_or_enrollment_changing and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"週期狀態為 {cycle.status.value}，"
+                "不允許修改 base_score / enrollment_target / enrollment_actual"
+            ),
+        )
     if payload.base_score is not None:
         cycle.base_score = payload.base_score
     if payload.enrollment_target is not None:
@@ -642,7 +659,7 @@ def sync_score_items(
                 raw_value=raw_v,
                 note=note,
                 source_ref=sref,
-                created_by=current_user.get("id"),
+                created_by=current_user.get("user_id"),
             )
         )
     session.commit()
@@ -727,6 +744,10 @@ def recompute_summaries(
                 bonus_amount=result.bonus_amount,
             )
             session.add(summary)
+        elif summary.status == SummaryStatus.FINALIZED:
+            # bug sweep 2026-05-16 P0-2：FINALIZED 後不再覆寫金額。
+            # 若需要重算已核定的 summary，需先走「駁回 → 重簽」流程。
+            pass
         else:
             summary.base_score = result.base_score
             summary.event_score_sum = result.event_score_sum
@@ -748,11 +769,24 @@ def sign_supervisor(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_REVIEW)),
     session: Session = Depends(get_session_dep),
 ):
-    summary = session.get(AppraisalSummary, summary_id)
+    # with_for_update：兩個 reviewer 同時簽核時，後贏者會覆蓋簽核人欄位
+    # 卻只看到「已是 SUPERVISOR_SIGNED」就跳過更新，造成稽核軌跡被誰偷換。
+    # bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT 狀態（current={summary.status.value}）")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     summary.status = SummaryStatus.SUPERVISOR_SIGNED
     summary.supervisor_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -773,11 +807,22 @@ def sign_accounting(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_ACCOUNTING)),
     session: Session = Depends(get_session_dep),
 ):
-    summary = session.get(AppraisalSummary, summary_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"未經主管簽核（current={summary.status.value}）")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     summary.status = SummaryStatus.ACCOUNTING_SIGNED
     summary.accounting_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -796,11 +841,22 @@ def finalize_summary(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
     session: Session = Depends(get_session_dep),
 ):
-    summary = session.get(AppraisalSummary, summary_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"未經行政會計簽核（current={summary.status.value}）")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     summary.status = SummaryStatus.FINALIZED
     summary.finalized_by = current_user.get("user_id")
     from datetime import datetime, timezone

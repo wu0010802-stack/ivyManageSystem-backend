@@ -57,6 +57,7 @@ from services.year_end.print_pdf import (
     generate_summary_table_pdf,
     generate_transfer_roster_pdf,
 )
+from utils.approval_helpers import assert_not_self_approval
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -73,9 +74,7 @@ def list_cycles(
     current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
-    return (
-        session.query(YearEndCycle).order_by(YearEndCycle.academic_year.desc()).all()
-    )
+    return session.query(YearEndCycle).order_by(YearEndCycle.academic_year.desc()).all()
 
 
 @year_end_router.post("/cycles", response_model=YearEndCycleOut)
@@ -135,9 +134,7 @@ def upsert_org_settings(
         .first()
     )
     if existing is None:
-        existing = OrgYearSettings(
-            year_end_cycle_id=cycle_id, **payload.model_dump()
-        )
+        existing = OrgYearSettings(year_end_cycle_id=cycle_id, **payload.model_dump())
         session.add(existing)
     else:
         for k, v in payload.model_dump().items():
@@ -197,11 +194,20 @@ def sign_supervisor(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_REVIEW)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    # with_for_update：兩個 reviewer 同時簽核會讓 *signed_by 被後贏者覆蓋
+    # 但 status 已改為下一階段，造成稽核軌跡與真實簽核人不符。
+    # bug sweep 2026-05-16 P1-3。
+    s = (
+        session.query(YearEndSettlement)
+        .filter(YearEndSettlement.id == settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
     s.status = YearEndSettlementStatus.SUPERVISOR_SIGNED
     s.supervisor_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -220,11 +226,18 @@ def sign_accounting(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_ACCOUNTING)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    s = (
+        session.query(YearEndSettlement)
+        .filter(YearEndSettlement.id == settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"非主管已簽 (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
     s.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
     s.accounting_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -243,11 +256,18 @@ def finalize_settlement(
     current_user: dict = Depends(require_permission(Permission.YEAR_END_FINALIZE)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    s = (
+        session.query(YearEndSettlement)
+        .filter(YearEndSettlement.id == settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"非會計已簽 (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
     s.status = YearEndSettlementStatus.FINALIZED
     s.finalized_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -290,17 +310,38 @@ def add_special_bonus(
 ):
     if not session.get(YearEndCycle, cycle_id):
         raise HTTPException(404, "cycle 不存在")
+    # bug sweep 2026-05-16 P0-3：
+    # (a) 反向 race：若 settlement 還未建，_recompute 會 silently no-op，
+    #     special_bonus 寫入但 total_amount 不會反映，造成漏算。要求 settlement 先在。
+    # (b) FINALIZED 不可改：核定後再加 special_bonus 會改 total_amount，等於事後加錢。
+    # 取 settlement 時加 with_for_update 防 race（與 sign 端點對齊）。
+    settlement = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle_id, employee_id=payload.employee_id)
+        .with_for_update()
+        .first()
+    )
+    if settlement is None:
+        raise HTTPException(
+            status_code=400,
+            detail="該員工尚未建立年終結算單，請先建立 settlement 再加 special_bonus",
+        )
+    if settlement.status == YearEndSettlementStatus.FINALIZED:
+        raise HTTPException(
+            status_code=400,
+            detail="年終結算已 FINALIZED，不允許新增 special_bonus（會改變 total_amount）",
+        )
     item = SpecialBonusItem(
         year_end_cycle_id=cycle_id,
         **payload.model_dump(),
         created_by=current_user.get("user_id"),
     )
     session.add(item)
-    session.commit()
-    session.refresh(item)
+    session.flush()
     # 重算對應 settlement.special_bonus_total
     _recompute_settlement_special_total(session, cycle_id, payload.employee_id)
     session.commit()
+    session.refresh(item)
     return item
 
 
@@ -319,9 +360,27 @@ def _recompute_settlement_special_total(
         .filter_by(year_end_cycle_id=cycle_id, employee_id=employee_id)
         .first()
     )
-    if s is not None:
-        s.special_bonus_total = total_sum
-        s.total_amount = s.payable_amount + total_sum
+    if s is None:
+        # add_special_bonus 已守住此 race；只剩 import_excel 批次 path 可能撞到，
+        # 那條另案處理（bug sweep P2-7）。
+        logger.warning(
+            "_recompute_settlement_special_total: settlement 不存在 cycle=%s emp=%s，"
+            "special_bonus 寫入但 total_amount 未同步",
+            cycle_id,
+            employee_id,
+        )
+        return
+    if s.status == YearEndSettlementStatus.FINALIZED:
+        # 防呆：caller add_special_bonus 已守 FINALIZED，但 import_excel 批次可能繞過。
+        # 不靜默改 total_amount，留 warning 讓事後可審。
+        logger.warning(
+            "_recompute_settlement_special_total: settlement FINALIZED 不可改 cycle=%s emp=%s",
+            cycle_id,
+            employee_id,
+        )
+        return
+    s.special_bonus_total = total_sum
+    s.total_amount = s.payable_amount + total_sum
 
 
 # ===== Excel I/O =====
@@ -422,9 +481,7 @@ def export_summary(
                 total=s.total_amount,
             )
         )
-    payload = export_year_end_summary_xlsx(
-        rows=rows, academic_year=cycle.academic_year
-    )
+    payload = export_year_end_summary_xlsx(rows=rows, academic_year=cycle.academic_year)
     return Response(
         content=payload,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -169,6 +169,30 @@ def is_self_approval(approver: dict, owner_employee_id: int) -> bool:
     return bool(approver_eid and owner_employee_id == approver_eid)
 
 
+def assert_not_self_approval(
+    approver: dict,
+    owner_employee_id: int | None,
+    *,
+    doc_label: str,
+) -> None:
+    """禁止 approver 簽核 / 結案自己的單據（403）。
+
+    用於考核（appraisal_summary）/ 年終獎金（year_end_settlement）三層簽核端點。
+    主管/會計/園長若同時是被簽核對象，必須由其他人代簽，否則園長可自己加獎金後自簽結案。
+    Refs: bug sweep 2026-05-16 P1-2。
+
+    純管理員（無 employee_id）核准他人單據視為合法；owner_employee_id 為 None 時
+    （理論上不應發生，但 model 設計可選）視為無自簽風險直接放行。
+    """
+    if owner_employee_id is None:
+        return
+    if is_self_approval(approver, owner_employee_id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"不可自行簽核您本人的{doc_label}",
+        )
+
+
 def assert_approver_eligible(
     session,
     *,

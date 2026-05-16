@@ -165,7 +165,11 @@ ENTITY_PATTERNS = [
     (r"/api/appraisal/cycles", "appraisal_cycle"),
     (r"/api/appraisal/participants", "appraisal_participant"),
     (r"/api/appraisal/summaries", "appraisal_summary"),
-    # 年終獎金（2026-05-16）。special_bonuses 排在 cycles 前，確保更具體路徑優先匹配。
+    # 年終獎金結算（2026-05-16 P0-1c）。三層簽核 + special_bonus 全部金流類，
+    # 端點本身已透過 *_signed_by 留 user_id（見 P0-1b fix），但若不在 ENTITY_PATTERNS
+    # AuditMiddleware 不會落 audit_logs，事後無法用「誰加 special_bonus、誰 finalize」
+    # 在 audit-logs 篩。Refs: bug sweep 2026-05-16。
+    # 順序：special_bonuses 排在 /api/year_end/cycles 之前，first-match wins。
     # /api/year_end/cycles/{id}/settlements:* 歸 year_end_cycle；
     # 個別 /api/year_end/settlements/{id}/sign_*/finalize 走 year_end_settlement。
     (r"/api/year_end/cycles/\d+/special_bonuses", "year_end_special_bonus"),
@@ -239,7 +243,7 @@ ENTITY_LABELS = {
     "appraisal_summary": "考核結算",
     "appraisal_bonus_rate": "考核獎金率",
     "appraisal_catalog": "懲處目錄",
-    # 年終獎金結算
+    # 年終獎金結算（2026-05-16 P0-1c）
     "year_end_cycle": "年終週期",
     "year_end_settlement": "年終結算",
     "year_end_special_bonus": "年終特別獎金",
