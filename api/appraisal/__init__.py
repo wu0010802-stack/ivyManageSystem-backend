@@ -524,6 +524,9 @@ def sync_score_items(
         .filter(AppraisalScoreItem.source_ref.like(auto_like))
         .delete(synchronize_session=False)
     )
+    # 把 DELETE 先 flush 出去，避免 INSERT 階段 identity map 還抓著舊 row
+    # （PG 不會出問題，但 SQLite 會丟 SAWarning）。
+    session.flush()
     catalog_ids = {c.code: c.id for c in session.query(AppraisalScoreItemCatalog).all()}
     for pid, code, sref, new_delta, raw_v, note in auto_rows:
         session.add(
