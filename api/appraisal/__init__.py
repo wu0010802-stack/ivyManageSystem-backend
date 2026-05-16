@@ -67,6 +67,7 @@ from services.appraisal.excel_io import (
     parse_half_year_excel,
 )
 from services.appraisal.status_aggregator import aggregate_cycle_status
+from utils.approval_helpers import assert_not_self_approval
 from utils.academic import resolve_current_academic_term, semester_int_to_enum
 from utils.auth import require_permission
 from utils.permissions import Permission
@@ -659,6 +660,11 @@ def sign_supervisor(
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT 狀態（current={summary.status.value}）")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     summary.status = SummaryStatus.SUPERVISOR_SIGNED
     summary.supervisor_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -690,6 +696,11 @@ def sign_accounting(
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"未經主管簽核（current={summary.status.value}）")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     summary.status = SummaryStatus.ACCOUNTING_SIGNED
     summary.accounting_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -719,6 +730,11 @@ def finalize_summary(
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"未經行政會計簽核（current={summary.status.value}）")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     summary.status = SummaryStatus.FINALIZED
     summary.finalized_by = current_user.get("user_id")
     from datetime import datetime, timezone

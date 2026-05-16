@@ -57,6 +57,7 @@ from services.year_end.print_pdf import (
     generate_summary_table_pdf,
     generate_transfer_roster_pdf,
 )
+from utils.approval_helpers import assert_not_self_approval
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -206,6 +207,7 @@ def sign_supervisor(
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
     s.status = YearEndSettlementStatus.SUPERVISOR_SIGNED
     s.supervisor_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -235,6 +237,7 @@ def sign_accounting(
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"非主管已簽 (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
     s.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
     s.accounting_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -264,6 +267,7 @@ def finalize_settlement(
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"非會計已簽 (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
     s.status = YearEndSettlementStatus.FINALIZED
     s.finalized_by = current_user.get("user_id")
     from datetime import datetime, timezone
