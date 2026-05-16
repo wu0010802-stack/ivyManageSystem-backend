@@ -37,3 +37,32 @@ def resolve_academic_term_filters(
             status_code=400, detail="school_year 與 semester 需同時提供"
         )
     return school_year, semester
+
+
+def semester_int_to_enum(sem_int: int):
+    """將 1/2 整數轉為 models.appraisal.Semester enum（FIRST/SECOND）。
+
+    考核系統用 Semester enum，但其他模組（班級、活動報名）用 int(1/2)；
+    此 helper 集中轉換，避免各 caller 自寫。
+    """
+    from models.appraisal import Semester
+
+    if sem_int == 1:
+        return Semester.FIRST
+    if sem_int == 2:
+        return Semester.SECOND
+    raise ValueError(f"semester must be 1 or 2, got {sem_int}")
+
+
+def semester_enum_to_int(sem) -> int:
+    """將 models.appraisal.Semester enum 轉為 1/2 整數。
+
+    用於跨模組查詢（如 ActivityRegistration.semester 是 int）。
+    """
+    from models.appraisal import Semester
+
+    if sem == Semester.FIRST or sem == "FIRST":
+        return 1
+    if sem == Semester.SECOND or sem == "SECOND":
+        return 2
+    raise ValueError(f"semester must be Semester enum, got {sem!r}")

@@ -7,14 +7,16 @@ Excel 雙向 I/O 端點，全部聚合在單一 router 內。
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from models.appraisal import (
@@ -33,18 +35,27 @@ from models.appraisal import (
 from models.base import get_session_dep, session_scope
 from models.employee import Employee
 from schemas.appraisal import (
+    ActivityRateAggregateOut,
+    AggregatedStatusOut,
+    AttendanceAggregateOut,
     BonusRateCreate,
     BonusRateOut,
     CatalogOut,
+    ClassRetentionAggregateOut,
     CycleCreate,
     CycleOut,
     CycleUpdate,
+    DisciplinaryActionItemOut,
+    DisciplinaryAggregateOut,
     ImportResultOut,
     ParticipantCreate,
     ParticipantOut,
+    ParticipantStatusOut,
     ScoreItemCreate,
     ScoreItemOut,
     SummaryOut,
+    SyncResultOut,
+    SyncResultPreviewItem,
 )
 from services.appraisal.engine import BonusRateLookup, compute_summary
 from services.appraisal.excel_io import (
@@ -55,6 +66,8 @@ from services.appraisal.excel_io import (
     import_half_year_to_db,
     parse_half_year_excel,
 )
+from services.appraisal.status_aggregator import aggregate_cycle_status
+from utils.academic import resolve_current_academic_term, semester_int_to_enum
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -71,9 +84,126 @@ def list_cycles(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
-    return session.query(AppraisalCycle).order_by(
-        AppraisalCycle.academic_year.desc(), AppraisalCycle.semester
-    ).all()
+    return (
+        session.query(AppraisalCycle)
+        .order_by(AppraisalCycle.academic_year.desc(), AppraisalCycle.semester)
+        .all()
+    )
+
+
+@appraisal_router.get("/current", response_model=Optional[CycleOut])
+def get_current_cycle(
+    school_year: Optional[int] = Query(None),
+    semester: Optional[int] = Query(None, ge=1, le=2),
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """取得當前學期 cycle；不存在回 null（200，**不**自動建立 / **不** 404）。
+
+    參數規則：
+      - 兩個都不給：用 `resolve_current_academic_term()` 決定當前學期
+      - 兩個都給：用傳入值
+      - 只給一個：400
+    """
+    if (school_year is None) != (semester is None):
+        raise HTTPException(400, "school_year 與 semester 需同時提供")
+    if school_year is None:
+        sy, sem_int = resolve_current_academic_term()
+    else:
+        sy, sem_int = school_year, semester
+    sem_enum = semester_int_to_enum(sem_int)
+    return (
+        session.query(AppraisalCycle)
+        .filter_by(academic_year=sy, semester=sem_enum)
+        .first()
+    )
+
+
+@appraisal_router.get("/by_year/{academic_year}", response_model=list[CycleOut])
+def list_cycles_by_year(
+    academic_year: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """取得某學年的所有 cycle（最多兩筆：上/下）。"""
+    return (
+        session.query(AppraisalCycle)
+        .filter_by(academic_year=academic_year)
+        .order_by(AppraisalCycle.semester)
+        .all()
+    )
+
+
+@appraisal_router.get(
+    "/cycles/{cycle_id}/aggregated_status", response_model=AggregatedStatusOut
+)
+def get_aggregated_status(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """彙整 cycle 期間每位 participant 的四個指標（不寫 DB）。"""
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    statuses = aggregate_cycle_status(session, cycle)
+    participants = [
+        ParticipantStatusOut(
+            participant_id=s.participant_id,
+            employee_id=s.employee_id,
+            employee_name=s.employee_name,
+            role_group=RoleGroup(s.role_group),
+            classroom_id=s.classroom_id,
+            attendance=AttendanceAggregateOut(
+                late_count=s.attendance.late_count,
+                early_leave_count=s.attendance.early_leave_count,
+                missing_punch_count=s.attendance.missing_punch_count,
+                leave_days=s.attendance.leave_days,
+                suggested_score_delta=s.attendance.suggested_score_delta,
+            ),
+            retention=ClassRetentionAggregateOut(
+                classroom_id=s.retention.classroom_id,
+                classroom_name=s.retention.classroom_name,
+                initial_count=s.retention.initial_count,
+                final_count=s.retention.final_count,
+                retention_rate=s.retention.retention_rate,
+                suggested_score_delta=s.retention.suggested_score_delta,
+            ),
+            activity=ActivityRateAggregateOut(
+                classroom_id=s.activity.classroom_id,
+                enrolled_students=s.activity.enrolled_students,
+                registered_for_activity=s.activity.registered_for_activity,
+                activity_rate=s.activity.activity_rate,
+                suggested_score_delta=s.activity.suggested_score_delta,
+            ),
+            disciplinary=DisciplinaryAggregateOut(
+                warning_count=s.disciplinary.warning_count,
+                minor_count=s.disciplinary.minor_count,
+                major_count=s.disciplinary.major_count,
+                actions=[
+                    DisciplinaryActionItemOut(
+                        id=a.id,
+                        action_date=a.action_date,
+                        action_type=a.action_type,
+                        deduction_amount=a.deduction_amount,
+                        reason=a.reason,
+                    )
+                    for a in s.disciplinary.actions
+                ],
+                suggested_score_delta=s.disciplinary.suggested_score_delta,
+            ),
+        )
+        for s in statuses
+    ]
+    return AggregatedStatusOut(
+        cycle_id=cycle.id,
+        academic_year=cycle.academic_year,
+        semester=cycle.semester,
+        start_date=cycle.start_date,
+        end_date=cycle.end_date,
+        generated_at=datetime.now(timezone.utc),
+        participants=participants,
+    )
 
 
 @appraisal_router.post("/cycles", response_model=CycleOut)
@@ -91,7 +221,9 @@ def create_cycle(
     base_score = Decimal("0")
     if payload.enrollment_target and payload.enrollment_actual is not None:
         base_score = (
-            Decimal(payload.enrollment_actual) / Decimal(payload.enrollment_target) * 100
+            Decimal(payload.enrollment_actual)
+            / Decimal(payload.enrollment_target)
+            * 100
         ).quantize(Decimal("0.1"))
     cycle = AppraisalCycle(
         academic_year=payload.academic_year,
@@ -168,9 +300,7 @@ def list_participants(
     )
 
 
-@appraisal_router.post(
-    "/cycles/{cycle_id}/participants", response_model=ParticipantOut
-)
+@appraisal_router.post("/cycles/{cycle_id}/participants", response_model=ParticipantOut)
 def add_participant(
     cycle_id: int,
     payload: ParticipantCreate,
@@ -245,6 +375,185 @@ def add_score_item(
     return si
 
 
+# source_ref 前綴 → item_code（auto-only deletion 用此前綴隔離人工 row）
+_AUTO_SOURCE_TYPE_TO_ITEM_CODE = {
+    "attendance": "LATE_EARLY",
+    "returning_rate": "RETURNING_RATE_0315",
+    "after_class": "AFTER_CLASS_RATE",
+    "disciplinary": "REWARD_PUNISH",
+}
+
+
+@appraisal_router.post(
+    "/cycles/{cycle_id}/sync_score_items", response_model=SyncResultOut
+)
+def sync_score_items(
+    cycle_id: int,
+    dry_run: bool = Query(False),
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """把四指標的 suggested_score_delta 寫入 appraisal_score_items。
+
+    source_ref 前綴隔離：
+      - auto:attendance:<cycle_id>     → item_code LATE_EARLY
+      - auto:returning_rate:<cycle_id> → item_code RETURNING_RATE_0315
+      - auto:after_class:<cycle_id>    → item_code AFTER_CLASS_RATE
+      - auto:disciplinary:<cycle_id>   → item_code REWARD_PUNISH
+
+    Sync 流程：DELETE WHERE source_ref LIKE 'auto:%:<cycle_id>' → INSERT；
+    人工 row（source_ref IS NULL 或非 'auto:%:<cycle_id>'）絕不動。
+
+    限制：
+      - cycle.status != OPEN → 400（已鎖/已關閉）
+      - dry_run=true → 不寫 DB，回 preview
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法同步")
+    statuses = aggregate_cycle_status(session, cycle)
+
+    suffix = f":{cycle_id}"
+    auto_rows: list[tuple[int, str, str, Decimal, Decimal, str]] = []
+    # (participant_id, item_code, source_ref, score_delta, raw_value, note)
+    employee_name_by_pid = {s.participant_id: s.employee_name for s in statuses}
+    for s in statuses:
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["attendance"],
+                f"auto:attendance{suffix}",
+                s.attendance.suggested_score_delta,
+                Decimal(s.attendance.late_count + s.attendance.early_leave_count),
+                (
+                    f"遲到 {s.attendance.late_count} / "
+                    f"早退 {s.attendance.early_leave_count} / "
+                    f"未打卡 {s.attendance.missing_punch_count}"
+                ),
+            )
+        )
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["returning_rate"],
+                f"auto:returning_rate{suffix}",
+                s.retention.suggested_score_delta,
+                s.retention.retention_rate,
+                f"期初 {s.retention.initial_count} → 期末 {s.retention.final_count}",
+            )
+        )
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["after_class"],
+                f"auto:after_class{suffix}",
+                s.activity.suggested_score_delta,
+                s.activity.activity_rate,
+                (
+                    f"才藝報名 {s.activity.registered_for_activity}/"
+                    f"{s.activity.enrolled_students}"
+                ),
+            )
+        )
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["disciplinary"],
+                f"auto:disciplinary{suffix}",
+                s.disciplinary.suggested_score_delta,
+                Decimal(
+                    s.disciplinary.warning_count
+                    + s.disciplinary.minor_count
+                    + s.disciplinary.major_count
+                ),
+                (
+                    f"警告 {s.disciplinary.warning_count} / "
+                    f"小過 {s.disciplinary.minor_count} / "
+                    f"大過 {s.disciplinary.major_count}"
+                ),
+            )
+        )
+
+    auto_like = f"auto:%{suffix}"
+    existing_auto = (
+        session.query(AppraisalScoreItem)
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .filter(AppraisalScoreItem.source_ref.like(auto_like))
+        .all()
+    )
+    skipped_manual = (
+        session.query(func.count(AppraisalScoreItem.id))
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .filter(
+            or_(
+                AppraisalScoreItem.source_ref.is_(None),
+                ~AppraisalScoreItem.source_ref.like(auto_like),
+            )
+        )
+        .scalar()
+    ) or 0
+    old_by_key = {(r.participant_id, r.item_code): r.score_delta for r in existing_auto}
+
+    preview = [
+        SyncResultPreviewItem(
+            participant_id=pid,
+            employee_name=employee_name_by_pid.get(pid, ""),
+            item_code=code,
+            old_score_delta=old_by_key.get((pid, code), Decimal("0")),
+            new_score_delta=new_delta,
+            source_ref=sref,
+        )
+        for pid, code, sref, new_delta, _raw, _note in auto_rows
+    ]
+
+    if dry_run:
+        return SyncResultOut(
+            cycle_id=cycle_id,
+            dry_run=True,
+            deleted_count=len(existing_auto),
+            inserted_count=len(auto_rows),
+            skipped_manual_count=int(skipped_manual),
+            items=preview,
+        )
+
+    deleted = (
+        session.query(AppraisalScoreItem)
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .filter(AppraisalScoreItem.source_ref.like(auto_like))
+        .delete(synchronize_session=False)
+    )
+    # 把 DELETE 先 flush 出去，避免 INSERT 階段 identity map 還抓著舊 row
+    # （PG 不會出問題，但 SQLite 會丟 SAWarning）。
+    session.flush()
+    catalog_ids = {c.code: c.id for c in session.query(AppraisalScoreItemCatalog).all()}
+    for pid, code, sref, new_delta, raw_v, note in auto_rows:
+        session.add(
+            AppraisalScoreItem(
+                participant_id=pid,
+                cycle_id=cycle_id,
+                catalog_id=catalog_ids.get(code),
+                item_code=code,
+                sequence_no=1,
+                score_delta=new_delta,
+                raw_value=raw_v,
+                note=note,
+                source_ref=sref,
+                created_by=current_user.get("id"),
+            )
+        )
+    session.commit()
+    return SyncResultOut(
+        cycle_id=cycle_id,
+        dry_run=False,
+        deleted_count=int(deleted),
+        inserted_count=len(auto_rows),
+        skipped_manual_count=int(skipped_manual),
+        items=preview,
+    )
+
+
 # ===== Summaries =====
 
 
@@ -304,9 +613,7 @@ def recompute_summaries(
             bonus_rates=bonus_lookup,
             on_date=cycle.base_score_calc_date,
         )
-        summary = (
-            session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
-        )
+        summary = session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
         if summary is None:
             summary = AppraisalSummary(
                 participant_id=p.id,
@@ -330,7 +637,9 @@ def recompute_summaries(
     return out
 
 
-@appraisal_router.post("/summaries/{summary_id}/sign_supervisor", response_model=SummaryOut)
+@appraisal_router.post(
+    "/summaries/{summary_id}/sign_supervisor", response_model=SummaryOut
+)
 def sign_supervisor(
     summary_id: int,
     comment: str = "",
@@ -353,7 +662,9 @@ def sign_supervisor(
     return summary
 
 
-@appraisal_router.post("/summaries/{summary_id}/sign_accounting", response_model=SummaryOut)
+@appraisal_router.post(
+    "/summaries/{summary_id}/sign_accounting", response_model=SummaryOut
+)
 def sign_accounting(
     summary_id: int,
     comment: str = "",
@@ -445,9 +756,7 @@ def _build_employee_resolver(session: Session):
 
 
 def _build_role_resolver(session: Session):
-    employees = {
-        e.id: e for e in session.query(Employee).all()
-    }
+    employees = {e.id: e for e in session.query(Employee).all()}
 
     def resolver(emp_id: int) -> RoleGroup:
         e = employees.get(emp_id)
@@ -478,9 +787,7 @@ def _build_classroom_resolver(session: Session):
     return resolver
 
 
-@appraisal_router.post(
-    "/cycles/import_excel", response_model=ImportResultOut
-)
+@appraisal_router.post("/cycles/import_excel", response_model=ImportResultOut)
 async def import_excel(
     file: UploadFile = File(...),
     start_date: date = Query(...),
@@ -542,10 +849,12 @@ def export_excel(
             .filter_by(participant_id=p.id)
             .all()
         }
-        summary = (
-            session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
+        summary = session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
+        emp_name = (
+            employees.get(p.employee_id).name
+            if employees.get(p.employee_id)
+            else f"emp#{p.employee_id}"
         )
-        emp_name = employees.get(p.employee_id).name if employees.get(p.employee_id) else f"emp#{p.employee_id}"
         rows.append(
             ExportRow(
                 name=emp_name,
@@ -588,7 +897,9 @@ def export_transfer_roster(
         raise HTTPException(404, "週期不存在")
     summaries = (
         session.query(AppraisalSummary)
-        .filter(AppraisalSummary.cycle_id == cycle_id, AppraisalSummary.bonus_amount > 0)
+        .filter(
+            AppraisalSummary.cycle_id == cycle_id, AppraisalSummary.bonus_amount > 0
+        )
         .all()
     )
     employees = {e.id: e for e in session.query(Employee).all()}

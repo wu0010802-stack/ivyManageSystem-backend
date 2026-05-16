@@ -17,7 +17,6 @@ from models.appraisal import (
     SummaryStatus,
 )
 
-
 # ===== Cycle =====
 
 
@@ -163,3 +162,87 @@ class ImportResultOut(BaseModel):
     score_items_upserted: int
     summaries_upserted: int
     skipped_unresolved_names: list[str]
+
+
+# ===== Aggregated Status (current-semester refactor) =====
+
+
+class AttendanceAggregateOut(BaseModel):
+    late_count: int
+    early_leave_count: int
+    missing_punch_count: int
+    leave_days: int
+    suggested_score_delta: Decimal
+
+
+class ClassRetentionAggregateOut(BaseModel):
+    classroom_id: Optional[int] = None
+    classroom_name: Optional[str] = None
+    initial_count: int
+    final_count: int
+    retention_rate: Decimal
+    suggested_score_delta: Decimal
+
+
+class ActivityRateAggregateOut(BaseModel):
+    classroom_id: Optional[int] = None
+    enrolled_students: int
+    registered_for_activity: int
+    activity_rate: Decimal
+    suggested_score_delta: Decimal
+
+
+class DisciplinaryActionItemOut(BaseModel):
+    id: int
+    action_date: date
+    action_type: str
+    deduction_amount: Optional[Decimal] = None
+    reason: Optional[str] = None
+
+
+class DisciplinaryAggregateOut(BaseModel):
+    warning_count: int
+    minor_count: int
+    major_count: int
+    actions: list[DisciplinaryActionItemOut] = Field(default_factory=list)
+    suggested_score_delta: Decimal
+
+
+class ParticipantStatusOut(BaseModel):
+    participant_id: int
+    employee_id: int
+    employee_name: str
+    role_group: RoleGroup
+    classroom_id: Optional[int] = None
+    attendance: AttendanceAggregateOut
+    retention: ClassRetentionAggregateOut
+    activity: ActivityRateAggregateOut
+    disciplinary: DisciplinaryAggregateOut
+
+
+class AggregatedStatusOut(BaseModel):
+    cycle_id: int
+    academic_year: int
+    semester: Semester
+    start_date: date
+    end_date: date
+    generated_at: datetime
+    participants: list[ParticipantStatusOut]
+
+
+class SyncResultPreviewItem(BaseModel):
+    participant_id: int
+    employee_name: str
+    item_code: str
+    old_score_delta: Decimal
+    new_score_delta: Decimal
+    source_ref: str
+
+
+class SyncResultOut(BaseModel):
+    cycle_id: int
+    dry_run: bool
+    deleted_count: int
+    inserted_count: int
+    skipped_manual_count: int
+    items: list[SyncResultPreviewItem]
