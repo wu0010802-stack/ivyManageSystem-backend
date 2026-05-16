@@ -60,14 +60,18 @@ def _roc_year(year: int) -> int:
 def _resolve_amount(record: SalaryRecord, roster_type: str) -> int:
     """依名冊類型決定該員工該月金額。回傳整數元（已四捨五入）。
 
-    base：若獎金獨立轉帳（bonus_separate），net_salary 需扣 bonus_amount，
-          否則會與 festival/surplus 名冊重複入帳。
+    base：直接用 net_salary。
+      net_salary = gross_salary - total_deduction，其中 gross_salary 公式
+      （engine.py:1764-1770 / totals.py:21-30）為:
+          base + perf + special + supervisor_dividend + birthday
+          + meeting_overtime_pay + overtime_pay
+      已不含 festival_bonus / overtime_bonus（這兩項走 festival / surplus 名冊獨立轉帳）。
+      因此 base 名冊與 festival / surplus 名冊不會重複入帳，不可再扣 bonus_amount
+      （含 supervisor_dividend）—— 否則主管紅利會漏付，festival/overtime 也會被
+      重複扣一次。salary_slip.py:145-147 的「另行轉帳」也只取 festival + overtime。
     """
     if roster_type == "base":
-        amount = float(record.net_salary or 0)
-        if getattr(record, "bonus_separate", False):
-            amount -= float(record.bonus_amount or 0)
-        return int(round(amount))
+        return int(round(float(record.net_salary or 0)))
     if roster_type == "festival":
         return int(round(float(record.festival_bonus or 0)))
     if roster_type == "surplus":

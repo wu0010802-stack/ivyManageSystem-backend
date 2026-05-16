@@ -92,6 +92,7 @@ def _add_record(
     net_salary: float = 30000,
     festival_bonus: float = 0,
     overtime_bonus: float = 0,
+    supervisor_dividend: float = 0,
     bonus_separate: bool = False,
     bonus_amount: float = 0,
     is_finalized: bool = True,
@@ -103,6 +104,7 @@ def _add_record(
         net_salary=net_salary,
         festival_bonus=festival_bonus,
         overtime_bonus=overtime_bonus,
+        supervisor_dividend=supervisor_dividend,
         bonus_separate=bonus_separate,
         bonus_amount=bonus_amount,
         is_finalized=is_finalized,
@@ -165,17 +167,26 @@ class TestBaseSalaryRoster:
         assert ws.cell(row=7, column=2).value == "合計"
         assert ws.cell(row=7, column=3).value == 55000
 
-    def test_bonus_separate_deducts_from_base(self, roster_client):
-        """若獎金獨立轉帳，本薪名冊金額應扣除 bonus_amount 以免重複入帳。"""
+    def test_bonus_separate_does_not_deduct_from_base(self, roster_client):
+        """REGRESSION: base 名冊金額 = net_salary，即使 bonus_separate=True 也不扣 bonus_amount。
+
+        net_salary = gross_salary - total_deduction，gross_salary 不含 festival_bonus /
+        overtime_bonus（見 engine.py:1764-1770、totals.py:21-30），所以與 festival/surplus
+        名冊不會重複入帳；舊邏輯多扣 bonus_amount 會讓有獨立獎金的員工被少付（特別是
+        supervisor_dividend 漏付，festival/overtime 被重複扣一次）。
+        """
         client, session_factory = roster_client
         with session_factory() as session:
             emp = _add_employee(session, employee_id="E001", name="王雅玲")
+            # 模擬主管：net_salary 已含 supervisor_dividend (4000)；festival 8000 走獨立名冊
             _add_record(
                 session,
                 emp.id,
-                net_salary=48044,
+                net_salary=44044,
+                festival_bonus=8000,
+                supervisor_dividend=4000,
                 bonus_separate=True,
-                bonus_amount=4000,  # 主管紅利獨立轉
+                bonus_amount=12000,  # festival 8000 + supervisor 4000
             )
             session.commit()
 
@@ -183,7 +194,87 @@ class TestBaseSalaryRoster:
         res = client.get("/api/salaries/2026/4/transfer-roster?type=base")
         assert res.status_code == 200
         ws = _load_xlsx(res.content)
-        assert ws.cell(row=5, column=3).value == 44044  # 48044 - 4000
+        # base 名冊 = net_salary 全額（含 supervisor_dividend），不扣 bonus_amount
+        assert ws.cell(row=5, column=3).value == 44044
+
+    def test_supervisor_dividend_stays_in_base_roster(self, roster_client):
+        """REGRESSION: 只有主管紅利、無 festival/overtime 的員工，base 名冊應拿到完整 net_salary。
+
+        舊邏輯下 bonus_separate=True 但 festival 名冊不會列此員工（festival_bonus=0），
+        員工會短少 supervisor_dividend 整額。
+        """
+        client, session_factory = roster_client
+        with session_factory() as session:
+            emp = _add_employee(session, employee_id="E001", name="主管 A")
+            _add_record(
+                session,
+                emp.id,
+                net_salary=50000,  # 已含 supervisor_dividend 5000
+                supervisor_dividend=5000,
+                bonus_separate=True,
+                bonus_amount=5000,
+            )
+            session.commit()
+
+        _login_as_salary_admin(client, session_factory)
+        res = client.get("/api/salaries/2026/4/transfer-roster?type=base")
+        assert res.status_code == 200
+        ws = _load_xlsx(res.content)
+        assert ws.cell(row=5, column=3).value == 50000
+
+        # 同月也不應出現在 festival/surplus 名冊（festival_bonus=0、overtime_bonus=0）
+        res_f = client.get("/api/salaries/2026/4/transfer-roster?type=festival")
+        assert res_f.status_code == 200
+        ws_f = _load_xlsx(res_f.content)
+        # row 5 直接是合計（沒人入榜）
+        assert ws_f.cell(row=5, column=2).value == "合計"
+
+    def test_base_plus_independent_rosters_equal_total_payable(self, roster_client):
+        """REGRESSION: base + festival + surplus 三張名冊合計 = 員工實際應收總額。
+
+        員工應收 = net_salary + festival_bonus + overtime_bonus（festival/overtime 走獨立轉帳）。
+        舊邏輯下 base 多扣 bonus_amount → 三張名冊合計 < 應收。
+        """
+        client, session_factory = roster_client
+        with session_factory() as session:
+            emp = _add_employee(session, employee_id="E001", name="完整案例")
+            _add_record(
+                session,
+                emp.id,
+                net_salary=44000,  # gross - 扣款，已含 supervisor 4000
+                festival_bonus=15000,
+                overtime_bonus=3000,
+                supervisor_dividend=4000,
+                bonus_separate=True,
+                bonus_amount=22000,  # festival 15000 + overtime 3000 + supervisor 4000
+            )
+            session.commit()
+
+        _login_as_salary_admin(client, session_factory)
+        base_amt = (
+            _load_xlsx(
+                client.get("/api/salaries/2026/4/transfer-roster?type=base").content
+            )
+            .cell(row=5, column=3)
+            .value
+        )
+        festival_amt = (
+            _load_xlsx(
+                client.get("/api/salaries/2026/4/transfer-roster?type=festival").content
+            )
+            .cell(row=5, column=3)
+            .value
+        )
+        surplus_amt = (
+            _load_xlsx(
+                client.get("/api/salaries/2026/4/transfer-roster?type=surplus").content
+            )
+            .cell(row=5, column=3)
+            .value
+        )
+
+        # 三張名冊加總 = 員工實際應收 = net_salary + festival + overtime
+        assert base_amt + festival_amt + surplus_amt == 44000 + 15000 + 3000
 
     def test_zero_amount_employee_excluded(self, roster_client):
         client, session_factory = roster_client
