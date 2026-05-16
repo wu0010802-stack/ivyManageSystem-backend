@@ -245,3 +245,59 @@ class StudentFeeRefund(Base):
         Index("ix_fee_refunds_idk_refunded", "idempotency_key", "refunded_at"),
         UniqueConstraint("idempotency_key", name="uq_student_fee_refunds_idk"),
     )
+
+
+# adjustment_type 列舉（折抵類，從應收中扣除）
+ADJUSTMENT_TYPE_SIBLING_DISCOUNT = "sibling_discount"  # 同胞優惠
+ADJUSTMENT_TYPE_PREPAYMENT = "prepayment"              # 預繳折抵
+ADJUSTMENT_TYPE_LEAVE_DEDUCTION = "leave_deduction"    # 請假扣款
+ADJUSTMENT_TYPE_OTHER = "other"                        # 其他
+
+
+class StudentFeeAdjustment(Base):
+    """學費折抵：同胞優惠 / 預繳 / 請假扣款 等「減少應收」的記錄。
+
+    為何獨立成表而非以負金額的 StudentFeeRecord 表達：
+    - StudentFeeRecord.amount_due 有 ≥ 1 守衛，整套 payment/refund 審計與
+      月度聚合都假設正金額；硬塞負值會破壞既有不變式
+    - 折抵需追蹤獨立「原因」（同胞、提前繳款、請假天數等）
+
+    應用方式：
+    - 該生該學期 total_due = SUM(records.amount_due) - SUM(adjustments.amount)
+    - 不影響 amount_paid 與支付流水
+    - 同一學生同學期可有多筆同 type 折抵（不加 UNIQUE）
+    """
+
+    __tablename__ = "student_fee_adjustments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    student_id = Column(
+        Integer,
+        ForeignKey("students.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="對應學生",
+    )
+    period = Column(String(20), nullable=False, comment="學期，如 114-2")
+    adjustment_type = Column(
+        String(50),
+        nullable=False,
+        comment="sibling_discount/prepayment/leave_deduction/other",
+    )
+    amount = Column(
+        Integer,
+        nullable=False,
+        comment="折抵金額（正整數，套用時相減）",
+    )
+    reason = Column(String(200), nullable=True, comment="折抵原因說明")
+    notes = Column(Text, nullable=True, default="", comment="備註")
+    created_by = Column(String(50), nullable=True, comment="建立者 username")
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_fee_adjustments_student_period", "student_id", "period"),
+        Index("ix_fee_adjustments_type", "adjustment_type"),
+        CheckConstraint("amount > 0", name="ck_fee_adjustments_amount_positive"),
+    )

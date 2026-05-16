@@ -49,7 +49,10 @@ class FeeTemplateCreate(BaseModel):
     semester: int = Field(..., ge=1, le=2)
     fee_type: str = Field(
         ...,
-        pattern="^(registration|miscellaneous|monthly|material|insurance)$",
+        # 既有：registration/miscellaneous/monthly/material/insurance
+        # 新增（紙本對齊）：tuition/transport/summer_uniform/summer_sports
+        # 折抵類（sibling_discount/prepayment/leave_deduction）需負金額支援，另開設計
+        pattern="^(registration|miscellaneous|monthly|material|insurance|tuition|transport|summer_uniform|summer_sports)$",
     )
     name: str = Field(..., min_length=1, max_length=100)
     # 下限 ge=1：0 元範本無明確業務語意，「該年級該學期免收某類費用」應用
@@ -97,6 +100,10 @@ class GenerateFromTemplatesRequest(BaseModel):
             "monthly",
             "material",
             "insurance",
+            "tuition",
+            "transport",
+            "summer_uniform",
+            "summer_sports",
         }
         bad = [t for t in v if t not in allowed]
         if bad:

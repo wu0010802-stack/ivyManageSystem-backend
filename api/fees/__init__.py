@@ -34,6 +34,7 @@ from ._helpers import (  # noqa: F401
     _invalidate_finance_summary_cache,
 )
 
+from .adjustments import router as _adjustments_router
 from .generation import router as _generation_router
 from .records import router as _records_router
 from .refunds import router as _refunds_router
@@ -46,3 +47,4 @@ router.include_router(_templates_router)
 router.include_router(_generation_router)
 router.include_router(_records_router)
 router.include_router(_refunds_router)
+router.include_router(_adjustments_router)
