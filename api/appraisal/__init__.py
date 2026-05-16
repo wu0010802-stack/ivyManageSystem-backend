@@ -71,9 +71,11 @@ def list_cycles(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
-    return session.query(AppraisalCycle).order_by(
-        AppraisalCycle.academic_year.desc(), AppraisalCycle.semester
-    ).all()
+    return (
+        session.query(AppraisalCycle)
+        .order_by(AppraisalCycle.academic_year.desc(), AppraisalCycle.semester)
+        .all()
+    )
 
 
 @appraisal_router.post("/cycles", response_model=CycleOut)
@@ -91,7 +93,9 @@ def create_cycle(
     base_score = Decimal("0")
     if payload.enrollment_target and payload.enrollment_actual is not None:
         base_score = (
-            Decimal(payload.enrollment_actual) / Decimal(payload.enrollment_target) * 100
+            Decimal(payload.enrollment_actual)
+            / Decimal(payload.enrollment_target)
+            * 100
         ).quantize(Decimal("0.1"))
     cycle = AppraisalCycle(
         academic_year=payload.academic_year,
@@ -168,9 +172,7 @@ def list_participants(
     )
 
 
-@appraisal_router.post(
-    "/cycles/{cycle_id}/participants", response_model=ParticipantOut
-)
+@appraisal_router.post("/cycles/{cycle_id}/participants", response_model=ParticipantOut)
 def add_participant(
     cycle_id: int,
     payload: ParticipantCreate,
@@ -304,9 +306,7 @@ def recompute_summaries(
             bonus_rates=bonus_lookup,
             on_date=cycle.base_score_calc_date,
         )
-        summary = (
-            session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
-        )
+        summary = session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
         if summary is None:
             summary = AppraisalSummary(
                 participant_id=p.id,
@@ -330,7 +330,9 @@ def recompute_summaries(
     return out
 
 
-@appraisal_router.post("/summaries/{summary_id}/sign_supervisor", response_model=SummaryOut)
+@appraisal_router.post(
+    "/summaries/{summary_id}/sign_supervisor", response_model=SummaryOut
+)
 def sign_supervisor(
     summary_id: int,
     comment: str = "",
@@ -353,7 +355,9 @@ def sign_supervisor(
     return summary
 
 
-@appraisal_router.post("/summaries/{summary_id}/sign_accounting", response_model=SummaryOut)
+@appraisal_router.post(
+    "/summaries/{summary_id}/sign_accounting", response_model=SummaryOut
+)
 def sign_accounting(
     summary_id: int,
     comment: str = "",
@@ -424,7 +428,9 @@ def create_bonus_rate(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
     session: Session = Depends(get_session_dep),
 ):
-    br = AppraisalBonusRate(**payload.model_dump(), created_by=current_user.get("user_id"))
+    br = AppraisalBonusRate(
+        **payload.model_dump(), created_by=current_user.get("user_id")
+    )
     session.add(br)
     session.commit()
     session.refresh(br)
@@ -445,9 +451,7 @@ def _build_employee_resolver(session: Session):
 
 
 def _build_role_resolver(session: Session):
-    employees = {
-        e.id: e for e in session.query(Employee).all()
-    }
+    employees = {e.id: e for e in session.query(Employee).all()}
 
     def resolver(emp_id: int) -> RoleGroup:
         e = employees.get(emp_id)
@@ -463,7 +467,11 @@ def _build_role_resolver(session: Session):
             return RoleGroup.STAFF
         if cat in ("assistant_educare",):
             return RoleGroup.ASSISTANT
-        return RoleGroup.HEAD_TEACHER
+        if cat in ("head_teacher", "teacher"):
+            return RoleGroup.HEAD_TEACHER
+        # Why: 未知 staff_role_category 不應默默落入獎金率最高的 HEAD_TEACHER；
+        # fallback 改 STAFF 保守處理，避免「資料缺漏 → 獎金浮報」。
+        return RoleGroup.STAFF
 
     return resolver
 
@@ -478,9 +486,7 @@ def _build_classroom_resolver(session: Session):
     return resolver
 
 
-@appraisal_router.post(
-    "/cycles/import_excel", response_model=ImportResultOut
-)
+@appraisal_router.post("/cycles/import_excel", response_model=ImportResultOut)
 async def import_excel(
     file: UploadFile = File(...),
     start_date: date = Query(...),
@@ -542,10 +548,12 @@ def export_excel(
             .filter_by(participant_id=p.id)
             .all()
         }
-        summary = (
-            session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
+        summary = session.query(AppraisalSummary).filter_by(participant_id=p.id).first()
+        emp_name = (
+            employees.get(p.employee_id).name
+            if employees.get(p.employee_id)
+            else f"emp#{p.employee_id}"
         )
-        emp_name = employees.get(p.employee_id).name if employees.get(p.employee_id) else f"emp#{p.employee_id}"
         rows.append(
             ExportRow(
                 name=emp_name,
@@ -588,7 +596,9 @@ def export_transfer_roster(
         raise HTTPException(404, "週期不存在")
     summaries = (
         session.query(AppraisalSummary)
-        .filter(AppraisalSummary.cycle_id == cycle_id, AppraisalSummary.bonus_amount > 0)
+        .filter(
+            AppraisalSummary.cycle_id == cycle_id, AppraisalSummary.bonus_amount > 0
+        )
         .all()
     )
     employees = {e.id: e for e in session.query(Employee).all()}
