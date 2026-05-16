@@ -40,6 +40,8 @@ from schemas.appraisal import (
     AttendanceAggregateOut,
     BonusRateCreate,
     BonusRateOut,
+    BulkAddParticipantsRequest,
+    BulkAddParticipantsResult,
     CatalogOut,
     ClassRetentionAggregateOut,
     CycleCreate,
@@ -70,7 +72,10 @@ from services.appraisal.excel_io import (
     import_half_year_to_db,
     parse_half_year_excel,
 )
-from services.appraisal.status_aggregator import aggregate_cycle_status
+from services.appraisal.status_aggregator import (
+    aggregate_all_active_employees_status,
+    aggregate_cycle_status,
+)
 from utils.academic import resolve_current_academic_term, semester_int_to_enum
 from utils.auth import require_permission
 from utils.permissions import Permission
@@ -138,6 +143,57 @@ def list_cycles_by_year(
     )
 
 
+def _build_participant_status_out(s) -> ParticipantStatusOut:
+    """ParticipantStatus dataclass → ParticipantStatusOut Pydantic 共用組裝。"""
+    return ParticipantStatusOut(
+        participant_id=s.participant_id,
+        employee_id=s.employee_id,
+        employee_name=s.employee_name,
+        role_group=RoleGroup(s.role_group),
+        classroom_id=s.classroom_id,
+        is_participant=s.is_participant,
+        hire_months_in_cycle=s.hire_months_in_cycle,
+        attendance=AttendanceAggregateOut(
+            late_count=s.attendance.late_count,
+            early_leave_count=s.attendance.early_leave_count,
+            missing_punch_count=s.attendance.missing_punch_count,
+            leave_days=s.attendance.leave_days,
+            suggested_score_delta=s.attendance.suggested_score_delta,
+        ),
+        retention=ClassRetentionAggregateOut(
+            classroom_id=s.retention.classroom_id,
+            classroom_name=s.retention.classroom_name,
+            initial_count=s.retention.initial_count,
+            final_count=s.retention.final_count,
+            retention_rate=s.retention.retention_rate,
+            suggested_score_delta=s.retention.suggested_score_delta,
+        ),
+        activity=ActivityRateAggregateOut(
+            classroom_id=s.activity.classroom_id,
+            enrolled_students=s.activity.enrolled_students,
+            registered_for_activity=s.activity.registered_for_activity,
+            activity_rate=s.activity.activity_rate,
+            suggested_score_delta=s.activity.suggested_score_delta,
+        ),
+        disciplinary=DisciplinaryAggregateOut(
+            warning_count=s.disciplinary.warning_count,
+            minor_count=s.disciplinary.minor_count,
+            major_count=s.disciplinary.major_count,
+            actions=[
+                DisciplinaryActionItemOut(
+                    id=a.id,
+                    action_date=a.action_date,
+                    action_type=a.action_type,
+                    deduction_amount=a.deduction_amount,
+                    reason=a.reason,
+                )
+                for a in s.disciplinary.actions
+            ],
+            suggested_score_delta=s.disciplinary.suggested_score_delta,
+        ),
+    )
+
+
 @appraisal_router.get(
     "/cycles/{cycle_id}/aggregated_status", response_model=AggregatedStatusOut
 )
@@ -151,54 +207,38 @@ def get_aggregated_status(
     if cycle is None:
         raise HTTPException(404, "週期不存在")
     statuses = aggregate_cycle_status(session, cycle)
-    participants = [
-        ParticipantStatusOut(
-            participant_id=s.participant_id,
-            employee_id=s.employee_id,
-            employee_name=s.employee_name,
-            role_group=RoleGroup(s.role_group),
-            classroom_id=s.classroom_id,
-            attendance=AttendanceAggregateOut(
-                late_count=s.attendance.late_count,
-                early_leave_count=s.attendance.early_leave_count,
-                missing_punch_count=s.attendance.missing_punch_count,
-                leave_days=s.attendance.leave_days,
-                suggested_score_delta=s.attendance.suggested_score_delta,
-            ),
-            retention=ClassRetentionAggregateOut(
-                classroom_id=s.retention.classroom_id,
-                classroom_name=s.retention.classroom_name,
-                initial_count=s.retention.initial_count,
-                final_count=s.retention.final_count,
-                retention_rate=s.retention.retention_rate,
-                suggested_score_delta=s.retention.suggested_score_delta,
-            ),
-            activity=ActivityRateAggregateOut(
-                classroom_id=s.activity.classroom_id,
-                enrolled_students=s.activity.enrolled_students,
-                registered_for_activity=s.activity.registered_for_activity,
-                activity_rate=s.activity.activity_rate,
-                suggested_score_delta=s.activity.suggested_score_delta,
-            ),
-            disciplinary=DisciplinaryAggregateOut(
-                warning_count=s.disciplinary.warning_count,
-                minor_count=s.disciplinary.minor_count,
-                major_count=s.disciplinary.major_count,
-                actions=[
-                    DisciplinaryActionItemOut(
-                        id=a.id,
-                        action_date=a.action_date,
-                        action_type=a.action_type,
-                        deduction_amount=a.deduction_amount,
-                        reason=a.reason,
-                    )
-                    for a in s.disciplinary.actions
-                ],
-                suggested_score_delta=s.disciplinary.suggested_score_delta,
-            ),
-        )
-        for s in statuses
-    ]
+    participants = [_build_participant_status_out(s) for s in statuses]
+    return AggregatedStatusOut(
+        cycle_id=cycle.id,
+        academic_year=cycle.academic_year,
+        semester=cycle.semester,
+        start_date=cycle.start_date,
+        end_date=cycle.end_date,
+        generated_at=datetime.now(timezone.utc),
+        participants=participants,
+    )
+
+
+@appraisal_router.get(
+    "/cycles/{cycle_id}/all_employees_status", response_model=AggregatedStatusOut
+)
+def get_all_employees_status(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """彙整 cycle 期間所有在職員工的四指標（包含未加入考核者）。
+
+    - 已加入 cycle 的 participant 標 is_participant=True、participant_id 帶值；
+    - 未加入者 is_participant=False、participant_id=None，role_group / classroom_id
+      由 employee_inference helpers 從 Employee 推斷。
+    - is_excluded=True 的 participant 視同未加入（不混入 participant override）。
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    statuses = aggregate_all_active_employees_status(session, cycle)
+    participants = [_build_participant_status_out(s) for s in statuses]
     return AggregatedStatusOut(
         cycle_id=cycle.id,
         academic_year=cycle.academic_year,
@@ -324,6 +364,64 @@ def add_participant(
     session.commit()
     session.refresh(p)
     return p
+
+
+@appraisal_router.post(
+    "/cycles/{cycle_id}/participants:bulk_from_active",
+    response_model=BulkAddParticipantsResult,
+)
+def bulk_add_participants_from_active(
+    cycle_id: int,
+    payload: BulkAddParticipantsRequest,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """把指定（或全部）在職員工自動加入 cycle。
+
+    - role_group / classroom_id 從 Employee 推斷（infer_role_group / infer_classroom_id）；
+    - hire_months_in_cycle 預設 6；
+    - 已加入 cycle 的員工會被 skip（不論 is_excluded）；
+    - cycle.status != OPEN 直接 400。
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法加入")
+
+    q = session.query(Employee).filter(Employee.is_active == True)  # noqa: E712
+    if payload.employee_ids:
+        q = q.filter(Employee.id.in_(payload.employee_ids))
+    employees = q.all()
+    existing = {
+        p.employee_id
+        for p in session.query(AppraisalParticipant).filter_by(cycle_id=cycle_id).all()
+    }
+    created_rows: list[AppraisalParticipant] = []
+    skipped_count = 0
+    for e in employees:
+        if e.id in existing:
+            skipped_count += 1
+            continue
+        p = AppraisalParticipant(
+            cycle_id=cycle_id,
+            employee_id=e.id,
+            role_group=infer_role_group(e),
+            classroom_id=infer_classroom_id(e),
+            hire_months_in_cycle=Decimal("6"),
+            is_excluded=False,
+        )
+        session.add(p)
+        created_rows.append(p)
+    session.commit()
+    for p in created_rows:
+        session.refresh(p)
+    return BulkAddParticipantsResult(
+        cycle_id=cycle_id,
+        created_count=len(created_rows),
+        skipped_count=skipped_count,
+        created_participants=[ParticipantOut.model_validate(p) for p in created_rows],
+    )
 
 
 # ===== Score Items =====

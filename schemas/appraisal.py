@@ -209,11 +209,13 @@ class DisciplinaryAggregateOut(BaseModel):
 
 
 class ParticipantStatusOut(BaseModel):
-    participant_id: int
+    participant_id: Optional[int] = None
     employee_id: int
     employee_name: str
     role_group: RoleGroup
     classroom_id: Optional[int] = None
+    is_participant: bool = True
+    hire_months_in_cycle: Optional[Decimal] = None
     attendance: AttendanceAggregateOut
     retention: ClassRetentionAggregateOut
     activity: ActivityRateAggregateOut
@@ -246,3 +248,17 @@ class SyncResultOut(BaseModel):
     inserted_count: int
     skipped_manual_count: int
     items: list[SyncResultPreviewItem]
+
+
+# ===== Bulk add participants from active employees =====
+
+
+class BulkAddParticipantsRequest(BaseModel):
+    employee_ids: Optional[list[int]] = None  # None = 全部在職員工
+
+
+class BulkAddParticipantsResult(BaseModel):
+    cycle_id: int
+    created_count: int
+    skipped_count: int
+    created_participants: list[ParticipantOut]

@@ -25,7 +25,7 @@ from sqlalchemy import Integer, case, func, or_
 from sqlalchemy.orm import Session
 
 from models.activity import ActivityRegistration
-from models.appraisal import AppraisalCycle, AppraisalParticipant
+from models.appraisal import AppraisalCycle, AppraisalParticipant, RoleGroup
 from models.attendance import Attendance
 from models.classroom import LIFECYCLE_ACTIVE, Classroom, Student
 from models.disciplinary import DisciplinaryAction
@@ -91,7 +91,7 @@ class ActivityRateAggregate:
 
 @dataclass
 class ParticipantStatus:
-    participant_id: int
+    participant_id: Optional[int]
     employee_id: int
     employee_name: str
     role_group: str  # value of RoleGroup enum
@@ -100,6 +100,8 @@ class ParticipantStatus:
     retention: ClassRetentionAggregate
     activity: ActivityRateAggregate
     disciplinary: DisciplinaryAggregate
+    is_participant: bool = True
+    hire_months_in_cycle: Optional[Decimal] = None
 
 
 # ===== Sub-aggregators =====
@@ -400,8 +402,105 @@ def aggregate_cycle_status(
                 retention=ret_map[p.employee_id],
                 activity=act_map[p.employee_id],
                 disciplinary=dis_map[p.employee_id],
+                is_participant=True,
+                hire_months_in_cycle=p.hire_months_in_cycle,
             )
         )
+    return out
+
+
+def aggregate_all_active_employees_status(
+    session: Session,
+    cycle: AppraisalCycle,
+) -> list[ParticipantStatus]:
+    """彙整 cycle 期間所有 is_active=True 員工的四指標。
+
+    已加入 cycle 的 participant 標 is_participant=True 並帶 participant_id；
+    未加入的標 is_participant=False、participant_id=None，role_group / classroom_id
+    由 employee_inference helpers 推斷。is_excluded=True 的 participant 不出現。
+    """
+    from services.appraisal.employee_inference import (
+        infer_classroom_id,
+        infer_role_group,
+    )
+
+    employees = (
+        session.query(Employee).filter(Employee.is_active == True).all()  # noqa: E712
+    )
+    if not employees:
+        return []
+    emp_by_id = {e.id: e for e in employees}
+    employee_ids = list(emp_by_id.keys())
+
+    # 取既有 participants（in cycle, 排除 is_excluded=True）
+    participants_rows = (
+        session.query(AppraisalParticipant)
+        .filter_by(cycle_id=cycle.id, is_excluded=False)
+        .all()
+    )
+    participant_by_emp = {p.employee_id: p for p in participants_rows}
+
+    # employee → classroom_id / role_group：participant 優先 override；非 participant 用 Employee 推斷
+    employee_to_classroom: dict[int, Optional[int]] = {}
+    employee_to_role: dict[int, RoleGroup] = {}
+    for eid in employee_ids:
+        emp = emp_by_id[eid]
+        p = participant_by_emp.get(eid)
+        if p is not None:
+            employee_to_classroom[eid] = p.classroom_id
+            employee_to_role[eid] = p.role_group
+        else:
+            employee_to_classroom[eid] = infer_classroom_id(emp)
+            employee_to_role[eid] = infer_role_group(emp)
+
+    classroom_ids = list({c for c in employee_to_classroom.values() if c is not None})
+    classroom_name_by_id = (
+        {
+            c.id: c.name
+            for c in session.query(Classroom)
+            .filter(Classroom.id.in_(classroom_ids))
+            .all()
+        }
+        if classroom_ids
+        else {}
+    )
+
+    start = cycle.start_date
+    end = min(cycle.end_date, date.today())
+    att_map = _aggregate_attendance(session, employee_ids, start, end)
+    ret_map = _aggregate_class_retention(
+        session, employee_to_classroom, classroom_name_by_id, start, end
+    )
+    act_map = _aggregate_activity_rate(
+        session,
+        employee_to_classroom,
+        cycle.academic_year,
+        semester_enum_to_int(cycle.semester),
+    )
+    dis_map = _aggregate_disciplinary(session, employee_ids, start, end)
+
+    out: list[ParticipantStatus] = []
+    for eid in employee_ids:
+        emp = emp_by_id[eid]
+        p = participant_by_emp.get(eid)
+        role = employee_to_role[eid]
+        out.append(
+            ParticipantStatus(
+                participant_id=p.id if p else None,
+                employee_id=eid,
+                employee_name=emp.name,
+                role_group=role.value if hasattr(role, "value") else str(role),
+                classroom_id=employee_to_classroom[eid],
+                attendance=att_map[eid],
+                retention=ret_map[eid],
+                activity=act_map[eid],
+                disciplinary=dis_map[eid],
+                is_participant=p is not None,
+                hire_months_in_cycle=p.hire_months_in_cycle if p else None,
+            )
+        )
+    # 排序：已加入考核者在前，再依員工姓名
+    out.sort(key=lambda s: (not s.is_participant, s.employee_name))
     return out
 
 
@@ -412,5 +511,6 @@ __all__ = [
     "DisciplinaryActionItem",
     "DisciplinaryAggregate",
     "ParticipantStatus",
+    "aggregate_all_active_employees_status",
     "aggregate_cycle_status",
 ]
