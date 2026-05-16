@@ -17,6 +17,7 @@ from sqlalchemy import (
     JSON,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -282,7 +283,9 @@ class SalaryRecord(Base):
             "is_finalized",
         ),
         Index("ix_salary_ym_finalized", "salary_year", "salary_month", "is_finalized"),
-        Index("ix_salary_ym_needs_recalc", "salary_year", "salary_month", "needs_recalc"),
+        Index(
+            "ix_salary_ym_needs_recalc", "salary_year", "salary_month", "needs_recalc"
+        ),
         Index("ix_salary_bonus_config_id", "bonus_config_id"),
         Index("ix_salary_attendance_policy_id", "attendance_policy_id"),
     )
@@ -401,6 +404,18 @@ class SalarySnapshot(Base):
             "salary_month",
             "snapshot_type",
         ),
+        # month_end / finalize 為「不可變歷史」，每 (emp, ym) 只准一筆；
+        # 阻擋 lazy trigger + scheduler 撞同秒雙 INSERT。manual 類允許重複（管理員可手動補拍）。
+        Index(
+            "uq_salary_snapshot_emp_ym_immutable",
+            "employee_id",
+            "salary_year",
+            "salary_month",
+            "snapshot_type",
+            unique=True,
+            postgresql_where=text("snapshot_type IN ('month_end', 'finalize')"),
+            sqlite_where=text("snapshot_type IN ('month_end', 'finalize')"),
+        ),
     )
 
 
@@ -437,4 +452,14 @@ class SalaryCalcJobRecord(Base):
     __table_args__ = (
         Index("ix_salary_calc_jobs_ym_status", "year", "month", "status"),
         Index("ix_salary_calc_jobs_job_id", "job_id"),
+        # 跨 worker 防雙跑：同 (year, month) 同時只允許一筆 pending/running job。
+        # 阻擋 find→create 的 TOCTOU；create() 用 IntegrityError 接住改回查既有 active job。
+        Index(
+            "uq_salary_calc_jobs_active_ym",
+            "year",
+            "month",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'running')"),
+            sqlite_where=text("status IN ('pending', 'running')"),
+        ),
     )

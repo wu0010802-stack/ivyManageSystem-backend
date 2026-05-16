@@ -30,11 +30,26 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 
 from models.base import session_scope
 from models.database import SalaryCalcJobRecord
 
 _JOB_TTL_SEC = 3600
+
+
+class ActiveJobExistsError(Exception):
+    """同 (year, month) 已有 pending/running job；create() race-lost 時拋出。
+
+    持有 `existing` 屬性，呼叫端可直接拿到既有 active job 的資訊。
+    """
+
+    def __init__(self, existing: "SalaryCalcJob") -> None:
+        super().__init__(
+            f"active job for {existing.year}/{existing.month} already exists "
+            f"(job_id={existing.job_id}, status={existing.status})"
+        )
+        self.existing = existing
 
 
 @dataclass
@@ -115,7 +130,35 @@ class _SalaryJobRegistry:
                     current_employee="",
                 )
                 s.add(record)
-                s.flush()
+                try:
+                    s.flush()
+                except IntegrityError:
+                    # 跨 worker 同時 create → partial unique index 拒絕第二筆。
+                    # 回查既有 active job 拋 ActiveJobExistsError，呼叫端回 409。
+                    s.rollback()
+                    r = (
+                        s.query(SalaryCalcJobRecord)
+                        .filter(
+                            SalaryCalcJobRecord.year == year,
+                            SalaryCalcJobRecord.month == month,
+                            SalaryCalcJobRecord.status.in_(("pending", "running")),
+                        )
+                        .order_by(desc(SalaryCalcJobRecord.created_at))
+                        .first()
+                    )
+                    if r is None:
+                        # 極罕見：唯一索引拒絕但回查不到（可能已被 evict）。
+                        # 仍視為衝突，抛出 race-lost 訊號。
+                        raise ActiveJobExistsError(
+                            SalaryCalcJob(
+                                job_id="",
+                                year=year,
+                                month=month,
+                                total=0,
+                                status="pending",
+                            )
+                        )
+                    raise ActiveJobExistsError(SalaryCalcJob._from_record(r))
                 return SalaryCalcJob._from_record(record)
 
     def get(self, job_id: str) -> Optional[SalaryCalcJob]:

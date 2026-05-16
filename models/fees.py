@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     JSON,
     CheckConstraint,
+    text,
 )
 
 from models.base import Base
@@ -161,6 +162,22 @@ class StudentFeeRecord(Base):
         Index("ix_fee_records_student_period", "student_id", "period"),
         Index("ix_fee_records_due_date", "due_date"),
         Index("ix_fee_records_fee_type", "fee_type"),
+        # 非月費（target_month IS NULL）冪等鍵：同 (學生, 範本, 學期) 只能一張，
+        # 阻擋並發 generate 雙寫註冊費 / 制服費 / 學費。
+        # 月費另由 ix_fee_records_monthly_unique 處理。
+        Index(
+            "uq_fee_records_non_monthly_unique",
+            "student_id",
+            "source_template_id",
+            "period",
+            unique=True,
+            postgresql_where=text(
+                "source_template_id IS NOT NULL AND target_month IS NULL"
+            ),
+            sqlite_where=text(
+                "source_template_id IS NOT NULL AND target_month IS NULL"
+            ),
+        ),
     )
 
 

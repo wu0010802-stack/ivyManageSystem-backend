@@ -27,7 +27,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from models.base import session_scope
 from models.database import Employee, SalaryRecord, get_session
 from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
-from services.salary_job_registry import registry as _salary_job_registry
+from services.salary_job_registry import (
+    ActiveJobExistsError,
+    registry as _salary_job_registry,
+)
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -325,7 +328,19 @@ def calculate_salaries_async_start(
             .count()
         )
 
-    job = _salary_job_registry.create(year=year, month=month, total=total)
+    try:
+        job = _salary_job_registry.create(year=year, month=month, total=total)
+    except ActiveJobExistsError as race:
+        # 跨 worker 同時 POST：本 worker 的 find_active 看不到對方 in-flight 的 job，
+        # 但 DB partial unique index 攔截了第二筆 insert。回傳對方已建立的 job。
+        existing = race.existing
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{year} 年 {month} 月已有計算中的 job（id={existing.job_id}，"
+                f"status={existing.status}），請等待目前工作完成或待其結束後再觸發"
+            ),
+        )
     background_tasks.add_task(
         _salary_module._run_salary_calc_job, job.job_id, year, month
     )

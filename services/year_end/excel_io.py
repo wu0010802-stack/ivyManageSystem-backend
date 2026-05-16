@@ -225,7 +225,11 @@ def _parse_year_end_main_sheet(rows: list[list]) -> list[ParsedSettlementRow]:
         personal_leave = _to_decimal(row[12]) if len(row) > 12 else Decimal("0")
         sick_leave = _to_decimal(row[13]) if len(row) > 13 else Decimal("0")
         late = _to_decimal(row[14]) if len(row) > 14 else Decimal("0")
-        hire_months = _to_decimal(row[16], default=Decimal("12")) if len(row) > 16 else Decimal("12")
+        hire_months = (
+            _to_decimal(row[16], default=Decimal("12"))
+            if len(row) > 16
+            else Decimal("12")
+        )
         payable = _to_decimal(row[17]) if len(row) > 17 else Decimal("0")
         remark = _normalize(row[18]) if len(row) > 18 else None
         # Excel 中 hire_months 欄空白代表滿 12 個月
@@ -332,7 +336,17 @@ def _parse_class_performance_sheet(
             continue
         if first_cell in ("", "班級", "合計"):
             continue
-        if first_cell in ("天堂鳥", "百合", "櫻花", "茉莉", "薔薇", "芙蓉", "牡丹", "向日葵", "滿天星"):
+        if first_cell in (
+            "天堂鳥",
+            "百合",
+            "櫻花",
+            "茉莉",
+            "薔薇",
+            "芙蓉",
+            "牡丹",
+            "向日葵",
+            "滿天星",
+        ):
             head_name = _normalize(row[1]) if len(row) > 1 else None
             assist = _normalize(row[2]) if len(row) > 2 else None
             head_count = int(_to_decimal(row[11], Decimal("0"))) if len(row) > 11 else 0
@@ -343,7 +357,9 @@ def _parse_class_performance_sheet(
                 ParsedClassEnrollmentTarget(
                     semester_first=semester_first,
                     class_name=first_cell,
-                    head_teacher_name=head_name if head_name and head_name != "已離職" else None,
+                    head_teacher_name=(
+                        head_name if head_name and head_name != "已離職" else None
+                    ),
                     assistant_name=assist if assist and assist != "已離職" else None,
                     head_count_target=head_count,
                     avg_monthly_enrollment=avg_enrol,
@@ -483,9 +499,7 @@ def import_year_end_to_db(
         head_id = (
             employee_resolver(ct.head_teacher_name) if ct.head_teacher_name else None
         )
-        assist_id = (
-            employee_resolver(ct.assistant_name) if ct.assistant_name else None
-        )
+        assist_id = employee_resolver(ct.assistant_name) if ct.assistant_name else None
         existing = (
             session.query(ClassEnrollmentTarget)
             .filter_by(
@@ -564,6 +578,17 @@ def import_year_end_to_db(
             .one_or_none()
         )
         if settlement is None:
+            # 反向 race 防護：若 API 已先建 special_bonus，settlement 必須帶入既有總額，
+            # 否則本次 Excel 未列入該員的特別獎金時 total_amount 會漏算。
+            existing_special_total = sum(
+                (
+                    row.amount
+                    for row in session.query(SpecialBonusItem.amount)
+                    .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
+                    .all()
+                ),
+                Decimal("0"),
+            )
             settlement = YearEndSettlement(
                 year_end_cycle_id=cycle.id,
                 employee_id=emp_id,
@@ -584,12 +609,23 @@ def import_year_end_to_db(
                 hire_months=s.total_in_year,
                 proration_rate=proration,
                 payable_amount=s.payable,
-                total_amount=s.payable,  # 加 special_bonus_total 後續更新
+                special_bonus_total=existing_special_total,
+                total_amount=s.payable + existing_special_total,
                 remark=s.remark,
                 status=YearEndSettlementStatus.DRAFT,
             )
             session.add(settlement)
         else:
+            # FINALIZED settlement 視為轉帳名冊金額不可變承諾，已 finalize 的
+            # 不允許 import 覆寫；跳過更新但仍記入 settlements_count 以保留稽核脈絡。
+            if settlement.status == YearEndSettlementStatus.FINALIZED:
+                logger.warning(
+                    "year_end import skip FINALIZED settlement: cycle=%d emp=%d",
+                    cycle.id,
+                    emp_id,
+                )
+                settlements_count += 1
+                continue
             settlement.snapshot_id = snapshot.id
             settlement.avg_performance_rate = s.avg_performance_rate
             settlement.base_salary = s.base_salary

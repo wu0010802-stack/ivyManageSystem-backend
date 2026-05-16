@@ -14,9 +14,8 @@ import hashlib
 import html
 import logging
 import re
-import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import json as _json
@@ -50,7 +49,95 @@ PROVIDER_LABEL = "教育部幼兒園查詢系統（高雄市）"
 TARGET_CITY = "高雄市"
 TARGET_CITY_CODE = "18"  # 教育部網站高雄市縣市代碼
 
-_SYNC_LOCK = threading.Lock()
+# 僵屍鎖閾值：sync_in_progress 持有超過此時間視為前一個 worker crash，可強奪。
+_STUCK_LOCK_THRESHOLD = timedelta(hours=2)
+
+
+def _try_acquire_db_lock() -> bool:
+    """跨 worker DB lock：在 `recruitment_sync_states.sync_in_progress` 上做
+    SELECT...FOR UPDATE + check-and-set。成功取得回 True，已被別人持有回 False。
+
+    取代原 `threading.Lock`，後者只在單一 process 內有效。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        with session_scope() as sess:
+            state = (
+                sess.query(RecruitmentSyncState)
+                .filter_by(provider_name=PROVIDER_NAME)
+                .with_for_update()
+                .first()
+            )
+            now = datetime.now()
+            if state is None:
+                # provider_name 唯一索引：兩 worker 同時 INSERT 第二筆會 IntegrityError。
+                # 接住後重查；通常重查會看到對方已取得鎖（sync_in_progress=True）。
+                state = RecruitmentSyncState(
+                    provider_name=PROVIDER_NAME,
+                    provider_label=PROVIDER_LABEL,
+                    sync_in_progress=True,
+                    last_started_at=now,
+                )
+                sess.add(state)
+                try:
+                    sess.flush()
+                except IntegrityError:
+                    sess.rollback()
+                    state = (
+                        sess.query(RecruitmentSyncState)
+                        .filter_by(provider_name=PROVIDER_NAME)
+                        .with_for_update()
+                        .first()
+                    )
+                    if state is None:
+                        return False
+                    if state.sync_in_progress:
+                        return False
+                    state.sync_in_progress = True
+                    state.last_started_at = now
+                    return True
+                return True
+            if state.sync_in_progress:
+                # 僵屍鎖：crash 沒釋放，超過閾值就強奪
+                if (
+                    state.last_started_at is not None
+                    and (now - state.last_started_at) > _STUCK_LOCK_THRESHOLD
+                ):
+                    logger.warning(
+                        "[MOE 爬蟲] 偵測到僵屍鎖（started_at=%s），強制接管",
+                        state.last_started_at,
+                    )
+                    state.last_started_at = now
+                    return True
+                return False
+            state.sync_in_progress = True
+            state.last_started_at = now
+            return True
+    except Exception as e:
+        logger.error("[MOE 爬蟲] 取得 DB lock 失敗：%s", e)
+        return False
+
+
+def _release_db_lock() -> None:
+    """釋放 DB lock：把 sync_in_progress 設回 False。
+
+    `_update_sync_state(status=...)` 在 status 非 running 時已會置 False，
+    但保留此函式做 finally 兜底，避免異常路徑漏放鎖。
+    """
+    try:
+        with session_scope() as sess:
+            state = (
+                sess.query(RecruitmentSyncState)
+                .filter_by(provider_name=PROVIDER_NAME)
+                .with_for_update()
+                .first()
+            )
+            if state is not None and state.sync_in_progress:
+                state.sync_in_progress = False
+    except Exception as e:
+        logger.error("[MOE 爬蟲] 釋放 DB lock 失敗：%s", e)
+
 
 # ---------------------------------------------------------------------------
 # Regex 工具
@@ -281,7 +368,7 @@ def _request_with_retry(
             last_exc = e
             if attempt >= max_retries - 1:
                 break
-            wait_s = backoff_base * (2 ** attempt)
+            wait_s = backoff_base * (2**attempt)
             logger.warning(
                 "[MOE 爬蟲] %s 失敗（%s），%.2fs 後重試 (%d/%d)",
                 label,
@@ -291,14 +378,13 @@ def _request_with_retry(
                 max_retries,
             )
             time.sleep(wait_s)
-    logger.error(
-        "[MOE 爬蟲] %s 重試 %d 次仍失敗：%s", label, max_retries, last_exc
-    )
+    logger.error("[MOE 爬蟲] %s 重試 %d 次仍失敗：%s", label, max_retries, last_exc)
     return None
 
 
 def _fetch_search_page(sess: requests.Session) -> Optional[str]:
     """GET 搜尋首頁，取得 __VIEWSTATE 等隱藏欄位。"""
+
     def _do() -> str:
         r = sess.get(SEARCH_URL, timeout=REQUEST_TIMEOUT)
         r.encoding = "utf-8"
@@ -475,9 +561,7 @@ def _upsert_one_school(
         pre_public = None
 
     now = datetime.now()
-    school_id = hashlib.md5(
-        f"{city}{school_name}".encode("utf-8")
-    ).hexdigest()[:8]
+    school_id = hashlib.md5(f"{city}{school_name}".encode("utf-8")).hexdigest()[:8]
     source_key = f"moe_ece:{school_id}"
 
     existing = existing_by_name.get(school_name)
@@ -641,11 +725,12 @@ def sync_moe_kindergartens() -> dict:
     """
     爬取教育部高雄市幼兒園資料並 upsert 至 competitor_school 表。
 
-    以 threading.Lock 確保不會同時執行兩次。
+    以 DB-level lock（recruitment_sync_states.sync_in_progress + SELECT FOR UPDATE）
+    跨 worker 防雙跑；本進程內也以同表序列化，免再用 threading.Lock。
     回傳統計資訊 dict：{ created, updated, failed, total_pages }
     """
-    if not _SYNC_LOCK.acquire(blocking=False):
-        logger.warning("[MOE 爬蟲] 已有同步作業在執行，跳過本次")
+    if not _try_acquire_db_lock():
+        logger.warning("[MOE 爬蟲] 已有同步作業在執行（DB lock 已被持有），跳過本次")
         return {"status": "already_running"}
 
     try:
@@ -800,4 +885,6 @@ def sync_moe_kindergartens() -> dict:
         _update_sync_state("error", str(e))
         return {"status": "error", "message": str(e)}
     finally:
-        _SYNC_LOCK.release()
+        # _update_sync_state(success/error) 已會把 sync_in_progress 設 False，
+        # 兜底再呼叫一次避免異常路徑（例如 _update_sync_state 本身爆炸）漏放鎖
+        _release_db_lock()
