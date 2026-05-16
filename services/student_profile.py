@@ -29,7 +29,7 @@ from models.classroom import (
     StudentAttendance,
     StudentIncident,
 )
-from models.fees import StudentFeeRecord
+from models.fees import StudentFeeAdjustment, StudentFeeRecord
 from models.guardian import Guardian
 from models.student_log import StudentChangeLog
 from utils.academic import resolve_current_academic_term
@@ -111,12 +111,22 @@ def get_fee_summary(
     total_due, total_paid, item_count = query.one()
     total_due = int(total_due or 0)
     total_paid = int(total_paid or 0)
+
+    # 折抵聚合：同 student_id + period 加總 adjustment.amount，扣抵 outstanding。
+    adj_q = session.query(
+        func.coalesce(func.sum(StudentFeeAdjustment.amount), 0)
+    ).filter(StudentFeeAdjustment.student_id == student_id)
+    if period:
+        adj_q = adj_q.filter(StudentFeeAdjustment.period == period)
+    adjustment = int(adj_q.scalar() or 0)
+
     return {
         "period": period,
         "item_count": int(item_count or 0),
         "total_due": total_due,
         "total_paid": total_paid,
-        "outstanding": max(total_due - total_paid, 0),
+        "outstanding": max(total_due - total_paid - adjustment, 0),
+        "adjustment": adjustment,
     }
 
 

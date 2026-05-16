@@ -13,8 +13,15 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from sqlalchemy import func
+
 from models.database import get_session
-from models.fees import StudentFeePayment, StudentFeeRecord, StudentFeeRefund
+from models.fees import (
+    StudentFeeAdjustment,
+    StudentFeePayment,
+    StudentFeeRecord,
+    StudentFeeRefund,
+)
 from utils.auth import require_parent_role
 
 from ._shared import _assert_student_owned, _get_parent_student_ids
@@ -71,6 +78,42 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
         total_paid += r.amount_paid or 0
         total_outstanding += outstanding
 
+    # 折抵聚合：按 student 加總 adjustment.amount，從 outstanding / overdue / due_soon
+    # 依優先順序扣抵；amount_due 同步減（保留 amount_paid 流水不動）。
+    # 折抵未綁定特定 record，故以 student 為粒度匯算後分配。
+    adj_rows = (
+        session.query(
+            StudentFeeAdjustment.student_id,
+            func.coalesce(func.sum(StudentFeeAdjustment.amount), 0),
+        )
+        .filter(StudentFeeAdjustment.student_id.in_(student_ids))
+        .group_by(StudentFeeAdjustment.student_id)
+        .all()
+    )
+    total_adjustment = 0
+    for sid, adj_total in adj_rows:
+        adj = int(adj_total or 0)
+        if adj <= 0:
+            continue
+        entry = by_student[sid]
+        entry["adjustment"] = entry.get("adjustment", 0) + adj
+        remaining = adj
+        for k in ("overdue", "due_soon"):
+            take = min(entry[k], remaining)
+            entry[k] -= take
+            remaining -= take
+            if k == "overdue":
+                total_overdue -= take
+            else:
+                total_due_soon -= take
+        take = min(entry["outstanding"], remaining)
+        entry["outstanding"] -= take
+        total_outstanding -= take
+        # outstanding_count 不調整：仍代表「有 record 未繳清」筆數，與折抵後總額分開呈現
+        entry["amount_due"] = max(0, entry["amount_due"] - adj)
+        total_adjustment += adj
+    total_due = max(0, total_due - total_adjustment)
+
     return {
         "by_student": [
             {"student_id": sid, **stats} for sid, stats in by_student.items()
@@ -82,6 +125,7 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
             "overdue": total_overdue,
             "due_soon": total_due_soon,
             "outstanding_count": outstanding_count,
+            "adjustment": total_adjustment,
         },
     }
 
@@ -206,6 +250,7 @@ def _empty_totals() -> dict:
         "outstanding": 0,
         "overdue": 0,
         "due_soon": 0,
+        "adjustment": 0,
     }
 
 
