@@ -360,7 +360,11 @@ class TestConfigUpdateMarksStale:
         _login_admin(client, sf)
         res = client.put(
             "/api/config/bonus",
-            json={"head_teacher_ab": 2500, "config_year": 2026},
+            json={
+                "head_teacher_ab": 2500,
+                "config_year": 2026,
+                "reason": "薪資 consistency 測試：調班導 ab 級獎金底數",
+            },
         )
         assert res.status_code == 200, res.text
         assert res.json()["salary_records_marked_stale"] >= 1
@@ -712,9 +716,7 @@ class TestManualAdjustWritesOverrides:
             assert rec.performance_bonus == 5000
             assert "performance_bonus" in (rec.manual_overrides or [])
 
-    def test_manual_adjust_accumulates_overrides_across_calls(
-        self, consistency_client
-    ):
+    def test_manual_adjust_accumulates_overrides_across_calls(self, consistency_client):
         client, sf, _ = consistency_client
         _emp_id, rec_id = self._seed_record_for_adjust(sf)
         _login_admin(client, sf)
@@ -769,7 +771,9 @@ class TestManualAdjustWritesOverrides:
             rec = session.query(SalaryRecord).filter_by(id=rec_id).one()
             overrides = set(rec.manual_overrides or [])
         assert "meeting_absence_deduction" in overrides
-        assert "festival_bonus" in overrides, "連動寫入的 festival_bonus 也應列入 override"
+        assert (
+            "festival_bonus" in overrides
+        ), "連動寫入的 festival_bonus 也應列入 override"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
