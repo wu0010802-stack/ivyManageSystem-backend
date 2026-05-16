@@ -42,6 +42,8 @@ PUNISH_URL = "https://kiang.github.io/ap.ece.moe.edu.tw/punish_all.json"
 KIANG_PRESCHOOLS_URL = "https://kiang.github.io/ap.ece.moe.edu.tw/preschools.json"
 REQUEST_TIMEOUT = 20
 REQUEST_DELAY = 0.8  # 每次請求間隔（秒），避免對政府網站造成壓力
+REQUEST_MAX_RETRIES = 3  # 對 Timeout / ConnectionError 重試上限
+REQUEST_RETRY_BACKOFF_BASE = 0.5  # 重試指數退避基數（秒）
 MAX_PAGES = 200  # 安全上限（高雄市約 400 所，每頁 10 筆約 40 頁）
 PROVIDER_NAME = "moe_ece"
 PROVIDER_LABEL = "教育部幼兒園查詢系統（高雄市）"
@@ -259,12 +261,51 @@ def _make_session() -> requests.Session:
     return sess
 
 
+def _request_with_retry(
+    operation,
+    *,
+    label: str,
+    max_retries: int = REQUEST_MAX_RETRIES,
+    backoff_base: float = REQUEST_RETRY_BACKOFF_BASE,
+) -> Optional[str]:
+    """對 ``operation`` 做指數退避重試（僅 Timeout / ConnectionError 重試）。
+
+    其他例外（含 SSL/Value 等永久性錯誤）會直接 propagate，由呼叫端決定怎麼處理。
+    用 backoff_base * 2**attempt 的間隔等待；耗盡重試仍失敗回 None。
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last_exc = e
+            if attempt >= max_retries - 1:
+                break
+            wait_s = backoff_base * (2 ** attempt)
+            logger.warning(
+                "[MOE 爬蟲] %s 失敗（%s），%.2fs 後重試 (%d/%d)",
+                label,
+                e,
+                wait_s,
+                attempt + 1,
+                max_retries,
+            )
+            time.sleep(wait_s)
+    logger.error(
+        "[MOE 爬蟲] %s 重試 %d 次仍失敗：%s", label, max_retries, last_exc
+    )
+    return None
+
+
 def _fetch_search_page(sess: requests.Session) -> Optional[str]:
     """GET 搜尋首頁，取得 __VIEWSTATE 等隱藏欄位。"""
-    try:
+    def _do() -> str:
         r = sess.get(SEARCH_URL, timeout=REQUEST_TIMEOUT)
         r.encoding = "utf-8"
         return r.text
+
+    try:
+        return _request_with_retry(_do, label="GET 搜尋首頁")
     except Exception as e:
         logger.error("[MOE 爬蟲] 無法載入搜尋頁：%s", e)
         return None
@@ -290,10 +331,15 @@ def _submit_search(
     if not page_target:
         form_data["btnSearch"] = "搜尋"
 
-    try:
+    def _do() -> str:
         r = sess.post(SEARCH_URL, data=form_data, timeout=REQUEST_TIMEOUT)
         r.encoding = "utf-8"
         return r.text
+
+    try:
+        return _request_with_retry(
+            _do, label=f"POST 搜尋（page_target={page_target or '初次'}）"
+        )
     except Exception as e:
         logger.error("[MOE 爬蟲] POST 查詢失敗：%s", e)
         return None
@@ -379,6 +425,104 @@ def get_sync_status() -> dict:
 # ---------------------------------------------------------------------------
 # kiang preschools.json 補充同步
 # ---------------------------------------------------------------------------
+
+
+def _parse_capacity(raw: Optional[str]) -> Optional[int]:
+    if not raw:
+        return None
+    m = re.search(r"(\d+)", raw)
+    return int(m.group(1)) if m else None
+
+
+def _parse_area(raw: Optional[str]) -> Optional[float]:
+    if not raw:
+        return None
+    m = re.search(r"([\d,]+(?:\.\d+)?)", raw)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _upsert_one_school(
+    db_session,
+    parsed: dict,
+    *,
+    punish_data: dict,
+    existing_by_name: dict,
+) -> str:
+    """upsert 一所學校到 competitor_school，回傳 "created" 或 "updated"。
+
+    existing_by_name 為「當頁批次撈出的現有 row」字典；命中走 update，否則 insert。
+    新增 row 會同步寫回 dict，避免同頁出現重複名字時連續 INSERT 造成 unique 衝突。
+    """
+    school_name = parsed["school_name"]
+    city = parsed.get("city") or TARGET_CITY
+    owner_name = parsed.get("owner_name")
+
+    penalty_text = (parsed.get("penalty_text") or "").strip()
+    has_penalty = penalty_text not in ("無", "") or _owner_has_penalty(
+        punish_data, owner_name
+    )
+
+    capacity = _parse_capacity(parsed.get("approved_capacity"))
+    area = _parse_area(parsed.get("total_area_sqm"))
+
+    pre_public = parsed.get("pre_public_type")
+    if pre_public in ("無", ""):
+        pre_public = None
+
+    now = datetime.now()
+    school_id = hashlib.md5(
+        f"{city}{school_name}".encode("utf-8")
+    ).hexdigest()[:8]
+    source_key = f"moe_ece:{school_id}"
+
+    existing = existing_by_name.get(school_name)
+    if existing:
+        existing.owner_name = owner_name or existing.owner_name
+        existing.school_type = parsed.get("school_type") or existing.school_type
+        existing.pre_public_type = pre_public or existing.pre_public_type
+        existing.phone = parsed.get("phone") or existing.phone
+        existing.address = parsed.get("address") or existing.address
+        existing.district = parsed.get("district") or existing.district
+        existing.city = city
+        existing.approved_capacity = capacity or existing.approved_capacity
+        existing.approved_date = parsed.get("approved_date") or existing.approved_date
+        existing.total_area_sqm = area or existing.total_area_sqm
+        existing.website = parsed.get("website") or existing.website
+        existing.has_penalty = has_penalty
+        existing.is_active = True
+        existing.source_updated_at = now
+        existing.updated_at = now
+        return "updated"
+
+    record = CompetitorSchool(
+        source_school_id=school_id,
+        source_key=source_key,
+        school_name=school_name,
+        owner_name=owner_name,
+        school_type=parsed.get("school_type"),
+        pre_public_type=pre_public,
+        is_active=True,
+        phone=parsed.get("phone"),
+        address=parsed.get("address"),
+        district=parsed.get("district"),
+        city=city,
+        approved_capacity=capacity,
+        approved_date=parsed.get("approved_date"),
+        total_area_sqm=area,
+        website=parsed.get("website"),
+        has_penalty=has_penalty,
+        source_updated_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(record)
+    existing_by_name[school_name] = record
+    return "created"
 
 
 def _sync_kiang_supplementary(http_sess: requests.Session, db_session) -> int:
@@ -546,106 +690,37 @@ def sync_moe_kindergartens() -> dict:
                 break
 
             with session_scope() as db:
+                # 一次撈當頁所有 school_name 對應的現有 row，避免 N+1 SELECT。
+                page_names = [
+                    s.get("school_name") for s in schools if s.get("school_name")
+                ]
+                existing_rows = (
+                    db.query(CompetitorSchool)
+                    .filter(CompetitorSchool.school_name.in_(page_names))
+                    .all()
+                    if page_names
+                    else []
+                )
+                existing_by_name: dict[str, CompetitorSchool] = {
+                    row.school_name: row for row in existing_rows
+                }
+
                 for s in schools:
                     school_name = s.get("school_name")
                     if not school_name:
                         failed += 1
                         continue
                     try:
-                        city = s.get("city") or TARGET_CITY
-                        owner_name = s.get("owner_name")
-
-                        # has_penalty：MOE 直接顯示「無」或其他；再用 kiang 補強
-                        penalty_text = (s.get("penalty_text") or "").strip()
-                        has_penalty = penalty_text not in (
-                            "無",
-                            "",
-                        ) or _owner_has_penalty(punish_data, owner_name)
-
-                        # 核定人數 → int
-                        capacity: Optional[int] = None
-                        if s.get("approved_capacity"):
-                            m = re.search(r"(\d+)", s["approved_capacity"])
-                            capacity = int(m.group(1)) if m else None
-
-                        # 全園總面積 → float
-                        area: Optional[float] = None
-                        if s.get("total_area_sqm"):
-                            m = re.search(r"([\d,]+(?:\.\d+)?)", s["total_area_sqm"])
-                            if m:
-                                try:
-                                    area = float(m.group(1).replace(",", ""))
-                                except ValueError:
-                                    pass
-
-                        # 準公共幼兒園「無」→ None
-                        pre_public = s.get("pre_public_type")
-                        if pre_public in ("無", ""):
-                            pre_public = None
-
-                        now = datetime.now()
-                        school_id = hashlib.md5(
-                            f"{city}{school_name}".encode("utf-8")
-                        ).hexdigest()[:8]
-                        source_key = f"moe_ece:{school_id}"
-
-                        # 用 school_name 比對（新版網站無法取得舊版 schNo）
-                        existing = (
-                            db.query(CompetitorSchool)
-                            .filter_by(school_name=school_name)
-                            .first()
+                        action = _upsert_one_school(
+                            db,
+                            s,
+                            punish_data=punish_data,
+                            existing_by_name=existing_by_name,
                         )
-
-                        if existing:
-                            existing.owner_name = owner_name or existing.owner_name
-                            existing.school_type = (
-                                s.get("school_type") or existing.school_type
-                            )
-                            existing.pre_public_type = (
-                                pre_public or existing.pre_public_type
-                            )
-                            existing.phone = s.get("phone") or existing.phone
-                            existing.address = s.get("address") or existing.address
-                            existing.district = s.get("district") or existing.district
-                            existing.city = city
-                            existing.approved_capacity = (
-                                capacity or existing.approved_capacity
-                            )
-                            existing.approved_date = (
-                                s.get("approved_date") or existing.approved_date
-                            )
-                            existing.total_area_sqm = area or existing.total_area_sqm
-                            existing.website = s.get("website") or existing.website
-                            existing.has_penalty = has_penalty
-                            existing.is_active = True
-                            existing.source_updated_at = now
-                            existing.updated_at = now
-                            updated += 1
-                        else:
-                            record = CompetitorSchool(
-                                source_school_id=school_id,
-                                source_key=source_key,
-                                school_name=school_name,
-                                owner_name=owner_name,
-                                school_type=s.get("school_type"),
-                                pre_public_type=pre_public,
-                                is_active=True,
-                                phone=s.get("phone"),
-                                address=s.get("address"),
-                                district=s.get("district"),
-                                city=city,
-                                approved_capacity=capacity,
-                                approved_date=s.get("approved_date"),
-                                total_area_sqm=area,
-                                website=s.get("website"),
-                                has_penalty=has_penalty,
-                                source_updated_at=now,
-                                created_at=now,
-                                updated_at=now,
-                            )
-                            db.add(record)
+                        if action == "created":
                             created += 1
-
+                        else:
+                            updated += 1
                     except Exception as e:
                         logger.error("[MOE 爬蟲] 處理 %s 失敗：%s", school_name, e)
                         failed += 1
@@ -686,8 +761,11 @@ def sync_moe_kindergartens() -> dict:
         logger.info("[MOE 爬蟲] %s", msg)
 
         # ── kiang 補充同步 ─────────────────────────────────────────────
+        # 主迴圈每頁用獨立 session_scope 寫 competitor_school；這裡再開一個
+        # 新 session 給 kiang 補充同步使用（_sync_kiang_supplementary 內部會 flush）。
         try:
-            kiang_count = _sync_kiang_supplementary(http_sess, session)
+            with session_scope() as kiang_session:
+                kiang_count = _sync_kiang_supplementary(sess_http, kiang_session)
             if kiang_count:
                 logger.info("[MOE 爬蟲] kiang 補充同步完成，更新 %d 筆", kiang_count)
         except Exception as _ke:
