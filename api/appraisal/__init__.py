@@ -254,6 +254,22 @@ def update_cycle(
     cycle = session.get(AppraisalCycle, cycle_id)
     if cycle is None:
         raise HTTPException(404, "週期不存在")
+    # bug sweep 2026-05-16 P0-2：cycle 進入 LOCKED/CLOSED 後，base_score 與 enrollment
+    # 是 recompute 的輸入；放任修改會讓已 FINALIZED 的 summary 與「重新打開重算」結果
+    # 不一致，等於事後改獎金基數。狀態切換（payload.status）本身仍允許（例如 OPEN → LOCKED）。
+    score_or_enrollment_changing = (
+        payload.base_score is not None
+        or payload.enrollment_target is not None
+        or payload.enrollment_actual is not None
+    )
+    if score_or_enrollment_changing and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"週期狀態為 {cycle.status.value}，"
+                "不允許修改 base_score / enrollment_target / enrollment_actual"
+            ),
+        )
     if payload.base_score is not None:
         cycle.base_score = payload.base_score
     if payload.enrollment_target is not None:
@@ -626,6 +642,10 @@ def recompute_summaries(
                 bonus_amount=result.bonus_amount,
             )
             session.add(summary)
+        elif summary.status == SummaryStatus.FINALIZED:
+            # bug sweep 2026-05-16 P0-2：FINALIZED 後不再覆寫金額。
+            # 若需要重算已核定的 summary，需先走「駁回 → 重簽」流程。
+            pass
         else:
             summary.base_score = result.base_score
             summary.event_score_sum = result.event_score_sum
