@@ -198,36 +198,68 @@ def sync_registrations_on_student_deactivate(
                     "個別處理退款後再刪除學生。"
                 ),
             )
+    deleted = 0
+    failed: list[tuple[int, str]] = []
     for r in regs:
-        current_paid = r.paid_amount or 0
-        if current_paid > 0:
-            session.add(
-                ActivityPaymentRecord(
-                    registration_id=r.id,
-                    type="refund",
-                    amount=current_paid,
-                    payment_date=today,
-                    payment_method=SYSTEM_RECONCILE_METHOD,
-                    notes="（學生離園同步軟刪自動沖帳）",
-                    operator="system",
+        try:
+            with session.begin_nested():
+                _soft_delete_single_registration(
+                    session, r, student_id=student_id, today=today
                 )
-            )
-            r.paid_amount = 0
-            r.is_paid = False
-            logger.warning(
-                "學生離園同步軟刪報名自動沖帳：reg_id=%s student_id=%s refunded=NT$%d，"
-                "請管理員跟進實體退款",
+            deleted += 1
+        except Exception as exc:
+            failed.append((r.id, str(exc)))
+            logger.exception(
+                "學生離園同步軟刪單筆失敗，已 SAVEPOINT 回滾：reg_id=%s student_id=%s",
                 r.id,
                 student_id,
-                current_paid,
             )
-            activity_service.log_change(
-                session,
-                r.id,
-                r.student_name,
-                "學生離園自動沖帳",
-                f"學生離園同步軟刪，系統寫退費紀錄 NT${current_paid}，請跟進實體退款",
-                "system",
+    if failed:
+        logger.warning(
+            "學生離園同步軟刪共 %d 筆失敗（成功 %d 筆）：%s",
+            len(failed),
+            deleted,
+            failed,
+        )
+    return deleted
+
+
+def _soft_delete_single_registration(
+    session, reg: ActivityRegistration, *, student_id: int, today: _date
+) -> None:
+    """單筆軟刪邏輯（必要時自動沖帳並寫退費紀錄）。
+
+    呼叫端應包在 ``session.begin_nested()`` SAVEPOINT 內，這裡任何例外會
+    把該筆 reg 的所有變更（含 ActivityPaymentRecord）回滾，但不污染外層 session。
+    """
+    current_paid = reg.paid_amount or 0
+    if current_paid > 0:
+        session.add(
+            ActivityPaymentRecord(
+                registration_id=reg.id,
+                type="refund",
+                amount=current_paid,
+                payment_date=today,
+                payment_method=SYSTEM_RECONCILE_METHOD,
+                notes="（學生離園同步軟刪自動沖帳）",
+                operator="system",
             )
-        r.is_active = False
-    return len(regs)
+        )
+        reg.paid_amount = 0
+        reg.is_paid = False
+        logger.warning(
+            "學生離園同步軟刪報名自動沖帳：reg_id=%s student_id=%s refunded=NT$%d，"
+            "請管理員跟進實體退款",
+            reg.id,
+            student_id,
+            current_paid,
+        )
+        activity_service.log_change(
+            session,
+            reg.id,
+            reg.student_name,
+            "學生離園自動沖帳",
+            f"學生離園同步軟刪，系統寫退費紀錄 NT${current_paid}，請跟進實體退款",
+            "system",
+        )
+    reg.is_active = False
