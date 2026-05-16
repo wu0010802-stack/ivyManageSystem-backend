@@ -89,23 +89,23 @@ def sync_recruitment_ivykids_backend(
     payload: IvykidsBackendSyncPayload,
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
 ):
-    with session_scope() as session:
-        result = ivykids_sync_service.sync_backend_records(
-            session,
-            max_pages=payload.max_pages,
-            trigger="manual",
+    # 不傳 session，讓 sync_backend_records 自行管理 session_scope 並先取跨 worker
+    # lock；避免管理員快速雙擊「立即同步」造成兩個 transaction 同時跑。
+    result = ivykids_sync_service.sync_backend_records(
+        max_pages=payload.max_pages,
+        trigger="manual",
+    )
+    if result.get("provider_available"):
+        logger.info(
+            "義華校官網同步：抓取 %s 筆，新增 %s 筆，更新 %s 筆，略過 %s 筆",
+            result.get("total_fetched", 0),
+            result.get("inserted", 0),
+            result.get("updated", 0),
+            result.get("skipped", 0),
         )
-        if result.get("provider_available"):
-            logger.info(
-                "義華校官網同步：抓取 %s 筆，新增 %s 筆，更新 %s 筆，略過 %s 筆",
-                result.get("total_fetched", 0),
-                result.get("inserted", 0),
-                result.get("updated", 0),
-                result.get("skipped", 0),
-            )
-        else:
-            logger.warning("義華校官網同步未啟用：%s", result.get("message"))
-        return result
+    else:
+        logger.warning("義華校官網同步未啟用：%s", result.get("message"))
+    return result
 
 
 @router.delete("/records", status_code=200)

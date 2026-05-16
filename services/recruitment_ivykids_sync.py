@@ -8,9 +8,8 @@ import json
 import logging
 import os
 import re
-import threading
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -30,8 +29,9 @@ DEFAULT_SYNC_CREATED_AT_CUTOFF = "2024-04-26 10:46:04"
 MAX_SYNC_PAGES = 20
 REQUEST_TIMEOUT_SECONDS = 20
 PREVIEW_LIMIT = 8
-
-_SYNC_LOCK = threading.Lock()
+# 跨 worker 同步鎖：若上次 last_started_at 超過此分鐘數仍標 in_progress，
+# 視為前一個 worker crash、自動允許搶鎖。30 分鐘比一般同步耗時多數倍，足夠寬鬆。
+SYNC_LOCK_STALE_MINUTES = 30
 _DATE_PATTERNS = (
     "%Y-%m-%d",
     "%Y/%m/%d",
@@ -712,6 +712,60 @@ def _serialize_counts(counts: dict[str, int]) -> str:
     return json.dumps(counts, ensure_ascii=False)
 
 
+def _try_acquire_sync_lock() -> bool:
+    """跨 worker 安全的同步鎖：以 recruitment_sync_state 表的原子 UPDATE 取得。
+
+    語意：UPDATE recruitment_sync_state
+          SET sync_in_progress=TRUE, last_started_at=NOW(), last_sync_status='running'
+          WHERE provider_name=:p
+            AND (sync_in_progress=FALSE OR last_started_at IS NULL
+                 OR last_started_at < NOW() - INTERVAL stale_minutes)
+    rowcount > 0 ⇒ 取得；rowcount = 0 ⇒ 已被其他 worker 鎖住且未 stale。
+    使用獨立 session_scope 即時 commit，鎖狀態立刻對其他 worker 可見。
+    """
+    from sqlalchemy import or_
+
+    now = datetime.now()
+    stale_cutoff = now - timedelta(minutes=SYNC_LOCK_STALE_MINUTES)
+    with session_scope() as lock_session:
+        _get_or_create_sync_state(lock_session)  # 確保 row 存在
+        rowcount = (
+            lock_session.query(RecruitmentSyncState)
+            .filter(
+                RecruitmentSyncState.provider_name == IVYKIDS_BACKEND_SOURCE,
+                or_(
+                    RecruitmentSyncState.sync_in_progress.is_(False),
+                    RecruitmentSyncState.last_started_at.is_(None),
+                    RecruitmentSyncState.last_started_at < stale_cutoff,
+                ),
+            )
+            .update(
+                {
+                    RecruitmentSyncState.sync_in_progress: True,
+                    RecruitmentSyncState.last_started_at: now,
+                    RecruitmentSyncState.last_sync_status: "running",
+                    RecruitmentSyncState.last_sync_message: (
+                        f"{IVYKIDS_PROVIDER_LABEL}同步進行中"
+                    ),
+                },
+                synchronize_session=False,
+            )
+        )
+    return rowcount > 0
+
+
+def _release_sync_lock() -> None:
+    """強制釋放同步鎖（測試 / 手動恢復用；正常流程中 _run_sync 完成時自然會把
+    sync_in_progress 設回 False）。"""
+    with session_scope() as lock_session:
+        lock_session.query(RecruitmentSyncState).filter(
+            RecruitmentSyncState.provider_name == IVYKIDS_BACKEND_SOURCE
+        ).update(
+            {RecruitmentSyncState.sync_in_progress: False},
+            synchronize_session=False,
+        )
+
+
 def _get_or_create_sync_state(session) -> RecruitmentSyncState:
     state = session.query(RecruitmentSyncState).filter(
         RecruitmentSyncState.provider_name == IVYKIDS_BACKEND_SOURCE
@@ -913,9 +967,6 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
             "last_sync_counts": status.get("last_sync_counts"),
         }
 
-    if not _SYNC_LOCK.acquire(blocking=False):
-        return _busy_sync_result(session)
-
     started_at = datetime.now()
     try:
         state.sync_in_progress = True
@@ -939,6 +990,19 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
         skipped = 0
         pruned = _prune_records_before_cutoff(session, created_at_cutoff)
 
+        # 一次批撈所有通過 cutoff 的 external_id 對應的現有 row，避免逐筆 SELECT（N+1）。
+        upsert_ids = [
+            r.external_id
+            for r in records
+            if _record_meets_created_at_cutoff(r.created_at, created_at_cutoff)
+        ]
+        existing_by_id: dict[str, RecruitmentIvykidsRecord] = {}
+        if upsert_ids:
+            existing_rows = session.query(RecruitmentIvykidsRecord).filter(
+                RecruitmentIvykidsRecord.external_id.in_(upsert_ids)
+            ).all()
+            existing_by_id = {row.external_id: row for row in existing_rows}
+
         for record in records:
             if not _record_meets_created_at_cutoff(record.created_at, created_at_cutoff):
                 skipped += 1
@@ -946,10 +1010,7 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
                     preview.append(_preview_item(record, "skipped"))
                 continue
 
-            existing = session.query(RecruitmentIvykidsRecord).filter(
-                RecruitmentIvykidsRecord.external_id == record.external_id,
-            ).first()
-
+            existing = existing_by_id.get(record.external_id)
             action = "updated"
             if existing is None:
                 existing = RecruitmentIvykidsRecord(
@@ -961,6 +1022,8 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
                     transfer_term=False,
                 )
                 session.add(existing)
+                # 同一批 records 內若 external_id 重複，後續 lookup 走 dict 而不會再 add 一次。
+                existing_by_id[record.external_id] = existing
                 inserted += 1
                 action = "inserted"
             else:
@@ -1047,16 +1110,32 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
             "sync_interval_minutes": get_sync_interval_minutes(),
             "last_sync_counts": _deserialize_counts(state.last_sync_counts),
         }
-    finally:
-        _SYNC_LOCK.release()
 
 
 def sync_backend_records(session=None, max_pages: int = MAX_SYNC_PAGES, trigger: str = "manual") -> dict[str, Any]:
+    """義華校官網同步入口。
+
+    - session 已給定（測試 / 已 in transaction caller）：直接走 _run_sync，由 caller
+      保證不會並發呼叫。
+    - session=None（production / scheduler）：先在獨立 transaction 取跨 worker lock，
+      取得後才開實際同步的 session_scope。鎖在獨立 transaction commit，立刻對其他
+      worker 可見；多 worker 部署不會同時跑兩個同步。
+    """
     if session is not None:
         return _run_sync(session, max_pages=max_pages, trigger=trigger)
 
-    with session_scope() as owned_session:
-        return _run_sync(owned_session, max_pages=max_pages, trigger=trigger)
+    if not _try_acquire_sync_lock():
+        with session_scope() as busy_session:
+            return _busy_sync_result(busy_session)
+
+    try:
+        with session_scope() as owned_session:
+            return _run_sync(owned_session, max_pages=max_pages, trigger=trigger)
+    except Exception:
+        # _run_sync 內部 except 已把 sync_in_progress=False 寫回；但若它自己拋出
+        # （例如取 state 失敗），我們在這裡保險再 release 一次。
+        _release_sync_lock()
+        raise
 
 
 async def run_sync_scheduler(stop_event: asyncio.Event) -> None:
