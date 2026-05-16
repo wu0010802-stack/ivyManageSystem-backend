@@ -73,9 +73,7 @@ def list_cycles(
     current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
-    return (
-        session.query(YearEndCycle).order_by(YearEndCycle.academic_year.desc()).all()
-    )
+    return session.query(YearEndCycle).order_by(YearEndCycle.academic_year.desc()).all()
 
 
 @year_end_router.post("/cycles", response_model=YearEndCycleOut)
@@ -135,9 +133,7 @@ def upsert_org_settings(
         .first()
     )
     if existing is None:
-        existing = OrgYearSettings(
-            year_end_cycle_id=cycle_id, **payload.model_dump()
-        )
+        existing = OrgYearSettings(year_end_cycle_id=cycle_id, **payload.model_dump())
         session.add(existing)
     else:
         for k, v in payload.model_dump().items():
@@ -197,7 +193,12 @@ def sign_supervisor(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_REVIEW)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    s = (
+        session.query(YearEndSettlement)
+        .filter_by(id=settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.DRAFT:
@@ -220,7 +221,12 @@ def sign_accounting(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_ACCOUNTING)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    s = (
+        session.query(YearEndSettlement)
+        .filter_by(id=settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.SUPERVISOR_SIGNED:
@@ -243,7 +249,12 @@ def finalize_settlement(
     current_user: dict = Depends(require_permission(Permission.YEAR_END_FINALIZE)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    s = (
+        session.query(YearEndSettlement)
+        .filter_by(id=settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.ACCOUNTING_SIGNED:
@@ -290,23 +301,52 @@ def add_special_bonus(
 ):
     if not session.get(YearEndCycle, cycle_id):
         raise HTTPException(404, "cycle 不存在")
+    existing_settlement = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle_id, employee_id=payload.employee_id)
+        .with_for_update()
+        .first()
+    )
+    if (
+        existing_settlement is not None
+        and existing_settlement.status == YearEndSettlementStatus.FINALIZED
+    ):
+        raise HTTPException(
+            400, "settlement 已 FINALIZED，不可新增特別獎金（需重新開啟年終週期）"
+        )
     item = SpecialBonusItem(
         year_end_cycle_id=cycle_id,
         **payload.model_dump(),
         created_by=current_user.get("id"),
     )
     session.add(item)
-    session.commit()
-    session.refresh(item)
-    # 重算對應 settlement.special_bonus_total
+    session.flush()
     _recompute_settlement_special_total(session, cycle_id, payload.employee_id)
     session.commit()
+    session.refresh(item)
     return item
 
 
 def _recompute_settlement_special_total(
     session: Session, cycle_id: int, employee_id: int
 ) -> None:
+    """重算指定 (cycle, employee) settlement 的 special_bonus_total / total_amount。
+
+    若 settlement 不存在則 no-op（settlement 建立時會主動回算既有 special_bonus）；
+    若 settlement 已 FINALIZED 則拒絕變更，避免事後改動轉帳金額。
+    """
+    s = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle_id, employee_id=employee_id)
+        .with_for_update()
+        .first()
+    )
+    if s is None:
+        return
+    if s.status == YearEndSettlementStatus.FINALIZED:
+        raise HTTPException(
+            400, "settlement 已 FINALIZED，不可重算特別獎金（需重新開啟年終週期）"
+        )
     total = (
         session.query(SpecialBonusItem)
         .filter_by(year_end_cycle_id=cycle_id, employee_id=employee_id)
@@ -314,14 +354,8 @@ def _recompute_settlement_special_total(
         .all()
     )
     total_sum = sum((row.amount for row in total), Decimal("0"))
-    s = (
-        session.query(YearEndSettlement)
-        .filter_by(year_end_cycle_id=cycle_id, employee_id=employee_id)
-        .first()
-    )
-    if s is not None:
-        s.special_bonus_total = total_sum
-        s.total_amount = s.payable_amount + total_sum
+    s.special_bonus_total = total_sum
+    s.total_amount = s.payable_amount + total_sum
 
 
 # ===== Excel I/O =====
@@ -422,9 +456,7 @@ def export_summary(
                 total=s.total_amount,
             )
         )
-    payload = export_year_end_summary_xlsx(
-        rows=rows, academic_year=cycle.academic_year
-    )
+    payload = export_year_end_summary_xlsx(rows=rows, academic_year=cycle.academic_year)
     return Response(
         content=payload,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
