@@ -10,7 +10,8 @@ c2 後僅保留 POST /generate（原 /generate-from-templates 改名）：
 import logging
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 
 from models.base import session_scope
 from models.classroom import (
@@ -200,7 +201,20 @@ def generate_from_templates(
                 threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
                 action_label=f"批次產生費用記錄（{len(new_records)} 筆合計）",
             )
-            session.bulk_insert_mappings(StudentFeeRecord, new_records)
+            try:
+                session.bulk_insert_mappings(StudentFeeRecord, new_records)
+                session.flush()
+            except IntegrityError:
+                # 並發雙寫：DB partial unique index 攔截。
+                # 月費由 ix_fee_records_monthly_unique 守，非月費由 uq_fee_records_non_monthly_unique 守。
+                session.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "並發產生衝突：偵測到相同 (學生, 範本, 學期/月份) 記錄已被建立，"
+                        "請重新整理頁面後再試"
+                    ),
+                )
 
         if not payload.dry_run:
             _invalidate_finance_summary_cache()
