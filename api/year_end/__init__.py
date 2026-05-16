@@ -193,7 +193,15 @@ def sign_supervisor(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_REVIEW)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    # with_for_update：兩個 reviewer 同時簽核會讓 *signed_by 被後贏者覆蓋
+    # 但 status 已改為下一階段，造成稽核軌跡與真實簽核人不符。
+    # bug sweep 2026-05-16 P1-3。
+    s = (
+        session.query(YearEndSettlement)
+        .filter(YearEndSettlement.id == settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.DRAFT:
@@ -216,7 +224,13 @@ def sign_accounting(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_ACCOUNTING)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    s = (
+        session.query(YearEndSettlement)
+        .filter(YearEndSettlement.id == settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.SUPERVISOR_SIGNED:
@@ -239,7 +253,13 @@ def finalize_settlement(
     current_user: dict = Depends(require_permission(Permission.YEAR_END_FINALIZE)),
     session: Session = Depends(get_session_dep),
 ):
-    s = session.get(YearEndSettlement, settlement_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    s = (
+        session.query(YearEndSettlement)
+        .filter(YearEndSettlement.id == settlement_id)
+        .with_for_update()
+        .first()
+    )
     if s is None:
         raise HTTPException(404)
     if s.status != YearEndSettlementStatus.ACCOUNTING_SIGNED:

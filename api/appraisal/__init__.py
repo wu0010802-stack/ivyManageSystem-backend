@@ -646,7 +646,15 @@ def sign_supervisor(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_REVIEW)),
     session: Session = Depends(get_session_dep),
 ):
-    summary = session.get(AppraisalSummary, summary_id)
+    # with_for_update：兩個 reviewer 同時簽核時，後贏者會覆蓋簽核人欄位
+    # 卻只看到「已是 SUPERVISOR_SIGNED」就跳過更新，造成稽核軌跡被誰偷換。
+    # bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.DRAFT:
@@ -671,7 +679,13 @@ def sign_accounting(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_ACCOUNTING)),
     session: Session = Depends(get_session_dep),
 ):
-    summary = session.get(AppraisalSummary, summary_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.SUPERVISOR_SIGNED:
@@ -694,7 +708,13 @@ def finalize_summary(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
     session: Session = Depends(get_session_dep),
 ):
-    summary = session.get(AppraisalSummary, summary_id)
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
     if summary.status != SummaryStatus.ACCOUNTING_SIGNED:
