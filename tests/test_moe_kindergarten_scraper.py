@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
-import threading
+import threading  # noqa: F401 — 保留供 scraper module 內部仍有 threading 依賴的 hot-path 測試
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -101,13 +101,19 @@ def _install_minimal_mocks(
 
     pages：每頁要回的學校 list；None 表示空頁（最快終止）。
     """
-    monkeypatch.setattr(scraper, "_SYNC_LOCK", threading.Lock())
+    # _SYNC_LOCK 已改 DB-level lock；stub 為 always-acquire 模擬乾淨啟動
+    monkeypatch.setattr(scraper, "_try_acquire_db_lock", lambda: True)
+    monkeypatch.setattr(scraper, "_release_db_lock", lambda: None)
     monkeypatch.setattr(scraper, "_make_session", lambda: SimpleNamespace())
     monkeypatch.setattr(scraper, "_fetch_search_page", lambda _s: "<html>home</html>")
     monkeypatch.setattr(
         scraper,
         "_get_hidden_fields",
-        lambda _h: {"__VIEWSTATE": "v", "__VIEWSTATEGENERATOR": "g", "__EVENTVALIDATION": "e"},
+        lambda _h: {
+            "__VIEWSTATE": "v",
+            "__VIEWSTATEGENERATOR": "g",
+            "__EVENTVALIDATION": "e",
+        },
     )
     monkeypatch.setattr(
         scraper, "_submit_search", lambda *a, **kw: "<html>result</html>"
@@ -154,9 +160,9 @@ class TestKiangSupplementarySession:
         def fake_kiang(http_sess, db_session):
             kiang_calls.append((http_sess, db_session))
             assert db_session is not None
-            assert hasattr(db_session, "query"), (
-                f"kiang 拿到的不是 DB session：type={type(db_session)}"
-            )
+            assert hasattr(
+                db_session, "query"
+            ), f"kiang 拿到的不是 DB session：type={type(db_session)}"
             return 0
 
         monkeypatch.setattr(scraper, "_sync_kiang_supplementary", fake_kiang)
@@ -164,9 +170,7 @@ class TestKiangSupplementarySession:
         result = scraper.sync_moe_kindergartens()
 
         assert result["status"] == "success", result
-        assert kiang_calls, (
-            "kiang 補充同步未被呼叫（line 690 NameError 把整段攔截了）"
-        )
+        assert kiang_calls, "kiang 補充同步未被呼叫（line 690 NameError 把整段攔截了）"
         assert len(kiang_calls) == 1
 
 
@@ -195,6 +199,7 @@ def sqlite_engine():
 def _stub_for_per_page_test(monkeypatch, sqlite_engine, schools_one_page):
     """讓 sync_moe_kindergartens 跑「一頁 N 筆 schools」並改用 SQLite 真實 session_scope。"""
     from contextlib import contextmanager
+
     engine, SessionFactory = sqlite_engine
 
     @contextmanager
@@ -209,7 +214,9 @@ def _stub_for_per_page_test(monkeypatch, sqlite_engine, schools_one_page):
         finally:
             s.close()
 
-    monkeypatch.setattr(scraper, "_SYNC_LOCK", threading.Lock())
+    # _SYNC_LOCK 已改 DB-level lock；stub 為 always-acquire 模擬乾淨啟動
+    monkeypatch.setattr(scraper, "_try_acquire_db_lock", lambda: True)
+    monkeypatch.setattr(scraper, "_release_db_lock", lambda: None)
     monkeypatch.setattr(scraper, "_make_session", lambda: SimpleNamespace())
     monkeypatch.setattr(scraper, "_fetch_search_page", lambda _s: "<html>home</html>")
     monkeypatch.setattr(
