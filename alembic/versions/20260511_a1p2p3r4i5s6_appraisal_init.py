@@ -42,9 +42,7 @@ depends_on = None
 
 
 # === 新 enum 定義（PG ENUM；create_type=False 因由 upgrade() raw DDL 手動建立）===
-SEMESTER = ENUM(
-    "FIRST", "SECOND", name="appraisal_semester_enum", create_type=False
-)
+SEMESTER = ENUM("FIRST", "SECOND", name="appraisal_semester_enum", create_type=False)
 CYCLE_STATUS = ENUM(
     "OPEN", "LOCKED", "CLOSED", name="appraisal_cycle_status_enum", create_type=False
 )
@@ -332,9 +330,7 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column("item_code", sa.String(40), nullable=False),
-        sa.Column(
-            "sequence_no", sa.SmallInteger(), nullable=False, server_default="1"
-        ),
+        sa.Column("sequence_no", sa.SmallInteger(), nullable=False, server_default="1"),
         sa.Column("score_delta", sa.Numeric(5, 2), nullable=False, server_default="0"),
         sa.Column("raw_value", sa.Numeric(8, 2), nullable=True),
         sa.Column("note", sa.Text(), nullable=True),
@@ -391,9 +387,7 @@ def upgrade() -> None:
         sa.Column(
             "event_score_sum", sa.Numeric(6, 2), nullable=False, server_default="0"
         ),
-        sa.Column(
-            "total_score", sa.Numeric(6, 2), nullable=False, server_default="0"
-        ),
+        sa.Column("total_score", sa.Numeric(6, 2), nullable=False, server_default="0"),
         sa.Column("grade", GRADE, nullable=False, server_default="FAIL"),
         sa.Column(
             "bonus_amount", sa.Numeric(10, 2), nullable=False, server_default="0"
@@ -746,7 +740,9 @@ def upgrade() -> None:
         sa.Column(
             "festival_total", sa.Numeric(10, 2), nullable=False, server_default="0"
         ),
-        sa.Column("gross_amount", sa.Numeric(10, 2), nullable=False, server_default="0"),
+        sa.Column(
+            "gross_amount", sa.Numeric(10, 2), nullable=False, server_default="0"
+        ),
         # step3 小計
         sa.Column(
             "org_achievement_rate",
@@ -850,9 +846,7 @@ def upgrade() -> None:
             sa.ForeignKey("users.id", ondelete="SET NULL"),
             nullable=True,
         ),
-        sa.Column(
-            "rejected_from_stage", YEAR_END_SETTLEMENT_STATUS, nullable=True
-        ),
+        sa.Column("rejected_from_stage", YEAR_END_SETTLEMENT_STATUS, nullable=True),
         sa.Column("rejected_reason", sa.Text(), nullable=True),
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column(
@@ -945,6 +939,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """單向 migration（intentional）。
+
+    upgrade() 已 DROP 舊版 appraisal_events / appraisal_penalty_catalog 與三條舊 enum
+    （OBSOLETE_TABLES / OBSOLETE_ENUMS）；其完整 column schema 在 v8a9b0c1d2e3
+    之前的 revision 散落多次變更，無法以 reasonable cost 在此處精確重建。
+
+    對 prod / staging：downgrade 過此點視為破壞性回退，需 DBA 手動處理舊表還原；
+    對 dev / CI：本 downgrade 把新版表與 enum drop 乾淨即可（資料庫稍後可 reset）。
+    """
     # 反向順序：先 drop year_end 6 表，再 drop appraisal 6 表，最後 drop enum
     op.drop_index("ix_special_bonus_item_emp_cycle", table_name="special_bonus_items")
     op.drop_table("special_bonus_items")
@@ -958,12 +961,8 @@ def downgrade() -> None:
     op.drop_table("year_end_cycles")
 
     op.drop_table("appraisal_bonus_rates")
-    op.drop_index(
-        "ix_appraisal_summary_cycle_grade", table_name="appraisal_summaries"
-    )
-    op.drop_index(
-        "ix_appraisal_summary_cycle_status", table_name="appraisal_summaries"
-    )
+    op.drop_index("ix_appraisal_summary_cycle_grade", table_name="appraisal_summaries")
+    op.drop_index("ix_appraisal_summary_cycle_status", table_name="appraisal_summaries")
     op.drop_table("appraisal_summaries")
     op.drop_index(
         "ix_appraisal_score_item_cycle_code", table_name="appraisal_score_items"
