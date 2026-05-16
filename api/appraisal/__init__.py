@@ -57,6 +57,10 @@ from schemas.appraisal import (
     SyncResultOut,
     SyncResultPreviewItem,
 )
+from services.appraisal.employee_inference import (
+    infer_classroom_id,
+    infer_role_group,
+)
 from services.appraisal.engine import BonusRateLookup, compute_summary
 from services.appraisal.excel_io import (
     ExportRow,
@@ -762,17 +766,7 @@ def _build_role_resolver(session: Session):
         e = employees.get(emp_id)
         if e is None:
             return RoleGroup.STAFF
-        # 簡化映射：supervisor_role 對應 SUPERVISOR；staff_role_category 對應其他
-        if e.supervisor_role:
-            return RoleGroup.SUPERVISOR
-        cat = (e.staff_role_category or "").lower()
-        if cat in ("kitchen", "driver"):
-            return RoleGroup.COOK
-        if cat in ("office",):
-            return RoleGroup.STAFF
-        if cat in ("assistant_educare",):
-            return RoleGroup.ASSISTANT
-        return RoleGroup.HEAD_TEACHER
+        return infer_role_group(e)
 
     return resolver
 
@@ -782,7 +776,7 @@ def _build_classroom_resolver(session: Session):
 
     def resolver(emp_id: int):
         e = employees.get(emp_id)
-        return e.classroom_id if e else None
+        return infer_classroom_id(e) if e else None
 
     return resolver
 
