@@ -24,7 +24,11 @@ def infer_role_group(employee: Employee) -> RoleGroup:
         return RoleGroup.STAFF
     if cat in ("assistant_educare",):
         return RoleGroup.ASSISTANT
-    return RoleGroup.HEAD_TEACHER
+    if cat in ("head_teacher", "teacher"):
+        return RoleGroup.HEAD_TEACHER
+    # Why: 未知 staff_role_category 不應默默落入獎金率最高的 HEAD_TEACHER；
+    # fallback 改 STAFF 保守處理，避免「資料缺漏 → 獎金浮報」（P1-4 bug-sweep 2026-05-16）。
+    return RoleGroup.STAFF
 
 
 def infer_classroom_id(employee: Employee) -> Optional[int]:

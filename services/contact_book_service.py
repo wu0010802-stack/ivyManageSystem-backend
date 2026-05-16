@@ -57,7 +57,15 @@ def publish_entry(
     *,
     entry_id: int,
     line_service: Optional[LineService] = None,
+    defer_line_push: bool = False,
 ) -> StudentContactBookEntry:
+    """發布聯絡簿。
+
+    defer_line_push=True 時，LINE push 任務累積到 entry.line_push_tasks 屬性
+    （`list[dict]`）由 caller 在 commit / close session 之後在 loop 外執行，
+    避免迴圈內同 session 同步 LINE push 卡住 DB 連線池（batch_publish 場景）。
+    預設 False 維持單筆發布的同步行為。
+    """
     """發布一筆聯絡簿 entry。
 
     呼叫前 caller 已完成權限檢查；本函式只負責：
@@ -107,24 +115,31 @@ def publish_entry(
     # WS broadcasting：fire-and-forget；單筆失敗不影響交易
     try:
         from api.contact_book_ws import broadcast_classroom, broadcast_parent
+        from utils.event_loop import get_main_loop
 
         async def _fanout():
             await broadcast_classroom(entry.classroom_id, event_payload)
             for uid in guardian_user_ids:
                 await broadcast_parent(uid, event_payload)
 
+        # 同 thread 內已有 running loop（async 路由直接呼叫）→ create_task；
+        # sync def 路由跑在 starlette thread pool 沒 loop → 投回主 loop 跑，
+        # 避免 asyncio.run() 起新 loop 後 WS transport 視為僵死誤踢訂閱者。
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_fanout())
-            else:
-                loop.run_until_complete(_fanout())
+            loop = asyncio.get_running_loop()
+            loop.create_task(_fanout())
         except RuntimeError:
-            asyncio.run(_fanout())
+            main_loop = get_main_loop()
+            if main_loop is not None and main_loop.is_running():
+                asyncio.run_coroutine_threadsafe(_fanout(), main_loop)
+            else:
+                # 測試或 lifespan 尚未跑（理論上不會走到）：保險走 asyncio.run
+                asyncio.run(_fanout())
     except Exception as exc:
         logger.warning("contact_book WS 廣播失敗（不阻斷）：%s", exc)
 
     # LINE push：依個別家長偏好決定
+    push_tasks: list[dict] = []
     if line_service is not None:
         teacher_note_preview = (entry.teacher_note or "").strip()
         for uid in guardian_user_ids:
@@ -133,18 +148,59 @@ def publish_entry(
             )
             if not line_id:
                 continue
+            push_tasks.append(
+                {
+                    "user_id": uid,
+                    "line_id": line_id,
+                    "student_name": student_name,
+                    "log_date": entry.log_date,
+                    "teacher_note_preview": teacher_note_preview,
+                    "photo_count": photo_count,
+                }
+            )
+
+    if defer_line_push:
+        entry.line_push_tasks = (
+            push_tasks  # noqa: SLF001（attach 到 ORM 物件，caller 用）
+        )
+    elif line_service is not None:
+        # 同步路徑：保持原行為，立即 push
+        for t in push_tasks:
             try:
                 line_service.notify_parent_contact_book_published(
-                    line_id,
-                    student_name=student_name,
-                    log_date=entry.log_date,
-                    teacher_note_preview=teacher_note_preview,
-                    photo_count=photo_count,
+                    t["line_id"],
+                    student_name=t["student_name"],
+                    log_date=t["log_date"],
+                    teacher_note_preview=t["teacher_note_preview"],
+                    photo_count=t["photo_count"],
                 )
             except Exception as exc:
-                logger.warning("contact_book LINE push 失敗 user_id=%d: %s", uid, exc)
+                logger.warning(
+                    "contact_book LINE push 失敗 user_id=%d: %s", t["user_id"], exc
+                )
 
     return entry
+
+
+def fire_line_push_tasks(
+    line_service: Optional[LineService], tasks: list[dict]
+) -> None:
+    """在 DB session/transaction 之外執行 LINE push 任務（單筆失敗不影響其餘）。"""
+    if line_service is None:
+        return
+    for t in tasks:
+        try:
+            line_service.notify_parent_contact_book_published(
+                t["line_id"],
+                student_name=t["student_name"],
+                log_date=t["log_date"],
+                teacher_note_preview=t["teacher_note_preview"],
+                photo_count=t["photo_count"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "contact_book LINE push 失敗 user_id=%d: %s", t["user_id"], exc
+            )
 
 
 # 範本可套用欄位清單（與 ContactBookTemplate.fields 對應）

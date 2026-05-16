@@ -716,9 +716,18 @@ def batch_publish(
 
         results: list[dict] = []
         success_ids: list[int] = []
+        deferred_push_tasks: list[dict] = []
         for entry in entries:
             try:
-                publish_entry(session, entry_id=entry.id, line_service=_line_service)
+                published = publish_entry(
+                    session,
+                    entry_id=entry.id,
+                    line_service=_line_service,
+                    defer_line_push=True,
+                )
+                deferred_push_tasks.extend(
+                    getattr(published, "line_push_tasks", []) or []
+                )
                 success_ids.append(entry.id)
                 results.append({"entry_id": entry.id, "status": "ok"})
             except Exception as exc:
@@ -732,9 +741,15 @@ def batch_publish(
         request.state.audit_summary = (
             f"教師批次發布聯絡簿：success={len(success_ids)}/{len(entries)}"
         )
-        return {"results": results, "success_count": len(success_ids)}
     finally:
         session.close()
+
+    # commit + close 後在 transaction / DB 連線之外推 LINE，
+    # 避免迴圈內同步 requests.post(timeout=5) × N 把 DB 連線池佔住。
+    from services.contact_book_service import fire_line_push_tasks
+
+    fire_line_push_tasks(_line_service, deferred_push_tasks)
+    return {"results": results, "success_count": len(success_ids)}
 
 
 @router.delete("/{entry_id}/photos/{attachment_id}")
