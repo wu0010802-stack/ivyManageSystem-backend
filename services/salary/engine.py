@@ -2891,12 +2891,13 @@ class SalaryEngine:
             if not emp:
                 raise ValueError(f"Employee {employee_id} not found")
 
-            breakdown = self._build_breakdown_for_month(session, emp, year, month)
-
-            # 儲存 SalaryRecord（advisory lock 保護：多 worker 不會同時寫同筆）
+            # 先取鎖再讀資料：避免並發 commit 的假單/加班記錄沒進 breakdown，
+            # 卻在後續 stale 旗標被清。與 bulk path 對齊。
             from utils.advisory_lock import acquire_salary_lock
 
             acquire_salary_lock(session, employee_id=emp.id, year=year, month=month)
+
+            breakdown = self._build_breakdown_for_month(session, emp, year, month)
 
             salary_record = (
                 session.query(SalaryRecord)

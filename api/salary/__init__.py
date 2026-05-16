@@ -131,6 +131,10 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
 
     呼叫端：`/salaries/calculate` 與 `/salaries/records`。
     不阻塞主請求，錯誤僅 log。
+
+    guard key 語義：僅在「實際排了背景任務」時保留 key，避免重複排隊。
+    若早退（無 record / 已齊全 / 例外），釋放 key，讓同日後續請求重試
+    （records 在當日後段才補建的場景能正確觸發補拍）。
     """
     if bg is None:
         return
@@ -143,6 +147,7 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
         if key in _snapshot_lazy_guard:
             return
         _snapshot_lazy_guard.add(key)
+    queued = False
     try:
         from services.salary_snapshot_service import (
             run_month_end_snapshots_job,
@@ -181,6 +186,7 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
             if snapshot_count >= record_count:
                 return
         bg.add_task(run_month_end_snapshots_job, year, month, "system")
+        queued = True
         logger.info(
             "lazy snapshot trigger queued for %d/%d (records=%d, existing=%d)",
             year,
@@ -190,6 +196,10 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
         )
     except Exception as e:
         logger.warning("lazy snapshot trigger skipped: %s", e)
+    finally:
+        if not queued:
+            with _snapshot_lazy_lock:
+                _snapshot_lazy_guard.discard(key)
 
 
 # ============ Access control helpers ============

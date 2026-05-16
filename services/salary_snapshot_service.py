@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models.base import session_scope
@@ -132,7 +133,20 @@ def create_month_end_snapshots(
     for r in records:
         if r.employee_id in existing_emp_ids:
             continue
-        session.add(_copy_record_to_snapshot(r, "month_end", captured_by))
+        snap = _copy_record_to_snapshot(r, "month_end", captured_by)
+        # savepoint + IntegrityError 接住跨 worker / lazy+scheduler 撞同秒的並發插入
+        try:
+            with session.begin_nested():
+                session.add(snap)
+                session.flush()
+        except IntegrityError:
+            logger.info(
+                "salary month_end snapshot already exists (race lost): emp=%d %d/%d",
+                r.employee_id,
+                year,
+                month,
+            )
+            continue
         created += 1
     if created:
         logger.info(
@@ -148,10 +162,25 @@ def create_month_end_snapshots(
 
 def create_finalize_snapshot(
     session: Session, record: SalaryRecord, captured_by: str
-) -> SalarySnapshot:
-    """封存單筆時同步寫 type='finalize' 快照。呼叫端負責 commit。"""
+) -> Optional[SalarySnapshot]:
+    """封存單筆時同步寫 type='finalize' 快照。呼叫端負責 commit。
+
+    若已存在同 (emp, ym, finalize) 快照（並發 / 重入 finalize），回傳 None；
+    避免唯一索引引發整批 finalize transaction rollback。
+    """
     snap = _copy_record_to_snapshot(record, "finalize", captured_by)
-    session.add(snap)
+    try:
+        with session.begin_nested():
+            session.add(snap)
+            session.flush()
+    except IntegrityError:
+        logger.info(
+            "salary finalize snapshot already exists (race lost): emp=%d %d/%d",
+            record.employee_id,
+            record.salary_year,
+            record.salary_month,
+        )
+        return None
     return snap
 
 
