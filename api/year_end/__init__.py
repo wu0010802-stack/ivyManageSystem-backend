@@ -96,7 +96,7 @@ def create_cycle(
         end_date=payload.end_date,
         bonus_calc_date=payload.bonus_calc_date,
         status=YearEndCycleStatus.OPEN,
-        created_by=current_user.get("id"),
+        created_by=current_user.get("user_id"),
     )
     session.add(cycle)
     session.commit()
@@ -203,7 +203,7 @@ def sign_supervisor(
     if s.status != YearEndSettlementStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT (current={s.status.value})")
     s.status = YearEndSettlementStatus.SUPERVISOR_SIGNED
-    s.supervisor_signed_by = current_user.get("id")
+    s.supervisor_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
 
     s.supervisor_signed_at = datetime.now(timezone.utc)
@@ -226,7 +226,7 @@ def sign_accounting(
     if s.status != YearEndSettlementStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"非主管已簽 (current={s.status.value})")
     s.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
-    s.accounting_signed_by = current_user.get("id")
+    s.accounting_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
 
     s.accounting_signed_at = datetime.now(timezone.utc)
@@ -249,7 +249,7 @@ def finalize_settlement(
     if s.status != YearEndSettlementStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"非會計已簽 (current={s.status.value})")
     s.status = YearEndSettlementStatus.FINALIZED
-    s.finalized_by = current_user.get("id")
+    s.finalized_by = current_user.get("user_id")
     from datetime import datetime, timezone
 
     s.finalized_at = datetime.now(timezone.utc)
@@ -293,7 +293,7 @@ def add_special_bonus(
     item = SpecialBonusItem(
         year_end_cycle_id=cycle_id,
         **payload.model_dump(),
-        created_by=current_user.get("id"),
+        created_by=current_user.get("user_id"),
     )
     session.add(item)
     session.commit()

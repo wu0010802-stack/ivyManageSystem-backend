@@ -103,7 +103,7 @@ def create_cycle(
         enrollment_target=payload.enrollment_target,
         enrollment_actual=payload.enrollment_actual,
         status=CycleStatus.OPEN,
-        created_by=current_user.get("id"),
+        created_by=current_user.get("user_id"),
     )
     session.add(cycle)
     session.commit()
@@ -237,7 +237,7 @@ def add_score_item(
         score_delta=payload.score_delta,
         raw_value=payload.raw_value,
         note=payload.note,
-        created_by=current_user.get("id"),
+        created_by=current_user.get("user_id"),
     )
     session.add(si)
     session.commit()
@@ -343,7 +343,7 @@ def sign_supervisor(
     if summary.status != SummaryStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT 狀態（current={summary.status.value}）")
     summary.status = SummaryStatus.SUPERVISOR_SIGNED
-    summary.supervisor_signed_by = current_user.get("id")
+    summary.supervisor_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
 
     summary.supervisor_signed_at = datetime.now(timezone.utc)
@@ -366,7 +366,7 @@ def sign_accounting(
     if summary.status != SummaryStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"未經主管簽核（current={summary.status.value}）")
     summary.status = SummaryStatus.ACCOUNTING_SIGNED
-    summary.accounting_signed_by = current_user.get("id")
+    summary.accounting_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
 
     summary.accounting_signed_at = datetime.now(timezone.utc)
@@ -389,7 +389,7 @@ def finalize_summary(
     if summary.status != SummaryStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"未經行政會計簽核（current={summary.status.value}）")
     summary.status = SummaryStatus.FINALIZED
-    summary.finalized_by = current_user.get("id")
+    summary.finalized_by = current_user.get("user_id")
     from datetime import datetime, timezone
 
     summary.finalized_at = datetime.now(timezone.utc)
@@ -424,7 +424,7 @@ def create_bonus_rate(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
     session: Session = Depends(get_session_dep),
 ):
-    br = AppraisalBonusRate(**payload.model_dump(), created_by=current_user.get("id"))
+    br = AppraisalBonusRate(**payload.model_dump(), created_by=current_user.get("user_id"))
     session.add(br)
     session.commit()
     session.refresh(br)
