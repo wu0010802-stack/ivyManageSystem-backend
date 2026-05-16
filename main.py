@@ -234,6 +234,15 @@ async def _activity_waitlist_sweeper():
 async def app_lifespan(app_instance: FastAPI):
     import asyncio
 
+    # 註冊主 event loop，供 sync def 路由（thread pool）內呼叫 WS 廣播時使用。
+    # contact_book_service.publish_entry 等位點透過 run_coroutine_threadsafe 投回主 loop，
+    # 避免在背景 thread 起新 loop 造成 WS transport 跨 loop 失敗（誤踢訂閱者）。
+    from utils.event_loop import set_main_loop
+
+    _main_loop = asyncio.get_running_loop()
+    app_instance.state.main_loop = _main_loop
+    set_main_loop(_main_loop)
+
     on_startup()
     # 只有 env 啟用時才跑 sweeper（避免多 worker 重複發送通知）
     sweeper_task = None

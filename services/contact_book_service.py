@@ -107,20 +107,26 @@ def publish_entry(
     # WS broadcasting：fire-and-forget；單筆失敗不影響交易
     try:
         from api.contact_book_ws import broadcast_classroom, broadcast_parent
+        from utils.event_loop import get_main_loop
 
         async def _fanout():
             await broadcast_classroom(entry.classroom_id, event_payload)
             for uid in guardian_user_ids:
                 await broadcast_parent(uid, event_payload)
 
+        # 同 thread 內已有 running loop（async 路由直接呼叫）→ create_task；
+        # sync def 路由跑在 starlette thread pool 沒 loop → 投回主 loop 跑，
+        # 避免 asyncio.run() 起新 loop 後 WS transport 視為僵死誤踢訂閱者。
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_fanout())
-            else:
-                loop.run_until_complete(_fanout())
+            loop = asyncio.get_running_loop()
+            loop.create_task(_fanout())
         except RuntimeError:
-            asyncio.run(_fanout())
+            main_loop = get_main_loop()
+            if main_loop is not None and main_loop.is_running():
+                asyncio.run_coroutine_threadsafe(_fanout(), main_loop)
+            else:
+                # 測試或 lifespan 尚未跑（理論上不會走到）：保險走 asyncio.run
+                asyncio.run(_fanout())
     except Exception as exc:
         logger.warning("contact_book WS 廣播失敗（不阻斷）：%s", exc)
 

@@ -328,6 +328,7 @@ def mark_read(
         # WS 推回班級教師端，讓老師看到 ack 計數即時更新
         try:
             from api.contact_book_ws import broadcast_classroom
+            from utils.event_loop import get_main_loop
 
             import asyncio
 
@@ -344,13 +345,14 @@ def mark_read(
                 )
 
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(_push())
-                else:
-                    loop.run_until_complete(_push())
+                loop = asyncio.get_running_loop()
+                loop.create_task(_push())
             except RuntimeError:
-                asyncio.run(_push())
+                main_loop = get_main_loop()
+                if main_loop is not None and main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(_push(), main_loop)
+                else:
+                    asyncio.run(_push())
         except Exception as exc:
             logger.warning("contact_book ack WS 推送失敗（不阻斷）：%s", exc)
 
