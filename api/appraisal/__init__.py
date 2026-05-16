@@ -375,6 +375,182 @@ def add_score_item(
     return si
 
 
+# source_ref 前綴 → item_code（auto-only deletion 用此前綴隔離人工 row）
+_AUTO_SOURCE_TYPE_TO_ITEM_CODE = {
+    "attendance": "LATE_EARLY",
+    "returning_rate": "RETURNING_RATE_0315",
+    "after_class": "AFTER_CLASS_RATE",
+    "disciplinary": "REWARD_PUNISH",
+}
+
+
+@appraisal_router.post(
+    "/cycles/{cycle_id}/sync_score_items", response_model=SyncResultOut
+)
+def sync_score_items(
+    cycle_id: int,
+    dry_run: bool = Query(False),
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """把四指標的 suggested_score_delta 寫入 appraisal_score_items。
+
+    source_ref 前綴隔離：
+      - auto:attendance:<cycle_id>     → item_code LATE_EARLY
+      - auto:returning_rate:<cycle_id> → item_code RETURNING_RATE_0315
+      - auto:after_class:<cycle_id>    → item_code AFTER_CLASS_RATE
+      - auto:disciplinary:<cycle_id>   → item_code REWARD_PUNISH
+
+    Sync 流程：DELETE WHERE source_ref LIKE 'auto:%:<cycle_id>' → INSERT；
+    人工 row（source_ref IS NULL 或非 'auto:%:<cycle_id>'）絕不動。
+
+    限制：
+      - cycle.status != OPEN → 400（已鎖/已關閉）
+      - dry_run=true → 不寫 DB，回 preview
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法同步")
+    statuses = aggregate_cycle_status(session, cycle)
+
+    suffix = f":{cycle_id}"
+    auto_rows: list[tuple[int, str, str, Decimal, Decimal, str]] = []
+    # (participant_id, item_code, source_ref, score_delta, raw_value, note)
+    employee_name_by_pid = {s.participant_id: s.employee_name for s in statuses}
+    for s in statuses:
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["attendance"],
+                f"auto:attendance{suffix}",
+                s.attendance.suggested_score_delta,
+                Decimal(s.attendance.late_count + s.attendance.early_leave_count),
+                (
+                    f"遲到 {s.attendance.late_count} / "
+                    f"早退 {s.attendance.early_leave_count} / "
+                    f"未打卡 {s.attendance.missing_punch_count}"
+                ),
+            )
+        )
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["returning_rate"],
+                f"auto:returning_rate{suffix}",
+                s.retention.suggested_score_delta,
+                s.retention.retention_rate,
+                f"期初 {s.retention.initial_count} → 期末 {s.retention.final_count}",
+            )
+        )
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["after_class"],
+                f"auto:after_class{suffix}",
+                s.activity.suggested_score_delta,
+                s.activity.activity_rate,
+                (
+                    f"才藝報名 {s.activity.registered_for_activity}/"
+                    f"{s.activity.enrolled_students}"
+                ),
+            )
+        )
+        auto_rows.append(
+            (
+                s.participant_id,
+                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["disciplinary"],
+                f"auto:disciplinary{suffix}",
+                s.disciplinary.suggested_score_delta,
+                Decimal(
+                    s.disciplinary.warning_count
+                    + s.disciplinary.minor_count
+                    + s.disciplinary.major_count
+                ),
+                (
+                    f"警告 {s.disciplinary.warning_count} / "
+                    f"小過 {s.disciplinary.minor_count} / "
+                    f"大過 {s.disciplinary.major_count}"
+                ),
+            )
+        )
+
+    auto_like = f"auto:%{suffix}"
+    existing_auto = (
+        session.query(AppraisalScoreItem)
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .filter(AppraisalScoreItem.source_ref.like(auto_like))
+        .all()
+    )
+    skipped_manual = (
+        session.query(func.count(AppraisalScoreItem.id))
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .filter(
+            or_(
+                AppraisalScoreItem.source_ref.is_(None),
+                ~AppraisalScoreItem.source_ref.like(auto_like),
+            )
+        )
+        .scalar()
+    ) or 0
+    old_by_key = {(r.participant_id, r.item_code): r.score_delta for r in existing_auto}
+
+    preview = [
+        SyncResultPreviewItem(
+            participant_id=pid,
+            employee_name=employee_name_by_pid.get(pid, ""),
+            item_code=code,
+            old_score_delta=old_by_key.get((pid, code), Decimal("0")),
+            new_score_delta=new_delta,
+            source_ref=sref,
+        )
+        for pid, code, sref, new_delta, _raw, _note in auto_rows
+    ]
+
+    if dry_run:
+        return SyncResultOut(
+            cycle_id=cycle_id,
+            dry_run=True,
+            deleted_count=len(existing_auto),
+            inserted_count=len(auto_rows),
+            skipped_manual_count=int(skipped_manual),
+            items=preview,
+        )
+
+    deleted = (
+        session.query(AppraisalScoreItem)
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .filter(AppraisalScoreItem.source_ref.like(auto_like))
+        .delete(synchronize_session=False)
+    )
+    catalog_ids = {c.code: c.id for c in session.query(AppraisalScoreItemCatalog).all()}
+    for pid, code, sref, new_delta, raw_v, note in auto_rows:
+        session.add(
+            AppraisalScoreItem(
+                participant_id=pid,
+                cycle_id=cycle_id,
+                catalog_id=catalog_ids.get(code),
+                item_code=code,
+                sequence_no=1,
+                score_delta=new_delta,
+                raw_value=raw_v,
+                note=note,
+                source_ref=sref,
+                created_by=current_user.get("id"),
+            )
+        )
+    session.commit()
+    return SyncResultOut(
+        cycle_id=cycle_id,
+        dry_run=False,
+        deleted_count=int(deleted),
+        inserted_count=len(auto_rows),
+        skipped_manual_count=int(skipped_manual),
+        items=preview,
+    )
+
+
 # ===== Summaries =====
 
 
