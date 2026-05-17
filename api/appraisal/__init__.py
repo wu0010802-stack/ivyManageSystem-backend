@@ -64,6 +64,7 @@ from schemas.appraisal import (
     ParticipantOut,
     ParticipantStatusOut,
     PerUnitConfig,
+    RejectIn,
     ScoreItemCreate,
     ScoreItemOut,
     ScorePreviewItem,
@@ -81,7 +82,12 @@ from services.appraisal.employee_inference import (
     infer_role_group,
 )
 from services.appraisal.engine import BonusRateLookup, compute_summary
-from services.appraisal.sign_workflow import write_summary_log
+from services.appraisal.sign_workflow import (
+    apply_reject,
+    can_reject,
+    default_reject_to_status,
+    write_summary_log,
+)
 from services.appraisal.excel_io import (
     ExportRow,
     TransferRow,
@@ -879,6 +885,100 @@ def finalize_summary(
         from_status=SummaryStatus.ACCOUNTING_SIGNED,
         to_status=SummaryStatus.FINALIZED,
         comment=comment if comment else None,
+    )
+    session.commit()
+    session.refresh(summary)
+    return summary
+
+
+def _resolve_reject_permission(current_status: SummaryStatus) -> Permission:
+    """依當前 status 決定退簽需要的 Permission（二次驗用）。
+
+    - SUPERVISOR_SIGNED → APPRAISAL_REVIEW
+    - ACCOUNTING_SIGNED → APPRAISAL_ACCOUNTING
+    - FINALIZED → APPRAISAL_FINALIZE
+    - 其他（DRAFT）→ FINALIZE 作 fallback；DRAFT 在 endpoint 內已先回 400
+    """
+    if current_status == SummaryStatus.SUPERVISOR_SIGNED:
+        return Permission.APPRAISAL_REVIEW
+    if current_status == SummaryStatus.ACCOUNTING_SIGNED:
+        return Permission.APPRAISAL_ACCOUNTING
+    if current_status == SummaryStatus.FINALIZED:
+        return Permission.APPRAISAL_FINALIZE
+    return Permission.APPRAISAL_FINALIZE
+
+
+@appraisal_router.post("/summaries/{summary_id}/reject", response_model=SummaryOut)
+def reject_summary(
+    summary_id: int,
+    payload: RejectIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """退簽：寫 log + 更新 status 到 to_status（預設退一階）+ 清對應 sign 欄位。
+
+    入口最低門檻為 APPRAISAL_READ；依當前 stage 還要二次驗對應 stage 權限
+    （SUPERVISOR_SIGNED → REVIEW / ACCOUNTING_SIGNED → ACCOUNTING /
+    FINALIZED → FINALIZE）。
+    """
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
+    if summary is None:
+        raise HTTPException(404, "summary 不存在")
+
+    if summary.status == SummaryStatus.DRAFT:
+        raise HTTPException(400, "DRAFT 狀態無法退簽")
+
+    # 二次權限檢查：對 ACCOUNTING_SIGNED / FINALIZED reject 還要更高權限
+    from utils.permissions import has_permission
+
+    required = _resolve_reject_permission(summary.status)
+    user_perms = current_user.get("permissions", 0)
+    if not has_permission(user_perms, required):
+        raise HTTPException(403, f"權限不足，需要 {required.name}")
+
+    # 決定 to_status
+    if payload.to_status:
+        to_status = SummaryStatus(payload.to_status)
+    else:
+        to_status_default = default_reject_to_status(summary.status)
+        if to_status_default is None:
+            raise HTTPException(
+                400, f"無法決定退簽目標（current={summary.status.value}）"
+            )
+        to_status = to_status_default
+
+    if not can_reject(summary.status, to_status):
+        raise HTTPException(
+            400, f"不可從 {summary.status.value} 退到 {to_status.value}"
+        )
+
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
+
+    from_status = apply_reject(
+        summary,
+        to_status,
+        actor_user_id=current_user.get("user_id"),
+        reason=payload.reason,
+    )
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.REJECT,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=from_status,
+        to_status=to_status,
+        reason=payload.reason,
     )
     session.commit()
     session.refresh(summary)
