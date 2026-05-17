@@ -354,3 +354,42 @@ class TestFacade:
         statuses = aggregate_cycle_status(s, cycle)
         assert len(statuses) == 1
         assert statuses[0].employee_name == "計算"
+
+    def test_aggregate_cycle_status_loads_manual_event_counts(self, test_db_session):
+        """有 manual count 的 participant 應在 ParticipantStatus.manual_event_counts
+        對應 item_code 看到正確 Decimal 數值；未填入者該 dict 為空。"""
+        from models.appraisal import AppraisalManualEventCount, ScoreItemCode
+
+        s = test_db_session
+        cycle = _make_cycle(s)
+        e1 = _make_employee(s, "有手填", eid_suffix="M01")
+        e2 = _make_employee(s, "沒手填", eid_suffix="M02")
+        p1 = _make_participant(s, cycle, e1)
+        _make_participant(s, cycle, e2)
+        s.flush()
+        s.add_all(
+            [
+                AppraisalManualEventCount(
+                    cycle_id=cycle.id,
+                    participant_id=p1.id,
+                    item_code=ScoreItemCode.SCHOOL_MEETING_ABSENCE.value,
+                    count=Decimal("2"),
+                ),
+                AppraisalManualEventCount(
+                    cycle_id=cycle.id,
+                    participant_id=p1.id,
+                    item_code=ScoreItemCode.CHILD_ACCIDENT.value,
+                    count=Decimal("1"),
+                ),
+            ]
+        )
+        s.commit()
+        statuses = aggregate_cycle_status(s, cycle)
+        by_pid = {st.participant_id: st for st in statuses}
+        assert p1.id in by_pid
+        target = by_pid[p1.id]
+        assert target.manual_event_counts["SCHOOL_MEETING_ABSENCE"] == Decimal("2")
+        assert target.manual_event_counts["CHILD_ACCIDENT"] == Decimal("1")
+        # 未手填者應為空 dict
+        other = next(st for st in statuses if st.participant_id != p1.id)
+        assert other.manual_event_counts == {}
