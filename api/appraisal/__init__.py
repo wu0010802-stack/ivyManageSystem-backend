@@ -49,6 +49,7 @@ from schemas.appraisal import (
     BulkAddParticipantsResult,
     CatalogOut,
     ClassRetentionAggregateOut,
+    CommentIn,
     CycleCreate,
     CycleOut,
     CycleUpdate,
@@ -979,6 +980,33 @@ def reject_summary(
         from_status=from_status,
         to_status=to_status,
         reason=payload.reason,
+    )
+    session.commit()
+    session.refresh(summary)
+    return summary
+
+
+@appraisal_router.post("/summaries/{summary_id}/comment", response_model=SummaryOut)
+def comment_summary(
+    summary_id: int,
+    payload: CommentIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """留言：寫 AppraisalSummaryLog action=COMMENT，status 不變。
+
+    入口門檻 APPRAISAL_READ；空 comment 由 Pydantic min_length=1 攔截。
+    """
+    summary = session.get(AppraisalSummary, summary_id)
+    if summary is None:
+        raise HTTPException(404, "summary 不存在")
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.COMMENT,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        comment=payload.comment,
     )
     session.commit()
     session.refresh(summary)
