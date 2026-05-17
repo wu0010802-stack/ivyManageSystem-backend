@@ -105,6 +105,44 @@ class ScoreItemSign(str, enum.Enum):
     NEUTRAL = "NEUTRAL"
 
 
+class ScoreItemCode(str, enum.Enum):
+    """14 條考核扣分項對應 Excel `半年考核統計表` 欄位。
+
+    auto = aggregator 即時算；manual = 主任在 UI 上手填次數。
+    """
+
+    # auto (7) — engine 從 status_aggregator 拿原始值
+    LATE_EARLY = "LATE_EARLY"
+    MISSING_PUNCH = "MISSING_PUNCH"
+    LEAVE = "LEAVE"
+    RETURNING_RATE_0915 = "RETURNING_RATE_0915"
+    RETURNING_RATE_0315 = "RETURNING_RATE_0315"
+    AFTER_CLASS_RATE = "AFTER_CLASS_RATE"
+    REWARD_PUNISH = "REWARD_PUNISH"
+    # manual (7) — 主任在 ManualEventEntrySection 上填次數
+    SCHOOL_MEETING_ABSENCE = "SCHOOL_MEETING_ABSENCE"
+    INSTITUTION_MEETING_0913 = "INSTITUTION_MEETING_0913"
+    INSTITUTION_MEETING_1115 = "INSTITUTION_MEETING_1115"
+    SELF_IMPROVEMENT_ACTIVITY = "SELF_IMPROVEMENT_ACTIVITY"
+    CHILD_ACCIDENT = "CHILD_ACCIDENT"
+    CLASS_HEADCOUNT_BONUS = "CLASS_HEADCOUNT_BONUS"
+    OTHER = "OTHER"
+
+
+AUTO_ITEM_CODES = frozenset(
+    {
+        ScoreItemCode.LATE_EARLY,
+        ScoreItemCode.MISSING_PUNCH,
+        ScoreItemCode.LEAVE,
+        ScoreItemCode.RETURNING_RATE_0915,
+        ScoreItemCode.RETURNING_RATE_0315,
+        ScoreItemCode.AFTER_CLASS_RATE,
+        ScoreItemCode.REWARD_PUNISH,
+    }
+)
+MANUAL_ITEM_CODES = frozenset(set(ScoreItemCode) - AUTO_ITEM_CODES)
+
+
 # 共用 enum types（對齊 migration 的 PG enum 名稱；create_type=False 因 enum 由 migration 創建）
 _SEMESTER_ENUM = Enum(
     Semester,
@@ -153,7 +191,9 @@ class AppraisalCycle(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    academic_year: Mapped[int] = mapped_column(Integer, nullable=False, comment="民國學年")
+    academic_year: Mapped[int] = mapped_column(
+        Integer, nullable=False, comment="民國學年"
+    )
     semester: Mapped[Semester] = mapped_column(_SEMESTER_ENUM, nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -335,7 +375,9 @@ class AppraisalScoreItem(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    participant: Mapped[AppraisalParticipant] = relationship(back_populates="score_items")
+    participant: Mapped[AppraisalParticipant] = relationship(
+        back_populates="score_items"
+    )
     catalog: Mapped[Optional[AppraisalScoreItemCatalog]] = relationship()
 
 
@@ -368,7 +410,9 @@ class AppraisalSummary(Base):
         Numeric(10, 2), nullable=False, default=Decimal("0")
     )
     leave_note: Mapped[Optional[str]] = mapped_column(
-        String(120), nullable=True, comment="Excel 事假/病假備註欄（如「事3天」「病6天」）"
+        String(120),
+        nullable=True,
+        comment="Excel 事假/病假備註欄（如「事3天」「病6天」）",
     )
     status: Mapped[SummaryStatus] = mapped_column(
         _SUMMARY_STATUS_ENUM, nullable=False, default=SummaryStatus.DRAFT
