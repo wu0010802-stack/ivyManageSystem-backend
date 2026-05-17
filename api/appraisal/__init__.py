@@ -29,10 +29,12 @@ from models.appraisal import (
     AppraisalScoreItemCatalog,
     AppraisalScoringRule,
     AppraisalSummary,
+    AppraisalSummaryLog,
     CycleStatus,
     Grade,
     RoleGroup,
     Semester,
+    SummaryLogAction,
     SummaryStatus,
 )
 from models.base import get_session_dep, session_scope
@@ -79,6 +81,7 @@ from services.appraisal.employee_inference import (
     infer_role_group,
 )
 from services.appraisal.engine import BonusRateLookup, compute_summary
+from services.appraisal.sign_workflow import write_summary_log
 from services.appraisal.excel_io import (
     ExportRow,
     TransferRow,
@@ -777,6 +780,16 @@ def sign_supervisor(
 
     summary.supervisor_signed_at = datetime.now(timezone.utc)
     summary.supervisor_comment = comment
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.SIGN_SUPERVISOR,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=SummaryStatus.DRAFT,
+        to_status=SummaryStatus.SUPERVISOR_SIGNED,
+        comment=comment if comment else None,
+    )
     session.commit()
     session.refresh(summary)
     return summary
@@ -813,6 +826,16 @@ def sign_accounting(
 
     summary.accounting_signed_at = datetime.now(timezone.utc)
     summary.accounting_comment = comment
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.SIGN_ACCOUNTING,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=SummaryStatus.SUPERVISOR_SIGNED,
+        to_status=SummaryStatus.ACCOUNTING_SIGNED,
+        comment=comment if comment else None,
+    )
     session.commit()
     session.refresh(summary)
     return summary
@@ -847,6 +870,16 @@ def finalize_summary(
 
     summary.finalized_at = datetime.now(timezone.utc)
     summary.finalized_comment = comment
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.FINALIZE,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=SummaryStatus.ACCOUNTING_SIGNED,
+        to_status=SummaryStatus.FINALIZED,
+        comment=comment if comment else None,
+    )
     session.commit()
     session.refresh(summary)
     return summary
