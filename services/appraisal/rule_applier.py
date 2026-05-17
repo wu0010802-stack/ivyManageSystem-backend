@@ -74,3 +74,14 @@ def apply_tier(rule: ScoringRule, value: Decimal, role_group: RoleGroup) -> Deci
         rule.item_code,
     )
     return Decimal("0")
+
+
+def apply_flat_threshold(
+    rule: ScoringRule, value: Decimal, role_group: RoleGroup
+) -> Decimal:
+    """value >= threshold → above_delta；否則 below_delta。"""
+    cfg = rule.rule_config
+    threshold = Decimal(str(cfg["threshold"]))
+    if value >= threshold:
+        return _round(Decimal(str(cfg["above_delta"])))
+    return _round(Decimal(str(cfg["below_delta"])))

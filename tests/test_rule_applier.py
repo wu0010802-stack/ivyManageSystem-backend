@@ -8,6 +8,7 @@ import pytest
 from models.appraisal import RoleGroup, ScoreItemCode
 from services.appraisal.rule_applier import (
     ScoringRule,
+    apply_flat_threshold,
     apply_per_unit,
     apply_tier,
 )
@@ -116,3 +117,34 @@ class TestApplyTier:
         assert apply_tier(rule, Decimal("100"), RoleGroup.HEAD_TEACHER) == Decimal(
             "6.00"
         )
+
+
+class TestApplyFlatThreshold:
+    def _make_rule(self, threshold, above, below):
+        return _rule(
+            "FLAT_THRESHOLD",
+            {
+                "input_field": "activity_rate",
+                "threshold": threshold,
+                "above_delta": above,
+                "below_delta": below,
+            },
+        )
+
+    def test_value_above_threshold(self):
+        rule = self._make_rule(80, 2, 0)
+        assert apply_flat_threshold(
+            rule, Decimal("90"), RoleGroup.HEAD_TEACHER
+        ) == Decimal("2.00")
+
+    def test_value_below_threshold(self):
+        rule = self._make_rule(80, 2, -1)
+        assert apply_flat_threshold(
+            rule, Decimal("70"), RoleGroup.HEAD_TEACHER
+        ) == Decimal("-1.00")
+
+    def test_value_equal_threshold_counts_as_above(self):
+        rule = self._make_rule(80, 2, 0)
+        assert apply_flat_threshold(
+            rule, Decimal("80"), RoleGroup.HEAD_TEACHER
+        ) == Decimal("2.00")
