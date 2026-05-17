@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from models.appraisal import (
     CycleStatus,
@@ -262,3 +262,118 @@ class BulkAddParticipantsResult(BaseModel):
     created_count: int
     skipped_count: int
     created_participants: list[ParticipantOut]
+
+
+# ===== Scoring Rules (calibrate Phase 1) =====
+
+
+class PerUnitConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    per_unit_delta: Decimal
+    per_role_override: Optional[dict[str, Decimal]] = None
+    unit_cap: Optional[int] = Field(default=None, gt=0)
+    delta_cap: Optional[Decimal] = None
+
+
+class TierItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min: Decimal
+    delta: Decimal
+
+
+class TierConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    input_field: str
+    tiers: list[TierItem]
+
+    @field_validator("tiers")
+    @classmethod
+    def must_have_min_zero(cls, v):
+        if not v:
+            raise ValueError("tiers 不可為空")
+        if not any(t.min == 0 for t in v):
+            raise ValueError("必須有一條 min=0 兜底")
+        return v
+
+
+class FlatThresholdConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    input_field: str
+    threshold: Decimal
+    above_delta: Decimal
+    below_delta: Decimal
+
+
+class DisciplinaryTieredConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    warning_delta: Decimal
+    minor_delta: Decimal
+    major_delta: Decimal
+
+
+class ScoringRuleIn(BaseModel):
+    item_code: str
+    effective_from: date
+    rule_type: Literal["PER_UNIT", "TIER", "FLAT_THRESHOLD", "DISCIPLINARY_TIERED"]
+    rule_config: (
+        dict  # 由 endpoint 內依 rule_type 二次 validate（用上方 4 config class）
+    )
+    applies_to_role_groups: Optional[list[str]] = None
+    notes: Optional[str] = None
+
+
+class ScoringRuleOut(ScoringRuleIn):
+    id: int
+    created_at: Optional[str] = None
+    created_by: Optional[int] = None
+
+
+# ===== Manual Event Counts (calibrate Phase 1) =====
+
+
+class ManualEventCountIn(BaseModel):
+    participant_id: int
+    item_code: str
+    count: Decimal = Field(ge=0)
+    note: Optional[str] = None
+
+
+class ManualEventCountBatchIn(BaseModel):
+    entries: list[ManualEventCountIn]
+
+
+class ManualEventCountOut(BaseModel):
+    participant_id: int
+    employee_name: str
+    item_code: str
+    count: Decimal
+    entered_by: Optional[int]
+    entered_at: Optional[str]
+
+
+class ManualEventCountListOut(BaseModel):
+    cycle_id: int
+    entries: list[ManualEventCountOut]
+
+
+# ===== Score Preview (calibrate Phase 1) =====
+
+
+class ScorePreviewItem(BaseModel):
+    item_code: str
+    delta: Decimal
+    raw_value: Decimal
+    note: str
+    current_db_value: Optional[Decimal] = None
+
+
+class ScorePreviewParticipant(BaseModel):
+    participant_id: int
+    employee_name: str
+    items: list[ScorePreviewItem]
+
+
+class ScorePreviewOut(BaseModel):
+    cycle_id: int
+    on_date: date
+    participants: list[ScorePreviewParticipant]
