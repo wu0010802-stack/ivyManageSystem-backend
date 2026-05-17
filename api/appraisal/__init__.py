@@ -37,6 +37,7 @@ from models.appraisal import (
     SummaryLogAction,
     SummaryStatus,
 )
+from models.auth import User
 from models.base import get_session_dep, session_scope
 from models.employee import Employee
 from schemas.appraisal import (
@@ -76,6 +77,7 @@ from schemas.appraisal import (
     ScorePreviewParticipant,
     ScoringRuleIn,
     ScoringRuleOut,
+    SummaryLogOut,
     SummaryOut,
     SyncResultOut,
     SyncResultPreviewItem,
@@ -1137,6 +1139,57 @@ def batch_sign_summaries(
 
     session.commit()
     return BatchSignResultOut(succeeded=succeeded, failed=failed)
+
+
+@appraisal_router.get(
+    "/summaries/{summary_id}/logs",
+    response_model=list[SummaryLogOut],
+)
+def get_summary_logs(
+    summary_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """取得 summary 簽核軌跡（log）；desc by created_at + id。
+
+    join users 取 actor_name（display_name 或 username fallback）。
+    """
+    summary = session.get(AppraisalSummary, summary_id)
+    if summary is None:
+        raise HTTPException(404, "summary 不存在")
+
+    rows = (
+        session.query(AppraisalSummaryLog)
+        .filter(AppraisalSummaryLog.summary_id == summary_id)
+        .order_by(
+            AppraisalSummaryLog.created_at.desc(),
+            AppraisalSummaryLog.id.desc(),
+        )
+        .all()
+    )
+
+    actor_ids = {r.actor_id for r in rows}
+    actor_names: dict[int, str] = {}
+    if actor_ids:
+        for u in session.query(User).filter(User.id.in_(actor_ids)).all():
+            actor_names[u.id] = u.display_name or u.username
+
+    return [
+        SummaryLogOut(
+            id=r.id,
+            summary_id=r.summary_id,
+            action=r.action.value if hasattr(r.action, "value") else str(r.action),
+            from_status=r.from_status.value if r.from_status else None,
+            to_status=r.to_status.value if r.to_status else None,
+            actor_id=r.actor_id,
+            actor_name=actor_names.get(r.actor_id),
+            actor_role_snapshot=r.actor_role_snapshot,
+            reason=r.reason,
+            comment=r.comment,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        for r in rows
+    ]
 
 
 # ===== Bonus Rates =====
