@@ -7,6 +7,7 @@ Excel 雙向 I/O 端點，全部聚合在單一 router 內。
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import BytesIO
@@ -22,9 +23,11 @@ from sqlalchemy.orm import Session
 from models.appraisal import (
     AppraisalBonusRate,
     AppraisalCycle,
+    AppraisalManualEventCount,
     AppraisalParticipant,
     AppraisalScoreItem,
     AppraisalScoreItemCatalog,
+    AppraisalScoringRule,
     AppraisalSummary,
     CycleStatus,
     Grade,
@@ -49,15 +52,27 @@ from schemas.appraisal import (
     CycleUpdate,
     DisciplinaryActionItemOut,
     DisciplinaryAggregateOut,
+    DisciplinaryTieredConfig,
+    FlatThresholdConfig,
     ImportResultOut,
+    ManualEventCountBatchIn,
+    ManualEventCountListOut,
+    ManualEventCountOut,
     ParticipantCreate,
     ParticipantOut,
     ParticipantStatusOut,
+    PerUnitConfig,
     ScoreItemCreate,
     ScoreItemOut,
+    ScorePreviewItem,
+    ScorePreviewOut,
+    ScorePreviewParticipant,
+    ScoringRuleIn,
+    ScoringRuleOut,
     SummaryOut,
     SyncResultOut,
     SyncResultPreviewItem,
+    TierConfig,
 )
 from services.appraisal.employee_inference import (
     infer_classroom_id,
@@ -494,15 +509,6 @@ def add_score_item(
     return si
 
 
-# source_ref 前綴 → item_code（auto-only deletion 用此前綴隔離人工 row）
-_AUTO_SOURCE_TYPE_TO_ITEM_CODE = {
-    "attendance": "LATE_EARLY",
-    "returning_rate": "RETURNING_RATE_0315",
-    "after_class": "AFTER_CLASS_RATE",
-    "disciplinary": "REWARD_PUNISH",
-}
-
-
 @appraisal_router.post(
     "/cycles/{cycle_id}/sync_score_items", response_model=SyncResultOut
 )
@@ -512,15 +518,12 @@ def sync_score_items(
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
     session: Session = Depends(get_session_dep),
 ):
-    """把四指標的 suggested_score_delta 寫入 appraisal_score_items。
+    """把 14 個 item_code 的 suggested_score_delta 寫入 appraisal_score_items。
 
-    source_ref 前綴隔離：
-      - auto:attendance:<cycle_id>     → item_code LATE_EARLY
-      - auto:returning_rate:<cycle_id> → item_code RETURNING_RATE_0315
-      - auto:after_class:<cycle_id>    → item_code AFTER_CLASS_RATE
-      - auto:disciplinary:<cycle_id>   → item_code REWARD_PUNISH
+    source_ref 規範：auto:<lowercase_item_code>:<cycle_id>
+      （例：auto:late_early:42 / auto:school_meeting_absence:42 ...）
 
-    Sync 流程：DELETE WHERE source_ref LIKE 'auto:%:<cycle_id>' → INSERT；
+    Sync 流程：DELETE WHERE source_ref LIKE 'auto:%:<cycle_id>' → INSERT 14×N；
     人工 row（source_ref IS NULL 或非 'auto:%:<cycle_id>'）絕不動。
 
     限制：
@@ -532,70 +535,49 @@ def sync_score_items(
         raise HTTPException(404, "週期不存在")
     if cycle.status != CycleStatus.OPEN:
         raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法同步")
-    statuses = aggregate_cycle_status(session, cycle)
+
+    from services.appraisal.rule_applier import compute_all_deltas
+
+    deltas = compute_all_deltas(session, cycle)
 
     suffix = f":{cycle_id}"
-    auto_rows: list[tuple[int, str, str, Decimal, Decimal, str]] = []
-    # (participant_id, item_code, source_ref, score_delta, raw_value, note)
-    employee_name_by_pid = {s.participant_id: s.employee_name for s in statuses}
-    for s in statuses:
+    auto_like = f"auto:%{suffix}"
+
+    # 撈 participant → employee name（preview 顯示）
+    pids = {pid for pid, _ in deltas.keys()}
+    participants = (
+        session.query(AppraisalParticipant)
+        .filter(AppraisalParticipant.id.in_(pids))
+        .all()
+        if pids
+        else []
+    )
+    pid_to_emp = {p.id: p.employee_id for p in participants}
+    emp_ids = set(pid_to_emp.values())
+    emp_names = (
+        {
+            e.id: e.name
+            for e in session.query(Employee).filter(Employee.id.in_(emp_ids)).all()
+        }
+        if emp_ids
+        else {}
+    )
+
+    auto_rows: list[dict] = []
+    for (pid, code), dr in deltas.items():
+        ref = f"auto:{code.lower()}:{cycle_id}"
         auto_rows.append(
-            (
-                s.participant_id,
-                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["attendance"],
-                f"auto:attendance{suffix}",
-                s.attendance.suggested_score_delta,
-                Decimal(s.attendance.late_count + s.attendance.early_leave_count),
-                (
-                    f"遲到 {s.attendance.late_count} / "
-                    f"早退 {s.attendance.early_leave_count} / "
-                    f"未打卡 {s.attendance.missing_punch_count}"
-                ),
-            )
-        )
-        auto_rows.append(
-            (
-                s.participant_id,
-                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["returning_rate"],
-                f"auto:returning_rate{suffix}",
-                s.retention.suggested_score_delta,
-                s.retention.retention_rate,
-                f"期初 {s.retention.initial_count} → 期末 {s.retention.final_count}",
-            )
-        )
-        auto_rows.append(
-            (
-                s.participant_id,
-                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["after_class"],
-                f"auto:after_class{suffix}",
-                s.activity.suggested_score_delta,
-                s.activity.activity_rate,
-                (
-                    f"才藝報名 {s.activity.registered_for_activity}/"
-                    f"{s.activity.enrolled_students}"
-                ),
-            )
-        )
-        auto_rows.append(
-            (
-                s.participant_id,
-                _AUTO_SOURCE_TYPE_TO_ITEM_CODE["disciplinary"],
-                f"auto:disciplinary{suffix}",
-                s.disciplinary.suggested_score_delta,
-                Decimal(
-                    s.disciplinary.warning_count
-                    + s.disciplinary.minor_count
-                    + s.disciplinary.major_count
-                ),
-                (
-                    f"警告 {s.disciplinary.warning_count} / "
-                    f"小過 {s.disciplinary.minor_count} / "
-                    f"大過 {s.disciplinary.major_count}"
-                ),
-            )
+            {
+                "participant_id": pid,
+                "cycle_id": cycle_id,
+                "item_code": code,
+                "score_delta": dr.delta,
+                "raw_value": dr.raw_value,
+                "note": dr.note,
+                "source_ref": ref,
+            }
         )
 
-    auto_like = f"auto:%{suffix}"
     existing_auto = (
         session.query(AppraisalScoreItem)
         .filter(AppraisalScoreItem.cycle_id == cycle_id)
@@ -617,14 +599,16 @@ def sync_score_items(
 
     preview = [
         SyncResultPreviewItem(
-            participant_id=pid,
-            employee_name=employee_name_by_pid.get(pid, ""),
-            item_code=code,
-            old_score_delta=old_by_key.get((pid, code), Decimal("0")),
-            new_score_delta=new_delta,
-            source_ref=sref,
+            participant_id=row["participant_id"],
+            employee_name=emp_names.get(pid_to_emp.get(row["participant_id"]), ""),
+            item_code=row["item_code"],
+            old_score_delta=old_by_key.get(
+                (row["participant_id"], row["item_code"]), Decimal("0")
+            ),
+            new_score_delta=row["score_delta"],
+            source_ref=row["source_ref"],
         )
-        for pid, code, sref, new_delta, _raw, _note in auto_rows
+        for row in auto_rows
     ]
 
     if dry_run:
@@ -647,18 +631,18 @@ def sync_score_items(
     # （PG 不會出問題，但 SQLite 會丟 SAWarning）。
     session.flush()
     catalog_ids = {c.code: c.id for c in session.query(AppraisalScoreItemCatalog).all()}
-    for pid, code, sref, new_delta, raw_v, note in auto_rows:
+    for row in auto_rows:
         session.add(
             AppraisalScoreItem(
-                participant_id=pid,
-                cycle_id=cycle_id,
-                catalog_id=catalog_ids.get(code),
-                item_code=code,
+                participant_id=row["participant_id"],
+                cycle_id=row["cycle_id"],
+                catalog_id=catalog_ids.get(row["item_code"]),
+                item_code=row["item_code"],
                 sequence_no=1,
-                score_delta=new_delta,
-                raw_value=raw_v,
-                note=note,
-                source_ref=sref,
+                score_delta=row["score_delta"],
+                raw_value=row["raw_value"],
+                note=row["note"],
+                source_ref=row["source_ref"],
                 created_by=current_user.get("user_id"),
             )
         )
@@ -1075,6 +1059,296 @@ def export_transfer_roster(
         headers={
             "Content-Disposition": f'attachment; filename="transfer_roster_{cycle_id}.xlsx"'
         },
+    )
+
+
+# ===== Scoring Rules (calibrate Phase 1) =====
+
+
+_CONFIG_VALIDATORS = {
+    "PER_UNIT": PerUnitConfig,
+    "TIER": TierConfig,
+    "FLAT_THRESHOLD": FlatThresholdConfig,
+    "DISCIPLINARY_TIERED": DisciplinaryTieredConfig,
+}
+
+
+def _validate_rule_config(rule_type: str, config: dict) -> dict:
+    """依 rule_type 用對應 BaseModel 二次 validate rule_config。"""
+    validator = _CONFIG_VALIDATORS.get(rule_type)
+    if validator is None:
+        raise HTTPException(422, f"未知 rule_type: {rule_type}")
+    try:
+        return validator(**config).model_dump(mode="json")
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, f"rule_config 驗證失敗: {e}")
+
+
+def _row_to_scoring_rule_out(row: AppraisalScoringRule) -> ScoringRuleOut:
+    return ScoringRuleOut(
+        id=row.id,
+        item_code=row.item_code,
+        effective_from=row.effective_from,
+        rule_type=row.rule_type,
+        rule_config=row.rule_config,
+        applies_to_role_groups=row.applies_to_role_groups,
+        notes=row.notes,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        created_by=row.created_by,
+    )
+
+
+@appraisal_router.get("/scoring_rules", response_model=list[ScoringRuleOut])
+def list_scoring_rules(
+    effective_on: Optional[date] = Query(None),
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """列出指定日期當前有效的所有規則（每個 item_code 只取最新版）。"""
+    on_date = effective_on or date.today()
+    rows = (
+        session.query(AppraisalScoringRule)
+        .filter(AppraisalScoringRule.effective_from <= on_date)
+        .order_by(
+            AppraisalScoringRule.item_code,
+            AppraisalScoringRule.effective_from.desc(),
+        )
+        .all()
+    )
+    seen: set[str] = set()
+    out: list[ScoringRuleOut] = []
+    for row in rows:
+        if row.item_code in seen:
+            continue
+        seen.add(row.item_code)
+        out.append(_row_to_scoring_rule_out(row))
+    return out
+
+
+@appraisal_router.get("/scoring_rules/history", response_model=list[ScoringRuleOut])
+def get_scoring_rule_history(
+    item_code: str = Query(...),
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """單一 item_code 的版本歷史，依 effective_from 由新到舊。"""
+    rows = (
+        session.query(AppraisalScoringRule)
+        .filter(AppraisalScoringRule.item_code == item_code)
+        .order_by(AppraisalScoringRule.effective_from.desc())
+        .all()
+    )
+    return [_row_to_scoring_rule_out(r) for r in rows]
+
+
+@appraisal_router.post("/scoring_rules", response_model=ScoringRuleOut, status_code=201)
+def create_scoring_rule(
+    payload: ScoringRuleIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_RULE_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """建立新版規則。
+
+    - effective_from 不可早於今天
+    - rule_config 依 rule_type 二次 validate
+    - (item_code, effective_from) UNIQUE 衝突回 409
+    """
+    if payload.effective_from < date.today():
+        raise HTTPException(422, "effective_from 不可早於今天")
+    validated_config = _validate_rule_config(payload.rule_type, payload.rule_config)
+    exists = (
+        session.query(AppraisalScoringRule)
+        .filter(
+            AppraisalScoringRule.item_code == payload.item_code,
+            AppraisalScoringRule.effective_from == payload.effective_from,
+        )
+        .first()
+    )
+    if exists:
+        raise HTTPException(
+            409,
+            f"{payload.item_code} 已有 {payload.effective_from} 生效的版本",
+        )
+    row = AppraisalScoringRule(
+        item_code=payload.item_code,
+        effective_from=payload.effective_from,
+        rule_type=payload.rule_type,
+        rule_config=validated_config,
+        applies_to_role_groups=payload.applies_to_role_groups,
+        notes=payload.notes,
+        created_by=current_user.get("id"),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return _row_to_scoring_rule_out(row)
+
+
+# ===== Manual Event Counts (calibrate Phase 1) =====
+
+
+@appraisal_router.get(
+    "/cycles/{cycle_id}/manual_event_counts",
+    response_model=ManualEventCountListOut,
+)
+def list_manual_event_counts(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """列出指定 cycle 已填的手填事件次數（含員工姓名）。"""
+    rows = (
+        session.query(AppraisalManualEventCount, AppraisalParticipant.employee_id)
+        .join(
+            AppraisalParticipant,
+            AppraisalParticipant.id == AppraisalManualEventCount.participant_id,
+        )
+        .filter(AppraisalManualEventCount.cycle_id == cycle_id)
+        .all()
+    )
+    employee_ids = [emp_id for _, emp_id in rows]
+    emp_names: dict[int, str] = (
+        {
+            e.id: e.name
+            for e in session.query(Employee).filter(Employee.id.in_(employee_ids)).all()
+        }
+        if employee_ids
+        else {}
+    )
+    return ManualEventCountListOut(
+        cycle_id=cycle_id,
+        entries=[
+            ManualEventCountOut(
+                participant_id=r.participant_id,
+                employee_name=emp_names.get(emp_id, ""),
+                item_code=r.item_code,
+                count=r.count,
+                entered_by=r.entered_by,
+                entered_at=r.entered_at.isoformat() if r.entered_at else None,
+            )
+            for r, emp_id in rows
+        ],
+    )
+
+
+@appraisal_router.put("/cycles/{cycle_id}/manual_event_counts:batch")
+def batch_upsert_manual_event_counts(
+    cycle_id: int,
+    payload: ManualEventCountBatchIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """Batch UPSERT 手填事件次數；僅 OPEN 狀態的 cycle 可寫。"""
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法編輯")
+
+    for entry in payload.entries:
+        existing = (
+            session.query(AppraisalManualEventCount)
+            .filter_by(
+                cycle_id=cycle_id,
+                participant_id=entry.participant_id,
+                item_code=entry.item_code,
+            )
+            .first()
+        )
+        if existing:
+            existing.count = entry.count
+            existing.entered_by = current_user.get("id")
+            existing.note = entry.note
+        else:
+            session.add(
+                AppraisalManualEventCount(
+                    cycle_id=cycle_id,
+                    participant_id=entry.participant_id,
+                    item_code=entry.item_code,
+                    count=entry.count,
+                    entered_by=current_user.get("id"),
+                    note=entry.note,
+                )
+            )
+    session.commit()
+    return {"ok": True, "updated_count": len(payload.entries)}
+
+
+@appraisal_router.post(
+    "/cycles/{cycle_id}/score_preview", response_model=ScorePreviewOut
+)
+def score_preview(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """Dry-run 算 14 條 delta + 對比目前 DB score_items 標 highlight。
+
+    不寫 DB；前端拿來給 admin 預覽 sync 前後差異。
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+
+    from services.appraisal.rule_applier import compute_all_deltas
+
+    deltas = compute_all_deltas(session, cycle)
+
+    # 目前 DB 中已存的 score_items（用於 current_db_value 比對）
+    existing = (
+        session.query(AppraisalScoreItem)
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .all()
+    )
+    current_by_key = {(r.participant_id, r.item_code): r.score_delta for r in existing}
+
+    # 員工名稱
+    pids = {pid for pid, _ in deltas.keys()}
+    pid_to_emp = (
+        {
+            p.id: p.employee_id
+            for p in session.query(AppraisalParticipant)
+            .filter(AppraisalParticipant.id.in_(pids))
+            .all()
+        }
+        if pids
+        else {}
+    )
+    emp_ids = set(pid_to_emp.values())
+    emp_names = (
+        {
+            e.id: e.name
+            for e in session.query(Employee).filter(Employee.id.in_(emp_ids)).all()
+        }
+        if emp_ids
+        else {}
+    )
+
+    by_pid: dict[int, list[ScorePreviewItem]] = defaultdict(list)
+    for (pid, code), dr in deltas.items():
+        by_pid[pid].append(
+            ScorePreviewItem(
+                item_code=code,
+                delta=dr.delta,
+                raw_value=dr.raw_value,
+                note=dr.note,
+                current_db_value=current_by_key.get((pid, code)),
+            )
+        )
+    # 穩定排序：participant_id asc，items 內按 item_code asc
+    participants_out = [
+        ScorePreviewParticipant(
+            participant_id=pid,
+            employee_name=emp_names.get(pid_to_emp.get(pid, 0), ""),
+            items=sorted(items, key=lambda i: i.item_code),
+        )
+        for pid, items in sorted(by_pid.items())
+    ]
+
+    return ScorePreviewOut(
+        cycle_id=cycle_id,
+        on_date=cycle.base_score_calc_date,
+        participants=participants_out,
     )
 
 

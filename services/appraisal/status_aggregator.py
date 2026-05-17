@@ -16,6 +16,7 @@ facade：`aggregate_cycle_status(session, cycle, employee_ids=None)`
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -25,7 +26,12 @@ from sqlalchemy import Integer, case, func, or_
 from sqlalchemy.orm import Session
 
 from models.activity import ActivityRegistration
-from models.appraisal import AppraisalCycle, AppraisalParticipant, RoleGroup
+from models.appraisal import (
+    AppraisalCycle,
+    AppraisalManualEventCount,
+    AppraisalParticipant,
+    RoleGroup,
+)
 from models.attendance import Attendance
 from models.classroom import LIFECYCLE_ACTIVE, Classroom, Student
 from models.disciplinary import DisciplinaryAction
@@ -102,6 +108,9 @@ class ParticipantStatus:
     disciplinary: DisciplinaryAggregate
     is_participant: bool = True
     hire_months_in_cycle: Optional[Decimal] = None
+    # manual item_code → count；主任在 ManualEventEntrySection 填的 7 條手動項。
+    # non-participant 員工或無手填者為空 dict。
+    manual_event_counts: dict[str, Decimal] = field(default_factory=dict)
 
 
 # ===== Sub-aggregators =====
@@ -321,6 +330,28 @@ def _aggregate_disciplinary(
     return result
 
 
+def _aggregate_manual_event_counts(
+    session: Session, cycle_id: int
+) -> dict[int, dict[str, Decimal]]:
+    """bulk 撈 cycle 內全部 manual count → {participant_id: {item_code: count}}。
+
+    一次查詢避免 N+1；participant 沒有任何 manual count 時 caller 應 fallback 空 dict。
+    """
+    out: dict[int, dict[str, Decimal]] = defaultdict(dict)
+    rows = (
+        session.query(
+            AppraisalManualEventCount.participant_id,
+            AppraisalManualEventCount.item_code,
+            AppraisalManualEventCount.count,
+        )
+        .filter(AppraisalManualEventCount.cycle_id == cycle_id)
+        .all()
+    )
+    for pid, code, count in rows:
+        out[pid][code] = count
+    return out
+
+
 # ===== Facade =====
 
 
@@ -385,6 +416,7 @@ def aggregate_cycle_status(
         semester_enum_to_int(cycle.semester),
     )
     dis_map = _aggregate_disciplinary(session, employee_ids_list, start, end)
+    manual_by_pid = _aggregate_manual_event_counts(session, cycle.id)
     out: list[ParticipantStatus] = []
     for p in participants:
         out.append(
@@ -404,6 +436,7 @@ def aggregate_cycle_status(
                 disciplinary=dis_map[p.employee_id],
                 is_participant=True,
                 hire_months_in_cycle=p.hire_months_in_cycle,
+                manual_event_counts=dict(manual_by_pid.get(p.id, {})),
             )
         )
     return out
@@ -478,12 +511,14 @@ def aggregate_all_active_employees_status(
         semester_enum_to_int(cycle.semester),
     )
     dis_map = _aggregate_disciplinary(session, employee_ids, start, end)
+    manual_by_pid = _aggregate_manual_event_counts(session, cycle.id)
 
     out: list[ParticipantStatus] = []
     for eid in employee_ids:
         emp = emp_by_id[eid]
         p = participant_by_emp.get(eid)
         role = employee_to_role[eid]
+        manual_counts = dict(manual_by_pid.get(p.id, {})) if p is not None else {}
         out.append(
             ParticipantStatus(
                 participant_id=p.id if p else None,
@@ -497,6 +532,7 @@ def aggregate_all_active_employees_status(
                 disciplinary=dis_map[eid],
                 is_participant=p is not None,
                 hire_months_in_cycle=p.hire_months_in_cycle if p else None,
+                manual_event_counts=manual_counts,
             )
         )
     # 排序：已加入考核者在前，再依員工姓名

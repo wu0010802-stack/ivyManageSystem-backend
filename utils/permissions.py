@@ -90,6 +90,7 @@ class Permission(IntFlag):
     APPRAISAL_REVIEW = 1 << 57  # 主管簽核（第一階）
     APPRAISAL_ACCOUNTING = 1 << 58  # 行政會計核數字（第二階）
     APPRAISAL_FINALIZE = 1 << 59  # 最高主管核定（第三階）+ cycle lock/unlock/close
+    APPRAISAL_RULE_WRITE = 1 << 53  # 考核扣分規則設定（Phase 1 calibrate）
 
     # --- 年終獎金結算（M1 重構新增）---
     # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
@@ -224,6 +225,7 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.APPRAISAL_EVENT_WRITE
         | Permission.APPRAISAL_REVIEW
         | Permission.APPRAISAL_FINALIZE
+        | Permission.APPRAISAL_RULE_WRITE
         # 年終獎金：主管全程權限（檢視+編輯+核定）
         | Permission.YEAR_END_READ
         | Permission.YEAR_END_WRITE
@@ -331,6 +333,7 @@ PERMISSION_LABELS: Dict[str, str] = {
     "APPRAISAL_REVIEW": "考核簽核 (主管第一階)",
     "APPRAISAL_ACCOUNTING": "考核核數字 (會計第二階)",
     "APPRAISAL_FINALIZE": "考核核定 (最高主管第三階)",
+    "APPRAISAL_RULE_WRITE": "考核扣分規則設定 (Phase 1 calibrate)",
     # 年終獎金結算
     "YEAR_END_READ": "年終結算 (檢視)",
     "YEAR_END_WRITE": "年終結算 (編輯)",

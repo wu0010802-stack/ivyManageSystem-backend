@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     Date,
@@ -105,6 +106,44 @@ class ScoreItemSign(str, enum.Enum):
     NEUTRAL = "NEUTRAL"
 
 
+class ScoreItemCode(str, enum.Enum):
+    """14 條考核扣分項對應 Excel `半年考核統計表` 欄位。
+
+    auto = aggregator 即時算；manual = 主任在 UI 上手填次數。
+    """
+
+    # auto (7) — engine 從 status_aggregator 拿原始值
+    LATE_EARLY = "LATE_EARLY"
+    MISSING_PUNCH = "MISSING_PUNCH"
+    LEAVE = "LEAVE"
+    RETURNING_RATE_0915 = "RETURNING_RATE_0915"
+    RETURNING_RATE_0315 = "RETURNING_RATE_0315"
+    AFTER_CLASS_RATE = "AFTER_CLASS_RATE"
+    REWARD_PUNISH = "REWARD_PUNISH"
+    # manual (7) — 主任在 ManualEventEntrySection 上填次數
+    SCHOOL_MEETING_ABSENCE = "SCHOOL_MEETING_ABSENCE"
+    INSTITUTION_MEETING_0913 = "INSTITUTION_MEETING_0913"
+    INSTITUTION_MEETING_1115 = "INSTITUTION_MEETING_1115"
+    SELF_IMPROVEMENT_ACTIVITY = "SELF_IMPROVEMENT_ACTIVITY"
+    CHILD_ACCIDENT = "CHILD_ACCIDENT"
+    CLASS_HEADCOUNT_BONUS = "CLASS_HEADCOUNT_BONUS"
+    OTHER = "OTHER"
+
+
+AUTO_ITEM_CODES = frozenset(
+    {
+        ScoreItemCode.LATE_EARLY,
+        ScoreItemCode.MISSING_PUNCH,
+        ScoreItemCode.LEAVE,
+        ScoreItemCode.RETURNING_RATE_0915,
+        ScoreItemCode.RETURNING_RATE_0315,
+        ScoreItemCode.AFTER_CLASS_RATE,
+        ScoreItemCode.REWARD_PUNISH,
+    }
+)
+MANUAL_ITEM_CODES = frozenset(set(ScoreItemCode) - AUTO_ITEM_CODES)
+
+
 # 共用 enum types（對齊 migration 的 PG enum 名稱；create_type=False 因 enum 由 migration 創建）
 _SEMESTER_ENUM = Enum(
     Semester,
@@ -153,7 +192,9 @@ class AppraisalCycle(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    academic_year: Mapped[int] = mapped_column(Integer, nullable=False, comment="民國學年")
+    academic_year: Mapped[int] = mapped_column(
+        Integer, nullable=False, comment="民國學年"
+    )
     semester: Mapped[Semester] = mapped_column(_SEMESTER_ENUM, nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -335,7 +376,9 @@ class AppraisalScoreItem(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    participant: Mapped[AppraisalParticipant] = relationship(back_populates="score_items")
+    participant: Mapped[AppraisalParticipant] = relationship(
+        back_populates="score_items"
+    )
     catalog: Mapped[Optional[AppraisalScoreItemCatalog]] = relationship()
 
 
@@ -368,7 +411,9 @@ class AppraisalSummary(Base):
         Numeric(10, 2), nullable=False, default=Decimal("0")
     )
     leave_note: Mapped[Optional[str]] = mapped_column(
-        String(120), nullable=True, comment="Excel 事假/病假備註欄（如「事3天」「病6天」）"
+        String(120),
+        nullable=True,
+        comment="Excel 事假/病假備註欄（如「事3天」「病6天」）",
     )
     status: Mapped[SummaryStatus] = mapped_column(
         _SUMMARY_STATUS_ENUM, nullable=False, default=SummaryStatus.DRAFT
@@ -440,3 +485,80 @@ class AppraisalBonusRate(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class AppraisalScoringRule(Base):
+    """考核扣分規則版本化儲存。
+
+    一個 item_code 可有多版（依 effective_from 區分）。
+    rule_config JSON 結構依 rule_type 而異 — 詳見
+    schemas/appraisal.py 的 PerUnitConfig / TierConfig /
+    FlatThresholdConfig / DisciplinaryTieredConfig。
+    """
+
+    __tablename__ = "appraisal_scoring_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "item_code",
+            "effective_from",
+            name="uq_appraisal_scoring_rule_code_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    item_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    rule_config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    applies_to_role_groups: Mapped[Optional[list]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="null=全部；否則 ['HEAD_TEACHER','ASSISTANT_TEACHER',...]",
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class AppraisalManualEventCount(Base):
+    """主任在 UI 上手填的「事件型」item_code 次數。"""
+
+    __tablename__ = "appraisal_manual_event_counts"
+    __table_args__ = (
+        UniqueConstraint(
+            "cycle_id",
+            "participant_id",
+            "item_code",
+            name="uq_appraisal_manual_event_count_triple",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    cycle_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    participant_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("appraisal_participants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    item_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    count: Mapped[Decimal] = mapped_column(
+        Numeric(8, 2),
+        nullable=False,
+        default=Decimal("0"),
+        comment="次數；允許 0.5 半次",
+    )
+    entered_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    entered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
