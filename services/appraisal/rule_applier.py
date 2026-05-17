@@ -11,12 +11,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from models.appraisal import RoleGroup
+
+logger = logging.getLogger(__name__)
 
 _TWO_PLACES = Decimal("0.01")
 
@@ -57,3 +60,17 @@ def apply_per_unit(rule: ScoringRule, count: Decimal, role_group: RoleGroup) -> 
         elif dcap_d > 0 and delta > dcap_d:
             delta = dcap_d
     return _round(delta)
+
+
+def apply_tier(rule: ScoringRule, value: Decimal, role_group: RoleGroup) -> Decimal:
+    """value ≥ tier.min 的最大 tier 的 delta；tiers 內部自動依 min desc 排。"""
+    tiers = sorted(rule.rule_config["tiers"], key=lambda t: t["min"], reverse=True)
+    for tier in tiers:
+        if value >= Decimal(str(tier["min"])):
+            return _round(Decimal(str(tier["delta"])))
+    logger.warning(
+        "apply_tier: value=%s 沒 match 任何 tier（item=%s）",
+        value,
+        rule.item_code,
+    )
+    return Decimal("0")
