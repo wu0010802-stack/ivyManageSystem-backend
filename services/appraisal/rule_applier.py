@@ -85,3 +85,19 @@ def apply_flat_threshold(
     if value >= threshold:
         return _round(Decimal(str(cfg["above_delta"])))
     return _round(Decimal(str(cfg["below_delta"])))
+
+
+def apply_disciplinary_tiered(
+    rule: ScoringRule,
+    warning_count: int,
+    minor_count: int,
+    major_count: int,
+) -> Decimal:
+    """REWARD_PUNISH 專用：warning/minor/major 各自單價乘以件數後加總。"""
+    cfg = rule.rule_config
+    delta = (
+        Decimal(str(cfg["warning_delta"])) * Decimal(warning_count)
+        + Decimal(str(cfg["minor_delta"])) * Decimal(minor_count)
+        + Decimal(str(cfg["major_delta"])) * Decimal(major_count)
+    )
+    return _round(delta)

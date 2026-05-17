@@ -8,6 +8,7 @@ import pytest
 from models.appraisal import RoleGroup, ScoreItemCode
 from services.appraisal.rule_applier import (
     ScoringRule,
+    apply_disciplinary_tiered,
     apply_flat_threshold,
     apply_per_unit,
     apply_tier,
@@ -148,3 +149,35 @@ class TestApplyFlatThreshold:
         assert apply_flat_threshold(
             rule, Decimal("80"), RoleGroup.HEAD_TEACHER
         ) == Decimal("2.00")
+
+
+class TestApplyDisciplinaryTiered:
+    def _make_rule(self):
+        return _rule(
+            "DISCIPLINARY_TIERED",
+            {
+                "warning_delta": -1,
+                "minor_delta": -3,
+                "major_delta": -10,
+            },
+            item_code=ScoreItemCode.REWARD_PUNISH,
+        )
+
+    def test_all_zero(self):
+        assert apply_disciplinary_tiered(self._make_rule(), 0, 0, 0) == Decimal("0.00")
+
+    def test_basic_sum(self):
+        # 2*-1 + 1*-3 + 0*-10 = -5
+        assert apply_disciplinary_tiered(self._make_rule(), 2, 1, 0) == Decimal("-5.00")
+
+    def test_major_only(self):
+        # 2*-10 = -20
+        assert apply_disciplinary_tiered(self._make_rule(), 0, 0, 2) == Decimal(
+            "-20.00"
+        )
+
+    def test_mixed(self):
+        # -1 + -3 + -10 = -14
+        assert apply_disciplinary_tiered(self._make_rule(), 1, 1, 1) == Decimal(
+            "-14.00"
+        )
