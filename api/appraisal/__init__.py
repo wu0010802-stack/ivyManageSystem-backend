@@ -77,6 +77,9 @@ from schemas.appraisal import (
     ScorePreviewParticipant,
     ScoringRuleIn,
     ScoringRuleOut,
+    SignStatusBucket,
+    SignStatusSummaryItem,
+    SignStatusSummaryOut,
     SummaryLogOut,
     SummaryOut,
     SyncResultOut,
@@ -1190,6 +1193,73 @@ def get_summary_logs(
         )
         for r in rows
     ]
+
+
+@appraisal_router.get(
+    "/cycles/{cycle_id}/sign_status_summary",
+    response_model=SignStatusSummaryOut,
+)
+def get_sign_status_summary(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """聚合 cycle 內所有 summary 的 sign status（排除 is_excluded participant）。
+
+    回 counts + buckets（含每桶 summary 列表，供 KanbanView 一次取齊）。
+    counts 鍵涵蓋全部 SummaryStatus（零值補 0）。
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+
+    rows = (
+        session.query(AppraisalSummary, AppraisalParticipant)
+        .join(
+            AppraisalParticipant,
+            AppraisalParticipant.id == AppraisalSummary.participant_id,
+        )
+        .filter(
+            AppraisalSummary.cycle_id == cycle_id,
+            AppraisalParticipant.is_excluded.is_(False),
+        )
+        .all()
+    )
+
+    emp_ids = {p.employee_id for _, p in rows}
+    emp_names: dict[int, str] = {}
+    if emp_ids:
+        for e in session.query(Employee).filter(Employee.id.in_(emp_ids)).all():
+            emp_names[e.id] = e.name
+
+    buckets_dict: dict[str, list[SignStatusSummaryItem]] = {
+        st.value: [] for st in SummaryStatus
+    }
+    for summary, participant in rows:
+        buckets_dict[summary.status.value].append(
+            SignStatusSummaryItem(
+                id=summary.id,
+                employee_id=participant.employee_id,
+                employee_name=emp_names.get(participant.employee_id, ""),
+                total_score=summary.total_score,
+                grade=summary.grade.value,
+                bonus_amount=summary.bonus_amount,
+                updated_at=(
+                    summary.updated_at.isoformat() if summary.updated_at else None
+                ),
+            )
+        )
+
+    counts = {k: len(v) for k, v in buckets_dict.items()}
+    buckets = [
+        SignStatusBucket(status=st, count=len(items), summaries=items)
+        for st, items in buckets_dict.items()
+    ]
+    return SignStatusSummaryOut(
+        cycle_id=cycle_id,
+        counts=counts,
+        buckets=buckets,
+    )
 
 
 # ===== Bonus Rates =====
