@@ -1,7 +1,7 @@
 """Growth report PDF generator using reportlab + reportlab.graphics.
 
 Pattern reference: .worktrees/moe-phase4/services/enrollment_certificate_pdf.py
-- 用 STSong-Light CID font 處理中文
+- 用 utils/pdf_fonts.register_cjk_font() 註冊嵌入式 TTF（Noto Sans TC）
 - 直接寫到 BytesIO 後 caller 寫檔
 """
 
@@ -17,18 +17,15 @@ from reportlab.graphics.shapes import Drawing
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfgen import canvas
 
-_CJK_FONT = "STSong-Light"
+from utils.pdf_fonts import CJK_FONT_NAME, register_cjk_font
+
+_CJK_FONT = CJK_FONT_NAME
 
 
 def _ensure_font() -> None:
-    try:
-        pdfmetrics.getFont(_CJK_FONT)
-    except KeyError:
-        pdfmetrics.registerFont(UnicodeCIDFont(_CJK_FONT))
+    register_cjk_font()
 
 
 def _fmt_roc(d: date) -> str:

@@ -5,18 +5,15 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.lib import colors
 
-_CJK_FONT = "STSong-Light"
+from utils.pdf_fonts import CJK_FONT_NAME, register_cjk_font
+
+_CJK_FONT = CJK_FONT_NAME
 
 
 def _ensure_font():
-    try:
-        pdfmetrics.getFont(_CJK_FONT)
-    except KeyError:
-        pdfmetrics.registerFont(UnicodeCIDFont(_CJK_FONT))
+    register_cjk_font()
 
 
 def generate_iep_pdf(

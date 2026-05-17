@@ -6,6 +6,7 @@ import logging
 from datetime import date
 from io import BytesIO
 from typing import List, Optional
+from urllib.parse import quote
 
 import openpyxl
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +27,7 @@ from utils.auth import get_current_user, require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
 from api.activity._shared import _build_session_detail_response
+from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +291,41 @@ def export_session_attendance(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        )
+    finally:
+        session.close()
+
+
+@router.get(
+    "/sessions/{session_id}/roll.pdf",
+    dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))],
+)
+def print_session_roll_pdf(
+    session_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """產生場次點名單 PDF（瀏覽器原生 PDF viewer 可直接列印）。"""
+    session = get_session()
+    try:
+        sess = (
+            session.query(ActivitySession)
+            .filter(ActivitySession.id == session_id)
+            .first()
+        )
+        if not sess:
+            raise HTTPException(status_code=404, detail="找不到場次")
+        data = _build_session_detail_response(session, sess)
+        pdf_bytes = generate_attendance_roll_pdf(session_data=data)
+        filename = f"點名單_{data['course_name']}_{data['session_date']}.pdf"
+        return StreamingResponse(
+            BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                # inline → 瀏覽器直接顯示而非下載；filename* 需 RFC 5987 URL-encode
+                "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+                # 點名狀態會即時變動，禁止任何層的快取
+                "Cache-Control": "no-store",
+            },
         )
     finally:
         session.close()

@@ -5,7 +5,9 @@
   generate_transfer_roster_pdf      — 轉帳名冊 PDF (對應「轉帳名冊~P6」)
   generate_summary_table_pdf        — 年終獎金總表 PDF (對應「年終獎金總表」)
 
-中文字型：使用 reportlab 內建 STSong-Light（PDF 預設 CJK），無需外部字型檔。
+中文字型：透過 utils/pdf_fonts.register_cjk_font() 嵌入 Noto Sans TC TTF。
+不能用 reportlab 內建 CID font（STSong-Light/MSung-Light），它們只是 stub reference，
+Chrome PDFium 不內建對應字型 fallback，繁體獨有字會 silently 在 Chrome viewer 中消失。
 """
 
 from __future__ import annotations
@@ -20,8 +22,6 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import (
     Paragraph,
     SimpleDocTemplate,
@@ -31,17 +31,17 @@ from reportlab.platypus import (
 )
 
 from models.year_end import SpecialBonusType
+from utils.pdf_fonts import CJK_FONT_NAME, register_cjk_font
 
 logger = logging.getLogger(__name__)
 
 
-CJK_FONT = "STSong-Light"
+CJK_FONT = CJK_FONT_NAME
 
 
 def _register_font_once() -> None:
     """註冊 CJK 字型（idempotent）。"""
-    if CJK_FONT not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(UnicodeCIDFont(CJK_FONT))
+    register_cjk_font()
 
 
 def _build_styles() -> dict[str, ParagraphStyle]:
@@ -172,9 +172,7 @@ def generate_personal_bonus_slip_pdf(data: PersonalBonusSlipData) -> bytes:
     flow.append(table)
     flow.append(Spacer(1, 0.5 * cm))
     flow.append(
-        Paragraph(
-            f"<b>實際金額 (A)+(B) = {actual_amount:,.2f} 元</b>", styles["h2"]
-        )
+        Paragraph(f"<b>實際金額 (A)+(B) = {actual_amount:,.2f} 元</b>", styles["h2"])
     )
 
     doc.build(flow)

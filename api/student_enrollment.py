@@ -4,9 +4,12 @@ api/student_enrollment.py — 幼生在籍統計 API endpoints
 
 import logging
 from datetime import date
+from io import BytesIO
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, case
 from sqlalchemy.orm import aliased
@@ -14,6 +17,7 @@ from sqlalchemy.orm import aliased
 from models.base import session_scope
 from models.classroom import Classroom, ClassGrade, Student
 from models.database import Employee
+from services.enrollment_roster_pdf import generate_enrollment_roster_pdf
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.academic import resolve_academic_term_filters
@@ -26,6 +30,7 @@ router = APIRouter(prefix="/api", tags=["student-enrollment"])
 # ---------------------------------------------------------------------------
 # Response Schemas
 # ---------------------------------------------------------------------------
+
 
 class ClassStats(BaseModel):
     class_name: str
@@ -67,6 +72,7 @@ class TermOption(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("/student-enrollment/stats", response_model=EnrollmentStatsResponse)
 def get_enrollment_stats(
     school_year: Optional[int] = Query(None),
@@ -90,14 +96,16 @@ def get_enrollment_stats(
             .join(ClassGrade, Classroom.grade_id == ClassGrade.id)
             .outerjoin(
                 Student,
-                (Student.classroom_id == Classroom.id) & (Student.is_active.is_(True))
+                (Student.classroom_id == Classroom.id) & (Student.is_active.is_(True)),
             )
             .filter(
                 Classroom.school_year == school_year,
                 Classroom.semester == semester,
                 Classroom.is_active.is_(True),
             )
-            .group_by(Classroom.id, Classroom.name, ClassGrade.name, ClassGrade.sort_order)
+            .group_by(
+                Classroom.id, Classroom.name, ClassGrade.name, ClassGrade.sort_order
+            )
             .order_by(ClassGrade.sort_order, Classroom.name)
             .all()
         )
@@ -123,7 +131,9 @@ def get_enrollment_stats(
             grade_map[gname]["male"] += male
             grade_map[gname]["female"] += female
             grade_map[gname]["classes"].append(
-                ClassStats(class_name=row.class_name, total=total, male=male, female=female)
+                ClassStats(
+                    class_name=row.class_name, total=total, male=male, female=female
+                )
             )
 
         by_grade = [GradeStats(**grade_map[g]) for g in grade_order]
@@ -149,6 +159,7 @@ def get_enrollment_stats(
 # ---------------------------------------------------------------------------
 # Roster Schemas
 # ---------------------------------------------------------------------------
+
 
 class RosterStudent(BaseModel):
     seq: int
@@ -199,6 +210,7 @@ class RosterResponse(BaseModel):
 # Roster Endpoint
 # ---------------------------------------------------------------------------
 
+
 @router.get("/student-enrollment/roster", response_model=RosterResponse)
 def get_enrollment_roster(
     school_year: Optional[int] = Query(None),
@@ -231,7 +243,9 @@ def get_enrollment_roster(
             )
             .join(ClassGrade, Classroom.grade_id == ClassGrade.id)
             .outerjoin(HeadTeacher, Classroom.head_teacher_id == HeadTeacher.id)
-            .outerjoin(AssistantTeacher, Classroom.assistant_teacher_id == AssistantTeacher.id)
+            .outerjoin(
+                AssistantTeacher, Classroom.assistant_teacher_id == AssistantTeacher.id
+            )
             .outerjoin(ArtTeacher, Classroom.art_teacher_id == ArtTeacher.id)
             .filter(
                 Classroom.school_year == school_year,
@@ -245,18 +259,22 @@ def get_enrollment_roster(
         # ── 查詢各班學生 ────────────────────────────────────────────────
         classroom_ids = [r.classroom_id for r in classroom_rows]
         student_rows = (
-            session.query(
-                Student.classroom_id,
-                Student.name,
-                Student.status_tag,
+            (
+                session.query(
+                    Student.classroom_id,
+                    Student.name,
+                    Student.status_tag,
+                )
+                .filter(
+                    Student.classroom_id.in_(classroom_ids),
+                    Student.is_active.is_(True),
+                )
+                .order_by(Student.classroom_id, Student.id)
+                .all()
             )
-            .filter(
-                Student.classroom_id.in_(classroom_ids),
-                Student.is_active.is_(True),
-            )
-            .order_by(Student.classroom_id, Student.id)
-            .all()
-        ) if classroom_ids else []
+            if classroom_ids
+            else []
+        )
 
         # 按班級分組學生
         students_by_class: dict[int, list] = {cid: [] for cid in classroom_ids}
@@ -278,23 +296,31 @@ def get_enrollment_roster(
             new_count = sum(1 for s in stu_list if s.status_tag == "新生")
             old_count = len(stu_list) - new_count
 
-            classes.append(ClassRosterData(
-                class_number=idx,
-                classroom_id=cid,
-                class_name=row.class_name,
-                grade_name=row.grade_name,
-                head_teacher_name=row.head_teacher_name,
-                assistant_teacher_name=row.assistant_teacher_name,
-                art_teacher_name=row.art_teacher_name,
-                students=roster_students,
-                total=len(stu_list),
-                new_count=new_count,
-                old_count=old_count,
-            ))
+            classes.append(
+                ClassRosterData(
+                    class_number=idx,
+                    classroom_id=cid,
+                    class_name=row.class_name,
+                    grade_name=row.grade_name,
+                    head_teacher_name=row.head_teacher_name,
+                    assistant_teacher_name=row.assistant_teacher_name,
+                    art_teacher_name=row.art_teacher_name,
+                    students=roster_students,
+                    total=len(stu_list),
+                    new_count=new_count,
+                    old_count=old_count,
+                )
+            )
 
             gname = row.grade_name
             if gname not in grade_map:
-                grade_map[gname] = {"grade_name": gname, "class_numbers": [], "total": 0, "new_count": 0, "old_count": 0}
+                grade_map[gname] = {
+                    "grade_name": gname,
+                    "class_numbers": [],
+                    "total": 0,
+                    "new_count": 0,
+                    "old_count": 0,
+                }
                 grade_order.append(gname)
             grade_map[gname]["class_numbers"].append(idx)
             grade_map[gname]["total"] += len(stu_list)
@@ -308,6 +334,7 @@ def get_enrollment_roster(
 
         # ── 員工依職稱分組 ──────────────────────────────────────────────
         from models.database import JobTitle
+
         emp_rows = (
             session.query(Employee.name, JobTitle.name.label("job_title"))
             .outerjoin(JobTitle, Employee.job_title_id == JobTitle.id)
@@ -335,6 +362,33 @@ def get_enrollment_roster(
             old_grand_total=old_grand_total,
             staff_by_role=staff_by_role,
         )
+
+
+@router.get("/student-enrollment/roster.pdf")
+def print_enrollment_roster_pdf(
+    school_year: Optional[int] = Query(None),
+    semester: Optional[int] = Query(None),
+    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+):
+    """產生在籍花名冊 PDF（A4 橫向，繁中 embed Noto Sans TC）。"""
+    roster = get_enrollment_roster(school_year=school_year, semester=semester)
+    # roster 是 Pydantic model；轉成 dict 餵 generator
+    roster_dict = (
+        roster.model_dump() if hasattr(roster, "model_dump") else roster.dict()
+    )
+    pdf_bytes = generate_enrollment_roster_pdf(roster=roster_dict)
+    filename = (
+        f"在籍花名冊_{roster_dict.get('school_year')}_"
+        f"{roster_dict.get('semester_label') or ''}.pdf"
+    )
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/student-enrollment/options", response_model=list[TermOption])

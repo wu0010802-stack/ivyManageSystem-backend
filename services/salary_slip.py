@@ -15,14 +15,10 @@ from utils.excel_utils import (
 
 
 def _register_cjk_font():
-    """註冊 CJK 字型（使用 reportlab 內建的 CID 字型）"""
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    """註冊 CJK 字型（嵌入 Noto Sans TC TTF，見 utils/pdf_fonts）。"""
+    from utils.pdf_fonts import register_cjk_font
 
-    try:
-        pdfmetrics.getFont("STSong-Light")
-    except KeyError:
-        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    return register_cjk_font()
 
 
 def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
@@ -44,7 +40,9 @@ def generate_salary_pdf(record, employee, year: int, month: int) -> bytes:
     from reportlab.platypus import SimpleDocTemplate
 
     _register_cjk_font()
-    font_name = "STSong-Light"
+    from utils.pdf_fonts import CJK_FONT_NAME
+
+    font_name = CJK_FONT_NAME
     styles = getSampleStyleSheet()
 
     buffer = io.BytesIO()
@@ -318,7 +316,9 @@ def generate_salary_all_pdf(records_with_employees, year: int, month: int) -> by
     from reportlab.platypus import PageBreak, SimpleDocTemplate
 
     _register_cjk_font()
-    font_name = "STSong-Light"
+    from utils.pdf_fonts import CJK_FONT_NAME
+
+    font_name = CJK_FONT_NAME
     styles = getSampleStyleSheet()
 
     buffer = io.BytesIO()

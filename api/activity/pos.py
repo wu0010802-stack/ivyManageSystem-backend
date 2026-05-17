@@ -19,12 +19,17 @@ import re
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from io import BytesIO
 from typing import List, Literal, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_
 from sqlalchemy.exc import CompileError, IntegrityError, OperationalError
+
+from services.activity_pos_receipt_pdf import generate_pos_receipt_pdf
 
 from models.database import (
     ActivityPaymentRecord,
@@ -326,6 +331,51 @@ def _has_any_record_for_key(session, idempotency_key: str) -> bool:
 
 
 OVERDUE_DAYS_THRESHOLD = 14
+
+
+@router.get("/pos/receipts/{receipt_no}/print.pdf")
+def print_pos_receipt_pdf(
+    receipt_no: str,
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
+):
+    """重印 POS 收據 PDF（80mm 寬窄條）。"""
+    session = get_session()
+    try:
+        anchor = (
+            session.query(ActivityPaymentRecord)
+            .filter(ActivityPaymentRecord.receipt_no == receipt_no)
+            .order_by(ActivityPaymentRecord.id.asc())
+            .first()
+        )
+        if anchor is None:
+            # fallback：舊資料 notes 標記
+            anchor = (
+                session.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+                .order_by(ActivityPaymentRecord.id.asc())
+                .first()
+            )
+        if anchor is None:
+            raise HTTPException(status_code=404, detail="找不到此收據")
+
+        receipt = _parse_receipt_response_from_record(session, anchor)
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="找不到此收據")
+        # 補印標記
+        receipt["is_reprint"] = True
+
+        pdf_bytes = generate_pos_receipt_pdf(receipt=receipt)
+        filename = f"收據_{receipt_no}.pdf"
+        return StreamingResponse(
+            BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+                "Cache-Control": "no-store",
+            },
+        )
+    finally:
+        session.close()
 
 
 @router.get("/pos/outstanding-by-student")

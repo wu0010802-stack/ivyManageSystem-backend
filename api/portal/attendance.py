@@ -4,18 +4,33 @@ Portal - attendance sheet endpoint
 
 import calendar as cal_module
 from datetime import date, datetime, timedelta
+from io import BytesIO
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 
 from sqlalchemy import func, case, or_
 
 from models.database import (
-    get_session, Attendance, Classroom, LeaveRecord, OvertimeRecord,
-    ShiftAssignment, DailyShift,
+    get_session,
+    Attendance,
+    Classroom,
+    LeaveRecord,
+    OvertimeRecord,
+    ShiftAssignment,
+    DailyShift,
 )
+from services.portal_attendance_sheet_pdf import generate_portal_attendance_sheet_pdf
 from services.workday_rules import classify_day, load_day_rule_maps
 from utils.auth import get_current_user
-from ._shared import _get_employee, _get_shift_type_map, WEEKDAY_NAMES, LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
+from ._shared import (
+    _get_employee,
+    _get_shift_type_map,
+    WEEKDAY_NAMES,
+    LEAVE_TYPE_LABELS,
+    OVERTIME_TYPE_LABELS,
+)
 from services.salary_engine import _calc_lunch_overlap_hours
 
 router = APIRouter()
@@ -35,23 +50,39 @@ def get_attendance_sheet(
         start = date(year, month, 1)
         end = date(year, month, last_day)
 
-        records = session.query(Attendance).filter(
-            Attendance.employee_id == emp.id,
-            Attendance.attendance_date >= start,
-            Attendance.attendance_date <= end,
-        ).order_by(Attendance.attendance_date).all()
+        records = (
+            session.query(Attendance)
+            .filter(
+                Attendance.employee_id == emp.id,
+                Attendance.attendance_date >= start,
+                Attendance.attendance_date <= end,
+            )
+            .order_by(Attendance.attendance_date)
+            .all()
+        )
 
         # Build lookup
         record_map = {r.attendance_date: r for r in records}
 
         # 一次查詢同時判斷教師角色，避免兩次獨立 DB 查詢
-        role_row = session.query(
-            func.max(case((Classroom.head_teacher_id == emp.id, 1), else_=0)).label("is_head"),
-            func.max(case((Classroom.assistant_teacher_id == emp.id, 1), else_=0)).label("is_asst"),
-        ).filter(
-            or_(Classroom.head_teacher_id == emp.id, Classroom.assistant_teacher_id == emp.id),
-            Classroom.is_active == True,
-        ).first()
+        role_row = (
+            session.query(
+                func.max(case((Classroom.head_teacher_id == emp.id, 1), else_=0)).label(
+                    "is_head"
+                ),
+                func.max(
+                    case((Classroom.assistant_teacher_id == emp.id, 1), else_=0)
+                ).label("is_asst"),
+            )
+            .filter(
+                or_(
+                    Classroom.head_teacher_id == emp.id,
+                    Classroom.assistant_teacher_id == emp.id,
+                ),
+                Classroom.is_active == True,
+            )
+            .first()
+        )
         is_head_teacher = bool(role_row and role_row.is_head)
         is_assistant = bool(role_row and role_row.is_asst)
         is_driver = "司機" in emp.title_name
@@ -65,11 +96,15 @@ def get_attendance_sheet(
 
             first_monday = start - timedelta(days=start.weekday())
             last_monday = end - timedelta(days=end.weekday())
-            assignments = session.query(ShiftAssignment).filter(
-                ShiftAssignment.employee_id == emp.id,
-                ShiftAssignment.week_start_date >= first_monday,
-                ShiftAssignment.week_start_date <= last_monday,
-            ).all()
+            assignments = (
+                session.query(ShiftAssignment)
+                .filter(
+                    ShiftAssignment.employee_id == emp.id,
+                    ShiftAssignment.week_start_date >= first_monday,
+                    ShiftAssignment.week_start_date <= last_monday,
+                )
+                .all()
+            )
             for sa in assignments:
                 st = shift_types.get(sa.shift_type_id)
                 if st:
@@ -77,15 +112,21 @@ def get_attendance_sheet(
                         "work_start": st.work_start,
                         "work_end": st.work_end,
                         "name": st.name,
-                        "work_start_t": datetime.strptime(st.work_start, "%H:%M").time(),
+                        "work_start_t": datetime.strptime(
+                            st.work_start, "%H:%M"
+                        ).time(),
                         "work_end_t": datetime.strptime(st.work_end, "%H:%M").time(),
                     }
 
-            daily_shifts = session.query(DailyShift).filter(
-                DailyShift.employee_id == emp.id,
-                DailyShift.date >= start,
-                DailyShift.date <= end,
-            ).all()
+            daily_shifts = (
+                session.query(DailyShift)
+                .filter(
+                    DailyShift.employee_id == emp.id,
+                    DailyShift.date >= start,
+                    DailyShift.date <= end,
+                )
+                .all()
+            )
             for ds in daily_shifts:
                 st = shift_types.get(ds.shift_type_id)
                 if st:
@@ -93,17 +134,23 @@ def get_attendance_sheet(
                         "work_start": st.work_start,
                         "work_end": st.work_end,
                         "name": st.name,
-                        "work_start_t": datetime.strptime(st.work_start, "%H:%M").time(),
+                        "work_start_t": datetime.strptime(
+                            st.work_start, "%H:%M"
+                        ).time(),
                         "work_end_t": datetime.strptime(st.work_end, "%H:%M").time(),
                     }
 
         # Single query for all leave requests in range; split in-memory for the two use cases
-        all_leaves = session.query(LeaveRecord).filter(
-            LeaveRecord.employee_id == emp.id,
-            LeaveRecord.start_date <= end,
-            LeaveRecord.end_date >= start,
-        ).all()
-        leave_dates = {}        # approved leaves → date → leave_type (for status calculation)
+        all_leaves = (
+            session.query(LeaveRecord)
+            .filter(
+                LeaveRecord.employee_id == emp.id,
+                LeaveRecord.start_date <= end,
+                LeaveRecord.end_date >= start,
+            )
+            .all()
+        )
+        leave_dates = {}  # approved leaves → date → leave_type (for status calculation)
         leave_request_map = {}  # all leaves → date → list of requests (for display)
         for lv in all_leaves:
             d = max(lv.start_date, start)
@@ -112,33 +159,45 @@ def get_attendance_sheet(
                     leave_dates[d] = lv.leave_type
                 if d not in leave_request_map:
                     leave_request_map[d] = []
-                leave_request_map[d].append({
-                    "leave_type": lv.leave_type,
-                    "leave_type_label": LEAVE_TYPE_LABELS.get(lv.leave_type, lv.leave_type),
-                    "leave_hours": lv.leave_hours,
-                    "is_approved": lv.is_approved,
-                    "reason": lv.reason,
-                })
+                leave_request_map[d].append(
+                    {
+                        "leave_type": lv.leave_type,
+                        "leave_type_label": LEAVE_TYPE_LABELS.get(
+                            lv.leave_type, lv.leave_type
+                        ),
+                        "leave_hours": lv.leave_hours,
+                        "is_approved": lv.is_approved,
+                        "reason": lv.reason,
+                    }
+                )
                 d = date.fromordinal(d.toordinal() + 1)
 
         # ALL overtime requests for display
-        overtimes = session.query(OvertimeRecord).filter(
-            OvertimeRecord.employee_id == emp.id,
-            OvertimeRecord.overtime_date >= start,
-            OvertimeRecord.overtime_date <= end,
-        ).all()
+        overtimes = (
+            session.query(OvertimeRecord)
+            .filter(
+                OvertimeRecord.employee_id == emp.id,
+                OvertimeRecord.overtime_date >= start,
+                OvertimeRecord.overtime_date <= end,
+            )
+            .all()
+        )
         overtime_map = {}
         for ot in overtimes:
             d = ot.overtime_date
             if d not in overtime_map:
                 overtime_map[d] = []
-            overtime_map[d].append({
-                "overtime_type": ot.overtime_type,
-                "overtime_type_label": OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type),
-                "hours": ot.hours,
-                "is_approved": ot.is_approved,
-                "reason": ot.reason,
-            })
+            overtime_map[d].append(
+                {
+                    "overtime_type": ot.overtime_type,
+                    "overtime_type_label": OVERTIME_TYPE_LABELS.get(
+                        ot.overtime_type, ot.overtime_type
+                    ),
+                    "hours": ot.hours,
+                    "is_approved": ot.is_approved,
+                    "reason": ot.reason,
+                }
+            )
 
         # Holidays
         holiday_map, makeup_map = load_day_rule_maps(session, start, end)
@@ -162,7 +221,11 @@ def get_attendance_sheet(
                 "is_makeup_workday": day_rule["is_makeup_workday"],
                 "punch_in": None,
                 "punch_out": None,
-                "status": day_rule["kind"] if day_rule["kind"] in ("weekend", "holiday") else "no_record",
+                "status": (
+                    day_rule["kind"]
+                    if day_rule["kind"] in ("weekend", "holiday")
+                    else "no_record"
+                ),
                 "is_late": False,
                 "late_minutes": 0,
                 "is_early_leave": False,
@@ -197,8 +260,12 @@ def get_attendance_sheet(
 
             att = record_map.get(d)
             if att:
-                row["punch_in"] = att.punch_in_time.strftime("%H:%M") if att.punch_in_time else None
-                row["punch_out"] = att.punch_out_time.strftime("%H:%M") if att.punch_out_time else None
+                row["punch_in"] = (
+                    att.punch_in_time.strftime("%H:%M") if att.punch_in_time else None
+                )
+                row["punch_out"] = (
+                    att.punch_out_time.strftime("%H:%M") if att.punch_out_time else None
+                )
                 row["is_missing_punch_in"] = att.is_missing_punch_in or False
                 row["is_missing_punch_out"] = att.is_missing_punch_out or False
                 row["remark"] = att.remark
@@ -210,13 +277,22 @@ def get_attendance_sheet(
                 if not effective_in or not effective_out:
                     # Determine fallback times from shift or defaults
                     if shift_info:
-                        fallback_start = datetime.combine(d, datetime.strptime(shift_info["work_start"], "%H:%M").time())
-                        fallback_end = datetime.combine(d, datetime.strptime(shift_info["work_end"], "%H:%M").time())
+                        fallback_start = datetime.combine(
+                            d,
+                            datetime.strptime(shift_info["work_start"], "%H:%M").time(),
+                        )
+                        fallback_end = datetime.combine(
+                            d, datetime.strptime(shift_info["work_end"], "%H:%M").time()
+                        )
                     else:
                         fb_ws = emp.work_start_time or "08:00"
                         fb_we = emp.work_end_time or "17:00"
-                        fallback_start = datetime.combine(d, datetime.strptime(fb_ws, "%H:%M").time())
-                        fallback_end = datetime.combine(d, datetime.strptime(fb_we, "%H:%M").time())
+                        fallback_start = datetime.combine(
+                            d, datetime.strptime(fb_ws, "%H:%M").time()
+                        )
+                        fallback_end = datetime.combine(
+                            d, datetime.strptime(fb_we, "%H:%M").time()
+                        )
 
                     # 跨夜班修正：排班下班時間落在隔日（如 work_end=02:00 < work_start=18:00）
                     if fallback_end <= fallback_start:
@@ -233,7 +309,9 @@ def get_attendance_sheet(
 
                 if effective_in and effective_out and effective_out > effective_in:
                     duration_min = (effective_out - effective_in).total_seconds() / 60
-                    duration_min -= _calc_lunch_overlap_hours(effective_in, effective_out, d) * 60
+                    duration_min -= (
+                        _calc_lunch_overlap_hours(effective_in, effective_out, d) * 60
+                    )
                     row["work_hours"] = round(duration_min / 60, 1)
                     total_work_hours += row["work_hours"]
                     work_hour_days += 1
@@ -251,7 +329,17 @@ def get_attendance_sheet(
 
                         is_late = att.punch_in_time > shift_start_dt
                         is_early_leave = att.punch_out_time < shift_end_dt
-                        late_min = max(0, int((att.punch_in_time - shift_start_dt).total_seconds() / 60)) if is_late else 0
+                        late_min = (
+                            max(
+                                0,
+                                int(
+                                    (att.punch_in_time - shift_start_dt).total_seconds()
+                                    / 60
+                                ),
+                            )
+                            if is_late
+                            else 0
+                        )
 
                         row["is_late"] = is_late
                         row["late_minutes"] = late_min
@@ -267,7 +355,9 @@ def get_attendance_sheet(
                             row["status"] = "normal"
                     else:
                         required_min = 480 if is_driver else 540
-                        duration_min = (att.punch_out_time - att.punch_in_time).total_seconds() / 60
+                        duration_min = (
+                            att.punch_out_time - att.punch_in_time
+                        ).total_seconds() / 60
 
                         if duration_min >= required_min:
                             row["status"] = "normal"
@@ -311,12 +401,22 @@ def get_attendance_sheet(
             days.append(row)
 
         # Summary
-        total_work = sum(1 for r in days if r["status"] in ("normal", "late") and not r["is_weekend"] and not r["is_holiday"])
+        total_work = sum(
+            1
+            for r in days
+            if r["status"] in ("normal", "late")
+            and not r["is_weekend"]
+            and not r["is_holiday"]
+        )
         late_count = sum(1 for r in days if r["is_late"])
         early_leave_count = sum(1 for r in days if r["is_early_leave"])
-        missing_punch_count = sum(1 for r in days if r["is_missing_punch_in"] or r["is_missing_punch_out"])
+        missing_punch_count = sum(
+            1 for r in days if r["is_missing_punch_in"] or r["is_missing_punch_out"]
+        )
         leave_count = sum(1 for r in days if r["leave_type"] is not None)
-        avg_work_hours = round(total_work_hours / work_hour_days, 1) if work_hour_days > 0 else 0
+        avg_work_hours = (
+            round(total_work_hours / work_hour_days, 1) if work_hour_days > 0 else 0
+        )
 
         return {
             "employee_name": emp.name,
@@ -335,3 +435,23 @@ def get_attendance_sheet(
         }
     finally:
         session.close()
+
+
+@router.get("/attendance-sheet.pdf")
+def print_attendance_sheet_pdf(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(get_current_user),
+):
+    """個人月考勤表 PDF（A4 橫向）。"""
+    sheet = get_attendance_sheet(year=year, month=month, current_user=current_user)
+    pdf_bytes = generate_portal_attendance_sheet_pdf(sheet=sheet)
+    filename = f"{sheet.get('employee_name', '')}_{year}-{month:02d}_考勤表.pdf"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store",
+        },
+    )
