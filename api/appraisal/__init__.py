@@ -7,6 +7,7 @@ Excel 雙向 I/O 端點，全部聚合在單一 router 內。
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import BytesIO
@@ -63,6 +64,9 @@ from schemas.appraisal import (
     PerUnitConfig,
     ScoreItemCreate,
     ScoreItemOut,
+    ScorePreviewItem,
+    ScorePreviewOut,
+    ScorePreviewParticipant,
     ScoringRuleIn,
     ScoringRuleOut,
     SummaryOut,
@@ -1299,6 +1303,84 @@ def batch_upsert_manual_event_counts(
             )
     session.commit()
     return {"ok": True, "updated_count": len(payload.entries)}
+
+
+@appraisal_router.post(
+    "/cycles/{cycle_id}/score_preview", response_model=ScorePreviewOut
+)
+def score_preview(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """Dry-run 算 14 條 delta + 對比目前 DB score_items 標 highlight。
+
+    不寫 DB；前端拿來給 admin 預覽 sync 前後差異。
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+
+    from services.appraisal.rule_applier import compute_all_deltas
+
+    deltas = compute_all_deltas(session, cycle)
+
+    # 目前 DB 中已存的 score_items（用於 current_db_value 比對）
+    existing = (
+        session.query(AppraisalScoreItem)
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .all()
+    )
+    current_by_key = {(r.participant_id, r.item_code): r.score_delta for r in existing}
+
+    # 員工名稱
+    pids = {pid for pid, _ in deltas.keys()}
+    pid_to_emp = (
+        {
+            p.id: p.employee_id
+            for p in session.query(AppraisalParticipant)
+            .filter(AppraisalParticipant.id.in_(pids))
+            .all()
+        }
+        if pids
+        else {}
+    )
+    emp_ids = set(pid_to_emp.values())
+    emp_names = (
+        {
+            e.id: e.name
+            for e in session.query(Employee).filter(Employee.id.in_(emp_ids)).all()
+        }
+        if emp_ids
+        else {}
+    )
+
+    by_pid: dict[int, list[ScorePreviewItem]] = defaultdict(list)
+    for (pid, code), dr in deltas.items():
+        by_pid[pid].append(
+            ScorePreviewItem(
+                item_code=code,
+                delta=dr.delta,
+                raw_value=dr.raw_value,
+                note=dr.note,
+                current_db_value=current_by_key.get((pid, code)),
+            )
+        )
+    # 穩定排序：participant_id asc，items 內按 item_code asc
+    participants_out = [
+        ScorePreviewParticipant(
+            participant_id=pid,
+            employee_name=emp_names.get(pid_to_emp.get(pid, 0), ""),
+            items=sorted(items, key=lambda i: i.item_code),
+        )
+        for pid, items in sorted(by_pid.items())
+    ]
+
+    return ScorePreviewOut(
+        cycle_id=cycle_id,
+        on_date=cycle.base_score_calc_date,
+        participants=participants_out,
+    )
 
 
 __all__ = ["appraisal_router"]
