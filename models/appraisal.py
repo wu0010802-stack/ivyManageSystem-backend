@@ -562,3 +562,55 @@ class AppraisalManualEventCount(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class SummaryLogAction(str, enum.Enum):
+    """考核 summary 簽核軌跡的動作型別。"""
+
+    SIGN_SUPERVISOR = "SIGN_SUPERVISOR"
+    SIGN_ACCOUNTING = "SIGN_ACCOUNTING"
+    FINALIZE = "FINALIZE"
+    REJECT = "REJECT"
+    COMMENT = "COMMENT"
+    RECOMPUTE = "RECOMPUTE"
+
+
+_SUMMARY_LOG_ACTION_ENUM = Enum(
+    SummaryLogAction,
+    name="appraisal_summary_action",
+    values_callable=lambda x: [e.value for e in x],
+    create_type=False,
+)
+
+
+class AppraisalSummaryLog(Base):
+    """考核 summary 簽核軌跡（誰簽的 / 何時 / 退簽原因 / 留言）。"""
+
+    __tablename__ = "appraisal_summary_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    summary_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("appraisal_summaries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    action: Mapped[SummaryLogAction] = mapped_column(
+        _SUMMARY_LOG_ACTION_ENUM, nullable=False
+    )
+    from_status: Mapped[Optional[SummaryStatus]] = mapped_column(
+        _SUMMARY_STATUS_ENUM, nullable=True
+    )
+    to_status: Mapped[Optional[SummaryStatus]] = mapped_column(
+        _SUMMARY_STATUS_ENUM, nullable=True
+    )
+    actor_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    actor_role_snapshot: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
