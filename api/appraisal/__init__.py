@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from models.appraisal import (
     AppraisalBonusRate,
     AppraisalCycle,
+    AppraisalManualEventCount,
     AppraisalParticipant,
     AppraisalScoreItem,
     AppraisalScoreItemCatalog,
@@ -53,6 +54,9 @@ from schemas.appraisal import (
     DisciplinaryTieredConfig,
     FlatThresholdConfig,
     ImportResultOut,
+    ManualEventCountBatchIn,
+    ManualEventCountListOut,
+    ManualEventCountOut,
     ParticipantCreate,
     ParticipantOut,
     ParticipantStatusOut,
@@ -1205,6 +1209,96 @@ def create_scoring_rule(
     session.commit()
     session.refresh(row)
     return _row_to_scoring_rule_out(row)
+
+
+# ===== Manual Event Counts (calibrate Phase 1) =====
+
+
+@appraisal_router.get(
+    "/cycles/{cycle_id}/manual_event_counts",
+    response_model=ManualEventCountListOut,
+)
+def list_manual_event_counts(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """列出指定 cycle 已填的手填事件次數（含員工姓名）。"""
+    rows = (
+        session.query(AppraisalManualEventCount, AppraisalParticipant.employee_id)
+        .join(
+            AppraisalParticipant,
+            AppraisalParticipant.id == AppraisalManualEventCount.participant_id,
+        )
+        .filter(AppraisalManualEventCount.cycle_id == cycle_id)
+        .all()
+    )
+    employee_ids = [emp_id for _, emp_id in rows]
+    emp_names: dict[int, str] = (
+        {
+            e.id: e.name
+            for e in session.query(Employee).filter(Employee.id.in_(employee_ids)).all()
+        }
+        if employee_ids
+        else {}
+    )
+    return ManualEventCountListOut(
+        cycle_id=cycle_id,
+        entries=[
+            ManualEventCountOut(
+                participant_id=r.participant_id,
+                employee_name=emp_names.get(emp_id, ""),
+                item_code=r.item_code,
+                count=r.count,
+                entered_by=r.entered_by,
+                entered_at=r.entered_at.isoformat() if r.entered_at else None,
+            )
+            for r, emp_id in rows
+        ],
+    )
+
+
+@appraisal_router.put("/cycles/{cycle_id}/manual_event_counts:batch")
+def batch_upsert_manual_event_counts(
+    cycle_id: int,
+    payload: ManualEventCountBatchIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """Batch UPSERT 手填事件次數；僅 OPEN 狀態的 cycle 可寫。"""
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法編輯")
+
+    for entry in payload.entries:
+        existing = (
+            session.query(AppraisalManualEventCount)
+            .filter_by(
+                cycle_id=cycle_id,
+                participant_id=entry.participant_id,
+                item_code=entry.item_code,
+            )
+            .first()
+        )
+        if existing:
+            existing.count = entry.count
+            existing.entered_by = current_user.get("id")
+            existing.note = entry.note
+        else:
+            session.add(
+                AppraisalManualEventCount(
+                    cycle_id=cycle_id,
+                    participant_id=entry.participant_id,
+                    item_code=entry.item_code,
+                    count=entry.count,
+                    entered_by=current_user.get("id"),
+                    note=entry.note,
+                )
+            )
+    session.commit()
+    return {"ok": True, "updated_count": len(payload.entries)}
 
 
 __all__ = ["appraisal_router"]
