@@ -43,6 +43,9 @@ from schemas.appraisal import (
     ActivityRateAggregateOut,
     AggregatedStatusOut,
     AttendanceAggregateOut,
+    BatchSignErrorItem,
+    BatchSignIn,
+    BatchSignResultOut,
     BonusRateCreate,
     BonusRateOut,
     BulkAddParticipantsRequest,
@@ -84,7 +87,9 @@ from services.appraisal.employee_inference import (
 )
 from services.appraisal.engine import BonusRateLookup, compute_summary
 from services.appraisal.sign_workflow import (
+    advance_target,
     apply_reject,
+    can_advance,
     can_reject,
     default_reject_to_status,
     write_summary_log,
@@ -1011,6 +1016,127 @@ def comment_summary(
     session.commit()
     session.refresh(summary)
     return summary
+
+
+@appraisal_router.post(
+    "/cycles/{cycle_id}/summaries:batch_sign",
+    response_model=BatchSignResultOut,
+)
+def batch_sign_summaries(
+    cycle_id: int,
+    payload: BatchSignIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """批次簽核 summaries（SUPERVISOR / ACCOUNTING / FINALIZE）。
+
+    入口最低門檻 APPRAISAL_READ；依 stage 還要二次驗對應 stage 權限
+    （SUPERVISOR → REVIEW / ACCOUNTING → ACCOUNTING / FINALIZE → FINALIZE）。
+
+    策略：逐筆嘗試。某筆失敗（status 不合 / 不存在 / 不屬此 cycle / 自簽防呆）
+    只記入 failed 清單，不會 rollback 其他成功的筆。最後一次 commit。
+    """
+    from utils.permissions import has_permission
+
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法批次簽核")
+
+    stage_perm = {
+        "SUPERVISOR": Permission.APPRAISAL_REVIEW,
+        "ACCOUNTING": Permission.APPRAISAL_ACCOUNTING,
+        "FINALIZE": Permission.APPRAISAL_FINALIZE,
+    }[payload.stage]
+    user_perms = current_user.get("permissions", 0)
+    if not has_permission(user_perms, stage_perm):
+        raise HTTPException(403, f"批次 {payload.stage} 需要 {stage_perm.name}")
+
+    actor_user_id = current_user.get("user_id")
+    actor_role = current_user.get("role")
+    action_enum = {
+        "SUPERVISOR": SummaryLogAction.SIGN_SUPERVISOR,
+        "ACCOUNTING": SummaryLogAction.SIGN_ACCOUNTING,
+        "FINALIZE": SummaryLogAction.FINALIZE,
+    }[payload.stage]
+
+    succeeded: list[int] = []
+    failed: list[BatchSignErrorItem] = []
+
+    for sid in payload.summary_ids:
+        try:
+            summary = (
+                session.query(AppraisalSummary)
+                .filter(AppraisalSummary.id == sid)
+                .with_for_update()
+                .first()
+            )
+            if summary is None:
+                failed.append(
+                    BatchSignErrorItem(summary_id=sid, error="summary 不存在")
+                )
+                continue
+            if summary.cycle_id != cycle_id:
+                failed.append(
+                    BatchSignErrorItem(summary_id=sid, error="不屬於此 cycle")
+                )
+                continue
+            if not can_advance(summary.status, payload.stage):
+                failed.append(
+                    BatchSignErrorItem(
+                        summary_id=sid,
+                        error=(
+                            f"當前 status={summary.status.value} "
+                            f"無法進入 {payload.stage}"
+                        ),
+                    )
+                )
+                continue
+            try:
+                assert_not_self_approval(
+                    current_user,
+                    summary.participant.employee_id,
+                    doc_label="考核獎金",
+                )
+            except HTTPException as e:
+                failed.append(
+                    BatchSignErrorItem(summary_id=sid, error=f"自簽防呆: {e.detail}")
+                )
+                continue
+
+            from_status = summary.status
+            to_status = advance_target(from_status, payload.stage)
+            summary.status = to_status
+
+            now = datetime.now(timezone.utc)
+            if payload.stage == "SUPERVISOR":
+                summary.supervisor_signed_by = actor_user_id
+                summary.supervisor_signed_at = now
+            elif payload.stage == "ACCOUNTING":
+                summary.accounting_signed_by = actor_user_id
+                summary.accounting_signed_at = now
+            else:  # FINALIZE
+                summary.finalized_by = actor_user_id
+                summary.finalized_at = now
+
+            write_summary_log(
+                session,
+                summary,
+                action_enum,
+                actor_user_id=actor_user_id,
+                actor_role=actor_role,
+                from_status=from_status,
+                to_status=to_status,
+            )
+            succeeded.append(sid)
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            failed.append(BatchSignErrorItem(summary_id=sid, error=str(e)))
+
+    session.commit()
+    return BatchSignResultOut(succeeded=succeeded, failed=failed)
 
 
 # ===== Bonus Rates =====
