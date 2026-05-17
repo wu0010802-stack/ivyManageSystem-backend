@@ -1176,7 +1176,7 @@ def create_scoring_rule(
         rule_config=validated_config,
         applies_to_role_groups=payload.applies_to_role_groups,
         notes=payload.notes,
-        created_by=current_user.get("id"),
+        created_by=current_user.get("user_id"),
     )
     session.add(row)
     session.commit()
@@ -1257,7 +1257,7 @@ def batch_upsert_manual_event_counts(
         )
         if existing:
             existing.count = entry.count
-            existing.entered_by = current_user.get("id")
+            existing.entered_by = current_user.get("user_id")
             existing.note = entry.note
         else:
             session.add(
@@ -1266,7 +1266,7 @@ def batch_upsert_manual_event_counts(
                     participant_id=entry.participant_id,
                     item_code=entry.item_code,
                     count=entry.count,
-                    entered_by=current_user.get("id"),
+                    entered_by=current_user.get("user_id"),
                     note=entry.note,
                 )
             )

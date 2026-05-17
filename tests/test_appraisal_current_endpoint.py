@@ -26,6 +26,7 @@ from models.appraisal import (
     AppraisalCycle,
     AppraisalParticipant,
     AppraisalScoreItem,
+    AppraisalScoringRule,
     CycleStatus,
     RoleGroup,
     Semester,
@@ -133,6 +134,67 @@ def _make_participant(session, cycle, emp, classroom_id=None) -> AppraisalPartic
     session.add(p)
     session.flush()
     return p
+
+
+# calibrate Phase 1：sync_score_items 改寫 14 條（每個 item_code 需有對應 rule
+# 才會被 compute_all_deltas 寫入）。本 helper 與
+# tests/test_appraisal_sync_score_items_extended.py 內 defaults 一致。
+_DEFAULT_RULES = [
+    ("LATE_EARLY", "PER_UNIT", {"per_unit_delta": -0.25}),
+    ("MISSING_PUNCH", "PER_UNIT", {"per_unit_delta": -0.25}),
+    ("LEAVE", "PER_UNIT", {"per_unit_delta": -1.0}),
+    (
+        "RETURNING_RATE_0915",
+        "TIER",
+        {"input_field": "retention_rate", "tiers": [{"min": 0, "delta": 0}]},
+    ),
+    (
+        "RETURNING_RATE_0315",
+        "TIER",
+        {
+            "input_field": "retention_rate",
+            "tiers": [
+                {"min": 100, "delta": 6},
+                {"min": 0, "delta": -6},
+            ],
+        },
+    ),
+    (
+        "AFTER_CLASS_RATE",
+        "FLAT_THRESHOLD",
+        {
+            "input_field": "activity_rate",
+            "threshold": 80,
+            "above_delta": 2,
+            "below_delta": 0,
+        },
+    ),
+    (
+        "REWARD_PUNISH",
+        "DISCIPLINARY_TIERED",
+        {"warning_delta": -1, "minor_delta": -3, "major_delta": -10},
+    ),
+    ("SCHOOL_MEETING_ABSENCE", "PER_UNIT", {"per_unit_delta": -1}),
+    ("INSTITUTION_MEETING_0913", "PER_UNIT", {"per_unit_delta": -2}),
+    ("INSTITUTION_MEETING_1115", "PER_UNIT", {"per_unit_delta": -2}),
+    ("SELF_IMPROVEMENT_ACTIVITY", "PER_UNIT", {"per_unit_delta": -2}),
+    ("CHILD_ACCIDENT", "PER_UNIT", {"per_unit_delta": -3}),
+    ("CLASS_HEADCOUNT_BONUS", "PER_UNIT", {"per_unit_delta": 2}),
+    ("OTHER", "PER_UNIT", {"per_unit_delta": 0}),
+]
+
+
+def _seed_default_rules(session):
+    """Seed 14 default AppraisalScoringRule rows (effective 2025-01-01)。"""
+    for code, rt, cfg in _DEFAULT_RULES:
+        session.add(
+            AppraisalScoringRule(
+                item_code=code,
+                effective_from=date(2025, 1, 1),
+                rule_type=rt,
+                rule_config=cfg,
+            )
+        )
 
 
 # 完整考核權限位元（READ + WRITE + REVIEW + ACCOUNTING + FINALIZE）
@@ -258,6 +320,7 @@ class TestSyncScoreItems:
             cycle = _make_cycle(s)
             emp = _make_employee(s, "A")
             _make_participant(s, cycle, emp)
+            _seed_default_rules(s)  # calibrate Phase 1：14 條 rule 才會被寫
             cycle_id = cycle.id
             s.commit()
         assert _login(client, "admin1").status_code == 200
@@ -268,7 +331,7 @@ class TestSyncScoreItems:
         assert res.status_code == 200, res.text
         data = res.json()
         assert data["dry_run"] is True
-        assert data["inserted_count"] == 4  # 1 participant × 4 items
+        assert data["inserted_count"] == 14  # 1 participant × 14 items (calibrate)
         # DB 不應有 row
         with sf() as s:
             assert s.query(AppraisalScoreItem).count() == 0
@@ -280,6 +343,7 @@ class TestSyncScoreItems:
             cycle = _make_cycle(s)
             emp = _make_employee(s, "A")
             p = _make_participant(s, cycle, emp)
+            _seed_default_rules(s)  # calibrate Phase 1：14 條 rule
             cycle_id = cycle.id
             participant_id = p.id
             # 1 個人工 row（source_ref IS NULL）
@@ -296,30 +360,30 @@ class TestSyncScoreItems:
             )
             s.commit()
         assert _login(client, "admin1").status_code == 200
-        # 第一次同步
+        # 第一次同步：14 auto 寫入、人工 row 不動
         res = client.post(f"/api/appraisal/cycles/{cycle_id}/sync_score_items")
         assert res.status_code == 200, res.text
         d1 = res.json()
         assert d1["dry_run"] is False
         assert d1["deleted_count"] == 0
-        assert d1["inserted_count"] == 4
+        assert d1["inserted_count"] == 14
         assert d1["skipped_manual_count"] == 1
         with sf() as s:
             rows = s.query(AppraisalScoreItem).filter_by(cycle_id=cycle_id).all()
-            assert len(rows) == 5  # 4 auto + 1 manual
+            assert len(rows) == 15  # 14 auto + 1 manual
             manual = [r for r in rows if r.source_ref is None]
             assert len(manual) == 1
             assert manual[0].score_delta == Decimal("-5.0")
-        # 第二次同步：舊 4 auto 被刪、新 4 auto 寫入；人工仍在
+        # 第二次同步：舊 14 auto 被刪、新 14 auto 寫入；人工仍在
         res = client.post(f"/api/appraisal/cycles/{cycle_id}/sync_score_items")
         assert res.status_code == 200, res.text
         d2 = res.json()
-        assert d2["deleted_count"] == 4
-        assert d2["inserted_count"] == 4
+        assert d2["deleted_count"] == 14
+        assert d2["inserted_count"] == 14
         assert d2["skipped_manual_count"] == 1
         with sf() as s:
             rows = s.query(AppraisalScoreItem).filter_by(cycle_id=cycle_id).all()
-            assert len(rows) == 5
+            assert len(rows) == 15
             manual = [r for r in rows if r.source_ref is None]
             assert len(manual) == 1
             assert manual[0].note == "人工手動扣"
