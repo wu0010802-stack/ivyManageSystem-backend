@@ -145,9 +145,11 @@ class TestInsuranceBracketBounds:
         higher = service.calculate(salary=31800, dependents=0)
         assert higher.total_employee >= lower.total_employee
 
-    def test_zero_salary_falls_to_min_bracket(self, service):
+    def test_zero_salary_short_circuits_to_zero(self, service):
+        # base=0 員工短路回零，避免 clamp 到 1500 級距產生 net=-735 倒貼
         result = service.calculate(salary=0, dependents=0)
-        assert result.insured_amount == 1500
+        assert result.insured_amount == 0
+        assert result.total_employee == 0
 
     def test_negative_salary_rejected(self, service):
         with pytest.raises(ValueError):

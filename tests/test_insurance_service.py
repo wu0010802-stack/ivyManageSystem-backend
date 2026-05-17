@@ -113,6 +113,52 @@ class TestCalculate:
         assert result.insured_amount == 313000
 
 
+class TestZeroSalaryShortCircuit:
+    """salary=0 短路：避免 base=0 員工被 clamp 到 1500 級距產生 net=-735 倒貼"""
+
+    def test_zero_salary_returns_all_zero(self, service):
+        """salary=0 且未指定分項投保 → 全部歸零"""
+        r = service.calculate(salary=0)
+        assert r.insured_amount == 0
+        assert r.salary_range == "N/A"
+        assert r.labor_employee == 0
+        assert r.labor_employer == 0
+        assert r.labor_government == 0
+        assert r.health_employee == 0
+        assert r.health_employer == 0
+        assert r.pension_employee == 0
+        assert r.pension_employer == 0
+        assert r.total_employee == 0
+        assert r.total_employer == 0
+        assert r.labor_insured_amount == 0
+        assert r.health_insured_amount == 0
+        assert r.pension_insured_amount == 0
+
+    def test_zero_salary_with_dependents_still_zero(self, service):
+        """salary=0 + 眷屬：健保仍歸零（沒投保就沒眷屬保費）"""
+        r = service.calculate(salary=0, dependents=3)
+        assert r.health_employee == 0
+        assert r.total_employee == 0
+
+    def test_zero_salary_with_pension_self_rate_still_zero(self, service):
+        """salary=0 + 勞退自提：仍歸零（沒投保就沒自提基數）"""
+        r = service.calculate(salary=0, pension_self_rate=0.06)
+        assert r.pension_employee == 0
+        assert r.total_employee == 0
+
+    def test_zero_salary_with_split_labor_insured_does_not_short_circuit(self, service):
+        """salary=0 但顯式設 labor_insured：自願免薪仍要投保的場景，勞保正常算"""
+        r = service.calculate(salary=0, labor_insured=30000)
+        assert r.labor_employee > 0
+        assert r.labor_insured_amount == 30300
+
+    def test_min_bracket_salary_unchanged(self, service):
+        """regression: salary=1500（最低級距）仍走完整流程，不被短路誤殺"""
+        r = service.calculate(salary=1500)
+        assert r.insured_amount == 1500
+        assert r.labor_employee > 0
+
+
 class TestNegativeDependents:
     """眷屬人數為負值時不得產生負健保費"""
 

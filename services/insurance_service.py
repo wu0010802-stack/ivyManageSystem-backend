@@ -953,6 +953,25 @@ class InsuranceService:
             raise ValueError(f"勞退自提比例不可為 NaN：{pension_self_rate}")
         if not 0 <= pension_self_rate <= 0.06:
             raise ValueError(f"勞退自提比例必須介於 0～6%：{pension_self_rate}")
+        # salary=0 短路：get_bracket(0) 會 clamp 到最低級距 1500，員工側合計 ~735
+        # 形成 net=-735 倒貼。顯式設分項投保則不短路（自願免薪仍要投保場景）。
+        if salary == 0 and not (labor_insured or health_insured or pension_insured):
+            return InsuranceCalculation(
+                insured_amount=0,
+                salary_range="N/A",
+                labor_employee=0,
+                labor_employer=0,
+                labor_government=0,
+                health_employee=0,
+                health_employer=0,
+                pension_employer=0,
+                pension_employee=0,
+                total_employee=0,
+                total_employer=0,
+                labor_insured_amount=0,
+                health_insured_amount=0,
+                pension_insured_amount=0,
+            )
         bracket = self.get_bracket(salary)
         amount = bracket["amount"]
 
