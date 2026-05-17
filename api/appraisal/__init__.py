@@ -25,6 +25,7 @@ from models.appraisal import (
     AppraisalParticipant,
     AppraisalScoreItem,
     AppraisalScoreItemCatalog,
+    AppraisalScoringRule,
     AppraisalSummary,
     CycleStatus,
     Grade,
@@ -49,15 +50,21 @@ from schemas.appraisal import (
     CycleUpdate,
     DisciplinaryActionItemOut,
     DisciplinaryAggregateOut,
+    DisciplinaryTieredConfig,
+    FlatThresholdConfig,
     ImportResultOut,
     ParticipantCreate,
     ParticipantOut,
     ParticipantStatusOut,
+    PerUnitConfig,
     ScoreItemCreate,
     ScoreItemOut,
+    ScoringRuleIn,
+    ScoringRuleOut,
     SummaryOut,
     SyncResultOut,
     SyncResultPreviewItem,
+    TierConfig,
 )
 from services.appraisal.employee_inference import (
     infer_classroom_id,
@@ -1076,6 +1083,128 @@ def export_transfer_roster(
             "Content-Disposition": f'attachment; filename="transfer_roster_{cycle_id}.xlsx"'
         },
     )
+
+
+# ===== Scoring Rules (calibrate Phase 1) =====
+
+
+_CONFIG_VALIDATORS = {
+    "PER_UNIT": PerUnitConfig,
+    "TIER": TierConfig,
+    "FLAT_THRESHOLD": FlatThresholdConfig,
+    "DISCIPLINARY_TIERED": DisciplinaryTieredConfig,
+}
+
+
+def _validate_rule_config(rule_type: str, config: dict) -> dict:
+    """依 rule_type 用對應 BaseModel 二次 validate rule_config。"""
+    validator = _CONFIG_VALIDATORS.get(rule_type)
+    if validator is None:
+        raise HTTPException(422, f"未知 rule_type: {rule_type}")
+    try:
+        return validator(**config).model_dump(mode="json")
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, f"rule_config 驗證失敗: {e}")
+
+
+def _row_to_scoring_rule_out(row: AppraisalScoringRule) -> ScoringRuleOut:
+    return ScoringRuleOut(
+        id=row.id,
+        item_code=row.item_code,
+        effective_from=row.effective_from,
+        rule_type=row.rule_type,
+        rule_config=row.rule_config,
+        applies_to_role_groups=row.applies_to_role_groups,
+        notes=row.notes,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        created_by=row.created_by,
+    )
+
+
+@appraisal_router.get("/scoring_rules", response_model=list[ScoringRuleOut])
+def list_scoring_rules(
+    effective_on: Optional[date] = Query(None),
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """列出指定日期當前有效的所有規則（每個 item_code 只取最新版）。"""
+    on_date = effective_on or date.today()
+    rows = (
+        session.query(AppraisalScoringRule)
+        .filter(AppraisalScoringRule.effective_from <= on_date)
+        .order_by(
+            AppraisalScoringRule.item_code,
+            AppraisalScoringRule.effective_from.desc(),
+        )
+        .all()
+    )
+    seen: set[str] = set()
+    out: list[ScoringRuleOut] = []
+    for row in rows:
+        if row.item_code in seen:
+            continue
+        seen.add(row.item_code)
+        out.append(_row_to_scoring_rule_out(row))
+    return out
+
+
+@appraisal_router.get("/scoring_rules/history", response_model=list[ScoringRuleOut])
+def get_scoring_rule_history(
+    item_code: str = Query(...),
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """單一 item_code 的版本歷史，依 effective_from 由新到舊。"""
+    rows = (
+        session.query(AppraisalScoringRule)
+        .filter(AppraisalScoringRule.item_code == item_code)
+        .order_by(AppraisalScoringRule.effective_from.desc())
+        .all()
+    )
+    return [_row_to_scoring_rule_out(r) for r in rows]
+
+
+@appraisal_router.post("/scoring_rules", response_model=ScoringRuleOut, status_code=201)
+def create_scoring_rule(
+    payload: ScoringRuleIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_RULE_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """建立新版規則。
+
+    - effective_from 不可早於今天
+    - rule_config 依 rule_type 二次 validate
+    - (item_code, effective_from) UNIQUE 衝突回 409
+    """
+    if payload.effective_from < date.today():
+        raise HTTPException(422, "effective_from 不可早於今天")
+    validated_config = _validate_rule_config(payload.rule_type, payload.rule_config)
+    exists = (
+        session.query(AppraisalScoringRule)
+        .filter(
+            AppraisalScoringRule.item_code == payload.item_code,
+            AppraisalScoringRule.effective_from == payload.effective_from,
+        )
+        .first()
+    )
+    if exists:
+        raise HTTPException(
+            409,
+            f"{payload.item_code} 已有 {payload.effective_from} 生效的版本",
+        )
+    row = AppraisalScoringRule(
+        item_code=payload.item_code,
+        effective_from=payload.effective_from,
+        rule_type=payload.rule_type,
+        rule_config=validated_config,
+        applies_to_role_groups=payload.applies_to_role_groups,
+        notes=payload.notes,
+        created_by=current_user.get("id"),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return _row_to_scoring_rule_out(row)
 
 
 __all__ = ["appraisal_router"]
