@@ -30,7 +30,8 @@ from services.finance_report_service import (
     get_activity_revenue_by_month,
     get_classroom_count_by_month,
     get_insured_employee_count_by_month,
-    get_salary_breakdown_by_month,
+    get_monthly_fixed_cost_by_category,
+    get_salary_breakdown_by_month_with_role,
     get_tuition_refund_by_month,
     get_tuition_revenue_by_fee_type,
     get_tuition_revenue_by_payment_method,
@@ -89,10 +90,7 @@ _PENDING_ITEMS: tuple[str, ...] = (
     "預繳收入（fee_adjustments=prepayment 為折抵非收入；招生階段 deposit 不在 fee_payment 流水）",
     "畢業紀念冊（無對應 fee_type，建議於 vendor_payments 登錄收入或自訂 fee_type）",
     "紅利細項：年終／招生獎金／教課鼓勵金／自主成長契約獎勵金／出國尾牙獎金／註冊預繳獎金（salary 模型現只區分節慶／超額／主管分紅三類，其餘細項無欄位）",
-    "舊制勞退準備金（固定每月支出，無自動來源）",
-    "二代健保（無對應欄位）",
-    "才藝鐘點薪資（需依 employee.employee_type 區分，Phase 1 未拆分）",
-    "租金／辦公室零用金／廚房零用金／餐點採購／水電費（請於 vendor_payments 登錄）",
+    "二代健保（無對應欄位，建議新增 SalaryRecord 欄位後拆出）",
     "個別廠商分項列（vendor_payments.vendor_name 為自由文字，無 row-level 分類；Phase 2 可加 vendor 分類映射表）",
 )
 
@@ -140,29 +138,69 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
     insured_monthly = [int(insured_map.get(m, 0)) for m in _MONTHS]
 
     # ── 人事支出切片 ─────────────────────────────────────────────────────
-    salary_breakdown = get_salary_breakdown_by_month(session, year)
+    # Phase 2：用 by-role 切片拆才藝（hourly）vs 全職（regular）base 薪資；
+    # 其他欄位（節慶／超額／加班費／主管紅利／勞健保／勞退）依舊跨 role 加總
+    salary_with_role = get_salary_breakdown_by_month_with_role(session, year)
 
-    def _salary_field(field: str) -> list[int]:
-        return [int(salary_breakdown.get(m, {}).get(field, 0)) for m in _MONTHS]
+    def _role_field(role: str, field: str) -> list[int]:
+        return [
+            int(salary_with_role.get(m, {}).get(role, {}).get(field, 0))
+            for m in _MONTHS
+        ]
 
-    gross_monthly = _salary_field("gross_salary")
-    festival_monthly = _salary_field("festival_bonus")
-    overtime_bonus_monthly = _salary_field("overtime_bonus")
-    overtime_pay_monthly = _salary_field("overtime_pay")
-    supervisor_dividend_monthly = _salary_field("supervisor_dividend")
-    labor_ins_monthly = _salary_field("labor_insurance_employer")
-    health_ins_monthly = _salary_field("health_insurance_employer")
-    pension_monthly = _salary_field("pension_employer")
+    def _both_roles_field(field: str) -> list[int]:
+        return [
+            int(
+                salary_with_role.get(m, {}).get("regular", {}).get(field, 0)
+                + salary_with_role.get(m, {}).get("hourly", {}).get(field, 0)
+            )
+            for m in _MONTHS
+        ]
 
-    # 公式詳見模組 docstring：gross 已含 overtime_pay 與 supervisor_dividend
+    regular_gross_monthly = _role_field("regular", "gross_salary")
+    regular_ot_pay_monthly = _role_field("regular", "overtime_pay")
+    regular_sup_div_monthly = _role_field("regular", "supervisor_dividend")
+    hourly_gross_monthly = _role_field("hourly", "gross_salary")
+    hourly_ot_pay_monthly = _role_field("hourly", "overtime_pay")
+    hourly_sup_div_monthly = _role_field("hourly", "supervisor_dividend")
+
+    festival_monthly = _both_roles_field("festival_bonus")
+    overtime_bonus_monthly = _both_roles_field("overtime_bonus")
+    overtime_pay_monthly = _both_roles_field("overtime_pay")
+    supervisor_dividend_monthly = _both_roles_field("supervisor_dividend")
+    labor_ins_monthly = _both_roles_field("labor_insurance_employer")
+    health_ins_monthly = _both_roles_field("health_insurance_employer")
+    pension_monthly = _both_roles_field("pension_employer")
+
+    # base = gross − overtime_pay − supervisor_dividend（gross 已含此二者）
     base_salary_monthly = _diff_lists(
-        _diff_lists(gross_monthly, overtime_pay_monthly),
-        supervisor_dividend_monthly,
+        _diff_lists(regular_gross_monthly, regular_ot_pay_monthly),
+        regular_sup_div_monthly,
     )
+    art_teacher_hourly_monthly = _diff_lists(
+        _diff_lists(hourly_gross_monthly, hourly_ot_pay_monthly),
+        hourly_sup_div_monthly,
+    )
+
+    # ── 變動支出 + 舊制勞退（前者進變動，後者進人事）──────────────────
+    fixed_cost_map = get_monthly_fixed_cost_by_category(session, year)
+
+    def _fixed_cost_field(category: str) -> list[int]:
+        return [int(fixed_cost_map.get(m, {}).get(category, 0)) for m in _MONTHS]
+
+    rent_monthly = _fixed_cost_field("rent")
+    office_petty_monthly = _fixed_cost_field("office_petty_cash")
+    kitchen_petty_monthly = _fixed_cost_field("kitchen_petty_cash")
+    meals_monthly = _fixed_cost_field("meals")
+    water_monthly = _fixed_cost_field("water")
+    electricity_monthly = _fixed_cost_field("electricity")
+    phone_monthly = _fixed_cost_field("phone")
+    old_pension_reserve_monthly = _fixed_cost_field("old_pension_reserve")
 
     personnel_subtotal_monthly = _sum_lists(
         [
             base_salary_monthly,
+            art_teacher_hourly_monthly,
             festival_monthly,
             overtime_bonus_monthly,
             overtime_pay_monthly,
@@ -170,13 +208,24 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
             labor_ins_monthly,
             health_ins_monthly,
             pension_monthly,
+            old_pension_reserve_monthly,
         ]
     )
 
-    # ── 變動支出 ─────────────────────────────────────────────────────────
     vendor_map = get_vendor_payment_expense_by_month(session, year)
     vendor_monthly = [int(vendor_map.get(m, 0)) for m in _MONTHS]
-    variable_subtotal_monthly = list(vendor_monthly)  # 目前只一列
+    variable_subtotal_monthly = _sum_lists(
+        [
+            rent_monthly,
+            office_petty_monthly,
+            kitchen_petty_monthly,
+            meals_monthly,
+            water_monthly,
+            electricity_monthly,
+            phone_monthly,
+            vendor_monthly,
+        ]
+    )
 
     # ── totals ───────────────────────────────────────────────────────────
     expense_total_monthly = _sum_lists(
@@ -269,9 +318,15 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
             "rows": [
                 _row(
                     "personnel_base_salary",
-                    "薪資（基本，已扣節慶／超額／其他獎金）",
+                    "薪資（全職基本）",
                     "amount",
                     base_salary_monthly,
+                ),
+                _row(
+                    "personnel_art_teacher_hourly",
+                    "薪資（才藝老師鐘點）",
+                    "amount",
+                    art_teacher_hourly_monthly,
                 ),
                 _row(
                     "personnel_festival_bonus",
@@ -316,6 +371,12 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
                     pension_monthly,
                 ),
                 _row(
+                    "personnel_old_pension_reserve",
+                    "舊制勞退準備金",
+                    "amount",
+                    old_pension_reserve_monthly,
+                ),
+                _row(
                     "personnel_subtotal",
                     "人事小計",
                     "amount",
@@ -328,9 +389,26 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
             "key": "variable_expense",
             "label": "變動支出",
             "rows": [
+                _row("variable_rent", "租金支出", "amount", rent_monthly),
+                _row(
+                    "variable_office_petty_cash",
+                    "辦公室零用金",
+                    "amount",
+                    office_petty_monthly,
+                ),
+                _row(
+                    "variable_kitchen_petty_cash",
+                    "廚房零用金",
+                    "amount",
+                    kitchen_petty_monthly,
+                ),
+                _row("variable_meals", "餐點採購", "amount", meals_monthly),
+                _row("variable_water", "水費", "amount", water_monthly),
+                _row("variable_electricity", "電費", "amount", electricity_monthly),
+                _row("variable_phone", "電話費", "amount", phone_monthly),
                 _row(
                     "variable_vendor",
-                    "廠商付款（含租金/零用金/餐點等需登錄之項目）",
+                    "廠商付款（個別廠商流水）",
                     "amount",
                     vendor_monthly,
                 ),
