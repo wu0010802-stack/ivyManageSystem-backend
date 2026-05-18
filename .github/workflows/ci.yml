@@ -114,7 +114,7 @@ jobs:
       - name: Checkout ivy-frontend (sibling)
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/ivy-frontend
+          repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
           path: ivy-frontend
           token: ${{ secrets.IVY_CROSS_REPO_TOKEN }}
 
