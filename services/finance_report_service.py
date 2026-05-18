@@ -26,6 +26,10 @@ from models.fees import (
     StudentFeeRecord,
     StudentFeeRefund,
 )
+from models.monthly_fixed_cost import (
+    FIXED_COST_CATEGORIES,
+    MonthlyFixedCost,
+)
 from models.salary import SalaryRecord
 from models.vendor_payment import VendorPayment
 
@@ -424,6 +428,107 @@ def get_salary_breakdown_by_month(
             "health_insurance_employer": int(hi or 0),
             "pension_employer": int(pen or 0),
         }
+    return out
+
+
+def get_salary_breakdown_by_month_with_role(
+    session: Session, year: int
+) -> dict[int, dict[str, dict[str, int]]]:
+    """月度損益表 Phase 2：薪資 by month by role by field 切片。
+
+    回傳 dict[month, {regular: {...8 fields}, hourly: {...8 fields}}]，
+    role = employee.employee_type ∈ {regular, hourly}；hourly 即才藝老師。
+
+    Aggregator 用 hourly 部分組「才藝鐘點薪資」row、regular 部分組 base 薪資，
+    確保 base_salary 不重複計入 hourly。
+
+    Note: 既有 `get_salary_breakdown_by_month` 保留，回傳 sum over role；本函式
+    為 Phase 2 新增，不取代既有 API。
+    """
+    rows = (
+        session.query(
+            SalaryRecord.salary_month,
+            Employee.employee_type,
+            func.sum(SalaryRecord.gross_salary),
+            func.sum(SalaryRecord.festival_bonus),
+            func.sum(SalaryRecord.overtime_bonus),
+            func.sum(SalaryRecord.overtime_pay),
+            func.sum(SalaryRecord.supervisor_dividend),
+            func.sum(SalaryRecord.labor_insurance_employer),
+            func.sum(SalaryRecord.health_insurance_employer),
+            func.sum(SalaryRecord.pension_employer),
+        )
+        .join(Employee, Employee.id == SalaryRecord.employee_id)
+        .filter(SalaryRecord.salary_year == year)
+        .group_by(SalaryRecord.salary_month, Employee.employee_type)
+        .all()
+    )
+
+    def _empty_role_dict() -> dict[str, int]:
+        return {
+            "gross_salary": 0,
+            "festival_bonus": 0,
+            "overtime_bonus": 0,
+            "overtime_pay": 0,
+            "supervisor_dividend": 0,
+            "labor_insurance_employer": 0,
+            "health_insurance_employer": 0,
+            "pension_employer": 0,
+        }
+
+    out: dict[int, dict[str, dict[str, int]]] = {}
+    for (
+        m,
+        emp_type,
+        gross,
+        festival,
+        ot_bonus,
+        ot_pay,
+        sup_div,
+        li,
+        hi,
+        pen,
+    ) in rows:
+        month_dict = out.setdefault(
+            int(m),
+            {"regular": _empty_role_dict(), "hourly": _empty_role_dict()},
+        )
+        # 員工 employee_type 預期只有 regular/hourly；防禦性：未知值歸入 regular。
+        role_key = "hourly" if emp_type == "hourly" else "regular"
+        bucket = month_dict[role_key]
+        bucket["gross_salary"] += int(gross or 0)
+        bucket["festival_bonus"] += int(festival or 0)
+        bucket["overtime_bonus"] += int(ot_bonus or 0)
+        bucket["overtime_pay"] += int(ot_pay or 0)
+        bucket["supervisor_dividend"] += int(sup_div or 0)
+        bucket["labor_insurance_employer"] += int(li or 0)
+        bucket["health_insurance_employer"] += int(hi or 0)
+        bucket["pension_employer"] += int(pen or 0)
+    return out
+
+
+def get_monthly_fixed_cost_by_category(
+    session: Session, year: int
+) -> dict[int, dict[str, int]]:
+    """月度損益表 Phase 2：固定費用 by month by category。
+
+    回傳 dict[month, {category: amount}]，category 為 MonthlyFixedCost
+    8 個 enum 值之一。aggregator 端拆 7 條進「變動支出」section，
+    `old_pension_reserve` 進「人事支出」section（屬勞退非變動）。
+    """
+    rows = (
+        session.query(
+            MonthlyFixedCost.month,
+            MonthlyFixedCost.category,
+            func.sum(MonthlyFixedCost.amount),
+        )
+        .filter(MonthlyFixedCost.year == year)
+        .group_by(MonthlyFixedCost.month, MonthlyFixedCost.category)
+        .all()
+    )
+    out: dict[int, dict[str, int]] = {}
+    for m, cat, amt in rows:
+        out.setdefault(int(m), {})[str(cat)] = int(amt or 0)
     return out
 
 
