@@ -177,6 +177,8 @@ ENTITY_PATTERNS = [
     (r"/api/year_end/settlements", "year_end_settlement"),
     # 廠商付款簽收：金流類，付款 + 簽收 + 附件異動全部留 audit。
     (r"/api/vendor-payments", "vendor_payment"),
+    # 月度固定費用登錄：金流類，每筆 upsert/delete 全部留 audit。
+    (r"/api/monthly-fixed-costs", "monthly_fixed_cost"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -258,6 +260,7 @@ ENTITY_LABELS = {
     "parent_milestone": "家長端里程碑互動",
     # 廠商付款簽收
     "vendor_payment": "廠商付款簽收",
+    "monthly_fixed_cost": "月度固定費用",
 }
 
 ACTION_LABELS = {
