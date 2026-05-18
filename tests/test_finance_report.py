@@ -24,6 +24,7 @@ from models.database import (
     SalaryRecord,
 )
 from models.fees import StudentFeePayment, StudentFeeRecord, StudentFeeRefund
+from models.vendor_payment import VendorPayment
 from services import finance_report_service as svc
 from sqlalchemy import event as sa_event
 from utils.auth import hash_password
@@ -224,6 +225,88 @@ class TestSalaryExpense:
         assert out == {3: {"employee_gross": 30000, "employer_benefit": 5700}}
 
 
+class TestVendorPaymentExpense:
+    def test_aggregated_by_month_regardless_of_status(self, fin_client):
+        """pending 與 signed 都計入支出總額（園所現金已付出）。"""
+        _, sf = fin_client
+        with sf() as s:
+            s.add_all(
+                [
+                    VendorPayment(
+                        payment_date=date(2026, 3, 5),
+                        vendor_name="A 清潔",
+                        amount=1200,
+                        payment_method="cash",
+                        status="signed",
+                    ),
+                    VendorPayment(
+                        payment_date=date(2026, 3, 20),
+                        vendor_name="B 教具",
+                        amount=800,
+                        payment_method="bank_transfer",
+                        status="pending",
+                    ),
+                    VendorPayment(
+                        payment_date=date(2026, 4, 1),
+                        vendor_name="C 食材",
+                        amount=5000,
+                        payment_method="check",
+                        status="signed",
+                    ),
+                ]
+            )
+            s.commit()
+        with sf() as s:
+            out = svc.get_vendor_payment_expense_by_month(s, 2026)
+        assert out == {3: 2000, 4: 5000}
+
+    def test_vendor_expense_aggregates_into_summary(self, fin_client):
+        _, sf = fin_client
+        with sf() as s:
+            s.add(
+                VendorPayment(
+                    payment_date=date(2026, 5, 10),
+                    vendor_name="Z 公司",
+                    amount=3000,
+                    payment_method="cash",
+                    status="pending",
+                )
+            )
+            s.commit()
+        with sf() as s:
+            data = svc.build_finance_summary(s, 2026, month=5)
+        row = data["monthly_trend"][0]
+        assert row["expense"] == 3000
+        vendor_cat = next(
+            c for c in data["expense_by_category"] if c["category"] == "vendor_payment"
+        )
+        assert vendor_cat["amount"] == 3000
+        assert vendor_cat["label"] == "廠商付款"
+
+    def test_vendor_detail_in_drilldown(self, fin_client):
+        _, sf = fin_client
+        with sf() as s:
+            s.add(
+                VendorPayment(
+                    payment_date=date(2026, 5, 15),
+                    vendor_name="D 紙箱行",
+                    amount=750,
+                    payment_method="cash",
+                    description="搬家用紙箱",
+                    invoice_number="X-9",
+                    status="signed",
+                )
+            )
+            s.commit()
+        with sf() as s:
+            detail = svc.build_finance_detail(s, 2026, 5)
+        rows = detail["vendor_payment"]
+        assert len(rows) == 1
+        assert rows[0]["vendor_name"] == "D 紙箱行"
+        assert rows[0]["amount"] == 750
+        assert rows[0]["status"] == "signed"
+
+
 # ── Aggregator ─────────────────────────────────────────────────────────────
 
 
@@ -284,7 +367,7 @@ class TestAggregator:
         rev_cats = {c["category"] for c in data["revenue_by_category"]}
         exp_cats = {c["category"] for c in data["expense_by_category"]}
         assert rev_cats == {"tuition", "activity"}
-        assert exp_cats == {"salary_gross", "employer_benefit"}
+        assert exp_cats == {"salary_gross", "employer_benefit", "vendor_payment"}
 
     def test_cross_year_isolation(self, fin_client):
         _, sf = fin_client

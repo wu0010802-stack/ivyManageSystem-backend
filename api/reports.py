@@ -462,6 +462,38 @@ def export_finance_summary(
                 ws5.cell(row=i, column=5, value="—")
             ws5.cell(row=i, column=6, value="是" if r["is_finalized"] else "")
 
+        # Sheet 6：廠商付款明細
+        ws6 = SafeWorksheet(wb.create_sheet("廠商付款明細"))
+        _write_header(
+            ws6,
+            ["日期", "廠商", "金額", "收付方式", "項目/說明", "發票號", "狀態"],
+        )
+        _METHOD_LABEL = {
+            "cash": "現金",
+            "bank_transfer": "銀行匯款",
+            "check": "支票",
+            "linepay": "LINE Pay",
+            "other": "其他",
+        }
+        for i, r in enumerate(detail.get("vendor_payment", []), start=2):
+            ws6.cell(row=i, column=1, value=r.get("date"))
+            ws6.cell(row=i, column=2, value=r.get("vendor_name"))
+            ws6.cell(row=i, column=3, value=r["amount"])
+            ws6.cell(
+                row=i,
+                column=4,
+                value=_METHOD_LABEL.get(
+                    r.get("payment_method"), r.get("payment_method")
+                ),
+            )
+            ws6.cell(row=i, column=5, value=r.get("description"))
+            ws6.cell(row=i, column=6, value=r.get("invoice_number"))
+            ws6.cell(
+                row=i,
+                column=7,
+                value="已簽收" if r.get("status") == "signed" else "待簽收",
+            )
+
     suffix = f"{year}" + (f"-{month:02d}" if month else "-全年")
     return xlsx_streaming_response(wb, f"收支彙總_{suffix}.xlsx")
 

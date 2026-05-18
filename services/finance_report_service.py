@@ -26,6 +26,7 @@ from models.fees import (
     StudentFeeRefund,
 )
 from models.salary import SalaryRecord
+from models.vendor_payment import VendorPayment
 
 
 def _month_totals_from(rows) -> dict[int, int]:
@@ -174,6 +175,28 @@ def get_salary_expense_by_month(
     return out
 
 
+def get_vendor_payment_expense_by_month(session: Session, year: int) -> dict[int, int]:
+    """廠商付款支出，按 payment_date 月份聚合。
+
+    無論 status 為 pending 或 signed 都計入：對園所而言錢已付出，差別只在
+    廠商是否完成簽收憑證；若只算 signed 會在「未簽收的支出」上低估現金流。
+    """
+    start, end = _year_range(year)
+    rows = (
+        session.query(
+            extract("month", VendorPayment.payment_date).label("m"),
+            func.sum(VendorPayment.amount),
+        )
+        .filter(
+            VendorPayment.payment_date >= start,
+            VendorPayment.payment_date < end,
+        )
+        .group_by("m")
+        .all()
+    )
+    return _month_totals_from(rows)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Aggregator
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +211,7 @@ def build_finance_summary(
     activity_rev = get_activity_revenue_by_month(session, year)
     activity_ref = get_activity_refund_by_month(session, year)
     salary_exp = get_salary_expense_by_month(session, year)
+    vendor_exp = get_vendor_payment_expense_by_month(session, year)
 
     months = list(range(1, 13)) if month is None else [month]
 
@@ -196,7 +220,8 @@ def build_finance_summary(
         revenue = tuition_rev.get(m, 0) + activity_rev.get(m, 0)
         refund = tuition_ref.get(m, 0) + activity_ref.get(m, 0)
         sal = salary_exp.get(m, {"employee_gross": 0, "employer_benefit": 0})
-        expense = sal["employee_gross"] + sal["employer_benefit"]
+        vendor_m = vendor_exp.get(m, 0)
+        expense = sal["employee_gross"] + sal["employer_benefit"] + vendor_m
         trend.append(
             {
                 "month": m,
@@ -219,6 +244,7 @@ def build_finance_summary(
     employer_total = sum(
         salary_exp.get(m, {}).get("employer_benefit", 0) for m in months
     )
+    vendor_total = sum(vendor_exp.get(m, 0) for m in months)
 
     return {
         "period": {"year": year, "month": month},
@@ -253,6 +279,11 @@ def build_finance_summary(
                 "category": "employer_benefit",
                 "label": "雇主保費+勞退",
                 "amount": employer_total,
+            },
+            {
+                "category": "vendor_payment",
+                "label": "廠商付款",
+                "amount": vendor_total,
             },
         ],
         "monthly_trend": trend,
@@ -395,11 +426,39 @@ def get_salary_detail(session: Session, year: int, month: int) -> list[dict]:
     return result
 
 
+def get_vendor_payment_detail(session: Session, year: int, month: int) -> list[dict]:
+    """該月廠商付款明細，按付款日期排序。"""
+    start, end = _month_range(year, month)
+    rows = (
+        session.query(VendorPayment)
+        .filter(
+            VendorPayment.payment_date >= start,
+            VendorPayment.payment_date < end,
+        )
+        .order_by(VendorPayment.payment_date)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "date": _iso(r.payment_date),
+            "vendor_name": r.vendor_name,
+            "amount": int(r.amount or 0),
+            "payment_method": r.payment_method,
+            "description": r.description,
+            "invoice_number": r.invoice_number,
+            "status": r.status,
+        }
+        for r in rows
+    ]
+
+
 def build_finance_detail(session: Session, year: int, month: int) -> dict:
-    """下鑽明細彙總：回傳三來源的明細陣列。"""
+    """下鑽明細彙總：回傳四來源的明細陣列。"""
     return {
         "period": {"year": year, "month": month},
         "tuition": get_tuition_detail(session, year, month),
         "activity": get_activity_detail(session, year, month),
         "salary": get_salary_detail(session, year, month),
+        "vendor_payment": get_vendor_payment_detail(session, year, month),
     }

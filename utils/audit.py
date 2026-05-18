@@ -175,6 +175,8 @@ ENTITY_PATTERNS = [
     (r"/api/year_end/cycles/\d+/special_bonuses", "year_end_special_bonus"),
     (r"/api/year_end/cycles", "year_end_cycle"),
     (r"/api/year_end/settlements", "year_end_settlement"),
+    # 廠商付款簽收：金流類，付款 + 簽收 + 附件異動全部留 audit。
+    (r"/api/vendor-payments", "vendor_payment"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -254,6 +256,8 @@ ENTITY_LABELS = {
     # 家長端 milestone 互動（react/acknowledge）— middleware 透過
     # ENTITY_PATTERNS 攔截 POST 寫入 audit_logs。
     "parent_milestone": "家長端里程碑互動",
+    # 廠商付款簽收
+    "vendor_payment": "廠商付款簽收",
 }
 
 ACTION_LABELS = {

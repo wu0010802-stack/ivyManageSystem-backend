@@ -98,6 +98,11 @@ class Permission(IntFlag):
     YEAR_END_WRITE = 1 << 60  # 年終 cycle / settlements / special_bonus_items 編輯
     YEAR_END_FINALIZE = 1 << 61  # 年終最高主管核定 + cycle lock/close
 
+    # --- 廠商付款簽收（園務行政）---
+    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
+    VENDOR_PAYMENT_READ = 1 << 54  # 廠商付款 (檢視)
+    VENDOR_PAYMENT_WRITE = 1 << 62  # 廠商付款 (編輯 / 簽收)
+
     # 全部權限
     ALL = 0xFFFFFFFFFFFFFFFF
 
@@ -130,6 +135,10 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     "GUARDIANS": {"read": "GUARDIANS_READ", "write": "GUARDIANS_WRITE"},
     "APPRAISAL": {"read": "APPRAISAL_READ", "write": "APPRAISAL_EVENT_WRITE"},
     "YEAR_END": {"read": "YEAR_END_READ", "write": "YEAR_END_WRITE"},
+    "VENDOR_PAYMENT": {
+        "read": "VENDOR_PAYMENT_READ",
+        "write": "VENDOR_PAYMENT_WRITE",
+    },
 }
 
 # READ → WRITE 位元對照（供遷移用）
@@ -149,6 +158,7 @@ _RW_PAIRS: List[tuple] = [
     (Permission.FEES_READ, Permission.FEES_WRITE),
     (Permission.RECRUITMENT_READ, Permission.RECRUITMENT_WRITE),
     (Permission.GUARDIANS_READ, Permission.GUARDIANS_WRITE),
+    (Permission.VENDOR_PAYMENT_READ, Permission.VENDOR_PAYMENT_WRITE),
 ]
 
 
@@ -180,6 +190,9 @@ ROLE_TEMPLATES: Dict[str, int] = {
         # 年終獎金：人事可檢視與編輯（會計核數字流程）
         | Permission.YEAR_END_READ
         | Permission.YEAR_END_WRITE
+        # 廠商付款：HR 兼採購行政
+        | Permission.VENDOR_PAYMENT_READ
+        | Permission.VENDOR_PAYMENT_WRITE
     ),
     "supervisor": (
         Permission.DASHBOARD
@@ -230,6 +243,9 @@ ROLE_TEMPLATES: Dict[str, int] = {
         | Permission.YEAR_END_READ
         | Permission.YEAR_END_WRITE
         | Permission.YEAR_END_FINALIZE
+        # 廠商付款：主管全程權限（含核定/簽收）
+        | Permission.VENDOR_PAYMENT_READ
+        | Permission.VENDOR_PAYMENT_WRITE
     ),
     "teacher": (
         Permission.DASHBOARD
@@ -338,6 +354,9 @@ PERMISSION_LABELS: Dict[str, str] = {
     "YEAR_END_READ": "年終結算 (檢視)",
     "YEAR_END_WRITE": "年終結算 (編輯)",
     "YEAR_END_FINALIZE": "年終核定 (最高主管)",
+    # 廠商付款簽收
+    "VENDOR_PAYMENT_READ": "廠商付款簽收 (檢視)",
+    "VENDOR_PAYMENT_WRITE": "廠商付款簽收 (編輯/簽收)",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -436,6 +455,11 @@ PERMISSION_GROUPS: List[Dict] = [
                 "module": "公告管理",
                 "read": "ANNOUNCEMENTS_READ",
                 "write": "ANNOUNCEMENTS_WRITE",
+            },
+            {
+                "module": "廠商付款簽收",
+                "read": "VENDOR_PAYMENT_READ",
+                "write": "VENDOR_PAYMENT_WRITE",
             },
         ],
     },
