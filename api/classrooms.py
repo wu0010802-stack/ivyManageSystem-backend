@@ -6,8 +6,9 @@ import logging
 from typing import Optional
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
+from utils.etag import etag_response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sqlalchemy import func
@@ -426,6 +427,8 @@ def _serialize_classroom_detail(
 
 @router.get("/classrooms")
 async def get_classrooms(
+    request: Request,
+    response: Response,
     include_inactive: bool = Query(False),
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
@@ -556,7 +559,7 @@ async def get_classrooms(
                     "is_active": c.is_active,
                 }
             )
-        return result
+        return etag_response(request, response, result)
     finally:
         session.close()
 

@@ -6,8 +6,9 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from utils.errors import raise_safe_500
+from utils.etag import etag_response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
@@ -239,6 +240,8 @@ class OffboardRequest(BaseModel):
 
 @router.get("/employees")
 def get_employees(
+    request: Request,
+    response: Response,
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
@@ -267,7 +270,9 @@ def get_employees(
                     resign_fields=True,
                 )
             )
-        return result
+        # payload 因 can_view_salary 而 per-user 變動，ETag 在 per-user 序列化後計算；
+        # Cache-Control: private 阻擋 proxy 跨用戶誤拿。
+        return etag_response(request, response, result)
     finally:
         session.close()
 
