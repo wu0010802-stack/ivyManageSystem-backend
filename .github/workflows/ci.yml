@@ -100,3 +100,54 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           retention-days: 14
+
+  openapi-drift:
+    name: OpenAPI Drift Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout ivy-backend
+        uses: actions/checkout@v4
+        with:
+          path: ivy-backend
+
+      - name: Checkout ivy-frontend (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ivy-frontend
+          path: ivy-frontend
+          token: ${{ secrets.IVY_CROSS_REPO_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ivy-backend/requirements.txt
+
+      - name: Install backend deps
+        working-directory: ivy-backend
+        run: pip install -r requirements.txt
+
+      - name: Dump openapi.json
+        working-directory: ivy-backend
+        env:
+          ENV: development
+          DATABASE_URL: postgresql://dummy:dummy@localhost:5432/dummy
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+        run: python scripts/dump_openapi.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ivy-frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: ivy-frontend
+        run: npm ci
+
+      - name: Run drift check
+        working-directory: ivy-frontend
+        run: npm run gen:api:check
