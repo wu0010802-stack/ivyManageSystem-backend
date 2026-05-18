@@ -640,6 +640,181 @@ class TestMonthlyPnLAggregator:
         assert insured_row["total"] is None
         assert insured_row["unit"] == "person"
 
+    # ── Phase 2 新增測試 ────────────────────────────────────────────────
+
+    def test_aggregator_art_teacher_split(self, pnl_client):
+        """才藝老師（hourly）的 base 薪資切出至 personnel_art_teacher_hourly。
+
+        regular 員工 → personnel_base_salary；hourly 員工 → personnel_art_teacher_hourly；
+        其他列（festival／overtime／勞健保／勞退）仍跨 role 加總。
+        """
+        from models.monthly_fixed_cost import MonthlyFixedCost  # noqa: F401
+
+        _, sf = pnl_client
+        with sf() as s:
+            reg_emp = Employee(
+                employee_id="REG",
+                name="正職",
+                base_salary=30000,
+                employee_type="regular",
+                is_active=True,
+            )
+            hr_emp = Employee(
+                employee_id="HR",
+                name="才藝老師",
+                base_salary=0,
+                employee_type="hourly",
+                is_active=True,
+            )
+            s.add_all([reg_emp, hr_emp])
+            s.flush()
+            # 8 月：regular gross=42000 (含 ot 2000 + supdiv 3000) → base=37000
+            # 8 月：hourly gross=15000 (含 ot 500 + supdiv 0) → art=14500
+            s.add_all(
+                [
+                    SalaryRecord(
+                        employee_id=reg_emp.id,
+                        salary_year=2026,
+                        salary_month=8,
+                        gross_salary=42000,
+                        overtime_pay=2000,
+                        supervisor_dividend=3000,
+                        festival_bonus=1000,
+                        labor_insurance_employer=2500,
+                        net_salary=30000,
+                        total_deduction=12000,
+                    ),
+                    SalaryRecord(
+                        employee_id=hr_emp.id,
+                        salary_year=2026,
+                        salary_month=8,
+                        gross_salary=15000,
+                        overtime_pay=500,
+                        supervisor_dividend=0,
+                        festival_bonus=500,
+                        labor_insurance_employer=800,
+                        net_salary=14000,
+                        total_deduction=1000,
+                    ),
+                ]
+            )
+            s.commit()
+        with sf() as s:
+            data = build_monthly_pnl(s, 2026)
+        rows = data["sections"]
+        # 8 月 index = 7
+        assert (
+            _row(rows, "personnel_expense", "personnel_base_salary")["monthly"][7]
+            == 37000
+        )
+        assert (
+            _row(rows, "personnel_expense", "personnel_art_teacher_hourly")["monthly"][
+                7
+            ]
+            == 14500
+        )
+        # festival 跨 role 加總 = 1000 + 500 = 1500
+        assert (
+            _row(rows, "personnel_expense", "personnel_festival_bonus")["monthly"][7]
+            == 1500
+        )
+        # 勞保（雇主）跨 role 加總 = 2500 + 800 = 3300
+        assert (
+            _row(rows, "personnel_expense", "personnel_labor_insurance")["monthly"][7]
+            == 3300
+        )
+
+    def test_aggregator_fixed_costs_in_variable_section(self, pnl_client):
+        """7 條變動支出固定費用從 monthly_fixed_costs 取，row key 一對一映射。"""
+        from models.monthly_fixed_cost import MonthlyFixedCost
+
+        _, sf = pnl_client
+        with sf() as s:
+            s.add_all(
+                [
+                    MonthlyFixedCost(
+                        year=2026, month=3, category="rent", amount=500000
+                    ),
+                    MonthlyFixedCost(year=2026, month=3, category="water", amount=5989),
+                    MonthlyFixedCost(
+                        year=2026, month=3, category="electricity", amount=16525
+                    ),
+                    MonthlyFixedCost(year=2026, month=3, category="phone", amount=1273),
+                    MonthlyFixedCost(
+                        year=2026, month=3, category="office_petty_cash", amount=18134
+                    ),
+                    MonthlyFixedCost(
+                        year=2026, month=3, category="kitchen_petty_cash", amount=19202
+                    ),
+                    MonthlyFixedCost(
+                        year=2026, month=3, category="meals", amount=50000
+                    ),
+                    # 另一年的條目不應出現
+                    MonthlyFixedCost(
+                        year=2025, month=3, category="rent", amount=400000
+                    ),
+                ]
+            )
+            s.commit()
+        with sf() as s:
+            data = build_monthly_pnl(s, 2026)
+        rows = data["sections"]
+        # 3 月 index = 2
+        assert _row(rows, "variable_expense", "variable_rent")["monthly"][2] == 500000
+        assert _row(rows, "variable_expense", "variable_water")["monthly"][2] == 5989
+        assert (
+            _row(rows, "variable_expense", "variable_electricity")["monthly"][2]
+            == 16525
+        )
+        assert _row(rows, "variable_expense", "variable_phone")["monthly"][2] == 1273
+        assert (
+            _row(rows, "variable_expense", "variable_office_petty_cash")["monthly"][2]
+            == 18134
+        )
+        assert (
+            _row(rows, "variable_expense", "variable_kitchen_petty_cash")["monthly"][2]
+            == 19202
+        )
+        assert _row(rows, "variable_expense", "variable_meals")["monthly"][2] == 50000
+        # subtotal = 7 條固定 + vendor(0)
+        subtotal_3 = _row(rows, "variable_expense", "variable_subtotal")["monthly"][2]
+        assert subtotal_3 == 500000 + 5989 + 16525 + 1273 + 18134 + 19202 + 50000
+
+    def test_aggregator_old_pension_reserve_in_personnel(self, pnl_client):
+        """old_pension_reserve 從 monthly_fixed_costs 讀但落在 personnel section
+        而非 variable section（屬勞退非變動）。"""
+        from models.monthly_fixed_cost import MonthlyFixedCost
+
+        _, sf = pnl_client
+        with sf() as s:
+            s.add(
+                MonthlyFixedCost(
+                    year=2026, month=4, category="old_pension_reserve", amount=10000
+                )
+            )
+            s.commit()
+        with sf() as s:
+            data = build_monthly_pnl(s, 2026)
+        rows = data["sections"]
+        # 4 月 index = 3
+        assert (
+            _row(rows, "personnel_expense", "personnel_old_pension_reserve")["monthly"][
+                3
+            ]
+            == 10000
+        )
+        # personnel_subtotal 涵蓋 10000（其他列為 0）
+        assert (
+            _row(rows, "personnel_expense", "personnel_subtotal")["monthly"][3] == 10000
+        )
+        # 不出現在 variable section（key 名不衝突，但驗證概念）
+        variable_keys = {
+            r["key"]
+            for r in next(s for s in rows if s["key"] == "variable_expense")["rows"]
+        }
+        assert "old_pension_reserve" not in variable_keys
+        assert "personnel_old_pension_reserve" not in variable_keys
+
 
 # ── 端點整合測試 ───────────────────────────────────────────────────────────
 
