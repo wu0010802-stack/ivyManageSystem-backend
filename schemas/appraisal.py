@@ -377,3 +377,69 @@ class ScorePreviewOut(BaseModel):
     cycle_id: int
     on_date: date
     participants: list[ScorePreviewParticipant]
+
+
+# ===== Signing UX：log / reject / comment / batch / status_summary =====
+
+
+class SummaryLogOut(BaseModel):
+    id: int
+    summary_id: int
+    action: str
+    from_status: Optional[str] = None
+    to_status: Optional[str] = None
+    actor_id: int
+    actor_name: Optional[str] = None
+    actor_role_snapshot: Optional[str] = None
+    reason: Optional[str] = None
+    comment: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class RejectIn(BaseModel):
+    reason: str = Field(min_length=10)
+    to_status: Optional[Literal["DRAFT", "SUPERVISOR_SIGNED", "ACCOUNTING_SIGNED"]] = (
+        None
+    )
+    # null = 預設退一階；FINALIZED reject 用 ACCOUNTING_SIGNED
+
+
+class CommentIn(BaseModel):
+    comment: str = Field(min_length=1)
+
+
+class BatchSignIn(BaseModel):
+    summary_ids: list[int]
+    stage: Literal["SUPERVISOR", "ACCOUNTING", "FINALIZE"]
+
+
+class BatchSignErrorItem(BaseModel):
+    summary_id: int
+    error: str
+
+
+class BatchSignResultOut(BaseModel):
+    succeeded: list[int]
+    failed: list[BatchSignErrorItem]
+
+
+class SignStatusSummaryItem(BaseModel):
+    id: int
+    employee_id: int
+    employee_name: str
+    total_score: Decimal
+    grade: str
+    bonus_amount: Decimal
+    updated_at: Optional[str] = None
+
+
+class SignStatusBucket(BaseModel):
+    status: str
+    count: int
+    summaries: list[SignStatusSummaryItem]
+
+
+class SignStatusSummaryOut(BaseModel):
+    cycle_id: int
+    counts: dict[str, int]
+    buckets: list[SignStatusBucket]

@@ -29,24 +29,31 @@ from models.appraisal import (
     AppraisalScoreItemCatalog,
     AppraisalScoringRule,
     AppraisalSummary,
+    AppraisalSummaryLog,
     CycleStatus,
     Grade,
     RoleGroup,
     Semester,
+    SummaryLogAction,
     SummaryStatus,
 )
+from models.auth import User
 from models.base import get_session_dep, session_scope
 from models.employee import Employee
 from schemas.appraisal import (
     ActivityRateAggregateOut,
     AggregatedStatusOut,
     AttendanceAggregateOut,
+    BatchSignErrorItem,
+    BatchSignIn,
+    BatchSignResultOut,
     BonusRateCreate,
     BonusRateOut,
     BulkAddParticipantsRequest,
     BulkAddParticipantsResult,
     CatalogOut,
     ClassRetentionAggregateOut,
+    CommentIn,
     CycleCreate,
     CycleOut,
     CycleUpdate,
@@ -62,6 +69,7 @@ from schemas.appraisal import (
     ParticipantOut,
     ParticipantStatusOut,
     PerUnitConfig,
+    RejectIn,
     ScoreItemCreate,
     ScoreItemOut,
     ScorePreviewItem,
@@ -69,6 +77,10 @@ from schemas.appraisal import (
     ScorePreviewParticipant,
     ScoringRuleIn,
     ScoringRuleOut,
+    SignStatusBucket,
+    SignStatusSummaryItem,
+    SignStatusSummaryOut,
+    SummaryLogOut,
     SummaryOut,
     SyncResultOut,
     SyncResultPreviewItem,
@@ -79,6 +91,14 @@ from services.appraisal.employee_inference import (
     infer_role_group,
 )
 from services.appraisal.engine import BonusRateLookup, compute_summary
+from services.appraisal.sign_workflow import (
+    advance_target,
+    apply_reject,
+    can_advance,
+    can_reject,
+    default_reject_to_status,
+    write_summary_log,
+)
 from services.appraisal.excel_io import (
     ExportRow,
     TransferRow,
@@ -777,6 +797,16 @@ def sign_supervisor(
 
     summary.supervisor_signed_at = datetime.now(timezone.utc)
     summary.supervisor_comment = comment
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.SIGN_SUPERVISOR,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=SummaryStatus.DRAFT,
+        to_status=SummaryStatus.SUPERVISOR_SIGNED,
+        comment=comment if comment else None,
+    )
     session.commit()
     session.refresh(summary)
     return summary
@@ -813,6 +843,16 @@ def sign_accounting(
 
     summary.accounting_signed_at = datetime.now(timezone.utc)
     summary.accounting_comment = comment
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.SIGN_ACCOUNTING,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=SummaryStatus.SUPERVISOR_SIGNED,
+        to_status=SummaryStatus.ACCOUNTING_SIGNED,
+        comment=comment if comment else None,
+    )
     session.commit()
     session.refresh(summary)
     return summary
@@ -847,9 +887,379 @@ def finalize_summary(
 
     summary.finalized_at = datetime.now(timezone.utc)
     summary.finalized_comment = comment
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.FINALIZE,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=SummaryStatus.ACCOUNTING_SIGNED,
+        to_status=SummaryStatus.FINALIZED,
+        comment=comment if comment else None,
+    )
     session.commit()
     session.refresh(summary)
     return summary
+
+
+def _resolve_reject_permission(current_status: SummaryStatus) -> Permission:
+    """依當前 status 決定退簽需要的 Permission（二次驗用）。
+
+    - SUPERVISOR_SIGNED → APPRAISAL_REVIEW
+    - ACCOUNTING_SIGNED → APPRAISAL_ACCOUNTING
+    - FINALIZED → APPRAISAL_FINALIZE
+    - 其他（DRAFT）→ FINALIZE 作 fallback；DRAFT 在 endpoint 內已先回 400
+    """
+    if current_status == SummaryStatus.SUPERVISOR_SIGNED:
+        return Permission.APPRAISAL_REVIEW
+    if current_status == SummaryStatus.ACCOUNTING_SIGNED:
+        return Permission.APPRAISAL_ACCOUNTING
+    if current_status == SummaryStatus.FINALIZED:
+        return Permission.APPRAISAL_FINALIZE
+    return Permission.APPRAISAL_FINALIZE
+
+
+@appraisal_router.post("/summaries/{summary_id}/reject", response_model=SummaryOut)
+def reject_summary(
+    summary_id: int,
+    payload: RejectIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """退簽：寫 log + 更新 status 到 to_status（預設退一階）+ 清對應 sign 欄位。
+
+    入口最低門檻為 APPRAISAL_READ；依當前 stage 還要二次驗對應 stage 權限
+    （SUPERVISOR_SIGNED → REVIEW / ACCOUNTING_SIGNED → ACCOUNTING /
+    FINALIZED → FINALIZE）。
+    """
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
+    if summary is None:
+        raise HTTPException(404, "summary 不存在")
+
+    if summary.status == SummaryStatus.DRAFT:
+        raise HTTPException(400, "DRAFT 狀態無法退簽")
+
+    # 二次權限檢查：對 ACCOUNTING_SIGNED / FINALIZED reject 還要更高權限
+    from utils.permissions import has_permission
+
+    required = _resolve_reject_permission(summary.status)
+    user_perms = current_user.get("permissions", 0)
+    if not has_permission(user_perms, required):
+        raise HTTPException(403, f"權限不足，需要 {required.name}")
+
+    # 決定 to_status
+    if payload.to_status:
+        to_status = SummaryStatus(payload.to_status)
+    else:
+        to_status_default = default_reject_to_status(summary.status)
+        if to_status_default is None:
+            raise HTTPException(
+                400, f"無法決定退簽目標（current={summary.status.value}）"
+            )
+        to_status = to_status_default
+
+    if not can_reject(summary.status, to_status):
+        raise HTTPException(
+            400, f"不可從 {summary.status.value} 退到 {to_status.value}"
+        )
+
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
+
+    from_status = apply_reject(
+        summary,
+        to_status,
+        actor_user_id=current_user.get("user_id"),
+        reason=payload.reason,
+    )
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.REJECT,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        from_status=from_status,
+        to_status=to_status,
+        reason=payload.reason,
+    )
+    session.commit()
+    session.refresh(summary)
+    return summary
+
+
+@appraisal_router.post("/summaries/{summary_id}/comment", response_model=SummaryOut)
+def comment_summary(
+    summary_id: int,
+    payload: CommentIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """留言：寫 AppraisalSummaryLog action=COMMENT，status 不變。
+
+    入口門檻 APPRAISAL_READ；空 comment 由 Pydantic min_length=1 攔截。
+    """
+    summary = session.get(AppraisalSummary, summary_id)
+    if summary is None:
+        raise HTTPException(404, "summary 不存在")
+    write_summary_log(
+        session,
+        summary,
+        SummaryLogAction.COMMENT,
+        actor_user_id=current_user.get("user_id"),
+        actor_role=current_user.get("role"),
+        comment=payload.comment,
+    )
+    session.commit()
+    session.refresh(summary)
+    return summary
+
+
+@appraisal_router.post(
+    "/cycles/{cycle_id}/summaries:batch_sign",
+    response_model=BatchSignResultOut,
+)
+def batch_sign_summaries(
+    cycle_id: int,
+    payload: BatchSignIn,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """批次簽核 summaries（SUPERVISOR / ACCOUNTING / FINALIZE）。
+
+    入口最低門檻 APPRAISAL_READ；依 stage 還要二次驗對應 stage 權限
+    （SUPERVISOR → REVIEW / ACCOUNTING → ACCOUNTING / FINALIZE → FINALIZE）。
+
+    策略：逐筆嘗試。某筆失敗（status 不合 / 不存在 / 不屬此 cycle / 自簽防呆）
+    只記入 failed 清單，不會 rollback 其他成功的筆。最後一次 commit。
+    """
+    from utils.permissions import has_permission
+
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法批次簽核")
+
+    stage_perm = {
+        "SUPERVISOR": Permission.APPRAISAL_REVIEW,
+        "ACCOUNTING": Permission.APPRAISAL_ACCOUNTING,
+        "FINALIZE": Permission.APPRAISAL_FINALIZE,
+    }[payload.stage]
+    user_perms = current_user.get("permissions", 0)
+    if not has_permission(user_perms, stage_perm):
+        raise HTTPException(403, f"批次 {payload.stage} 需要 {stage_perm.name}")
+
+    actor_user_id = current_user.get("user_id")
+    actor_role = current_user.get("role")
+    action_enum = {
+        "SUPERVISOR": SummaryLogAction.SIGN_SUPERVISOR,
+        "ACCOUNTING": SummaryLogAction.SIGN_ACCOUNTING,
+        "FINALIZE": SummaryLogAction.FINALIZE,
+    }[payload.stage]
+
+    succeeded: list[int] = []
+    failed: list[BatchSignErrorItem] = []
+
+    for sid in payload.summary_ids:
+        try:
+            summary = (
+                session.query(AppraisalSummary)
+                .filter(AppraisalSummary.id == sid)
+                .with_for_update()
+                .first()
+            )
+            if summary is None:
+                failed.append(
+                    BatchSignErrorItem(summary_id=sid, error="summary 不存在")
+                )
+                continue
+            if summary.cycle_id != cycle_id:
+                failed.append(
+                    BatchSignErrorItem(summary_id=sid, error="不屬於此 cycle")
+                )
+                continue
+            if not can_advance(summary.status, payload.stage):
+                failed.append(
+                    BatchSignErrorItem(
+                        summary_id=sid,
+                        error=(
+                            f"當前 status={summary.status.value} "
+                            f"無法進入 {payload.stage}"
+                        ),
+                    )
+                )
+                continue
+            try:
+                assert_not_self_approval(
+                    current_user,
+                    summary.participant.employee_id,
+                    doc_label="考核獎金",
+                )
+            except HTTPException as e:
+                failed.append(
+                    BatchSignErrorItem(summary_id=sid, error=f"自簽防呆: {e.detail}")
+                )
+                continue
+
+            from_status = summary.status
+            to_status = advance_target(from_status, payload.stage)
+            summary.status = to_status
+
+            now = datetime.now(timezone.utc)
+            if payload.stage == "SUPERVISOR":
+                summary.supervisor_signed_by = actor_user_id
+                summary.supervisor_signed_at = now
+            elif payload.stage == "ACCOUNTING":
+                summary.accounting_signed_by = actor_user_id
+                summary.accounting_signed_at = now
+            else:  # FINALIZE
+                summary.finalized_by = actor_user_id
+                summary.finalized_at = now
+
+            write_summary_log(
+                session,
+                summary,
+                action_enum,
+                actor_user_id=actor_user_id,
+                actor_role=actor_role,
+                from_status=from_status,
+                to_status=to_status,
+            )
+            succeeded.append(sid)
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            failed.append(BatchSignErrorItem(summary_id=sid, error=str(e)))
+
+    session.commit()
+    return BatchSignResultOut(succeeded=succeeded, failed=failed)
+
+
+@appraisal_router.get(
+    "/summaries/{summary_id}/logs",
+    response_model=list[SummaryLogOut],
+)
+def get_summary_logs(
+    summary_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """取得 summary 簽核軌跡（log）；desc by created_at + id。
+
+    join users 取 actor_name（display_name 或 username fallback）。
+    """
+    summary = session.get(AppraisalSummary, summary_id)
+    if summary is None:
+        raise HTTPException(404, "summary 不存在")
+
+    rows = (
+        session.query(AppraisalSummaryLog)
+        .filter(AppraisalSummaryLog.summary_id == summary_id)
+        .order_by(
+            AppraisalSummaryLog.created_at.desc(),
+            AppraisalSummaryLog.id.desc(),
+        )
+        .all()
+    )
+
+    actor_ids = {r.actor_id for r in rows}
+    actor_names: dict[int, str] = {}
+    if actor_ids:
+        for u in session.query(User).filter(User.id.in_(actor_ids)).all():
+            actor_names[u.id] = u.display_name or u.username
+
+    return [
+        SummaryLogOut(
+            id=r.id,
+            summary_id=r.summary_id,
+            action=r.action.value if hasattr(r.action, "value") else str(r.action),
+            from_status=r.from_status.value if r.from_status else None,
+            to_status=r.to_status.value if r.to_status else None,
+            actor_id=r.actor_id,
+            actor_name=actor_names.get(r.actor_id),
+            actor_role_snapshot=r.actor_role_snapshot,
+            reason=r.reason,
+            comment=r.comment,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        for r in rows
+    ]
+
+
+@appraisal_router.get(
+    "/cycles/{cycle_id}/sign_status_summary",
+    response_model=SignStatusSummaryOut,
+)
+def get_sign_status_summary(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """聚合 cycle 內所有 summary 的 sign status（排除 is_excluded participant）。
+
+    回 counts + buckets（含每桶 summary 列表，供 KanbanView 一次取齊）。
+    counts 鍵涵蓋全部 SummaryStatus（零值補 0）。
+    """
+    cycle = session.get(AppraisalCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "週期不存在")
+
+    rows = (
+        session.query(AppraisalSummary, AppraisalParticipant)
+        .join(
+            AppraisalParticipant,
+            AppraisalParticipant.id == AppraisalSummary.participant_id,
+        )
+        .filter(
+            AppraisalSummary.cycle_id == cycle_id,
+            AppraisalParticipant.is_excluded.is_(False),
+        )
+        .all()
+    )
+
+    emp_ids = {p.employee_id for _, p in rows}
+    emp_names: dict[int, str] = {}
+    if emp_ids:
+        for e in session.query(Employee).filter(Employee.id.in_(emp_ids)).all():
+            emp_names[e.id] = e.name
+
+    buckets_dict: dict[str, list[SignStatusSummaryItem]] = {
+        st.value: [] for st in SummaryStatus
+    }
+    for summary, participant in rows:
+        buckets_dict[summary.status.value].append(
+            SignStatusSummaryItem(
+                id=summary.id,
+                employee_id=participant.employee_id,
+                employee_name=emp_names.get(participant.employee_id, ""),
+                total_score=summary.total_score,
+                grade=summary.grade.value,
+                bonus_amount=summary.bonus_amount,
+                updated_at=(
+                    summary.updated_at.isoformat() if summary.updated_at else None
+                ),
+            )
+        )
+
+    counts = {k: len(v) for k, v in buckets_dict.items()}
+    buckets = [
+        SignStatusBucket(status=st, count=len(items), summaries=items)
+        for st, items in buckets_dict.items()
+    ]
+    return SignStatusSummaryOut(
+        cycle_id=cycle_id,
+        counts=counts,
+        buckets=buckets,
+    )
 
 
 # ===== Bonus Rates =====
