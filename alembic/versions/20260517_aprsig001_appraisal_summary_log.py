@@ -51,6 +51,13 @@ def upgrade() -> None:
             postgresql.ENUM(name="appraisal_summary_status_enum", create_type=False),
             nullable=True,
         ),
+        # bug sweep 2026-05-18 P2 文件化：actor_id 用 RESTRICT（與其他模組 SET NULL
+        # 慣例不同但刻意為之）。本表是「簽核軌跡」審計表，actor 是強身分證明；
+        # 若 admin 帳號被刪而把 actor_id 設 NULL，等於抹掉「誰簽核的」這條稽核
+        # 關鍵欄位，違反金流類審計表「人類處理 user 刪除事件」的原則。RESTRICT
+        # 會在嘗試刪除有 log 的 user 時擋下，強制 admin 先選擇：
+        #   (a) 該 user 改 is_active=False 而非物理刪除（推薦）
+        #   (b) 用 SQL 把 actor_role_snapshot 保留下備查再清 log（極少數情境）
         sa.Column(
             "actor_id",
             sa.Integer,

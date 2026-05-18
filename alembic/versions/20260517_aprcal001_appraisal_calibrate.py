@@ -3,6 +3,15 @@
 Revision ID: aprcal001
 Revises: f33ty9types, r4c3c0nd5n4p
 Create Date: 2026-05-17
+
+bug sweep 2026-05-18 P2 文件化（transaction 邊界）：
+    本檔 upgrade() 內所有 DDL (create_table / create_index) 與 DML
+    (UPDATE source_ref / UPDATE item_code rename / INSERT DEFAULT_RULES) 都包在
+    alembic 預設的「每 migration 一個 transaction」內（env.py 採 transaction_per_migration
+    + transactional_ddl 為 True for PostgreSQL）。意義：任一 step 拋例外，整個
+    migration rollback，不會留下「table 建好但 default rules 沒灌進去」或「source_ref
+    rename 完但 item_code rename 失敗」這類 partial state；可放心 retry。
+    若未來改成單 migration 內跨多個 conn 或自行 BEGIN/COMMIT，要重新檢查此假設。
 """
 
 from __future__ import annotations
