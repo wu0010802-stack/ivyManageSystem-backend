@@ -33,7 +33,7 @@ from utils.file_upload import (
 )
 from utils.permissions import Permission
 from utils.portfolio_storage import get_portfolio_storage
-from services.report_cache_service import report_cache_service
+from utils.finance_cache import invalidate_finance_summary_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["vendor-payments"])
@@ -177,11 +177,12 @@ def _parse_signature_payload(data: str) -> tuple[bytes, str]:
 
 
 def _invalidate_finance_cache() -> None:
-    """金流變動影響 /finance-summary 報表快取（TTL 30 分），同步失效。"""
-    try:
-        report_cache_service.invalidate_category(None, "reports_finance_summary")
-    except Exception:
-        logger.warning("invalidate finance_summary cache failed", exc_info=True)
+    """金流變動影響 /finance-summary 與 /monthly-pnl 報表快取（皆 TTL 30 分），同步失效。
+
+    走中央 helper `utils.finance_cache.invalidate_finance_summary_cache()` 一次
+    清掉兩個 category，避免新加 category 時遺漏單一呼叫站點。
+    """
+    invalidate_finance_summary_cache()
 
 
 def _load_payment(session, payment_id: int) -> VendorPayment:

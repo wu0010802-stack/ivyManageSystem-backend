@@ -20,6 +20,7 @@ from models.database import (
     SalaryRecord,
 )
 from services.finance_report_service import build_finance_detail, build_finance_summary
+from services.monthly_pnl_service import build_monthly_pnl
 from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
@@ -287,6 +288,33 @@ def get_finance_summary(
             ttl_seconds=FINANCE_SUMMARY_CACHE_TTL_SECONDS,
             params={"year": year, "month": month},
             builder=lambda: build_finance_summary(session, year=year, month=month),
+        )
+    finally:
+        session.close()
+
+
+@router.get("/monthly-pnl")
+def get_monthly_pnl(
+    year: int = Query(..., ge=2000, le=2100),
+    current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
+):
+    """月度損益表：試算表 layout，4 section × 12 月 × row + totals + pending_items。
+
+    Phase 1 範圍：只整合已有資料來源的 ~22 列；未整合的 user 自家詞彙、紅利細項、
+    固定費用、個別廠商分項落於 pending_items（不假裝填 0）。
+
+    快取：sub-category `reports_monthly_pnl`，TTL 30 分；與 /finance-summary 共用
+    `utils.finance_cache.invalidate_finance_summary_cache()` 失效掛鉤，所有 fees /
+    salary / activity / vendor_payments write 路徑會一併失效兩個快取。
+    """
+    session = get_session()
+    try:
+        return report_cache_service.get_or_build(
+            session,
+            category="reports_monthly_pnl",
+            ttl_seconds=FINANCE_SUMMARY_CACHE_TTL_SECONDS,
+            params={"year": year},
+            builder=lambda: build_monthly_pnl(session, year=year),
         )
     finally:
         session.close()
