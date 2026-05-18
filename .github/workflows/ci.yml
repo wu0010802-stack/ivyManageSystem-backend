@@ -104,6 +104,7 @@ jobs:
   openapi-drift:
     name: OpenAPI Drift Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout ivy-backend
