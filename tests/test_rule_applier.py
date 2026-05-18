@@ -443,3 +443,150 @@ def test_compute_all_deltas_smoke(test_db_session, monkeypatch):
     assert rp.delta == Decimal("-1.00")
     smt = result[(p.id, "SCHOOL_MEETING_ABSENCE")]
     assert smt.delta == Decimal("-1.00")
+
+
+def test_after_class_rate_skipped_for_cook(test_db_session, monkeypatch):
+    """COOK 角色無班級，AFTER_CLASS_RATE / RETURNING_RATE_* 應套 role 過濾
+    寫入 delta=0、note='本角色不適用'，不應拿到真實扣分（P1-4）。
+
+    P1-4：DEFAULT_RULES 把 AFTER_CLASS_RATE / RETURNING_RATE_0315 /
+    RETURNING_RATE_0915 三條的 applies_to_role_groups 從 None 改成
+    ['HEAD_TEACHER','ASSISTANT']，避免廚工/行政人員被套用「沒有 0% 才藝率」
+    這種對非教學職完全不適用的扣分。
+    """
+    s = test_db_session
+    cycle = AppraisalCycle(
+        academic_year=114,
+        semester=Semester.FIRST,
+        start_date=date(2025, 8, 1),
+        end_date=date(2026, 1, 31),
+        base_score_calc_date=date(2025, 9, 15),
+        base_score=Decimal("75.6"),
+        status=CycleStatus.OPEN,
+    )
+    s.add(cycle)
+    s.flush()
+    p = AppraisalParticipant(
+        cycle_id=cycle.id,
+        employee_id=2,
+        role_group=RoleGroup.COOK,
+        hire_months_in_cycle=Decimal("6"),
+        is_excluded=False,
+    )
+    s.add(p)
+    s.flush()
+
+    # 3 條教學職限定 rule，applies_to_role_groups=['HEAD_TEACHER','ASSISTANT']
+    teaching_only = ["HEAD_TEACHER", "ASSISTANT"]
+    s.add(
+        AppraisalScoringRule(
+            item_code="AFTER_CLASS_RATE",
+            effective_from=date(2025, 1, 1),
+            rule_type="FLAT_THRESHOLD",
+            rule_config={
+                "input_field": "activity_rate",
+                "threshold": 80,
+                "above_delta": 2,
+                "below_delta": -3,
+            },
+            applies_to_role_groups=teaching_only,
+        )
+    )
+    s.add(
+        AppraisalScoringRule(
+            item_code="RETURNING_RATE_0315",
+            effective_from=date(2025, 1, 1),
+            rule_type="TIER",
+            rule_config={
+                "input_field": "retention_rate",
+                "tiers": [
+                    {"min": 100, "delta": 6},
+                    {"min": 0, "delta": -6},
+                ],
+            },
+            applies_to_role_groups=teaching_only,
+        )
+    )
+    s.add(
+        AppraisalScoringRule(
+            item_code="RETURNING_RATE_0915",
+            effective_from=date(2025, 1, 1),
+            rule_type="TIER",
+            rule_config={
+                "input_field": "retention_rate",
+                "tiers": [
+                    {"min": 100, "delta": 0},
+                    {"min": 0, "delta": -3},
+                ],
+            },
+            applies_to_role_groups=teaching_only,
+        )
+    )
+    s.flush()
+
+    # 給 COOK 一個假 status（無班級、無才藝、retention=0）
+    from services.appraisal import status_aggregator as agg
+    from services.appraisal.status_aggregator import (
+        ActivityRateAggregate,
+        AttendanceAggregate,
+        ClassRetentionAggregate,
+        DisciplinaryAggregate,
+        ParticipantStatus,
+    )
+
+    fake_status = ParticipantStatus(
+        participant_id=p.id,
+        employee_id=2,
+        employee_name="廚工張三",
+        role_group=RoleGroup.COOK.value,
+        classroom_id=None,
+        attendance=AttendanceAggregate(
+            employee_id=2,
+            late_count=0,
+            early_leave_count=0,
+            missing_punch_count=0,
+            leave_days=0,
+            suggested_score_delta=Decimal("0"),
+        ),
+        retention=ClassRetentionAggregate(
+            employee_id=2,
+            classroom_id=None,
+            classroom_name=None,
+            initial_count=0,
+            final_count=0,
+            retention_rate=Decimal("0"),  # 廚工沒班級 → 留校率 0%
+            suggested_score_delta=Decimal("0"),
+        ),
+        activity=ActivityRateAggregate(
+            employee_id=2,
+            classroom_id=None,
+            enrolled_students=0,
+            registered_for_activity=0,
+            activity_rate=Decimal("0"),  # 沒班級 → 才藝率 0%
+            suggested_score_delta=Decimal("0"),
+        ),
+        disciplinary=DisciplinaryAggregate(
+            employee_id=2,
+            warning_count=0,
+            minor_count=0,
+            major_count=0,
+            actions=[],
+            suggested_score_delta=Decimal("0"),
+        ),
+        is_participant=True,
+        hire_months_in_cycle=Decimal("6"),
+    )
+    monkeypatch.setattr(agg, "aggregate_cycle_status", lambda session, c: [fake_status])
+
+    result = compute_all_deltas(s, cycle)
+
+    # 三條教學職規則應寫入 delta=0、note="本角色不適用"
+    for code in ("AFTER_CLASS_RATE", "RETURNING_RATE_0315", "RETURNING_RATE_0915"):
+        dr = result[(p.id, code)]
+        assert dr.delta == Decimal("0"), (
+            f"{code} 應因 role 不在 applies_to_role_groups 而為 0，"
+            f"實際 {dr.delta}（廚工拿到非教學職規則扣分）"
+        )
+        assert (
+            dr.note == "本角色不適用"
+        ), f"{code} 應標記本角色不適用，實際 note={dr.note!r}"

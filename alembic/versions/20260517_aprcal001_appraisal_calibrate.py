@@ -22,10 +22,16 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+# bug sweep 2026-05-18 P1-4：班級績效類規則（才藝率/留校率）僅教學職適用。
+# COOK / SUPERVISOR / STAFF 沒有自己的班級，套這些規則只會吃到 0% → -3 ~ -6
+# 的虛假扣分。改為 applies_to_role_groups=['HEAD_TEACHER','ASSISTANT']
+# 對非教學職跳過。
+_TEACHING_ROLES = ["HEAD_TEACHER", "ASSISTANT"]
+
 DEFAULT_RULES = [
-    ("LATE_EARLY", "PER_UNIT", {"per_unit_delta": -0.25}),
-    ("MISSING_PUNCH", "PER_UNIT", {"per_unit_delta": -0.25}),
-    ("LEAVE", "PER_UNIT", {"per_unit_delta": -1.0}),
+    ("LATE_EARLY", "PER_UNIT", {"per_unit_delta": -0.25}, None),
+    ("MISSING_PUNCH", "PER_UNIT", {"per_unit_delta": -0.25}, None),
+    ("LEAVE", "PER_UNIT", {"per_unit_delta": -1.0}, None),
     (
         "RETURNING_RATE_0915",
         "TIER",
@@ -37,6 +43,7 @@ DEFAULT_RULES = [
                 {"min": 0, "delta": -3.0},
             ],
         },
+        _TEACHING_ROLES,
     ),
     (
         "RETURNING_RATE_0315",
@@ -51,6 +58,7 @@ DEFAULT_RULES = [
                 {"min": 0, "delta": -6.0},
             ],
         },
+        _TEACHING_ROLES,
     ),
     (
         "AFTER_CLASS_RATE",
@@ -61,6 +69,7 @@ DEFAULT_RULES = [
             "above_delta": 2.0,
             "below_delta": 0,
         },
+        _TEACHING_ROLES,
     ),
     (
         "REWARD_PUNISH",
@@ -70,14 +79,15 @@ DEFAULT_RULES = [
             "minor_delta": -3.0,
             "major_delta": -10.0,
         },
+        None,
     ),
-    ("SCHOOL_MEETING_ABSENCE", "PER_UNIT", {"per_unit_delta": -1.0}),
-    ("INSTITUTION_MEETING_0913", "PER_UNIT", {"per_unit_delta": -2.0}),
-    ("INSTITUTION_MEETING_1115", "PER_UNIT", {"per_unit_delta": -2.0}),
-    ("SELF_IMPROVEMENT_ACTIVITY", "PER_UNIT", {"per_unit_delta": -2.0}),
-    ("CHILD_ACCIDENT", "PER_UNIT", {"per_unit_delta": -3.0}),
-    ("CLASS_HEADCOUNT_BONUS", "PER_UNIT", {"per_unit_delta": 2.0}),
-    ("OTHER", "PER_UNIT", {"per_unit_delta": 0}),
+    ("SCHOOL_MEETING_ABSENCE", "PER_UNIT", {"per_unit_delta": -1.0}, None),
+    ("INSTITUTION_MEETING_0913", "PER_UNIT", {"per_unit_delta": -2.0}, None),
+    ("INSTITUTION_MEETING_1115", "PER_UNIT", {"per_unit_delta": -2.0}, None),
+    ("SELF_IMPROVEMENT_ACTIVITY", "PER_UNIT", {"per_unit_delta": -2.0}, None),
+    ("CHILD_ACCIDENT", "PER_UNIT", {"per_unit_delta": -3.0}, None),
+    ("CLASS_HEADCOUNT_BONUS", "PER_UNIT", {"per_unit_delta": 2.0}, None),
+    ("OTHER", "PER_UNIT", {"per_unit_delta": 0}, None),
 ]
 
 
@@ -196,22 +206,44 @@ def upgrade() -> None:
              WHERE source_ref LIKE 'auto:disciplinary:%'
             """))
 
-    # 4. 14 條 default rules INSERT
-    for code, rtype, cfg in DEFAULT_RULES:
+    # 4. 14 條 default rules INSERT（含 applies_to_role_groups）
+    for code, rtype, cfg, role_groups in DEFAULT_RULES:
         conn.execute(
             text("""
                 INSERT INTO appraisal_scoring_rules
-                    (item_code, effective_from, rule_type, rule_config, notes)
-                VALUES (:code, :ef, :rt, CAST(:cfg AS JSONB), :notes)
+                    (item_code, effective_from, rule_type, rule_config,
+                     applies_to_role_groups, notes)
+                VALUES (:code, :ef, :rt, CAST(:cfg AS JSONB),
+                        CAST(:rg AS JSONB), :notes)
                 """),
             {
                 "code": code,
                 "ef": date(2026, 1, 1),
                 "rt": rtype,
                 "cfg": json.dumps(cfg),
+                "rg": json.dumps(role_groups) if role_groups is not None else None,
                 "notes": "migration default — user 可在 UI 上覆寫新版",
             },
         )
+
+    # 5. P1-4 defensive data migration：把舊版「無 role 限制」的班級績效
+    # 規則（既存 prod row 若 applies_to_role_groups IS NULL）補上限制。
+    # 若 prod 在 1bcb251f 之後就已套這支 migration 的原版（無 role 限制），
+    # 這段 UPDATE 會把那些 row 帶上 role 限制；若 prod 已是新版，UPDATE
+    # 不會動到任何 row。
+    conn.execute(
+        text("""
+            UPDATE appraisal_scoring_rules
+               SET applies_to_role_groups = CAST(:rg AS JSONB)
+             WHERE item_code IN (
+                'AFTER_CLASS_RATE',
+                'RETURNING_RATE_0315',
+                'RETURNING_RATE_0915'
+             )
+               AND applies_to_role_groups IS NULL
+            """),
+        {"rg": json.dumps(_TEACHING_ROLES)},
+    )
 
 
 def downgrade() -> None:
