@@ -206,6 +206,28 @@ def upgrade() -> None:
              WHERE source_ref LIKE 'auto:disciplinary:%'
             """))
 
+    # 3b. P1-2 defensive cleanup：item_code 欄位舊小寫值對應到新 14-code enum。
+    # 1bcb251f 之前的 _AUTO_SOURCE_TYPE_TO_ITEM_CODE 顯示 sync_score_items
+    # 寫入的 item_code 一直是 enum 大寫值（如 'LATE_EARLY'），未真的出現
+    # 小寫舊值。但本批次仍保留防禦性 UPDATE，覆蓋以下情境：
+    #   (a) 早期 dev 環境曾有人 raw SQL INSERT 進測試資料
+    #   (b) 未來 reseed/import 走旁路時的 fail-safe
+    # prod 實測無相符 row，這段 UPDATE affected_rows 預期為 0。
+    item_code_rename = [
+        ("attendance", "LATE_EARLY"),
+        ("returning_rate", "RETURNING_RATE_0315"),
+        ("after_class", "AFTER_CLASS_RATE"),
+        ("disciplinary", "REWARD_PUNISH"),
+    ]
+    for old, new in item_code_rename:
+        conn.execute(
+            text(
+                "UPDATE appraisal_score_items SET item_code = :new "
+                "WHERE item_code = :old"
+            ),
+            {"old": old, "new": new},
+        )
+
     # 4. 14 條 default rules INSERT（含 applies_to_role_groups）
     for code, rtype, cfg, role_groups in DEFAULT_RULES:
         conn.execute(
