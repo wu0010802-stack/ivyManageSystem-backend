@@ -144,7 +144,9 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 
 - **啟用條件**：`SENTRY_DSN` 環境變數設定才生效；缺 DSN 時整個模組 no-op
 - **整合**：FastAPI / Starlette / SQLAlchemy / Logging（`event_level=ERROR`）；`transaction_style="endpoint"` 讓 Sentry 用 path template 不是 raw URL
-- **PII 過濾**：`_scrub_event` + `_scrub_breadcrumb` 自動遮罩 60+ 欄位（金流 / 個資 / 幼教 / 醫療 / 認證）；URL path 中段 id 自動換成 `:id`。新增 PII 欄位請更新 `_PII_KEY_SUBSTRINGS` 並補 `tests/test_sentry_scrubber.py`
+- **PII 過濾**：`_scrub_event` + `_scrub_breadcrumb` 自動遮罩 60+ 欄位（金流 / 個資 / 幼教 / 醫療 / 認證）；URL path 中段 id 自動換成 `:id`，**query string 內 PII（phone/email/id_number 等）值自動 `[Filtered]`**（含 `request.query_string` 與 `request.url` 兩個獨立欄位）。新增 PII 欄位請更新 `_PII_KEY_SUBSTRINGS` 並補 `tests/test_sentry_scrubber.py`
+- **`event.user.id` 自動 blake2b hash 化**：employees.id / parents.id 是擬個資，scrubber 自動 hash 成 8-char hex 保留 issue grouping 但移除直連性。沒呼叫 `set_user` 的 code path 不受影響
+- **FE/BE denylist parity 由 CI enforce**：`tests/test_pii_denylist_parity.py` 讀 `../ivy-frontend/src/utils/sentry.js` 對比 PII denylist + exempt list；drift 即 fail。新增 PII key 必須同步前後端
 - **logger.error / logger.exception 自動上報**；`logger.warning` 不會（業務語意通常是「可降級警告」）
 - **scheduler / WS handler 啟動 try/except**：吞 exception 的點請呼叫 `capture_exception(e, level="warning")` 顯式上報，否則 prod 出事只會看到「scheduler 沒跑」但 Sentry 一片乾淨（main.py 已示範 10 處）
 - **不要在 logger.exception 之後重複呼叫 capture_exception**：LoggingIntegration 已抓，重複會雙報炸 quota

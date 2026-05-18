@@ -9,10 +9,12 @@
   → main.py 的 scheduler 啟動 try/except 改顯式 capture_exception
 """
 
+import hashlib
 import logging
 import os
 import re
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +101,23 @@ _URL_ID_RE = re.compile(r"/(\d+)(?=/|$|\?)")
 
 
 def _sanitize_url(url: str) -> str:
+    """Sanitize URL：path 中段純數字 → `:id`；query 內 PII key 值 → `[Filtered]`。
+
+    Query 內 PII 過去完全繞過 scrubber（search?phone=0912 / ?id_number=A1 等都會
+    原樣進 Sentry）。改用 urlsplit 拆 path + query，path 跑既有 id 替換，
+    query 用相同 denylist 做 key-based 遮罩，最後拼回。
+    """
     if not isinstance(url, str) or not url:
         return url
-    return _URL_ID_RE.sub("/:id", url)
+    parts = urlsplit(url)
+    new_path = _URL_ID_RE.sub("/:id", parts.path)
+    if parts.query:
+        pairs = parse_qsl(parts.query, keep_blank_values=True)
+        scrubbed = [(k, _FILTERED if _key_is_pii(k) else v) for k, v in pairs]
+        new_query = urlencode(scrubbed)
+    else:
+        new_query = parts.query
+    return urlunsplit((parts.scheme, parts.netloc, new_path, new_query, parts.fragment))
 
 
 def _key_is_pii(key: Any) -> bool:
@@ -130,6 +146,26 @@ def _scrub_mapping(obj: Any) -> Any:
     return obj
 
 
+def _scrub_query_string(value: Any) -> Any:
+    """request.query_string 可能是 string 或 dict；前者 parse 後跑相同 denylist。"""
+    if isinstance(value, str):
+        if not value:
+            return value
+        pairs = parse_qsl(value, keep_blank_values=True)
+        scrubbed = [(k, _FILTERED if _key_is_pii(k) else v) for k, v in pairs]
+        return urlencode(scrubbed)
+    return _scrub_mapping(value)
+
+
+def _hash_user_id(value: Any) -> Any:
+    """employees.id / parents.id 對 Sentry 是擬個資（pseudonymous identifier）；
+    blake2b 8-char hash 保留 issue grouping 能力但移除直連性。None / 空字串不變。
+    """
+    if value is None or value == "":
+        return value
+    return hashlib.blake2b(str(value).encode("utf-8"), digest_size=4).hexdigest()
+
+
 def _scrub_event(event: dict, _hint: dict | None = None) -> dict | None:
     """Sentry before_send hook：遮 PII + sanitize URL。"""
     if not isinstance(event, dict):
@@ -139,7 +175,9 @@ def _scrub_event(event: dict, _hint: dict | None = None) -> dict | None:
     if isinstance(request, dict):
         if isinstance(request.get("url"), str):
             request["url"] = _sanitize_url(request["url"])
-        for sect in ("headers", "cookies", "data", "query_string", "env"):
+        if "query_string" in request:
+            request["query_string"] = _scrub_query_string(request["query_string"])
+        for sect in ("headers", "cookies", "data", "env"):
             if sect in request:
                 request[sect] = _scrub_mapping(request[sect])
 
@@ -149,6 +187,12 @@ def _scrub_event(event: dict, _hint: dict | None = None) -> dict | None:
     for sect in ("extra", "contexts", "tags", "user"):
         if sect in event:
             event[sect] = _scrub_mapping(event[sect])
+
+    # user.id 對映 employees.id / parents.id —— 直連個人。額外 hash 化以保留
+    # Sentry issue grouping 能力但移除直連性。
+    user = event.get("user")
+    if isinstance(user, dict) and "id" in user:
+        user["id"] = _hash_user_id(user["id"])
 
     crumbs = event.get("breadcrumbs")
     if isinstance(crumbs, dict) and isinstance(crumbs.get("values"), list):
