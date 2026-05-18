@@ -96,6 +96,7 @@ from services.appraisal.sign_workflow import (
     apply_reject,
     can_advance,
     can_reject,
+    clear_rejection_state,
     default_reject_to_status,
     write_summary_log,
 )
@@ -822,6 +823,8 @@ def sign_supervisor(
 
     summary.supervisor_signed_at = datetime.now(timezone.utc)
     summary.supervisor_comment = comment
+    # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+    clear_rejection_state(summary)
     write_summary_log(
         session,
         summary,
@@ -872,6 +875,8 @@ def sign_accounting(
 
     summary.accounting_signed_at = datetime.now(timezone.utc)
     summary.accounting_comment = comment
+    # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+    clear_rejection_state(summary)
     write_summary_log(
         session,
         summary,
@@ -920,6 +925,8 @@ def finalize_summary(
 
     summary.finalized_at = datetime.now(timezone.utc)
     summary.finalized_comment = comment
+    # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+    clear_rejection_state(summary)
     write_summary_log(
         session,
         summary,
@@ -1162,6 +1169,9 @@ def batch_sign_summaries(
                 else:  # FINALIZE
                     summary.finalized_by = actor_user_id
                     summary.finalized_at = now
+
+                # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+                clear_rejection_state(summary)
 
                 write_summary_log(
                     session,
