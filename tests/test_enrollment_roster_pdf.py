@@ -123,6 +123,9 @@ class TestEnrollmentRosterPdfEndpoint:
         assert res.headers["content-type"] == "application/pdf"
         assert res.content.startswith(b"%PDF-")
         assert len(res.content) > 1500
+        # P1-22 防回歸：確保 TTF embed（不是 CID stub）。
+        assert b"/FontFile2" in res.content
+        assert b"NotoSansTC" in res.content
 
     def test_forbidden_without_students_read(self, enrollment_client):
         client, session_factory = enrollment_client
@@ -152,3 +155,6 @@ class TestEnrollmentRosterPdfEndpoint:
         )
         assert res.status_code == 200
         assert res.content.startswith(b"%PDF-")
+        # P1-22 防回歸：空名冊也要含 font embed（header/footer 中文仍需字型）。
+        assert b"/FontFile2" in res.content
+        assert b"NotoSansTC" in res.content
