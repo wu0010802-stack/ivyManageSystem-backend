@@ -19,6 +19,7 @@ from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 
 from models.activity import ActivityPaymentRecord, ActivityRegistration
+from models.classroom import Classroom
 from models.employee import Employee
 from models.fees import (
     StudentFeePayment,
@@ -195,6 +196,235 @@ def get_vendor_payment_expense_by_month(session: Session, year: int) -> dict[int
         .all()
     )
     return _month_totals_from(rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 月度損益表（Monthly P&L）專屬切片 providers
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 與既有 finance_summary 不同：finance_summary 給 dashboard 顯示「總收入 / 總支出
+# / 淨現金流」三件大事；月度損益表 layout 是試算表 — 左欄 67 行細項 × 12 月，
+# user 拿來對自家 Excel 用。所以這裡多幾個 by-method / by-fee-type / by-salary-field
+# 切片，僅給 /monthly-pnl 端點消費，不污染 finance_summary 既有契約。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# 學費 payment_method 在 DB 為自由 String，但前端目前固定填 "現金"/"轉帳"/"其他"
+# （見 api/fees/_helpers.py:122 的正則）。NULL 視同「其他」。
+_PAYMENT_METHOD_CASH_LITERALS = ("現金", "cash")
+_PAYMENT_METHOD_TRANSFER_LITERALS = ("轉帳", "bank_transfer", "transfer")
+
+
+def _classify_payment_method(method: str | None) -> str:
+    """把 DB 原始 payment_method 字串歸類為 {'cash', 'bank_transfer', 'other_method'}。
+
+    NULL / 空字串 / 未知值 一律歸 'other_method'，避免落空。
+    """
+    if not method:
+        return "other_method"
+    if method in _PAYMENT_METHOD_CASH_LITERALS:
+        return "cash"
+    if method in _PAYMENT_METHOD_TRANSFER_LITERALS:
+        return "bank_transfer"
+    return "other_method"
+
+
+def get_tuition_revenue_by_payment_method(
+    session: Session, year: int
+) -> dict[int, dict[str, int]]:
+    """按 payment_date 月份 × payment_method 分類聚合學費收入。
+
+    回傳 dict[month, dict[{'cash','bank_transfer','other_method'}, int]]，
+    缺少月份的 key 在 aggregator 端補 0。
+    """
+    start, end = _year_range(year)
+    rows = (
+        session.query(
+            extract("month", StudentFeePayment.payment_date).label("m"),
+            StudentFeePayment.payment_method,
+            func.sum(StudentFeePayment.amount),
+        )
+        .filter(
+            StudentFeePayment.payment_date >= start,
+            StudentFeePayment.payment_date < end,
+        )
+        .group_by("m", StudentFeePayment.payment_method)
+        .all()
+    )
+    out: dict[int, dict[str, int]] = {}
+    for m, method, amount in rows:
+        if m is None:
+            continue
+        bucket = _classify_payment_method(method)
+        slot = out.setdefault(
+            int(m), {"cash": 0, "bank_transfer": 0, "other_method": 0}
+        )
+        slot[bucket] += int(amount or 0)
+    return out
+
+
+def get_tuition_revenue_by_fee_type(
+    session: Session, year: int
+) -> dict[int, dict[str, int]]:
+    """按 payment_date 月份 × fee_type 分類聚合學費收入。
+
+    回傳 dict[month, dict[{'registration','material','monthly_tuition'}, int]]：
+    - registration：新生註冊費
+    - material：耗材費
+    - monthly_tuition：monthly / tuition / miscellaneous 合併（user 自家詞彙
+      與 codebase 既有 fee_type 對齊不完美，這三類在月度損益表都歸「月費／學費／雜費」列）
+
+    insurance / 其他 fee_type 不在本切片，會在 by-method 列出現（總額不會少算）。
+    """
+    start, end = _year_range(year)
+    rows = (
+        session.query(
+            extract("month", StudentFeePayment.payment_date).label("m"),
+            StudentFeeRecord.fee_type,
+            func.sum(StudentFeePayment.amount),
+        )
+        .join(StudentFeeRecord, StudentFeePayment.record_id == StudentFeeRecord.id)
+        .filter(
+            StudentFeePayment.payment_date >= start,
+            StudentFeePayment.payment_date < end,
+        )
+        .group_by("m", StudentFeeRecord.fee_type)
+        .all()
+    )
+    out: dict[int, dict[str, int]] = {}
+    for m, fee_type, amount in rows:
+        if m is None:
+            continue
+        slot = out.setdefault(
+            int(m), {"registration": 0, "material": 0, "monthly_tuition": 0}
+        )
+        if fee_type == "registration":
+            slot["registration"] += int(amount or 0)
+        elif fee_type == "material":
+            slot["material"] += int(amount or 0)
+        elif fee_type in ("monthly", "tuition", "miscellaneous"):
+            slot["monthly_tuition"] += int(amount or 0)
+        # 其他 fee_type（insurance/transport/...）不入此切片
+    return out
+
+
+def get_classroom_count_by_month(session: Session, year: int) -> dict[int, int]:
+    """每月 active classroom 數。
+
+    限制：Classroom 模型只有 `is_active` 旗標，無月度時序欄位（created_at /
+    deactivated_at 都不適合做歷史快照）。因此 Phase 1 全年 12 月都回傳當下
+    `is_active=True` 的班級數 baseline。當有月份切時序時，請改用快照表。
+
+    `year` 參數目前僅用於 API 簽章一致性與未來實作預留，不影響回傳值。
+    """
+    count = (
+        session.query(func.count(Classroom.id))
+        .filter(Classroom.is_active.is_(True))
+        .scalar()
+        or 0
+    )
+    return {m: int(count) for m in range(1, 13)}
+
+
+def get_insured_employee_count_by_month(session: Session, year: int) -> dict[int, int]:
+    """每月「在職且有勞保投保」的員工數。
+
+    判定條件：
+    - `hire_date <= 該月最後一天`（含當月入職）
+    - `resign_date IS NULL OR resign_date > 該月第一天`（含當月離職）
+    - `labor_insured_salary > 0`（NULL 或 0 不計入；prod 上有些 employee
+      labor_insured_salary 為 NULL，沿用 insurance_salary_level，本切片從嚴
+      只認真正有設 labor_insured_salary 的列，與「投保人數」字面意義一致）
+    """
+    out: dict[int, int] = {}
+    for m in range(1, 13):
+        month_first, month_end_exclusive = _month_range(year, m)
+        # 該月最後一天 = next month 起算的前一天，用 < end_exclusive 表達
+        # 條件：hire_date < month_end_exclusive AND (resign_date IS NULL OR resign_date > month_first)
+        count = (
+            session.query(func.count(Employee.id))
+            .filter(
+                Employee.hire_date.isnot(None),
+                Employee.hire_date < month_end_exclusive,
+                (Employee.resign_date.is_(None)) | (Employee.resign_date > month_first),
+                Employee.labor_insured_salary.isnot(None),
+                Employee.labor_insured_salary > 0,
+            )
+            .scalar()
+            or 0
+        )
+        out[m] = int(count)
+    return out
+
+
+def get_salary_breakdown_by_month(
+    session: Session, year: int
+) -> dict[int, dict[str, int]]:
+    """月度損益表用：薪資的 8 欄細項聚合。
+
+    回傳 dict[month, dict]，每月 dict 含：
+    - gross_salary：應發總額 sum
+    - festival_bonus：節慶獎金 sum
+    - overtime_bonus：超額獎金 sum
+    - overtime_pay：加班費 sum
+    - supervisor_dividend：主管紅利 sum
+    - labor_insurance_employer：勞保（雇主負擔）sum
+    - health_insurance_employer：健保（雇主負擔）sum
+    - pension_employer：勞退（雇主提撥）sum
+
+    **關鍵 gross_salary 組成確認（see services/salary/totals.py line 21-30）**：
+    `gross_salary = base + hourly_total + performance_bonus + special_bonus
+                   + supervisor_dividend + meeting_overtime_pay + birthday_bonus
+                   + overtime_pay`
+    → 含 overtime_pay 與 supervisor_dividend；**不含** festival_bonus / overtime_bonus。
+
+    Spec 原本要求 `personnel_other_bonus = sum(bonus_amount)`，但 bonus_amount =
+    `festival_bonus + overtime_bonus + supervisor_dividend`（見 models/salary.py
+    line 236-240 與 services/salary/totals.py line 47-51 註解），若直接展列 sum
+    會與 festival_bonus / overtime_bonus 三重計算。aggregator 端改用
+    `supervisor_dividend` 當「其他獎金」列，並把 `personnel_base_salary` 公式
+    調整為 `gross_salary - overtime_pay - supervisor_dividend`，確保 subtotal
+    無雙計（細節見 monthly_pnl_service.build_monthly_pnl docstring）。
+    """
+    rows = (
+        session.query(
+            SalaryRecord.salary_month,
+            func.sum(SalaryRecord.gross_salary),
+            func.sum(SalaryRecord.festival_bonus),
+            func.sum(SalaryRecord.overtime_bonus),
+            func.sum(SalaryRecord.overtime_pay),
+            func.sum(SalaryRecord.supervisor_dividend),
+            func.sum(SalaryRecord.labor_insurance_employer),
+            func.sum(SalaryRecord.health_insurance_employer),
+            func.sum(SalaryRecord.pension_employer),
+        )
+        .filter(SalaryRecord.salary_year == year)
+        .group_by(SalaryRecord.salary_month)
+        .all()
+    )
+    out: dict[int, dict[str, int]] = {}
+    for (
+        m,
+        gross,
+        festival,
+        ot_bonus,
+        ot_pay,
+        sup_div,
+        li,
+        hi,
+        pen,
+    ) in rows:
+        out[int(m)] = {
+            "gross_salary": int(gross or 0),
+            "festival_bonus": int(festival or 0),
+            "overtime_bonus": int(ot_bonus or 0),
+            "overtime_pay": int(ot_pay or 0),
+            "supervisor_dividend": int(sup_div or 0),
+            "labor_insurance_employer": int(li or 0),
+            "health_insurance_employer": int(hi or 0),
+            "pension_employer": int(pen or 0),
+        }
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
