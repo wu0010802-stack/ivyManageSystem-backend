@@ -48,11 +48,14 @@ def _row(
     *,
     include_total: bool = True,
     is_subtotal: bool = False,
+    is_breakdown: bool = False,
 ) -> dict:
     """建立一筆 row dict。
 
     - amount 列 include_total=True 計合計；統計列 unit='person'/'class' 不算合計
       （傳 include_total=False，total 為 None）。
+    - is_breakdown=True 標示「分類切片，已併入上方合計」的資訊列，
+      前端應視覺降階（縮排／柔色）以免被誤判為重複計算。
     """
     return {
         "key": key,
@@ -61,6 +64,7 @@ def _row(
         "monthly": list(monthly),
         "total": sum(monthly) if include_total else None,
         "is_subtotal": is_subtotal,
+        "is_breakdown": is_breakdown,
     }
 
 
@@ -84,7 +88,7 @@ _PENDING_ITEMS: tuple[str, ...] = (
     "全校節慶人數（user 自訂指標，未對應 schema）",
     "預繳收入（fee_adjustments=prepayment 為折抵非收入；招生階段 deposit 不在 fee_payment 流水）",
     "畢業紀念冊（無對應 fee_type，建議於 vendor_payments 登錄收入或自訂 fee_type）",
-    "紅利細項：年終／主管分紅／招生／教課鼓勵／自主成長契約／出國尾牙／註冊預繳獎金（salary 模型只有 festival_bonus/overtime_bonus/bonus_amount 三欄）",
+    "紅利細項：年終／招生獎金／教課鼓勵金／自主成長契約獎勵金／出國尾牙獎金／註冊預繳獎金（salary 模型現只區分節慶／超額／主管分紅三類，其餘細項無欄位）",
     "舊制勞退準備金（固定每月支出，無自動來源）",
     "二代健保（無對應欄位）",
     "才藝鐘點薪資（需依 employee.employee_type 區分，Phase 1 未拆分）",
@@ -211,6 +215,7 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
             "key": "income",
             "label": "收入",
             "rows": [
+                # by-payment-method 切片：直接加總進收入合計
                 _row("income_cash", "現金繳費", "amount", cash_monthly),
                 _row("income_transfer", "轉帳繳費", "amount", transfer_monthly),
                 _row(
@@ -218,19 +223,6 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
                     "其他繳費方式",
                     "amount",
                     other_method_monthly,
-                ),
-                _row(
-                    "income_registration",
-                    "新生註冊費",
-                    "amount",
-                    registration_monthly,
-                ),
-                _row("income_material", "耗材費", "amount", material_monthly),
-                _row(
-                    "income_monthly_tuition",
-                    "月費／學費／雜費",
-                    "amount",
-                    monthly_tuition_monthly,
                 ),
                 _row("income_activity", "課後才藝", "amount", activity_monthly),
                 _row(
@@ -245,6 +237,29 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
                     "退款（含學費／才藝退費）",
                     "amount",
                     refund_monthly,
+                ),
+                # by-fee-type 切片：說明同一筆學費繳款的費別組成，
+                # is_breakdown=True 避免被誤算為重複計入
+                _row(
+                    "income_registration",
+                    "費別切片：新生註冊費",
+                    "amount",
+                    registration_monthly,
+                    is_breakdown=True,
+                ),
+                _row(
+                    "income_material",
+                    "費別切片：耗材費",
+                    "amount",
+                    material_monthly,
+                    is_breakdown=True,
+                ),
+                _row(
+                    "income_monthly_tuition",
+                    "費別切片：月費／學費／雜費",
+                    "amount",
+                    monthly_tuition_monthly,
+                    is_breakdown=True,
                 ),
             ],
         },
