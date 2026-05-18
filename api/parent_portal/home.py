@@ -19,7 +19,9 @@ from fastapi import APIRouter, Depends
 
 from models.activity import ActivityRegistration, RegistrationCourse
 from models.classroom import StudentAttendance
-from models.database import Classroom, Guardian, Student, get_session
+from sqlalchemy.orm import Session
+
+from models.database import Classroom, Guardian, Student
 from models.dismissal import StudentDismissalCall
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
@@ -32,6 +34,7 @@ from ._shared import (
     _get_parent_user,
     resolve_parent_display_name,
 )
+from ._dependencies import get_parent_db
 from .announcements import count_unread_for_user as count_unread_announcements
 from .events import count_pending_acks_for_user as count_pending_event_acks
 from .fees import compute_fees_summary
@@ -86,90 +89,90 @@ def _count_recent_leave_reviews(session, user_id: int, days: int = 7) -> int:
 
 
 @router.get("/summary")
-def home_summary(current_user: dict = Depends(require_parent_role())):
+def home_summary(
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
     """家長首頁一站式彙總。
 
     回傳：
     - me: 個人資料 + 推播可達性（同 /me）
     - children: 監護學生清單（同 /my-children）
     - summary:
-        - unread_announcements: int
-        - fees: { outstanding, overdue, due_soon, outstanding_count, ... }
-        - pending_event_acks: int
+    - unread_announcements: int
+    - fees: { outstanding, overdue, due_soon, outstanding_count, ... }
+    - pending_event_acks: int
     """
     user_id = current_user["user_id"]
     cached = _home_summary_cache.get(user_id)
     if cached is not None:
         return cached
 
-    session = get_session()
-    try:
-        user = _get_parent_user(session, current_user)
-        me = {
-            "user_id": user.id,
-            "name": resolve_parent_display_name(session, user),
-            "line_user_id": user.line_user_id,
-            "role": "parent",
-            "can_push": user.line_follow_confirmed_at is not None,
-            "last_login": user.last_login.isoformat() if user.last_login else None,
+    user = _get_parent_user(session, current_user)
+    me = {
+        "user_id": user.id,
+        "name": resolve_parent_display_name(session, user),
+        "line_user_id": user.line_user_id,
+        "role": "parent",
+        "can_push": user.line_follow_confirmed_at is not None,
+        "last_login": user.last_login.isoformat() if user.last_login else None,
+    }
+
+    rows = (
+        session.query(Guardian, Student, Classroom)
+        .join(Student, Student.id == Guardian.student_id)
+        .outerjoin(Classroom, Classroom.id == Student.classroom_id)
+        .filter(Guardian.user_id == user_id, Guardian.deleted_at.is_(None))
+        .order_by(Student.enrollment_date.asc().nulls_last(), Student.name.asc())
+        .all()
+    )
+    children = [
+        {
+            "guardian_id": g.id,
+            "guardian_relation": g.relation,
+            "is_primary": bool(g.is_primary),
+            "can_pickup": bool(g.can_pickup),
+            "student_id": s.id,
+            "student_no": s.student_id,
+            "name": s.name,
+            "gender": s.gender,
+            "birthday": s.birthday.isoformat() if s.birthday else None,
+            "classroom_id": c.id if c else None,
+            "classroom_name": c.name if c else None,
+            "lifecycle_status": s.lifecycle_status,
+            "is_active": bool(s.is_active),
         }
+        for g, s, c in rows
+    ]
 
-        rows = (
-            session.query(Guardian, Student, Classroom)
-            .join(Student, Student.id == Guardian.student_id)
-            .outerjoin(Classroom, Classroom.id == Student.classroom_id)
-            .filter(Guardian.user_id == user_id, Guardian.deleted_at.is_(None))
-            .order_by(Student.enrollment_date.asc().nulls_last(), Student.name.asc())
-            .all()
-        )
-        children = [
-            {
-                "guardian_id": g.id,
-                "guardian_relation": g.relation,
-                "is_primary": bool(g.is_primary),
-                "can_pickup": bool(g.can_pickup),
-                "student_id": s.id,
-                "student_no": s.student_id,
-                "name": s.name,
-                "gender": s.gender,
-                "birthday": s.birthday.isoformat() if s.birthday else None,
-                "classroom_id": c.id if c else None,
-                "classroom_name": c.name if c else None,
-                "lifecycle_status": s.lifecycle_status,
-                "is_active": bool(s.is_active),
-            }
-            for g, s, c in rows
-        ]
+    _, student_ids = _get_parent_student_ids(session, user_id)
+    fees = compute_fees_summary(session, student_ids)
 
-        _, student_ids = _get_parent_student_ids(session, user_id)
-        fees = compute_fees_summary(session, student_ids)
-
-        result = {
-            "me": me,
-            "children": children,
-            "summary": {
-                "unread_announcements": count_unread_announcements(session, user_id),
-                "fees": fees["totals"],
-                "pending_event_acks": count_pending_event_acks(
-                    session, user_id, student_ids
-                ),
-                "unread_messages": count_unread_for_parent(
-                    session, parent_user_id=user_id
-                ),
-                "pending_activity_promotions": _count_pending_activity_promotions(
-                    session, student_ids
-                ),
-                "recent_leave_reviews": _count_recent_leave_reviews(session, user_id),
-            },
-        }
-        _home_summary_cache[user_id] = result
-        return result
-    finally:
-        session.close()
+    result = {
+        "me": me,
+        "children": children,
+        "summary": {
+            "unread_announcements": count_unread_announcements(session, user_id),
+            "fees": fees["totals"],
+            "pending_event_acks": count_pending_event_acks(
+                session, user_id, student_ids
+            ),
+            "unread_messages": count_unread_for_parent(session, parent_user_id=user_id),
+            "pending_activity_promotions": _count_pending_activity_promotions(
+                session, student_ids
+            ),
+            "recent_leave_reviews": _count_recent_leave_reviews(session, user_id),
+        },
+    }
+    _home_summary_cache[user_id] = result
+    return result
 
 
 @router.get("/today-status")
-def today_status(current_user: dict = Depends(require_parent_role())):
+def today_status(
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
     """每位子女今日的彙總狀態：出席 / 請假 / 用藥 / 接送通知。
 
     各狀態彼此獨立，前端用 chips 並列顯示；今日無任何狀態 → 全部回 None/空。
@@ -178,138 +181,130 @@ def today_status(current_user: dict = Depends(require_parent_role())):
     {
       "date": "2026-05-01",
       "children": [
-        {
-          "student_id": int,
-          "name": str,
-          "classroom_name": str | None,
-          "attendance": { "status": "出席" | ... } | null,
-          "leave": { "id": int, "type": "病假" | "事假", "status": "approved" } | null,
-          "medication": { "order_count": int, "has_order": bool },
-          "dismissal": { "id": int, "status": "pending|acknowledged|completed", "requested_at": iso } | null,
-        }, ...
+    {
+      "student_id": int,
+      "name": str,
+      "classroom_name": str | None,
+      "attendance": { "status": "出席" | ... } | null,
+      "leave": { "id": int, "type": "病假" | "事假", "status": "approved" } | null,
+      "medication": { "order_count": int, "has_order": bool },
+      "dismissal": { "id": int, "status": "pending|acknowledged|completed", "requested_at": iso } | null,
+    }, ...
       ]
     }
     ```
     """
     user_id = current_user["user_id"]
     today = date.today()
-    session = get_session()
-    try:
-        # 子女清單（沿用 home_summary 的 join，輕量重複比共用 helper 簡單）
-        rows = (
-            session.query(Guardian, Student, Classroom)
-            .join(Student, Student.id == Guardian.student_id)
-            .outerjoin(Classroom, Classroom.id == Student.classroom_id)
-            .filter(Guardian.user_id == user_id, Guardian.deleted_at.is_(None))
-            .order_by(Student.name.asc())
-            .all()
+    # 子女清單（沿用 home_summary 的 join，輕量重複比共用 helper 簡單）
+    rows = (
+        session.query(Guardian, Student, Classroom)
+        .join(Student, Student.id == Guardian.student_id)
+        .outerjoin(Classroom, Classroom.id == Student.classroom_id)
+        .filter(Guardian.user_id == user_id, Guardian.deleted_at.is_(None))
+        .order_by(Student.name.asc())
+        .all()
+    )
+    if not rows:
+        return {"date": today.isoformat(), "children": []}
+
+    student_ids = list({s.id for _, s, _ in rows})
+
+    # 一次撈完所有子女今日 attendance / leave / medication / dismissal，避免 N+1
+    att_map = {
+        a.student_id: a
+        for a in session.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id.in_(student_ids),
+            StudentAttendance.date == today,
         )
-        if not rows:
-            return {"date": today.isoformat(), "children": []}
-
-        student_ids = list({s.id for _, s, _ in rows})
-
-        # 一次撈完所有子女今日 attendance / leave / medication / dismissal，避免 N+1
-        att_map = {
-            a.student_id: a
-            for a in session.query(StudentAttendance)
-            .filter(
-                StudentAttendance.student_id.in_(student_ids),
-                StudentAttendance.date == today,
-            )
-            .all()
-        }
-        leave_map: dict[int, StudentLeaveRequest] = {}
-        for lr in (
-            session.query(StudentLeaveRequest)
-            .filter(
-                StudentLeaveRequest.student_id.in_(student_ids),
-                StudentLeaveRequest.status == "approved",
-                StudentLeaveRequest.start_date <= today,
-                StudentLeaveRequest.end_date >= today,
-            )
-            .all()
-        ):
-            # 同一天若多筆只保留最早一筆即可（leaves 系統已防重疊 approved）
-            leave_map.setdefault(lr.student_id, lr)
-
-        from sqlalchemy import func
-
-        med_rows = (
-            session.query(
-                StudentMedicationOrder.student_id, func.count(StudentMedicationOrder.id)
-            )
-            .filter(
-                StudentMedicationOrder.student_id.in_(student_ids),
-                StudentMedicationOrder.order_date == today,
-            )
-            .group_by(StudentMedicationOrder.student_id)
-            .all()
+        .all()
+    }
+    leave_map: dict[int, StudentLeaveRequest] = {}
+    for lr in (
+        session.query(StudentLeaveRequest)
+        .filter(
+            StudentLeaveRequest.student_id.in_(student_ids),
+            StudentLeaveRequest.status == "approved",
+            StudentLeaveRequest.start_date <= today,
+            StudentLeaveRequest.end_date >= today,
         )
-        med_count: dict[int, int] = {sid: int(c) for sid, c in med_rows}
+        .all()
+    ):
+        # 同一天若多筆只保留最早一筆即可（leaves 系統已防重疊 approved）
+        leave_map.setdefault(lr.student_id, lr)
 
-        # 今日進行中的接送通知（pending / acknowledged，未完成、未取消）
-        dismissal_map: dict[int, StudentDismissalCall] = {}
-        today_start = datetime.combine(today, datetime.min.time())
-        for d in (
-            session.query(StudentDismissalCall)
-            .filter(
-                StudentDismissalCall.student_id.in_(student_ids),
-                StudentDismissalCall.requested_at >= today_start,
-                StudentDismissalCall.status.in_(
-                    ("pending", "acknowledged", "completed")
+    from sqlalchemy import func
+
+    med_rows = (
+        session.query(
+            StudentMedicationOrder.student_id, func.count(StudentMedicationOrder.id)
+        )
+        .filter(
+            StudentMedicationOrder.student_id.in_(student_ids),
+            StudentMedicationOrder.order_date == today,
+        )
+        .group_by(StudentMedicationOrder.student_id)
+        .all()
+    )
+    med_count: dict[int, int] = {sid: int(c) for sid, c in med_rows}
+
+    # 今日進行中的接送通知（pending / acknowledged，未完成、未取消）
+    dismissal_map: dict[int, StudentDismissalCall] = {}
+    today_start = datetime.combine(today, datetime.min.time())
+    for d in (
+        session.query(StudentDismissalCall)
+        .filter(
+            StudentDismissalCall.student_id.in_(student_ids),
+            StudentDismissalCall.requested_at >= today_start,
+            StudentDismissalCall.status.in_(("pending", "acknowledged", "completed")),
+        )
+        .order_by(StudentDismissalCall.requested_at.desc())
+        .all()
+    ):
+        dismissal_map.setdefault(d.student_id, d)
+
+    children = []
+    for g, s, c in rows:
+        sid = s.id
+        att = att_map.get(sid)
+        leave = leave_map.get(sid)
+        d = dismissal_map.get(sid)
+        children.append(
+            {
+                "student_id": sid,
+                "name": s.name,
+                "classroom_name": c.name if c else None,
+                "attendance": ({"status": att.status} if att else None),
+                "leave": (
+                    {
+                        "id": leave.id,
+                        "type": leave.leave_type,
+                        "status": leave.status,
+                    }
+                    if leave
+                    else None
                 ),
-            )
-            .order_by(StudentDismissalCall.requested_at.desc())
-            .all()
-        ):
-            dismissal_map.setdefault(d.student_id, d)
+                "medication": {
+                    "has_order": sid in med_count,
+                    "order_count": med_count.get(sid, 0),
+                },
+                "dismissal": (
+                    {
+                        "id": d.id,
+                        "status": d.status,
+                        "requested_at": d.requested_at.isoformat(),
+                        "acknowledged_at": (
+                            d.acknowledged_at.isoformat() if d.acknowledged_at else None
+                        ),
+                        "completed_at": (
+                            d.completed_at.isoformat() if d.completed_at else None
+                        ),
+                    }
+                    if d
+                    else None
+                ),
+            }
+        )
 
-        children = []
-        for g, s, c in rows:
-            sid = s.id
-            att = att_map.get(sid)
-            leave = leave_map.get(sid)
-            d = dismissal_map.get(sid)
-            children.append(
-                {
-                    "student_id": sid,
-                    "name": s.name,
-                    "classroom_name": c.name if c else None,
-                    "attendance": ({"status": att.status} if att else None),
-                    "leave": (
-                        {
-                            "id": leave.id,
-                            "type": leave.leave_type,
-                            "status": leave.status,
-                        }
-                        if leave
-                        else None
-                    ),
-                    "medication": {
-                        "has_order": sid in med_count,
-                        "order_count": med_count.get(sid, 0),
-                    },
-                    "dismissal": (
-                        {
-                            "id": d.id,
-                            "status": d.status,
-                            "requested_at": d.requested_at.isoformat(),
-                            "acknowledged_at": (
-                                d.acknowledged_at.isoformat()
-                                if d.acknowledged_at
-                                else None
-                            ),
-                            "completed_at": (
-                                d.completed_at.isoformat() if d.completed_at else None
-                            ),
-                        }
-                        if d
-                        else None
-                    ),
-                }
-            )
-
-        return {"date": today.isoformat(), "children": children}
-    finally:
-        session.close()
+    return {"date": today.isoformat(), "children": children}

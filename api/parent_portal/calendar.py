@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
 from models.database import (
     Announcement,
@@ -43,10 +44,11 @@ from models.database import (
     StudentContactBookEntry,
     StudentLeaveRequest,
     StudentMedicationOrder,
-    get_session,
 )
 from models.fees import StudentFeeRecord
 from utils.auth import require_parent_role
+
+from ._dependencies import get_parent_db
 
 from ._shared import _get_parent_student_ids
 
@@ -330,28 +332,25 @@ def get_week_agenda(
     days: int = Query(7, ge=1, le=14, description="從今日起算的天數，預設 7"),
     student_id: Optional[int] = Query(default=None, gt=0),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """整合本週聚合行程（events / announcements / fee_due / contact_book / leave / medication）。"""
     user_id = current_user["user_id"]
     today = date.today()
     end = today + timedelta(days=days)
 
-    session = get_session()
-    try:
-        items = _aggregate_period(
-            session,
-            user_id=user_id,
-            start=today,
-            end=end,
-            student_id=student_id,
-        )
-        return {
-            "from": today.isoformat(),
-            "to": end.isoformat(),
-            "items": items,
-        }
-    finally:
-        session.close()
+    items = _aggregate_period(
+        session,
+        user_id=user_id,
+        start=today,
+        end=end,
+        student_id=student_id,
+    )
+    return {
+        "from": today.isoformat(),
+        "to": end.isoformat(),
+        "items": items,
+    }
 
 
 @router.get("/month")
@@ -360,6 +359,7 @@ def get_month_agenda(
     month: int = Query(..., ge=1, le=12),
     student_id: Optional[int] = Query(default=None, gt=0),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """月份視圖：[year-month-01, 隔月-01) 區間內所有家長行程。"""
     user_id = current_user["user_id"]
@@ -369,21 +369,17 @@ def get_month_agenda(
     else:
         end = date(year, month + 1, 1)
 
-    session = get_session()
-    try:
-        items = _aggregate_period(
-            session,
-            user_id=user_id,
-            start=start,
-            end=end,
-            student_id=student_id,
-        )
-        return {
-            "year": year,
-            "month": month,
-            "from": start.isoformat(),
-            "to": end.isoformat(),
-            "items": items,
-        }
-    finally:
-        session.close()
+    items = _aggregate_period(
+        session,
+        user_id=user_id,
+        start=start,
+        end=end,
+        student_id=student_id,
+    )
+    return {
+        "year": year,
+        "month": month,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "items": items,
+    }

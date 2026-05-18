@@ -42,6 +42,13 @@ def app_client(tmp_path):
     app = FastAPI()
     # Parent timeline router mounted under /api/parent prefix
     app.include_router(parent_timeline_router, prefix="/api/parent")
+
+    from api.parent_portal._dependencies import get_parent_db
+    from tests._parent_rls_test_utils import make_sqlite_parent_db_override
+
+    app.dependency_overrides[get_parent_db] = make_sqlite_parent_db_override(
+        TestingSession
+    )
     client = TestClient(app)
 
     # 建立 parent user + classroom + student + guardian binding

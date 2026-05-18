@@ -11,11 +11,13 @@ import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
-from models.database import StudentMeasurement, get_session
+from models.database import StudentMeasurement
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
 logger = logging.getLogger(__name__)
@@ -52,26 +54,23 @@ async def parent_list_measurements(
     student_id: int = Query(...),
     months: int = Query(24, ge=1, le=_MONTHS_MAX),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ) -> dict:
     try:
-        session = get_session()
-        try:
-            user_id = current_user["user_id"]
-            _assert_student_owned(session, user_id, student_id)
-            since = date.today() - timedelta(days=30 * months)
-            rows = (
-                session.query(StudentMeasurement)
-                .filter(
-                    StudentMeasurement.student_id == student_id,
-                    StudentMeasurement.measured_on >= since,
-                )
-                .order_by(StudentMeasurement.measured_on.desc())
-                .limit(_HARD_ROW_LIMIT)
-                .all()
+        user_id = current_user["user_id"]
+        _assert_student_owned(session, user_id, student_id)
+        since = date.today() - timedelta(days=30 * months)
+        rows = (
+            session.query(StudentMeasurement)
+            .filter(
+                StudentMeasurement.student_id == student_id,
+                StudentMeasurement.measured_on >= since,
             )
-            return {"items": [_to_dict(r) for r in rows]}
-        finally:
-            session.close()
+            .order_by(StudentMeasurement.measured_on.desc())
+            .limit(_HARD_ROW_LIMIT)
+            .all()
+        )
+        return {"items": [_to_dict(r) for r in rows]}
     except HTTPException:
         raise
     except Exception as e:
@@ -83,48 +82,45 @@ async def parent_measurement_chart(
     student_id: int = Query(...),
     months: int = Query(24, ge=1, le=_MONTHS_MAX),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ) -> dict:
     """回傳 admin chart-data 同結構 (asc by date)."""
     try:
-        session = get_session()
-        try:
-            user_id = current_user["user_id"]
-            _assert_student_owned(session, user_id, student_id)
-            since = date.today() - timedelta(days=30 * months)
-            rows = (
-                session.query(StudentMeasurement)
-                .filter(
-                    StudentMeasurement.student_id == student_id,
-                    StudentMeasurement.measured_on >= since,
-                )
-                .order_by(StudentMeasurement.measured_on.asc())
-                .limit(_HARD_ROW_LIMIT)
-                .all()
+        user_id = current_user["user_id"]
+        _assert_student_owned(session, user_id, student_id)
+        since = date.today() - timedelta(days=30 * months)
+        rows = (
+            session.query(StudentMeasurement)
+            .filter(
+                StudentMeasurement.student_id == student_id,
+                StudentMeasurement.measured_on >= since,
             )
-            series: dict[str, list[dict]] = {
-                "height": [],
-                "weight": [],
-                "head_circumference": [],
-                "vision_left": [],
-                "vision_right": [],
-            }
-            for r in rows:
-                d = r.measured_on.isoformat()
-                if r.height_cm is not None:
-                    series["height"].append({"x": d, "y": str(r.height_cm)})
-                if r.weight_kg is not None:
-                    series["weight"].append({"x": d, "y": str(r.weight_kg)})
-                if r.head_circumference_cm is not None:
-                    series["head_circumference"].append(
-                        {"x": d, "y": str(r.head_circumference_cm)}
-                    )
-                if r.vision_left is not None:
-                    series["vision_left"].append({"x": d, "y": str(r.vision_left)})
-                if r.vision_right is not None:
-                    series["vision_right"].append({"x": d, "y": str(r.vision_right)})
-            return series
-        finally:
-            session.close()
+            .order_by(StudentMeasurement.measured_on.asc())
+            .limit(_HARD_ROW_LIMIT)
+            .all()
+        )
+        series: dict[str, list[dict]] = {
+            "height": [],
+            "weight": [],
+            "head_circumference": [],
+            "vision_left": [],
+            "vision_right": [],
+        }
+        for r in rows:
+            d = r.measured_on.isoformat()
+            if r.height_cm is not None:
+                series["height"].append({"x": d, "y": str(r.height_cm)})
+            if r.weight_kg is not None:
+                series["weight"].append({"x": d, "y": str(r.weight_kg)})
+            if r.head_circumference_cm is not None:
+                series["head_circumference"].append(
+                    {"x": d, "y": str(r.head_circumference_cm)}
+                )
+            if r.vision_left is not None:
+                series["vision_left"].append({"x": d, "y": str(r.vision_left)})
+            if r.vision_right is not None:
+                series["vision_right"].append({"x": d, "y": str(r.vision_right)})
+        return series
     except HTTPException:
         raise
     except Exception as e:

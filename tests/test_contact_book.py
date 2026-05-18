@@ -61,6 +61,14 @@ def app_clients(tmp_path):
     app = FastAPI()
     app.include_router(parent_router)
     app.include_router(portal_router)
+
+    from api.parent_portal._dependencies import get_parent_db
+    from tests._parent_rls_test_utils import make_sqlite_parent_db_override
+
+    app.dependency_overrides[get_parent_db] = make_sqlite_parent_db_override(
+        session_factory
+    )
+
     with TestClient(app) as client:
         yield client, session_factory, line_service
 

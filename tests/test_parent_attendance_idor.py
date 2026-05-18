@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
 from api.parent_portal import parent_router as parent_portal_router
+from api.parent_portal._dependencies import get_parent_db
 from models.database import (
     Base,
     Classroom,
@@ -48,6 +49,17 @@ def parent_attend_client(tmp_path):
 
     app = FastAPI()
     app.include_router(parent_portal_router)
+
+    # Phase 1+ (2026-05-18): attendance.py now uses Depends(get_parent_db) which
+    # demands a PG engine with RLS roles. SQLite can't do RLS, so we override
+    # the dep to yield a SQLite session — app-layer _assert_student_owned still
+    # runs; DB-layer RLS isolation lives in tests/spike_rls/.
+    from tests._parent_rls_test_utils import make_sqlite_parent_db_override
+
+    app.dependency_overrides[get_parent_db] = make_sqlite_parent_db_override(
+        session_factory
+    )
+
     with TestClient(app) as client:
         yield client, session_factory
 
@@ -321,6 +333,7 @@ class TestParentIdor:
         # 軟刪
         with session_factory() as session:
             from datetime import datetime as _dt
+
             g = session.query(Guardian).filter(Guardian.id == guardian_id).first()
             g.deleted_at = _dt.now()
             session.commit()

@@ -3,7 +3,11 @@
 - GET /api/parent/attendance/daily：單日出席
 - GET /api/parent/attendance/monthly：單月出席（按日清單 + 各狀態統計）
 
-兩端點皆強制經過 _assert_student_owned，禁止跨家長存取。
+雙層防線：
+1. 應用層 `_assert_student_owned` 對非自己小孩給 403（UX 友善）。
+2. DB 層 Row-Level Security（policy `parent_isolate_attendance` /
+   `parent_self_guardian`）作為硬隔離兜底——即便應用層被繞過，PG 也只回 0 row。
+   由 `get_parent_db` dependency 設定的 `app.current_user_id` 驅動。
 """
 
 import calendar
@@ -11,10 +15,12 @@ from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
-from models.database import StudentAttendance, get_session
+from models.database import StudentAttendance
 from utils.auth import require_parent_role
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
 router = APIRouter(prefix="/attendance", tags=["parent-attendance"])
@@ -36,35 +42,32 @@ def get_daily_attendance(
         None, alias="date", description="YYYY-MM-DD；不填則為今天"
     ),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, student_id)
-        d = _parse_date(target_date) if target_date else date.today()
-        record = (
-            session.query(StudentAttendance)
-            .filter(
-                StudentAttendance.student_id == student_id,
-                StudentAttendance.date == d,
-            )
-            .first()
+    _assert_student_owned(session, user_id, student_id)
+    d = _parse_date(target_date) if target_date else date.today()
+    record = (
+        session.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id == student_id,
+            StudentAttendance.date == d,
         )
-        if record is None:
-            return {
-                "student_id": student_id,
-                "date": d.isoformat(),
-                "status": None,
-                "remark": None,
-            }
+        .first()
+    )
+    if record is None:
         return {
             "student_id": student_id,
             "date": d.isoformat(),
-            "status": record.status,
-            "remark": record.remark,
+            "status": None,
+            "remark": None,
         }
-    finally:
-        session.close()
+    return {
+        "student_id": student_id,
+        "date": d.isoformat(),
+        "status": record.status,
+        "remark": record.remark,
+    }
 
 
 @router.get("/monthly")
@@ -73,42 +76,39 @@ def get_monthly_attendance(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, student_id)
-        first_day = date(year, month, 1)
-        last_day = date(year, month, calendar.monthrange(year, month)[1])
-        records = (
-            session.query(StudentAttendance)
-            .filter(
-                StudentAttendance.student_id == student_id,
-                StudentAttendance.date >= first_day,
-                StudentAttendance.date <= last_day,
-            )
-            .order_by(StudentAttendance.date.asc())
-            .all()
+    _assert_student_owned(session, user_id, student_id)
+    first_day = date(year, month, 1)
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+    records = (
+        session.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id == student_id,
+            StudentAttendance.date >= first_day,
+            StudentAttendance.date <= last_day,
         )
-        items = []
-        counts = {s: 0 for s in _VALID_STATUSES}
-        for r in records:
-            items.append(
-                {
-                    "date": r.date.isoformat() if r.date else None,
-                    "status": r.status,
-                    "remark": r.remark,
-                }
-            )
-            if r.status in counts:
-                counts[r.status] += 1
-        return {
-            "student_id": student_id,
-            "year": year,
-            "month": month,
-            "items": items,
-            "counts": counts,
-            "recorded_days": len(items),
-        }
-    finally:
-        session.close()
+        .order_by(StudentAttendance.date.asc())
+        .all()
+    )
+    items = []
+    counts = {s: 0 for s in _VALID_STATUSES}
+    for r in records:
+        items.append(
+            {
+                "date": r.date.isoformat() if r.date else None,
+                "status": r.status,
+                "remark": r.remark,
+            }
+        )
+        if r.status in counts:
+            counts[r.status] += 1
+    return {
+        "student_id": student_id,
+        "year": year,
+        "month": month,
+        "items": items,
+        "counts": counts,
+        "recorded_days": len(items),
+    }

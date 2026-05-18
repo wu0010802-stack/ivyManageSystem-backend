@@ -22,17 +22,18 @@ from fastapi import (
     UploadFile,
 )
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from models.database import (
     Attachment,
     EventAcknowledgment,
     SchoolEvent,
-    get_session,
 )
 from models.portfolio import ATTACHMENT_OWNER_EVENT_ACK
 from utils.auth import require_parent_role
 from utils.file_upload import safe_attachment_filename, validate_file_signature
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
 
 logger = logging.getLogger(__name__)
@@ -97,74 +98,71 @@ def count_pending_acks_for_user(session, user_id: int, student_ids: list[int]) -
 
 
 @router.get("")
-def list_events(current_user: dict = Depends(require_parent_role())):
+def list_events(
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
     user_id = current_user["user_id"]
     today = date.today()
     df = today - timedelta(days=_PAST_DAYS)
     dt = today + timedelta(days=_FUTURE_DAYS)
-    session = get_session()
-    try:
-        _, student_ids = _get_parent_student_ids(session, user_id)
+    _, student_ids = _get_parent_student_ids(session, user_id)
 
-        events = (
-            session.query(SchoolEvent)
+    events = (
+        session.query(SchoolEvent)
+        .filter(
+            SchoolEvent.is_active == True,
+            SchoolEvent.event_date >= df,
+            SchoolEvent.event_date <= dt,
+        )
+        .order_by(SchoolEvent.event_date.asc())
+        .all()
+    )
+    event_ids = [e.id for e in events]
+
+    ack_map: dict[int, set[int]] = {}
+    if event_ids and student_ids:
+        ack_rows = (
+            session.query(EventAcknowledgment.event_id, EventAcknowledgment.student_id)
             .filter(
-                SchoolEvent.is_active == True,
-                SchoolEvent.event_date >= df,
-                SchoolEvent.event_date <= dt,
+                EventAcknowledgment.user_id == user_id,
+                EventAcknowledgment.event_id.in_(event_ids),
+                EventAcknowledgment.student_id.in_(student_ids),
             )
-            .order_by(SchoolEvent.event_date.asc())
             .all()
         )
-        event_ids = [e.id for e in events]
+        for ev_id, st_id in ack_rows:
+            ack_map.setdefault(ev_id, set()).add(st_id)
 
-        ack_map: dict[int, set[int]] = {}
-        if event_ids and student_ids:
-            ack_rows = (
-                session.query(
-                    EventAcknowledgment.event_id, EventAcknowledgment.student_id
-                )
-                .filter(
-                    EventAcknowledgment.user_id == user_id,
-                    EventAcknowledgment.event_id.in_(event_ids),
-                    EventAcknowledgment.student_id.in_(student_ids),
-                )
-                .all()
-            )
-            for ev_id, st_id in ack_rows:
-                ack_map.setdefault(ev_id, set()).add(st_id)
-
-        items = []
-        for e in events:
-            acked_for = sorted(ack_map.get(e.id, set()))
-            need_ack_for = (
-                sorted(set(student_ids) - set(acked_for))
-                if e.requires_acknowledgment
-                else []
-            )
-            items.append(
-                {
-                    "id": e.id,
-                    "title": e.title,
-                    "description": e.description,
-                    "event_date": e.event_date.isoformat() if e.event_date else None,
-                    "end_date": e.end_date.isoformat() if e.end_date else None,
-                    "event_type": e.event_type,
-                    "is_all_day": bool(e.is_all_day),
-                    "start_time": e.start_time,
-                    "end_time": e.end_time,
-                    "location": e.location,
-                    "requires_acknowledgment": bool(e.requires_acknowledgment),
-                    "ack_deadline": (
-                        e.ack_deadline.isoformat() if e.ack_deadline else None
-                    ),
-                    "acked_student_ids": acked_for,
-                    "need_ack_student_ids": need_ack_for,
-                }
-            )
-        return {"items": items, "total": len(items)}
-    finally:
-        session.close()
+    items = []
+    for e in events:
+        acked_for = sorted(ack_map.get(e.id, set()))
+        need_ack_for = (
+            sorted(set(student_ids) - set(acked_for))
+            if e.requires_acknowledgment
+            else []
+        )
+        items.append(
+            {
+                "id": e.id,
+                "title": e.title,
+                "description": e.description,
+                "event_date": e.event_date.isoformat() if e.event_date else None,
+                "end_date": e.end_date.isoformat() if e.end_date else None,
+                "event_type": e.event_type,
+                "is_all_day": bool(e.is_all_day),
+                "start_time": e.start_time,
+                "end_time": e.end_time,
+                "location": e.location,
+                "requires_acknowledgment": bool(e.requires_acknowledgment),
+                "ack_deadline": (
+                    e.ack_deadline.isoformat() if e.ack_deadline else None
+                ),
+                "acked_student_ids": acked_for,
+                "need_ack_student_ids": need_ack_for,
+            }
+        )
+    return {"items": items, "total": len(items)}
 
 
 @router.post("/{event_id}/ack", status_code=200)
@@ -172,64 +170,61 @@ def acknowledge_event(
     event_id: int,
     payload: AckRequest,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, payload.student_id, for_write=True)
+    _assert_student_owned(session, user_id, payload.student_id, for_write=True)
 
-        event = (
-            session.query(SchoolEvent)
-            .filter(SchoolEvent.id == event_id, SchoolEvent.is_active == True)
-            .first()
+    event = (
+        session.query(SchoolEvent)
+        .filter(SchoolEvent.id == event_id, SchoolEvent.is_active == True)
+        .first()
+    )
+    if event is None:
+        raise HTTPException(status_code=404, detail="找不到事件")
+    if not event.requires_acknowledgment:
+        raise HTTPException(status_code=400, detail="此事件未要求簽閱")
+    # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽閱（與 signature 上傳對齊）
+    if event.ack_deadline is not None and date.today() > event.ack_deadline:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"事件簽閱截止日（{event.ack_deadline.isoformat()}）已過，"
+                f"無法簽收。如需補簽請聯繫校方協助處理。"
+            ),
         )
-        if event is None:
-            raise HTTPException(status_code=404, detail="找不到事件")
-        if not event.requires_acknowledgment:
-            raise HTTPException(status_code=400, detail="此事件未要求簽閱")
-        # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽閱（與 signature 上傳對齊）
-        if event.ack_deadline is not None and date.today() > event.ack_deadline:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"事件簽閱截止日（{event.ack_deadline.isoformat()}）已過，"
-                    f"無法簽收。如需補簽請聯繫校方協助處理。"
-                ),
-            )
 
-        existing = (
-            session.query(EventAcknowledgment)
-            .filter(
-                EventAcknowledgment.event_id == event_id,
-                EventAcknowledgment.user_id == user_id,
-                EventAcknowledgment.student_id == payload.student_id,
-            )
-            .first()
+    existing = (
+        session.query(EventAcknowledgment)
+        .filter(
+            EventAcknowledgment.event_id == event_id,
+            EventAcknowledgment.user_id == user_id,
+            EventAcknowledgment.student_id == payload.student_id,
         )
-        if existing is not None:
-            return {
-                "status": "ok",
-                "already_acknowledged": True,
-                "acknowledged_at": existing.acknowledged_at.isoformat(),
-            }
-
-        ack = EventAcknowledgment(
-            event_id=event_id,
-            user_id=user_id,
-            student_id=payload.student_id,
-            acknowledged_at=datetime.now(),
-            signature_name=(payload.signature_name or "").strip() or None,
-        )
-        session.add(ack)
-        session.commit()
+        .first()
+    )
+    if existing is not None:
         return {
             "status": "ok",
-            "already_acknowledged": False,
-            "ack_id": ack.id,
-            "acknowledged_at": ack.acknowledged_at.isoformat(),
+            "already_acknowledged": True,
+            "acknowledged_at": existing.acknowledged_at.isoformat(),
         }
-    finally:
-        session.close()
+
+    ack = EventAcknowledgment(
+        event_id=event_id,
+        user_id=user_id,
+        student_id=payload.student_id,
+        acknowledged_at=datetime.now(),
+        signature_name=(payload.signature_name or "").strip() or None,
+    )
+    session.add(ack)
+    session.flush()
+    return {
+        "status": "ok",
+        "already_acknowledged": False,
+        "ack_id": ack.id,
+        "acknowledged_at": ack.acknowledged_at.isoformat(),
+    }
 
 
 @router.post("/{event_id}/ack/signature", status_code=201)
@@ -239,6 +234,7 @@ async def upload_ack_signature(
     student_id: int = Query(..., gt=0),
     file: UploadFile = File(...),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """上傳已建立的簽收紀錄之手寫簽名圖（PNG）。
 
@@ -262,99 +258,93 @@ async def upload_ack_signature(
 
     from utils.portfolio_storage import get_portfolio_storage
 
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, student_id, for_write=True)
+    _assert_student_owned(session, user_id, student_id, for_write=True)
 
-        # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽。家長若有正當理由
-        # 補簽，需請校方協助走後台 admin override（不在本端點開放）。
-        event = (
-            session.query(SchoolEvent)
-            .filter(SchoolEvent.id == event_id, SchoolEvent.is_active == True)
-            .first()
-        )
-        if event is None:
-            raise HTTPException(status_code=404, detail="找不到事件")
-        if event.ack_deadline is not None and date.today() > event.ack_deadline:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"事件簽閱截止日（{event.ack_deadline.isoformat()}）已過，"
-                    f"無法上傳簽名。如需補簽請聯繫校方協助處理。"
-                ),
-            )
-
-        ack = (
-            session.query(EventAcknowledgment)
-            .filter(
-                EventAcknowledgment.event_id == event_id,
-                EventAcknowledgment.user_id == user_id,
-                EventAcknowledgment.student_id == student_id,
-            )
-            .first()
-        )
-        if ack is None:
-            raise HTTPException(
-                status_code=404,
-                detail="尚未簽收此事件，請先 POST /ack 後再上傳簽名",
-            )
-
-        # 若已有舊簽名，軟刪除以保留歷史
-        if ack.signature_attachment_id:
-            old = (
-                session.query(Attachment)
-                .filter(Attachment.id == ack.signature_attachment_id)
-                .first()
-            )
-            if old and not old.deleted_at:
-                old.deleted_at = datetime.now()
-
-        storage = get_portfolio_storage()
-        stored = storage.put_attachment(content, ext)
-        # P1-9：sanitize 後再入庫，避免 download Content-Disposition 顯示
-        # 雙副檔名 / 路徑成分 / 控制字元。
-        safe_name = safe_attachment_filename(filename, ext)
-        att = Attachment(
-            owner_type=ATTACHMENT_OWNER_EVENT_ACK,
-            owner_id=ack.id,
-            storage_key=stored.storage_key,
-            display_key=stored.display_key,
-            thumb_key=stored.thumb_key,
-            original_filename=safe_name,
-            mime_type=stored.mime_type,
-            size_bytes=len(content),
-            uploaded_by=user_id,
-        )
-        session.add(att)
-        session.flush()
-        session.refresh(att)
-        ack.signature_attachment_id = att.id
-        # 資安掃描 2026-05-07 P2：紀錄簽名上傳時間（重簽會更新此欄位）
-        ack.signature_uploaded_at = datetime.now()
-        session.commit()
-
-        request.state.audit_entity_id = str(ack.id)
-        request.state.audit_summary = (
-            f"家長上傳事件簽名：event_id={event_id} student_id={student_id} "
-            f"ack_id={ack.id} attachment_id={att.id} size={len(content)}B"
-        )
-        logger.info(
-            "家長上傳簽名：event_id=%d student_id=%d ack_id=%d att_id=%d size=%d",
-            event_id,
-            student_id,
-            ack.id,
-            att.id,
-            len(content),
-        )
-        return {
-            "ack_id": ack.id,
-            "signature_attachment_id": att.id,
-            "url": f"/api/parent/uploads/portfolio/{att.storage_key}",
-            "thumb_url": (
-                f"/api/parent/uploads/portfolio/{att.thumb_key}"
-                if att.thumb_key
-                else None
+    # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽。家長若有正當理由
+    # 補簽，需請校方協助走後台 admin override（不在本端點開放）。
+    event = (
+        session.query(SchoolEvent)
+        .filter(SchoolEvent.id == event_id, SchoolEvent.is_active == True)
+        .first()
+    )
+    if event is None:
+        raise HTTPException(status_code=404, detail="找不到事件")
+    if event.ack_deadline is not None and date.today() > event.ack_deadline:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"事件簽閱截止日（{event.ack_deadline.isoformat()}）已過，"
+                f"無法上傳簽名。如需補簽請聯繫校方協助處理。"
             ),
-        }
-    finally:
-        session.close()
+        )
+
+    ack = (
+        session.query(EventAcknowledgment)
+        .filter(
+            EventAcknowledgment.event_id == event_id,
+            EventAcknowledgment.user_id == user_id,
+            EventAcknowledgment.student_id == student_id,
+        )
+        .first()
+    )
+    if ack is None:
+        raise HTTPException(
+            status_code=404,
+            detail="尚未簽收此事件，請先 POST /ack 後再上傳簽名",
+        )
+
+    # 若已有舊簽名，軟刪除以保留歷史
+    if ack.signature_attachment_id:
+        old = (
+            session.query(Attachment)
+            .filter(Attachment.id == ack.signature_attachment_id)
+            .first()
+        )
+        if old and not old.deleted_at:
+            old.deleted_at = datetime.now()
+
+    storage = get_portfolio_storage()
+    stored = storage.put_attachment(content, ext)
+    # P1-9：sanitize 後再入庫，避免 download Content-Disposition 顯示
+    # 雙副檔名 / 路徑成分 / 控制字元。
+    safe_name = safe_attachment_filename(filename, ext)
+    att = Attachment(
+        owner_type=ATTACHMENT_OWNER_EVENT_ACK,
+        owner_id=ack.id,
+        storage_key=stored.storage_key,
+        display_key=stored.display_key,
+        thumb_key=stored.thumb_key,
+        original_filename=safe_name,
+        mime_type=stored.mime_type,
+        size_bytes=len(content),
+        uploaded_by=user_id,
+    )
+    session.add(att)
+    session.flush()
+    session.refresh(att)
+    ack.signature_attachment_id = att.id
+    # 資安掃描 2026-05-07 P2：紀錄簽名上傳時間（重簽會更新此欄位）
+    ack.signature_uploaded_at = datetime.now()
+    session.flush()
+
+    request.state.audit_entity_id = str(ack.id)
+    request.state.audit_summary = (
+        f"家長上傳事件簽名：event_id={event_id} student_id={student_id} "
+        f"ack_id={ack.id} attachment_id={att.id} size={len(content)}B"
+    )
+    logger.info(
+        "家長上傳簽名：event_id=%d student_id=%d ack_id=%d att_id=%d size=%d",
+        event_id,
+        student_id,
+        ack.id,
+        att.id,
+        len(content),
+    )
+    return {
+        "ack_id": ack.id,
+        "signature_attachment_id": att.id,
+        "url": f"/api/parent/uploads/portfolio/{att.storage_key}",
+        "thumb_url": (
+            f"/api/parent/uploads/portfolio/{att.thumb_key}" if att.thumb_key else None
+        ),
+    }

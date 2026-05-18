@@ -45,6 +45,15 @@ def fees_client(tmp_path):
     Base.metadata.create_all(db_engine)
     app = FastAPI()
     app.include_router(parent_portal_router)
+
+    # Phase 1c+ (2026-05-18): fees.py now uses Depends(get_parent_db).
+    from api.parent_portal._dependencies import get_parent_db
+    from tests._parent_rls_test_utils import make_sqlite_parent_db_override
+
+    app.dependency_overrides[get_parent_db] = make_sqlite_parent_db_override(
+        session_factory
+    )
+
     with TestClient(app) as client:
         yield client, session_factory
     base_module._engine = old_engine

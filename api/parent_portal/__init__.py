@@ -12,6 +12,9 @@ from fastapi import APIRouter, Depends
 
 from utils.auth import require_parent_role
 
+from api.guardians_admin import (
+    router as binding_admin_router,
+)  # 已搬出 parent_portal/，僅保留 import 別名以維 admin_router 結構
 from .auth import (
     init_line_login_service,
     router as auth_router,
@@ -19,7 +22,6 @@ from .auth import (
 from .activity import router as activity_router
 from .announcements import router as announcements_router
 from .attendance import router as attendance_router
-from .binding_admin import router as binding_admin_router
 from .calendar import router as calendar_router
 from .contact_book import router as contact_book_router
 from .growth_reports import router as growth_reports_router
