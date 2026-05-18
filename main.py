@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from utils.sentry_init import capture_exception, init_sentry
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
 from services.line_service import LineService
@@ -148,6 +149,10 @@ def _configure_logging():
 _configure_logging()
 logger = logging.getLogger(__name__)
 
+# Sentry 初始化（缺 SENTRY_DSN 時 no-op，安全在所有環境啟動）
+# 必須在 FastAPI() 建構前 init，FastApiIntegration 才能 patch 進 router pipeline。
+init_sentry()
+
 
 def _is_production() -> bool:
     return os.environ.get("ENV", "development").lower() in ("production", "prod")
@@ -266,6 +271,7 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("自動畢業排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
     ivykids_sync_task = None
@@ -280,6 +286,7 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("義華校官網自動同步啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     # 薪資月底快照排程：需要 SALARY_AUTO_SNAPSHOT_ENABLED=1；建議僅在單一 worker 啟用
     salary_snapshot_task = None
@@ -294,6 +301,7 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("薪資月底快照排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     # 才藝候補名單過期掃描排程：需要 ACTIVITY_WAITLIST_SCHEDULER_ENABLED=1；建議僅在單一 worker 啟用
     activity_waitlist_task = None
@@ -309,6 +317,7 @@ async def app_lifespan(app_instance: FastAPI):
             logger.info("activity waitlist scheduler 已啟用")
     except Exception as e:
         logger.warning("才藝候補名單排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     # 用藥提醒排程：需要 MEDICATION_REMINDER_ENABLED=1；建議僅在單一 worker 啟用
     medication_reminder_task = None
@@ -329,6 +338,7 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("用藥提醒排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     # 安全支援表 GC：rate_limit_buckets / jwt_blocklist；預設啟用，env 可關
     security_gc_task = None
@@ -343,6 +353,7 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("安全支援表 GC 排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     # 官方日曆每日同步：需要 OFFICIAL_CALENDAR_SYNC_ENABLED=1；建議僅單一 worker 啟用
     official_calendar_task = None
@@ -357,6 +368,7 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("官方日曆排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     # 才藝 POS paid_amount 對帳（spec H4）：需要 FINANCE_RECONCILIATION_ENABLED=1
     # 每日 02:00 Asia/Taipei 掃 active registrations，若 paid_amount 與
@@ -375,6 +387,7 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("對帳排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
 
     try:
         yield
@@ -495,6 +508,7 @@ async def app_lifespan(app_instance: FastAPI):
             logger.info("WebSocket 連線已全部關閉")
         except Exception as e:
             logger.warning("WebSocket 關閉時發生錯誤: %s", e)
+            capture_exception(e, level="warning")
         # 釋放 DB 連線池
         try:
             from models.base import get_engine as _get_engine
@@ -503,6 +517,7 @@ async def app_lifespan(app_instance: FastAPI):
             logger.info("資料庫連線池已釋放")
         except Exception as e:
             logger.warning("資料庫連線池釋放失敗: %s", e)
+            capture_exception(e, level="warning")
         logger.info("Application shutdown complete.")
 
 

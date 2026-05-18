@@ -135,3 +135,16 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 - 公開端點不可使用 `HTTPException(500, str(e))` 或 `HTTPException(500, f"...{e}")` —— 一律走 `utils/errors.raise_safe_500(e, context=...)`
 - 升級依賴後必須跑 `pip-audit -r requirements.txt`；CI 會 enforce
 - 完整資安發現清單見 `SECURITY_AUDIT.md`；新發現以 finding 格式追加並標記嚴重度
+
+---
+
+### 錯誤監控（Sentry）
+
+`utils/sentry_init.py` 提供 `init_sentry()`（main.py 啟動時呼叫）與 `capture_exception(exc, level)`。
+
+- **啟用條件**：`SENTRY_DSN` 環境變數設定才生效；缺 DSN 時整個模組 no-op
+- **整合**：FastAPI / Starlette / SQLAlchemy / Logging（`event_level=ERROR`）；`transaction_style="endpoint"` 讓 Sentry 用 path template 不是 raw URL
+- **PII 過濾**：`_scrub_event` + `_scrub_breadcrumb` 自動遮罩 60+ 欄位（金流 / 個資 / 幼教 / 醫療 / 認證）；URL path 中段 id 自動換成 `:id`。新增 PII 欄位請更新 `_PII_KEY_SUBSTRINGS` 並補 `tests/test_sentry_scrubber.py`
+- **logger.error / logger.exception 自動上報**；`logger.warning` 不會（業務語意通常是「可降級警告」）
+- **scheduler / WS handler 啟動 try/except**：吞 exception 的點請呼叫 `capture_exception(e, level="warning")` 顯式上報，否則 prod 出事只會看到「scheduler 沒跑」但 Sentry 一片乾淨（main.py 已示範 10 處）
+- **不要在 logger.exception 之後重複呼叫 capture_exception**：LoggingIntegration 已抓，重複會雙報炸 quota

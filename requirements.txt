@@ -26,3 +26,4 @@ pytest-cov>=4.1.0
 httpx>=0.24.0
 responses>=0.25
 mcp>=1.0.0  # MCP server SDK（mcp_server/activity_crud 暴露才藝 CRUD 給 Claude Code）
+sentry-sdk[fastapi]>=2.0.0  # 錯誤監控；缺 SENTRY_DSN 時 init_sentry() no-op
