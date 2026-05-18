@@ -281,6 +281,14 @@ def downgrade() -> None:
                SET source_ref = REPLACE(source_ref, 'auto:returning_rate_0315:', 'auto:returning_rate:')
              WHERE source_ref LIKE 'auto:returning_rate_0315:%'
             """))
+    # P1-24：post-migration sync 會寫 _0915 source_ref（item_code RETURNING_RATE_0915
+    # 對應）；downgrade 也必須還原回舊單一 `auto:returning_rate:`，否則 prod 緊急
+    # downgrade 後 _0915 rows 會變孤兒、舊代碼吃不到。
+    conn.execute(text("""
+            UPDATE appraisal_score_items
+               SET source_ref = REPLACE(source_ref, 'auto:returning_rate_0915:', 'auto:returning_rate:')
+             WHERE source_ref LIKE 'auto:returning_rate_0915:%'
+            """))
     conn.execute(text("""
             UPDATE appraisal_score_items
                SET source_ref = REPLACE(source_ref, 'auto:after_class_rate:', 'auto:after_class:')
