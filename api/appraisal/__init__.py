@@ -1102,75 +1102,84 @@ def batch_sign_summaries(
     succeeded: list[int] = []
     failed: list[BatchSignErrorItem] = []
 
+    # bug sweep 2026-05-18 P1-1：每筆獨立 savepoint，避免單筆 DB error
+    # 牽連整批 rollback（PendingRollbackError）。
     for sid in payload.summary_ids:
         try:
-            summary = (
-                session.query(AppraisalSummary)
-                .filter(AppraisalSummary.id == sid)
-                .with_for_update()
-                .first()
-            )
-            if summary is None:
-                failed.append(
-                    BatchSignErrorItem(summary_id=sid, error="summary 不存在")
+            with session.begin_nested():
+                summary = (
+                    session.query(AppraisalSummary)
+                    .filter(AppraisalSummary.id == sid)
+                    .with_for_update()
+                    .first()
                 )
-                continue
-            if summary.cycle_id != cycle_id:
-                failed.append(
-                    BatchSignErrorItem(summary_id=sid, error="不屬於此 cycle")
-                )
-                continue
-            if not can_advance(summary.status, payload.stage):
-                failed.append(
-                    BatchSignErrorItem(
-                        summary_id=sid,
-                        error=(
-                            f"當前 status={summary.status.value} "
-                            f"無法進入 {payload.stage}"
-                        ),
+                if summary is None:
+                    failed.append(
+                        BatchSignErrorItem(summary_id=sid, error="summary 不存在")
                     )
-                )
-                continue
-            try:
-                assert_not_self_approval(
-                    current_user,
-                    summary.participant.employee_id,
-                    doc_label="考核獎金",
-                )
-            except HTTPException as e:
-                failed.append(
-                    BatchSignErrorItem(summary_id=sid, error=f"自簽防呆: {e.detail}")
-                )
-                continue
+                    continue
+                if summary.cycle_id != cycle_id:
+                    failed.append(
+                        BatchSignErrorItem(summary_id=sid, error="不屬於此 cycle")
+                    )
+                    continue
+                if not can_advance(summary.status, payload.stage):
+                    failed.append(
+                        BatchSignErrorItem(
+                            summary_id=sid,
+                            error=(
+                                f"當前 status={summary.status.value} "
+                                f"無法進入 {payload.stage}"
+                            ),
+                        )
+                    )
+                    continue
+                try:
+                    assert_not_self_approval(
+                        current_user,
+                        summary.participant.employee_id,
+                        doc_label="考核獎金",
+                    )
+                except HTTPException as e:
+                    failed.append(
+                        BatchSignErrorItem(
+                            summary_id=sid, error=f"自簽防呆: {e.detail}"
+                        )
+                    )
+                    continue
 
-            from_status = summary.status
-            to_status = advance_target(from_status, payload.stage)
-            summary.status = to_status
+                from_status = summary.status
+                to_status = advance_target(from_status, payload.stage)
+                summary.status = to_status
 
-            now = datetime.now(timezone.utc)
-            if payload.stage == "SUPERVISOR":
-                summary.supervisor_signed_by = actor_user_id
-                summary.supervisor_signed_at = now
-            elif payload.stage == "ACCOUNTING":
-                summary.accounting_signed_by = actor_user_id
-                summary.accounting_signed_at = now
-            else:  # FINALIZE
-                summary.finalized_by = actor_user_id
-                summary.finalized_at = now
+                now = datetime.now(timezone.utc)
+                if payload.stage == "SUPERVISOR":
+                    summary.supervisor_signed_by = actor_user_id
+                    summary.supervisor_signed_at = now
+                elif payload.stage == "ACCOUNTING":
+                    summary.accounting_signed_by = actor_user_id
+                    summary.accounting_signed_at = now
+                else:  # FINALIZE
+                    summary.finalized_by = actor_user_id
+                    summary.finalized_at = now
 
-            write_summary_log(
-                session,
-                summary,
-                action_enum,
-                actor_user_id=actor_user_id,
-                actor_role=actor_role,
-                from_status=from_status,
-                to_status=to_status,
-            )
-            succeeded.append(sid)
+                write_summary_log(
+                    session,
+                    summary,
+                    action_enum,
+                    actor_user_id=actor_user_id,
+                    actor_role=actor_role,
+                    from_status=from_status,
+                    to_status=to_status,
+                )
+                succeeded.append(sid)
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001
+            # savepoint 已自動 rollback；succeeded 內可能含本 sid（先 append
+            # 後拋例外的時序），需移除。
+            if sid in succeeded:
+                succeeded.remove(sid)
             failed.append(BatchSignErrorItem(summary_id=sid, error=str(e)))
 
     session.commit()
