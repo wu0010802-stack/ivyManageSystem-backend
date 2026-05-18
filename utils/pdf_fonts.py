@@ -31,6 +31,12 @@ def register_cjk_font() -> str:
 
     Returns:
         字型名稱字串（供 setFont / fontName 用）。
+
+    Notes:
+        會同時註冊 family mapping，讓 reportlab Paragraph 的 <b>/<i>/<bi>
+        標籤不會 fallback 到 Helvetica-Bold（無 CJK glyph 會變方塊）。
+        reportlab 4.x 的 TTFont 預設已自動填 family map，本呼叫為防禦性鎖定，
+        避免 reportlab 版本變更或 ParagraphStyle parent 繼承的 corner case 翻車。
     """
     if CJK_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
         if not os.path.isfile(_FONT_PATH):
@@ -39,4 +45,14 @@ def register_cjk_font() -> str:
                 "請確認 assets/fonts/NotoSansTC-Regular.ttf 存在（repo 已 bundle）。"
             )
         pdfmetrics.registerFont(TTFont(CJK_FONT_NAME, _FONT_PATH))
+        # 把同一個 TTF 註冊成 family 的 normal/bold/italic/boldItalic，
+        # 避免 <b>...</b> 中文走 Helvetica-Bold fallback 失字。
+        # 未來如要支援真正 bold weight，可另 bundle NotoSansTC-Bold.ttf。
+        pdfmetrics.registerFontFamily(
+            CJK_FONT_NAME,
+            normal=CJK_FONT_NAME,
+            bold=CJK_FONT_NAME,
+            italic=CJK_FONT_NAME,
+            boldItalic=CJK_FONT_NAME,
+        )
     return CJK_FONT_NAME

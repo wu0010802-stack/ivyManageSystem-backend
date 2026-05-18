@@ -651,14 +651,32 @@ def sync_score_items(
     # （PG 不會出問題，但 SQLite 會丟 SAWarning）。
     session.flush()
     catalog_ids = {c.code: c.id for c in session.query(AppraisalScoreItemCatalog).all()}
+
+    # 找出每個 (participant_id, item_code) 既存的最大 sequence_no（人工 row）
+    # 並讓 auto row 從 max+1 開始，避免與人工 row 撞號（P0-B）。
+    existing_seq = (
+        session.query(
+            AppraisalScoreItem.participant_id,
+            AppraisalScoreItem.item_code,
+            func.coalesce(func.max(AppraisalScoreItem.sequence_no), 0).label("max_seq"),
+        )
+        .filter(AppraisalScoreItem.cycle_id == cycle_id)
+        .group_by(AppraisalScoreItem.participant_id, AppraisalScoreItem.item_code)
+        .all()
+    )
+    seq_map = {(r.participant_id, r.item_code): r.max_seq for r in existing_seq}
+
     for row in auto_rows:
+        key = (row["participant_id"], row["item_code"])
+        next_seq = seq_map.get(key, 0) + 1
+        seq_map[key] = next_seq  # 同 row 多次 catalog 衝突也避讓
         session.add(
             AppraisalScoreItem(
                 participant_id=row["participant_id"],
                 cycle_id=row["cycle_id"],
                 catalog_id=catalog_ids.get(row["item_code"]),
                 item_code=row["item_code"],
-                sequence_no=1,
+                sequence_no=next_seq,
                 score_delta=row["score_delta"],
                 raw_value=row["raw_value"],
                 note=row["note"],
