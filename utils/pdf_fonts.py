@@ -18,16 +18,20 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 CJK_FONT_NAME = "NotoSansTC"
 
-_FONT_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "assets",
-    "fonts",
-    "NotoSansTC-Regular.ttf",
+# bug sweep 2026-05-18 P2：用 Path(__file__).resolve().parent.parent 取代 os.path
+# 鏈，PyInstaller / frozen 部署時 __file__ 可能是相對路徑或 .pyc，resolve() 確保
+# 拿到絕對路徑且 follow symlink；assets/fonts 跟 utils/ 同一層 (repo root) 不變。
+_FONT_PATH = str(
+    Path(__file__).resolve().parent.parent
+    / "assets"
+    / "fonts"
+    / "NotoSansTC-Regular.ttf"
 )
 
 

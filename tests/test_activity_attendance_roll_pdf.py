@@ -154,6 +154,11 @@ class TestAttendanceRollPdfEndpoint:
         assert res.content.startswith(b"%PDF-")
         # 至少幾 KB 表示有完整內容
         assert len(res.content) > 1500
+        # P1-22 防回歸：確保 TTF 真的 embed（避免改回 UnicodeCIDFont stub）。
+        # /FontFile2 = embedded TrueType font program（PDF spec）；
+        # NotoSansTC = 我們選用的字型名稱，確保不是換成別的字型。
+        assert b"/FontFile2" in res.content
+        assert b"NotoSansTC" in res.content
 
     def test_forbidden_without_activity_read(self, activity_client):
         client, session_factory = activity_client

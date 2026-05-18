@@ -196,6 +196,15 @@ def on_startup():
     run_startup_bootstrap(
         salary_engine, line_service, insurance_service=insurance_service
     )
+    # bug sweep 2026-05-18 P2：啟動時預熱 CJK 字型註冊一次，讓任何 PDF 路由
+    # 首次 hit 不會付 ~30ms TTFont parse 成本，且若 NotoSansTC-Regular.ttf 缺檔
+    # 在啟動就 raise FileNotFoundError，比 production 跑到第一張 PDF 才爆好。
+    try:
+        from utils.pdf_fonts import register_cjk_font
+
+        register_cjk_font()
+    except Exception:
+        logger.exception("CJK font 預熱失敗（PDF 端點將於首次呼叫時再試）")
     # 資安掃描 2026-05-07 P1：啟動時 log env，取代 /health/ready 公開暴露
     env_label = os.environ.get("ENV", "development").lower()
     logger.info("Application started successfully (env=%s).", env_label)

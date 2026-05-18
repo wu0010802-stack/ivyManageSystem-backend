@@ -83,6 +83,20 @@ def write_summary_log(
     return log
 
 
+def clear_rejection_state(summary: AppraisalSummary) -> None:
+    """簽核成功進階時清掉 rejected_* 殘影（P1-5）。
+
+    威脅：reject 後 summary 留下 rejected_at / rejected_by / rejected_from_stage /
+    rejected_reason 四個欄位，若之後再從同一階段往上簽，欄位殘留會讓 UI
+    把已成功進階的 summary 顯示為「曾被退簽」狀態，造成混淆。caller 在
+    sign_supervisor / sign_accounting / finalize 成功時呼叫此 helper 即可。
+    """
+    summary.rejected_at = None
+    summary.rejected_by = None
+    summary.rejected_from_stage = None
+    summary.rejected_reason = None
+
+
 def apply_reject(
     summary: AppraisalSummary,
     to_status: SummaryStatus,

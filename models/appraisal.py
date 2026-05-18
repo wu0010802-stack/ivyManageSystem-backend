@@ -36,6 +36,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base
@@ -509,9 +510,13 @@ class AppraisalScoringRule(Base):
     item_code: Mapped[str] = mapped_column(String(64), nullable=False)
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     rule_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    rule_config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # P1-23：用 JSON().with_variant(JSONB) 對齊 migration（PG=JSONB / SQLite=JSON），
+    # 否則 alembic autogenerate 會反覆 detect drift。
+    rule_config: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False
+    )
     applies_to_role_groups: Mapped[Optional[list]] = mapped_column(
-        JSON,
+        JSON().with_variant(JSONB(), "postgresql"),
         nullable=True,
         comment="null=全部；否則 ['HEAD_TEACHER','ASSISTANT_TEACHER',...]",
     )

@@ -96,6 +96,7 @@ from services.appraisal.sign_workflow import (
     apply_reject,
     can_advance,
     can_reject,
+    clear_rejection_state,
     default_reject_to_status,
     write_summary_log,
 )
@@ -724,6 +725,9 @@ def recompute_summaries(
     cycle = session.get(AppraisalCycle, cycle_id)
     if cycle is None:
         raise HTTPException(404, "週期不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可重算（與 batch_sign 守衛一致）
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法重算")
     rates_rows = session.query(AppraisalBonusRate).all()
     bonus_lookup = BonusRateLookup(
         rates={
@@ -802,6 +806,10 @@ def sign_supervisor(
     )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可簽核（與 batch_sign 守衛一致）
+    cycle = session.get(AppraisalCycle, summary.cycle_id)
+    if cycle is not None and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法簽核")
     if summary.status != SummaryStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT 狀態（current={summary.status.value}）")
     assert_not_self_approval(
@@ -815,6 +823,8 @@ def sign_supervisor(
 
     summary.supervisor_signed_at = datetime.now(timezone.utc)
     summary.supervisor_comment = comment
+    # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+    clear_rejection_state(summary)
     write_summary_log(
         session,
         summary,
@@ -848,6 +858,10 @@ def sign_accounting(
     )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可簽核
+    cycle = session.get(AppraisalCycle, summary.cycle_id)
+    if cycle is not None and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法簽核")
     if summary.status != SummaryStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"未經主管簽核（current={summary.status.value}）")
     assert_not_self_approval(
@@ -861,6 +875,8 @@ def sign_accounting(
 
     summary.accounting_signed_at = datetime.now(timezone.utc)
     summary.accounting_comment = comment
+    # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+    clear_rejection_state(summary)
     write_summary_log(
         session,
         summary,
@@ -892,6 +908,10 @@ def finalize_summary(
     )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可核定
+    cycle = session.get(AppraisalCycle, summary.cycle_id)
+    if cycle is not None and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法核定")
     if summary.status != SummaryStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"未經行政會計簽核（current={summary.status.value}）")
     assert_not_self_approval(
@@ -905,6 +925,8 @@ def finalize_summary(
 
     summary.finalized_at = datetime.now(timezone.utc)
     summary.finalized_comment = comment
+    # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+    clear_rejection_state(summary)
     write_summary_log(
         session,
         summary,
@@ -950,13 +972,11 @@ def reject_summary(
     （SUPERVISOR_SIGNED → REVIEW / ACCOUNTING_SIGNED → ACCOUNTING /
     FINALIZED → FINALIZE）。
     """
-    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
-    summary = (
-        session.query(AppraisalSummary)
-        .filter(AppraisalSummary.id == summary_id)
-        .with_for_update()
-        .first()
-    )
+    # bug sweep 2026-05-18 P2：with_for_update timing 改為「先 permission check
+    # 再持鎖」。原本路徑會在 403 前先 SELECT...FOR UPDATE 拿 row lock，無權限者
+    # 也能短暫卡住合法簽核者的 commit。改成第一次 unlocked read 做 404/DRAFT/
+    # permission 三道守衛，通過後才 re-fetch with_for_update 做 mutation。
+    summary = session.get(AppraisalSummary, summary_id)
     if summary is None:
         raise HTTPException(404, "summary 不存在")
 
@@ -970,6 +990,18 @@ def reject_summary(
     user_perms = current_user.get("permissions", 0)
     if not has_permission(user_perms, required):
         raise HTTPException(403, f"權限不足，需要 {required.name}")
+
+    # 通過守衛後 re-fetch 並持有 row lock 做 mutation。
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
+    if summary is None:
+        # 罕見 race：剛剛 unlocked read 看到的 row 被別人刪除
+        raise HTTPException(404, "summary 不存在")
 
     # 決定 to_status
     if payload.to_status:
@@ -1024,10 +1056,19 @@ def comment_summary(
     """留言：寫 AppraisalSummaryLog action=COMMENT，status 不變。
 
     入口門檻 APPRAISAL_READ；空 comment 由 Pydantic min_length=1 攔截。
+
+    bug sweep 2026-05-18 P2：comment 是「留言」非「核可」，但仍與 sign/reject 共用
+    同一 log 表 + 同樣會被審計追溯。為保持 audit trail 行為一致，禁止本人對自己
+    的考核 summary 留言（避免自簽自評的灰色地帶；確需發聲改走 reject/sign 對應端點）。
     """
     summary = session.get(AppraisalSummary, summary_id)
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     write_summary_log(
         session,
         summary,
@@ -1087,75 +1128,87 @@ def batch_sign_summaries(
     succeeded: list[int] = []
     failed: list[BatchSignErrorItem] = []
 
+    # bug sweep 2026-05-18 P1-1：每筆獨立 savepoint，避免單筆 DB error
+    # 牽連整批 rollback（PendingRollbackError）。
     for sid in payload.summary_ids:
         try:
-            summary = (
-                session.query(AppraisalSummary)
-                .filter(AppraisalSummary.id == sid)
-                .with_for_update()
-                .first()
-            )
-            if summary is None:
-                failed.append(
-                    BatchSignErrorItem(summary_id=sid, error="summary 不存在")
+            with session.begin_nested():
+                summary = (
+                    session.query(AppraisalSummary)
+                    .filter(AppraisalSummary.id == sid)
+                    .with_for_update()
+                    .first()
                 )
-                continue
-            if summary.cycle_id != cycle_id:
-                failed.append(
-                    BatchSignErrorItem(summary_id=sid, error="不屬於此 cycle")
-                )
-                continue
-            if not can_advance(summary.status, payload.stage):
-                failed.append(
-                    BatchSignErrorItem(
-                        summary_id=sid,
-                        error=(
-                            f"當前 status={summary.status.value} "
-                            f"無法進入 {payload.stage}"
-                        ),
+                if summary is None:
+                    failed.append(
+                        BatchSignErrorItem(summary_id=sid, error="summary 不存在")
                     )
-                )
-                continue
-            try:
-                assert_not_self_approval(
-                    current_user,
-                    summary.participant.employee_id,
-                    doc_label="考核獎金",
-                )
-            except HTTPException as e:
-                failed.append(
-                    BatchSignErrorItem(summary_id=sid, error=f"自簽防呆: {e.detail}")
-                )
-                continue
+                    continue
+                if summary.cycle_id != cycle_id:
+                    failed.append(
+                        BatchSignErrorItem(summary_id=sid, error="不屬於此 cycle")
+                    )
+                    continue
+                if not can_advance(summary.status, payload.stage):
+                    failed.append(
+                        BatchSignErrorItem(
+                            summary_id=sid,
+                            error=(
+                                f"當前 status={summary.status.value} "
+                                f"無法進入 {payload.stage}"
+                            ),
+                        )
+                    )
+                    continue
+                try:
+                    assert_not_self_approval(
+                        current_user,
+                        summary.participant.employee_id,
+                        doc_label="考核獎金",
+                    )
+                except HTTPException as e:
+                    failed.append(
+                        BatchSignErrorItem(
+                            summary_id=sid, error=f"自簽防呆: {e.detail}"
+                        )
+                    )
+                    continue
 
-            from_status = summary.status
-            to_status = advance_target(from_status, payload.stage)
-            summary.status = to_status
+                from_status = summary.status
+                to_status = advance_target(from_status, payload.stage)
+                summary.status = to_status
 
-            now = datetime.now(timezone.utc)
-            if payload.stage == "SUPERVISOR":
-                summary.supervisor_signed_by = actor_user_id
-                summary.supervisor_signed_at = now
-            elif payload.stage == "ACCOUNTING":
-                summary.accounting_signed_by = actor_user_id
-                summary.accounting_signed_at = now
-            else:  # FINALIZE
-                summary.finalized_by = actor_user_id
-                summary.finalized_at = now
+                now = datetime.now(timezone.utc)
+                if payload.stage == "SUPERVISOR":
+                    summary.supervisor_signed_by = actor_user_id
+                    summary.supervisor_signed_at = now
+                elif payload.stage == "ACCOUNTING":
+                    summary.accounting_signed_by = actor_user_id
+                    summary.accounting_signed_at = now
+                else:  # FINALIZE
+                    summary.finalized_by = actor_user_id
+                    summary.finalized_at = now
 
-            write_summary_log(
-                session,
-                summary,
-                action_enum,
-                actor_user_id=actor_user_id,
-                actor_role=actor_role,
-                from_status=from_status,
-                to_status=to_status,
-            )
-            succeeded.append(sid)
+                # bug sweep 2026-05-18 P1-5：簽核進階成功時清舊 rejected_* 殘影
+                clear_rejection_state(summary)
+
+                write_summary_log(
+                    session,
+                    summary,
+                    action_enum,
+                    actor_user_id=actor_user_id,
+                    actor_role=actor_role,
+                    from_status=from_status,
+                    to_status=to_status,
+                )
+                succeeded.append(sid)
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001
+            # savepoint 已自動 rollback；succeeded 內可能含本 sid（先 append
+            # 後拋例外的時序），需移除。
+            if sid in succeeded:
+                succeeded.remove(sid)
             failed.append(BatchSignErrorItem(summary_id=sid, error=str(e)))
 
     session.commit()
@@ -1580,8 +1633,13 @@ def create_scoring_rule(
     - effective_from 不可早於今天
     - rule_config 依 rule_type 二次 validate
     - (item_code, effective_from) UNIQUE 衝突回 409
+
+    bug sweep 2026-05-18 P2：用 today_taipei() 取台灣時區「今日」，避免 server
+    部署在 UTC 時午夜前後的 ±8h 偏差讓 admin 在凌晨無法建明天生效的規則。
     """
-    if payload.effective_from < date.today():
+    from utils.taipei_time import today_taipei
+
+    if payload.effective_from < today_taipei():
         raise HTTPException(422, "effective_from 不可早於今天")
     validated_config = _validate_rule_config(payload.rule_type, payload.rule_config)
     exists = (

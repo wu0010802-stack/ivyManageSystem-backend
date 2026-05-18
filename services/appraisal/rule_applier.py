@@ -257,6 +257,21 @@ def compute_all_deltas(session: Session, cycle) -> dict[tuple[int, str], DeltaRe
     auto_codes = {c.value for c in AUTO_ITEM_CODES}
     manual_codes = {c.value for c in MANUAL_ITEM_CODES}
 
+    # bug sweep 2026-05-18 P2：DB 漏掉某 expected code（migration 失效、admin 誤刪、
+    # effective_from 設未來日尚未生效）會讓該 code 對所有 participant 不產出 delta，
+    # 被靜默當作 0，UI 也不會閃任何警示。改為在迴圈前明確 log warning，
+    # 讓 SRE 從 logs 即可發現「規則資料完整性出問題」。
+    expected_codes = auto_codes | manual_codes
+    missing_codes = expected_codes - rules.keys()
+    for code in sorted(missing_codes):
+        logger.warning(
+            "compute_all_deltas: 找不到 item_code=%s 的有效 rule（cycle_id=%s, "
+            "effective_on=%s）— 該 code 將不產出 delta",
+            code,
+            cycle.id,
+            cycle.base_score_calc_date,
+        )
+
     for status in statuses:
         role = _coerce_role(status.role_group)
         for code, rule in rules.items():

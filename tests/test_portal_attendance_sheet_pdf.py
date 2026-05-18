@@ -95,6 +95,9 @@ class TestPortalAttendanceSheetPdf:
         assert res.headers["content-type"] == "application/pdf"
         assert res.content.startswith(b"%PDF-")
         assert len(res.content) > 1500
+        # P1-22 防回歸：確保 TTF embed（不是 CID stub）。
+        assert b"/FontFile2" in res.content
+        assert b"NotoSansTC" in res.content
 
     def test_unauthenticated_401(self, portal_client):
         client, _sf = portal_client

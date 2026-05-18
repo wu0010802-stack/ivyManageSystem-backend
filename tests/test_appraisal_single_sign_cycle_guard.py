@@ -1,11 +1,8 @@
-"""POST /summaries/{id}/comment 3 case 測試（Phase 2 Task 7）。
+"""單筆 sign endpoints 對 cycle.status != OPEN 須擋（P1-3）。
 
-威脅：留言 endpoint 必須寫 AppraisalSummaryLog action=COMMENT，但 status 不變；
-空 comment 必須擋（Pydantic min_length=1 → 422）；完全沒考核權限 → 403
-（endpoint 入口最低門檻是 APPRAISAL_READ）。
+對齊 batch_sign 既有行為（status code 400），避免封存週期被旁路偷簽。
 
-fixture pattern 沿用 tests/test_appraisal_reject_endpoint.py（SQLite + 真實 JWT
-cookie login）。
+fixture pattern 沿用 test_appraisal_reject_endpoint.py。
 """
 
 from __future__ import annotations
@@ -31,12 +28,10 @@ from models.appraisal import (
     AppraisalCycle,
     AppraisalParticipant,
     AppraisalSummary,
-    AppraisalSummaryLog,
     CycleStatus,
     Grade,
     RoleGroup,
     Semester,
-    SummaryLogAction,
     SummaryStatus,
 )
 from models.auth import User
@@ -48,7 +43,7 @@ from utils.permissions import Permission
 
 @pytest.fixture
 def client_with_db(tmp_path):
-    db_path = tmp_path / "appraisal-comment-endpoint.sqlite"
+    db_path = tmp_path / "appraisal-single-sign-guard.sqlite"
     engine = create_engine(
         f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
     )
@@ -78,7 +73,6 @@ def client_with_db(tmp_path):
 
 
 def _create_user(session, username, perms, password="TempPass123"):
-    """admin 角色、無 employee_id（避免 assert_not_self_approval 誤殺）。"""
     user = User(
         username=username,
         password_hash=hash_password(password),
@@ -99,7 +93,7 @@ def _login(client, username, password="TempPass123"):
     return res
 
 
-def _seed_summary(s, status=SummaryStatus.SUPERVISOR_SIGNED):
+def _seed_summary(s, summary_status, cycle_status=CycleStatus.OPEN):
     emp = Employee(
         employee_id="E001",
         name="王老師",
@@ -115,7 +109,7 @@ def _seed_summary(s, status=SummaryStatus.SUPERVISOR_SIGNED):
         end_date=date(2026, 1, 31),
         base_score_calc_date=date(2025, 9, 15),
         base_score=Decimal("75.6"),
-        status=CycleStatus.OPEN,
+        status=cycle_status,
     )
     s.add(cycle)
     s.flush()
@@ -136,103 +130,94 @@ def _seed_summary(s, status=SummaryStatus.SUPERVISOR_SIGNED):
         total_score=Decimal("75.6"),
         grade=Grade.PASS,
         bonus_amount=Decimal("0"),
-        status=status,
+        status=summary_status,
     )
-    if status in (
+    if summary_status in (
         SummaryStatus.SUPERVISOR_SIGNED,
         SummaryStatus.ACCOUNTING_SIGNED,
         SummaryStatus.FINALIZED,
     ):
         summary.supervisor_signed_by = 999
-    if status in (SummaryStatus.ACCOUNTING_SIGNED, SummaryStatus.FINALIZED):
+    if summary_status in (
+        SummaryStatus.ACCOUNTING_SIGNED,
+        SummaryStatus.FINALIZED,
+    ):
         summary.accounting_signed_by = 999
-    if status == SummaryStatus.FINALIZED:
+    if summary_status == SummaryStatus.FINALIZED:
         summary.finalized_by = 999
     s.add(summary)
     s.commit()
-    return summary
+    return summary, cycle
 
 
-# ===== 3 case =====
-
-
-def test_comment_writes_log_no_status_change(client_with_db):
-    """寫 log action=COMMENT，status 不變。"""
+def test_sign_supervisor_blocked_when_cycle_locked(client_with_db):
+    """cycle.status=LOCKED 時，單筆 sign_supervisor 也該擋（與 batch 一致 400）。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(s, "commenter1", Permission.APPRAISAL_READ)
-        s.commit()
-        summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
-        summary_id = summary.id
-    _login(client, "commenter1")
-    r = client.post(
-        f"/api/appraisal/summaries/{summary_id}/comment",
-        json={"comment": "ok"},
-    )
-    assert r.status_code == 200, r.text
-    with sf() as s:
-        fresh = s.get(AppraisalSummary, summary_id)
-        assert fresh.status == SummaryStatus.SUPERVISOR_SIGNED  # 不變
-        logs = s.query(AppraisalSummaryLog).filter_by(summary_id=summary_id).all()
-        assert len(logs) == 1
-        assert logs[0].action == SummaryLogAction.COMMENT
-        assert logs[0].comment == "ok"
-
-
-def test_comment_empty_rejected(client_with_db):
-    """空 comment → 422（Pydantic min_length=1 攔截）。"""
-    client, sf = client_with_db
-    with sf() as s:
-        _create_user(s, "commenter2", Permission.APPRAISAL_READ)
-        s.commit()
-        summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
-        summary_id = summary.id
-    _login(client, "commenter2")
-    r = client.post(
-        f"/api/appraisal/summaries/{summary_id}/comment",
-        json={"comment": ""},
-    )
-    assert r.status_code == 422
-
-
-def test_comment_requires_read_permission(client_with_db):
-    """完全沒考核權限 → 403（endpoint 入口最低門檻是 APPRAISAL_READ）。"""
-    client, sf = client_with_db
-    with sf() as s:
-        _create_user(s, "noperm", Permission(0))
-        s.commit()
-        summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
-        summary_id = summary.id
-    _login(client, "noperm")
-    r = client.post(
-        f"/api/appraisal/summaries/{summary_id}/comment",
-        json={"comment": "x"},
-    )
-    assert r.status_code == 403
-
-
-def test_comment_blocks_self_approval(client_with_db):
-    """bug sweep 2026-05-18 P2：本人不可對自己的 summary 留言（403）。"""
-    client, sf = client_with_db
-    with sf() as s:
-        summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
-        summary_id = summary.id
-        emp_id = summary.participant.employee_id
-        # 建一個與 summary 同 employee_id 的 user（教師本人）
-        user = User(
-            username="self_user",
-            password_hash=hash_password("TempPass123"),
-            role="teacher",
-            permissions=int(Permission.APPRAISAL_READ),
-            is_active=True,
-            employee_id=emp_id,
+        _create_user(s, "admin1", Permission.APPRAISAL_REVIEW)
+        summary, _ = _seed_summary(
+            s, SummaryStatus.DRAFT, cycle_status=CycleStatus.LOCKED
         )
-        s.add(user)
-        s.commit()
-    _login(client, "self_user")
-    r = client.post(
-        f"/api/appraisal/summaries/{summary_id}/comment",
-        json={"comment": "self"},
+        sid = summary.id
+    _login(client, "admin1")
+    r = client.post(f"/api/appraisal/summaries/{sid}/sign_supervisor")
+    assert r.status_code == 400, r.text
+    assert (
+        "LOCKED" in r.json().get("detail", "")
+        or "封存" in r.json().get("detail", "")
+        or "鎖" in r.json().get("detail", "")
     )
-    assert r.status_code == 403, r.text
-    assert "自行簽核" in r.json().get("detail", "")
+
+
+def test_sign_accounting_blocked_when_cycle_locked(client_with_db):
+    client, sf = client_with_db
+    with sf() as s:
+        _create_user(s, "admin1", Permission.APPRAISAL_ACCOUNTING)
+        summary, _ = _seed_summary(
+            s, SummaryStatus.SUPERVISOR_SIGNED, cycle_status=CycleStatus.LOCKED
+        )
+        sid = summary.id
+    _login(client, "admin1")
+    r = client.post(f"/api/appraisal/summaries/{sid}/sign_accounting")
+    assert r.status_code == 400, r.text
+
+
+def test_finalize_blocked_when_cycle_locked(client_with_db):
+    client, sf = client_with_db
+    with sf() as s:
+        _create_user(s, "admin1", Permission.APPRAISAL_FINALIZE)
+        summary, _ = _seed_summary(
+            s, SummaryStatus.ACCOUNTING_SIGNED, cycle_status=CycleStatus.LOCKED
+        )
+        sid = summary.id
+    _login(client, "admin1")
+    r = client.post(f"/api/appraisal/summaries/{sid}/finalize")
+    assert r.status_code == 400, r.text
+
+
+def test_recompute_blocked_when_cycle_locked(client_with_db):
+    """recompute_summaries 也應守 cycle.status。"""
+    client, sf = client_with_db
+    with sf() as s:
+        _create_user(s, "admin1", Permission.APPRAISAL_EVENT_WRITE)
+        _, cycle = _seed_summary(
+            s, SummaryStatus.DRAFT, cycle_status=CycleStatus.LOCKED
+        )
+        cycle_id = cycle.id
+    _login(client, "admin1")
+    r = client.post(f"/api/appraisal/cycles/{cycle_id}/summaries:recompute")
+    assert r.status_code == 400, r.text
+
+
+def test_sign_supervisor_still_works_when_cycle_open(client_with_db):
+    """sanity: cycle OPEN 時單筆 sign 正常通過。"""
+    client, sf = client_with_db
+    with sf() as s:
+        _create_user(s, "admin1", Permission.APPRAISAL_REVIEW)
+        summary, _ = _seed_summary(
+            s, SummaryStatus.DRAFT, cycle_status=CycleStatus.OPEN
+        )
+        sid = summary.id
+    _login(client, "admin1")
+    r = client.post(f"/api/appraisal/summaries/{sid}/sign_supervisor")
+    assert r.status_code == 200, r.text
