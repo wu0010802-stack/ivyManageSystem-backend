@@ -209,3 +209,30 @@ def test_comment_requires_read_permission(client_with_db):
         json={"comment": "x"},
     )
     assert r.status_code == 403
+
+
+def test_comment_blocks_self_approval(client_with_db):
+    """bug sweep 2026-05-18 P2：本人不可對自己的 summary 留言（403）。"""
+    client, sf = client_with_db
+    with sf() as s:
+        summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
+        summary_id = summary.id
+        emp_id = summary.participant.employee_id
+        # 建一個與 summary 同 employee_id 的 user（教師本人）
+        user = User(
+            username="self_user",
+            password_hash=hash_password("TempPass123"),
+            role="teacher",
+            permissions=int(Permission.APPRAISAL_READ),
+            is_active=True,
+            employee_id=emp_id,
+        )
+        s.add(user)
+        s.commit()
+    _login(client, "self_user")
+    r = client.post(
+        f"/api/appraisal/summaries/{summary_id}/comment",
+        json={"comment": "self"},
+    )
+    assert r.status_code == 403, r.text
+    assert "自行簽核" in r.json().get("detail", "")

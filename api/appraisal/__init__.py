@@ -972,13 +972,11 @@ def reject_summary(
     （SUPERVISOR_SIGNED → REVIEW / ACCOUNTING_SIGNED → ACCOUNTING /
     FINALIZED → FINALIZE）。
     """
-    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
-    summary = (
-        session.query(AppraisalSummary)
-        .filter(AppraisalSummary.id == summary_id)
-        .with_for_update()
-        .first()
-    )
+    # bug sweep 2026-05-18 P2：with_for_update timing 改為「先 permission check
+    # 再持鎖」。原本路徑會在 403 前先 SELECT...FOR UPDATE 拿 row lock，無權限者
+    # 也能短暫卡住合法簽核者的 commit。改成第一次 unlocked read 做 404/DRAFT/
+    # permission 三道守衛，通過後才 re-fetch with_for_update 做 mutation。
+    summary = session.get(AppraisalSummary, summary_id)
     if summary is None:
         raise HTTPException(404, "summary 不存在")
 
@@ -992,6 +990,18 @@ def reject_summary(
     user_perms = current_user.get("permissions", 0)
     if not has_permission(user_perms, required):
         raise HTTPException(403, f"權限不足，需要 {required.name}")
+
+    # 通過守衛後 re-fetch 並持有 row lock 做 mutation。
+    # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
+    summary = (
+        session.query(AppraisalSummary)
+        .filter(AppraisalSummary.id == summary_id)
+        .with_for_update()
+        .first()
+    )
+    if summary is None:
+        # 罕見 race：剛剛 unlocked read 看到的 row 被別人刪除
+        raise HTTPException(404, "summary 不存在")
 
     # 決定 to_status
     if payload.to_status:
@@ -1046,10 +1056,19 @@ def comment_summary(
     """留言：寫 AppraisalSummaryLog action=COMMENT，status 不變。
 
     入口門檻 APPRAISAL_READ；空 comment 由 Pydantic min_length=1 攔截。
+
+    bug sweep 2026-05-18 P2：comment 是「留言」非「核可」，但仍與 sign/reject 共用
+    同一 log 表 + 同樣會被審計追溯。為保持 audit trail 行為一致，禁止本人對自己
+    的考核 summary 留言（避免自簽自評的灰色地帶；確需發聲改走 reject/sign 對應端點）。
     """
     summary = session.get(AppraisalSummary, summary_id)
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    assert_not_self_approval(
+        current_user,
+        summary.participant.employee_id,
+        doc_label="考核獎金",
+    )
     write_summary_log(
         session,
         summary,
@@ -1614,8 +1633,13 @@ def create_scoring_rule(
     - effective_from 不可早於今天
     - rule_config 依 rule_type 二次 validate
     - (item_code, effective_from) UNIQUE 衝突回 409
+
+    bug sweep 2026-05-18 P2：用 today_taipei() 取台灣時區「今日」，避免 server
+    部署在 UTC 時午夜前後的 ±8h 偏差讓 admin 在凌晨無法建明天生效的規則。
     """
-    if payload.effective_from < date.today():
+    from utils.taipei_time import today_taipei
+
+    if payload.effective_from < today_taipei():
         raise HTTPException(422, "effective_from 不可早於今天")
     validated_config = _validate_rule_config(payload.rule_type, payload.rule_config)
     exists = (

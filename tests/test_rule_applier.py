@@ -590,3 +590,106 @@ def test_after_class_rate_skipped_for_cook(test_db_session, monkeypatch):
         assert (
             dr.note == "本角色不適用"
         ), f"{code} 應標記本角色不適用，實際 note={dr.note!r}"
+
+
+def test_compute_all_deltas_warns_on_missing_rule(test_db_session, monkeypatch, caplog):
+    """bug sweep 2026-05-18 P2：DB 漏 expected rule code 時應 log warning，
+    而非靜默讓該 code 不產出 delta。"""
+    import logging
+    from services.appraisal import status_aggregator as agg
+    from services.appraisal.status_aggregator import (
+        ActivityRateAggregate,
+        AttendanceAggregate,
+        ClassRetentionAggregate,
+        DisciplinaryAggregate,
+        ParticipantStatus,
+    )
+
+    s = test_db_session
+    cycle = AppraisalCycle(
+        academic_year=114,
+        semester=Semester.FIRST,
+        start_date=date(2025, 8, 1),
+        end_date=date(2026, 1, 31),
+        base_score_calc_date=date(2025, 9, 15),
+        base_score=Decimal("75.6"),
+        status=CycleStatus.OPEN,
+    )
+    s.add(cycle)
+    s.flush()
+    p = AppraisalParticipant(
+        cycle_id=cycle.id,
+        employee_id=1,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+        is_excluded=False,
+    )
+    s.add(p)
+    # 故意只插一條 rule，讓其他 13 條 expected codes 缺席
+    s.add(
+        AppraisalScoringRule(
+            item_code="LATE_EARLY",
+            effective_from=date(2025, 1, 1),
+            rule_type="PER_UNIT",
+            rule_config={"per_unit_delta": -0.25},
+        )
+    )
+    s.flush()
+
+    fake_status = ParticipantStatus(
+        participant_id=p.id,
+        employee_id=1,
+        employee_name="王雅玲",
+        role_group=RoleGroup.HEAD_TEACHER.value,
+        classroom_id=10,
+        attendance=AttendanceAggregate(
+            employee_id=1,
+            late_count=0,
+            early_leave_count=0,
+            missing_punch_count=0,
+            leave_days=0,
+            suggested_score_delta=Decimal("0"),
+        ),
+        retention=ClassRetentionAggregate(
+            employee_id=1,
+            classroom_id=10,
+            classroom_name="A",
+            initial_count=20,
+            final_count=20,
+            retention_rate=Decimal("100"),
+            suggested_score_delta=Decimal("0"),
+        ),
+        activity=ActivityRateAggregate(
+            employee_id=1,
+            classroom_id=10,
+            enrolled_students=20,
+            registered_for_activity=18,
+            activity_rate=Decimal("90"),
+            suggested_score_delta=Decimal("0"),
+        ),
+        disciplinary=DisciplinaryAggregate(
+            employee_id=1,
+            warning_count=0,
+            minor_count=0,
+            major_count=0,
+            actions=[],
+            suggested_score_delta=Decimal("0"),
+        ),
+        is_participant=True,
+        hire_months_in_cycle=Decimal("6"),
+    )
+    monkeypatch.setattr(agg, "aggregate_cycle_status", lambda session, c: [fake_status])
+
+    with caplog.at_level(logging.WARNING, logger="services.appraisal.rule_applier"):
+        compute_all_deltas(s, cycle)
+
+    # 應該至少出現幾個「找不到 item_code=...」的 warning（13 個缺席）
+    missing_warnings = [
+        rec
+        for rec in caplog.records
+        if "找不到 item_code" in rec.message or "找不到 item_code" in str(rec.msg)
+    ]
+    assert len(missing_warnings) >= 10, (
+        f"expected ≥10 missing-rule warnings, got {len(missing_warnings)}; "
+        f"messages: {[r.getMessage() for r in caplog.records]}"
+    )
