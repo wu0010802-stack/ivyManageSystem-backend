@@ -32,6 +32,10 @@ data/payroll.db
 *.log
 backend.log
 
+# OpenAPI dump（scripts/dump_openapi.py 產出）：含全 30+ router schema，
+# 是給前端 codegen 用的本地產物，commit 進 repo 等於對外洩漏完整 admin API surface
+openapi.json
+
 # Uploads (user data)
 # 所有使用者上傳檔案集中在 data/uploads/<module>/
 # 舊 uploads/ 已棄用，保留 ignore 規則避免誤 commit 歷史遺留目錄
