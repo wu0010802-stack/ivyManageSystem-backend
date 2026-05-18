@@ -38,6 +38,7 @@ from .parent_messages import (
     init_parent_messages_line_service,
 )
 from .search import router as search_router
+from .appraisal import router as appraisal_router
 
 router = APIRouter(
     prefix="/api/portal",
@@ -70,6 +71,7 @@ router.include_router(home_router, tags=["portal-home"])
 router.include_router(medications_router, tags=["portal-medications"])
 router.include_router(class_hub_router, tags=["portal-class-hub"])
 router.include_router(search_router)
+router.include_router(appraisal_router, tags=["portal-appraisal"])
 
 
 def init_portal_notify_services(line_service):
