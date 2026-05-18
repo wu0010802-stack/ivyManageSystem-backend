@@ -724,6 +724,9 @@ def recompute_summaries(
     cycle = session.get(AppraisalCycle, cycle_id)
     if cycle is None:
         raise HTTPException(404, "週期不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可重算（與 batch_sign 守衛一致）
+    if cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法重算")
     rates_rows = session.query(AppraisalBonusRate).all()
     bonus_lookup = BonusRateLookup(
         rates={
@@ -802,6 +805,10 @@ def sign_supervisor(
     )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可簽核（與 batch_sign 守衛一致）
+    cycle = session.get(AppraisalCycle, summary.cycle_id)
+    if cycle is not None and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法簽核")
     if summary.status != SummaryStatus.DRAFT:
         raise HTTPException(400, f"非 DRAFT 狀態（current={summary.status.value}）")
     assert_not_self_approval(
@@ -848,6 +855,10 @@ def sign_accounting(
     )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可簽核
+    cycle = session.get(AppraisalCycle, summary.cycle_id)
+    if cycle is not None and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法簽核")
     if summary.status != SummaryStatus.SUPERVISOR_SIGNED:
         raise HTTPException(400, f"未經主管簽核（current={summary.status.value}）")
     assert_not_self_approval(
@@ -892,6 +903,10 @@ def finalize_summary(
     )
     if summary is None:
         raise HTTPException(404, "summary 不存在")
+    # bug sweep 2026-05-18 P1-3：cycle 非 OPEN 不可核定
+    cycle = session.get(AppraisalCycle, summary.cycle_id)
+    if cycle is not None and cycle.status != CycleStatus.OPEN:
+        raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法核定")
     if summary.status != SummaryStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"未經行政會計簽核（current={summary.status.value}）")
     assert_not_self_approval(
