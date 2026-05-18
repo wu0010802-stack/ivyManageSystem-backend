@@ -8,6 +8,11 @@
 
 字型：Noto Sans TC Regular（Google Fonts，SIL OFL 授權，可商用），
     bundled 於 assets/fonts/NotoSansTC-Regular.ttf。
+
+子集化（subsetted）：原始 Noto Sans TC Regular VF 為 11.9 MB（包含全 CJK Ext B + variable
+    font axes 等本系統用不到的資料）。bundle 版為 pyftsubset 處理後的 5.7 MB 子集，
+    保留範圍涵蓋全 BMP CJK（U+4E00-9FFF + Ext A）含罕用人名字（例：凃/淼/婭/瑄）。
+    重 subset 指令見 assets/fonts/README.md。
 """
 
 from __future__ import annotations
