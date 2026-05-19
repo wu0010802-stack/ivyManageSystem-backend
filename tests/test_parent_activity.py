@@ -51,6 +51,22 @@ def activity_client(tmp_path):
     Base.metadata.create_all(db_engine)
     app = FastAPI()
     app.include_router(parent_portal_router)
+
+    from api.parent_portal._dependencies import get_parent_db
+    from tests._parent_rls_test_utils import (
+        make_sqlite_parent_db_override,
+        register_sqlite_parent_rls_udfs,
+    )
+
+    # Phase 1f activity.py uses func.public_count_enrolled(course_id) which is
+    # a Postgres SECURITY DEFINER function. Provide an inline SQLite UDF so
+    # SQLite-backed tests can run the same code path.
+    register_sqlite_parent_rls_udfs(db_engine)
+
+    app.dependency_overrides[get_parent_db] = make_sqlite_parent_db_override(
+        session_factory
+    )
+
     with TestClient(app) as client:
         yield client, session_factory
     base_module._engine = old_engine
@@ -58,7 +74,9 @@ def activity_client(tmp_path):
     db_engine.dispose()
 
 
-def _setup_family(session, *, line_user_id="UA", student_name="阿活", classroom_name="活力班"):
+def _setup_family(
+    session, *, line_user_id="UA", student_name="阿活", classroom_name="活力班"
+):
     user = User(
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
@@ -203,7 +221,9 @@ class TestRegister:
             user_c, _, student_c, _ = _setup_family(
                 session, line_user_id="UC", student_name="C", classroom_name="C班"
             )
-            course = _create_course(session, name="熱門課", capacity=2, allow_waitlist=True)
+            course = _create_course(
+                session, name="熱門課", capacity=2, allow_waitlist=True
+            )
             session.commit()
             tokens = [_parent_token(u) for u in (user_a, user_b, user_c)]
             student_ids = [student_a.id, student_b.id, student_c.id]

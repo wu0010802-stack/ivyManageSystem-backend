@@ -47,6 +47,14 @@ def parent_event_client(tmp_path):
 
     app = FastAPI()
     app.include_router(parent_portal_router)
+
+    from api.parent_portal._dependencies import get_parent_db
+    from tests._parent_rls_test_utils import make_sqlite_parent_db_override
+
+    app.dependency_overrides[get_parent_db] = make_sqlite_parent_db_override(
+        session_factory
+    )
+
     with TestClient(app) as client:
         yield client, session_factory
 
@@ -115,9 +123,7 @@ def _create_announcement(
     session.add(ann)
     session.flush()
     session.add(
-        AnnouncementParentRecipient(
-            announcement_id=ann.id, scope=scope, **scope_kwargs
-        )
+        AnnouncementParentRecipient(announcement_id=ann.id, scope=scope, **scope_kwargs)
     )
     session.flush()
     return ann
@@ -262,9 +268,11 @@ class TestAnnouncementRead:
         assert resp1.status_code == 200
         assert resp2.status_code == 200
         with session_factory() as session:
-            reads = session.query(AnnouncementParentRead).filter(
-                AnnouncementParentRead.user_id == user_id
-            ).all()
+            reads = (
+                session.query(AnnouncementParentRead)
+                .filter(AnnouncementParentRead.user_id == user_id)
+                .all()
+            )
             assert len(reads) == 1  # 冪等
 
     def test_unread_count_decreases_after_read(self, parent_event_client):
@@ -277,9 +285,7 @@ class TestAnnouncementRead:
             ann1 = _create_announcement(
                 session, title="A", author_id=author.id, scope="all"
             )
-            _create_announcement(
-                session, title="B", author_id=author.id, scope="all"
-            )
+            _create_announcement(session, title="B", author_id=author.id, scope="all")
             session.commit()
             token = _make_token(user)
             ann1_id = ann1.id
@@ -308,8 +314,14 @@ class TestAnnouncementRead:
             )
             author = _create_employee_author(session)
             ann = _create_announcement(
-                session, title="只給 B 班", author_id=author.id, scope="guardian",
-                guardian_id=session.query(Guardian).filter(Guardian.user_id == user_b.id).first().id,
+                session,
+                title="只給 B 班",
+                author_id=author.id,
+                scope="guardian",
+                guardian_id=session.query(Guardian)
+                .filter(Guardian.user_id == user_b.id)
+                .first()
+                .id,
             )
             session.commit()
             token_a = _make_token(user_a)
@@ -388,9 +400,11 @@ class TestEventAck:
         assert resp2.status_code == 200
         assert resp2.json()["already_acknowledged"] is True
         with session_factory() as session:
-            acks = session.query(EventAcknowledgment).filter(
-                EventAcknowledgment.user_id == user_id
-            ).all()
+            acks = (
+                session.query(EventAcknowledgment)
+                .filter(EventAcknowledgment.user_id == user_id)
+                .all()
+            )
             assert len(acks) == 1
 
     def test_ack_other_child_returns_403(self, parent_event_client):

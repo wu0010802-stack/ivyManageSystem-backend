@@ -15,13 +15,16 @@ from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-from models.database import ParentNotificationPreference, get_session
+from models.database import ParentNotificationPreference
 from models.parent_notification import (
     PARENT_NOTIFICATION_CHANNELS,
     PARENT_NOTIFICATION_EVENT_TYPES,
 )
 from utils.auth import require_parent_role
+
+from ._dependencies import get_parent_db
 
 logger = logging.getLogger(__name__)
 
@@ -45,21 +48,20 @@ def _all_event_types_default(prefs_rows: list) -> dict:
 
 
 @router.get("/preferences")
-def get_preferences(current_user: dict = Depends(require_parent_role())):
+def get_preferences(
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        rows = (
-            session.query(ParentNotificationPreference)
-            .filter(
-                ParentNotificationPreference.user_id == user_id,
-                ParentNotificationPreference.channel == "line",
-            )
-            .all()
+    rows = (
+        session.query(ParentNotificationPreference)
+        .filter(
+            ParentNotificationPreference.user_id == user_id,
+            ParentNotificationPreference.channel == "line",
         )
-        return {"channel": "line", "prefs": _all_event_types_default(rows)}
-    finally:
-        session.close()
+        .all()
+    )
+    return {"channel": "line", "prefs": _all_event_types_default(rows)}
 
 
 @router.put("/preferences")
@@ -67,6 +69,7 @@ def update_preferences(
     payload: PreferenceUpdate,
     request: Request,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """整批 upsert（缺的 event_type 不動，存在的覆寫）。"""
     user_id = current_user["user_id"]
@@ -80,46 +83,42 @@ def update_preferences(
             detail=f"不支援的 event_type：{unknown}；可選值：{list(PARENT_NOTIFICATION_EVENT_TYPES)}",
         )
 
-    session = get_session()
-    try:
-        for ev, enabled in payload.prefs.items():
-            existing = (
-                session.query(ParentNotificationPreference)
-                .filter(
-                    ParentNotificationPreference.user_id == user_id,
-                    ParentNotificationPreference.event_type == ev,
-                    ParentNotificationPreference.channel == "line",
-                )
-                .first()
-            )
-            if existing:
-                existing.enabled = bool(enabled)
-                existing.updated_at = datetime.now()
-            else:
-                session.add(
-                    ParentNotificationPreference(
-                        user_id=user_id,
-                        event_type=ev,
-                        channel="line",
-                        enabled=bool(enabled),
-                    )
-                )
-        session.commit()
-
-        request.state.audit_entity_id = str(user_id)
-        request.state.audit_summary = f"家長更新通知偏好：{payload.prefs}"
-
-        rows = (
+    for ev, enabled in payload.prefs.items():
+        existing = (
             session.query(ParentNotificationPreference)
             .filter(
                 ParentNotificationPreference.user_id == user_id,
+                ParentNotificationPreference.event_type == ev,
                 ParentNotificationPreference.channel == "line",
             )
-            .all()
+            .first()
         )
-        return {"channel": "line", "prefs": _all_event_types_default(rows)}
-    finally:
-        session.close()
+        if existing:
+            existing.enabled = bool(enabled)
+            existing.updated_at = datetime.now()
+        else:
+            session.add(
+                ParentNotificationPreference(
+                    user_id=user_id,
+                    event_type=ev,
+                    channel="line",
+                    enabled=bool(enabled),
+                )
+            )
+    session.flush()
+
+    request.state.audit_entity_id = str(user_id)
+    request.state.audit_summary = f"家長更新通知偏好：{payload.prefs}"
+
+    rows = (
+        session.query(ParentNotificationPreference)
+        .filter(
+            ParentNotificationPreference.user_id == user_id,
+            ParentNotificationPreference.channel == "line",
+        )
+        .all()
+    )
+    return {"channel": "line", "prefs": _all_event_types_default(rows)}
 
 
 # ── Service helper（給 line_service.should_push_to_parent 用） ──────────────

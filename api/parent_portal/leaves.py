@@ -21,13 +21,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
 from models.database import (
     Attachment,
     Guardian,
     StudentLeaveRequest,
     StudentAttendance,
-    get_session,
 )
 from models.portfolio import ATTACHMENT_OWNER_STUDENT_LEAVE
 from models.student_leave import LEAVE_TYPES
@@ -46,6 +46,7 @@ from utils.portfolio_storage import (
     is_heic_extension,
 )
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
 
 logger = logging.getLogger(__name__)
@@ -160,100 +161,93 @@ def create_leave(
     payload: CreateLeaveRequest,
     request: Request,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
     _validate_date_range(payload)
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, payload.student_id, for_write=True)
-        _check_overlap(
-            session, payload.student_id, payload.start_date, payload.end_date
-        )
+    _assert_student_owned(session, user_id, payload.student_id, for_write=True)
+    _check_overlap(session, payload.student_id, payload.start_date, payload.end_date)
 
-        guardian = (
-            session.query(Guardian)
-            .filter(
-                Guardian.user_id == user_id,
-                Guardian.student_id == payload.student_id,
-                Guardian.deleted_at.is_(None),
-            )
-            .first()
+    guardian = (
+        session.query(Guardian)
+        .filter(
+            Guardian.user_id == user_id,
+            Guardian.student_id == payload.student_id,
+            Guardian.deleted_at.is_(None),
         )
-        item = StudentLeaveRequest(
-            student_id=payload.student_id,
-            applicant_user_id=user_id,
-            applicant_guardian_id=guardian.id if guardian else None,
-            leave_type=payload.leave_type,
-            start_date=payload.start_date,
-            end_date=payload.end_date,
-            reason=(payload.reason or "").strip() or None,
-            status="approved",
-            reviewed_at=datetime.now(),
-            reviewed_by=None,
-        )
-        session.add(item)
-        session.flush()
-        apply_attendance_for_leave(session, item, recorded_by=None)
-        session.commit()
-        session.refresh(item)
-        request.state.audit_entity_id = str(item.id)
-        request.state.audit_summary = (
-            f"家長提交請假：leave_id={item.id} student_id={item.student_id} "
-            f"period={item.start_date}~{item.end_date} type={item.leave_type}"
-        )
-        logger.info(
-            "家長提交請假：leave_id=%d student_id=%d parent_user=%d type=%s",
-            item.id,
-            item.student_id,
-            user_id,
-            item.leave_type,
-        )
-        return _serialize(item)
-    finally:
-        session.close()
+        .first()
+    )
+    item = StudentLeaveRequest(
+        student_id=payload.student_id,
+        applicant_user_id=user_id,
+        applicant_guardian_id=guardian.id if guardian else None,
+        leave_type=payload.leave_type,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        reason=(payload.reason or "").strip() or None,
+        status="approved",
+        reviewed_at=datetime.now(),
+        reviewed_by=None,
+    )
+    session.add(item)
+    session.flush()
+    apply_attendance_for_leave(session, item, recorded_by=None)
+    # NOTE: dep owns the commit — handler must NOT call session.commit() or
+    # SET LOCAL app.current_user_id is lost and subsequent queries get 0 rows.
+    session.flush()
+    session.refresh(item)
+    request.state.audit_entity_id = str(item.id)
+    request.state.audit_summary = (
+        f"家長提交請假：leave_id={item.id} student_id={item.student_id} "
+        f"period={item.start_date}~{item.end_date} type={item.leave_type}"
+    )
+    logger.info(
+        "家長提交請假：leave_id=%d student_id=%d parent_user=%d type=%s",
+        item.id,
+        item.student_id,
+        user_id,
+        item.leave_type,
+    )
+    return _serialize(item)
 
 
 @router.get("")
-def list_leaves(current_user: dict = Depends(require_parent_role())):
+def list_leaves(
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _, student_ids = _get_parent_student_ids(session, user_id)
-        if not student_ids:
-            return {"items": [], "total": 0}
-        rows = (
-            session.query(StudentLeaveRequest)
-            .filter(StudentLeaveRequest.student_id.in_(student_ids))
-            .order_by(StudentLeaveRequest.created_at.desc())
-            .all()
-        )
-        return {"items": [_serialize(r) for r in rows], "total": len(rows)}
-    finally:
-        session.close()
+    _, student_ids = _get_parent_student_ids(session, user_id)
+    if not student_ids:
+        return {"items": [], "total": 0}
+    rows = (
+        session.query(StudentLeaveRequest)
+        .filter(StudentLeaveRequest.student_id.in_(student_ids))
+        .order_by(StudentLeaveRequest.created_at.desc())
+        .all()
+    )
+    return {"items": [_serialize(r) for r in rows], "total": len(rows)}
 
 
 @router.get("/{leave_id}")
 def get_leave(
     leave_id: int,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        # F-004：「申請不存在」與「不屬於本家庭」collapse 為單一 403，
-        # 避免透過 status code 差異枚舉 StudentLeaveRequest id 存在性。
-        _, owned_student_ids = _get_parent_student_ids(session, user_id)
-        item = (
-            session.query(StudentLeaveRequest)
-            .filter(StudentLeaveRequest.id == leave_id)
-            .first()
-        )
-        if item is None or item.student_id not in owned_student_ids:
-            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        attachments = _load_leave_attachments(session, item.id)
-        return _serialize(item, attachments)
-    finally:
-        session.close()
+    # F-004：「申請不存在」與「不屬於本家庭」collapse 為單一 403，
+    # 避免透過 status code 差異枚舉 StudentLeaveRequest id 存在性。
+    _, owned_student_ids = _get_parent_student_ids(session, user_id)
+    item = (
+        session.query(StudentLeaveRequest)
+        .filter(StudentLeaveRequest.id == leave_id)
+        .first()
+    )
+    if item is None or item.student_id not in owned_student_ids:
+        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+    attachments = _load_leave_attachments(session, item.id)
+    return _serialize(item, attachments)
 
 
 @router.post("/{leave_id}/attachments", status_code=201)
@@ -262,6 +256,7 @@ async def upload_leave_attachment(
     request: Request,
     file: UploadFile = File(...),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """為已建立的請假申請上傳佐證檔案（診斷證明、活動行程等）。
 
@@ -287,59 +282,54 @@ async def upload_leave_attachment(
 
     from utils.portfolio_storage import get_portfolio_storage
 
-    session = get_session()
-    try:
-        _, owned_student_ids = _get_parent_student_ids(session, user_id)
-        item = (
-            session.query(StudentLeaveRequest)
-            .filter(StudentLeaveRequest.id == leave_id)
-            .first()
+    _, owned_student_ids = _get_parent_student_ids(session, user_id)
+    item = (
+        session.query(StudentLeaveRequest)
+        .filter(StudentLeaveRequest.id == leave_id)
+        .first()
+    )
+    if item is None or item.student_id not in owned_student_ids:
+        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+    today = date.today()
+    if not (item.status == "approved" and item.start_date > today):
+        raise HTTPException(
+            status_code=400,
+            detail="請假已成立或已開始，無法新增/刪除附件",
         )
-        if item is None or item.student_id not in owned_student_ids:
-            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        today = date.today()
-        if not (item.status == "approved" and item.start_date > today):
-            raise HTTPException(
-                status_code=400,
-                detail="請假已成立或已開始，無法新增/刪除附件",
-            )
 
-        storage = get_portfolio_storage()
-        stored = storage.put_attachment(content, ext)
+    storage = get_portfolio_storage()
+    stored = storage.put_attachment(content, ext)
 
-        # P1-9：sanitize 後再入庫，與 medications / events 對齊。
-        safe_name = safe_attachment_filename(filename, ext)
-        att = Attachment(
-            owner_type=ATTACHMENT_OWNER_STUDENT_LEAVE,
-            owner_id=item.id,
-            storage_key=stored.storage_key,
-            display_key=stored.display_key,
-            thumb_key=stored.thumb_key,
-            original_filename=safe_name,
-            mime_type=stored.mime_type,
-            size_bytes=len(content),
-            uploaded_by=user_id,
-        )
-        session.add(att)
-        session.flush()
-        session.refresh(att)
-        session.commit()
+    # P1-9：sanitize 後再入庫，與 medications / events 對齊。
+    safe_name = safe_attachment_filename(filename, ext)
+    att = Attachment(
+        owner_type=ATTACHMENT_OWNER_STUDENT_LEAVE,
+        owner_id=item.id,
+        storage_key=stored.storage_key,
+        display_key=stored.display_key,
+        thumb_key=stored.thumb_key,
+        original_filename=safe_name,
+        mime_type=stored.mime_type,
+        size_bytes=len(content),
+        uploaded_by=user_id,
+    )
+    session.add(att)
+    session.flush()
+    session.refresh(att)
 
-        request.state.audit_entity_id = str(item.id)
-        request.state.audit_summary = (
-            f"家長上傳請假附件：leave_id={item.id} "
-            f"attachment_id={att.id} filename={filename} size={len(content)}B"
-        )
-        logger.info(
-            "家長上傳請假附件：leave_id=%d attachment_id=%d size=%d parent_user=%d",
-            item.id,
-            att.id,
-            len(content),
-            user_id,
-        )
-        return _attachment_to_dict(att)
-    finally:
-        session.close()
+    request.state.audit_entity_id = str(item.id)
+    request.state.audit_summary = (
+        f"家長上傳請假附件：leave_id={item.id} "
+        f"attachment_id={att.id} filename={filename} size={len(content)}B"
+    )
+    logger.info(
+        "家長上傳請假附件：leave_id=%d attachment_id=%d size=%d parent_user=%d",
+        item.id,
+        att.id,
+        len(content),
+        user_id,
+    )
+    return _attachment_to_dict(att)
 
 
 @router.delete("/{leave_id}/attachments/{attachment_id}")
@@ -348,48 +338,45 @@ def delete_leave_attachment(
     attachment_id: int,
     request: Request,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """軟刪除請假附件；同樣僅 status='approved' 且 start_date > 今天時可刪。"""
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _, owned_student_ids = _get_parent_student_ids(session, user_id)
-        item = (
-            session.query(StudentLeaveRequest)
-            .filter(StudentLeaveRequest.id == leave_id)
-            .first()
+    _, owned_student_ids = _get_parent_student_ids(session, user_id)
+    item = (
+        session.query(StudentLeaveRequest)
+        .filter(StudentLeaveRequest.id == leave_id)
+        .first()
+    )
+    if item is None or item.student_id not in owned_student_ids:
+        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+    today = date.today()
+    if not (item.status == "approved" and item.start_date > today):
+        raise HTTPException(
+            status_code=400,
+            detail="請假已成立或已開始，無法新增/刪除附件",
         )
-        if item is None or item.student_id not in owned_student_ids:
-            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        today = date.today()
-        if not (item.status == "approved" and item.start_date > today):
-            raise HTTPException(
-                status_code=400,
-                detail="請假已成立或已開始，無法新增/刪除附件",
-            )
 
-        att = (
-            session.query(Attachment)
-            .filter(
-                Attachment.id == attachment_id,
-                Attachment.owner_type == ATTACHMENT_OWNER_STUDENT_LEAVE,
-                Attachment.owner_id == item.id,
-                Attachment.deleted_at.is_(None),
-            )
-            .first()
+    att = (
+        session.query(Attachment)
+        .filter(
+            Attachment.id == attachment_id,
+            Attachment.owner_type == ATTACHMENT_OWNER_STUDENT_LEAVE,
+            Attachment.owner_id == item.id,
+            Attachment.deleted_at.is_(None),
         )
-        if not att:
-            raise HTTPException(status_code=404, detail="附件不存在")
-        att.deleted_at = datetime.now()
-        session.commit()
+        .first()
+    )
+    if not att:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    att.deleted_at = datetime.now()
+    session.flush()
 
-        request.state.audit_entity_id = str(item.id)
-        request.state.audit_summary = (
-            f"家長刪除請假附件：leave_id={item.id} attachment_id={att.id}"
-        )
-        return {"status": "ok"}
-    finally:
-        session.close()
+    request.state.audit_entity_id = str(item.id)
+    request.state.audit_summary = (
+        f"家長刪除請假附件：leave_id={item.id} attachment_id={att.id}"
+    )
+    return {"status": "ok"}
 
 
 @router.post("/{leave_id}/cancel")
@@ -397,42 +384,37 @@ def cancel_leave(
     leave_id: int,
     request: Request,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """僅 status='approved' 且 start_date > today 可取消，並反向清除 attendance。"""
     user_id = current_user["user_id"]
     today = date.today()
-    session = get_session()
-    try:
-        # F-004：「申請不存在」與「不屬於本家庭」collapse 為單一 403。
-        _, owned_student_ids = _get_parent_student_ids(session, user_id)
-        item = (
-            session.query(StudentLeaveRequest)
-            .filter(StudentLeaveRequest.id == leave_id)
-            .first()
-        )
-        if item is None or item.student_id not in owned_student_ids:
-            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-        if item.status != "approved":
-            raise HTTPException(
-                status_code=400, detail=f"狀態為 {item.status}，無法取消"
-            )
-        if item.start_date <= today:
-            raise HTTPException(status_code=400, detail="請假期間已開始，無法取消")
-        affected = revert_attendance_for_leave(session, item)
-        item.status = "cancelled"
-        item.updated_at = datetime.now()
-        session.commit()
-        request.state.audit_entity_id = str(item.id)
-        request.state.audit_summary = (
-            f"家長取消請假：leave_id={item.id} "
-            f"period={item.start_date}~{item.end_date} reverted_attendance={affected}"
-        )
-        logger.info(
-            "家長取消請假：leave_id=%d reverted_attendance=%d parent_user=%d",
-            item.id,
-            affected,
-            user_id,
-        )
-        return {"status": "ok"}
-    finally:
-        session.close()
+    # F-004：「申請不存在」與「不屬於本家庭」collapse 為單一 403。
+    _, owned_student_ids = _get_parent_student_ids(session, user_id)
+    item = (
+        session.query(StudentLeaveRequest)
+        .filter(StudentLeaveRequest.id == leave_id)
+        .first()
+    )
+    if item is None or item.student_id not in owned_student_ids:
+        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+    if item.status != "approved":
+        raise HTTPException(status_code=400, detail=f"狀態為 {item.status}，無法取消")
+    if item.start_date <= today:
+        raise HTTPException(status_code=400, detail="請假期間已開始，無法取消")
+    affected = revert_attendance_for_leave(session, item)
+    item.status = "cancelled"
+    item.updated_at = datetime.now()
+    session.flush()
+    request.state.audit_entity_id = str(item.id)
+    request.state.audit_summary = (
+        f"家長取消請假：leave_id={item.id} "
+        f"period={item.start_date}~{item.end_date} reverted_attendance={affected}"
+    )
+    logger.info(
+        "家長取消請假：leave_id=%d reverted_attendance=%d parent_user=%d",
+        item.id,
+        affected,
+        user_id,
+    )
+    return {"status": "ok"}

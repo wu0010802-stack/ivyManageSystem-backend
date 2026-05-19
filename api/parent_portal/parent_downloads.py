@@ -17,6 +17,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
+from sqlalchemy.orm import Session
 
 from models.contact_book import StudentContactBookEntry
 from models.database import (
@@ -28,7 +29,6 @@ from models.database import (
     StudentLeaveRequest,
     StudentMedicationOrder,
     StudentObservation,
-    get_session,
 )
 from models.portfolio import (
     ATTACHMENT_OWNER_CONTACT_BOOK,
@@ -43,6 +43,7 @@ from models.portfolio import (
 from utils.auth import require_parent_role
 from utils.portfolio_storage import get_portfolio_storage
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,7 @@ def _resolve_student_id_for_parent(session, owner_type: str, owner_id: int) -> i
 def download_parent_portfolio(
     key: str,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ) -> Response:
     """家長下載自己孩子相關的附件。
 
@@ -159,39 +161,33 @@ def download_parent_portfolio(
     4. 回傳檔案
     """
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        att = (
-            session.query(Attachment)
-            .filter(
-                (Attachment.storage_key == key)
-                | (Attachment.display_key == key)
-                | (Attachment.thumb_key == key)
-            )
-            .first()
+    att = (
+        session.query(Attachment)
+        .filter(
+            (Attachment.storage_key == key)
+            | (Attachment.display_key == key)
+            | (Attachment.thumb_key == key)
         )
-        if not att:
-            raise HTTPException(status_code=404, detail="檔案不存在")
-        if att.deleted_at:
-            raise HTTPException(status_code=410, detail="檔案已刪除")
+        .first()
+    )
+    if not att:
+        raise HTTPException(status_code=404, detail="檔案不存在")
+    if att.deleted_at:
+        raise HTTPException(status_code=410, detail="檔案已刪除")
 
-        student_id = _resolve_student_id_for_parent(
-            session, att.owner_type, att.owner_id
-        )
-        _assert_student_owned(session, user_id, student_id)
+    student_id = _resolve_student_id_for_parent(session, att.owner_type, att.owner_id)
+    _assert_student_owned(session, user_id, student_id)
 
-        storage = get_portfolio_storage()
-        path = storage.absolute_path(key)
-        if not path.exists():
-            logger.error("家長下載：實體檔案遺失 key=%s attachment_id=%d", key, att.id)
-            raise HTTPException(status_code=404, detail="檔案實體遺失")
+    storage = get_portfolio_storage()
+    path = storage.absolute_path(key)
+    if not path.exists():
+        logger.error("家長下載：實體檔案遺失 key=%s attachment_id=%d", key, att.id)
+        raise HTTPException(status_code=404, detail="檔案實體遺失")
 
-        # storage_key 用原始 mime；display/thumb 為 JPG
-        mime = att.mime_type if key == att.storage_key else "image/jpeg"
-        return FileResponse(
-            path=str(path),
-            media_type=mime,
-            filename=att.original_filename if key == att.storage_key else None,
-        )
-    finally:
-        session.close()
+    # storage_key 用原始 mime；display/thumb 為 JPG
+    mime = att.mime_type if key == att.storage_key else "image/jpeg"
+    return FileResponse(
+        path=str(path),
+        media_type=mime,
+        filename=att.original_filename if key == att.storage_key else None,
+    )

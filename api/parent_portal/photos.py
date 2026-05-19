@@ -18,6 +18,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
 from api.portfolio.student_attachments import SUPPORTED_OWNER_TYPES, _is_image
 from models.contact_book import StudentContactBookEntry
@@ -26,7 +27,6 @@ from models.database import (
     StudentGrowthReport,
     StudentMedicationOrder,
     StudentObservation,
-    get_session,
 )
 from models.portfolio import (
     ATTACHMENT_OWNER_CONTACT_BOOK,
@@ -39,6 +39,7 @@ from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
 from utils.portfolio_storage import PORTFOLIO_MODULE
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
 logger = logging.getLogger(__name__)
@@ -128,40 +129,37 @@ async def parent_list_photos(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ) -> dict:
     try:
-        session = get_session()
-        try:
-            user_id = current_user["user_id"]
-            _assert_student_owned(session, user_id, student_id)
+        user_id = current_user["user_id"]
+        _assert_student_owned(session, user_id, student_id)
 
-            all_items: list[dict] = []
-            for ot in SUPPORTED_OWNER_TYPES:
-                owner_ids = _parent_owner_ids(session, ot, student_id)
-                if not owner_ids:
-                    continue
-                rows = (
-                    session.query(Attachment)
-                    .filter(
-                        Attachment.owner_type == ot,
-                        Attachment.owner_id.in_(owner_ids),
-                        Attachment.deleted_at.is_(None),
-                    )
-                    .order_by(Attachment.created_at.desc())
-                    .all()
+        all_items: list[dict] = []
+        for ot in SUPPORTED_OWNER_TYPES:
+            owner_ids = _parent_owner_ids(session, ot, student_id)
+            if not owner_ids:
+                continue
+            rows = (
+                session.query(Attachment)
+                .filter(
+                    Attachment.owner_type == ot,
+                    Attachment.owner_id.in_(owner_ids),
+                    Attachment.deleted_at.is_(None),
                 )
-                for a in rows:
-                    if not _is_image(a.mime_type):
-                        continue
-                    all_items.append(_parent_attachment_to_dict(a))
+                .order_by(Attachment.created_at.desc())
+                .all()
+            )
+            for a in rows:
+                if not _is_image(a.mime_type):
+                    continue
+                all_items.append(_parent_attachment_to_dict(a))
 
-            all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-            return {
-                "total": len(all_items),
-                "items": all_items[skip : skip + limit],
-            }
-        finally:
-            session.close()
+        all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return {
+            "total": len(all_items),
+            "items": all_items[skip : skip + limit],
+        }
     except HTTPException:
         raise
     except Exception as e:

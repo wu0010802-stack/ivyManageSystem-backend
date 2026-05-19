@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
 from models.activity import ActivityRegistration
 from models.database import (
@@ -23,7 +24,6 @@ from models.database import (
     StudentMeasurement,
     StudentMilestone,
     StudentObservation,
-    get_session,
 )
 from models.student_log import ParentCommunicationLog
 from services.timeline_aggregator import (
@@ -43,6 +43,7 @@ from services.timeline_aggregator import (
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ async def parent_get_timeline(
     cursor: Optional[str] = Query(None),
     limit: int = Query(30, ge=1, le=100),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ) -> dict:
     try:
         user_id = current_user["user_id"]
@@ -81,11 +83,7 @@ async def parent_get_timeline(
         # Multi-source cursor pagination is TBD; signal "no more pages" rather than
         # re-fetching head and looping the parent app (it drives loadMore on cursor).
         if decode_cursor(cursor):
-            session = get_session()
-            try:
-                _assert_student_owned(session, current_user["user_id"], student_id)
-            finally:
-                session.close()
+            _assert_student_owned(session, user_id, student_id)
             return {
                 "items": [],
                 "next_cursor": None,
@@ -94,167 +92,156 @@ async def parent_get_timeline(
         if not since:
             since = date.today() - timedelta(days=90)
 
-        session = get_session()
-        try:
-            _assert_student_owned(session, user_id, student_id)
-            all_items: list[dict] = []
+        _assert_student_owned(session, user_id, student_id)
+        all_items: list[dict] = []
 
-            if "milestone" in requested_types:
-                q = session.query(StudentMilestone).filter(
-                    StudentMilestone.student_id == student_id,
-                    StudentMilestone.deleted_at.is_(None),
-                )
-                if since:
-                    q = q.filter(StudentMilestone.achieved_on >= since)
-                if until:
-                    q = q.filter(StudentMilestone.achieved_on <= until)
-                all_items.extend(
-                    milestone_to_timeline_item(r)
-                    for r in q.order_by(StudentMilestone.achieved_on.desc())
-                    .limit(100)
-                    .all()
-                )
+        if "milestone" in requested_types:
+            q = session.query(StudentMilestone).filter(
+                StudentMilestone.student_id == student_id,
+                StudentMilestone.deleted_at.is_(None),
+            )
+            if since:
+                q = q.filter(StudentMilestone.achieved_on >= since)
+            if until:
+                q = q.filter(StudentMilestone.achieved_on <= until)
+            all_items.extend(
+                milestone_to_timeline_item(r)
+                for r in q.order_by(StudentMilestone.achieved_on.desc())
+                .limit(100)
+                .all()
+            )
 
-            if "measurement" in requested_types:
-                q = session.query(StudentMeasurement).filter(
-                    StudentMeasurement.student_id == student_id
-                )
-                if since:
-                    q = q.filter(StudentMeasurement.measured_on >= since)
-                if until:
-                    q = q.filter(StudentMeasurement.measured_on <= until)
-                all_items.extend(
-                    measurement_to_timeline_item(r)
-                    for r in q.order_by(StudentMeasurement.measured_on.desc())
-                    .limit(100)
-                    .all()
-                )
+        if "measurement" in requested_types:
+            q = session.query(StudentMeasurement).filter(
+                StudentMeasurement.student_id == student_id
+            )
+            if since:
+                q = q.filter(StudentMeasurement.measured_on >= since)
+            if until:
+                q = q.filter(StudentMeasurement.measured_on <= until)
+            all_items.extend(
+                measurement_to_timeline_item(r)
+                for r in q.order_by(StudentMeasurement.measured_on.desc())
+                .limit(100)
+                .all()
+            )
 
-            if "observation" in requested_types:
-                q = session.query(StudentObservation).filter(
-                    StudentObservation.student_id == student_id,
-                    StudentObservation.deleted_at.is_(None),
-                )
-                if since:
-                    q = q.filter(StudentObservation.observation_date >= since)
-                if until:
-                    q = q.filter(StudentObservation.observation_date <= until)
-                all_items.extend(
-                    observation_to_timeline_item(r)
-                    for r in q.order_by(StudentObservation.observation_date.desc())
-                    .limit(100)
-                    .all()
-                )
+        if "observation" in requested_types:
+            q = session.query(StudentObservation).filter(
+                StudentObservation.student_id == student_id,
+                StudentObservation.deleted_at.is_(None),
+            )
+            if since:
+                q = q.filter(StudentObservation.observation_date >= since)
+            if until:
+                q = q.filter(StudentObservation.observation_date <= until)
+            all_items.extend(
+                observation_to_timeline_item(r)
+                for r in q.order_by(StudentObservation.observation_date.desc())
+                .limit(100)
+                .all()
+            )
 
-            if "assessment" in requested_types:
-                q = session.query(StudentAssessment).filter(
-                    StudentAssessment.student_id == student_id
-                )
-                if since:
-                    q = q.filter(StudentAssessment.assessment_date >= since)
-                if until:
-                    q = q.filter(StudentAssessment.assessment_date <= until)
-                all_items.extend(
-                    assessment_to_timeline_item(r)
-                    for r in q.order_by(StudentAssessment.assessment_date.desc())
-                    .limit(100)
-                    .all()
-                )
+        if "assessment" in requested_types:
+            q = session.query(StudentAssessment).filter(
+                StudentAssessment.student_id == student_id
+            )
+            if since:
+                q = q.filter(StudentAssessment.assessment_date >= since)
+            if until:
+                q = q.filter(StudentAssessment.assessment_date <= until)
+            all_items.extend(
+                assessment_to_timeline_item(r)
+                for r in q.order_by(StudentAssessment.assessment_date.desc())
+                .limit(100)
+                .all()
+            )
 
-            if "incident" in requested_types:
-                # 與 admin 一致：用 created_at 作 occurred_at
-                q = session.query(StudentIncident).filter(
-                    StudentIncident.student_id == student_id
-                )
-                if since:
-                    q = q.filter(StudentIncident.created_at >= since)
-                if until:
-                    q = q.filter(StudentIncident.created_at <= until)
-                all_items.extend(
-                    incident_to_timeline_item(r)
-                    for r in q.order_by(StudentIncident.created_at.desc())
-                    .limit(100)
-                    .all()
-                )
+        if "incident" in requested_types:
+            # 與 admin 一致：用 created_at 作 occurred_at
+            q = session.query(StudentIncident).filter(
+                StudentIncident.student_id == student_id
+            )
+            if since:
+                q = q.filter(StudentIncident.created_at >= since)
+            if until:
+                q = q.filter(StudentIncident.created_at <= until)
+            all_items.extend(
+                incident_to_timeline_item(r)
+                for r in q.order_by(StudentIncident.created_at.desc()).limit(100).all()
+            )
 
-            if "communication" in requested_types:
-                q = session.query(ParentCommunicationLog).filter(
-                    ParentCommunicationLog.student_id == student_id
-                )
-                if since:
-                    q = q.filter(ParentCommunicationLog.communication_date >= since)
-                if until:
-                    q = q.filter(ParentCommunicationLog.communication_date <= until)
-                all_items.extend(
-                    communication_to_timeline_item(r)
-                    for r in q.order_by(
-                        ParentCommunicationLog.communication_date.desc()
-                    )
-                    .limit(100)
-                    .all()
-                )
+        if "communication" in requested_types:
+            q = session.query(ParentCommunicationLog).filter(
+                ParentCommunicationLog.student_id == student_id
+            )
+            if since:
+                q = q.filter(ParentCommunicationLog.communication_date >= since)
+            if until:
+                q = q.filter(ParentCommunicationLog.communication_date <= until)
+            all_items.extend(
+                communication_to_timeline_item(r)
+                for r in q.order_by(ParentCommunicationLog.communication_date.desc())
+                .limit(100)
+                .all()
+            )
 
-            if "contact_book" in requested_types:
-                # round 5 P1：家長端 timeline 不應吐老師草稿/軟刪。
-                # 對偶 endpoint photos / family / contact_book._get_entry_for_parent
-                # 均已過濾 deleted_at IS NULL + published_at IS NOT NULL，
-                # 此處原本漏網。
-                q = session.query(StudentContactBookEntry).filter(
-                    StudentContactBookEntry.student_id == student_id,
-                    StudentContactBookEntry.deleted_at.is_(None),
-                    StudentContactBookEntry.published_at.isnot(None),
-                )
-                if since:
-                    q = q.filter(StudentContactBookEntry.log_date >= since)
-                if until:
-                    q = q.filter(StudentContactBookEntry.log_date <= until)
-                all_items.extend(
-                    contact_book_to_timeline_item(r)
-                    for r in q.order_by(StudentContactBookEntry.log_date.desc())
-                    .limit(100)
-                    .all()
-                )
+        if "contact_book" in requested_types:
+            # round 5 P1：家長端 timeline 不應吐老師草稿/軟刪。
+            q = session.query(StudentContactBookEntry).filter(
+                StudentContactBookEntry.student_id == student_id,
+                StudentContactBookEntry.deleted_at.is_(None),
+                StudentContactBookEntry.published_at.isnot(None),
+            )
+            if since:
+                q = q.filter(StudentContactBookEntry.log_date >= since)
+            if until:
+                q = q.filter(StudentContactBookEntry.log_date <= until)
+            all_items.extend(
+                contact_book_to_timeline_item(r)
+                for r in q.order_by(StudentContactBookEntry.log_date.desc())
+                .limit(100)
+                .all()
+            )
 
-            if "attendance" in requested_types:
-                q = session.query(StudentAttendance).filter(
-                    StudentAttendance.student_id == student_id,
-                    StudentAttendance.status != "出席",
-                )
-                if since:
-                    q = q.filter(StudentAttendance.date >= since)
-                if until:
-                    q = q.filter(StudentAttendance.date <= until)
-                all_items.extend(
-                    attendance_to_timeline_item(r)
-                    for r in q.order_by(StudentAttendance.date.desc()).limit(100).all()
-                )
+        if "attendance" in requested_types:
+            q = session.query(StudentAttendance).filter(
+                StudentAttendance.student_id == student_id,
+                StudentAttendance.status != "出席",
+            )
+            if since:
+                q = q.filter(StudentAttendance.date >= since)
+            if until:
+                q = q.filter(StudentAttendance.date <= until)
+            all_items.extend(
+                attendance_to_timeline_item(r)
+                for r in q.order_by(StudentAttendance.date.desc()).limit(100).all()
+            )
 
-            if "activity" in requested_types:
-                q = session.query(ActivityRegistration).filter(
-                    ActivityRegistration.student_id == student_id
-                )
-                if since:
-                    q = q.filter(ActivityRegistration.created_at >= since)
-                if until:
-                    q = q.filter(ActivityRegistration.created_at <= until)
-                all_items.extend(
-                    activity_to_timeline_item(r)
-                    for r in q.order_by(ActivityRegistration.created_at.desc())
-                    .limit(100)
-                    .all()
-                )
+        if "activity" in requested_types:
+            q = session.query(ActivityRegistration).filter(
+                ActivityRegistration.student_id == student_id
+            )
+            if since:
+                q = q.filter(ActivityRegistration.created_at >= since)
+            if until:
+                q = q.filter(ActivityRegistration.created_at <= until)
+            all_items.extend(
+                activity_to_timeline_item(r)
+                for r in q.order_by(ActivityRegistration.created_at.desc())
+                .limit(100)
+                .all()
+            )
 
-            paginated = sort_and_paginate(all_items, limit=limit)
-            return {
-                "items": paginated["items"],
-                "next_cursor": paginated["next_cursor"],
-                "stats": {
-                    "total_items": len(all_items),
-                    "by_type": _by_type_count(all_items),
-                },
-            }
-        finally:
-            session.close()
+        paginated = sort_and_paginate(all_items, limit=limit)
+        return {
+            "items": paginated["items"],
+            "next_cursor": paginated["next_cursor"],
+            "stats": {
+                "total_items": len(all_items),
+                "by_type": _by_type_count(all_items),
+            },
+        }
     except HTTPException:
         raise
     except Exception as e:

@@ -14,8 +14,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
-from models.database import get_session
 from models.fees import (
     StudentFeeAdjustment,
     StudentFeePayment,
@@ -24,6 +24,7 @@ from models.fees import (
 )
 from utils.auth import require_parent_role
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
 
 router = APIRouter(prefix="/fees", tags=["parent-fees"])
@@ -131,15 +132,14 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
 
 
 @router.get("/summary")
-def fees_summary(current_user: dict = Depends(require_parent_role())):
+def fees_summary(
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
     """跨子女費用總覽（依學生分組）。"""
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _, student_ids = _get_parent_student_ids(session, user_id)
-        return compute_fees_summary(session, student_ids)
-    finally:
-        session.close()
+    _, student_ids = _get_parent_student_ids(session, user_id)
+    return compute_fees_summary(session, student_ids)
 
 
 @router.get("/records")
@@ -147,99 +147,91 @@ def list_records(
     student_id: int = Query(..., gt=0),
     period: Optional[str] = Query(None),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, student_id)
-        q = session.query(StudentFeeRecord).filter(
-            StudentFeeRecord.student_id == student_id
-        )
-        if period:
-            q = q.filter(StudentFeeRecord.period == period)
-        rows = q.order_by(
-            StudentFeeRecord.due_date.asc().nulls_last(),
-            StudentFeeRecord.created_at.asc(),
-        ).all()
-        items = [
-            {
-                "id": r.id,
-                "fee_item_name": r.fee_item_name,
-                "period": r.period,
-                "amount_due": r.amount_due or 0,
-                "amount_paid": r.amount_paid or 0,
-                "outstanding": max(0, (r.amount_due or 0) - (r.amount_paid or 0)),
-                "status": r.status,
-                "due_date": r.due_date.isoformat() if r.due_date else None,
-                "payment_date": r.payment_date.isoformat() if r.payment_date else None,
-            }
-            for r in rows
-        ]
-        return {"items": items, "total": len(items)}
-    finally:
-        session.close()
+    _assert_student_owned(session, user_id, student_id)
+    q = session.query(StudentFeeRecord).filter(
+        StudentFeeRecord.student_id == student_id
+    )
+    if period:
+        q = q.filter(StudentFeeRecord.period == period)
+    rows = q.order_by(
+        StudentFeeRecord.due_date.asc().nulls_last(),
+        StudentFeeRecord.created_at.asc(),
+    ).all()
+    items = [
+        {
+            "id": r.id,
+            "fee_item_name": r.fee_item_name,
+            "period": r.period,
+            "amount_due": r.amount_due or 0,
+            "amount_paid": r.amount_paid or 0,
+            "outstanding": max(0, (r.amount_due or 0) - (r.amount_paid or 0)),
+            "status": r.status,
+            "due_date": r.due_date.isoformat() if r.due_date else None,
+            "payment_date": r.payment_date.isoformat() if r.payment_date else None,
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/records/{record_id}/payments")
 def list_payments(
     record_id: int,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """收據以 idempotency_key 分組（同一筆收據可能含多次付款）。
 
     隱私：operator / refunded_by 等員工欄位不回傳；refund 只回金額與原因。
     """
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        # F-002：collapse 「記錄不存在」與「不屬於本家庭」為同一 403，
-        # 避免攻擊者透過 status code 差異枚舉 fee record id 存在性。
-        _, owned_student_ids = _get_parent_student_ids(session, user_id)
-        record = (
-            session.query(StudentFeeRecord)
-            .filter(StudentFeeRecord.id == record_id)
-            .first()
-        )
-        if record is None or record.student_id not in owned_student_ids:
-            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+    # F-002：collapse 「記錄不存在」與「不屬於本家庭」為同一 403，
+    # 避免攻擊者透過 status code 差異枚舉 fee record id 存在性。
+    _, owned_student_ids = _get_parent_student_ids(session, user_id)
+    record = (
+        session.query(StudentFeeRecord).filter(StudentFeeRecord.id == record_id).first()
+    )
+    if record is None or record.student_id not in owned_student_ids:
+        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
 
-        payments = (
-            session.query(StudentFeePayment)
-            .filter(StudentFeePayment.record_id == record_id)
-            .order_by(StudentFeePayment.payment_date.asc(), StudentFeePayment.id.asc())
-            .all()
-        )
-        refunds = (
-            session.query(StudentFeeRefund)
-            .filter(StudentFeeRefund.record_id == record_id)
-            .order_by(StudentFeeRefund.refunded_at.asc(), StudentFeeRefund.id.asc())
-            .all()
-        )
-        return {
-            "fee_item_name": record.fee_item_name,
-            "period": record.period,
-            "payments": [
-                {
-                    "amount": p.amount,
-                    "payment_date": (
-                        p.payment_date.isoformat() if p.payment_date else None
-                    ),
-                    "payment_method": p.payment_method,
-                    "receipt_no": p.idempotency_key,  # 對家長以「收據編號」呈現
-                }
-                for p in payments
-            ],
-            "refunds": [
-                {
-                    "amount": r.amount,
-                    "reason": r.reason,
-                    "refunded_at": r.refunded_at.isoformat() if r.refunded_at else None,
-                }
-                for r in refunds
-            ],
-        }
-    finally:
-        session.close()
+    payments = (
+        session.query(StudentFeePayment)
+        .filter(StudentFeePayment.record_id == record_id)
+        .order_by(StudentFeePayment.payment_date.asc(), StudentFeePayment.id.asc())
+        .all()
+    )
+    refunds = (
+        session.query(StudentFeeRefund)
+        .filter(StudentFeeRefund.record_id == record_id)
+        .order_by(StudentFeeRefund.refunded_at.asc(), StudentFeeRefund.id.asc())
+        .all()
+    )
+    return {
+        "fee_item_name": record.fee_item_name,
+        "period": record.period,
+        "payments": [
+            {
+                "amount": p.amount,
+                "payment_date": (
+                    p.payment_date.isoformat() if p.payment_date else None
+                ),
+                "payment_method": p.payment_method,
+                "receipt_no": p.idempotency_key,  # 對家長以「收據編號」呈現
+            }
+            for p in payments
+        ],
+        "refunds": [
+            {
+                "amount": r.amount,
+                "reason": r.reason,
+                "refunded_at": r.refunded_at.isoformat() if r.refunded_at else None,
+            }
+            for r in refunds
+        ],
+    }
 
 
 def _empty_totals() -> dict:

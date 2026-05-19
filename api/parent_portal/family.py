@@ -14,6 +14,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sqlalchemy import and_, exists, or_
+from sqlalchemy.orm import Session
 
 from models.classroom import StudentAttendance
 from models.database import (
@@ -26,12 +27,12 @@ from models.database import (
     SchoolEvent,
     Student,
     StudentContactBookEntry,
-    get_session,
 )
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
 from utils.auth import require_parent_role
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
 
 router = APIRouter(prefix="/family", tags=["parent-family"])
@@ -45,6 +46,7 @@ def family_timeline(
     student_id: int = Query(..., ge=1),
     limit: int = Query(7, ge=1, le=50),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """單一子女最近 N 筆混合 timeline。
 
@@ -63,20 +65,16 @@ def family_timeline(
         ]
     """
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, student_id, for_write=False)
+    _assert_student_owned(session, user_id, student_id, for_write=False)
 
-        cache_key = (user_id, student_id, limit)
-        cached = _timeline_cache.get(cache_key)
-        if cached is not None:
-            return cached
+    cache_key = (user_id, student_id, limit)
+    cached = _timeline_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-        items = _collect_timeline_items(session, user_id, student_id, limit)
-        _timeline_cache[cache_key] = items
-        return items
-    finally:
-        session.close()
+    items = _collect_timeline_items(session, user_id, student_id, limit)
+    _timeline_cache[cache_key] = items
+    return items
 
 
 def _collect_timeline_items(

@@ -15,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from models.activity import (
     ActivityCourse,
@@ -24,10 +25,11 @@ from models.activity import (
     RegistrationCourse,
     RegistrationSupply,
 )
-from models.database import Guardian, Student, get_session
+from models.database import Guardian, Student
 from services.activity_service import activity_service
 from utils.auth import require_parent_role
 
+from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
 
 router = APIRouter(prefix="/activity", tags=["parent-activity"])
@@ -46,51 +48,44 @@ def list_courses(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None, ge=1, le=2),
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
-    session = get_session()
-    try:
-        q = session.query(ActivityCourse).filter(ActivityCourse.is_active == True)
-        if school_year is not None:
-            q = q.filter(ActivityCourse.school_year == school_year)
-        if semester is not None:
-            q = q.filter(ActivityCourse.semester == semester)
-        courses = q.order_by(ActivityCourse.name.asc()).all()
+    q = session.query(ActivityCourse).filter(ActivityCourse.is_active == True)
+    if school_year is not None:
+        q = q.filter(ActivityCourse.school_year == school_year)
+    if semester is not None:
+        q = q.filter(ActivityCourse.semester == semester)
+    courses = q.order_by(ActivityCourse.name.asc()).all()
 
-        # 計算每個 course 已報名（enrolled + promoted_pending）人數，用於前端顯示是否額滿
-        if not courses:
-            return {"items": [], "total": 0}
-        course_ids = [c.id for c in courses]
-        enrolled_counts = dict(
-            session.query(
-                RegistrationCourse.course_id, func.count(RegistrationCourse.id)
-            )
-            .filter(
-                RegistrationCourse.course_id.in_(course_ids),
-                RegistrationCourse.status.in_(("enrolled", "promoted_pending")),
-            )
-            .group_by(RegistrationCourse.course_id)
-            .all()
+    # 計算每個 course 已報名（enrolled + promoted_pending）人數，用於前端顯示是否額滿
+    # registration_courses 受 RLS 隔離只看得到自己；用 SECURITY DEFINER 函式
+    # public_count_enrolled(course_id) 取得跨家長真實 count（catalog UI is_full 依此）
+    if not courses:
+        return {"items": [], "total": 0}
+    enrolled_counts = {
+        c.id: int(
+            session.execute(func.public_count_enrolled(c.id).select()).scalar() or 0
         )
-        items = [
-            {
-                "id": c.id,
-                "name": c.name,
-                "price": c.price,
-                "sessions": c.sessions,
-                "capacity": c.capacity,
-                "school_year": c.school_year,
-                "semester": c.semester,
-                "allow_waitlist": bool(c.allow_waitlist),
-                "description": c.description,
-                "video_url": c.video_url,
-                "enrolled_count": enrolled_counts.get(c.id, 0),
-                "is_full": enrolled_counts.get(c.id, 0) >= (c.capacity or 0),
-            }
-            for c in courses
-        ]
-        return {"items": items, "total": len(items)}
-    finally:
-        session.close()
+        for c in courses
+    }
+    items = [
+        {
+            "id": c.id,
+            "name": c.name,
+            "price": c.price,
+            "sessions": c.sessions,
+            "capacity": c.capacity,
+            "school_year": c.school_year,
+            "semester": c.semester,
+            "allow_waitlist": bool(c.allow_waitlist),
+            "description": c.description,
+            "video_url": c.video_url,
+            "enrolled_count": enrolled_counts.get(c.id, 0),
+            "is_full": enrolled_counts.get(c.id, 0) >= (c.capacity or 0),
+        }
+        for c in courses
+    ]
+    return {"items": items, "total": len(items)}
 
 
 def _registration_summary(session, reg: ActivityRegistration) -> dict:
@@ -129,162 +124,144 @@ def _registration_summary(session, reg: ActivityRegistration) -> dict:
 
 
 @router.get("/my-registrations")
-def my_registrations(current_user: dict = Depends(require_parent_role())):
+def my_registrations(
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _, student_ids = _get_parent_student_ids(session, user_id)
-        if not student_ids:
-            return {"items": [], "total": 0}
-        rows = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.student_id.in_(student_ids),
-                ActivityRegistration.is_active == True,
-            )
-            .order_by(ActivityRegistration.created_at.desc())
-            .all()
+    _, student_ids = _get_parent_student_ids(session, user_id)
+    if not student_ids:
+        return {"items": [], "total": 0}
+    rows = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.student_id.in_(student_ids),
+            ActivityRegistration.is_active == True,
         )
-        return {
-            "items": [_registration_summary(session, r) for r in rows],
-            "total": len(rows),
-        }
-    finally:
-        session.close()
+        .order_by(ActivityRegistration.created_at.desc())
+        .all()
+    )
+    return {
+        "items": [_registration_summary(session, r) for r in rows],
+        "total": len(rows),
+    }
 
 
 @router.post("/register", status_code=201)
 def register_courses(
     payload: RegisterPayload,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """登入版報名：student_id 必為自己小孩、parent_phone 自動從 Guardian 帶入。"""
     if not payload.course_ids and not payload.supply_ids:
         raise HTTPException(status_code=400, detail="至少需選擇一門課程或一項用品")
 
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        _assert_student_owned(session, user_id, payload.student_id, for_write=True)
+    _assert_student_owned(session, user_id, payload.student_id, for_write=True)
 
-        student = (
-            session.query(Student).filter(Student.id == payload.student_id).first()
+    student = session.query(Student).filter(Student.id == payload.student_id).first()
+    if student is None:
+        raise HTTPException(status_code=404, detail="找不到學生")
+
+    # 防同學期重複報名
+    existing = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.student_id == payload.student_id,
+            ActivityRegistration.school_year == payload.school_year,
+            ActivityRegistration.semester == payload.semester,
+            ActivityRegistration.is_active == True,
         )
-        if student is None:
-            raise HTTPException(status_code=404, detail="找不到學生")
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=400, detail="該學期已有活的報名，請先取消既有報名再重新提交"
+        )
 
-        # 防同學期重複報名
-        existing = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.student_id == payload.student_id,
-                ActivityRegistration.school_year == payload.school_year,
-                ActivityRegistration.semester == payload.semester,
-                ActivityRegistration.is_active == True,
-            )
+    guardian = (
+        session.query(Guardian)
+        .filter(
+            Guardian.user_id == user_id,
+            Guardian.student_id == payload.student_id,
+            Guardian.deleted_at.is_(None),
+        )
+        .order_by(Guardian.is_primary.desc())
+        .first()
+    )
+    parent_phone = guardian.phone if guardian else None
+
+    reg = ActivityRegistration(
+        student_name=student.name,
+        birthday=(student.birthday.isoformat() if student.birthday else None),
+        class_name=None,  # 由 classroom_id 解析；不寫快照避免老資料
+        email=None,
+        is_paid=False,
+        paid_amount=0,
+        is_active=True,
+        school_year=payload.school_year,
+        semester=payload.semester,
+        student_id=student.id,
+        parent_phone=parent_phone,
+        classroom_id=student.classroom_id,
+        pending_review=False,  # 登入版視為已驗證
+        match_status="manual",
+    )
+    session.add(reg)
+    session.flush()
+
+    # 加入課程：依容量決定 enrolled / waitlist。容量檢查同樣需用 admin-bypass
+    # SECURITY DEFINER function 取真實 count（RLS 隔離下只看自己會誤判沒滿）
+    for course_id in payload.course_ids:
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id, ActivityCourse.is_active == True)
             .first()
         )
-        if existing is not None:
+        if course is None:
+            raise HTTPException(status_code=400, detail=f"找不到課程 id={course_id}")
+        enrolled_count = int(
+            session.execute(func.public_count_enrolled(course_id).select()).scalar()
+            or 0
+        )
+        if enrolled_count < (course.capacity or 0):
+            status = "enrolled"
+        elif course.allow_waitlist:
+            status = "waitlist"
+        else:
             raise HTTPException(
-                status_code=400, detail="該學期已有活的報名，請先取消既有報名再重新提交"
+                status_code=400,
+                detail=f"課程「{course.name}」已額滿且不開放候補",
             )
+        session.add(
+            RegistrationCourse(
+                registration_id=reg.id,
+                course_id=course_id,
+                status=status,
+                price_snapshot=course.price or 0,
+            )
+        )
 
-        guardian = (
-            session.query(Guardian)
-            .filter(
-                Guardian.user_id == user_id,
-                Guardian.student_id == payload.student_id,
-                Guardian.deleted_at.is_(None),
-            )
-            .order_by(Guardian.is_primary.desc())
+    for supply_id in payload.supply_ids:
+        supply = (
+            session.query(ActivitySupply)
+            .filter(ActivitySupply.id == supply_id, ActivitySupply.is_active == True)
             .first()
         )
-        parent_phone = guardian.phone if guardian else None
-
-        reg = ActivityRegistration(
-            student_name=student.name,
-            birthday=(student.birthday.isoformat() if student.birthday else None),
-            class_name=None,  # 由 classroom_id 解析；不寫快照避免老資料
-            email=None,
-            is_paid=False,
-            paid_amount=0,
-            is_active=True,
-            school_year=payload.school_year,
-            semester=payload.semester,
-            student_id=student.id,
-            parent_phone=parent_phone,
-            classroom_id=student.classroom_id,
-            pending_review=False,  # 登入版視為已驗證
-            match_status="manual",
+        if supply is None:
+            raise HTTPException(status_code=400, detail=f"找不到用品 id={supply_id}")
+        session.add(
+            RegistrationSupply(
+                registration_id=reg.id,
+                supply_id=supply_id,
+                price_snapshot=supply.price or 0,
+            )
         )
-        session.add(reg)
-        session.flush()
 
-        # 加入課程：依容量決定 enrolled / waitlist
-        for course_id in payload.course_ids:
-            course = (
-                session.query(ActivityCourse)
-                .filter(
-                    ActivityCourse.id == course_id, ActivityCourse.is_active == True
-                )
-                .first()
-            )
-            if course is None:
-                raise HTTPException(
-                    status_code=400, detail=f"找不到課程 id={course_id}"
-                )
-            enrolled_count = (
-                session.query(func.count(RegistrationCourse.id))
-                .filter(
-                    RegistrationCourse.course_id == course_id,
-                    RegistrationCourse.status.in_(("enrolled", "promoted_pending")),
-                )
-                .scalar()
-                or 0
-            )
-            if enrolled_count < (course.capacity or 0):
-                status = "enrolled"
-            elif course.allow_waitlist:
-                status = "waitlist"
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"課程「{course.name}」已額滿且不開放候補",
-                )
-            session.add(
-                RegistrationCourse(
-                    registration_id=reg.id,
-                    course_id=course_id,
-                    status=status,
-                    price_snapshot=course.price or 0,
-                )
-            )
-
-        for supply_id in payload.supply_ids:
-            supply = (
-                session.query(ActivitySupply)
-                .filter(
-                    ActivitySupply.id == supply_id, ActivitySupply.is_active == True
-                )
-                .first()
-            )
-            if supply is None:
-                raise HTTPException(
-                    status_code=400, detail=f"找不到用品 id={supply_id}"
-                )
-            session.add(
-                RegistrationSupply(
-                    registration_id=reg.id,
-                    supply_id=supply_id,
-                    price_snapshot=supply.price or 0,
-                )
-            )
-
-        session.commit()
-        session.refresh(reg)
-        return _registration_summary(session, reg)
-    finally:
-        session.close()
+    session.flush()
+    session.refresh(reg)
+    return _registration_summary(session, reg)
 
 
 class ConfirmPromotionPayload(BaseModel):
@@ -296,122 +273,106 @@ def confirm_promotion(
     registration_id: int,
     payload: ConfirmPromotionPayload,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """家長確認候補升正式：promoted_pending → enrolled。"""
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        # F-003：「報名不存在」「未綁定學生」「不屬於本家庭」一律 generic 403，
-        # 避免透過 status code/detail 差異枚舉 ActivityRegistration id 存在性。
-        _, owned_student_ids = _get_parent_student_ids(session, user_id)
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active == True,
-            )
-            .first()
+    # F-003：「報名不存在」「未綁定學生」「不屬於本家庭」一律 generic 403，
+    # 避免透過 status code/detail 差異枚舉 ActivityRegistration id 存在性。
+    _, owned_student_ids = _get_parent_student_ids(session, user_id)
+    reg = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.id == registration_id,
+            ActivityRegistration.is_active == True,
         )
-        if (
-            reg is None
-            or reg.student_id is None
-            or reg.student_id not in owned_student_ids
-        ):
-            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        .first()
+    )
+    if reg is None or reg.student_id is None or reg.student_id not in owned_student_ids:
+        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
 
-        # 改用 services.activity_service.confirm_waitlist_promotion：
-        # 與公開端 api/activity/public.py 共用同一 helper（已加 with_for_update
-        # on rc + course）。原 parent_portal 自寫 SELECT-then-UPDATE 無鎖、
-        # 沒呼叫 log_change，與公開端行為不對稱；雙裝置並發確認時兩個 commit
-        # 都會 200 而沒留稽核軌跡（bug sweep round 5 P2，2026-05-14）。
-        try:
-            student_name, course_name = activity_service.confirm_waitlist_promotion(
-                session, registration_id, payload.course_id
-            )
-        except ValueError as e:
-            code = str(e)
-            if code == "NOT_FOUND":
-                raise HTTPException(status_code=404, detail="找不到該報名課程")
-            if code == "ALREADY_CONFIRMED":
-                raise HTTPException(status_code=409, detail="此課程已是正式報名")
-            if code == "NOT_PENDING":
-                raise HTTPException(
-                    status_code=400, detail="此課程非待確認狀態，無法確認"
-                )
-            if code == "EXPIRED":
-                raise HTTPException(
-                    status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
-                )
-            raise
-        # 與公開端 api/activity/public.py 對齊：confirm 後寫一筆業務 audit 軌跡，
-        # operator 標 "parent" 區別於公開頁的 "parent-public"。
-        activity_service.log_change(
-            session,
-            registration_id,
-            student_name,
-            "候補轉正確認",
-            f"課程「{course_name}」家長確認接受升正式（parent-portal）",
-            "parent",
+    # 改用 services.activity_service.confirm_waitlist_promotion：
+    # 與公開端 api/activity/public.py 共用同一 helper（已加 with_for_update
+    # on rc + course）。原 parent_portal 自寫 SELECT-then-UPDATE 無鎖、
+    # 沒呼叫 log_change，與公開端行為不對稱；雙裝置並發確認時兩個 commit
+    # 都會 200 而沒留稽核軌跡（bug sweep round 5 P2，2026-05-14）。
+    try:
+        student_name, course_name = activity_service.confirm_waitlist_promotion(
+            session, registration_id, payload.course_id
         )
-        session.commit()
-        # rc.id 取得需重查；多數呼叫端只看 status:ok 故不必回傳。
-        return {"status": "ok"}
-    finally:
-        session.close()
+    except ValueError as e:
+        code = str(e)
+        if code == "NOT_FOUND":
+            raise HTTPException(status_code=404, detail="找不到該報名課程")
+        if code == "ALREADY_CONFIRMED":
+            raise HTTPException(status_code=409, detail="此課程已是正式報名")
+        if code == "NOT_PENDING":
+            raise HTTPException(status_code=400, detail="此課程非待確認狀態，無法確認")
+        if code == "EXPIRED":
+            raise HTTPException(
+                status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
+            )
+        raise
+    # 與公開端 api/activity/public.py 對齊：confirm 後寫一筆業務 audit 軌跡，
+    # operator 標 "parent" 區別於公開頁的 "parent-public"。
+    activity_service.log_change(
+        session,
+        registration_id,
+        student_name,
+        "候補轉正確認",
+        f"課程「{course_name}」家長確認接受升正式（parent-portal）",
+        "parent",
+    )
+    session.flush()
+    # rc.id 取得需重查；多數呼叫端只看 status:ok 故不必回傳。
+    return {"status": "ok"}
 
 
 @router.get("/registrations/{registration_id}/payments")
 def registration_payments(
     registration_id: int,
     current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
 ):
     """報名繳費歷史；不揭露 operator 等員工欄位。"""
     user_id = current_user["user_id"]
-    session = get_session()
-    try:
-        # F-003：「報名不存在」「未綁定學生」「不屬於本家庭」一律 generic 403。
-        _, owned_student_ids = _get_parent_student_ids(session, user_id)
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active == True,
-            )
-            .first()
+    # F-003：「報名不存在」「未綁定學生」「不屬於本家庭」一律 generic 403。
+    _, owned_student_ids = _get_parent_student_ids(session, user_id)
+    reg = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.id == registration_id,
+            ActivityRegistration.is_active == True,
         )
-        if (
-            reg is None
-            or reg.student_id is None
-            or reg.student_id not in owned_student_ids
-        ):
-            raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        .first()
+    )
+    if reg is None or reg.student_id is None or reg.student_id not in owned_student_ids:
+        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
 
-        rows = (
-            session.query(ActivityPaymentRecord)
-            .filter(
-                ActivityPaymentRecord.registration_id == registration_id,
-                ActivityPaymentRecord.voided_at.is_(None),
-            )
-            .order_by(
-                ActivityPaymentRecord.payment_date.asc(),
-                ActivityPaymentRecord.id.asc(),
-            )
-            .all()
+    rows = (
+        session.query(ActivityPaymentRecord)
+        .filter(
+            ActivityPaymentRecord.registration_id == registration_id,
+            ActivityPaymentRecord.voided_at.is_(None),
         )
-        return {
-            "registration_id": registration_id,
-            "items": [
-                {
-                    "type": r.type,
-                    "amount": r.amount,
-                    "payment_date": (
-                        r.payment_date.isoformat() if r.payment_date else None
-                    ),
-                    "payment_method": r.payment_method,
-                    "receipt_no": r.receipt_no,
-                }
-                for r in rows
-            ],
-        }
-    finally:
-        session.close()
+        .order_by(
+            ActivityPaymentRecord.payment_date.asc(),
+            ActivityPaymentRecord.id.asc(),
+        )
+        .all()
+    )
+    return {
+        "registration_id": registration_id,
+        "items": [
+            {
+                "type": r.type,
+                "amount": r.amount,
+                "payment_date": (
+                    r.payment_date.isoformat() if r.payment_date else None
+                ),
+                "payment_method": r.payment_method,
+                "receipt_no": r.receipt_no,
+            }
+            for r in rows
+        ],
+    }
