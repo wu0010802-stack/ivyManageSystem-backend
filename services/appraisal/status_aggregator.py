@@ -7,8 +7,10 @@ facade：`aggregate_cycle_status(session, cycle, employee_ids=None)`
 設計原則：
 - 純函式風格；session 由 caller 注入，內部**不** commit / refresh / close。
 - bulk query 避免 N+1；attendance / disciplinary 用單一 group_by 一次撈完。
-- `suggested_score_delta` 初版保守給 Decimal('0')，避免在 UI 上產生未經
-  calibrate 的扣分建議，待業主確認標準後再上權重。
+- `suggested_score_delta` 在 aggregator 路徑恆為 Decimal('0')；實際扣分由
+  `services.appraisal.rule_applier.compute_all_deltas` 依 `scoring_rules`
+  表算出後，於 `api/appraisal:sync_score_items` 寫入 `appraisal_score_items`。
+  本欄位保留是為了維持 response schema 與前端契約相容，不在此路徑計算。
 - 時間窗：`[cycle.start_date, min(cycle.end_date, today)]`，避免把未來的
   缺勤/懲處算進來。
 - `is_excluded=True` 的 participant 直接跳過（與 engine 一致）。
@@ -48,7 +50,7 @@ class AttendanceAggregate:
     early_leave_count: int = 0
     missing_punch_count: int = 0  # missing_in + missing_out
     leave_days: int = 0  # status='absent'
-    # TODO: 待業主給定權重後 calibrate 建議扣分
+    # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
 
@@ -68,7 +70,7 @@ class DisciplinaryAggregate:
     minor_count: int = 0
     major_count: int = 0
     actions: list[DisciplinaryActionItem] = field(default_factory=list)
-    # TODO: 警告/小過/大過 → 扣分映射待業主確認
+    # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
 
@@ -80,7 +82,7 @@ class ClassRetentionAggregate:
     initial_count: int = 0
     final_count: int = 0
     retention_rate: Decimal = Decimal("0")  # 0-100，2 位小數
-    # TODO: 留校率 → 加減分映射待業主確認（Excel 對應 col 12 RETURNING_RATE_0315）
+    # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
 
@@ -91,7 +93,7 @@ class ActivityRateAggregate:
     enrolled_students: int = 0  # 該班 active 學生數
     registered_for_activity: int = 0  # 該班報名才藝課人數（去重 student_id）
     activity_rate: Decimal = Decimal("0")  # 0-100，2 位小數
-    # TODO: 才藝參加率 → 加分映射待業主確認（Excel 對應 col 14 AFTER_CLASS_RATE）
+    # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
 

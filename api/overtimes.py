@@ -6,7 +6,7 @@ import logging
 import calendar as cal_module
 from datetime import date, datetime, time as dt_time
 from io import BytesIO
-from typing import Optional, List
+from typing import Any, Optional, List
 
 import pandas as pd
 from openpyxl import Workbook
@@ -23,8 +23,9 @@ _batch_approve_limiter = SlidingWindowLimiter(
     name="overtime_batch_approve",
     error_detail="批次審核操作過於頻繁，請稍後再試",
 ).as_dependency()
-from utils.file_upload import validate_file_signature
-from pydantic import BaseModel, field_validator, model_validator
+from utils.file_upload import read_upload_with_size_check, validate_file_signature
+from utils.excel_io import ExcelImportSchema, parse_excel
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, or_, and_
 
 from models.database import (
@@ -1490,50 +1491,95 @@ def get_overtime_import_template(
     return xlsx_streaming_response(wb, "加班匯入範本.xlsx")
 
 
+class OvertimeImportRow(ExcelImportSchema):
+    """加班匯入單列 schema（excel header 用中文 alias）。
+
+    僅負責「Excel 列 → 結構化資料」轉換；日期/時數/時間/類型的業務驗證
+    仍留在 endpoint（pandas 之前怎麼處理、現在保留相同行為）。
+    """
+
+    employee_code: Optional[str] = Field(default=None, alias="員工編號")
+    employee_name: Optional[str] = Field(default=None, alias="員工姓名")
+    overtime_date: Any = Field(default=None, alias="加班日期")
+    overtime_type: Optional[str] = Field(default=None, alias="加班類型")
+    hours: Any = Field(default=None, alias="時數")
+    start_time: Any = Field(default=None, alias="開始時間(可空)")
+    end_time: Any = Field(default=None, alias="結束時間(可空)")
+    reason: Any = Field(default=None, alias="原因(可空)")
+    use_comp_leave: Any = Field(default=None, alias="補休(是/否,可空)")
+
+
 @router.post("/overtimes/import")
 async def import_overtimes(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
     """批次匯入加班申請（建立草稿加班單，is_approved=None，需後續人工審核）"""
-    content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="檔案超過 10MB 限制")
+    content = await read_upload_with_size_check(file)
     validate_file_signature(content, ".xlsx")
-    try:
-        df = pd.read_excel(BytesIO(content))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+
+    parse_result = parse_excel(BytesIO(content), schema=OvertimeImportRow)
+    # 整檔級錯誤（INVALID_FILE / EMPTY_FILE / MISSING_COLUMN）→ 400，與既有行為一致
+    file_level_codes = {"INVALID_FILE", "EMPTY_FILE", "MISSING_COLUMN"}
+    file_level_errors = [
+        e for e in parse_result.errors if e["error_code"] in file_level_codes
+    ]
+    if file_level_errors:
+        msg = file_level_errors[0]["message"]
+        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{msg}")
 
     results: dict = {"total": 0, "created": 0, "failed": 0, "errors": []}
+    # parse_excel 的 row-level errors（型別/缺欄）先映射回舊格式 "第 N 行: msg"
+    for err in parse_result.errors:
+        if err["error_code"] in file_level_codes:
+            continue
+        results["total"] += 1
+        results["failed"] += 1
+        results["errors"].append(f"第 {err['row']} 行: {err['message']}")
+
     session = get_session()
     try:
         emp_by_id, emp_by_name = build_employee_lookup(session)
 
-        for idx, row in df.iterrows():
+        for row_idx, row in enumerate(parse_result.rows, start=2):
             results["total"] += 1
-            row_num = int(idx) + 2
+            row_num = row_idx
             try:
-                emp = resolve_employee_from_row(row, emp_by_id, emp_by_name)
+                # resolve_employee_from_row 接受 dict-like / pandas Series；
+                # pydantic BaseModel 補上原中文 keys 維持既有 lookup 行為。
+                row_dict = {
+                    "員工編號": row.employee_code,
+                    "員工姓名": row.employee_name,
+                }
+                emp = resolve_employee_from_row(row_dict, emp_by_id, emp_by_name)
 
-                ot_date_raw = row.get("加班日期")
-                if ot_date_raw is None or pd.isna(ot_date_raw):
+                ot_date_raw = row.overtime_date
+                if ot_date_raw is None:
                     raise ValueError("加班日期不得為空")
                 try:
+                    # pd.to_datetime 對 str / datetime / Timestamp 均能 normalize，
+                    # 維持與舊 endpoint 相同的日期解析行為（包含 Excel 數值序號）
                     overtime_date = pd.to_datetime(ot_date_raw).date()
                 except Exception:
                     raise ValueError("加班日期格式錯誤，建議使用 YYYY-MM-DD")
 
-                ot_type_raw = str(row.get("加班類型", "")).strip()
+                ot_type_raw = (
+                    str(row.overtime_type).strip()
+                    if row.overtime_type is not None
+                    else ""
+                )
                 if ot_type_raw not in OVERTIME_TYPE_LABELS:
                     raise ValueError(
                         f"無效的加班類型：{ot_type_raw}（可用：weekday/weekend/holiday）"
                     )
 
-                hours_raw = row.get("時數")
-                if hours_raw is None or pd.isna(hours_raw):
+                hours_raw = row.hours
+                if hours_raw is None:
                     raise ValueError("時數不得為空")
-                hours = float(hours_raw)
+                try:
+                    hours = float(hours_raw)
+                except (TypeError, ValueError):
+                    raise ValueError("時數必須為數字")
                 if hours <= 0:
                     raise ValueError("時數必須大於 0")
                 if hours > MAX_OVERTIME_HOURS:
@@ -1541,12 +1587,11 @@ async def import_overtimes(
 
                 start_dt = None
                 end_dt = None
-                for col_name, is_start in [
-                    ("開始時間(可空)", True),
-                    ("結束時間(可空)", False),
+                for col_name, raw_val, is_start in [
+                    ("開始時間(可空)", row.start_time, True),
+                    ("結束時間(可空)", row.end_time, False),
                 ]:
-                    raw_val = row.get(col_name)
-                    if raw_val is not None and not pd.isna(raw_val):
+                    if raw_val is not None:
                         val_str = str(raw_val).strip()
                         if val_str and val_str not in ("nan", ""):
                             try:
@@ -1571,9 +1616,9 @@ async def import_overtimes(
                 if start_dt is not None and end_dt is not None and start_dt >= end_dt:
                     raise ValueError("開始時間必須早於結束時間（不支援跨日加班）")
 
-                comp_raw = row.get("補休(是/否,可空)")
+                comp_raw = row.use_comp_leave
                 use_comp_leave = False
-                if comp_raw is not None and not pd.isna(comp_raw):
+                if comp_raw is not None:
                     use_comp_leave = str(comp_raw).strip() in (
                         "是",
                         "yes",
@@ -1612,12 +1657,8 @@ async def import_overtimes(
                 _check_monthly_overtime_cap(session, emp.id, overtime_date, hours)
                 _check_overtime_type_calendar(session, overtime_date, ot_type_raw)
 
-                reason_raw = row.get("原因(可空)")
-                reason = (
-                    str(reason_raw).strip()
-                    if reason_raw is not None and not pd.isna(reason_raw)
-                    else None
-                )
+                reason_raw = row.reason
+                reason = str(reason_raw).strip() if reason_raw is not None else None
 
                 ot = OvertimeRecord(
                     employee_id=emp.id,
