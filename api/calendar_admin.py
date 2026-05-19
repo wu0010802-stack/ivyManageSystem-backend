@@ -269,11 +269,13 @@ def _fetch_appraisal(
         | AppraisalCycle.end_date.between(from_, to)
         | AppraisalCycle.base_score_calc_date.between(from_, to)
     )
+    # Semester enum FIRST/SECOND → 上/下 對齊 api/student_enrollment.py 慣例
+    SEMESTER_LABEL = {"FIRST": "上", "SECOND": "下"}
     out: list[CalendarFeedItem] = []
     for r in session.execute(stmt).all():
-        # semester 可能是 enum 物件、.value 取數字 / 名稱
-        sem_value = r.semester.value if hasattr(r.semester, "value") else r.semester
-        cycle_title = f"{r.academic_year} 學年度 第 {sem_value} 學期"
+        sem_raw = r.semester.value if hasattr(r.semester, "value") else r.semester
+        sem_label = SEMESTER_LABEL.get(str(sem_raw), str(sem_raw))
+        cycle_title = f"{r.academic_year} 學年度 {sem_label}學期"
         for milestone in ("start_date", "end_date", "base_score_calc_date"):
             d = getattr(r, milestone)
             if not (from_ <= d <= to):

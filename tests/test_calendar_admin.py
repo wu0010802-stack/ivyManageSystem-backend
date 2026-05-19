@@ -540,6 +540,9 @@ def test_appraisal_three_milestones_per_cycle(calendar_admin_client):
     assert "結束" in by_milestone["end_date"]["title"]
     assert "基準分結算" in by_milestone["base_score_calc_date"]["title"]
 
+    # Semester.FIRST → 「上學期」(對齊 api/student_enrollment.py 慣例)
+    assert "114 學年度 上學期" in by_milestone["start_date"]["title"]
+
     for it in items:
         assert it["color"] == "#dc2626"
         assert it["link"] == f"/appraisal?cycleId={cycle_id}"
