@@ -327,3 +327,4 @@ def test_holiday_layer_basic(calendar_admin_client):
     assert by_date["2026-05-16"]["title"] == "補上 5/1"
     assert by_date["2026-05-16"]["color"] == "#6366f1"
     assert by_date["2026-05-16"]["id"] == "workday_override:2026-05-16"
+    assert by_date["2026-05-16"]["link"] is None
