@@ -170,3 +170,43 @@ def test_multi_day_recurring():
         (date(2026, 5, 12), date(2026, 5, 13)),
         (date(2026, 5, 19), date(2026, 5, 20)),
     ]
+
+
+# ----- validate_rule -----
+
+from utils.recurrence import validate_rule
+
+
+def test_validate_weekday_mismatch_rejected():
+    """rule weekday=1（週二）但 event_date 是週三 → ValueError。"""
+    with pytest.raises(ValueError, match="weekday"):
+        validate_rule(
+            event_date=date(2026, 5, 6),  # 週三
+            rule={"type": "weekly", "weekday": 1, "until": "2026-05-26"},
+        )
+
+
+def test_validate_until_over_730_days_rejected():
+    """until - event_date > 730 → ValueError runaway。"""
+    with pytest.raises(ValueError, match="730"):
+        validate_rule(
+            event_date=date(2026, 1, 1),
+            rule={"type": "weekly", "weekday": 3, "until": "2029-01-01"},  # ~1096 days
+        )
+
+
+def test_validate_unknown_type_rejected():
+    """unknown rule type → ValueError。"""
+    with pytest.raises(ValueError, match="rule type"):
+        validate_rule(
+            event_date=date(2026, 5, 5),
+            rule={"type": "yearly", "until": "2030-01-01"},
+        )
+
+
+def test_validate_monthly_day_31_for_jan_31_event_passes():
+    """event_date 是 1/31 + monthly_day 31 → 通過。"""
+    validate_rule(
+        event_date=date(2026, 1, 31),
+        rule={"type": "monthly_day", "day": 31, "until": "2026-06-30"},
+    )  # 不 raise

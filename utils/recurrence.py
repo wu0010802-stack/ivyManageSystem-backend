@@ -11,6 +11,62 @@
 import calendar as _cal
 from datetime import date, timedelta
 
+MAX_DURATION_DAYS = 730
+
+
+def validate_rule(event_date: date, rule: dict) -> None:
+    """驗證 rule 結構 + 業務規則；違反 raise ValueError。
+
+    呼叫方應在 API 入口（events.py create/update）catch 並回 422。
+    """
+    rtype = rule.get("type")
+    if rtype not in ("weekly", "monthly_day", "monthly_nth"):
+        raise ValueError(f"unknown rule type: {rtype}")
+
+    until_str = rule.get("until")
+    if not until_str:
+        raise ValueError("rule.until is required")
+    try:
+        until = date.fromisoformat(until_str)
+    except ValueError as e:
+        raise ValueError(f"rule.until invalid date: {until_str}") from e
+
+    if until <= event_date:
+        raise ValueError("rule.until must be after event_date")
+
+    if (until - event_date).days > MAX_DURATION_DAYS:
+        raise ValueError(
+            f"rule.until - event_date exceeds {MAX_DURATION_DAYS} days (runaway 防護)"
+        )
+
+    if rtype == "weekly":
+        wd = rule.get("weekday")
+        if not isinstance(wd, int) or not (0 <= wd <= 6):
+            raise ValueError("weekly.weekday must be int 0..6")
+        if event_date.weekday() != wd:
+            raise ValueError(
+                f"event_date weekday ({event_date.weekday()}) does not match rule.weekday ({wd})"
+            )
+    elif rtype == "monthly_day":
+        d = rule.get("day")
+        if not isinstance(d, int) or not (1 <= d <= 31):
+            raise ValueError("monthly_day.day must be int 1..31")
+        if event_date.day != d:
+            raise ValueError(
+                f"event_date.day ({event_date.day}) does not match rule.day ({d})"
+            )
+    elif rtype == "monthly_nth":
+        nth = rule.get("nth")
+        if not isinstance(nth, int) or not (nth in (-1, 1, 2, 3, 4, 5)):
+            raise ValueError("monthly_nth.nth must be int in {-1, 1..5}")
+        wd = rule.get("weekday")
+        if not isinstance(wd, int) or not (0 <= wd <= 6):
+            raise ValueError("monthly_nth.weekday must be int 0..6")
+        if event_date.weekday() != wd:
+            raise ValueError(
+                f"event_date weekday ({event_date.weekday()}) does not match rule.weekday ({wd})"
+            )
+
 
 def expand_event(
     event_date: date,
