@@ -1,7 +1,7 @@
 """parent_rls_phase0: 4 roles + guardians covering index（不啟用 RLS、不 GRANT）
 
 Revision ID: parlsr001
-Revises: aprsig001
+Revises: fkidx001
 Create Date: 2026-05-18
 
 Phase 0 = 基礎設施 only. 這支 migration 跑完以後：
@@ -32,7 +32,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "parlsr001"
-down_revision = "aprsig001"
+down_revision = "fkidx001"
 branch_labels = None
 depends_on = None
 
