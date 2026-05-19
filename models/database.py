@@ -129,6 +129,8 @@ from models.contact_book import (
     StudentContactBookAck,
     StudentContactBookReply,
 )
+from models.vendor_payment import VendorPayment  # noqa: F401
+from models.monthly_fixed_cost import MonthlyFixedCost  # noqa: F401
 
 __all__ = [
     # base
@@ -263,4 +265,8 @@ __all__ = [
     "ParentNotificationPreference",
     # LINE webhook reply context (Phase 5)
     "LineReplyContext",
+    # vendor payment（園務行政）
+    "VendorPayment",
+    # monthly fixed cost（月度損益表 Phase 2 手動登錄）
+    "MonthlyFixedCost",
 ]

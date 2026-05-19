@@ -4,7 +4,12 @@
 
 ## 開發指令
 
+需 Python **>=3.10**（CI 用 3.12；`python-multipart>=0.0.27` 強制升版，CVE-2026-40347/42561）。macOS 系統 `python3` 常為 3.9，請改用 Homebrew 的 `python3.11`/`python3.13` 建 venv：
+
 ```bash
+python3.13 -m venv .venv                # 首次：建立虛擬環境
+source .venv/bin/activate               # 每次開新 terminal 都要 activate
+pip install --upgrade pip
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8088   # 啟動後端
 pytest tests/ -v                         # 跑全部測試

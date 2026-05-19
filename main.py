@@ -23,6 +23,8 @@ from api.student_attendance import router as student_attendance_router
 from api.student_incidents import router as student_incidents_router
 from api.student_assessments import router as student_assessments_router
 from api.classrooms import router as classrooms_router
+from api.vendor_payments import router as vendor_payments_router
+from api.monthly_fixed_costs import router as monthly_fixed_costs_router
 from api.attendance import router as attendance_router
 from api.salary import router as salary_router, init_salary_services
 from api.disciplinary import router as disciplinary_router
@@ -620,6 +622,8 @@ app.include_router(student_attendance_router)
 app.include_router(student_incidents_router)
 app.include_router(student_assessments_router)
 app.include_router(classrooms_router)
+app.include_router(vendor_payments_router)
+app.include_router(monthly_fixed_costs_router)
 app.include_router(attendance_router)
 app.include_router(salary_router)
 app.include_router(disciplinary_router)

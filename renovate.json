@@ -1,0 +1,70 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":timezone(Asia/Taipei)"
+  ],
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rangeStrategy": "bump",
+  "labels": ["dependencies", "backend"],
+  "rebaseWhen": "behind-base-branch",
+  "commitMessagePrefix": "chore(deps):",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on thursday"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "schedule": null,
+    "prCreation": "immediate"
+  },
+  "packageRules": [
+    {
+      "description": "patch / pin / digest 自動合併（CI 綠燈就合）",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "ORM / migration 鎖在 minor 以下，避免 schema 風險",
+      "matchPackageNames": ["sqlalchemy", "alembic"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "FastAPI / Pydantic major 走人工（v2 → v3 預計大改）",
+      "matchPackageNames": ["fastapi", "starlette", "pydantic", "pydantic-core", "pydantic-settings"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Supabase / psycopg / pandas major 走人工",
+      "matchPackageNames": ["supabase", "psycopg2-binary", "pandas"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "groupName": "sqlalchemy 套件",
+      "matchPackageNames": ["sqlalchemy", "alembic", "psycopg2-binary"]
+    },
+    {
+      "groupName": "fastapi 套件",
+      "matchPackageNames": ["fastapi", "starlette", "uvicorn", "pydantic", "pydantic-core", "pydantic-settings"]
+    },
+    {
+      "groupName": "pytest 套件",
+      "matchPackageNames": ["pytest", "pytest-cov", "responses", "httpx"]
+    },
+    {
+      "groupName": "sentry sdk",
+      "matchPackageNames": ["sentry-sdk"]
+    },
+    {
+      "groupName": "reportlab + pillow",
+      "matchPackageNames": ["reportlab", "Pillow", "pillow-heif"]
+    }
+  ]
+}

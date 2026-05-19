@@ -38,10 +38,10 @@ from models.database import (
     get_session,
 )
 from services.activity_service import activity_service
-from services.report_cache_service import report_cache_service
 from utils.advisory_lock import acquire_activity_refund_lock
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
+from utils.finance_cache import invalidate_finance_summary_cache
 from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_student_pii
@@ -806,11 +806,8 @@ async def pos_checkout(
                     )
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
-        # 金流變動影響 /finance-summary 報表快取（TTL 30 分），同步失效
-        try:
-            report_cache_service.invalidate_category(None, "reports_finance_summary")
-        except Exception:
-            logger.warning("invalidate finance_summary cache failed", exc_info=True)
+        # 金流變動影響 /finance-summary 與 /monthly-pnl 報表快取（皆 TTL 30 分），同步失效
+        invalidate_finance_summary_cache()
 
         logger.warning(
             "POS checkout: receipt=%s operator=%s total=%d items=%d method=%s type=%s idk=%s",

@@ -23,10 +23,10 @@ from api.dismissal_ws import (
     MAX_BROADCAST_RETRIES,
 )
 
-
 # ---------------------------------------------------------------------------
 # 輔助
 # ---------------------------------------------------------------------------
+
 
 def _make_ws(*, recv_side_effect=None, send_raises=None):
     """建立最小化 WS mock。
@@ -38,8 +38,10 @@ def _make_ws(*, recv_side_effect=None, send_raises=None):
     ws.close = AsyncMock()
 
     if recv_side_effect is None:
+
         async def _block():
-            await asyncio.sleep(1000)   # 預設：永遠不回應
+            await asyncio.sleep(1000)  # 預設：永遠不回應
+
         ws.receive_text = _block
     else:
         ws.receive_text = recv_side_effect
@@ -60,6 +62,7 @@ def _run(coro):
 # TestRunConnectionHeartbeat
 # ---------------------------------------------------------------------------
 
+
 class TestRunConnectionHeartbeat:
 
     def test_sends_ping_periodically(self):
@@ -72,13 +75,13 @@ class TestRunConnectionHeartbeat:
                 ping_count += 1
 
         ws = _make_ws()
-        ws.send_text = _track_send   # 替換為計數 async func
+        ws.send_text = _track_send  # 替換為計數 async func
 
         async def _run_test():
             task = asyncio.create_task(
                 _run_connection(ws, ping_interval=0.01, pong_timeout=100.0)
             )
-            await asyncio.sleep(0.06)   # ~6 ping 機會
+            await asyncio.sleep(0.06)  # ~6 ping 機會
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -88,21 +91,26 @@ class TestRunConnectionHeartbeat:
 
     def test_cleanup_called_on_normal_disconnect(self):
         """WebSocketDisconnect 正常斷線後 cleanup 應被呼叫一次。"""
+
         async def _disconnect():
             raise WebSocketDisconnect(code=1000)
 
         ws = _make_ws(recv_side_effect=_disconnect)
         cleanup = MagicMock()
 
-        _run(_run_connection(ws, cleanup=cleanup, ping_interval=10.0, pong_timeout=10.0))
+        _run(
+            _run_connection(ws, cleanup=cleanup, ping_interval=10.0, pong_timeout=10.0)
+        )
         cleanup.assert_called_once()
 
     def test_cleanup_called_on_pong_timeout(self):
         """超過 pong_timeout 秒無任何訊息時 cleanup 應被呼叫，且 ws.close 被執行。"""
-        ws = _make_ws()    # receive_text 預設永遠不回應
+        ws = _make_ws()  # receive_text 預設永遠不回應
         cleanup = MagicMock()
 
-        _run(_run_connection(ws, cleanup=cleanup, ping_interval=10.0, pong_timeout=0.03))
+        _run(
+            _run_connection(ws, cleanup=cleanup, ping_interval=10.0, pong_timeout=0.03)
+        )
         cleanup.assert_called_once()
         ws.close.assert_called_once()
 
@@ -113,7 +121,9 @@ class TestRunConnectionHeartbeat:
 
         async def _run_test():
             task = asyncio.create_task(
-                _run_connection(ws, cleanup=cleanup, ping_interval=0.01, pong_timeout=100.0)
+                _run_connection(
+                    ws, cleanup=cleanup, ping_interval=0.01, pong_timeout=100.0
+                )
             )
             await asyncio.sleep(0.05)
             task.cancel()
@@ -125,6 +135,7 @@ class TestRunConnectionHeartbeat:
 
     def test_no_error_when_cleanup_is_none(self):
         """cleanup=None 時不應拋出例外。"""
+
         async def _disconnect():
             raise WebSocketDisconnect(code=1000)
 
@@ -132,8 +143,43 @@ class TestRunConnectionHeartbeat:
         # 不應拋出 TypeError / AttributeError
         _run(_run_connection(ws, cleanup=None, ping_interval=10.0, pong_timeout=10.0))
 
+    def test_client_responding_with_pong_keeps_connection_alive(self):
+        """正向回歸：client 在 pong_timeout 內持續回 pong，連線不應被踢、cleanup 不應被呼叫。
+
+        鎖住前端契約：收到 server ping 後回送任意訊息（pong）即可避免 idle timeout。
+        """
+        messages = ['{"type":"pong"}', '{"type":"pong"}', '{"type":"pong"}']
+        idx = 0
+
+        async def _respond_then_disconnect():
+            nonlocal idx
+            if idx < len(messages):
+                msg = messages[idx]
+                idx += 1
+                # 模擬 client 在 timeout 期限內回 pong
+                await asyncio.sleep(0.005)
+                return msg
+            # 三次回應後讓連線正常斷
+            raise WebSocketDisconnect(code=1000)
+
+        ws = _make_ws(recv_side_effect=_respond_then_disconnect)
+        cleanup = MagicMock()
+
+        # pong_timeout=0.05 大於每次回應的 0.005 sleep，client 有回就不該 timeout
+        _run(
+            _run_connection(ws, cleanup=cleanup, ping_interval=10.0, pong_timeout=0.05)
+        )
+
+        # 三次回應後因 WebSocketDisconnect 結束 → cleanup 呼叫一次（正常斷線）
+        cleanup.assert_called_once()
+        # 不應因 timeout 主動 close（disconnect 路徑沒有 close 呼叫）
+        ws.close.assert_not_called()
+        # 驗證 client 確實有送訊息回來（涵蓋了所有 pong）
+        assert idx == len(messages)
+
     def test_ping_not_sent_to_already_closed_connection(self):
         """斷線後 ping_task 取消，send_text 呼叫次數不會無限增長。"""
+
         async def _disconnect():
             raise WebSocketDisconnect(code=1000)
 
@@ -146,6 +192,7 @@ class TestRunConnectionHeartbeat:
 # ---------------------------------------------------------------------------
 # TestBroadcastRetry
 # ---------------------------------------------------------------------------
+
 
 class TestBroadcastRetry:
 
@@ -164,7 +211,10 @@ class TestBroadcastRetry:
     def test_retries_on_transient_failure(self):
         """第一次失敗、第二次成功時應只呼叫 send_text 兩次且連線不被移除。"""
         ws = AsyncMock()
-        ws.send_text.side_effect = [OSError("transient"), None]   # 第一次失敗，第二次成功
+        ws.send_text.side_effect = [
+            OSError("transient"),
+            None,
+        ]  # 第一次失敗，第二次成功
         mgr = self._build_manager_with_admin(ws)
 
         _run(mgr.broadcast(1, {"type": "test"}))
@@ -216,8 +266,8 @@ class TestBroadcastRetry:
         """不在指定班級的老師連線不應收到廣播。"""
         teacher_ws = AsyncMock()
         mgr = DismissalConnectionManager()
-        mgr._teacher_conns[99].append(teacher_ws)   # 班級 99，非廣播目標
+        mgr._teacher_conns[99].append(teacher_ws)  # 班級 99，非廣播目標
 
-        _run(mgr.broadcast(42, {"type": "test"}))   # 廣播給班級 42
+        _run(mgr.broadcast(42, {"type": "test"}))  # 廣播給班級 42
 
         teacher_ws.send_text.assert_not_called()

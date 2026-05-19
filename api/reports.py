@@ -20,6 +20,7 @@ from models.database import (
     SalaryRecord,
 )
 from services.finance_report_service import build_finance_detail, build_finance_summary
+from services.monthly_pnl_service import build_monthly_pnl
 from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
@@ -292,6 +293,33 @@ def get_finance_summary(
         session.close()
 
 
+@router.get("/monthly-pnl")
+def get_monthly_pnl(
+    year: int = Query(..., ge=2000, le=2100),
+    current_user: dict = Depends(require_staff_permission(Permission.REPORTS)),
+):
+    """月度損益表：試算表 layout，4 section × 12 月 × row + totals + pending_items。
+
+    Phase 1 範圍：只整合已有資料來源的 ~22 列；未整合的 user 自家詞彙、紅利細項、
+    固定費用、個別廠商分項落於 pending_items（不假裝填 0）。
+
+    快取：sub-category `reports_monthly_pnl`，TTL 30 分；與 /finance-summary 共用
+    `utils.finance_cache.invalidate_finance_summary_cache()` 失效掛鉤，所有 fees /
+    salary / activity / vendor_payments write 路徑會一併失效兩個快取。
+    """
+    session = get_session()
+    try:
+        return report_cache_service.get_or_build(
+            session,
+            category="reports_monthly_pnl",
+            ttl_seconds=FINANCE_SUMMARY_CACHE_TTL_SECONDS,
+            params={"year": year},
+            builder=lambda: build_monthly_pnl(session, year=year),
+        )
+    finally:
+        session.close()
+
+
 @router.get("/finance-summary/detail")
 def get_finance_summary_detail(
     year: int = Query(..., ge=2000, le=2100),
@@ -461,6 +489,38 @@ def export_finance_summary(
                 ws5.cell(row=i, column=4, value="—")
                 ws5.cell(row=i, column=5, value="—")
             ws5.cell(row=i, column=6, value="是" if r["is_finalized"] else "")
+
+        # Sheet 6：廠商付款明細
+        ws6 = SafeWorksheet(wb.create_sheet("廠商付款明細"))
+        _write_header(
+            ws6,
+            ["日期", "廠商", "金額", "收付方式", "項目/說明", "發票號", "狀態"],
+        )
+        _METHOD_LABEL = {
+            "cash": "現金",
+            "bank_transfer": "銀行匯款",
+            "check": "支票",
+            "linepay": "LINE Pay",
+            "other": "其他",
+        }
+        for i, r in enumerate(detail.get("vendor_payment", []), start=2):
+            ws6.cell(row=i, column=1, value=r.get("date"))
+            ws6.cell(row=i, column=2, value=r.get("vendor_name"))
+            ws6.cell(row=i, column=3, value=r["amount"])
+            ws6.cell(
+                row=i,
+                column=4,
+                value=_METHOD_LABEL.get(
+                    r.get("payment_method"), r.get("payment_method")
+                ),
+            )
+            ws6.cell(row=i, column=5, value=r.get("description"))
+            ws6.cell(row=i, column=6, value=r.get("invoice_number"))
+            ws6.cell(
+                row=i,
+                column=7,
+                value="已簽收" if r.get("status") == "signed" else "待簽收",
+            )
 
     suffix = f"{year}" + (f"-{month:02d}" if month else "-全年")
     return xlsx_streaming_response(wb, f"收支彙總_{suffix}.xlsx")
