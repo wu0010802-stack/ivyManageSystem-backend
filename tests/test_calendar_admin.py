@@ -21,6 +21,7 @@ from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
 from api.calendar_admin import router as calendar_admin_router
 from models.activity import ActivityCourse, ActivitySession
+from models.appraisal import AppraisalCycle, Semester
 from models.base import Base
 from models.database import User
 from models.employee import Employee
@@ -501,3 +502,71 @@ def test_activity_without_permission_excluded(calendar_admin_client):
     )
     assert r.status_code == 200
     assert r.json()["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# appraisal layer (Task 8)
+# ---------------------------------------------------------------------------
+
+
+def test_appraisal_three_milestones_per_cycle(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        cycle = AppraisalCycle(
+            academic_year=114,
+            semester=Semester.FIRST,
+            start_date=date(2026, 5, 5),
+            end_date=date(2026, 5, 25),
+            base_score_calc_date=date(2026, 5, 15),
+            base_score=0,
+        )
+        s.add(cycle)
+        s.commit()
+        cycle_id = cycle.id
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "appraisal"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 3
+    starts = sorted(it["start"] for it in items)
+    assert starts == ["2026-05-05", "2026-05-15", "2026-05-25"]
+
+    by_milestone = {it["meta"]["milestone"]: it for it in items}
+    assert "開始" in by_milestone["start_date"]["title"]
+    assert "結束" in by_milestone["end_date"]["title"]
+    assert "基準分結算" in by_milestone["base_score_calc_date"]["title"]
+
+    for it in items:
+        assert it["color"] == "#dc2626"
+        assert it["link"] == f"/appraisal?cycleId={cycle_id}"
+
+
+def test_appraisal_milestone_outside_window_excluded(calendar_admin_client):
+    """cycle 的 end_date 在 window 外、start_date 在 window 內 → 只下發 start。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            AppraisalCycle(
+                academic_year=114,
+                semester=Semester.FIRST,
+                start_date=date(2026, 5, 10),
+                end_date=date(2026, 8, 30),
+                base_score_calc_date=date(2026, 6, 30),
+                base_score=0,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "appraisal"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 1
+    assert items[0]["meta"]["milestone"] == "start_date"

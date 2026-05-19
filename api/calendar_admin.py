@@ -14,13 +14,18 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from models.activity import ActivityCourse, ActivitySession
+from models.appraisal import AppraisalCycle
 from models.base import get_session_dep
 from models.employee import Employee
 from models.event import Holiday, SchoolEvent, WorkdayOverride
 from models.leave import LeaveRecord
 from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse
 from utils.auth import get_current_user
-from utils.calendar_colors import ALL_LAYERS, LAYER_COLORS
+from utils.calendar_colors import (
+    ALL_LAYERS,
+    APPRAISAL_MILESTONE_LABELS,
+    LAYER_COLORS,
+)
 from utils.permissions import Permission, has_permission
 
 router = APIRouter(tags=["calendar-admin"])
@@ -237,6 +242,59 @@ def _fetch_activity(
 
 
 LAYER_FETCHERS["activity"] = _fetch_activity
+
+
+def _fetch_appraisal(
+    session: Session, from_: date, to: date, current_user: dict
+) -> list[CalendarFeedItem]:
+    """考核週期里程碑層。
+
+    一個 AppraisalCycle 拆 start_date / end_date / base_score_calc_date 三筆，
+    僅落 window 內者下發；id 用 `{cycle_id}:{milestone}` 區分。
+    """
+    if not has_permission(
+        current_user.get("permissions", 0), Permission.APPRAISAL_READ
+    ):
+        return []
+    # 三日期任一落 window 都要拉 cycle
+    stmt = select(
+        AppraisalCycle.id,
+        AppraisalCycle.academic_year,
+        AppraisalCycle.semester,
+        AppraisalCycle.start_date,
+        AppraisalCycle.end_date,
+        AppraisalCycle.base_score_calc_date,
+    ).where(
+        AppraisalCycle.start_date.between(from_, to)
+        | AppraisalCycle.end_date.between(from_, to)
+        | AppraisalCycle.base_score_calc_date.between(from_, to)
+    )
+    out: list[CalendarFeedItem] = []
+    for r in session.execute(stmt).all():
+        # semester 可能是 enum 物件、.value 取數字 / 名稱
+        sem_value = r.semester.value if hasattr(r.semester, "value") else r.semester
+        cycle_title = f"{r.academic_year} 學年度 第 {sem_value} 學期"
+        for milestone in ("start_date", "end_date", "base_score_calc_date"):
+            d = getattr(r, milestone)
+            if not (from_ <= d <= to):
+                continue
+            label = APPRAISAL_MILESTONE_LABELS[milestone]
+            out.append(
+                CalendarFeedItem(
+                    layer="appraisal",
+                    id=f"{r.id}:{milestone}",
+                    title=f"{cycle_title} {label}",
+                    start=d,
+                    end=d,
+                    color=LAYER_COLORS["appraisal"]["default"],
+                    link=f"/appraisal?cycleId={r.id}",
+                    meta={"cycle_id": r.id, "milestone": milestone},
+                )
+            )
+    return out
+
+
+LAYER_FETCHERS["appraisal"] = _fetch_appraisal
 
 
 @router.get("/admin_feed", response_model=CalendarFeedResponse)
