@@ -22,7 +22,7 @@ from api.auth import router as auth_router
 from api.calendar_admin import router as calendar_admin_router
 from models.base import Base
 from models.database import User
-from models.event import SchoolEvent
+from models.event import Holiday, SchoolEvent, WorkdayOverride
 from utils.auth import hash_password
 
 # ---------------------------------------------------------------------------
@@ -292,3 +292,38 @@ def test_event_multi_day_spanning_window_start(calendar_admin_client):
     assert len(items) == 1
     assert items[0]["start"] == "2026-04-28"
     assert items[0]["end"] == "2026-05-02"
+
+
+# ---------------------------------------------------------------------------
+# holiday layer (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def test_holiday_layer_basic(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add_all(
+            [
+                Holiday(date=date(2026, 5, 1), name="勞動節"),
+                WorkdayOverride(date=date(2026, 5, 16), name="補上 5/1"),
+            ]
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "holiday"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    by_date = {it["start"]: it for it in items}
+
+    assert by_date["2026-05-01"]["title"] == "勞動節"
+    assert by_date["2026-05-01"]["color"] == "#f59e0b"
+    assert by_date["2026-05-01"]["id"] == "holiday:2026-05-01"
+    assert by_date["2026-05-01"]["link"] is None
+
+    assert by_date["2026-05-16"]["title"] == "補上 5/1"
+    assert by_date["2026-05-16"]["color"] == "#6366f1"
+    assert by_date["2026-05-16"]["id"] == "workday_override:2026-05-16"

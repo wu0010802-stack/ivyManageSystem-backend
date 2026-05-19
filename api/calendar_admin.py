@@ -14,7 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from models.base import get_session_dep
-from models.event import SchoolEvent
+from models.event import Holiday, SchoolEvent, WorkdayOverride
 from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse
 from utils.auth import get_current_user
 from utils.calendar_colors import ALL_LAYERS, LAYER_COLORS
@@ -79,6 +79,54 @@ def _fetch_event(
 
 
 LAYER_FETCHERS["event"] = _fetch_event
+
+
+def _fetch_holiday(
+    session: Session, from_: date, to: date, current_user: dict
+) -> list[CalendarFeedItem]:
+    if not has_permission(current_user.get("permissions", 0), Permission.CALENDAR):
+        return []
+
+    holiday_rows = session.execute(
+        select(Holiday.date, Holiday.name).where(Holiday.date.between(from_, to))
+    ).all()
+    override_rows = session.execute(
+        select(WorkdayOverride.date, WorkdayOverride.name).where(
+            WorkdayOverride.date.between(from_, to)
+        )
+    ).all()
+
+    out: list[CalendarFeedItem] = []
+    for r in holiday_rows:
+        out.append(
+            CalendarFeedItem(
+                layer="holiday",
+                id=f"holiday:{r.date.isoformat()}",
+                title=r.name,
+                start=r.date,
+                end=r.date,
+                color=LAYER_COLORS["holiday"]["default"],
+                link=None,
+                meta={"kind": "holiday"},
+            )
+        )
+    for r in override_rows:
+        out.append(
+            CalendarFeedItem(
+                layer="holiday",
+                id=f"workday_override:{r.date.isoformat()}",
+                title=r.name,
+                start=r.date,
+                end=r.date,
+                color=LAYER_COLORS["holiday"]["workday_override"],
+                link=None,
+                meta={"kind": "workday_override"},
+            )
+        )
+    return out
+
+
+LAYER_FETCHERS["holiday"] = _fetch_holiday
 
 
 @router.get("/admin_feed", response_model=CalendarFeedResponse)
