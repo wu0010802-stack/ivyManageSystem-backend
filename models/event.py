@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from models.base import Base
@@ -138,6 +139,11 @@ class SchoolEvent(Base):
         comment="家長是否需簽閱此事件（家長入口顯示簽閱按鈕）",
     )
     ack_deadline = Column(Date, nullable=True, comment="家長簽閱截止日（可選）")
+    recurrence_rule = Column(
+        JSONB,
+        nullable=True,
+        comment="重複規則 JSONB；null 表單次事件",
+    )
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
