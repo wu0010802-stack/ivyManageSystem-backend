@@ -1,7 +1,16 @@
 from datetime import date
+from typing import get_args
+
 import pytest
 from pydantic import ValidationError
-from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse
+
+from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse, Layer
+from utils.calendar_colors import ALL_LAYERS
+
+
+def test_layer_literal_matches_constants():
+    """Layer Literal 與 ALL_LAYERS 必須同步；新增 layer 兩處都要改。"""
+    assert set(get_args(Layer)) == ALL_LAYERS
 
 
 def test_feed_item_minimal_valid():
