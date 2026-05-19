@@ -10,9 +10,10 @@ from datetime import date
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from models.activity import ActivityCourse, ActivitySession
 from models.base import get_session_dep
 from models.employee import Employee
 from models.event import Holiday, SchoolEvent, WorkdayOverride
@@ -178,6 +179,64 @@ def _fetch_leave(
 
 
 LAYER_FETCHERS["leave"] = _fetch_leave
+
+
+def _fetch_activity(
+    session: Session, from_: date, to: date, current_user: dict
+) -> list[CalendarFeedItem]:
+    """課後才藝場次層。
+
+    session_no 取「該課程內依 session_date 升序之全域序號」（不是 window 內序號），
+    以維持「第 N 堂」對使用者的穩定語意；用 SQL window function 一次算出，再以
+    outer where 過濾 date window 與課程 JOIN — 單 query、無 N+1。
+    """
+    if not has_permission(current_user.get("permissions", 0), Permission.ACTIVITY_READ):
+        return []
+
+    session_no_col = (
+        func.row_number()
+        .over(
+            partition_by=ActivitySession.course_id,
+            order_by=ActivitySession.session_date,
+        )
+        .label("session_no")
+    )
+    numbered = select(
+        ActivitySession.id.label("id"),
+        ActivitySession.course_id.label("course_id"),
+        ActivitySession.session_date.label("session_date"),
+        session_no_col,
+    ).subquery()
+
+    stmt = (
+        select(
+            numbered.c.id,
+            numbered.c.course_id,
+            numbered.c.session_date,
+            numbered.c.session_no,
+            ActivityCourse.name.label("course_name"),
+        )
+        .join(ActivityCourse, ActivityCourse.id == numbered.c.course_id)
+        .where(numbered.c.session_date.between(from_, to))
+    )
+    out: list[CalendarFeedItem] = []
+    for r in session.execute(stmt).all():
+        out.append(
+            CalendarFeedItem(
+                layer="activity",
+                id=r.id,
+                title=f"{r.course_name} 第{r.session_no}堂",
+                start=r.session_date,
+                end=r.session_date,
+                color=LAYER_COLORS["activity"]["default"],
+                link=f"/activity?courseId={r.course_id}",
+                meta={"course_id": r.course_id, "session_no": r.session_no},
+            )
+        )
+    return out
+
+
+LAYER_FETCHERS["activity"] = _fetch_activity
 
 
 @router.get("/admin_feed", response_model=CalendarFeedResponse)

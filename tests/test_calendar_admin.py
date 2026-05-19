@@ -20,6 +20,7 @@ import models.base as base_module
 from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
 from api.calendar_admin import router as calendar_admin_router
+from models.activity import ActivityCourse, ActivitySession
 from models.base import Base
 from models.database import User
 from models.employee import Employee
@@ -434,6 +435,68 @@ def test_leave_without_permission_excluded(calendar_admin_client):
     r = client.get(
         "/api/calendar/admin_feed",
         params={"from": "2026-05-01", "to": "2026-05-31", "layers": "leave"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# activity layer (Task 7)
+# ---------------------------------------------------------------------------
+
+
+def test_activity_layer_joins_course_name(calendar_admin_client):
+    """場次帶出課程名 + 「第 N 堂」（N 為該課程內依日期排序之序號，跨 window 全域）。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        course = ActivityCourse(name="陶藝班", price=2000)
+        s.add(course)
+        s.flush()
+        # 額外塞一筆 window 外的早場次，驗證 session_no 是全域序號 (=1)
+        # 落在 window 內的兩堂應為第 2、3 堂
+        s.add_all(
+            [
+                ActivitySession(course_id=course.id, session_date=date(2026, 4, 26)),
+                ActivitySession(course_id=course.id, session_date=date(2026, 5, 10)),
+                ActivitySession(course_id=course.id, session_date=date(2026, 5, 17)),
+            ]
+        )
+        s.commit()
+        course_id = course.id
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "activity"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 2
+    titles = sorted(it["title"] for it in items)
+    assert titles == ["陶藝班 第2堂", "陶藝班 第3堂"]
+    for it in items:
+        assert it["layer"] == "activity"
+        assert it["color"] == "#ec4899"
+        assert it["link"] == f"/activity?courseId={course_id}"
+        assert it["meta"]["course_id"] == course_id
+
+
+def test_activity_without_permission_excluded(calendar_admin_client):
+    """無 ACTIVITY_READ (1<<27) caller 看不到 activity layer。"""
+    client, sf = calendar_admin_client
+    tok = _login_with_permissions(client, sf, "viewer_act", 1 << 2)  # CALENDAR only
+    with sf() as s:
+        course = ActivityCourse(name="繪畫", price=1500)
+        s.add(course)
+        s.flush()
+        s.add(ActivitySession(course_id=course.id, session_date=date(2026, 5, 10)))
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "activity"},
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.status_code == 200
