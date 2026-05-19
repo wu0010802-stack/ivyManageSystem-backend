@@ -25,7 +25,7 @@ from models.appraisal import AppraisalCycle, Semester
 from models.base import Base
 from models.database import User
 from models.employee import Employee
-from models.event import Holiday, SchoolEvent, WorkdayOverride
+from models.event import Holiday, MeetingRecord, SchoolEvent, WorkdayOverride
 from models.leave import LeaveRecord
 from utils.auth import hash_password
 
@@ -573,3 +573,57 @@ def test_appraisal_milestone_outside_window_excluded(calendar_admin_client):
     items = r.json()["items"]
     assert len(items) == 1
     assert items[0]["meta"]["milestone"] == "start_date"
+
+
+# ---------------------------------------------------------------------------
+# meeting layer (Task 9)
+# ---------------------------------------------------------------------------
+
+
+def test_meeting_layer_dedupes_by_date_and_type(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    emp1 = _make_employee(sf, name="A 老師", employee_id="E0010")
+    emp2 = _make_employee(sf, name="B 老師", employee_id="E0011")
+    with sf() as s:
+        # 同一場園務會議：兩員工各自一 row
+        s.add_all(
+            [
+                MeetingRecord(
+                    employee_id=emp1,
+                    meeting_date=date(2026, 5, 14),
+                    meeting_type="staff_meeting",
+                    attended=True,
+                ),
+                MeetingRecord(
+                    employee_id=emp2,
+                    meeting_date=date(2026, 5, 14),
+                    meeting_type="staff_meeting",
+                    attended=True,
+                ),
+                # 另一天另一場
+                MeetingRecord(
+                    employee_id=emp1,
+                    meeting_date=date(2026, 5, 21),
+                    meeting_type="staff_meeting",
+                    attended=False,
+                ),
+            ]
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "meeting"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 2  # DISTINCT (date, type)
+    titles = {it["title"] for it in items}
+    assert titles == {"園務會議"}
+    starts = sorted(it["start"] for it in items)
+    assert starts == ["2026-05-14", "2026-05-21"]
+    for it in items:
+        assert it["color"] == "#8b5cf6"
+        assert it["id"].startswith("staff_meeting:")
+        assert it["link"] == f"/meetings?date={it['start']}"

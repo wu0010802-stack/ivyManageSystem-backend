@@ -17,7 +17,7 @@ from models.activity import ActivityCourse, ActivitySession
 from models.appraisal import AppraisalCycle
 from models.base import get_session_dep
 from models.employee import Employee
-from models.event import Holiday, SchoolEvent, WorkdayOverride
+from models.event import Holiday, MeetingRecord, SchoolEvent, WorkdayOverride
 from models.leave import LeaveRecord
 from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse
 from utils.auth import get_current_user
@@ -25,6 +25,7 @@ from utils.calendar_colors import (
     ALL_LAYERS,
     APPRAISAL_MILESTONE_LABELS,
     LAYER_COLORS,
+    MEETING_TYPE_LABELS,
 )
 from utils.permissions import Permission, has_permission
 
@@ -297,6 +298,38 @@ def _fetch_appraisal(
 
 
 LAYER_FETCHERS["appraisal"] = _fetch_appraisal
+
+
+def _fetch_meeting(
+    session: Session, from_: date, to: date, current_user: dict
+) -> list[CalendarFeedItem]:
+    """園務會議層：DISTINCT (date, type) 聚合，多員工出席同場只下發一筆。"""
+    if not has_permission(current_user.get("permissions", 0), Permission.MEETINGS):
+        return []
+    stmt = (
+        select(MeetingRecord.meeting_date, MeetingRecord.meeting_type)
+        .where(MeetingRecord.meeting_date.between(from_, to))
+        .distinct()
+    )
+    out: list[CalendarFeedItem] = []
+    for r in session.execute(stmt).all():
+        label = MEETING_TYPE_LABELS.get(r.meeting_type, r.meeting_type)
+        out.append(
+            CalendarFeedItem(
+                layer="meeting",
+                id=f"{r.meeting_type}:{r.meeting_date.isoformat()}",
+                title=label,
+                start=r.meeting_date,
+                end=r.meeting_date,
+                color=LAYER_COLORS["meeting"]["default"],
+                link=f"/meetings?date={r.meeting_date.isoformat()}",
+                meta={"meeting_type": r.meeting_type},
+            )
+        )
+    return out
+
+
+LAYER_FETCHERS["meeting"] = _fetch_meeting
 
 
 @router.get("/admin_feed", response_model=CalendarFeedResponse)
