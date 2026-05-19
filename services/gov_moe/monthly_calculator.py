@@ -8,12 +8,10 @@ DB query helper：working_days_in_month, classroom_at_month_end
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Iterable
-
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models.classroom import Student, StudentAttendance
@@ -258,7 +256,7 @@ def build_snapshot_rows(
                 "foreign_count": agg.foreign,
                 "expected_attendance_days": agg.expected_days,
                 "actual_attendance_days": agg.actual_days,
-                "attendance_rate": rate,
+                "attendance_rate": rate,  # 萬分比整數，e.g. 9543 = 95.43%
                 "snapshot_date": last,
                 "generated_at": now,
                 "generated_by": generated_by,

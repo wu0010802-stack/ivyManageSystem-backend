@@ -376,6 +376,27 @@ class TestBuildSnapshotRows:
         assert "4-5" in ag_groups
         assert "3-4" in ag_groups
 
+        # 驗各 group 的特殊屬性聚合（spec 核心數字）
+        # S002(越南/弱勢,3-4) + S003(障礙/原住民,3-4)，S001(本國,4-5)
+        row_3_4 = next(
+            r
+            for r in rows
+            if r["age_group"] == "3-4" and r["classroom_id"] == classroom_id
+        )
+        assert row_3_4["foreign_count"] == 1  # S002 越南
+        assert row_3_4["disadvantaged_count"] == 1  # S002
+        assert row_3_4["disability_count"] == 1  # S003
+        assert row_3_4["indigenous_count"] == 1  # S003
+
+        row_4_5 = next(
+            r
+            for r in rows
+            if r["age_group"] == "4-5" and r["classroom_id"] == classroom_id
+        )
+        # S001(本國,無特殊) + sample_classroom_context T001(本國,4-5) → 無特殊 flags
+        assert row_4_5["foreign_count"] == 0
+        assert row_4_5["disability_count"] == 0
+
     def test_excludes_prospect_lifecycle(
         self, test_db_session, sample_classroom_context
     ):
@@ -397,5 +418,4 @@ class TestBuildSnapshotRows:
         total = sum(r["total_count"] for r in rows)
         # sample_classroom_context fixture 預設 active student；prospect 不算
         # 結果應只算入 active student，不包含 prospect
-        # 用較寬鬆斷言：只要 total <= 預設 fixture student 數量即可
-        assert total <= 1
+        assert total == 1  # active T001 算入，prospect S099 應被排除
