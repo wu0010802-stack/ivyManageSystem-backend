@@ -22,6 +22,7 @@ from api.auth import router as auth_router
 from api.calendar_admin import router as calendar_admin_router
 from models.base import Base
 from models.database import User
+from models.event import SchoolEvent
 from utils.auth import hash_password
 
 # ---------------------------------------------------------------------------
@@ -162,8 +163,6 @@ def test_unknown_layer_ignored(calendar_admin_client):
 # event layer (Task 4)
 # ---------------------------------------------------------------------------
 
-from models.event import SchoolEvent
-
 
 def test_event_layer_basic(calendar_admin_client):
     client, sf = calendar_admin_client
@@ -264,3 +263,32 @@ def test_event_inactive_excluded(calendar_admin_client):
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.json()["items"] == []
+
+
+def test_event_multi_day_spanning_window_start(calendar_admin_client):
+    """event_date 在 window 開始前但 end_date 落入 window 內 → 應被納入。
+
+    鎖定 overlap clause 的非 NULL 分支（end_date >= from_）。
+    """
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="跨月活動",
+                event_date=date(2026, 4, 28),
+                end_date=date(2026, 5, 2),
+                is_active=True,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 1
+    assert items[0]["start"] == "2026-04-28"
+    assert items[0]["end"] == "2026-05-02"
