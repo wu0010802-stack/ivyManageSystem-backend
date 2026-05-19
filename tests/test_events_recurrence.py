@@ -170,3 +170,98 @@ def test_update_event_clear_recurrence(events_client):
     )
     assert r.status_code == 200, r.text
     assert r.json()["recurrence_rule"] is None
+
+
+# ----- Phase B drag-rescheduled tests -----
+
+
+def test_drag_patch_updates_single_event_date(events_client):
+    """單次事件 PUT 改 event_date → 200，模擬 FC 拖拉改期。"""
+    client, sf = events_client
+    tok = _login_admin(client, sf)
+    r = client.post(
+        "/api/events",
+        json={
+            "title": "single",
+            "event_date": "2026-05-05",
+            "event_type": "meeting",
+        },
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 201, r.text
+    eid = r.json()["id"]
+
+    r = client.put(
+        f"/api/events/{eid}",
+        json={"event_date": "2026-05-12"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["event_date"] == "2026-05-12"
+
+
+def test_drag_patch_rejects_recurring_event_date_change(events_client):
+    """重複事件 PUT 只改 event_date（沒帶 recurrence_rule） → 422。"""
+    client, sf = events_client
+    tok = _login_admin(client, sf)
+    r = client.post(
+        "/api/events",
+        json={
+            "title": "recurring",
+            "event_date": "2026-05-05",
+            "event_type": "meeting",
+            "recurrence_rule": {
+                "type": "weekly",
+                "weekday": 1,
+                "until": "2026-06-30",
+            },
+        },
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 201, r.text
+    eid = r.json()["id"]
+
+    r = client.put(
+        f"/api/events/{eid}",
+        json={"event_date": "2026-05-12"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 422, r.text
+    assert "重複事件" in r.json()["detail"]
+
+
+def test_drag_patch_recurring_with_explicit_rule_change_passes(events_client):
+    """重複事件同時改 event_date + recurrence_rule → 200（dialog 編輯路徑）。"""
+    client, sf = events_client
+    tok = _login_admin(client, sf)
+    r = client.post(
+        "/api/events",
+        json={
+            "title": "recurring",
+            "event_date": "2026-05-05",
+            "event_type": "meeting",
+            "recurrence_rule": {
+                "type": "weekly",
+                "weekday": 1,
+                "until": "2026-06-30",
+            },
+        },
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    eid = r.json()["id"]
+
+    # event_date 2026-05-12 (Tuesday, weekday=1) 對齊 rule.weekday=1
+    r = client.put(
+        f"/api/events/{eid}",
+        json={
+            "event_date": "2026-05-12",
+            "recurrence_rule": {
+                "type": "weekly",
+                "weekday": 1,
+                "until": "2026-07-31",
+            },
+        },
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["event_date"] == "2026-05-12"

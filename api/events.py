@@ -238,6 +238,19 @@ def update_event(
                 status_code=400, detail=f"無效的事件類型: {update_data['event_type']}"
             )
 
+        # Phase B 拖拉改期防護：recurring event 改 event_date/end_date 但沒同時
+        # 改 recurrence_rule，多半是 admin 從 FullCalendar 拖出來的——拒絕，要求
+        # 從編輯 dialog 走，避免「拖一次只改一筆」的 UX 陷阱。
+        if (
+            ev.recurrence_rule is not None
+            and ("event_date" in update_data or "end_date" in update_data)
+            and "recurrence_rule" not in data.model_fields_set
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="重複事件不支援直接改期，請從編輯對話框修改規則",
+            )
+
         # recurrence_rule：用 model_fields_set 區分 "未傳" vs "顯式 null"
         # 只有顯式傳了才驗證/覆寫；顯式 null 表清空回單次事件
         if "recurrence_rule" in data.model_fields_set:
