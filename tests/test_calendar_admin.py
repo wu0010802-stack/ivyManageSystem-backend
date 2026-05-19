@@ -328,6 +328,92 @@ def test_event_multi_day_spanning_window_start(calendar_admin_client):
 
 
 # ---------------------------------------------------------------------------
+# Phase B：event 時段（start_time / end_time）→ datetime
+# ---------------------------------------------------------------------------
+
+
+def test_event_with_start_time_returns_datetime(calendar_admin_client):
+    """start_time + end_time 都有值 → all_day=False + ISO datetime。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="教師研習",
+                event_date=date(2026, 5, 20),
+                start_time="09:30",
+                end_time="11:00",
+                is_active=True,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 1
+    it = items[0]
+    assert it["all_day"] is False
+    assert it["start"] == "2026-05-20T09:30:00"
+    assert it["end"] == "2026-05-20T11:00:00"
+
+
+def test_event_without_start_time_remains_all_day(calendar_admin_client):
+    """無 start_time → 維持 Phase A all-day + date string。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="園遊會",
+                event_date=date(2026, 5, 20),
+                is_active=True,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 1
+    assert items[0]["all_day"] is True
+    assert items[0]["start"] == "2026-05-20"
+    assert items[0]["end"] == "2026-05-20"
+
+
+def test_event_partial_time_falls_back_to_all_day(calendar_admin_client):
+    """只有 start_time 沒 end_time → fallback all-day（不爆 None.isoformat）。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="半邊時段",
+                event_date=date(2026, 5, 20),
+                start_time="09:00",
+                end_time=None,
+                is_active=True,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 1
+    assert items[0]["all_day"] is True
+
+
+# ---------------------------------------------------------------------------
 # holiday layer (Task 5)
 # ---------------------------------------------------------------------------
 
