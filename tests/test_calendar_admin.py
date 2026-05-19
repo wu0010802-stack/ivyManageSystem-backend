@@ -795,3 +795,64 @@ def test_meta_does_not_leak_pii(calendar_admin_client):
     for it in r.json()["items"]:
         leaked = set(it["meta"].keys()) & forbidden
         assert not leaked, f"meta leaked PII keys: {leaked} in item {it}"
+
+
+# ---------------------------------------------------------------------------
+# recurrence layer (Phase C)
+# ---------------------------------------------------------------------------
+
+
+def test_admin_feed_expands_weekly_event(calendar_admin_client):
+    """source event 含 weekly rule → admin_feed 展開成多筆 occurrence。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        ev = SchoolEvent(
+            title="園務週會",
+            event_date=date(2026, 5, 5),
+            is_active=True,
+            recurrence_rule={"type": "weekly", "weekday": 1, "until": "2026-05-26"},
+        )
+        s.add(ev)
+        s.commit()
+        eid = ev.id
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 4
+    starts = sorted(it["start"] for it in items)
+    assert starts == ["2026-05-05", "2026-05-12", "2026-05-19", "2026-05-26"]
+    for it in items:
+        assert it["id"].startswith(f"{eid}@")
+
+
+def test_admin_feed_source_before_window_returns_in_window_occurrences(
+    calendar_admin_client,
+):
+    """source event_date 在 window 前，rule 展開的 occurrence 在 window 內 → 應拉到。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="跨季週會",
+                event_date=date(2026, 1, 6),  # 週二
+                is_active=True,
+                recurrence_rule={"type": "weekly", "weekday": 1, "until": "2026-12-29"},
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 4
+    starts = sorted(it["start"] for it in items)
+    assert starts == ["2026-05-05", "2026-05-12", "2026-05-19", "2026-05-26"]

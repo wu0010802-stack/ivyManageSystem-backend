@@ -28,6 +28,7 @@ from utils.calendar_colors import (
     MEETING_TYPE_LABELS,
 )
 from utils.permissions import Permission, has_permission
+from utils.recurrence import expand_event
 
 router = APIRouter(tags=["calendar-admin"])
 
@@ -51,13 +52,21 @@ def _fetch_event(
             SchoolEvent.end_date,
             SchoolEvent.requires_acknowledgment,
             SchoolEvent.event_type,
+            SchoolEvent.recurrence_rule,
         )
         .where(SchoolEvent.is_active.is_(True))
-        .where(SchoolEvent.event_date <= to)
         .where(
             or_(
-                SchoolEvent.end_date.is_(None) & (SchoolEvent.event_date >= from_),
-                SchoolEvent.end_date.is_not(None) & (SchoolEvent.end_date >= from_),
+                # 非重複：原 overlap
+                SchoolEvent.recurrence_rule.is_(None)
+                & (SchoolEvent.event_date <= to)
+                & or_(
+                    SchoolEvent.end_date.is_(None) & (SchoolEvent.event_date >= from_),
+                    SchoolEvent.end_date.is_not(None) & (SchoolEvent.end_date >= from_),
+                ),
+                # 重複：source event_date <= to；until check 留給 Python expander
+                SchoolEvent.recurrence_rule.is_not(None)
+                & (SchoolEvent.event_date <= to),
             )
         )
     )
@@ -68,22 +77,32 @@ def _fetch_event(
             if r.requires_acknowledgment
             else LAYER_COLORS["event"]["default"]
         )
-        out.append(
-            CalendarFeedItem(
-                layer="event",
-                id=r.id,
-                title=r.title,
-                start=r.event_date,
-                end=r.end_date or r.event_date,
-                all_day=True,
-                color=color,
-                link=f"/calendar?eventId={r.id}",
-                meta={
-                    "event_type": r.event_type,
-                    "requires_acknowledgment": r.requires_acknowledgment,
-                },
-            )
+        occurrences = expand_event(
+            r.event_date,
+            r.end_date,
+            r.recurrence_rule,
+            from_,
+            to,
         )
+        for occ_start, occ_end in occurrences:
+            item_id = f"{r.id}@{occ_start.isoformat()}" if r.recurrence_rule else r.id
+            out.append(
+                CalendarFeedItem(
+                    layer="event",
+                    id=item_id,
+                    title=r.title,
+                    start=occ_start,
+                    end=occ_end,
+                    all_day=True,
+                    color=color,
+                    link=f"/calendar?eventId={r.id}",
+                    meta={
+                        "event_type": r.event_type,
+                        "requires_acknowledgment": r.requires_acknowledgment,
+                        "is_recurring": r.recurrence_rule is not None,
+                    },
+                )
+            )
     return out
 
 
