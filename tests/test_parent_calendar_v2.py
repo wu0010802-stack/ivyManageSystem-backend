@@ -28,6 +28,7 @@ from models.database import (
     Base,
     Classroom,
     Guardian,
+    SchoolEvent,
     Student,
     StudentContactBookEntry,
     StudentLeaveRequest,
@@ -283,3 +284,157 @@ class TestMonthEndpoint:
         assert body["year"] == today.year
         assert body["month"] == today.month
         assert body["from"].startswith(f"{today.year}-{today.month:02d}-01")
+
+
+class TestRecurringSchoolEvent:
+    """Phase C T7：家長端 week/month agenda 展開 recurrence_rule。"""
+
+    def test_weekly_recurring_event_expands_in_week_agenda(self, parent_client):
+        """每週重複事件在 7 天 window 內展開為 1 個 occurrence（含當日）。"""
+        client, sf = parent_client
+        today = date.today()
+        with sf() as s:
+            _classroom, parent, _child_a, _child_b = _setup(s)
+            ev = SchoolEvent(
+                title="親子讀書會",
+                event_date=today,
+                event_type="activity",
+                is_active=True,
+                is_all_day=True,
+                recurrence_rule={
+                    "type": "weekly",
+                    "weekday": today.weekday(),
+                    "until": (today + timedelta(days=60)).isoformat(),
+                },
+            )
+            s.add(ev)
+            s.commit()
+            tok = _token(parent)
+
+        r = client.get(
+            "/api/parent/calendar/week?days=7",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code == 200, r.text
+        events = [it for it in r.json()["items"] if it["kind"] == "event"]
+        # 7 天 window 含一次 occurrence（今天）
+        assert len(events) == 1
+        assert events[0]["title"] == "親子讀書會"
+        assert events[0]["is_recurring"] is True
+        assert events[0]["occurrence_date"] == today.isoformat()
+
+    def test_weekly_recurring_event_expands_in_month_agenda(self, parent_client):
+        """每週重複事件在月 window 內展開為多個 occurrence（>=4）。"""
+        client, sf = parent_client
+        today = date.today()
+        # 用今天當週的星期作為錨點以確保至少 4 次出現
+        anchor = today.replace(day=1)
+        # 把 anchor 推到月初第一個與 today 同星期的日子
+        while anchor.weekday() != today.weekday():
+            anchor += timedelta(days=1)
+        target_year, target_month = today.year, today.month
+        with sf() as s:
+            _classroom, parent, _child_a, _child_b = _setup(s)
+            ev = SchoolEvent(
+                title="每週故事時間",
+                event_date=anchor,
+                event_type="activity",
+                is_active=True,
+                is_all_day=True,
+                recurrence_rule={
+                    "type": "weekly",
+                    "weekday": anchor.weekday(),
+                    "until": (anchor + timedelta(days=120)).isoformat(),
+                },
+            )
+            s.add(ev)
+            s.commit()
+            tok = _token(parent)
+
+        r = client.get(
+            f"/api/parent/calendar/month?year={target_year}&month={target_month}",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code == 200, r.text
+        events = [
+            it
+            for it in r.json()["items"]
+            if it["kind"] == "event" and it["title"] == "每週故事時間"
+        ]
+        # 一個月內同 weekday 至少 4 次
+        assert len(events) >= 4
+        # 每個 occurrence 都標記 is_recurring 且帶 occurrence_date
+        for ev_item in events:
+            assert ev_item["is_recurring"] is True
+            assert "occurrence_date" in ev_item
+        # 同事件不同 occurrence target_id 相同（指 source event）
+        assert len({ev_item["target_id"] for ev_item in events}) == 1
+
+    def test_non_recurring_event_still_works(self, parent_client):
+        """無 recurrence_rule 的事件保持原行為，extra.is_recurring=False。"""
+        client, sf = parent_client
+        today = date.today()
+        with sf() as s:
+            _classroom, parent, _child_a, _child_b = _setup(s)
+            ev = SchoolEvent(
+                title="一次性家長會",
+                event_date=today + timedelta(days=2),
+                event_type="meeting",
+                is_active=True,
+                is_all_day=True,
+                recurrence_rule=None,
+            )
+            s.add(ev)
+            s.commit()
+            tok = _token(parent)
+
+        r = client.get(
+            "/api/parent/calendar/week?days=7",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code == 200, r.text
+        events = [
+            it
+            for it in r.json()["items"]
+            if it["kind"] == "event" and it["title"] == "一次性家長會"
+        ]
+        assert len(events) == 1
+        assert events[0]["is_recurring"] is False
+        assert isinstance(events[0]["target_id"], int)
+        assert "occurrence_date" in events[0]
+
+    def test_recurring_event_until_terminates_expansion(self, parent_client):
+        """until 之後不再展開：until 設今天，month 只看到今天這次。"""
+        client, sf = parent_client
+        today = date.today()
+        with sf() as s:
+            _classroom, parent, _child_a, _child_b = _setup(s)
+            ev = SchoolEvent(
+                title="收尾活動",
+                event_date=today,
+                event_type="activity",
+                is_active=True,
+                is_all_day=True,
+                recurrence_rule={
+                    "type": "weekly",
+                    "weekday": today.weekday(),
+                    "until": today.isoformat(),  # 同日結束
+                },
+            )
+            s.add(ev)
+            s.commit()
+            tok = _token(parent)
+
+        r = client.get(
+            f"/api/parent/calendar/month?year={today.year}&month={today.month}",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code == 200, r.text
+        events = [
+            it
+            for it in r.json()["items"]
+            if it["kind"] == "event" and it["title"] == "收尾活動"
+        ]
+        # until=今天 → 只有今天一次
+        assert len(events) == 1
+        assert events[0]["occurrence_date"] == today.isoformat()

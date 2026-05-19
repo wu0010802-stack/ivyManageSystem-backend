@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, or_
 
 from models.database import (
     Announcement,
@@ -47,6 +48,7 @@ from models.database import (
 )
 from models.fees import StudentFeeRecord
 from utils.auth import require_parent_role
+from utils.recurrence import expand_event
 
 from ._shared import _get_parent_student_ids
 
@@ -127,39 +129,63 @@ def _aggregate_period(
         }
 
     # 1) 行事曆事件（家庭層級，不依 student_id 過濾）
+    #    支援 recurrence_rule：用 utils.recurrence.expand_event 展開每個 occurrence
+    #    SQL 用 event_date < end（SQLite-friendly），window clipping 由 Python expander 處理
+    window_from = start
+    window_to = end - timedelta(days=1)  # expand_event 為 inclusive 雙端
     events = (
         session.query(SchoolEvent)
+        .filter(SchoolEvent.is_active == True)  # noqa: E712
         .filter(
-            SchoolEvent.is_active == True,  # noqa: E712
-            SchoolEvent.event_date < end,
+            or_(
+                # 非重複：原 overlap 行為
+                and_(
+                    SchoolEvent.recurrence_rule.is_(None),
+                    SchoolEvent.event_date < end,
+                ),
+                # 重複：source event_date < end；until check 留給 Python expander
+                and_(
+                    SchoolEvent.recurrence_rule.is_not(None),
+                    SchoolEvent.event_date < end,
+                ),
+            )
         )
         .all()
     )
     for ev in events:
-        start_d = ev.event_date
-        end_d = ev.end_date or ev.event_date
-        if end_d < start:
-            continue
-        display_d = start_d if start_d >= start else start
-        subtitle = _EVENT_TYPE_LABEL.get(ev.event_type, ev.event_type or "")
-        if ev.is_all_day is False and ev.start_time:
-            subtitle = f"{subtitle}・{ev.start_time}"
-        if ev.location:
-            subtitle = f"{subtitle}・{ev.location}" if subtitle else ev.location
-        kind = "holiday" if ev.event_type == "holiday" else "event"
-        items.append(
-            _make_item(
-                item_date=display_d,
-                kind=kind,
-                title=ev.title,
-                subtitle=subtitle,
-                target_id=ev.id,
-                ref_type="school_event",
-                extra={
-                    "requires_acknowledgment": bool(ev.requires_acknowledgment),
-                },
-            )
+        occurrences = expand_event(
+            ev.event_date,
+            ev.end_date,
+            ev.recurrence_rule,
+            window_from,
+            window_to,
         )
+        for occ_start, occ_end in occurrences:
+            # window clipping：display date 不早於 window 起點
+            display_d = occ_start if occ_start >= start else start
+            subtitle = _EVENT_TYPE_LABEL.get(ev.event_type, ev.event_type or "")
+            if ev.is_all_day is False and ev.start_time:
+                subtitle = f"{subtitle}・{ev.start_time}"
+            if ev.location:
+                subtitle = f"{subtitle}・{ev.location}" if subtitle else ev.location
+            kind = "holiday" if ev.event_type == "holiday" else "event"
+            # target_id 保留為 source event.id（deep-link 用），
+            # occurrence 由 extra.occurrence_date 區分，前端 :key 用 "id@date" 組裝
+            items.append(
+                _make_item(
+                    item_date=display_d,
+                    kind=kind,
+                    title=ev.title,
+                    subtitle=subtitle,
+                    target_id=ev.id,
+                    ref_type="school_event",
+                    extra={
+                        "requires_acknowledgment": bool(ev.requires_acknowledgment),
+                        "is_recurring": ev.recurrence_rule is not None,
+                        "occurrence_date": occ_start.isoformat(),
+                    },
+                )
+            )
 
     # 2) 繳費截止（學生層級）
     if target_student_ids:
