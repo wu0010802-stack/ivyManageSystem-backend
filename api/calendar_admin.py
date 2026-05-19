@@ -14,7 +14,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from models.base import get_session_dep
+from models.employee import Employee
 from models.event import Holiday, SchoolEvent, WorkdayOverride
+from models.leave import LeaveRecord
 from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse
 from utils.auth import get_current_user
 from utils.calendar_colors import ALL_LAYERS, LAYER_COLORS
@@ -127,6 +129,55 @@ def _fetch_holiday(
 
 
 LAYER_FETCHERS["holiday"] = _fetch_holiday
+
+
+def _fetch_leave(
+    session: Session, from_: date, to: date, current_user: dict
+) -> list[CalendarFeedItem]:
+    if not has_permission(current_user.get("permissions", 0), Permission.LEAVES_READ):
+        return []
+    stmt = (
+        select(
+            LeaveRecord.id,
+            LeaveRecord.start_date,
+            LeaveRecord.end_date,
+            LeaveRecord.leave_type,
+            LeaveRecord.is_approved,
+            Employee.name.label("employee_name"),
+        )
+        .join(Employee, Employee.id == LeaveRecord.employee_id)
+        .where(LeaveRecord.start_date <= to)
+        .where(LeaveRecord.end_date >= from_)
+        .where(
+            or_(
+                LeaveRecord.is_approved.is_(None),
+                LeaveRecord.is_approved.is_(True),
+            )
+        )
+    )
+    out: list[CalendarFeedItem] = []
+    for r in session.execute(stmt).all():
+        is_pending = r.is_approved is None
+        color = LAYER_COLORS["leave"]["pending" if is_pending else "default"]
+        out.append(
+            CalendarFeedItem(
+                layer="leave",
+                id=r.id,
+                title=f"{r.employee_name} {r.leave_type}",
+                start=r.start_date,
+                end=r.end_date,
+                color=color,
+                link=f"/leaves?id={r.id}",
+                meta={
+                    "status": "pending" if is_pending else "approved",
+                    "leave_type": r.leave_type,
+                },
+            )
+        )
+    return out
+
+
+LAYER_FETCHERS["leave"] = _fetch_leave
 
 
 @router.get("/admin_feed", response_model=CalendarFeedResponse)

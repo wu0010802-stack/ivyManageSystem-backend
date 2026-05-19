@@ -22,7 +22,9 @@ from api.auth import router as auth_router
 from api.calendar_admin import router as calendar_admin_router
 from models.base import Base
 from models.database import User
+from models.employee import Employee
 from models.event import Holiday, SchoolEvent, WorkdayOverride
+from models.leave import LeaveRecord
 from utils.auth import hash_password
 
 # ---------------------------------------------------------------------------
@@ -76,6 +78,35 @@ def _login_admin(client, session_factory):
         s.commit()
     resp = client.post(
         "/api/auth/login", json={"username": "admin", "password": "AdminPass1"}
+    )
+    return resp.json().get("access_token") or resp.cookies.get("access_token")
+
+
+def _make_employee(session_factory, name="王老師", employee_id="E0001"):
+    """造員工 — 至少必填 employee_id(unique)+name。"""
+    with session_factory() as s:
+        emp = Employee(employee_id=employee_id, name=name)
+        s.add(emp)
+        s.commit()
+        s.refresh(emp)
+        return emp.id
+
+
+def _login_with_permissions(client, session_factory, username, permissions_int):
+    """造一個指定 permissions 的 user 並登入；用於跨權限矩陣測試。"""
+    with session_factory() as s:
+        s.add(
+            User(
+                username=username,
+                password_hash=hash_password("Pass1234"),
+                role="staff",
+                permissions=permissions_int,
+                is_active=True,
+            )
+        )
+        s.commit()
+    resp = client.post(
+        "/api/auth/login", json={"username": username, "password": "Pass1234"}
     )
     return resp.json().get("access_token") or resp.cookies.get("access_token")
 
@@ -328,3 +359,82 @@ def test_holiday_layer_basic(calendar_admin_client):
     assert by_date["2026-05-16"]["color"] == "#6366f1"
     assert by_date["2026-05-16"]["id"] == "workday_override:2026-05-16"
     assert by_date["2026-05-16"]["link"] is None
+
+
+# ---------------------------------------------------------------------------
+# leave layer (Task 6)
+# ---------------------------------------------------------------------------
+
+
+def test_leave_layer_approved_and_pending(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    emp_id = _make_employee(sf)
+    with sf() as s:
+        s.add_all(
+            [
+                LeaveRecord(
+                    employee_id=emp_id,
+                    leave_type="sick",
+                    start_date=date(2026, 5, 10),
+                    end_date=date(2026, 5, 11),
+                    is_approved=True,
+                ),
+                LeaveRecord(
+                    employee_id=emp_id,
+                    leave_type="annual",
+                    start_date=date(2026, 5, 15),
+                    end_date=date(2026, 5, 15),
+                    is_approved=None,  # pending
+                ),
+                LeaveRecord(
+                    employee_id=emp_id,
+                    leave_type="personal",
+                    start_date=date(2026, 5, 20),
+                    end_date=date(2026, 5, 20),
+                    is_approved=False,  # rejected — 應被過濾
+                ),
+            ]
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "leave"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 2
+
+    colors = sorted({it["color"] for it in items})
+    assert colors == ["#0ea5e9", "#94a3b8"]  # approved blue + pending gray
+
+    # title 包含員工名 + leave_type
+    assert any("王老師" in it["title"] and "sick" in it["title"] for it in items)
+
+
+def test_leave_without_permission_excluded(calendar_admin_client):
+    """無 LEAVES_READ 的 caller 不應看到 leave layer，但能看到 event。"""
+    client, sf = calendar_admin_client
+    # CALENDAR (1<<2) but no LEAVES_READ (1<<5)
+    tok = _login_with_permissions(client, sf, "viewer", 1 << 2)
+    emp_id = _make_employee(sf)
+    with sf() as s:
+        s.add(
+            LeaveRecord(
+                employee_id=emp_id,
+                leave_type="sick",
+                start_date=date(2026, 5, 10),
+                end_date=date(2026, 5, 10),
+                is_approved=True,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "leave"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["items"] == []
