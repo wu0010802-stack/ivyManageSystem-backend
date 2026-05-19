@@ -6,6 +6,7 @@
 
 import os
 import sys
+from datetime import date
 
 import pytest
 from fastapi import FastAPI
@@ -154,4 +155,112 @@ def test_unknown_layer_ignored(calendar_admin_client):
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# event layer (Task 4)
+# ---------------------------------------------------------------------------
+
+from models.event import SchoolEvent
+
+
+def test_event_layer_basic(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="家長會",
+                event_date=date(2026, 5, 20),
+                event_type="meeting",
+                is_active=True,
+                requires_acknowledgment=False,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 1
+    it = items[0]
+    assert it["layer"] == "event"
+    assert it["title"] == "家長會"
+    assert it["start"] == "2026-05-20"
+    assert it["end"] == "2026-05-20"
+    assert it["color"] == "#10b981"
+    assert it["link"] == f"/calendar?eventId={it['id']}"
+
+
+def test_event_multi_day_uses_end_date(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="校外教學",
+                event_date=date(2026, 5, 20),
+                end_date=date(2026, 5, 22),
+                event_type="activity",
+                is_active=True,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert len(items) == 1
+    assert items[0]["start"] == "2026-05-20"
+    assert items[0]["end"] == "2026-05-22"
+
+
+def test_event_requires_ack_uses_ack_color(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="家長簽閱通知",
+                event_date=date(2026, 5, 20),
+                is_active=True,
+                requires_acknowledgment=True,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.json()["items"][0]["color"] == "#ef4444"
+
+
+def test_event_inactive_excluded(calendar_admin_client):
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add(
+            SchoolEvent(
+                title="已停用",
+                event_date=date(2026, 5, 20),
+                is_active=False,
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "event"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
     assert r.json()["items"] == []

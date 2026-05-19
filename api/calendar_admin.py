@@ -10,12 +10,15 @@ from datetime import date
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from models.base import get_session_dep
+from models.event import SchoolEvent
 from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse
 from utils.auth import get_current_user
-from utils.calendar_colors import ALL_LAYERS
+from utils.calendar_colors import ALL_LAYERS, LAYER_COLORS
+from utils.permissions import Permission, has_permission
 
 router = APIRouter(tags=["calendar-admin"])
 
@@ -24,6 +27,58 @@ MAX_WINDOW_DAYS = 90
 LAYER_FETCHERS: dict[
     str, Callable[[Session, date, date, dict], list[CalendarFeedItem]]
 ] = {}
+
+
+def _fetch_event(
+    session: Session, from_: date, to: date, current_user: dict
+) -> list[CalendarFeedItem]:
+    if not has_permission(current_user.get("permissions", 0), Permission.CALENDAR):
+        return []
+    stmt = (
+        select(
+            SchoolEvent.id,
+            SchoolEvent.title,
+            SchoolEvent.event_date,
+            SchoolEvent.end_date,
+            SchoolEvent.requires_acknowledgment,
+            SchoolEvent.event_type,
+        )
+        .where(SchoolEvent.is_active.is_(True))
+        .where(SchoolEvent.event_date <= to)
+        .where(
+            or_(
+                SchoolEvent.end_date.is_(None) & (SchoolEvent.event_date >= from_),
+                SchoolEvent.end_date.is_not(None) & (SchoolEvent.end_date >= from_),
+            )
+        )
+    )
+    out: list[CalendarFeedItem] = []
+    for r in session.execute(stmt).all():
+        color = (
+            LAYER_COLORS["event"]["ack"]
+            if r.requires_acknowledgment
+            else LAYER_COLORS["event"]["default"]
+        )
+        out.append(
+            CalendarFeedItem(
+                layer="event",
+                id=r.id,
+                title=r.title,
+                start=r.event_date,
+                end=r.end_date or r.event_date,
+                all_day=True,
+                color=color,
+                link=f"/calendar?eventId={r.id}",
+                meta={
+                    "event_type": r.event_type,
+                    "requires_acknowledgment": r.requires_acknowledgment,
+                },
+            )
+        )
+    return out
+
+
+LAYER_FETCHERS["event"] = _fetch_event
 
 
 @router.get("/admin_feed", response_model=CalendarFeedResponse)
