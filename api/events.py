@@ -20,6 +20,7 @@ from services.official_calendar import build_admin_calendar_feed
 from utils.auth import require_staff_permission
 from utils.error_messages import EVENT_NOT_FOUND
 from utils.permissions import Permission
+from utils.recurrence import validate_rule
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.excel_utils import xlsx_streaming_response
 
@@ -48,6 +49,7 @@ class EventCreate(BaseModel):
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     location: Optional[str] = None
+    recurrence_rule: Optional[dict] = None
 
 
 class EventUpdate(BaseModel):
@@ -60,6 +62,7 @@ class EventUpdate(BaseModel):
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     location: Optional[str] = None
+    recurrence_rule: Optional[dict] = None
 
 
 # ============ Endpoints ============
@@ -78,6 +81,7 @@ def _event_to_dict(ev: SchoolEvent) -> dict:
         "start_time": ev.start_time,
         "end_time": ev.end_time,
         "location": ev.location,
+        "recurrence_rule": ev.recurrence_rule,
         "created_at": ev.created_at.isoformat() if ev.created_at else None,
         "updated_at": ev.updated_at.isoformat() if ev.updated_at else None,
     }
@@ -172,6 +176,12 @@ def create_event(
         if data.end_date and data.end_date < data.event_date:
             raise HTTPException(status_code=400, detail="結束日期不可早於開始日期")
 
+        if data.recurrence_rule is not None:
+            try:
+                validate_rule(data.event_date, data.recurrence_rule)
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+
         ev = SchoolEvent(
             title=data.title,
             description=data.description,
@@ -182,10 +192,12 @@ def create_event(
             start_time=data.start_time,
             end_time=data.end_time,
             location=data.location,
+            recurrence_rule=data.recurrence_rule,
         )
         session.add(ev)
         session.commit()
-        return {"message": "事件已建立", "id": ev.id}
+        session.refresh(ev)
+        return {"message": "事件已建立", "id": ev.id, **_event_to_dict(ev)}
     except HTTPException:
         raise
     except Exception as e:
@@ -226,6 +238,18 @@ def update_event(
                 status_code=400, detail=f"無效的事件類型: {update_data['event_type']}"
             )
 
+        # recurrence_rule：用 model_fields_set 區分 "未傳" vs "顯式 null"
+        # 只有顯式傳了才驗證/覆寫；顯式 null 表清空回單次事件
+        if "recurrence_rule" in data.model_fields_set:
+            new_rule = data.recurrence_rule
+            if new_rule is not None:
+                ev_date = data.event_date or ev.event_date
+                try:
+                    validate_rule(ev_date, new_rule)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e))
+            update_data["recurrence_rule"] = new_rule
+
         for key, value in update_data.items():
             setattr(ev, key, value)
 
@@ -234,7 +258,8 @@ def update_event(
             raise HTTPException(status_code=400, detail="結束日期不可早於開始日期")
 
         session.commit()
-        return {"message": "事件已更新"}
+        session.refresh(ev)
+        return {"message": "事件已更新", **_event_to_dict(ev)}
     except HTTPException:
         raise
     except Exception as e:
