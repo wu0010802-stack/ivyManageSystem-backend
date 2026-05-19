@@ -54,4 +54,4 @@ def get_admin_feed(
         items.extend(fetcher(session, from_, to, current_user))
 
     items.sort(key=lambda x: (x.start, x.layer, str(x.id)))
-    return CalendarFeedResponse(**{"from": from_}, to=to, items=items)
+    return CalendarFeedResponse(from_=from_, to=to, items=items)

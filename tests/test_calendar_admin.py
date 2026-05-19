@@ -92,6 +92,8 @@ def test_window_over_90_days_returns_422(calendar_admin_client):
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.status_code == 422
+    # 區分自定 422（"window exceeds"）與 FastAPI 內建 validation 422
+    assert "window" in r.json()["detail"].lower()
 
 
 def test_to_before_from_returns_422(calendar_admin_client):
@@ -103,6 +105,7 @@ def test_to_before_from_returns_422(calendar_admin_client):
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.status_code == 422
+    assert "to must be" in r.json()["detail"].lower()
 
 
 def test_missing_from_returns_422(calendar_admin_client):
