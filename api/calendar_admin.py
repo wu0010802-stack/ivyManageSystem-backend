@@ -6,7 +6,7 @@
 - 權限濾在每個 fetcher 入口（無權限直接 return []），避免越權外洩
 """
 
-from datetime import date
+from datetime import date, datetime, time
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -50,6 +50,8 @@ def _fetch_event(
             SchoolEvent.title,
             SchoolEvent.event_date,
             SchoolEvent.end_date,
+            SchoolEvent.start_time,
+            SchoolEvent.end_time,
             SchoolEvent.requires_acknowledgment,
             SchoolEvent.event_type,
             SchoolEvent.recurrence_rule,
@@ -84,16 +86,31 @@ def _fetch_event(
             from_,
             to,
         )
+        # Phase B：start_time + end_time 都有值才轉 datetime（時段事件）；
+        # 否則維持 Phase A all-day 行為。time.fromisoformat 接 "HH:MM"。
+        has_time = bool(r.start_time and r.end_time)
         for occ_start, occ_end in occurrences:
             item_id = f"{r.id}@{occ_start.isoformat()}" if r.recurrence_rule else r.id
+            if has_time:
+                start_val: date | datetime = datetime.combine(
+                    occ_start, time.fromisoformat(r.start_time)
+                )
+                end_val: date | datetime = datetime.combine(
+                    occ_end, time.fromisoformat(r.end_time)
+                )
+                all_day_val = False
+            else:
+                start_val = occ_start
+                end_val = occ_end
+                all_day_val = True
             out.append(
                 CalendarFeedItem(
                     layer="event",
                     id=item_id,
                     title=r.title,
-                    start=occ_start,
-                    end=occ_end,
-                    all_day=True,
+                    start=start_val,
+                    end=end_val,
+                    all_day=all_day_val,
                     color=color,
                     link=f"/calendar?eventId={r.id}",
                     meta={

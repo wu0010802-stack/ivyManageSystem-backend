@@ -1,6 +1,6 @@
 """管理端行事曆 admin_feed Pydantic schemas。"""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,11 +13,14 @@ Layer = Literal["event", "holiday", "leave", "activity", "appraisal", "meeting"]
 class CalendarFeedItem(BaseModel):
     """單筆行事曆事件，統一 envelope。"""
 
+    # union 順序：date 在前 — pydantic v2 smart mode 下 "YYYY-MM-DD" 解析為
+    # date 物件 (all-day 維持 Phase A 行為)；"YYYY-MM-DDTHH:MM:SS" 因 date
+    # strict format 不收，fallback 到 datetime。Phase B 新增 datetime 支援。
     layer: Layer
     id: int | str
     title: str
-    start: date
-    end: date
+    start: date | datetime
+    end: date | datetime
     all_day: bool = True
     color: str
     link: str | None = None
