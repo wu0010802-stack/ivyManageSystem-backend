@@ -351,3 +351,30 @@ def test_get_requires_view_permission(monthly_ctx):
         "/api/gov-moe/monthly?year=2026&month=5",
     )
     assert resp.status_code == 403
+
+
+def test_generate_409_when_lock_contention(monthly_ctx, monkeypatch):
+    """Advisory lock 被佔用時回 409。"""
+    from api.gov_moe import monthly as monthly_module
+
+    monkeypatch.setattr(monthly_module, "_try_advisory_lock", lambda db, y, m: False)
+    resp = monthly_ctx["client"].post(
+        "/api/gov-moe/monthly/generate",
+        json={"year": 2026, "month": 5},
+        cookies=monthly_ctx["export_cookie"],
+    )
+    assert resp.status_code == 409
+
+
+def test_export_requires_export_permission(monthly_ctx):
+    """view_only 不能 export（403）。"""
+    # 先 generate 拿到資料
+    _seed_student(monthly_ctx)
+    _generate(monthly_ctx)
+    resp = _with_cookie(
+        monthly_ctx,
+        "view_only_cookie",
+        "get",
+        "/api/gov-moe/monthly/export?year=2026&month=5&format=xlsx",
+    )
+    assert resp.status_code == 403

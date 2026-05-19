@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from io import BytesIO
+from typing import Literal
+from urllib.parse import quote as _quote
 
 from dateutil.relativedelta import relativedelta
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -17,11 +20,13 @@ from models.gov_moe import MonthlyEnrollmentSnapshot
 from services.gov_moe.monthly_calculator import build_snapshot_rows
 from services.gov_moe.monthly_excel_writer import build_monthly_xlsx_bytes
 from utils.audit import write_audit_in_session
-from utils.auth import get_current_user, require_staff_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 # 重用 disability_documents 的 get_db，確保測試環境 _SessionFactory 替換正確生效
 from api.gov_moe.disability_documents import get_db
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/monthly", tags=["gov_moe_monthly"])
 
@@ -59,6 +64,7 @@ def _try_advisory_lock(db: Session, year: int, month: int) -> bool:
     except Exception:
         return True
     if dialect != "postgresql":
+        _logger.warning("advisory lock skipped: dialect=%s (non-pg)", dialect)
         return True
     lock_key = abs(hash(f"moe_monthly_gen_{year}_{month}")) % (2**31)
     result = db.execute(
@@ -78,13 +84,14 @@ def _classroom_name_map(db: Session) -> dict[int, str]:
 @router.post(
     "/generate",
     response_model=GenerateResponse,
-    dependencies=[Depends(require_staff_permission(Permission.GOV_REPORTS_EXPORT))],
 )
 def generate_monthly_report(
     payload: GenerateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.GOV_REPORTS_EXPORT)
+    ),
 ):
     _validate_year(payload.year)
 
@@ -173,13 +180,10 @@ def generate_monthly_report(
     dependencies=[Depends(require_staff_permission(Permission.GOV_REPORTS_VIEW))],
 )
 def get_monthly_report(
-    year: int,
-    month: int,
+    year: int = Query(..., ge=2020, le=2100),
+    month: int = Query(..., ge=1, le=12),
     db: Session = Depends(get_db),
 ):
-    if month < 1 or month > 12:
-        raise HTTPException(status_code=400, detail="month 須 1~12")
-
     snapshot_rows = (
         db.query(MonthlyEnrollmentSnapshot)
         .filter(
@@ -226,6 +230,12 @@ def get_monthly_report(
         if r.age_group in by_age_group:
             by_age_group[r.age_group] += r.total_count
 
+    # NOTE: student_detail 採 live-recompute 而非從 snapshot 表讀回，
+    # 因 Phase 2 spec 沒有為 per-student rows 建表。
+    # 若使用者改動學生/出勤資料後 generate 未重跑，group aggregates（frozen）
+    # 與 student_detail（live）可能不一致 — 解法是請使用者「重算本月」。
+    # 未來如果要嚴格一致性，可 (a) 新建 monthly_student_detail 表或
+    # (b) 改在 generate 時把 details JSONB 序列化到 snapshot row 上。
     _, student_details = build_snapshot_rows(db, year, month, generated_by="(query)")
     for sd in student_details:
         sd["classroom_name"] = cls_map.get(sd.get("classroom_id"), "(未分班)")
@@ -274,15 +284,11 @@ def get_monthly_report(
     dependencies=[Depends(require_staff_permission(Permission.GOV_REPORTS_EXPORT))],
 )
 def export_monthly_report(
-    year: int,
-    month: int,
-    format: str = "xlsx",
+    year: int = Query(..., ge=2020, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    fmt: Literal["xlsx"] = Query("xlsx", alias="format"),
     db: Session = Depends(get_db),
 ):
-    if month < 1 or month > 12:
-        raise HTTPException(status_code=400, detail="month 須 1~12")
-    if format != "xlsx":
-        raise HTTPException(status_code=400, detail="format 只支援 xlsx")
 
     snapshot_rows = (
         db.query(MonthlyEnrollmentSnapshot)
@@ -305,7 +311,7 @@ def export_monthly_report(
         rows_payload.append(
             {
                 "classroom_name": cls_map.get(r.classroom_id, "(未分班)"),
-                "teacher_names": "",
+                "teacher_names": "",  # TODO: wire classroom teacher names
                 "age_group": r.age_group or "未知",
                 "expected_attendance_days": r.expected_attendance_days,
                 "actual_attendance_days": r.actual_attendance_days,
@@ -328,6 +334,12 @@ def export_monthly_report(
         if r.age_group in by_age_group:
             by_age_group[r.age_group] += r.total_count
 
+    # NOTE: student_detail 採 live-recompute 而非從 snapshot 表讀回，
+    # 因 Phase 2 spec 沒有為 per-student rows 建表。
+    # 若使用者改動學生/出勤資料後 generate 未重跑，group aggregates（frozen）
+    # 與 student_detail（live）可能不一致 — 解法是請使用者「重算本月」。
+    # 未來如果要嚴格一致性，可 (a) 新建 monthly_student_detail 表或
+    # (b) 改在 generate 時把 details JSONB 序列化到 snapshot row 上。
     _, student_details = build_snapshot_rows(db, year, month, generated_by="(export)")
     for sd in student_details:
         sd["classroom_name"] = cls_map.get(sd.get("classroom_id"), "(未分班)")
@@ -365,8 +377,6 @@ def export_monthly_report(
     filename = f"義華幼兒園_月報_{year}-{month:02d}_產生於{today_str}.xlsx"
 
     # RFC 5987: encode non-ASCII filename as UTF-8 percent-encoded
-    from urllib.parse import quote as _quote
-
     encoded_filename = _quote(filename, safe="")
     content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
 
