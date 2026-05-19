@@ -627,3 +627,171 @@ def test_meeting_layer_dedupes_by_date_and_type(calendar_admin_client):
         assert it["color"] == "#8b5cf6"
         assert it["id"].startswith("staff_meeting:")
         assert it["link"] == f"/meetings?date={it['start']}"
+
+
+# ---------------------------------------------------------------------------
+# Cross-cutting integration tests (Task 10)
+# ---------------------------------------------------------------------------
+
+
+def test_items_sorted_by_start_then_layer(calendar_admin_client):
+    """混插多 layer 同 window，items 應穩定排序：start asc → layer asc → id asc。"""
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    with sf() as s:
+        s.add_all(
+            [
+                SchoolEvent(
+                    title="家長會", event_date=date(2026, 5, 20), is_active=True
+                ),
+                Holiday(date=date(2026, 5, 1), name="勞動節"),
+            ]
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    items = r.json()["items"]
+    assert items[0]["start"] == "2026-05-01"  # holiday 先
+    assert items[1]["start"] == "2026-05-20"  # event 後
+
+
+def test_employee_with_only_calendar_bit_sees_event_and_holiday_only(
+    calendar_admin_client,
+):
+    """只持 CALENDAR bit 的 caller 只看到 event + holiday，其餘 layer return []。"""
+    client, sf = calendar_admin_client
+    # CALENDAR=1<<2 only — no leaves/activity/appraisal/meetings bits
+    tok = _login_with_permissions(client, sf, "calonly", 1 << 2)
+    emp_id = _make_employee(sf, name="X 老師", employee_id="E0099")
+    with sf() as s:
+        s.add_all(
+            [
+                SchoolEvent(
+                    title="家長會", event_date=date(2026, 5, 20), is_active=True
+                ),
+                Holiday(date=date(2026, 5, 1), name="勞動節"),
+                LeaveRecord(
+                    employee_id=emp_id,
+                    leave_type="sick",
+                    start_date=date(2026, 5, 10),
+                    end_date=date(2026, 5, 10),
+                    is_approved=True,
+                ),
+                MeetingRecord(
+                    employee_id=emp_id,
+                    meeting_date=date(2026, 5, 14),
+                    meeting_type="staff_meeting",
+                    attended=True,
+                ),
+            ]
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    layers = {it["layer"] for it in r.json()["items"]}
+    assert layers == {"event", "holiday"}
+
+
+def test_n_plus_1_query_count_under_threshold(calendar_admin_client):
+    """6 layer × max 2 query + auth/session 應 ≤ 16 query。
+
+    每 layer 各造一筆讓 fetcher 真的執行 join，計 SELECT count via SQLAlchemy event listener。
+    """
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    emp_id = _make_employee(sf, name="N 老師", employee_id="E0050")
+    with sf() as s:
+        course = ActivityCourse(name="陶藝", price=0)
+        s.add(course)
+        s.flush()
+        s.add_all(
+            [
+                SchoolEvent(title="x", event_date=date(2026, 5, 20), is_active=True),
+                Holiday(date=date(2026, 5, 1), name="x"),
+                LeaveRecord(
+                    employee_id=emp_id,
+                    leave_type="sick",
+                    start_date=date(2026, 5, 10),
+                    end_date=date(2026, 5, 10),
+                    is_approved=True,
+                ),
+                ActivitySession(course_id=course.id, session_date=date(2026, 5, 10)),
+                AppraisalCycle(
+                    academic_year=114,
+                    semester=Semester.FIRST,
+                    start_date=date(2026, 5, 5),
+                    end_date=date(2026, 5, 25),
+                    base_score_calc_date=date(2026, 5, 15),
+                    base_score=0,
+                ),
+                MeetingRecord(
+                    employee_id=emp_id,
+                    meeting_date=date(2026, 5, 14),
+                    meeting_type="staff_meeting",
+                    attended=True,
+                ),
+            ]
+        )
+        s.commit()
+
+    from sqlalchemy import event as sa_event
+
+    queries: list[str] = []
+
+    def _capture(conn, cursor, statement, *args, **kwargs):
+        if statement.strip().upper().startswith("SELECT"):
+            queries.append(statement)
+
+    sa_event.listen(base_module._engine, "before_cursor_execute", _capture)
+    try:
+        r = client.get(
+            "/api/calendar/admin_feed",
+            params={"from": "2026-05-01", "to": "2026-05-31"},
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+    finally:
+        sa_event.remove(base_module._engine, "before_cursor_execute", _capture)
+
+    assert r.status_code == 200
+    # 6 layer × max 2 query = 12，加 auth/session 至多 4，整體 ≤ 16
+    assert len(queries) <= 16, f"got {len(queries)} queries:\n" + "\n".join(queries)
+
+
+def test_meta_does_not_leak_pii(calendar_admin_client):
+    """meta 欄位不可含 reason / salary / phone / id_number 等敏感 key。
+
+    即便 source row 有 reason / address，meta 不應下發；test 主動驗 leave layer。
+    """
+    client, sf = calendar_admin_client
+    tok = _login_admin(client, sf)
+    emp_id = _make_employee(sf, name="P 老師", employee_id="E0040")
+    with sf() as s:
+        s.add(
+            LeaveRecord(
+                employee_id=emp_id,
+                leave_type="sick",
+                start_date=date(2026, 5, 10),
+                end_date=date(2026, 5, 10),
+                is_approved=True,
+                reason="家裡有事",
+            )
+        )
+        s.commit()
+
+    r = client.get(
+        "/api/calendar/admin_feed",
+        params={"from": "2026-05-01", "to": "2026-05-31", "layers": "leave"},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    forbidden = {"reason", "salary", "phone", "id_number", "address", "email"}
+    for it in r.json()["items"]:
+        leaked = set(it["meta"].keys()) & forbidden
+        assert not leaked, f"meta leaked PII keys: {leaked} in item {it}"
