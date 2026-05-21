@@ -54,8 +54,15 @@ def test_check_and_sweep_once_returns_dict(monkeypatch):
     def fake_session_scope():
         yield None
 
+    @contextmanager
+    def fake_acquired_lock(session, *, scheduler_name, run_key):
+        yield True
+
     monkeypatch.setattr(
         "services.activity_waitlist_scheduler.session_scope", fake_session_scope
+    )
+    monkeypatch.setattr(
+        "services.activity_waitlist_scheduler.try_scheduler_lock", fake_acquired_lock
     )
 
     result = activity_waitlist_scheduler.check_and_sweep_once()
@@ -83,8 +90,15 @@ def test_check_and_sweep_once_idempotent(monkeypatch):
     def fake_session_scope():
         yield None
 
+    @contextmanager
+    def fake_acquired_lock(session, *, scheduler_name, run_key):
+        yield True
+
     monkeypatch.setattr(
         "services.activity_waitlist_scheduler.session_scope", fake_session_scope
+    )
+    monkeypatch.setattr(
+        "services.activity_waitlist_scheduler.try_scheduler_lock", fake_acquired_lock
     )
 
     activity_waitlist_scheduler.check_and_sweep_once()
