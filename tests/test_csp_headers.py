@@ -20,14 +20,8 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _build_app(reload_env: dict | None = None):
-    if reload_env is not None:
-        for k, v in reload_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
+def _build_app():
+    """settings cache 已由呼叫端 reset；重載 security_headers 以套用新 env。"""
     from utils import security_headers
 
     importlib.reload(security_headers)
@@ -45,26 +39,38 @@ def _build_app(reload_env: dict | None = None):
 @pytest.fixture(autouse=True)
 def _restore_env():
     yield
-    os.environ.pop("CSP_SCRIPT_HASHES", None)
+    # monkeypatch 自動還原 env；此處只需重載 security_headers 讓模組狀態回到初始
     from utils import security_headers
 
     importlib.reload(security_headers)
 
 
-def test_csp_header_present():
-    client = _build_app({"CSP_SCRIPT_HASHES": None})
+def test_csp_header_present(monkeypatch):
+    monkeypatch.delenv("CSP_SCRIPT_HASHES", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    client = _build_app()
     r = client.get("/x")
     assert "content-security-policy" in r.headers
 
 
-def test_csp_does_not_contain_unsafe_eval():
-    client = _build_app({"CSP_SCRIPT_HASHES": None})
+def test_csp_does_not_contain_unsafe_eval(monkeypatch):
+    monkeypatch.delenv("CSP_SCRIPT_HASHES", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    client = _build_app()
     csp = client.get("/x").headers["content-security-policy"]
     assert "'unsafe-eval'" not in csp
 
 
-def test_csp_script_src_does_not_contain_unsafe_inline_by_default():
-    client = _build_app({"CSP_SCRIPT_HASHES": None})
+def test_csp_script_src_does_not_contain_unsafe_inline_by_default(monkeypatch):
+    monkeypatch.delenv("CSP_SCRIPT_HASHES", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    client = _build_app()
     csp = client.get("/x").headers["content-security-policy"]
     # 解析出 script-src directive
     for directive in csp.split(";"):
@@ -75,9 +81,13 @@ def test_csp_script_src_does_not_contain_unsafe_inline_by_default():
     pytest.fail("script-src directive not found in CSP")
 
 
-def test_csp_style_src_still_contains_unsafe_inline():
+def test_csp_style_src_still_contains_unsafe_inline(monkeypatch):
     """style-src 'unsafe-inline' 是已知保留（Element Plus、Vue scoped style）。"""
-    client = _build_app({"CSP_SCRIPT_HASHES": None})
+    monkeypatch.delenv("CSP_SCRIPT_HASHES", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    client = _build_app()
     csp = client.get("/x").headers["content-security-policy"]
     for directive in csp.split(";"):
         d = directive.strip()
@@ -87,15 +97,23 @@ def test_csp_style_src_still_contains_unsafe_inline():
     pytest.fail("style-src directive not found in CSP")
 
 
-def test_csp_script_src_includes_env_provided_hashes():
-    client = _build_app({"CSP_SCRIPT_HASHES": "'sha256-abc123' 'sha256-def456'"})
+def test_csp_script_src_includes_env_provided_hashes(monkeypatch):
+    monkeypatch.setenv("CSP_SCRIPT_HASHES", "'sha256-abc123' 'sha256-def456'")
+    from config import reset_for_tests
+
+    reset_for_tests()
+    client = _build_app()
     csp = client.get("/x").headers["content-security-policy"]
     assert "'sha256-abc123'" in csp
     assert "'sha256-def456'" in csp
 
 
-def test_csp_lockdown_directives_present():
-    client = _build_app({"CSP_SCRIPT_HASHES": None})
+def test_csp_lockdown_directives_present(monkeypatch):
+    monkeypatch.delenv("CSP_SCRIPT_HASHES", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    client = _build_app()
     csp = client.get("/x").headers["content-security-policy"]
     assert "frame-ancestors 'none'" in csp
     assert "object-src 'none'" in csp
@@ -103,8 +121,12 @@ def test_csp_lockdown_directives_present():
     assert "form-action 'self'" in csp
 
 
-def test_other_security_headers_still_set():
-    client = _build_app({"CSP_SCRIPT_HASHES": None})
+def test_other_security_headers_still_set(monkeypatch):
+    monkeypatch.delenv("CSP_SCRIPT_HASHES", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    client = _build_app()
     h = client.get("/x").headers
     assert h.get("x-content-type-options") == "nosniff"
     assert h.get("x-frame-options") == "DENY"

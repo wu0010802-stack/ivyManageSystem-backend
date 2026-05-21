@@ -18,11 +18,8 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _reload_cookie(env_value: str | None):
-    if env_value is None:
-        os.environ.pop("COOKIE_SAMESITE", None)
-    else:
-        os.environ["COOKIE_SAMESITE"] = env_value
+def _reload_cookie():
+    """settings cache 已由呼叫端 reset；重載 cookie 模組以套用新 env。"""
     from utils import cookie
 
     return importlib.reload(cookie)
@@ -42,36 +39,56 @@ def _capture_set_cookie(set_token_fn) -> str:
     return r.headers.get("set-cookie", "")
 
 
-def test_default_samesite_is_strict():
-    cookie = _reload_cookie(None)
+def test_default_samesite_is_strict(monkeypatch):
+    monkeypatch.delenv("COOKIE_SAMESITE", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    cookie = _reload_cookie()
     raw = _capture_set_cookie(cookie.set_access_token_cookie)
     assert "samesite=strict" in raw.lower()
 
 
-def test_env_var_lax_is_respected():
-    cookie = _reload_cookie("lax")
+def test_env_var_lax_is_respected(monkeypatch):
+    monkeypatch.setenv("COOKIE_SAMESITE", "lax")
+    from config import reset_for_tests
+
+    reset_for_tests()
+    cookie = _reload_cookie()
     raw = _capture_set_cookie(cookie.set_access_token_cookie)
     assert "samesite=lax" in raw.lower()
 
 
-def test_invalid_value_falls_back_to_strict(caplog):
+def test_invalid_value_falls_back_to_strict(monkeypatch, caplog):
     # 注意：'none' 在後續為跨網域部署支援後已是合法值（dev 會 fallback 到 lax），
     # 故此處改用真正不在白名單內的值來驗證 fallback 到 strict 的守衛邏輯。
-    cookie = _reload_cookie("garbage")
+    monkeypatch.setenv("COOKIE_SAMESITE", "garbage")
+    from config import reset_for_tests
+
+    reset_for_tests()
+    cookie = _reload_cookie()
     raw = _capture_set_cookie(cookie.set_access_token_cookie)
     assert "samesite=strict" in raw.lower()
 
 
-def test_dev_none_falls_back_to_lax():
+def test_dev_none_falls_back_to_lax(monkeypatch):
     """dev (HTTP) 環境下設 COOKIE_SAMESITE=none 會 fallback 到 lax，
     避免本機端 cookie 被瀏覽器拒收（None 強制要求 Secure）。"""
-    cookie = _reload_cookie("none")
+    monkeypatch.setenv("COOKIE_SAMESITE", "none")
+    from config import reset_for_tests
+
+    reset_for_tests()
+    cookie = _reload_cookie()
     raw = _capture_set_cookie(cookie.set_access_token_cookie)
     assert "samesite=lax" in raw.lower()
 
 
-def test_admin_token_cookie_has_same_attribute():
-    cookie = _reload_cookie(None)
+def test_admin_token_cookie_has_same_attribute(monkeypatch):
+    monkeypatch.delenv("COOKIE_SAMESITE", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    cookie = _reload_cookie()
     raw = _capture_set_cookie(cookie.set_admin_token_cookie)
     assert "samesite=strict" in raw.lower()
 
@@ -79,7 +96,7 @@ def test_admin_token_cookie_has_same_attribute():
 @pytest.fixture(autouse=True)
 def _restore_env():
     yield
-    os.environ.pop("COOKIE_SAMESITE", None)
+    # monkeypatch 自動還原 env；此處只需重載 cookie 讓模組狀態回到初始
     from utils import cookie
 
     importlib.reload(cookie)

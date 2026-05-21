@@ -153,6 +153,9 @@ def phase1_seed() -> Generator[Phase1Context, None, None]:
     os.environ.setdefault("DATABASE_URL", _ADMIN_URL)
     os.environ["PARENT_DB_USER"] = "ivy_parent_login"
     os.environ["PARENT_DB_PASSWORD"] = _PARENT_LOGIN_PW
+    from config import reset_for_tests
+
+    reset_for_tests()
     parent_db.reset_parent_engine_for_tests()
 
     yield Phase1Context(admin_engine_dispose=admin_engine.dispose)
@@ -161,6 +164,9 @@ def phase1_seed() -> Generator[Phase1Context, None, None]:
     parent_db.reset_parent_engine_for_tests()
     os.environ.pop("PARENT_DB_USER", None)
     os.environ.pop("PARENT_DB_PASSWORD", None)
+    from config import reset_for_tests
+
+    reset_for_tests()
     cleanup_engine = create_engine(_ADMIN_URL, isolation_level="AUTOCOMMIT")
     with cleanup_engine.connect() as conn:
         _cleanup_rows(conn)

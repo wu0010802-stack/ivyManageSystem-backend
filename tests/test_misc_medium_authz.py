@@ -670,46 +670,41 @@ class TestF043_DevRouterMount:
 
     def test_should_mount_dev_router_when_env_is_development(self, monkeypatch):
         monkeypatch.setenv("ENV", "development")
-        # 重新 import 確保拿到最新 helper（main 模組可能已快取）
-        import importlib
-        import main as main_module
+        from main import _should_mount_dev_router
 
-        importlib.reload(main_module)
-        try:
-            assert main_module._should_mount_dev_router() is True
-        finally:
-            # 復原 ENV，避免影響後續測試
-            monkeypatch.delenv("ENV", raising=False)
-            importlib.reload(main_module)
+        assert _should_mount_dev_router() is True
 
     @pytest.mark.parametrize("allowed_env", ["development", "dev", "local", "test"])
-    def test_should_mount_dev_router_for_each_allowed_env(self, allowed_env):
-        # 直接呼叫 helper（不必 reload main，邏輯在 helper 內以 os.environ 為準）
-        with patch.dict(os.environ, {"ENV": allowed_env}):
-            from main import _should_mount_dev_router
+    def test_should_mount_dev_router_for_each_allowed_env(
+        self, allowed_env, monkeypatch
+    ):
+        # 直接呼叫 helper（邏輯在 helper 內以 os.environ 為準）
+        monkeypatch.setenv("ENV", allowed_env)
+        from main import _should_mount_dev_router
 
-            assert _should_mount_dev_router() is True
+        assert _should_mount_dev_router() is True
 
     @pytest.mark.parametrize(
         "blocked_env", ["staging", "production", "prod", "qa", "stage"]
     )
-    def test_should_not_mount_dev_router_for_non_allowed_env(self, blocked_env):
-        with patch.dict(os.environ, {"ENV": blocked_env}):
-            from main import _should_mount_dev_router
+    def test_should_not_mount_dev_router_for_non_allowed_env(
+        self, blocked_env, monkeypatch
+    ):
+        monkeypatch.setenv("ENV", blocked_env)
+        from main import _should_mount_dev_router
 
-            assert (
-                _should_mount_dev_router() is False
-            ), f"ENV={blocked_env} 不應掛 dev_router"
+        assert (
+            _should_mount_dev_router() is False
+        ), f"ENV={blocked_env} 不應掛 dev_router"
 
-    def test_should_not_mount_dev_router_when_env_unset(self):
+    def test_should_not_mount_dev_router_when_env_unset(self, monkeypatch):
         # 完全清掉 ENV 環境變數
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ENV", None)
-            from main import _should_mount_dev_router
+        monkeypatch.delenv("ENV", raising=False)
+        from main import _should_mount_dev_router
 
-            assert (
-                _should_mount_dev_router() is False
-            ), "未設 ENV 不應掛 dev_router（白名單收斂）"
+        assert (
+            _should_mount_dev_router() is False
+        ), "未設 ENV 不應掛 dev_router（白名單收斂）"
 
     def test_main_uses_should_mount_dev_router_helper(self):
         """確保 main.py 的 mount 條件確實是呼叫 _should_mount_dev_router(),

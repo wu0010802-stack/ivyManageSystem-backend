@@ -174,11 +174,13 @@ def test_save_report_writes_both_files(tmp_path):
     json.loads(paths["json"].read_text())
 
 
-def test_build_attacker_auto_fallback_to_heuristic_without_key():
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
-        a = build_attacker("auto")
-        assert a.name == "heuristic"
+def test_build_attacker_auto_fallback_to_heuristic_without_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from config import reset_for_tests
+
+    reset_for_tests()
+    a = build_attacker("auto")
+    assert a.name == "heuristic"
 
 
 def test_build_attacker_force_heuristic():
