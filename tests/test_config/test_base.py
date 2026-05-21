@@ -68,3 +68,18 @@ def test_model_dump_safe_preserves_none(monkeypatch):
     assert dumped["core"]["jwt_secret_key"] is None
     assert dumped["parent_db"]["password"] is None
     assert dumped["sentry"]["dsn"] is None
+
+
+def test_model_dump_safe_exempts_known_false_positives(monkeypatch):
+    """activity_query_token_ttl_days 含 'token' substring 但不是敏感欄位（天數常數）。
+
+    透過 _SENSITIVE_KEY_EXEMPT 確保此欄位的值正常出現在 dump 中，方便 debug 看到實際 TTL。
+    """
+    monkeypatch.setenv("ACTIVITY_QUERY_TOKEN_TTL_DAYS", "60")
+    from config import reset_for_tests, get_settings
+
+    reset_for_tests()
+    dumped = get_settings().model_dump_safe()
+    assert (
+        dumped["misc"]["activity_query_token_ttl_days"] == 60
+    ), "activity_query_token_ttl_days 不該被 redact（_SENSITIVE_KEY_EXEMPT 失效）"

@@ -26,6 +26,11 @@ _SENSITIVE_KEY_SUBSTRINGS: tuple[str, ...] = (
     "dsn",
 )
 
+# Substring 匹配的副作用：含 token/secret 等字眼但實際無敏感資訊的欄位（如
+# activity_query_token_ttl_days 是天數常數），需要透過 exact-name exempt 避免誤遮。
+# 新增類似欄位時，請在此補上對應的 exact key name（不是 substring）。
+_SENSITIVE_KEY_EXEMPT: frozenset[str] = frozenset({"activity_query_token_ttl_days"})
+
 
 def _scrub(data: Any, denylist: tuple[str, ...]) -> Any:
     if not isinstance(data, dict):
@@ -36,6 +41,7 @@ def _scrub(data: Any, denylist: tuple[str, ...]) -> Any:
             out[k] = _scrub(v, denylist)
         elif (
             isinstance(k, str)
+            and k not in _SENSITIVE_KEY_EXEMPT
             and any(s in k.lower() for s in denylist)
             and v not in (None, "")
         ):

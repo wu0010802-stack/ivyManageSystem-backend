@@ -147,9 +147,10 @@ def phase1_seed() -> Generator[Phase1Context, None, None]:
                     {"s": sid, "d": d},
                 )
 
-    # Configure parent_db env vars. DATABASE_URL is required because
-    # parent_db reads from os.environ directly (not via the dotenv-aware base
-    # module), and the worktree has no .env file.
+    # Configure parent_db env vars. DATABASE_URL is required because parent_db
+    # reads from settings (which loads from env at instantiation), and the
+    # worktree has no .env file. We must set env first, then call
+    # reset_for_tests() so the next get_settings() picks up the new env.
     os.environ.setdefault("DATABASE_URL", _ADMIN_URL)
     os.environ["PARENT_DB_USER"] = "ivy_parent_login"
     os.environ["PARENT_DB_PASSWORD"] = _PARENT_LOGIN_PW

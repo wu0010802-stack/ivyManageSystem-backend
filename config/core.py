@@ -15,11 +15,11 @@ class CoreSettings(BaseSettings):
 
     env: str = "development"
     database_url: str | None = None
-    jwt_secret_key: str | None = None
+    jwt_secret_key: str | None = Field(default=None, repr=False)
     jwt_absolute_lifetime_hours: int = 8
     enable_api_docs: BoolEnv = False
     admin_init_username: str | None = None
-    admin_init_password: str | None = None
+    admin_init_password: str | None = Field(default=None, repr=False)
 
     # 連線池參數（5 base + 5 overflow = 10/pod 對 Supabase Session Mode 安全）
     db_pool_size: int = Field(default=5, validation_alias="DB_POOL_SIZE")
