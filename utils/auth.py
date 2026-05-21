@@ -314,13 +314,47 @@ def _check_token_algorithm(token: str) -> None:
         raise HTTPException(status_code=401, detail="無效或過期的 Token")
 
 
-def decode_token(token: str) -> dict:
-    _check_token_algorithm(token)
+def _decode_with_keys(token: str, *, allow_expired: bool = False) -> dict:
+    """Multi-key 容忍的 JWT decode。已先過 _check_token_algorithm。
+
+    解析順序：
+    1. 有 kid header → 用 _VERIFY_KEYS[kid]（未知 kid → 401）
+    2. 無 kid（過渡期 legacy token）→ 依序試 _LEGACY_TRY_ORDER
+    3. 都失敗 → 401
+    """
+    options = {"verify_exp": False} if allow_expired else {}
+
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        return payload
+        header = jwt.get_unverified_header(token)
     except JWTError:
         raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+    kid = header.get("kid")
+    if kid:
+        secret = _VERIFY_KEYS.get(kid)
+        if not secret:
+            raise HTTPException(status_code=401, detail="無效或過期的 Token")
+        try:
+            return jwt.decode(
+                token, secret, algorithms=[JWT_ALGORITHM], options=options
+            )
+        except JWTError:
+            raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+    # legacy（無 kid）：依序試 _LEGACY_TRY_ORDER
+    for secret in _LEGACY_TRY_ORDER:
+        try:
+            return jwt.decode(
+                token, secret, algorithms=[JWT_ALGORITHM], options=options
+            )
+        except JWTError:
+            continue
+    raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+
+def decode_token(token: str) -> dict:
+    _check_token_algorithm(token)
+    return _decode_with_keys(token, allow_expired=False)
 
 
 def verify_ws_token(token: str) -> dict:
@@ -369,28 +403,15 @@ def decode_token_allow_expired(token: str) -> dict:
     回傳 payload，若 token 無效、超出寬限期、或 jti 已被廢止則拋出 401。
     """
     _check_token_algorithm(token)
-    try:
-        # 先嘗試正常解碼（未過期）
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        # Token 已過期，跳過 exp 驗證取出 payload
-        payload = jwt.decode(
-            token,
-            JWT_SECRET_KEY,
-            algorithms=[JWT_ALGORITHM],
-            options={"verify_exp": False},
+    # 一律 allow_expired=True 解，再手動檢 exp + grace。簽章錯誤仍會 raise 401。
+    payload = _decode_with_keys(token, allow_expired=True)
+    exp = payload.get("exp", 0)
+    now = datetime.now(timezone.utc).timestamp()
+    grace_seconds = JWT_REFRESH_GRACE_HOURS * 3600
+    if now - exp > grace_seconds:
+        raise HTTPException(
+            status_code=401, detail="Token 已超過可刷新期限，請重新登入"
         )
-        # 檢查是否在寬限期內
-        exp = payload.get("exp", 0)
-        now = datetime.now(timezone.utc).timestamp()
-        grace_seconds = JWT_REFRESH_GRACE_HOURS * 3600
-        if now - exp > grace_seconds:
-            raise HTTPException(
-                status_code=401, detail="Token 已超過可刷新期限，請重新登入"
-            )
-    except JWTError:
-        raise HTTPException(status_code=401, detail="無效的 Token，請重新登入")
-
     # JTI 廢止檢查：與 decode_token 對齊。logout 廢止後的 token 在寬限期內仍可解碼，
     # 必須額外擋住才能讓 /refresh / /end-impersonate 不被遺失的 cookie 反覆利用。
     if is_token_revoked(payload.get("jti", "")):

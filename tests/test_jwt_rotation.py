@@ -8,6 +8,7 @@ import hashlib
 import os
 import importlib
 import pytest
+from fastapi import HTTPException
 
 import utils.auth as _auth_module_for_reset
 
@@ -162,3 +163,153 @@ class TestSignIncludesKid:
         secret = auth._VERIFY_KEYS[kid]
         payload = jose_jwt.decode(token, secret, algorithms=["HS256"])
         assert payload["user_id"] == 1
+
+
+# ── Task 3 helpers ────────────────────────────────────────────────────────────
+
+
+def _craft_token(header: dict, payload: dict, secret: str) -> str:
+    """手動組 token：用指定 secret 簽，header 可任意指定（含 kid 偽造）"""
+    from jose import jwt as jose_jwt
+
+    return jose_jwt.encode(payload, secret, algorithm="HS256", headers=header)
+
+
+def _craft_legacy_token_no_kid(payload: dict, secret: str) -> str:
+    """模擬升版前舊 token：用指定 secret 簽，header 不帶 kid"""
+    from jose import jwt as jose_jwt
+
+    # python-jose 預設 header 不含 kid（除非顯式傳 headers）
+    return jose_jwt.encode(payload, secret, algorithm="HS256")
+
+
+class TestVerifyMultiKey:
+
+    def test_verify_with_current_key(self, monkeypatch):
+        """current 簽 + current 驗 → pass"""
+        auth = _reload_auth(monkeypatch, current="cur-v1")
+        token = auth.create_access_token({"user_id": 1})
+        payload = auth.decode_token(token)
+        assert payload["user_id"] == 1
+
+    def test_verify_with_old_kid_in_olds_list(self, monkeypatch):
+        """舊 key 簽（kid_old）→ 啟動時 olds 含舊 key → 驗 pass"""
+        # 模擬：rotation 進行中，舊 token 仍在外
+        auth = _reload_auth(monkeypatch, current="new-key", olds='["old-key"]')
+        old_kid = _expected_kid("old-key")
+        # 用 old-key 簽，header 帶 old kid
+        token = _craft_token(
+            {"alg": "HS256", "kid": old_kid},
+            {"user_id": 7, "exp": 9999999999},
+            "old-key",
+        )
+        payload = auth.decode_token(token)
+        assert payload["user_id"] == 7
+
+    def test_verify_with_old_kid_not_in_olds(self, monkeypatch):
+        """舊 key 簽 + olds 不含 → 401（rotation 完成後預期）"""
+        auth = _reload_auth(monkeypatch, current="new-key")  # olds 為空
+        old_kid = _expected_kid("removed-old")
+        token = _craft_token(
+            {"alg": "HS256", "kid": old_kid},
+            {"user_id": 7, "exp": 9999999999},
+            "removed-old",
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            auth.decode_token(token)
+        assert excinfo.value.status_code == 401
+
+    def test_verify_unknown_kid_rejected(self, monkeypatch):
+        """偽造 kid header（從未在 _VERIFY_KEYS 中）→ 401"""
+        auth = _reload_auth(monkeypatch, current="cur-v2")
+        token = _craft_token(
+            {"alg": "HS256", "kid": "deadbeefcafe"},
+            {"user_id": 1, "exp": 9999999999},
+            "cur-v2",  # 即使簽章用對的 secret，未知 kid 也拒絕
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            auth.decode_token(token)
+        assert excinfo.value.status_code == 401
+
+
+class TestVerifyLegacyNoKid:
+
+    def test_legacy_no_kid_verified_by_current(self, monkeypatch):
+        """升版前 token（無 kid，用 current 簽）→ legacy try-loop 試到 current → pass"""
+        auth = _reload_auth(monkeypatch, current="cur-legacy")
+        token = _craft_legacy_token_no_kid(
+            {"user_id": 9, "exp": 9999999999},
+            "cur-legacy",
+        )
+        payload = auth.decode_token(token)
+        assert payload["user_id"] == 9
+
+    def test_legacy_no_kid_verified_by_old_in_olds(self, monkeypatch):
+        """升版前舊 token，secret 已 rotate；olds 仍含舊 key → legacy try-loop pass"""
+        auth = _reload_auth(monkeypatch, current="new", olds='["pre-rotate"]')
+        token = _craft_legacy_token_no_kid(
+            {"user_id": 9, "exp": 9999999999},
+            "pre-rotate",
+        )
+        payload = auth.decode_token(token)
+        assert payload["user_id"] == 9
+
+    def test_legacy_no_kid_unknown_key_rejected(self, monkeypatch):
+        """升版前 token，secret 早被刪 → legacy try-loop 全失敗 → 401"""
+        auth = _reload_auth(monkeypatch, current="new")  # olds 空
+        token = _craft_legacy_token_no_kid(
+            {"user_id": 9, "exp": 9999999999},
+            "long-gone-secret",
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            auth.decode_token(token)
+        assert excinfo.value.status_code == 401
+
+
+class TestDecodeTokenAllowExpiredMultiKey:
+
+    def test_allow_expired_with_current_kid(self, monkeypatch):
+        """current 簽的過期 token 在 grace 內 → decode_token_allow_expired pass"""
+        import time
+
+        auth = _reload_auth(monkeypatch, current="cur-grace")
+        # 過期 30 秒（在 2h grace 內）
+        past_exp = int(time.time()) - 30
+        token = _craft_token(
+            {"alg": "HS256", "kid": auth._CURRENT_KID},
+            {"user_id": 1, "exp": past_exp},
+            "cur-grace",
+        )
+        payload = auth.decode_token_allow_expired(token)
+        assert payload["user_id"] == 1
+
+    def test_allow_expired_with_old_kid(self, monkeypatch):
+        """rotation 期間 olds 中舊 key 簽的過期 token 也能在 grace 內 decode"""
+        import time
+
+        auth = _reload_auth(monkeypatch, current="new", olds='["old-grace"]')
+        old_kid = _expected_kid("old-grace")
+        past_exp = int(time.time()) - 30
+        token = _craft_token(
+            {"alg": "HS256", "kid": old_kid},
+            {"user_id": 1, "exp": past_exp},
+            "old-grace",
+        )
+        payload = auth.decode_token_allow_expired(token)
+        assert payload["user_id"] == 1
+
+    def test_allow_expired_beyond_grace_raises_401(self, monkeypatch):
+        """multi-key 路徑下，超出 grace 的過期 token → 401"""
+        import time
+
+        auth = _reload_auth(monkeypatch, current="grace-exceed")
+        past_exp = int(time.time()) - (auth.JWT_REFRESH_GRACE_HOURS * 3600 + 60)
+        token = _craft_token(
+            {"alg": "HS256", "kid": auth._CURRENT_KID},
+            {"user_id": 1, "exp": past_exp},
+            "grace-exceed",
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            auth.decode_token_allow_expired(token)
+        assert excinfo.value.status_code == 401
+        assert "刷新期限" in excinfo.value.detail
