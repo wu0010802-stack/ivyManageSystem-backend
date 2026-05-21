@@ -9,7 +9,7 @@
 - 新增 `config/cache.py`：CacheSettings（backend / redis_url / key_prefix）
 - 改造 12 個 callsite（含 plan 未列出但 spec 6 namespace 必要的 `api/config/bonus.py`）
 - 刪除 `api/salary/__init__.py` unused `from cachetools import TTLCache`
-- Migrate 5 個 test fixture 檔（test_salary_export / test_parent_home_summary / test_parent_display_name / test_parent_family_timeline / test_notifications / test_student_leave_notification_summary）
+- Migrate 6 個 test fixture 檔（test_salary_export / test_parent_home_summary / test_parent_display_name / test_parent_family_timeline / test_notifications / test_student_leave_notification_summary）
 
 ## Namespace 一覽（15 個）
 
@@ -46,6 +46,12 @@
 
 ## 驗收
 - 14 new `tests/test_cache_layer.py` 全綠
-- 既有 pytest 零回歸（除 pre-existing `test_audit_router` / `test_supabase_storage` 與本 PR 無關）
+- 全套 pytest：**4630 passed**, 6 skipped；零本 PR 引入的回歸
 - `grep -rn "from cachetools" api/ services/` 無輸出
-- 12 commits 一一獨立，皆 Conventional Commits 格式
+- 13 commits 一一獨立，皆 Conventional Commits 格式
+
+### Pre-existing 失敗（與本 PR 無關，merge 前確認 main 同樣紅）
+- 3× `test_audit_router::TestAuditListFilters::*`（filter_by_entity_id / filter_by_ip_address / changes_field_deserialized）
+- 1× `test_rls_phase1g::test_public_catalog_visible_to_all_parents`（parent RLS spike，env 變數依賴）
+- 9× `test_rls_phase1e::*`（parent RLS spike，env 變數依賴）
+- 6× `test_supabase_storage`（module-level setup error；本次 `--ignore` 跳過）
