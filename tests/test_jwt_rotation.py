@@ -137,3 +137,28 @@ class TestOldsParsing:
 
         with pytest.raises(RuntimeError, match="list of strings"):
             importlib.reload(auth_module)
+
+
+class TestSignIncludesKid:
+
+    def test_create_access_token_includes_kid_header(self, monkeypatch):
+        """新簽 token 的 header 必含 kid，值等於 _CURRENT_KID"""
+        from jose import jwt as jose_jwt
+
+        auth = _reload_auth(monkeypatch, current="signing-cur")
+        token = auth.create_access_token({"user_id": 1})
+        header = jose_jwt.get_unverified_header(token)
+        assert header["kid"] == auth._CURRENT_KID
+        assert header["alg"] == "HS256"
+
+    def test_kid_in_header_matches_secret_used_to_sign(self, monkeypatch):
+        """kid 確實對應簽章 secret（用該 kid 對應的 secret 能驗過）"""
+        from jose import jwt as jose_jwt
+
+        auth = _reload_auth(monkeypatch, current="match-test")
+        token = auth.create_access_token({"user_id": 1})
+        header = jose_jwt.get_unverified_header(token)
+        kid = header["kid"]
+        secret = auth._VERIFY_KEYS[kid]
+        payload = jose_jwt.decode(token, secret, algorithms=["HS256"])
+        assert payload["user_id"] == 1

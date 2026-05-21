@@ -203,7 +203,12 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode.setdefault("iat", iat_ts)
     to_encode.setdefault("original_iat", iat_ts)
     to_encode.setdefault("jti", secrets.token_urlsafe(16))
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(
+        to_encode,
+        JWT_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+        headers={"kid": _CURRENT_KID},
+    )
 
 
 def is_token_revoked(jti: str) -> bool:
