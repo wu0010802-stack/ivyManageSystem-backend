@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 from models.base import session_scope
 from models.salary import SalaryRecord, SalarySnapshot
 from services.salary_snapshot_service import create_month_end_snapshots
+from utils.advisory_lock import try_scheduler_lock
 
 logger = logging.getLogger(__name__)
 
@@ -48,32 +49,43 @@ def _previous_month(today: date) -> tuple[int, int]:
 
 
 def check_and_snapshot_once(today: Optional[date] = None) -> int:
-    """對「上個月」執行 idempotent 快照。回傳新建筆數。"""
+    """對「上個月」執行 idempotent 快照。回傳新建筆數。
+
+    多 worker 部署時以 advisory lock（run_key = 目標 YYYY-MM）確保同月只有一個
+    worker 真的建 snapshot。取不到鎖即回傳 0（外層 if created 自然 falsy 不 log）。
+    """
     today = today or _today_taipei()
     year, month = _previous_month(today)
     with session_scope() as session:
-        record_count = (
-            session.query(SalaryRecord.id)
-            .filter(
-                SalaryRecord.salary_year == year,
-                SalaryRecord.salary_month == month,
+        with try_scheduler_lock(
+            session,
+            scheduler_name="salary_snapshot",
+            run_key=f"{year}-{month:02d}",
+        ) as acquired:
+            if not acquired:
+                return 0
+            record_count = (
+                session.query(SalaryRecord.id)
+                .filter(
+                    SalaryRecord.salary_year == year,
+                    SalaryRecord.salary_month == month,
+                )
+                .count()
             )
-            .count()
-        )
-        if record_count == 0:
-            return 0
-        snapshot_count = (
-            session.query(SalarySnapshot.id)
-            .filter(
-                SalarySnapshot.salary_year == year,
-                SalarySnapshot.salary_month == month,
-                SalarySnapshot.snapshot_type == "month_end",
+            if record_count == 0:
+                return 0
+            snapshot_count = (
+                session.query(SalarySnapshot.id)
+                .filter(
+                    SalarySnapshot.salary_year == year,
+                    SalarySnapshot.salary_month == month,
+                    SalarySnapshot.snapshot_type == "month_end",
+                )
+                .count()
             )
-            .count()
-        )
-        if snapshot_count >= record_count:
-            return 0
-        created = create_month_end_snapshots(session, year, month, "scheduler")
+            if snapshot_count >= record_count:
+                return 0
+            created = create_month_end_snapshots(session, year, month, "scheduler")
     return created
 
 
