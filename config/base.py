@@ -1,0 +1,68 @@
+"""Centralized Settings combining all sub-Settings domains."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .core import CoreSettings
+from .geocoding import GeocodingSettings
+from .line import LineSettings
+from .misc import MiscSettings
+from .network import NetworkSettings
+from .parent_db import ParentDBSettings
+from .recruitment import RecruitmentSettings
+from .scheduler import SchedulerSettings
+from .sentry import SentrySettings
+from .storage import StorageSettings
+
+_SENSITIVE_KEY_SUBSTRINGS: tuple[str, ...] = (
+    "secret",
+    "password",
+    "token",
+    "api_key",
+    "dsn",
+)
+
+
+def _scrub(data: Any, denylist: tuple[str, ...]) -> Any:
+    if not isinstance(data, dict):
+        return data
+    out: dict[str, Any] = {}
+    for k, v in data.items():
+        if isinstance(v, dict):
+            out[k] = _scrub(v, denylist)
+        elif (
+            isinstance(k, str)
+            and any(s in k.lower() for s in denylist)
+            and v not in (None, "")
+        ):
+            out[k] = "***"
+        else:
+            out[k] = v
+    return out
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    core: CoreSettings = Field(default_factory=CoreSettings)
+    parent_db: ParentDBSettings = Field(default_factory=ParentDBSettings)
+    network: NetworkSettings = Field(default_factory=NetworkSettings)
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
+    sentry: SentrySettings = Field(default_factory=SentrySettings)
+    line: LineSettings = Field(default_factory=LineSettings)
+    recruitment: RecruitmentSettings = Field(default_factory=RecruitmentSettings)
+    geocoding: GeocodingSettings = Field(default_factory=GeocodingSettings)
+    storage: StorageSettings = Field(default_factory=StorageSettings)
+    misc: MiscSettings = Field(default_factory=MiscSettings)
+
+    def model_dump_safe(self) -> dict[str, Any]:
+        """Dump settings with sensitive fields redacted to '***'."""
+        return _scrub(self.model_dump(), _SENSITIVE_KEY_SUBSTRINGS)
