@@ -32,7 +32,7 @@ from utils.permissions import Permission
 
 from tests.test_activity_pos import _create_admin, _login
 
-READ_PERMS = Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE
+READ_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE"]
 
 
 @pytest.fixture
@@ -124,7 +124,7 @@ def test_no_warning_below_threshold(cash_client):
     client, sf = cash_client
     today = date.today()
     with sf() as s:
-        _create_admin(s, permissions=READ_PERMS)
+        _create_admin(s, permission_names=READ_PERMS)
         reg = _make_reg(s, "甲")
         _add_cash_payment(s, reg.id, 10000, day=today)
         s.commit()
@@ -143,7 +143,7 @@ def test_warning_at_threshold(cash_client):
     client, sf = cash_client
     today = date.today()
     with sf() as s:
-        _create_admin(s, permissions=READ_PERMS)
+        _create_admin(s, permission_names=READ_PERMS)
         reg = _make_reg(s, "乙")
         _add_cash_payment(s, reg.id, 30000, day=today)
         s.commit()
@@ -160,7 +160,7 @@ def test_warning_above_threshold(cash_client):
     client, sf = cash_client
     today = date.today()
     with sf() as s:
-        _create_admin(s, permissions=READ_PERMS)
+        _create_admin(s, permission_names=READ_PERMS)
         reg = _make_reg(s, "丙")
         for amt in (10000, 20000, 20000):
             _add_cash_payment(s, reg.id, amt, day=today)
@@ -181,7 +181,7 @@ def test_refund_offsets_cash_in_drawer(cash_client):
     client, sf = cash_client
     today = date.today()
     with sf() as s:
-        _create_admin(s, permissions=READ_PERMS)
+        _create_admin(s, permission_names=READ_PERMS)
         reg = _make_reg(s, "丁")
         _add_cash_payment(s, reg.id, 40000, day=today)
         # 退費 15000
@@ -212,7 +212,7 @@ def test_threshold_override_via_env(cash_client, monkeypatch):
     client, sf = cash_client
     today = date.today()
     with sf() as s:
-        _create_admin(s, permissions=READ_PERMS)
+        _create_admin(s, permission_names=READ_PERMS)
         reg = _make_reg(s, "丁")
         _add_cash_payment(s, reg.id, 12000, day=today)
         s.commit()
@@ -231,7 +231,7 @@ def test_threshold_invalid_env_falls_back_to_default(cash_client, monkeypatch):
     client, sf = cash_client
     today = date.today()
     with sf() as s:
-        _create_admin(s, permissions=READ_PERMS)
+        _create_admin(s, permission_names=READ_PERMS)
         reg = _make_reg(s, "戊")
         _add_cash_payment(s, reg.id, 10000, day=today)
         s.commit()

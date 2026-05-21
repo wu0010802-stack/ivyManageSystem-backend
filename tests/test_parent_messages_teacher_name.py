@@ -45,7 +45,7 @@ def _make_user(
         username=username,
         password_hash="!",
         role="teacher",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         display_name=display_name,
         employee_id=employee_id,

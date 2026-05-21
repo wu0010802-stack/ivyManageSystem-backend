@@ -71,11 +71,13 @@ def client_with_db(tmp_path):
 def _create_user(
     session, username, perms, password="TempPass123", role="admin"
 ) -> User:
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -174,7 +176,7 @@ class TestBatchUpsertManualEventCounts:
             _create_user(
                 s,
                 "admin1",
-                Permission.APPRAISAL_EVENT_WRITE | Permission.APPRAISAL_READ,
+                ["APPRAISAL_EVENT_WRITE", "APPRAISAL_READ"],
             )
             cycle_id, p_id, _ = _setup_cycle_with_participant(s)
             s.commit()
@@ -242,7 +244,7 @@ class TestBatchUpsertManualEventCounts:
             _create_user(
                 s,
                 "admin1",
-                Permission.APPRAISAL_EVENT_WRITE | Permission.APPRAISAL_READ,
+                ["APPRAISAL_EVENT_WRITE", "APPRAISAL_READ"],
             )
             cycle_id, p_id, _ = _setup_cycle_with_participant(s)
             s.commit()
@@ -267,7 +269,7 @@ class TestBatchUpsertManualEventCounts:
             _create_user(
                 s,
                 "admin1",
-                Permission.APPRAISAL_EVENT_WRITE | Permission.APPRAISAL_READ,
+                ["APPRAISAL_EVENT_WRITE", "APPRAISAL_READ"],
             )
             cycle_id, p_id, _ = _setup_cycle_with_participant(
                 s, status=CycleStatus.LOCKED

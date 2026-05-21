@@ -139,7 +139,7 @@ def _make_user(session_factory, *, username="bob"):
             username=username,
             password_hash=hash_password("Pass123456"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             token_version=0,
         )
@@ -164,7 +164,7 @@ def test_logout_writes_jti_to_blocklist(db):
         {
             "user_id": user_id,
             "role": "admin",
-            "permissions": -1,
+            "permission_names": ["*"],
             "token_version": 0,
         }
     )
@@ -211,7 +211,7 @@ def test_logout_revokes_expired_token_within_grace(db):
         {
             "user_id": user_id,
             "role": "admin",
-            "permissions": -1,
+            "permission_names": ["*"],
             "token_version": 0,
             "jti": "expired-but-in-grace",
             "exp": int((now - timedelta(minutes=10)).timestamp()),
@@ -251,7 +251,7 @@ def test_refresh_rejects_logged_out_token(db):
         {
             "user_id": user_id,
             "role": "admin",
-            "permissions": -1,
+            "permission_names": ["*"],
             "token_version": 0,
         }
     )

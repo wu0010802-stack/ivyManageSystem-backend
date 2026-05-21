@@ -76,7 +76,7 @@ def _create_admin(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+        permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
         is_active=True,
     )
     session.add(admin)

@@ -28,11 +28,7 @@ from utils.permissions import Permission
 
 from tests.test_activity_pos import _create_admin, _login
 
-APPROVE_PERMS = (
-    Permission.ACTIVITY_READ
-    | Permission.ACTIVITY_WRITE
-    | Permission.ACTIVITY_PAYMENT_APPROVE
-)
+APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
 
 
 @pytest.fixture
@@ -92,8 +88,8 @@ def test_unlock_writes_history_snapshot(history_client):
     client, sf = history_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(
         sf,
@@ -142,7 +138,7 @@ def test_unlock_admin_override_flag_recorded(history_client):
     client, sf = history_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="boss", permissions=APPROVE_PERMS)
+        _create_admin(s, username="boss", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target, approver_username="boss")
 
@@ -171,8 +167,8 @@ def test_multiple_unlock_cycles_append_rows(history_client):
     client, sf = history_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         s.commit()
 
     # 第一次簽核 + 解鎖
@@ -216,8 +212,8 @@ def test_history_endpoint_returns_snapshots(history_client):
     client, sf = history_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(
         sf,
@@ -252,7 +248,7 @@ def test_history_endpoint_empty_when_no_history(history_client):
     """無 history 紀錄時回 count=0，snapshots=[]。"""
     client, sf = history_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         s.commit()
 
     assert _login(client).status_code == 200
@@ -275,7 +271,7 @@ def test_history_endpoint_permission_403(history_client):
                 username="reader",
                 password_hash=hash_password("Pw123456"),
                 role="staff",
-                permissions=Permission.ACTIVITY_READ,
+                permission_names=["ACTIVITY_READ"],
                 is_active=True,
             )
         )

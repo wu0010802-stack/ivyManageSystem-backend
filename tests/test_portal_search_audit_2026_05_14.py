@@ -73,8 +73,7 @@ def _seed_teacher(sess, classroom):
         password_hash="x",
         role="teacher",
         employee_id=emp.id,
-        permissions=int(Permission.PARENT_MESSAGES_WRITE)
-        | int(Permission.PORTFOLIO_READ),
+        permission_names=["PARENT_MESSAGES_WRITE", "PORTFOLIO_READ"],
         is_active=True,
         token_version=0,
     )
@@ -86,7 +85,7 @@ def _seed_teacher(sess, classroom):
             "username": user.username,
             "role": user.role,
             "employee_id": emp.id,
-            "permissions": user.permissions,
+            "permission_names": user.permission_names,
             "token_version": 0,
         }
     )

@@ -66,7 +66,7 @@ def has_finance_approve(current_user: dict) -> bool:
 
     用於：大額退費 / 薪資調整 / 學費退款等敏感金流動作的二簽檢查。
     """
-    perms = current_user.get("permissions", 0)
+    perms = current_user.get("permission_names")
     return has_permission(perms, Permission.ACTIVITY_PAYMENT_APPROVE)
 
 

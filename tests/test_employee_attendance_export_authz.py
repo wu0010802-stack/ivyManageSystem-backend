@@ -84,7 +84,7 @@ def _create_user(
     username,
     password="Pass1234",
     role,
-    permissions,
+    permission_names,
     employee_id=None,
 ):
     user = User(
@@ -92,7 +92,7 @@ def _create_user(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(permissions),
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -140,7 +140,7 @@ class TestF032_EmployeeAttendanceExport:
                 s,
                 username="sv_cross",
                 role="supervisor",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -160,7 +160,7 @@ class TestF032_EmployeeAttendanceExport:
                 s,
                 username="sv_self",
                 role="supervisor",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -181,7 +181,7 @@ class TestF032_EmployeeAttendanceExport:
                 s,
                 username="adm_f032",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             s.commit()
             target_id = target.id
@@ -200,7 +200,7 @@ class TestF032_EmployeeAttendanceExport:
                 s,
                 username="hr_f032",
                 role="hr",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
             )
             s.commit()
             target_id = target.id
@@ -222,7 +222,7 @@ class TestF032_EmployeeAttendanceExport:
                 s,
                 username="adm_pure",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 employee_id=None,
             )
             s.commit()
@@ -246,7 +246,7 @@ class TestF032_EmployeeAttendanceExport:
                 s,
                 username="custom_att_assist",
                 role="attendance_assist",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()

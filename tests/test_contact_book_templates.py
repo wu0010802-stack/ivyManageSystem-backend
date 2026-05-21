@@ -52,7 +52,7 @@ def tpl_client(tmp_path):
     engine.dispose()
 
 
-def _make_teacher(session, *, username: str, perms: int) -> tuple[User, Employee]:
+def _make_teacher(session, *, username: str, perms: list[str]) -> tuple[User, Employee]:
     emp = Employee(
         employee_id=f"E_{username}",
         name=username,
@@ -66,7 +66,7 @@ def _make_teacher(session, *, username: str, perms: int) -> tuple[User, Employee
         password_hash="!",
         role="teacher",
         employee_id=emp.id,
-        permissions=perms,
+        permission_names=perms,
         is_active=True,
         token_version=0,
     )
@@ -75,14 +75,14 @@ def _make_teacher(session, *, username: str, perms: int) -> tuple[User, Employee
     return u, emp
 
 
-def _token(user: User, employee_id: int, perms: int) -> str:
+def _token(user: User, employee_id: int, perms: list[str]) -> str:
     return create_access_token(
         {
             "user_id": user.id,
             "employee_id": employee_id,
             "role": "teacher",
             "name": user.username,
-            "permissions": perms,
+            "permission_names": perms,
             "token_version": user.token_version or 0,
         }
     )
@@ -95,9 +95,10 @@ def _token(user: User, employee_id: int, perms: int) -> str:
 
 class TestPersonalTemplate:
     def _setup_teacher(self, sf):
-        write_perm = int(
-            Permission.PORTFOLIO_READ.value | Permission.PORTFOLIO_WRITE.value
-        )
+        write_perm = [
+            Permission.PORTFOLIO_READ.value,
+            Permission.PORTFOLIO_WRITE.value,
+        ]
         with sf() as session:
             user, emp = _make_teacher(session, username="t1", perms=write_perm)
             session.commit()
@@ -190,9 +191,10 @@ class TestPersonalTemplate:
         ).json()
 
         # 另一個教師
-        write_perm = int(
-            Permission.PORTFOLIO_READ.value | Permission.PORTFOLIO_WRITE.value
-        )
+        write_perm = [
+            Permission.PORTFOLIO_READ.value,
+            Permission.PORTFOLIO_WRITE.value,
+        ]
         with sf() as session:
             u2, e2 = _make_teacher(session, username="t2", perms=write_perm)
             session.commit()
@@ -239,11 +241,11 @@ class TestPersonalTemplate:
 
 class TestSharedTemplate:
     def _setup_supervisor(self, sf):
-        sup_perm = int(
-            Permission.PORTFOLIO_READ.value
-            | Permission.PORTFOLIO_WRITE.value
-            | Permission.PORTFOLIO_PUBLISH.value
-        )
+        sup_perm = [
+            Permission.PORTFOLIO_READ.value,
+            Permission.PORTFOLIO_WRITE.value,
+            Permission.PORTFOLIO_PUBLISH.value,
+        ]
         with sf() as session:
             u, e = _make_teacher(session, username="sup", perms=sup_perm)
             session.commit()
@@ -271,9 +273,10 @@ class TestSharedTemplate:
         client, sf = tpl_client
 
         # 教師建個人
-        tch_perm = int(
-            Permission.PORTFOLIO_READ.value | Permission.PORTFOLIO_WRITE.value
-        )
+        tch_perm = [
+            Permission.PORTFOLIO_READ.value,
+            Permission.PORTFOLIO_WRITE.value,
+        ]
         with sf() as session:
             tu, te = _make_teacher(session, username="tch", perms=tch_perm)
             session.commit()
@@ -321,9 +324,10 @@ class TestSharedTemplate:
         )
 
         # 教師建 personal + 看到 shared
-        tch_perm = int(
-            Permission.PORTFOLIO_READ.value | Permission.PORTFOLIO_WRITE.value
-        )
+        tch_perm = [
+            Permission.PORTFOLIO_READ.value,
+            Permission.PORTFOLIO_WRITE.value,
+        ]
         with sf() as session:
             tu, te = _make_teacher(session, username="tch", perms=tch_perm)
             session.commit()

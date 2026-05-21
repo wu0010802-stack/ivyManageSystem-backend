@@ -122,7 +122,7 @@ def _seed_admin_and_login(sf, client):
                 username="snap_admin",
                 password_hash=hash_password("SnapPass123"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 must_change_password=False,
             )

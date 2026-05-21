@@ -80,13 +80,13 @@ def _create_admin(
     session,
     username: str = "pos_admin",
     password: str = "TempPass123",
-    permissions: int = Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+    permission_names: list[str] = ["ACTIVITY_READ", "ACTIVITY_WRITE"],
 ) -> User:
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(user)
@@ -617,7 +617,7 @@ class TestPOSPermissions:
     def test_read_only_cannot_checkout(self, pos_client):
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s, username="viewer", permissions=Permission.ACTIVITY_READ)
+            _create_admin(s, username="viewer", permission_names=["ACTIVITY_READ"])
             reg = _setup_reg(s, student_name="王小明")
             s.commit()
             reg_id = reg.id
@@ -636,7 +636,7 @@ class TestPOSPermissions:
     def test_read_only_can_view_summary(self, pos_client):
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s, username="viewer", permissions=Permission.ACTIVITY_READ)
+            _create_admin(s, username="viewer", permission_names=["ACTIVITY_READ"])
             s.commit()
         assert _login(client, username="viewer").status_code == 200
         res = client.get("/api/activity/pos/daily-summary")
@@ -1043,11 +1043,7 @@ def _add_payment(
 class TestPosDailyClose:
     """POS 每日收款簽核：老闆核對流水、凍結 snapshot、解鎖重簽、對帳。"""
 
-    APPROVE_PERMS = (
-        Permission.ACTIVITY_READ
-        | Permission.ACTIVITY_WRITE
-        | Permission.ACTIVITY_PAYMENT_APPROVE
-    )
+    APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
 
     # ── A. Pending 列表 ────────────────────────────────────────────────
 
@@ -1059,7 +1055,7 @@ class TestPosDailyClose:
         d2 = today - timedelta(days=2)
         d3 = today - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="A")
             for d in (d1, d2, d3):
                 _add_payment(
@@ -1095,7 +1091,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="R")
             _add_payment(
                 s, reg.id, type_="refund", amount=800, method="現金", day=target
@@ -1112,7 +1108,7 @@ class TestPosDailyClose:
     def test_pending_rejects_range_over_92_days(self, pos_client):
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
         res = client.get(
@@ -1127,7 +1123,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="B")
             _add_payment(
                 s, reg.id, type_="payment", amount=1200, method="現金", day=target
@@ -1151,7 +1147,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="C")
             _add_payment(
                 s, reg.id, type_="payment", amount=1000, method="現金", day=target
@@ -1182,7 +1178,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="D")
             _add_payment(
                 s, reg.id, type_="payment", amount=2000, method="現金", day=target
@@ -1230,7 +1226,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="E")
             _add_payment(
                 s, reg.id, type_="payment", amount=1500, method="現金", day=target
@@ -1253,7 +1249,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="F")
             _add_payment(
                 s, reg.id, type_="payment", amount=1000, method="現金", day=target
@@ -1274,7 +1270,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="G")
             _add_payment(
                 s, reg.id, type_="payment", amount=700, method="轉帳", day=target
@@ -1295,7 +1291,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="H")
             _add_payment(
                 s, reg.id, type_="payment", amount=100, method="現金", day=target
@@ -1315,7 +1311,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         future = date.today() + timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
         res = client.post(
@@ -1326,7 +1322,7 @@ class TestPosDailyClose:
     def test_approve_rejects_bad_date_format(self, pos_client):
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
         res = client.post("/api/activity/pos/daily-close/bad-date", json={})
@@ -1337,7 +1333,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
         res = client.post(
@@ -1355,7 +1351,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
         res = client.post(
@@ -1370,8 +1366,8 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, username="approver_a", permissions=self.APPROVE_PERMS)
-            _create_admin(s, username="approver_b", permissions=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_a", permission_names=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_b", permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="I")
             _add_payment(
                 s, reg.id, type_="payment", amount=100, method="現金", day=target
@@ -1425,7 +1421,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="X")
             _add_payment(
                 s, reg.id, type_="payment", amount=100, method="現金", day=target
@@ -1455,7 +1451,7 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
         res = client.request(
@@ -1470,8 +1466,8 @@ class TestPosDailyClose:
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, username="approver_a", permissions=self.APPROVE_PERMS)
-            _create_admin(s, username="approver_b", permissions=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_a", permission_names=self.APPROVE_PERMS)
+            _create_admin(s, username="approver_b", permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="J")
             _add_payment(
                 s, reg.id, type_="payment", amount=1000, method="現金", day=target
@@ -1536,7 +1532,7 @@ class TestPosDailyClose:
                 s,
                 username="viewer",
                 password="Viewer12345",
-                permissions=Permission.ACTIVITY_READ,
+                permission_names=["ACTIVITY_READ"],
             )
             s.commit()
         assert (
@@ -1572,8 +1568,7 @@ class TestPosDailyClose:
                 s,
                 username="boss",
                 password="BossPass1234",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.commit()
         assert (
@@ -1594,7 +1589,7 @@ class TestPosDailyClose:
         d_approved = today - timedelta(days=2)
         d_live = today - timedelta(days=1)
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             reg = _make_reg_minimal(s, student_name="K")
             _add_payment(
                 s, reg.id, type_="payment", amount=1000, method="現金", day=d_approved
@@ -1643,7 +1638,7 @@ class TestPosDailyClose:
     def test_reconciliation_max_days_guard(self, pos_client):
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s, permissions=self.APPROVE_PERMS)
+            _create_admin(s, permission_names=self.APPROVE_PERMS)
             s.commit()
         assert _login(client).status_code == 200
         res = client.get(

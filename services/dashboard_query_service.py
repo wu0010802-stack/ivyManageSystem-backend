@@ -254,7 +254,7 @@ class DashboardQueryService:
         }
 
     def build_home_sections(
-        self, session, *, user_permissions: int, event_days: int = 7
+        self, session, *, user_permissions: list[str] | None, event_days: int = 7
     ) -> dict:
         sections = {}
 
@@ -364,12 +364,14 @@ class DashboardQueryService:
         self,
         session,
         *,
-        user_permissions: int,
+        user_permissions: list[str] | None,
         current_user: dict | None = None,
     ) -> dict:
         # 為支援班級 scope，將 cache key 從 user_permissions 升為 (user_permissions, user_id)
+        # list 不可 hash，先 sorted 後轉 tuple
+        perms_key = tuple(sorted(user_permissions)) if user_permissions else None
         cache_key = (
-            user_permissions,
+            perms_key,
             current_user.get("user_id") if current_user else None,
         )
         cached = self._notification_cache.get(cache_key)

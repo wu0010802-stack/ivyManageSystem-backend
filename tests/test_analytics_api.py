@@ -33,17 +33,17 @@ from utils.permissions import Permission
 # 輔助：建立不同權限的 mock user
 # ---------------------------------------------------------------------------
 
-_ANALYTICS_PERM = int(Permission.BUSINESS_ANALYTICS)
-_ANALYTICS_STUDENTS_PERM = int(Permission.BUSINESS_ANALYTICS | Permission.STUDENTS_READ)
+_ANALYTICS_PERM = ["BUSINESS_ANALYTICS"]
+_ANALYTICS_STUDENTS_PERM = ["BUSINESS_ANALYTICS", "STUDENTS_READ"]
 
 
-def _mock_user_with_perm(permissions: int, role: str = "admin"):
+def _mock_user_with_perm(permission_names, role: str = "admin"):
     async def _inner():
         return {
             "id": 1,
             "username": "testuser",
             "role": role,
-            "permissions": permissions,
+            "permission_names": permission_names,
         }
 
     return _inner
@@ -92,7 +92,7 @@ class TestAnalyticsApi:
         client, app = analytics_client
 
         # 任何不含 BUSINESS_ANALYTICS 的權限（例如只有 REPORTS）
-        no_analytics_perm = int(Permission.REPORTS)
+        no_analytics_perm = ["REPORTS"]
         app.dependency_overrides[get_current_user] = _mock_user_with_perm(
             no_analytics_perm
         )

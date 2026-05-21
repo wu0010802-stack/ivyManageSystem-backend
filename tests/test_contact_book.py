@@ -93,9 +93,10 @@ def _make_teacher(session, classroom_id: int) -> tuple[Employee, User]:
         password_hash="!hash",
         role="teacher",
         employee_id=emp.id,
-        permissions=int(
-            Permission.PORTFOLIO_READ.value | Permission.PORTFOLIO_WRITE.value
-        ),
+        permission_names=[
+            Permission.PORTFOLIO_READ.value,
+            Permission.PORTFOLIO_WRITE.value,
+        ],
         is_active=True,
         token_version=0,
     )
@@ -109,7 +110,7 @@ def _make_parent(session, username: str = "parent1") -> User:
         username=username,
         password_hash="!LINE",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=f"U_{username}",
         token_version=0,
@@ -161,7 +162,7 @@ def _teacher_token(user: User, emp: Employee) -> str:
             "employee_id": emp.id,
             "role": "teacher",
             "name": user.username,
-            "permissions": user.permissions,
+            "permission_names": user.permission_names,
             "token_version": user.token_version or 0,
         }
     )
@@ -174,7 +175,7 @@ def _parent_token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )

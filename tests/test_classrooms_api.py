@@ -58,7 +58,7 @@ def _create_user(session, username: str, password: str = "TempPass123") -> User:
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=Permission.CLASSROOMS_READ | Permission.CLASSROOMS_WRITE,
+        permission_names=["CLASSROOMS_READ", "CLASSROOMS_WRITE"],
         is_active=True,
     )
     session.add(user)

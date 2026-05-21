@@ -144,7 +144,7 @@ def export_employees(
         classrooms = _id_name_map(session, Classroom)
         job_titles = _id_name_map(session, JobTitle)
         can_view_full_account = has_permission(
-            current_user.get("permissions", 0), Permission.SALARY_WRITE
+            current_user.get("permission_names"), Permission.SALARY_WRITE
         )
         # 顯式寫 AuditLog:GET 匯出不會經 AuditMiddleware,但本端會輸出
         # 全員姓名/聯絡電話/銀行帳號等敏感資料。is_full_bank_account=True 時

@@ -62,7 +62,7 @@ def _create_audit_admin(session, username="audit_admin", password="TempPass123")
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=Permission.AUDIT_LOGS,
+        permission_names=["AUDIT_LOGS"],
         is_active=True,
     )
     session.add(user)
@@ -121,7 +121,7 @@ class TestAuditMeta:
                 username="plain_user",
                 password_hash=hash_password("TempPass123"),
                 role="staff",
-                permissions=Permission.EMPLOYEES_READ,
+                permission_names=["EMPLOYEES_READ"],
                 is_active=True,
             )
             s.add(user)

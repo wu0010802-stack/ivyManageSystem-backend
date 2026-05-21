@@ -4,7 +4,7 @@ Batch 1 — 地基：尚無家長路由，先驗證下列「擋人」邏輯：
 1. parent JWT 撞 portal/* → 403（router-level require_non_parent_role）
 2. parent JWT 撞 staff endpoint（require_staff_permission）→ 403
 3. teacher JWT 撞 portal/* → 200（既有行為不被破壞）
-4. require_staff_permission 即使 user.permissions=-1 也擋 parent role
+4. require_staff_permission 即使 user.permission_names=-1 也擋 parent role
 
 家長路由本身的 IDOR 測試在 Batch 3 補（test_parent_idor_regressions.py）。
 """
@@ -64,13 +64,13 @@ def isolated_app(tmp_path):
 
 
 def _create_parent_user(session, *, line_user_id: str = "Uparent001") -> User:
-    """建立家長 User（無 employee 關聯、role='parent'、permissions=0）。"""
+    """建立家長 User（無 employee 關聯、role='parent'、permission_names=0）。"""
     user = User(
         employee_id=None,
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",  # sentinel：永不匹配
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         must_change_password=False,
         line_user_id=line_user_id,
@@ -95,7 +95,7 @@ def _create_teacher_user(session, *, employee_id_str: str = "T001") -> User:
         username=f"teacher_{employee_id_str}",
         password_hash=hash_password("Passw0rd!"),
         role="teacher",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         must_change_password=False,
         token_version=0,
@@ -112,7 +112,7 @@ def _make_token(user: User) -> str:
             "employee_id": user.employee_id,
             "role": user.role,
             "name": user.username,
-            "permissions": user.permissions or 0,
+            "permission_names": user.permission_names or 0,
             "token_version": user.token_version or 0,
         }
     )
@@ -170,14 +170,14 @@ class TestTeacherStillReachesPortal:
 
 
 class TestParentBlockedFromStaffEndpoint:
-    """require_staff_permission 必拒絕 parent，即使 permissions=-1。"""
+    """require_staff_permission 必拒絕 parent，即使 permission_names=-1。"""
 
     def test_parent_with_full_permissions_still_blocked(self, isolated_app):
         client, session_factory = isolated_app
         with session_factory() as session:
             parent = _create_parent_user(session)
             # 模擬「有人錯誤地給 parent -1 全權限」：仍應被 role check 擋
-            parent.permissions = -1
+            parent.permission_names=["*"]
             session.commit()
             token = create_access_token(
                 {
@@ -185,7 +185,7 @@ class TestParentBlockedFromStaffEndpoint:
                     "employee_id": None,
                     "role": "parent",
                     "name": parent.username,
-                    "permissions": -1,
+                    "permission_names": ["*"],
                     "token_version": parent.token_version or 0,
                 }
             )

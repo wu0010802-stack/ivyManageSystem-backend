@@ -100,7 +100,7 @@ def _admin(session, *, employee=None, username: str = "hr_admin") -> User:
         username=username,
         password_hash=hash_password("AdminPass123"),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
         must_change_password=False,
     )
@@ -336,7 +336,7 @@ class TestHLinePushAndShiftHours:
                 username="emp_h001",
                 password_hash=hash_password("AdminPass123"),
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 is_active=True,
                 must_change_password=False,
                 line_user_id="UTEST_LINE_ID_H001",

@@ -64,12 +64,12 @@ def students_client(tmp_path):
     engine.dispose()
 
 
-def _create_admin(session, permissions: int):
+def _create_admin(session, permission_names):
     u = User(
         username="admin_t",
         password_hash=hash_password("Passw0rd!"),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -103,7 +103,7 @@ def _seed_student(session, lifecycle_status: str, name: str = "畢業生"):
     return s
 
 
-WRITE_PERMS = int(Permission.STUDENTS_WRITE) | int(Permission.STUDENTS_READ)
+WRITE_PERMS = ["STUDENTS_WRITE", "STUDENTS_READ"]
 
 
 class TestPutStudentTerminalGuard:
@@ -114,7 +114,7 @@ class TestPutStudentTerminalGuard:
     def test_put_blocked_for_terminal_lifecycle(self, students_client, terminal_status):
         client, sf = students_client
         with sf() as s:
-            _create_admin(s, permissions=WRITE_PERMS)
+            _create_admin(s, permission_names=WRITE_PERMS)
             student = _seed_student(s, lifecycle_status=terminal_status)
             s.commit()
             sid = student.id
@@ -136,7 +136,7 @@ class TestPutStudentTerminalGuard:
     def test_put_allowed_for_enrolled(self, students_client):
         client, sf = students_client
         with sf() as s:
-            _create_admin(s, permissions=WRITE_PERMS)
+            _create_admin(s, permission_names=WRITE_PERMS)
             student = _seed_student(s, lifecycle_status="enrolled")
             s.commit()
             sid = student.id

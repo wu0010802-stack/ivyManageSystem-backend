@@ -121,7 +121,7 @@ def _login_as_salary_admin(client: TestClient, session_factory):
                 username="roster_admin",
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 is_active=True,
                 must_change_password=False,
             )
@@ -448,7 +448,7 @@ class TestConfigAndValidation:
                     username="no_perm",
                     password_hash=hash_password("TempPass123"),
                     role="staff",
-                    permissions=0,
+                    permission_names=[],
                     is_active=True,
                     must_change_password=False,
                 )

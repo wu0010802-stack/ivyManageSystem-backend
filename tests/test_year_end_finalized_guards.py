@@ -71,9 +71,7 @@ def client_with_db(tmp_path):
     engine.dispose()
 
 
-YEAR_END_ALL = (
-    Permission.YEAR_END_READ | Permission.YEAR_END_WRITE | Permission.YEAR_END_FINALIZE
-)
+YEAR_END_ALL = ["YEAR_END_READ", "YEAR_END_WRITE", "YEAR_END_FINALIZE"]
 
 
 def _seed_cycle_with_settlement(sf, settlement_status: YearEndSettlementStatus):
@@ -92,7 +90,7 @@ def _seed_cycle_with_settlement(sf, settlement_status: YearEndSettlementStatus):
                 username="admin",
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=int(YEAR_END_ALL),
+                permission_names=YEAR_END_ALL,
                 is_active=True,
             )
         )
@@ -189,7 +187,7 @@ class TestAddSpecialBonusFinalizedGuard:
                     username="admin",
                     password_hash=hash_password("TempPass123"),
                     role="admin",
-                    permissions=int(YEAR_END_ALL),
+                    permission_names=YEAR_END_ALL,
                     is_active=True,
                 )
             )

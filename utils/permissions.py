@@ -1,110 +1,161 @@
 """
 Permission definitions for fine-grained access control
-位元遮罩權限系統（讀寫分離版）
+（text[] 版本，2026-05-21 重構：脫離 64-bit IntFlag 容量限制）
 """
 
-from enum import IntFlag
+from enum import Enum
 from typing import List, Dict
 
+WILDCARD = "*"
 
-class Permission(IntFlag):
-    """功能模組權限位元定義"""
 
-    # --- 不拆分的模組 (原位保留) ---
-    DASHBOARD = 1 << 0  # 儀表板
-    APPROVALS = 1 << 1  # 審核工作台
-    CALENDAR = 1 << 2  # 行事曆
-    SCHEDULE = 1 << 3  # 排班管理
-    MEETINGS = 1 << 7  # 園務會議
-    REPORTS = 1 << 13  # 報表統計
-    AUDIT_LOGS = 1 << 14  # 操作紀錄
+class Permission(str, Enum):
+    """權限識別字串（繼承 str：perm.value == "EMPLOYEES_READ"）。
 
-    # --- 讀寫分離模組：READ 保留原位，WRITE 使用高位 ---
-    ATTENDANCE_READ = 1 << 4  # 出勤管理 (檢視)
-    ATTENDANCE_WRITE = 1 << 17  # 出勤管理 (編輯)
-    LEAVES_READ = 1 << 5  # 請假管理 (檢視)
-    LEAVES_WRITE = 1 << 18  # 請假管理 (編輯)
-    OVERTIME_READ = 1 << 6  # 加班管理 (檢視)
-    OVERTIME_WRITE = 1 << 19  # 加班管理 (編輯)
-    EMPLOYEES_READ = 1 << 8  # 員工管理 (檢視)
-    EMPLOYEES_WRITE = 1 << 20  # 員工管理 (編輯)
-    STUDENTS_READ = 1 << 9  # 學生管理 (檢視)
-    STUDENTS_WRITE = 1 << 21  # 學生管理 (編輯)
-    CLASSROOMS_READ = 1 << 10  # 班級管理 (檢視)
-    CLASSROOMS_WRITE = 1 << 22  # 班級管理 (編輯)
-    SALARY_READ = 1 << 11  # 薪資管理 (檢視)
-    SALARY_WRITE = 1 << 23  # 薪資管理 (編輯)
-    ANNOUNCEMENTS_READ = 1 << 12  # 公告管理 (檢視)
-    ANNOUNCEMENTS_WRITE = 1 << 24  # 公告管理 (編輯)
-    SETTINGS_READ = 1 << 15  # 系統設定 (檢視)
-    SETTINGS_WRITE = 1 << 25  # 系統設定 (編輯)
-    USER_MANAGEMENT_READ = 1 << 16  # 帳號管理 (檢視)
-    USER_MANAGEMENT_WRITE = 1 << 26  # 帳號管理 (編輯)
-    ACTIVITY_READ = 1 << 27  # 課後才藝 (檢視)
-    ACTIVITY_WRITE = 1 << 28  # 課後才藝 (編輯)
-    DISMISSAL_CALLS_READ = 1 << 29  # 接送通知 portal (檢視)
-    DISMISSAL_CALLS_WRITE = 1 << 30  # 接送通知 portal (操作：acknowledge/complete)
-    FEES_READ = 1 << 31  # 學費管理 (檢視)
-    # ⚠️  注意：1 << 32 超出 JavaScript 32 位元 bitwise 安全範圍（最大 1 << 30）。
-    # 前端進行權限位元運算時必須使用 BigInt（如 BigInt(permissions) & BigInt(1) << 32n）
-    # 以避免整數溢出。後端 Python IntFlag 不受此限制影響。
-    FEES_WRITE = 1 << 32  # 學費管理 (編輯)
-    RECRUITMENT_READ = 1 << 33  # 招生統計 (檢視)
-    RECRUITMENT_WRITE = 1 << 34  # 招生統計 (編輯)
-    # ⚠️  同 1<<32 ~ 1<<34：前端 bitwise 必須使用 BigInt
-    ACTIVITY_PAYMENT_APPROVE = 1 << 35  # 才藝課收款簽核（老闆專屬）
+    位元值已搬到 LEGACY_PERMISSION_BITS，僅 alembic migration 使用，
+    runtime 不參考。
+    """
 
-    # --- 學生生命週期追蹤（Phase A） ---
-    STUDENTS_LIFECYCLE_WRITE = (
-        1 << 36
-    )  # 學生生命週期狀態轉移（退學/休學/畢業等高權操作）
-    GUARDIANS_READ = 1 << 37  # 監護人資料 (檢視) — 家長資料屬敏感
-    GUARDIANS_WRITE = 1 << 38  # 監護人資料 (編輯)
-    RECRUITMENT_CONVERT = 1 << 39  # 招生訪視 → 正式學生 轉化
-    BUSINESS_ANALYTICS = 1 << 40  # 經營分析（招生漏斗、流失預警等）
+    DASHBOARD = "DASHBOARD"
+    APPROVALS = "APPROVALS"
+    CALENDAR = "CALENDAR"
+    SCHEDULE = "SCHEDULE"
+    MEETINGS = "MEETINGS"
+    REPORTS = "REPORTS"
+    AUDIT_LOGS = "AUDIT_LOGS"
 
-    # --- 學習 Portfolio（幼兒成長歷程） ---
-    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
-    PORTFOLIO_READ = 1 << 41  # 檢視 portfolio（觀察、附件、報告）
-    PORTFOLIO_WRITE = 1 << 42  # 新增觀察、上傳附件、編輯報告草稿
-    PORTFOLIO_PUBLISH = 1 << 43  # 發佈學期報告給家長
-    STUDENTS_HEALTH_READ = 1 << 44  # 健康資訊檢視（過敏、用藥）— 敏感
-    STUDENTS_HEALTH_WRITE = 1 << 45  # 健康資訊編輯
-    STUDENTS_MEDICATION_ADMINISTER = 1 << 46  # 執行餵藥並記錄（班導師）
-    STUDENTS_SPECIAL_NEEDS_READ = 1 << 47  # 特殊需求檢視
-    STUDENTS_SPECIAL_NEEDS_WRITE = 1 << 48  # 特殊需求編輯 / IEP 管理
+    ATTENDANCE_READ = "ATTENDANCE_READ"
+    ATTENDANCE_WRITE = "ATTENDANCE_WRITE"
+    LEAVES_READ = "LEAVES_READ"
+    LEAVES_WRITE = "LEAVES_WRITE"
+    OVERTIME_READ = "OVERTIME_READ"
+    OVERTIME_WRITE = "OVERTIME_WRITE"
+    EMPLOYEES_READ = "EMPLOYEES_READ"
+    EMPLOYEES_WRITE = "EMPLOYEES_WRITE"
+    STUDENTS_READ = "STUDENTS_READ"
+    STUDENTS_WRITE = "STUDENTS_WRITE"
+    CLASSROOMS_READ = "CLASSROOMS_READ"
+    CLASSROOMS_WRITE = "CLASSROOMS_WRITE"
+    SALARY_READ = "SALARY_READ"
+    SALARY_WRITE = "SALARY_WRITE"
+    ANNOUNCEMENTS_READ = "ANNOUNCEMENTS_READ"
+    ANNOUNCEMENTS_WRITE = "ANNOUNCEMENTS_WRITE"
+    SETTINGS_READ = "SETTINGS_READ"
+    SETTINGS_WRITE = "SETTINGS_WRITE"
+    USER_MANAGEMENT_READ = "USER_MANAGEMENT_READ"
+    USER_MANAGEMENT_WRITE = "USER_MANAGEMENT_WRITE"
+    ACTIVITY_READ = "ACTIVITY_READ"
+    ACTIVITY_WRITE = "ACTIVITY_WRITE"
+    DISMISSAL_CALLS_READ = "DISMISSAL_CALLS_READ"
+    DISMISSAL_CALLS_WRITE = "DISMISSAL_CALLS_WRITE"
+    FEES_READ = "FEES_READ"
+    FEES_WRITE = "FEES_WRITE"
+    RECRUITMENT_READ = "RECRUITMENT_READ"
+    RECRUITMENT_WRITE = "RECRUITMENT_WRITE"
+    ACTIVITY_PAYMENT_APPROVE = "ACTIVITY_PAYMENT_APPROVE"
 
-    # --- 家園溝通平台（家長入口 2.0） ---
-    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
-    PARENT_MESSAGES_WRITE = 1 << 49  # 家長 1對1 訊息（教師端發送/回覆）
+    STUDENTS_LIFECYCLE_WRITE = "STUDENTS_LIFECYCLE_WRITE"
+    GUARDIANS_READ = "GUARDIANS_READ"
+    GUARDIANS_WRITE = "GUARDIANS_WRITE"
+    RECRUITMENT_CONVERT = "RECRUITMENT_CONVERT"
+    BUSINESS_ANALYTICS = "BUSINESS_ANALYTICS"
 
-    # --- 教育部申報模組（Phase 1） ---
-    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
-    GOV_REPORTS_VIEW = 1 << 50  # 政府申報資料 (檢視)
-    GOV_REPORTS_EXPORT = 1 << 51  # 政府申報匯出 (執行)
+    PORTFOLIO_READ = "PORTFOLIO_READ"
+    PORTFOLIO_WRITE = "PORTFOLIO_WRITE"
+    PORTFOLIO_PUBLISH = "PORTFOLIO_PUBLISH"
+    STUDENTS_HEALTH_READ = "STUDENTS_HEALTH_READ"
+    STUDENTS_HEALTH_WRITE = "STUDENTS_HEALTH_WRITE"
+    STUDENTS_MEDICATION_ADMINISTER = "STUDENTS_MEDICATION_ADMINISTER"
+    STUDENTS_SPECIAL_NEEDS_READ = "STUDENTS_SPECIAL_NEEDS_READ"
+    STUDENTS_SPECIAL_NEEDS_WRITE = "STUDENTS_SPECIAL_NEEDS_WRITE"
 
-    # --- 教職員考核（Phase 1）---
-    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
-    APPRAISAL_READ = 1 << 55  # 考核資料檢視（自己/屬下/全部三層 visibility）
-    APPRAISAL_EVENT_WRITE = 1 << 56  # 登錄事件（功過/扣加分/特別辦法）
-    APPRAISAL_REVIEW = 1 << 57  # 主管簽核（第一階）
-    APPRAISAL_ACCOUNTING = 1 << 58  # 行政會計核數字（第二階）
-    APPRAISAL_FINALIZE = 1 << 59  # 最高主管核定（第三階）+ cycle lock/unlock/close
-    APPRAISAL_RULE_WRITE = 1 << 53  # 考核扣分規則設定（Phase 1 calibrate）
+    PARENT_MESSAGES_WRITE = "PARENT_MESSAGES_WRITE"
 
-    # --- 年終獎金結算（M1 重構新增）---
-    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
-    YEAR_END_READ = 1 << 52  # 年終結算檢視（個人/全部）
-    YEAR_END_WRITE = 1 << 60  # 年終 cycle / settlements / special_bonus_items 編輯
-    YEAR_END_FINALIZE = 1 << 61  # 年終最高主管核定 + cycle lock/close
+    GOV_REPORTS_VIEW = "GOV_REPORTS_VIEW"
+    GOV_REPORTS_EXPORT = "GOV_REPORTS_EXPORT"
 
-    # --- 廠商付款簽收（園務行政）---
-    # ⚠ 位元 >= 32：前端 bitwise 必須使用 BigInt
-    VENDOR_PAYMENT_READ = 1 << 54  # 廠商付款 (檢視)
-    VENDOR_PAYMENT_WRITE = 1 << 62  # 廠商付款 (編輯 / 簽收)
+    APPRAISAL_READ = "APPRAISAL_READ"
+    APPRAISAL_EVENT_WRITE = "APPRAISAL_EVENT_WRITE"
+    APPRAISAL_REVIEW = "APPRAISAL_REVIEW"
+    APPRAISAL_ACCOUNTING = "APPRAISAL_ACCOUNTING"
+    APPRAISAL_FINALIZE = "APPRAISAL_FINALIZE"
+    APPRAISAL_RULE_WRITE = "APPRAISAL_RULE_WRITE"
 
-    # 全部權限
-    ALL = 0xFFFFFFFFFFFFFFFF
+    YEAR_END_READ = "YEAR_END_READ"
+    YEAR_END_WRITE = "YEAR_END_WRITE"
+    YEAR_END_FINALIZE = "YEAR_END_FINALIZE"
+
+    VENDOR_PAYMENT_READ = "VENDOR_PAYMENT_READ"
+    VENDOR_PAYMENT_WRITE = "VENDOR_PAYMENT_WRITE"
+
+
+# 位元值凍結快照——僅供 alembic upgrade()/downgrade() backfill 使用。
+# 一旦 migration 跑過 prod，請勿變更此表（保持歷史 migration 可重跑）。
+LEGACY_PERMISSION_BITS: Dict[str, int] = {
+    "DASHBOARD": 1 << 0,
+    "APPROVALS": 1 << 1,
+    "CALENDAR": 1 << 2,
+    "SCHEDULE": 1 << 3,
+    "ATTENDANCE_READ": 1 << 4,
+    "LEAVES_READ": 1 << 5,
+    "OVERTIME_READ": 1 << 6,
+    "MEETINGS": 1 << 7,
+    "EMPLOYEES_READ": 1 << 8,
+    "STUDENTS_READ": 1 << 9,
+    "CLASSROOMS_READ": 1 << 10,
+    "SALARY_READ": 1 << 11,
+    "ANNOUNCEMENTS_READ": 1 << 12,
+    "REPORTS": 1 << 13,
+    "AUDIT_LOGS": 1 << 14,
+    "SETTINGS_READ": 1 << 15,
+    "USER_MANAGEMENT_READ": 1 << 16,
+    "ATTENDANCE_WRITE": 1 << 17,
+    "LEAVES_WRITE": 1 << 18,
+    "OVERTIME_WRITE": 1 << 19,
+    "EMPLOYEES_WRITE": 1 << 20,
+    "STUDENTS_WRITE": 1 << 21,
+    "CLASSROOMS_WRITE": 1 << 22,
+    "SALARY_WRITE": 1 << 23,
+    "ANNOUNCEMENTS_WRITE": 1 << 24,
+    "SETTINGS_WRITE": 1 << 25,
+    "USER_MANAGEMENT_WRITE": 1 << 26,
+    "ACTIVITY_READ": 1 << 27,
+    "ACTIVITY_WRITE": 1 << 28,
+    "DISMISSAL_CALLS_READ": 1 << 29,
+    "DISMISSAL_CALLS_WRITE": 1 << 30,
+    "FEES_READ": 1 << 31,
+    "FEES_WRITE": 1 << 32,
+    "RECRUITMENT_READ": 1 << 33,
+    "RECRUITMENT_WRITE": 1 << 34,
+    "ACTIVITY_PAYMENT_APPROVE": 1 << 35,
+    "STUDENTS_LIFECYCLE_WRITE": 1 << 36,
+    "GUARDIANS_READ": 1 << 37,
+    "GUARDIANS_WRITE": 1 << 38,
+    "RECRUITMENT_CONVERT": 1 << 39,
+    "BUSINESS_ANALYTICS": 1 << 40,
+    "PORTFOLIO_READ": 1 << 41,
+    "PORTFOLIO_WRITE": 1 << 42,
+    "PORTFOLIO_PUBLISH": 1 << 43,
+    "STUDENTS_HEALTH_READ": 1 << 44,
+    "STUDENTS_HEALTH_WRITE": 1 << 45,
+    "STUDENTS_MEDICATION_ADMINISTER": 1 << 46,
+    "STUDENTS_SPECIAL_NEEDS_READ": 1 << 47,
+    "STUDENTS_SPECIAL_NEEDS_WRITE": 1 << 48,
+    "PARENT_MESSAGES_WRITE": 1 << 49,
+    "GOV_REPORTS_VIEW": 1 << 50,
+    "GOV_REPORTS_EXPORT": 1 << 51,
+    "YEAR_END_READ": 1 << 52,
+    "APPRAISAL_RULE_WRITE": 1 << 53,
+    "VENDOR_PAYMENT_READ": 1 << 54,
+    "APPRAISAL_READ": 1 << 55,
+    "APPRAISAL_EVENT_WRITE": 1 << 56,
+    "APPRAISAL_REVIEW": 1 << 57,
+    "APPRAISAL_ACCOUNTING": 1 << 58,
+    "APPRAISAL_FINALIZE": 1 << 59,
+    "YEAR_END_WRITE": 1 << 60,
+    "YEAR_END_FINALIZE": 1 << 61,
+    "VENDOR_PAYMENT_WRITE": 1 << 62,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -141,133 +192,111 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
     },
 }
 
-# READ → WRITE 位元對照（供遷移用）
-_RW_PAIRS: List[tuple] = [
-    (Permission.ATTENDANCE_READ, Permission.ATTENDANCE_WRITE),
-    (Permission.LEAVES_READ, Permission.LEAVES_WRITE),
-    (Permission.OVERTIME_READ, Permission.OVERTIME_WRITE),
-    (Permission.EMPLOYEES_READ, Permission.EMPLOYEES_WRITE),
-    (Permission.STUDENTS_READ, Permission.STUDENTS_WRITE),
-    (Permission.CLASSROOMS_READ, Permission.CLASSROOMS_WRITE),
-    (Permission.SALARY_READ, Permission.SALARY_WRITE),
-    (Permission.ANNOUNCEMENTS_READ, Permission.ANNOUNCEMENTS_WRITE),
-    (Permission.SETTINGS_READ, Permission.SETTINGS_WRITE),
-    (Permission.USER_MANAGEMENT_READ, Permission.USER_MANAGEMENT_WRITE),
-    (Permission.ACTIVITY_READ, Permission.ACTIVITY_WRITE),
-    (Permission.DISMISSAL_CALLS_READ, Permission.DISMISSAL_CALLS_WRITE),
-    (Permission.FEES_READ, Permission.FEES_WRITE),
-    (Permission.RECRUITMENT_READ, Permission.RECRUITMENT_WRITE),
-    (Permission.GUARDIANS_READ, Permission.GUARDIANS_WRITE),
-    (Permission.VENDOR_PAYMENT_READ, Permission.VENDOR_PAYMENT_WRITE),
-]
-
 
 # ---------------------------------------------------------------------------
-# RBAC 角色模板
+# RBAC 角色模板（text[] 版本：list[str]，admin 為 ["*"] wildcard）
 # ---------------------------------------------------------------------------
 
-ROLE_TEMPLATES: Dict[str, int] = {
-    "admin": -1,  # 全部權限
-    "hr": (
-        Permission.DASHBOARD
-        | Permission.EMPLOYEES_READ
-        | Permission.EMPLOYEES_WRITE
-        | Permission.SALARY_READ
-        | Permission.SALARY_WRITE
-        | Permission.ATTENDANCE_READ
-        | Permission.ATTENDANCE_WRITE
-        | Permission.LEAVES_READ
-        | Permission.LEAVES_WRITE
-        | Permission.OVERTIME_READ
-        | Permission.OVERTIME_WRITE
-        | Permission.REPORTS
-        | Permission.GOV_REPORTS_VIEW
-        | Permission.GOV_REPORTS_EXPORT
+ROLE_TEMPLATES: Dict[str, List[str]] = {
+    "admin": [WILDCARD],
+    "hr": [
+        Permission.DASHBOARD.value,
+        Permission.EMPLOYEES_READ.value,
+        Permission.EMPLOYEES_WRITE.value,
+        Permission.SALARY_READ.value,
+        Permission.SALARY_WRITE.value,
+        Permission.ATTENDANCE_READ.value,
+        Permission.ATTENDANCE_WRITE.value,
+        Permission.LEAVES_READ.value,
+        Permission.LEAVES_WRITE.value,
+        Permission.OVERTIME_READ.value,
+        Permission.OVERTIME_WRITE.value,
+        Permission.REPORTS.value,
+        Permission.GOV_REPORTS_VIEW.value,
+        Permission.GOV_REPORTS_EXPORT.value,
         # 教職員考核：人事/會計（核數字）
-        | Permission.APPRAISAL_READ
-        | Permission.APPRAISAL_EVENT_WRITE
-        | Permission.APPRAISAL_ACCOUNTING
+        Permission.APPRAISAL_READ.value,
+        Permission.APPRAISAL_EVENT_WRITE.value,
+        Permission.APPRAISAL_ACCOUNTING.value,
         # 年終獎金：人事可檢視與編輯（會計核數字流程）
-        | Permission.YEAR_END_READ
-        | Permission.YEAR_END_WRITE
+        Permission.YEAR_END_READ.value,
+        Permission.YEAR_END_WRITE.value,
         # 廠商付款：HR 兼採購行政
-        | Permission.VENDOR_PAYMENT_READ
-        | Permission.VENDOR_PAYMENT_WRITE
-    ),
-    "supervisor": (
-        Permission.DASHBOARD
-        | Permission.APPROVALS
-        | Permission.CALENDAR
-        | Permission.SCHEDULE
-        | Permission.ATTENDANCE_READ
-        | Permission.ATTENDANCE_WRITE
-        | Permission.LEAVES_READ
-        | Permission.LEAVES_WRITE
-        | Permission.OVERTIME_READ
-        | Permission.OVERTIME_WRITE
-        | Permission.MEETINGS
-        | Permission.STUDENTS_READ
-        | Permission.STUDENTS_WRITE
-        | Permission.STUDENTS_LIFECYCLE_WRITE
-        | Permission.GUARDIANS_READ
-        | Permission.GUARDIANS_WRITE
-        | Permission.CLASSROOMS_READ
-        | Permission.CLASSROOMS_WRITE
-        | Permission.FEES_READ
-        | Permission.FEES_WRITE
-        | Permission.RECRUITMENT_READ
-        | Permission.RECRUITMENT_WRITE
-        | Permission.RECRUITMENT_CONVERT
-        | Permission.BUSINESS_ANALYTICS
-        | Permission.REPORTS
+        Permission.VENDOR_PAYMENT_READ.value,
+        Permission.VENDOR_PAYMENT_WRITE.value,
+    ],
+    "supervisor": [
+        Permission.DASHBOARD.value,
+        Permission.APPROVALS.value,
+        Permission.CALENDAR.value,
+        Permission.SCHEDULE.value,
+        Permission.ATTENDANCE_READ.value,
+        Permission.ATTENDANCE_WRITE.value,
+        Permission.LEAVES_READ.value,
+        Permission.LEAVES_WRITE.value,
+        Permission.OVERTIME_READ.value,
+        Permission.OVERTIME_WRITE.value,
+        Permission.MEETINGS.value,
+        Permission.STUDENTS_READ.value,
+        Permission.STUDENTS_WRITE.value,
+        Permission.STUDENTS_LIFECYCLE_WRITE.value,
+        Permission.GUARDIANS_READ.value,
+        Permission.GUARDIANS_WRITE.value,
+        Permission.CLASSROOMS_READ.value,
+        Permission.CLASSROOMS_WRITE.value,
+        Permission.FEES_READ.value,
+        Permission.FEES_WRITE.value,
+        Permission.RECRUITMENT_READ.value,
+        Permission.RECRUITMENT_WRITE.value,
+        Permission.RECRUITMENT_CONVERT.value,
+        Permission.BUSINESS_ANALYTICS.value,
+        Permission.REPORTS.value,
         # Portfolio (supervisor 含發佈與健康編輯權限)
-        | Permission.PORTFOLIO_READ
-        | Permission.PORTFOLIO_WRITE
-        | Permission.PORTFOLIO_PUBLISH
-        | Permission.STUDENTS_HEALTH_READ
-        | Permission.STUDENTS_HEALTH_WRITE
-        | Permission.STUDENTS_MEDICATION_ADMINISTER
-        | Permission.STUDENTS_SPECIAL_NEEDS_READ
-        | Permission.STUDENTS_SPECIAL_NEEDS_WRITE
-        # 家園溝通平台：主管可主動發訊（後端 endpoint 仍以班導師守衛把關發起 thread 範圍）
-        | Permission.PARENT_MESSAGES_WRITE
+        Permission.PORTFOLIO_READ.value,
+        Permission.PORTFOLIO_WRITE.value,
+        Permission.PORTFOLIO_PUBLISH.value,
+        Permission.STUDENTS_HEALTH_READ.value,
+        Permission.STUDENTS_HEALTH_WRITE.value,
+        Permission.STUDENTS_MEDICATION_ADMINISTER.value,
+        Permission.STUDENTS_SPECIAL_NEEDS_READ.value,
+        Permission.STUDENTS_SPECIAL_NEEDS_WRITE.value,
+        # 家園溝通平台
+        Permission.PARENT_MESSAGES_WRITE.value,
         # 教育部申報模組：主管可檢視（不可匯出）
-        | Permission.GOV_REPORTS_VIEW
+        Permission.GOV_REPORTS_VIEW.value,
         # 教職員考核：主管全程權限（評分+簽核+核定）
-        | Permission.APPRAISAL_READ
-        | Permission.APPRAISAL_EVENT_WRITE
-        | Permission.APPRAISAL_REVIEW
-        | Permission.APPRAISAL_FINALIZE
-        | Permission.APPRAISAL_RULE_WRITE
-        # 年終獎金：主管全程權限（檢視+編輯+核定）
-        | Permission.YEAR_END_READ
-        | Permission.YEAR_END_WRITE
-        | Permission.YEAR_END_FINALIZE
-        # 廠商付款：主管全程權限（含核定/簽收）
-        | Permission.VENDOR_PAYMENT_READ
-        | Permission.VENDOR_PAYMENT_WRITE
-    ),
-    "teacher": (
-        Permission.DASHBOARD
-        | Permission.CALENDAR
-        | Permission.ANNOUNCEMENTS_READ  # 教師僅可檢視公告
-        | Permission.DISMISSAL_CALLS_READ  # 教師 portal：查看接送通知
-        | Permission.DISMISSAL_CALLS_WRITE  # 教師 portal：操作接送通知（acknowledge/complete）
-        # Portfolio（教師可讀寫觀察、上傳附件、餵藥；健康資訊編輯 / IEP / 發佈報告由 supervisor 掌管）
-        | Permission.PORTFOLIO_READ
-        | Permission.PORTFOLIO_WRITE
-        | Permission.STUDENTS_HEALTH_READ
-        | Permission.STUDENTS_MEDICATION_ADMINISTER
-        | Permission.STUDENTS_SPECIAL_NEEDS_READ
-        # 家園溝通平台：教師可發訊；發起 thread 範圍由 endpoint 端 assert_teacher_is_homeroom 守衛
-        | Permission.PARENT_MESSAGES_WRITE
-        # 教職員考核：教師登錄事件 + 看自己
-        | Permission.APPRAISAL_READ
-        | Permission.APPRAISAL_EVENT_WRITE
-    ),
-    # 家長角色：恆無任何 Permission 位元；資源存取一律由 user_id → guardians 過濾
-    "parent": 0,
+        Permission.APPRAISAL_READ.value,
+        Permission.APPRAISAL_EVENT_WRITE.value,
+        Permission.APPRAISAL_REVIEW.value,
+        Permission.APPRAISAL_FINALIZE.value,
+        Permission.APPRAISAL_RULE_WRITE.value,
+        # 年終獎金：主管全程權限
+        Permission.YEAR_END_READ.value,
+        Permission.YEAR_END_WRITE.value,
+        Permission.YEAR_END_FINALIZE.value,
+        # 廠商付款：主管全程權限
+        Permission.VENDOR_PAYMENT_READ.value,
+        Permission.VENDOR_PAYMENT_WRITE.value,
+    ],
+    "teacher": [
+        Permission.DASHBOARD.value,
+        Permission.CALENDAR.value,
+        Permission.ANNOUNCEMENTS_READ.value,
+        Permission.DISMISSAL_CALLS_READ.value,
+        Permission.DISMISSAL_CALLS_WRITE.value,
+        Permission.PORTFOLIO_READ.value,
+        Permission.PORTFOLIO_WRITE.value,
+        Permission.STUDENTS_HEALTH_READ.value,
+        Permission.STUDENTS_MEDICATION_ADMINISTER.value,
+        Permission.STUDENTS_SPECIAL_NEEDS_READ.value,
+        Permission.PARENT_MESSAGES_WRITE.value,
+        Permission.APPRAISAL_READ.value,
+        Permission.APPRAISAL_EVENT_WRITE.value,
+    ],
+    # 家長角色：恆無任何 Permission；資源存取一律由 user_id → guardians 過濾
+    "parent": [],
 }
+
 
 # 角色名稱對照表
 ROLE_LABELS: Dict[str, str] = {
@@ -277,11 +306,6 @@ ROLE_LABELS: Dict[str, str] = {
     "teacher": "教師",
     "parent": "家長",
 }
-
-
-def get_role_default_permissions(role: str) -> int:
-    """取得角色的預設權限"""
-    return ROLE_TEMPLATES.get(role, ROLE_TEMPLATES["teacher"])
 
 
 # 權限名稱對照表 (供前端使用)
@@ -502,46 +526,68 @@ PERMISSION_GROUPS: List[Dict] = [
 ]
 
 
-def get_permission_value(name: str) -> int:
-    """根據權限名稱取得位元值"""
-    try:
-        return Permission[name].value
-    except KeyError:
-        return 0
+# ---------------------------------------------------------------------------
+# Runtime helpers（text[] 版本）
+# ---------------------------------------------------------------------------
 
 
-def has_permission(user_permissions: int, required: Permission) -> bool:
-    """檢查使用者是否擁有指定權限"""
-    if user_permissions == -1:  # -1 表示全部權限
+def get_role_default_permissions(role: str) -> List[str]:
+    """取得角色預設權限名稱清單；未知角色 fallback 為 teacher。"""
+    return list(ROLE_TEMPLATES.get(role, ROLE_TEMPLATES["teacher"]))
+
+
+def has_permission(
+    user_perms: List[str] | None,
+    required: "Permission | str",
+) -> bool:
+    """單一權限檢查。
+
+    user_perms 應為已 resolve 完的最終 list（從 resolve_user_permissions 取得）。
+    若 caller 傳 None，視為「無權限」回 False；不在 helper 內 fallback role。
+    required 接受 Permission enum 或 str。
+    """
+    if user_perms is None:
+        return False
+    if WILDCARD in user_perms:
         return True
-    return (user_permissions & required.value) == required.value
+    name = required.value if isinstance(required, Permission) else required
+    return name in user_perms
 
 
-def get_permission_list(permissions_mask: int) -> List[str]:
-    """將位元遮罩轉換為權限名稱列表"""
-    if permissions_mask == -1:
-        return list(PERMISSION_LABELS.keys())
+def resolve_user_permissions(user) -> List[str]:
+    """從 User 物件取出最終權限清單。
 
-    result = []
-    for perm in Permission:
-        if perm == Permission.ALL:
-            continue
-        if (permissions_mask & perm.value) == perm.value:
-            result.append(perm.name)
-    return result
+    - permission_names is None → 套用 role 預設模板
+    - permission_names 為 list → 原樣回傳（已 override role 預設）
+    """
+    if user.permission_names is None:
+        return list(ROLE_TEMPLATES.get(user.role, []))
+    return list(user.permission_names)
+
+
+def get_permission_list(user_perms: List[str] | None) -> List[str]:
+    """展開權限清單為合法權限名稱列表。
+
+    - None → []
+    - 含 wildcard "*" → 全部 63 個 Permission name
+    - 否則 → 過濾掉非法名稱
+    """
+    if user_perms is None:
+        return []
+    if WILDCARD in user_perms:
+        return [p.value for p in Permission]
+    return [p for p in user_perms if p in Permission.__members__]
 
 
 def get_permissions_definition() -> Dict:
-    """取得完整權限定義供前端使用"""
-    permissions = {}
-    for perm in Permission:
-        if perm == Permission.ALL:
-            continue
-        permissions[perm.name] = {
+    """取得完整權限定義供前端使用。"""
+    permissions = {
+        perm.value: {
             "value": perm.value,
-            "label": PERMISSION_LABELS.get(perm.name, perm.name),
+            "label": PERMISSION_LABELS.get(perm.value, perm.value),
         }
-
+        for perm in Permission
+    }
     roles = {
         role: {
             "permissions": perms,
@@ -549,7 +595,6 @@ def get_permissions_definition() -> Dict:
         }
         for role, perms in ROLE_TEMPLATES.items()
     }
-
     return {
         "permissions": permissions,
         "groups": PERMISSION_GROUPS,

@@ -87,7 +87,7 @@ def _seed(session_factory):
             username="audit_admin",
             password_hash=hash_password("AuditPass123"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             must_change_password=False,
         )

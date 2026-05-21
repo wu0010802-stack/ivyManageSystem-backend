@@ -128,12 +128,10 @@ def filter_student_ids_by_access(
 
 
 def has_perm(current_user: dict, permission: Permission) -> bool:
-    """檢查 caller 是否持有指定 permission bit；委派 utils.permissions.has_permission，
-    可正確處理 -1（全權限）sentinel。"""
-    perms = current_user.get("permissions")
-    if perms is None:
-        return False
-    return has_permission(int(perms), permission)
+    """檢查 caller 是否持有指定 permission name；委派 utils.permissions.has_permission，
+    可正確處理 ["*"]（wildcard 全權限）。"""
+    perms = current_user.get("permission_names")
+    return has_permission(perms, permission)
 
 
 def can_view_student_health(current_user: dict) -> bool:

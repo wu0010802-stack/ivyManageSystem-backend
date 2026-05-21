@@ -77,17 +77,13 @@ def _create_admin(
     session,
     username: str = "fee_admin",
     password: str = "TempPass123",
-    permissions: int = (
-        Permission.ACTIVITY_READ
-        | Permission.ACTIVITY_WRITE
-        | Permission.ACTIVITY_PAYMENT_APPROVE
-    ),
+    permission_names: list[str] = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
 ) -> User:
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(user)
@@ -1181,7 +1177,7 @@ class TestForceRefundReasonAndApprovalGuards:
             _create_admin(
                 s,
                 username="lowperm",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(
                 s,
@@ -1291,7 +1287,7 @@ class TestForceRefundReasonAndApprovalGuards:
             _create_admin(
                 s,
                 username="lowperm",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(
                 s,
@@ -1379,7 +1375,7 @@ class TestForceRefundReasonAndApprovalGuards:
             _create_admin(
                 s,
                 username="lowperm",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, course_price=2000, paid_amount=2000)
             s.commit()

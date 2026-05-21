@@ -90,15 +90,17 @@ def _create_user(
     username: str,
     password: str = "Temp123456",
     role: str = "admin",
-    permissions: int = 0,
+    permission_names: list[str] = [],
     employee_id: int | None = None,
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee_id,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(user)
@@ -167,7 +169,7 @@ class TestPortalSalaryDraftLeak:
             session,
             username="portal_self",
             role="teacher",
-            permissions=0,
+            permission_names=[],
             employee_id=emp.id,
         )
         return emp
@@ -290,7 +292,7 @@ class TestFestivalBonusMonthsCap:
                 session=s,
                 username="cfg_admin",
                 role="admin",
-                permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+                permission_names=["SETTINGS_READ", "SETTINGS_WRITE"],
             )
             s.commit()
 
@@ -320,7 +322,7 @@ class TestFestivalBonusMonthsCap:
                 session=s,
                 username="cfg_admin",
                 role="admin",
-                permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+                permission_names=["SETTINGS_READ", "SETTINGS_WRITE"],
             )
             s.commit()
 
@@ -345,7 +347,7 @@ class TestFestivalBonusMonthsCap:
                 session=s,
                 username="cfg_admin",
                 role="admin",
-                permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+                permission_names=["SETTINGS_READ", "SETTINGS_WRITE"],
             )
             s.commit()
 
@@ -373,7 +375,7 @@ class TestFeePaymentLargeApproval:
                 session=s,
                 username="fee_clerk",
                 role="admin",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
             )
             rec = _seed_fee_record(s, amount_due=200_000)
             s.commit()
@@ -403,7 +405,7 @@ class TestFeePaymentLargeApproval:
                 session=s,
                 username="fee_clerk",
                 role="admin",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
             )
             rec = _seed_fee_record(s, amount_due=200_000)
             s.commit()
@@ -437,11 +439,7 @@ class TestFeePaymentLargeApproval:
                 session=s,
                 username="fee_boss",
                 role="admin",
-                permissions=(
-                    Permission.FEES_READ
-                    | Permission.FEES_WRITE
-                    | Permission.ACTIVITY_PAYMENT_APPROVE
-                ),
+                permission_names=["FEES_READ", "FEES_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             rec = _seed_fee_record(s, amount_due=200_000)
             s.commit()

@@ -61,12 +61,14 @@ def activity_client(tmp_path):
     engine.dispose()
 
 
-def _create_user(session, username: str, password: str, permissions: int) -> User:
+def _create_user(session, username: str, password: str, permission_names) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(user)
@@ -140,7 +142,7 @@ class TestAttendanceRollPdfEndpoint:
                 session,
                 "act_admin",
                 "TempPass123",
-                Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                ["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             session.commit()
 

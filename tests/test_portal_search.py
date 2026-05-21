@@ -90,7 +90,7 @@ def _seed_teacher(sess, classroom: Classroom):
         password_hash="x",
         role="teacher",
         employee_id=emp.id,
-        permissions=int(Permission.PARENT_MESSAGES_WRITE),
+        permission_names=["PARENT_MESSAGES_WRITE"],
         is_active=True,
         token_version=0,
     )
@@ -102,7 +102,7 @@ def _seed_teacher(sess, classroom: Classroom):
             "username": user.username,
             "role": user.role,
             "employee_id": emp.id,
-            "permissions": user.permissions,
+            "permission_names": user.permission_names,
             "token_version": 0,
         }
     )
@@ -351,7 +351,7 @@ def test_messages_only_returns_own_threads(client_and_session):
         password_hash="x",
         role="teacher",
         employee_id=emp_b.id,
-        permissions=int(Permission.PARENT_MESSAGES_WRITE),
+        permission_names=["PARENT_MESSAGES_WRITE"],
         is_active=True,
         token_version=0,
     )

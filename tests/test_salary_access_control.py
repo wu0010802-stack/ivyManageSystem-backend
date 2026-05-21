@@ -70,13 +70,15 @@ def salary_client(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def _create_user(session, *, username, password, role, permissions, employee_id=None):
+def _create_user(session, *, username, password, role, permission_names, employee_id=None):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee_id,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -102,7 +104,7 @@ class TestSalaryQueryAccessControl:
                 username="orphan_teacher",
                 password="TeacherPass123",
                 role="teacher",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 employee_id=None,
             )
             session.commit()
@@ -123,7 +125,7 @@ class TestSalaryQueryAccessControl:
                 username="pure_admin_salary",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 employee_id=None,
             )
             session.commit()
@@ -152,7 +154,7 @@ class TestSalaryQueryAccessControl:
                 username="linked_teacher",
                 password="LinkedPass123",
                 role="teacher",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 employee_id=emp.id,
             )
             session.commit()
@@ -197,7 +199,7 @@ class TestManualAdjustNegativeSalaryGuard:
                 username="salary_adjuster",
                 password="AdjPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 employee_id=None,
             )
             session.commit()
@@ -244,7 +246,7 @@ class TestManualAdjustNegativeSalaryGuard:
                 username="salary_adjuster2",
                 password="Adj2Pass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 employee_id=None,
             )
             session.commit()

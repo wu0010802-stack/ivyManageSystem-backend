@@ -56,13 +56,15 @@ def client_with_db(tmp_path):
 
 
 def _create_user(
-    session, username: str, permissions: int, password: str = "TempPass123"
+    session, username: str, permission_names, password: str = "TempPass123"
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(user)
@@ -176,7 +178,7 @@ class TestStudentAttendanceOverviewApi:
             _create_user(
                 session,
                 "student_editor",
-                Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+                ["STUDENTS_READ", "STUDENTS_WRITE"],
             )
             classroom = Classroom(name="向日葵班", is_active=True)
             session.add(classroom)

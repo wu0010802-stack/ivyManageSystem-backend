@@ -93,7 +93,7 @@ def _create_user(
     *,
     username,
     role,
-    permissions,
+    permission_names,
     employee_id=None,
     password="Pass1234",
 ):
@@ -102,7 +102,7 @@ def _create_user(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(permissions),
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -194,8 +194,7 @@ class TestF016_BonusPreview:
                 s,
                 username="sv_bonus",
                 role="supervisor",
-                permissions=int(Permission.STUDENTS_READ)
-                | int(Permission.STUDENTS_WRITE),
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE"],
             )
             s.commit()
 
@@ -246,7 +245,7 @@ class TestF016_BonusPreview:
             s.add(cls)
             s.flush()
             cls_id = cls.id
-            _create_user(s, username="adm_bonus", role="admin", permissions=-1)
+            _create_user(s, username="adm_bonus", role="admin", permission_names=["*"])
             s.commit()
 
         self._patch_compute(monkeypatch, cls_id)
@@ -273,9 +272,7 @@ class TestF016_BonusPreview:
                 s,
                 username="hr_bonus",
                 role="hr",
-                permissions=int(Permission.STUDENTS_READ)
-                | int(Permission.STUDENTS_WRITE)
-                | int(Permission.SALARY_READ),
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE", "SALARY_READ"],
             )
             s.commit()
 
@@ -327,7 +324,7 @@ class TestF017_EmployeeListDetail:
                 s,
                 username="sv_emp",
                 role="supervisor",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -349,7 +346,7 @@ class TestF017_EmployeeListDetail:
                 s,
                 username="sv_emp2",
                 role="supervisor",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -368,7 +365,7 @@ class TestF017_EmployeeListDetail:
         client, sf = pii_client
         with sf() as s:
             other = _create_employee(s, "S_other3", "他人3")
-            _create_user(s, username="adm_emp", role="admin", permissions=-1)
+            _create_user(s, username="adm_emp", role="admin", permission_names=["*"])
             s.commit()
             other_id = other.id
 
@@ -389,7 +386,7 @@ class TestF017_EmployeeListDetail:
                 s,
                 username="custom_emp",
                 role="hr_lite",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -488,8 +485,7 @@ class TestF026_RegistrationsList:
                 s,
                 username="act_no_st",
                 role="activity_admin",
-                permissions=int(Permission.ACTIVITY_READ)
-                | int(Permission.GUARDIANS_READ),
+                permission_names=["ACTIVITY_READ", "GUARDIANS_READ"],
             )
             s.commit()
             reg_id = reg.id
@@ -527,8 +523,7 @@ class TestF026_RegistrationsList:
                 s,
                 username="act_no_gd",
                 role="activity_admin",
-                permissions=int(Permission.ACTIVITY_READ)
-                | int(Permission.STUDENTS_READ),
+                permission_names=["ACTIVITY_READ", "STUDENTS_READ"],
             )
             s.commit()
             reg_id = reg.id
@@ -563,7 +558,7 @@ class TestF026_RegistrationsList:
         client, sf = pii_client
         with sf() as s:
             reg = _setup_activity_reg(s)
-            _create_user(s, username="adm_act", role="admin", permissions=-1)
+            _create_user(s, username="adm_act", role="admin", permission_names=["*"])
             s.commit()
             reg_id = reg.id
 
@@ -583,9 +578,7 @@ class TestF026_RegistrationsList:
                 s,
                 username="act_full",
                 role="activity_admin",
-                permissions=int(Permission.ACTIVITY_READ)
-                | int(Permission.STUDENTS_READ)
-                | int(Permission.GUARDIANS_READ),
+                permission_names=["ACTIVITY_READ", "STUDENTS_READ", "GUARDIANS_READ"],
             )
             s.commit()
             reg_id = reg.id
@@ -632,7 +625,7 @@ class TestF027_RegistrationsStudentsSearch:
                 s,
                 username="search_no",
                 role="activity_admin",
-                permissions=int(Permission.ACTIVITY_WRITE),
+                permission_names=["ACTIVITY_WRITE"],
             )
             s.commit()
 
@@ -648,8 +641,7 @@ class TestF027_RegistrationsStudentsSearch:
                 s,
                 username="search_yes",
                 role="activity_admin",
-                permissions=int(Permission.ACTIVITY_WRITE)
-                | int(Permission.STUDENTS_READ),
+                permission_names=["ACTIVITY_WRITE", "STUDENTS_READ"],
             )
             s.commit()
 
@@ -664,7 +656,7 @@ class TestF027_RegistrationsStudentsSearch:
         client, sf = pii_client
         with sf() as s:
             _setup_search_student(s)
-            _create_user(s, username="adm_search", role="admin", permissions=-1)
+            _create_user(s, username="adm_search", role="admin", permission_names=["*"])
             s.commit()
 
         _login(client, "adm_search")
@@ -688,7 +680,7 @@ class TestF028_POSOutstanding:
                 s,
                 username="pos_no_st",
                 role="pos_clerk",
-                permissions=int(Permission.ACTIVITY_READ),
+                permission_names=["ACTIVITY_READ"],
             )
             s.commit()
 
@@ -707,7 +699,7 @@ class TestF028_POSOutstanding:
         client, sf = pii_client
         with sf() as s:
             _setup_activity_reg(s)
-            _create_user(s, username="adm_pos", role="admin", permissions=-1)
+            _create_user(s, username="adm_pos", role="admin", permission_names=["*"])
             s.commit()
 
         _login(client, "adm_pos")

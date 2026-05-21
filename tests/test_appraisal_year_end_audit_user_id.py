@@ -67,11 +67,13 @@ def client_with_db(tmp_path):
 
 
 def _create_user(session, username, perms, password="TempPass123") -> User:
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -94,9 +96,7 @@ class TestAppraisalCycleCreatedBy:
             user = _create_user(
                 s,
                 "auditor",
-                Permission.APPRAISAL_READ
-                | Permission.APPRAISAL_EVENT_WRITE
-                | Permission.APPRAISAL_FINALIZE,
+                ["APPRAISAL_READ", "APPRAISAL_EVENT_WRITE", "APPRAISAL_FINALIZE"],
             )
             user_id = user.id
             s.commit()
@@ -130,9 +130,7 @@ class TestYearEndCycleCreatedBy:
             user = _create_user(
                 s,
                 "ye_admin",
-                Permission.YEAR_END_READ
-                | Permission.YEAR_END_WRITE
-                | Permission.YEAR_END_FINALIZE,
+                ["YEAR_END_READ", "YEAR_END_WRITE", "YEAR_END_FINALIZE"],
             )
             user_id = user.id
             s.commit()

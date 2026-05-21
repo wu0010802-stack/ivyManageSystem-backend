@@ -29,11 +29,7 @@ from tests.test_activity_pos import (
     _login,
 )
 
-APPROVE_PERMS = (
-    Permission.ACTIVITY_READ
-    | Permission.ACTIVITY_WRITE
-    | Permission.ACTIVITY_PAYMENT_APPROVE
-)
+APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
 
 
 @pytest.fixture
@@ -97,7 +93,7 @@ def test_unlock_by_original_approver_rejected_403(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target, approver_username="approver_a")
 
@@ -116,8 +112,8 @@ def test_unlock_by_other_approver_succeeds(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target, approver_username="approver_a")
 
@@ -148,7 +144,7 @@ def test_admin_override_with_long_reason_succeeds(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="boss", permissions=APPROVE_PERMS)
+        _create_admin(s, username="boss", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target, approver_username="boss")
 
@@ -178,7 +174,7 @@ def test_admin_override_short_reason_rejected_422(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="boss", permissions=APPROVE_PERMS)
+        _create_admin(s, username="boss", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target, approver_username="boss")
 
@@ -206,11 +202,11 @@ def test_non_admin_with_override_flag_rejected_403(unlock_client):
                 username="staff_x",
                 password_hash=hash_password("TempPass123"),
                 role="staff",
-                permissions=APPROVE_PERMS,
+                permission_names=APPROVE_PERMS,
                 is_active=True,
             )
         )
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target, approver_username="approver_a")
 
@@ -237,8 +233,8 @@ def test_unlock_response_notification_delivered_false_when_no_line_binding(
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target, approver_username="approver_a")
 
@@ -263,7 +259,7 @@ def test_approve_warnings_when_approver_is_today_operator(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
         # 直接寫一筆 payment_record，operator='approver_a'，模擬當日由 approver_a 操作
         # （避開 _add_payment helper 的 operator kwarg 不確定性）
         # 為了 _require_daily_close_unlocked 通過，必須先有一筆 ActivityRegistration
@@ -336,7 +332,7 @@ def test_approve_no_warnings_when_approver_did_not_operate_today(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
         from models.database import (
             ActivityCourse,
             ActivityRegistration,
@@ -406,8 +402,8 @@ def test_audit_endpoint_returns_recent_unlock_events_only(unlock_client):
     client, sf = unlock_client
     target_a = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         s.commit()
     _seed_signed_close(sf, target=target_a, approver_username="approver_a")
 
@@ -453,7 +449,7 @@ def test_audit_endpoint_orders_desc_and_limits_200(unlock_client):
 
     client, sf = unlock_client
     with sf() as s:
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         # 構造 250 筆 cancelled 事件
         base = datetime.now()
         for i in range(250):
@@ -484,8 +480,8 @@ def test_unlock_live_diff_zero_when_no_change(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         s.commit()
     # _seed_signed_close 寫入 snapshot payment_total=1000，但實際無 payment_records
     # → live_snapshot 為 0，diff = 0 - 1000 = -1000（DB 層沒對齊）
@@ -522,8 +518,8 @@ def test_unlock_live_diff_positive_when_new_payment_added(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         # 寫一筆 reg + 1500 payment_record（payment_date = target）
         course = ActivityCourse(
             name="美術",
@@ -617,8 +613,8 @@ def test_unlock_live_diff_negative_when_voided_after_approve(unlock_client):
     client, sf = unlock_client
     target = date.today() - timedelta(days=1)
     with sf() as s:
-        _create_admin(s, username="approver_a", permissions=APPROVE_PERMS)
-        _create_admin(s, username="approver_b", permissions=APPROVE_PERMS)
+        _create_admin(s, username="approver_a", permission_names=APPROVE_PERMS)
+        _create_admin(s, username="approver_b", permission_names=APPROVE_PERMS)
         course = ActivityCourse(
             name="美術",
             price=1000,

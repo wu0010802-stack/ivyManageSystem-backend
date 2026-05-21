@@ -80,13 +80,15 @@ def salary_logic_client(tmp_path):
     engine.dispose()
 
 
-def _create_user(session, *, username, password, role, permissions, employee_id=None):
+def _create_user(session, *, username, password, role, permission_names, employee_id=None):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee_id,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -113,7 +115,7 @@ class TestSalaryLogicEndpoint:
                 username="logic_admin",
                 password="LogicPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
 
@@ -160,7 +162,7 @@ class TestSalaryLogicEndpoint:
                 username="logic_no_perm",
                 password="NoPermPass123",
                 role="teacher",
-                permissions=int(Permission.STUDENTS_READ),
+                permission_names=["STUDENTS_READ"],
             )
             session.commit()
 
@@ -197,7 +199,7 @@ class TestEmployeeSalaryDebugEndpoint:
                 username="dbg_admin",
                 password="DbgPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             target_emp_id = emp.id
@@ -247,7 +249,7 @@ class TestEmployeeSalaryDebugEndpoint:
                 username="dbg_teacher",
                 password="DbgTeacherPass123",
                 role="teacher",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 employee_id=self_emp.id,
             )
             session.commit()
@@ -280,7 +282,7 @@ class TestEmployeeSalaryDebugEndpoint:
                 username="dbg_admin2",
                 password="DbgPass456",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             emp_id = emp.id

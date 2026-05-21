@@ -73,7 +73,7 @@ def app_client(tmp_path):
             username="parent_a",
             password_hash="$2b$12$dummy",
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=True,
             token_version=0,
         )
@@ -82,7 +82,7 @@ def app_client(tmp_path):
             username="parent_b",
             password_hash="$2b$12$dummy",
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=True,
             token_version=0,
         )
@@ -156,7 +156,7 @@ def app_client(tmp_path):
                 "sub": username,
                 "user_id": user_id,
                 "role": "parent",
-                "permissions": 0,
+                "permission_names": [],
                 "token_version": 0,
             }
         )
@@ -185,7 +185,7 @@ def test_parent_photo_urls_use_parent_route_not_admin(app_client):
     """Bug sweep round 4 (2026-05-14) B8：照片牆 URL 必須走家長專用下載路徑。
 
     舊 bug：reuse api/attachments._attachment_to_dict 產出
-    `/api/uploads/portfolio/{key}`，該路由守衛 PORTFOLIO_READ，家長 permissions=0
+    `/api/uploads/portfolio/{key}`，該路由守衛 PORTFOLIO_READ，家長 permission_names=[]
     沒此 bit → 所有 <img> 一律 403 變破圖。
     修補：local `_parent_attachment_to_dict` 改用 `/api/parent/uploads/...`
     （由 parent_downloads.py 認可家長 owner_type 反查）。
@@ -200,7 +200,7 @@ def test_parent_photo_urls_use_parent_route_not_admin(app_client):
     # 修補前會是 /api/uploads/portfolio/...，撞到 admin route 403
     assert not item["url"].startswith("/api/uploads/"), (
         "URL 不可走 admin route /api/uploads/，"
-        "家長 permissions=0 無 PORTFOLIO_READ bit 會 403"
+        "家長 permission_names=0 無 PORTFOLIO_READ bit 會 403"
     )
 
 

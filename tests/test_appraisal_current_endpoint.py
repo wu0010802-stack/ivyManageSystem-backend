@@ -73,11 +73,13 @@ def client_with_db(tmp_path):
 def _create_user(
     session, username, perms, password="TempPass123", role="admin"
 ) -> User:
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -198,13 +200,7 @@ def _seed_default_rules(session):
 
 
 # 完整考核權限位元（READ + WRITE + REVIEW + ACCOUNTING + FINALIZE）
-APPRAISAL_FULL = (
-    Permission.APPRAISAL_READ
-    | Permission.APPRAISAL_EVENT_WRITE
-    | Permission.APPRAISAL_REVIEW
-    | Permission.APPRAISAL_ACCOUNTING
-    | Permission.APPRAISAL_FINALIZE
-)
+APPRAISAL_FULL = ["APPRAISAL_READ", "APPRAISAL_EVENT_WRITE", "APPRAISAL_REVIEW", "APPRAISAL_ACCOUNTING", "APPRAISAL_FINALIZE"]
 
 
 class TestGetCurrent:

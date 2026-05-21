@@ -24,7 +24,15 @@ from api.portal.leaves import router as portal_leaves_router
 from api.portal.schedule import router as portal_schedule_router
 from api.portal.overtimes import router as portal_overtimes_router
 from api.portal.salary import router as portal_salary_router
-from models.database import ApprovalLog, Base, Employee, LeaveRecord, OvertimeRecord, SalaryRecord, User
+from models.database import (
+    ApprovalLog,
+    Base,
+    Employee,
+    LeaveRecord,
+    OvertimeRecord,
+    SalaryRecord,
+    User,
+)
 from utils.auth import hash_password
 from utils.permissions import Permission, get_role_default_permissions, has_permission
 
@@ -89,16 +97,18 @@ def _create_user(
     username: str,
     password: str,
     role: str,
-    permissions: int | None = None,
+    permission_names=None,
     employee: Employee | None = None,
     must_change_password: bool = False,
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee.id if employee else None,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         must_change_password=must_change_password,
         is_active=True,
     )
@@ -115,13 +125,15 @@ def _login(client: TestClient, username: str, password: str):
 
 
 class TestTeacherPermissionRegression:
-    def test_teacher_default_permissions_do_not_include_management_leave_or_overtime(self):
-        permissions = get_role_default_permissions("teacher")
+    def test_teacher_default_permissions_do_not_include_management_leave_or_overtime(
+        self,
+    ):
+        perms = get_role_default_permissions("teacher")
 
-        assert not has_permission(permissions, Permission.LEAVES_READ)
-        assert not has_permission(permissions, Permission.LEAVES_WRITE)
-        assert not has_permission(permissions, Permission.OVERTIME_READ)
-        assert not has_permission(permissions, Permission.OVERTIME_WRITE)
+        assert not has_permission(perms, Permission.LEAVES_READ)
+        assert not has_permission(perms, Permission.LEAVES_WRITE)
+        assert not has_permission(perms, Permission.OVERTIME_READ)
+        assert not has_permission(perms, Permission.OVERTIME_WRITE)
 
     def test_teacher_with_legacy_permissions_still_cannot_call_management_leave_or_overtime_api(
         self, client_with_db
@@ -136,12 +148,12 @@ class TestTeacherPermissionRegression:
                 password="TempPass123",
                 role="teacher",
                 employee=employee,
-                permissions=(
-                    Permission.LEAVES_READ
-                    | Permission.LEAVES_WRITE
-                    | Permission.OVERTIME_READ
-                    | Permission.OVERTIME_WRITE
-                ),
+                permission_names=[
+                    "LEAVES_READ",
+                    "LEAVES_WRITE",
+                    "OVERTIME_READ",
+                    "OVERTIME_WRITE",
+                ],
             )
             session.commit()
 
@@ -174,7 +186,7 @@ class TestMustChangePasswordEnforcement:
                 username="admin_temp",
                 password="TempPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 must_change_password=True,
             )
             session.commit()
@@ -207,7 +219,7 @@ class TestMustChangePasswordEnforcement:
                 username="admin_refresh",
                 password="TempPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 must_change_password=True,
             )
             session.commit()
@@ -220,7 +232,9 @@ class TestMustChangePasswordEnforcement:
 
 
 class TestApprovalLogAccessControl:
-    def test_non_admin_must_specify_doc_type_and_hold_matching_permission(self, client_with_db):
+    def test_non_admin_must_specify_doc_type_and_hold_matching_permission(
+        self, client_with_db
+    ):
         client, session_factory = client_with_db
         with session_factory() as session:
             employee = _create_employee(session, "HR001", "人事甲")
@@ -230,7 +244,7 @@ class TestApprovalLogAccessControl:
                 password="TempPass123",
                 role="hr",
                 employee=employee,
-                permissions=Permission.LEAVES_READ,
+                permission_names=["LEAVES_READ"],
             )
             session.add_all(
                 [
@@ -258,17 +272,22 @@ class TestApprovalLogAccessControl:
         missing_type_res = client.get("/api/approval-settings/logs")
         assert missing_type_res.status_code == 400
 
-        leave_res = client.get("/api/approval-settings/logs", params={"doc_type": "leave"})
+        leave_res = client.get(
+            "/api/approval-settings/logs", params={"doc_type": "leave"}
+        )
         assert leave_res.status_code == 200
         assert [row["doc_type"] for row in leave_res.json()] == ["leave"]
 
-        overtime_res = client.get("/api/approval-settings/logs", params={"doc_type": "overtime"})
+        overtime_res = client.get(
+            "/api/approval-settings/logs", params={"doc_type": "overtime"}
+        )
         assert overtime_res.status_code == 403
 
 
 # ─────────────────────────────────────────────────────────────
 # HIGH-1a：自我核准假單應回傳 403
 # ─────────────────────────────────────────────────────────────
+
 
 class TestSelfApprovalPrevention:
     """員工（含主管）不可自我核准自己的假單或加班單"""
@@ -277,13 +296,14 @@ class TestSelfApprovalPrevention:
         """建立主管帳號與一筆待審假單，回傳 (employee_id, leave_id)"""
         with session_factory() as session:
             from datetime import date as _date
+
             emp = _create_employee(session, "SUP001", "主管甲")
             _create_user(
                 session,
                 username="supervisor_self",
                 password="TempPass123",
                 role="supervisor",
-                permissions=Permission.LEAVES_WRITE | Permission.LEAVES_READ,
+                permission_names=["LEAVES_WRITE", "LEAVES_READ"],
                 employee=emp,
             )
             leave = LeaveRecord(
@@ -302,13 +322,14 @@ class TestSelfApprovalPrevention:
         """建立主管帳號與一筆待審加班單，回傳 (employee_id, overtime_id)"""
         with session_factory() as session:
             from datetime import date as _date
+
             emp = _create_employee(session, "SUP002", "主管乙")
             _create_user(
                 session,
                 username="supervisor_self_ot",
                 password="TempPass123",
                 role="supervisor",
-                permissions=Permission.OVERTIME_WRITE | Permission.OVERTIME_READ,
+                permission_names=["OVERTIME_WRITE", "OVERTIME_READ"],
                 employee=emp,
             )
             ot = OvertimeRecord(
@@ -340,6 +361,7 @@ class TestSelfApprovalPrevention:
         client, session_factory = client_with_db
         with session_factory() as session:
             from datetime import date as _date
+
             # 建立主管
             sup = _create_employee(session, "SUP003", "主管丙")
             _create_user(
@@ -347,7 +369,7 @@ class TestSelfApprovalPrevention:
                 username="supervisor_other",
                 password="TempPass123",
                 role="supervisor",
-                permissions=Permission.LEAVES_WRITE | Permission.LEAVES_READ,
+                permission_names=["LEAVES_WRITE", "LEAVES_READ"],
                 employee=sup,
             )
             # 建立另一員工的假單
@@ -390,6 +412,7 @@ class TestSelfApprovalPrevention:
 # MEDIUM-3：薪資記錄非 admin/hr 帳號只能看自己
 # ─────────────────────────────────────────────────────────────
 
+
 class TestSalaryRecordsRoleFilter:
     """非 admin/hr 帳號呼叫 GET /salaries/records 只能看到自己的資料"""
 
@@ -403,17 +426,25 @@ class TestSalaryRecordsRoleFilter:
                 username="staff_user",
                 password="TempPass123",
                 role="supervisor",
-                permissions=Permission.SALARY_READ,
+                permission_names=["SALARY_READ"],
                 employee=emp_a,
             )
-            session.add(SalaryRecord(
-                employee_id=emp_a.id, salary_year=2026, salary_month=3,
-                base_salary=30000,
-            ))
-            session.add(SalaryRecord(
-                employee_id=emp_b.id, salary_year=2026, salary_month=3,
-                base_salary=32000,
-            ))
+            session.add(
+                SalaryRecord(
+                    employee_id=emp_a.id,
+                    salary_year=2026,
+                    salary_month=3,
+                    base_salary=30000,
+                )
+            )
+            session.add(
+                SalaryRecord(
+                    employee_id=emp_b.id,
+                    salary_year=2026,
+                    salary_month=3,
+                    base_salary=32000,
+                )
+            )
             session.commit()
 
         _login(client, "staff_user", "TempPass123")
@@ -434,16 +465,24 @@ class TestSalaryRecordsRoleFilter:
                 username="admin_user",
                 password="TempPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
-            session.add(SalaryRecord(
-                employee_id=emp_a.id, salary_year=2026, salary_month=4,
-                base_salary=30000,
-            ))
-            session.add(SalaryRecord(
-                employee_id=emp_b.id, salary_year=2026, salary_month=4,
-                base_salary=32000,
-            ))
+            session.add(
+                SalaryRecord(
+                    employee_id=emp_a.id,
+                    salary_year=2026,
+                    salary_month=4,
+                    base_salary=30000,
+                )
+            )
+            session.add(
+                SalaryRecord(
+                    employee_id=emp_b.id,
+                    salary_year=2026,
+                    salary_month=4,
+                    base_salary=32000,
+                )
+            )
             session.commit()
 
         _login(client, "admin_user", "TempPass123")
@@ -455,6 +494,7 @@ class TestSalaryRecordsRoleFilter:
 # ─────────────────────────────────────────────────────────────
 # LOW-4：Portal 端點日期邊界驗證
 # ─────────────────────────────────────────────────────────────
+
 
 class TestPortalDateBoundaryValidation:
     """Portal 端點 year/month 越界應回傳 422（FastAPI 的 Query 驗證層攔截，無需 DB）"""
@@ -469,7 +509,7 @@ class TestPortalDateBoundaryValidation:
                 username="portal_user",
                 password="TempPass123",
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 employee=emp,
             )
             session.commit()
@@ -548,7 +588,7 @@ class TestSalarySnapshotAndSimulateSelfCheck:
                 username="staff_snap",
                 password="TempPass123",
                 role="supervisor",
-                permissions=Permission.SALARY_READ,
+                permission_names=["SALARY_READ"],
                 employee=emp_a,
             )
             snap_a_id = _seed_snapshot_for(session, emp_a.id)
@@ -575,9 +615,7 @@ class TestSalarySnapshotAndSimulateSelfCheck:
 
     def test_list_snapshots_without_employee_id_filters_to_self(self, client_with_db):
         client, ids = self._setup_staff(client_with_db)
-        res = client.get(
-            "/api/salaries/snapshots", params={"year": 2026, "month": 3}
-        )
+        res = client.get("/api/salaries/snapshots", params={"year": 2026, "month": 3})
         assert res.status_code == 200, res.text
         rows = res.json()["snapshots"]
         # 不傳 employee_id：staff 只能看到自己,絕不能看到他人快照

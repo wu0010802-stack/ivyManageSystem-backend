@@ -71,12 +71,12 @@ def students_client(tmp_path):
     engine.dispose()
 
 
-def _create_admin(session, permissions: int):
+def _create_admin(session, permission_names):
     u = User(
         username="admin_audit",
         password_hash=hash_password("Passw0rd!"),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -114,14 +114,14 @@ def _seed_student(session, name="王小明", classroom_id=None, **kwargs):
     return s
 
 
-WRITE_PERMS = int(Permission.STUDENTS_WRITE) | int(Permission.STUDENTS_READ)
+WRITE_PERMS = ["STUDENTS_WRITE", "STUDENTS_READ"]
 
 
 class TestPutStudentAuditChanges:
     def test_update_records_changed_fields_only(self, students_client):
         client, sf, captured = students_client
         with sf() as s:
-            _create_admin(s, permissions=WRITE_PERMS)
+            _create_admin(s, permission_names=WRITE_PERMS)
             cls_a = _seed_classroom(s, "大班A")
             student = _seed_student(s, classroom_id=cls_a.id)
             s.commit()
@@ -154,7 +154,7 @@ class TestPutStudentAuditChanges:
     def test_update_no_diff_when_no_change(self, students_client):
         client, sf, captured = students_client
         with sf() as s:
-            _create_admin(s, permissions=WRITE_PERMS)
+            _create_admin(s, permission_names=WRITE_PERMS)
             cls_a = _seed_classroom(s, "大班A")
             student = _seed_student(s, classroom_id=cls_a.id)
             s.commit()
@@ -177,7 +177,7 @@ class TestBulkTransferAuditChanges:
     def test_bulk_transfer_records_per_student_changes(self, students_client):
         client, sf, captured = students_client
         with sf() as s:
-            _create_admin(s, permissions=WRITE_PERMS)
+            _create_admin(s, permission_names=WRITE_PERMS)
             cls_a = _seed_classroom(s, "大班A")
             cls_b = _seed_classroom(s, "大班B")
             s1 = _seed_student(s, name="生A", student_id="S100", classroom_id=cls_a.id)
@@ -205,7 +205,7 @@ class TestBulkTransferAuditChanges:
         """所有學生本來就在目標班 → moved_count=0 → 不設 audit_changes。"""
         client, sf, captured = students_client
         with sf() as s:
-            _create_admin(s, permissions=WRITE_PERMS)
+            _create_admin(s, permission_names=WRITE_PERMS)
             cls_b = _seed_classroom(s, "大班B")
             s1 = _seed_student(s, name="生A", student_id="S200", classroom_id=cls_b.id)
             s.commit()

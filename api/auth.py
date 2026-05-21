@@ -7,7 +7,7 @@ import logging
 import time
 from collections import defaultdict
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from config import settings
 
@@ -40,7 +40,9 @@ from utils.permissions import Permission
 from utils.permissions import (
     get_permissions_definition,
     get_role_default_permissions,
+    resolve_user_permissions,
     ROLE_LABELS,
+    WILDCARD,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,21 +79,23 @@ def _assert_can_manage_user(
     *,
     target_user: Optional[User] = None,
     payload_role: Optional[str] = None,
-    payload_permissions: Optional[int] = None,
+    payload_permission_names: Optional[List[str]] = None,
 ) -> None:
     """USER_MANAGEMENT_WRITE 守衛：caller 不可超過自身權限管理他人。
 
     1. caller_role == 'admin' → 一律放行
     2. target_user.role == 'admin' → 拒絕（不可動 admin 帳號）
     3. payload_role == 'admin' → 拒絕（不可指定 admin 角色）
-    4. 「最終權限」(payload_permissions or 角色預設) 必須 ⊆ caller_permissions
+    4. 「最終權限」(payload_permission_names or 角色預設) 必須 ⊆ caller permission_names
     """
     caller_role = current_user.get("role")
     if caller_role == "admin":
         return
 
     caller_id = current_user.get("user_id")
-    caller_perms = int(current_user.get("permissions") or 0)
+    caller_perms = current_user.get("permission_names") or []
+    caller_has_wildcard = WILDCARD in caller_perms
+    caller_set = set(caller_perms)
 
     if target_user is not None and target_user.role == "admin":
         logger.warning(
@@ -114,40 +118,44 @@ def _assert_can_manage_user(
     # delete / is_active 等不帶 permissions 的操作，間接管理其實沒權限管的對象後
     # 透過接管密碼登入該帳號取得超額權限（提權鏈）。
     if target_user is not None and target_user.id != caller_id:
-        target_perms = (
-            target_user.permissions
-            if target_user.permissions is not None
-            else get_role_default_permissions(target_user.role)
-        )
-        target_perms_int = int(target_perms or 0)
-        if (target_perms_int & ~caller_perms) != 0:
-            logger.warning(
-                "user-management 拒絕：caller user_id=%s 權限 %s 不足以管理 target user_id=%s 權限 %s",
-                caller_id,
-                caller_perms,
-                target_user.id,
-                target_perms_int,
-            )
-            raise HTTPException(
-                status_code=403, detail="目標帳號的權限超出您的管理範圍"
-            )
+        target_perms = resolve_user_permissions(target_user)
+        target_set = set(target_perms)
+        # caller 有 wildcard → 任何 target 都可管；否則檢查 target 是否 ⊆ caller
+        # （target 也有 wildcard 但 caller 沒 → reject，因為 "*" ∉ caller_set）
+        if not caller_has_wildcard:
+            extra = target_set - caller_set
+            if extra:
+                logger.warning(
+                    "user-management 拒絕：caller user_id=%s 權限 %s 不足以管理 target user_id=%s 權限 %s（多: %s）",
+                    caller_id,
+                    sorted(caller_set),
+                    target_user.id,
+                    sorted(target_set),
+                    sorted(extra),
+                )
+                raise HTTPException(
+                    status_code=403, detail="目標帳號的權限超出您的管理範圍"
+                )
 
-    final_perms = payload_permissions
+    final_perms = payload_permission_names
     if final_perms is None and payload_role is not None:
         final_perms = get_role_default_permissions(payload_role)
 
     if final_perms is not None:
-        final_perms_int = int(final_perms)
-        if (final_perms_int & ~caller_perms) != 0:
-            logger.warning(
-                "user-management 拒絕：caller user_id=%s 權限 %s 不足以授予 %s",
-                caller_id,
-                caller_perms,
-                final_perms_int,
-            )
-            raise HTTPException(
-                status_code=403, detail="授予的權限超出您本身擁有的範圍"
-            )
+        final_set = set(final_perms)
+        if not caller_has_wildcard:
+            extra = final_set - caller_set
+            if extra:
+                logger.warning(
+                    "user-management 拒絕：caller user_id=%s 權限 %s 不足以授予 %s（多: %s）",
+                    caller_id,
+                    sorted(caller_set),
+                    sorted(final_set),
+                    sorted(extra),
+                )
+                raise HTTPException(
+                    status_code=403, detail="授予的權限超出您本身擁有的範圍"
+                )
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -248,12 +256,12 @@ class CreateUserRequest(BaseModel):
     username: str
     password: str
     role: str = "teacher"
-    permissions: Optional[int] = None  # None 表示使用角色預設權限
+    permission_names: Optional[List[str]] = None  # None 表示使用角色預設權限
 
 
 class UpdateUserRequest(BaseModel):
     role: Optional[str] = None
-    permissions: Optional[int] = None
+    permission_names: Optional[List[str]] = None
     is_active: Optional[bool] = None
 
 
@@ -326,18 +334,14 @@ def impersonate_user(
             raise HTTPException(status_code=403, detail="無法冒充已離職員工")
 
         # 5. 產生該使用者的 token
-        permissions = (
-            target_user.permissions
-            if target_user.permissions is not None
-            else get_role_default_permissions(target_user.role)
-        )
+        permission_names = resolve_user_permissions(target_user)
         target_token = create_access_token(
             {
                 "user_id": target_user.id,
                 "employee_id": target_user.employee_id,
                 "role": target_user.role,
                 "name": target_emp.name,
-                "permissions": permissions,
+                "permission_names": permission_names,
                 "token_version": target_user.token_version,
             }
         )
@@ -373,7 +377,7 @@ def impersonate_user(
                     "username": target_user.username,
                     "role": target_user.role,
                     "role_label": ROLE_LABELS.get(target_user.role, target_user.role),
-                    "permissions": permissions,
+                    "permission_names": permission_names,
                     "employee_id": target_user.employee_id,
                     "name": target_emp.name,
                     "title": (
@@ -477,12 +481,8 @@ def login(data: LoginRequest, request: Request):
         user.last_login = datetime.now()
         session.commit()
 
-        # permissions: -1 表示全部權限，teacher 角色不需要 permissions
-        permissions = (
-            user.permissions
-            if user.permissions is not None
-            else get_role_default_permissions(user.role)
-        )
+        # permission_names: ["*"] 表示全部權限；None 時套用角色預設
+        permission_names = resolve_user_permissions(user)
 
         token = create_access_token(
             {
@@ -490,7 +490,7 @@ def login(data: LoginRequest, request: Request):
                 "employee_id": user.employee_id,
                 "role": user.role,
                 "name": emp.name if emp else "",
-                "permissions": permissions,
+                "permission_names": permission_names,
                 "token_version": user.token_version,
             }
         )
@@ -511,7 +511,7 @@ def login(data: LoginRequest, request: Request):
                     "username": user.username,
                     "role": user.role,
                     "role_label": ROLE_LABELS.get(user.role, user.role),
-                    "permissions": permissions,
+                    "permission_names": permission_names,
                     "employee_id": user.employee_id,
                     "name": emp.name if emp else "",
                     "title": (
@@ -665,11 +665,7 @@ def refresh_token(request: Request):
             )
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = (
-            user.permissions
-            if user.permissions is not None
-            else get_role_default_permissions(user.role)
-        )
+        permission_names = resolve_user_permissions(user)
 
         # S2: 把舊 token 的 original_iat 帶進新 token，讓 absolute lifetime
         # 從首次登入算起，而非從本次 refresh 算起。
@@ -678,7 +674,7 @@ def refresh_token(request: Request):
             "employee_id": user.employee_id,
             "role": user.role,
             "name": emp.name if emp else "",
-            "permissions": permissions,
+            "permission_names": permission_names,
             "token_version": user.token_version,
         }
         if original_iat:
@@ -699,7 +695,7 @@ def refresh_token(request: Request):
                     "username": user.username,
                     "role": user.role,
                     "role_label": ROLE_LABELS.get(user.role, user.role),
-                    "permissions": permissions,
+                    "permission_names": permission_names,
                     "employee_id": user.employee_id,
                     "name": emp.name if emp else "",
                     "title": (
@@ -847,11 +843,7 @@ def end_impersonate(request: Request):
             )
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = (
-            user.permissions
-            if user.permissions is not None
-            else get_role_default_permissions(user.role)
-        )
+        permission_names = resolve_user_permissions(user)
 
         # 為管理員簽發新的 access token（避免使用可能已接近過期的舊 token）
         new_token = create_access_token(
@@ -860,7 +852,7 @@ def end_impersonate(request: Request):
                 "employee_id": user.employee_id,
                 "role": user.role,
                 "name": emp.name if emp else "",
-                "permissions": permissions,
+                "permission_names": permission_names,
                 "token_version": user.token_version,
             }
         )
@@ -874,7 +866,7 @@ def end_impersonate(request: Request):
                     "username": user.username,
                     "role": user.role,
                     "role_label": ROLE_LABELS.get(user.role, user.role),
-                    "permissions": permissions,
+                    "permission_names": permission_names,
                     "employee_id": user.employee_id,
                     "name": emp.name if emp else "",
                     "title": (
@@ -904,17 +896,13 @@ def get_me(current_user: dict = Depends(get_current_user)):
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permissions = (
-            user.permissions
-            if user.permissions is not None
-            else get_role_default_permissions(user.role)
-        )
+        permission_names = resolve_user_permissions(user)
         return {
             "id": user.id,
             "username": user.username,
             "role": user.role,
             "role_label": ROLE_LABELS.get(user.role, user.role),
-            "permissions": permissions,
+            "permission_names": permission_names,
             "employee_id": user.employee_id,
             "name": emp.name if emp else "",
             "title": (
@@ -955,11 +943,7 @@ def change_password(
 
         # 為當事人發新 token（同步新 token_version + must_change_password=False），
         # 避免「改完密碼立刻被踢」。其他 session 的舊 token 仍會在下次 refresh 被拒。
-        permissions = (
-            user.permissions
-            if user.permissions is not None
-            else get_role_default_permissions(user.role)
-        )
+        permission_names = resolve_user_permissions(user)
         emp = (
             session.query(Employee).filter(Employee.id == user.employee_id).first()
             if user.employee_id
@@ -971,7 +955,7 @@ def change_password(
                 "employee_id": user.employee_id,
                 "role": user.role,
                 "name": emp.name if emp else "",
-                "permissions": permissions,
+                "permission_names": permission_names,
                 "token_version": user.token_version,
             }
         )
@@ -1012,11 +996,7 @@ def list_users(
                 "username": u.username,
                 "role": u.role,
                 "role_label": ROLE_LABELS.get(u.role, u.role),
-                "permissions": (
-                    u.permissions
-                    if u.permissions is not None
-                    else get_role_default_permissions(u.role)
-                ),
+                "permission_names": resolve_user_permissions(u),
                 "is_active": u.is_active,
                 "employee_id": u.employee_id,
                 "employee_name": emp.name if emp else "",
@@ -1039,7 +1019,7 @@ def create_user(
     _assert_can_manage_user(
         current_user,
         payload_role=data.role,
-        payload_permissions=data.permissions,
+        payload_permission_names=data.permission_names,
     )
 
     session = get_session()
@@ -1059,10 +1039,10 @@ def create_user(
             emp = None
 
         # 計算權限：若有指定則使用，否則套用角色預設
-        if data.permissions is not None:
-            final_permissions = data.permissions
+        if data.permission_names is not None:
+            final_permission_names = data.permission_names
         else:
-            final_permissions = get_role_default_permissions(data.role)
+            final_permission_names = get_role_default_permissions(data.role)
 
         # 驗證密碼強度
         validate_password_strength(data.password)
@@ -1072,7 +1052,7 @@ def create_user(
             username=data.username,
             password_hash=hash_password(data.password),
             role=data.role,
-            permissions=final_permissions,
+            permission_names=final_permission_names,
             must_change_password=True,  # 新帳號強制首次登入修改密碼
         )
         session.add(user)
@@ -1151,22 +1131,22 @@ def update_user(
             current_user,
             target_user=user,
             payload_role=data.role,
-            payload_permissions=data.permissions,
+            payload_permission_names=data.permission_names,
         )
 
         # 記錄舊值，用於審計摘要
         old_role = user.role
-        old_permissions = user.permissions
+        old_permission_names = user.permission_names
         old_is_active = user.is_active
 
         if data.role is not None:
             user.role = data.role
             # 角色變更時，若未指定權限則套用新角色的預設權限
-            if data.permissions is None:
-                user.permissions = get_role_default_permissions(data.role)
+            if data.permission_names is None:
+                user.permission_names = get_role_default_permissions(data.role)
 
-        if data.permissions is not None:
-            user.permissions = data.permissions
+        if data.permission_names is not None:
+            user.permission_names = data.permission_names
 
         if data.is_active is not None:
             user.is_active = data.is_active
@@ -1176,7 +1156,7 @@ def update_user(
         should_revoke = (
             (not user.is_active and old_is_active)
             or (user.role != old_role)
-            or (user.permissions != old_permissions)
+            or (user.permission_names != old_permission_names)
         )
         if should_revoke:
             user.token_version = (user.token_version or 0) + 1
@@ -1185,8 +1165,15 @@ def update_user(
         changes = []
         if data.role is not None and user.role != old_role:
             changes.append(f"角色 {old_role} → {user.role}")
-        if user.permissions != old_permissions:
-            changes.append(f"權限遮罩 {old_permissions} → {user.permissions}")
+        if user.permission_names != old_permission_names:
+            old_set = set(old_permission_names or [])
+            new_set = set(user.permission_names or [])
+            added = sorted(new_set - old_set)
+            removed = sorted(old_set - new_set)
+            if added or removed:
+                changes.append(f"權限變更: +{added} / -{removed}")
+            else:
+                changes.append("權限未變更")
         if data.is_active is not None and user.is_active != old_is_active:
             changes.append("帳號" + ("啟用" if user.is_active else "停用"))
         if changes:

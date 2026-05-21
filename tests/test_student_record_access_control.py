@@ -76,13 +76,15 @@ def _create_employee(session, code: str, name: str) -> Employee:
     return emp
 
 
-def _create_user(session, *, username, password, role, permissions, employee=None) -> User:
+def _create_user(session, *, username, password, role, permission_names, employee=None) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee.id if employee else None,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -96,7 +98,7 @@ def _login(client, username, password):
 
 
 # 有 STUDENTS_WRITE 的教師權限值
-_STUDENTS_WRITE_PERM = int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE)
+_STUDENTS_WRITE_PERM = ["STUDENTS_READ", "STUDENTS_WRITE"]
 
 
 class TestAssessmentOwnershipGuard:
@@ -136,7 +138,7 @@ class TestAssessmentOwnershipGuard:
         with session_factory() as session:
             teacher_a, teacher_b, cls_a, cls_b, student = self._setup_two_classrooms(session)
             _create_user(session, username="teacher_b_upd", password="PassB123",
-                         role="teacher", permissions=_STUDENTS_WRITE_PERM, employee=teacher_b)
+                         role="teacher", permission_names=_STUDENTS_WRITE_PERM, employee=teacher_b)
             assessment = StudentAssessment(
                 student_id=student.id,
                 semester="2025-1",
@@ -167,7 +169,7 @@ class TestAssessmentOwnershipGuard:
         with session_factory() as session:
             teacher_a, teacher_b, cls_a, cls_b, student = self._setup_two_classrooms(session)
             _create_user(session, username="teacher_b_del", password="PassBD123",
-                         role="teacher", permissions=_STUDENTS_WRITE_PERM, employee=teacher_b)
+                         role="teacher", permission_names=_STUDENTS_WRITE_PERM, employee=teacher_b)
             assessment = StudentAssessment(
                 student_id=student.id,
                 semester="2025-1",
@@ -195,7 +197,7 @@ class TestAssessmentOwnershipGuard:
         with session_factory() as session:
             teacher_a, _, cls_a, _, student = self._setup_two_classrooms(session)
             _create_user(session, username="teacher_a_own", password="PassA123",
-                         role="teacher", permissions=_STUDENTS_WRITE_PERM, employee=teacher_a)
+                         role="teacher", permission_names=_STUDENTS_WRITE_PERM, employee=teacher_a)
             assessment = StudentAssessment(
                 student_id=student.id,
                 semester="2025-2",
@@ -248,7 +250,7 @@ class TestIncidentOwnershipGuard:
         with session_factory() as session:
             teacher_a, teacher_b, student = self._setup_incident(session)
             _create_user(session, username="inc_b_put", password="IncBP123",
-                         role="teacher", permissions=_STUDENTS_WRITE_PERM, employee=teacher_b)
+                         role="teacher", permission_names=_STUDENTS_WRITE_PERM, employee=teacher_b)
             incident = StudentIncident(
                 student_id=student.id,
                 incident_type="衝突",
@@ -276,7 +278,7 @@ class TestIncidentOwnershipGuard:
         with session_factory() as session:
             teacher_a, teacher_b, student = self._setup_incident(session)
             _create_user(session, username="inc_b_del", password="IncBD123",
-                         role="teacher", permissions=_STUDENTS_WRITE_PERM, employee=teacher_b)
+                         role="teacher", permission_names=_STUDENTS_WRITE_PERM, employee=teacher_b)
             incident = StudentIncident(
                 student_id=student.id,
                 incident_type="傷害",
@@ -302,7 +304,7 @@ class TestIncidentOwnershipGuard:
         with session_factory() as session:
             teacher_a, _, student = self._setup_incident(session)
             _create_user(session, username="inc_a_own", password="IncAO123",
-                         role="teacher", permissions=_STUDENTS_WRITE_PERM, employee=teacher_a)
+                         role="teacher", permission_names=_STUDENTS_WRITE_PERM, employee=teacher_a)
             incident = StudentIncident(
                 student_id=student.id,
                 incident_type="其他",

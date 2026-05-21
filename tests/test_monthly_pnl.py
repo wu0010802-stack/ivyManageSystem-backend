@@ -101,7 +101,7 @@ def _seed_admin(sf, client):
                 username="pnl_admin",
                 password_hash=hash_password("PnlPass123"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 must_change_password=False,
             )

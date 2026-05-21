@@ -87,7 +87,7 @@ def _seed_teacher(
         password_hash="x",
         role="teacher",
         employee_id=emp.id,
-        permissions=int(Permission.PORTFOLIO_READ | Permission.PORTFOLIO_WRITE),
+        permission_names=["PORTFOLIO_READ", "PORTFOLIO_WRITE"],
         is_active=True,
         token_version=0,
     )
@@ -99,7 +99,7 @@ def _seed_teacher(
             "username": user.username,
             "role": user.role,
             "employee_id": emp.id,
-            "permissions": user.permissions,
+            "permission_names": user.permission_names,
             "token_version": 0,
         }
     )
@@ -219,12 +219,12 @@ def test_last_measurement_null_when_no_record(client_and_session):
 def test_returns_403_without_portfolio_read(client_and_session):
     """User without PORTFOLIO_READ should get 403."""
     client, sess = client_and_session
-    # 用 _seed_teacher 建好 emp+user，再覆寫 permissions=0、重簽 token
+    # 用 _seed_teacher 建好 emp+user，再覆寫 permission_names=0、重簽 token
     classroom = Classroom(name="A", is_active=True)
     sess.add(classroom)
     sess.flush()
     emp, user, _ = _seed_teacher(sess, classroom)
-    user.permissions = 0
+    user.permission_names=[]
     sess.flush()
     token = create_access_token(
         {
@@ -232,7 +232,7 @@ def test_returns_403_without_portfolio_read(client_and_session):
             "username": user.username,
             "role": user.role,
             "employee_id": emp.id,
-            "permissions": 0,
+            "permission_names": [],
         }
     )
     sess.commit()

@@ -87,7 +87,7 @@ def _seed_parent_with_child(
         username=f"p_{line_id}",
         password_hash="!",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_id,
         line_follow_confirmed_at=datetime.now() if follow_confirmed else None,

@@ -74,7 +74,7 @@ def seed_data(session):
         username="admin",
         password_hash="dummy_hash",
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
     )
     session.add(admin_user)
     session.flush()
@@ -415,7 +415,7 @@ class TestDismissalCallRaceCondition:
                 username="admin",
                 password_hash="x",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             s.add(u)
             s.flush()

@@ -93,7 +93,7 @@ def _seed(session_factory):
             username="lock_admin",
             password_hash=hash_password("LockPass123"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             must_change_password=False,
         )

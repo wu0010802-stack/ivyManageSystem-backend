@@ -71,7 +71,7 @@ def _seed(session, *, line_id="UA", student_name="A1", classroom_name="A班"):
         username=f"p_{line_id}",
         password_hash="!",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_id,
         token_version=0,
@@ -91,7 +91,7 @@ def _seed(session, *, line_id="UA", student_name="A1", classroom_name="A班"):
         username=f"t_{line_id}",
         password_hash="!",
         role="teacher",
-        permissions=int(Permission.PARENT_MESSAGES_WRITE.value),
+        permission_names=[Permission.PARENT_MESSAGES_WRITE.value],
         is_active=True,
         token_version=0,
     )
@@ -134,7 +134,7 @@ def _parent_token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )
@@ -147,7 +147,7 @@ def _teacher_token(user: User, employee_id: int) -> str:
             "employee_id": employee_id,
             "role": "teacher",
             "name": user.username,
-            "permissions": int(Permission.PARENT_MESSAGES_WRITE.value),
+            "permission_names": [Permission.PARENT_MESSAGES_WRITE.value],
             "token_version": user.token_version or 0,
         }
     )
@@ -197,7 +197,7 @@ class TestTeacherCreateThread:
                 username="t_other",
                 password_hash="!",
                 role="teacher",
-                permissions=int(Permission.PARENT_MESSAGES_WRITE.value),
+                permission_names=[Permission.PARENT_MESSAGES_WRITE.value],
                 is_active=True,
                 token_version=0,
             )
@@ -222,7 +222,7 @@ class TestTeacherCreateThread:
                 username="random",
                 password_hash="!",
                 role="parent",
-                permissions=0,
+                permission_names=[],
                 is_active=True,
                 token_version=0,
             )
@@ -283,7 +283,7 @@ class TestParentReply:
                 username="stranger",
                 password_hash="!",
                 role="parent",
-                permissions=0,
+                permission_names=[],
                 is_active=True,
                 token_version=0,
             )

@@ -85,14 +85,14 @@ def _add_hourly_emp(session, employee_id="A001", name="才藝老師"):
 
 def _login(client, session_factory, perm=None):
     if perm is None:
-        perm = int(Permission.SALARY_READ | Permission.SALARY_WRITE)
+        perm = ["SALARY_READ", "SALARY_WRITE"]
     with session_factory() as session:
         session.add(
             User(
                 username="art_admin",
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=perm,
+                permission_names=perm,
                 is_active=True,
                 must_change_password=False,
             )
@@ -594,7 +594,7 @@ class TestApi:
             emp = _add_hourly_emp(session)
             emp_id = emp.id
             session.commit()
-        _login(client, session_factory, perm=int(Permission.SALARY_READ))
+        _login(client, session_factory, perm=["SALARY_READ"])
         res = client.post(
             "/api/art-teacher-payroll",
             json={

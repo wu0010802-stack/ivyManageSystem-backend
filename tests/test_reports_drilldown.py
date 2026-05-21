@@ -51,14 +51,16 @@ def client(tmp_path):
     engine.dispose()
 
 
-def _login(client, sf, username="admin", role="admin", permissions=-1):
+def _login(client, sf, username="admin", role="admin", permission_names=["*"]):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     with sf() as s:
         s.add(
             User(
                 username=username,
                 password_hash=hash_password("Passw0rd!"),
                 role=role,
-                permissions=permissions,
+                permission_names=permission_names,
                 is_active=True,
                 must_change_password=False,
             )
@@ -184,7 +186,7 @@ def test_attendance_detail_filtered_by_classroom(client):
 
 def test_attendance_detail_no_permission_returns_403(client):
     c, sf = client
-    _login(c, sf, username="reader", role="staff", permissions=0)
+    _login(c, sf, username="reader", role="staff", permission_names=[])
     r = c.get("/api/reports/attendance/detail?year=2026")
     assert r.status_code == 403
 
@@ -318,7 +320,7 @@ def test_salary_contributors_top5_gross_and_overtime(client):
 
 def test_salary_contributors_masks_amount_for_non_admin(client):
     c, sf = client
-    _login(c, sf, username="viewer", role="staff", permissions=1 << 13)
+    _login(c, sf, username="viewer", role="staff", permission_names=["REPORTS"])
     _seed_salary_contributors(sf)
     r = c.get("/api/reports/salary/contributors?year=2026&month=3")
     assert r.status_code == 200, r.text

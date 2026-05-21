@@ -77,12 +77,14 @@ def _make_employee(session, *, name, base_salary=30000, classroom_id=None):
     return emp
 
 
-def _make_user(session, *, username, permissions, employee_id=None, role="admin"):
+def _make_user(session, *, username, permission_names, employee_id=None, role="admin"):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,
@@ -109,7 +111,7 @@ def test_self_edit_only_non_sensitive_fields_allowed(selfedit_client):
         _make_user(
             s,
             username="self",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=emp.id,
         )
         s.commit()
@@ -131,7 +133,7 @@ def test_self_edit_single_sensitive_field_blocked(selfedit_client):
         _make_user(
             s,
             username="self",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=emp.id,
         )
         s.commit()
@@ -157,7 +159,7 @@ def test_self_edit_multiple_sensitive_fields_listed(selfedit_client):
         _make_user(
             s,
             username="self",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=emp.id,
         )
         s.commit()
@@ -190,7 +192,7 @@ def test_pure_admin_editing_other_employee_not_self_blocked(selfedit_client):
         _make_user(
             s,
             username="admin",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,  # 純管理員
         )
         s.commit()
@@ -216,7 +218,7 @@ def test_hr_editing_other_employee_not_self_blocked(selfedit_client):
         _make_user(
             s,
             username="hr",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=hr_emp.id,
         )
         s.commit()

@@ -79,11 +79,13 @@ def client_with_db(tmp_path):
 
 
 def _create_user(session, username, perms, password="TempPass123"):
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -160,7 +162,7 @@ def test_batch_sign_db_error_does_not_rollback_other_rows(client_with_db, monkey
         _create_user(
             s,
             "reviewer1",
-            Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW,
+            ["APPRAISAL_READ", "APPRAISAL_REVIEW"],
         )
         s.commit()
         cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)

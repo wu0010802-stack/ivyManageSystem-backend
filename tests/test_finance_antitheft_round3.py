@@ -102,15 +102,17 @@ def _create_user(
     session,
     *,
     username: str,
-    permissions: int,
+    permission_names,
     role: str = "admin",
     password: str = "TempPass123",
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(u)
@@ -187,7 +189,7 @@ class TestPOSRefundCumulative:
             _create_user(
                 s,
                 username="cashier",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, paid_amount=5000, is_paid=True)
             s.commit()
@@ -243,9 +245,7 @@ class TestPOSRefundCumulative:
             _create_user(
                 s,
                 username="boss",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             reg = _setup_reg(s, paid_amount=5000, is_paid=True)
             s.commit()
@@ -274,7 +274,7 @@ class TestPOSRefundCumulative:
             _create_user(
                 s,
                 username="cashier2",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, paid_amount=5000, is_paid=True)
             # 已 voided 的歷史退費 NT$5000，不應計入累積
@@ -329,7 +329,7 @@ class TestRefundCheckOrderAfterLock:
             _create_user(
                 s,
                 username="cashier3",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, paid_amount=2000, is_paid=False)
             s.commit()
@@ -363,7 +363,7 @@ class TestBatchMarkPaidGuards:
             _create_user(
                 s,
                 username="staff",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, course_price=500, paid_amount=0, is_paid=False)
             s.commit()
@@ -383,7 +383,7 @@ class TestBatchMarkPaidGuards:
             _create_user(
                 s,
                 username="staff2",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, course_price=500, paid_amount=0, is_paid=False)
             s.commit()
@@ -405,7 +405,7 @@ class TestBatchMarkPaidGuards:
             _create_user(
                 s,
                 username="write_only",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             r1 = _setup_reg(
                 s,
@@ -443,9 +443,7 @@ class TestBatchMarkPaidGuards:
             _create_user(
                 s,
                 username="boss2",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             r1 = _setup_reg(
                 s,
@@ -494,7 +492,7 @@ class TestBatchMarkPaidGuards:
             _create_user(
                 s,
                 username="staff3",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             r1 = _setup_reg(
                 s,
@@ -589,7 +587,7 @@ class TestMeetingsBatchOverwriteFinalizeGuard:
             _create_user(
                 s,
                 username="meet_admin",
-                permissions=Permission.MEETINGS,
+                permission_names=["MEETINGS"],
             )
             s.commit()
 
@@ -665,7 +663,7 @@ class TestGovReportFinalizeGuard:
             _create_user(
                 s,
                 username="hr",
-                permissions=Permission.SALARY_READ,
+                permission_names=["SALARY_READ"],
             )
             s.commit()
 
@@ -684,7 +682,7 @@ class TestGovReportFinalizeGuard:
             _create_user(
                 s,
                 username="hr2",
-                permissions=Permission.SALARY_READ,
+                permission_names=["SALARY_READ"],
             )
             s.commit()
 
@@ -703,7 +701,7 @@ class TestGovReportFinalizeGuard:
             _create_user(
                 s,
                 username="hr3",
-                permissions=Permission.SALARY_READ,
+                permission_names=["SALARY_READ"],
             )
             s.commit()
 
@@ -725,8 +723,7 @@ class TestGovReportFinalizeGuard:
             _create_user(
                 s,
                 username="boss_gov",
-                permissions=Permission.SALARY_READ
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.commit()
 
@@ -748,8 +745,7 @@ class TestGovReportFinalizeGuard:
             _create_user(
                 s,
                 username="boss_gov2",
-                permissions=Permission.SALARY_READ
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.commit()
 
@@ -771,7 +767,7 @@ class TestGovReportFinalizeGuard:
             _create_user(
                 s,
                 username="hr4",
-                permissions=Permission.SALARY_READ,
+                permission_names=["SALARY_READ"],
             )
             s.commit()
 

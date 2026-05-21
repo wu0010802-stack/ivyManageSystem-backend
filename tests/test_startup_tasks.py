@@ -140,7 +140,7 @@ def test_run_startup_bootstrap_creates_ivykids_table_for_legacy_db(
         engine.dispose()
 
 
-def test_run_maintenance_tasks_executes_alembic_and_permission_backfill(monkeypatch):
+def test_run_maintenance_tasks_executes_alembic_and_data_backfill(monkeypatch):
     from startup import bootstrap as bootstrap_module
 
     calls = []
@@ -152,15 +152,15 @@ def test_run_maintenance_tasks_executes_alembic_and_permission_backfill(monkeypa
     )
     monkeypatch.setattr(
         bootstrap_module,
-        "migrate_permissions_rw",
-        lambda: calls.append("migrate_permissions_rw"),
+        "migrate_school_year_to_roc",
+        lambda: calls.append("migrate_school_year_to_roc"),
     )
 
     bootstrap_module.run_maintenance_tasks()
 
     assert calls == [
         "run_alembic_upgrade",
-        "migrate_permissions_rw",
+        "migrate_school_year_to_roc",
     ]
 
 

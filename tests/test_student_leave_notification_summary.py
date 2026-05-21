@@ -50,7 +50,11 @@ def test_admin_sees_recent_parent_leave_count(session):
     )
     session.add(student)
     user = User(
-        username="p", password_hash="!", role="parent", permissions=0, is_active=True
+        username="p",
+        password_hash="!",
+        role="parent",
+        permission_names=[],
+        is_active=True,
     )
     session.add(user)
     session.flush()
@@ -96,8 +100,8 @@ def test_admin_sees_recent_parent_leave_count(session):
 
     summary = dashboard_query_service.build_notification_summary(
         session,
-        user_permissions=Permission.STUDENTS_READ.value,
-        current_user={"user_id": 999, "role": "admin", "permissions": -1},
+        user_permissions=[Permission.STUDENTS_READ.value],
+        current_user={"user_id": 999, "role": "admin", "permission_names": ["*"]},
     )
     items = [a for a in summary["action_items"] if a["type"] == "student_leave_recent"]
     assert len(items) == 1
@@ -109,8 +113,8 @@ def test_no_permission_no_block(session):
     dashboard_query_service._notification_cache.clear()
     summary = dashboard_query_service.build_notification_summary(
         session,
-        user_permissions=0,
-        current_user={"user_id": 999, "role": "admin", "permissions": 0},
+        user_permissions=[],
+        current_user={"user_id": 999, "role": "admin", "permission_names": []},
     )
     items = [a for a in summary["action_items"] if a["type"] == "student_leave_recent"]
     assert items == []

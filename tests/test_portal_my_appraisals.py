@@ -92,7 +92,7 @@ def _make_user_for_employee(session, emp, username):
         username=username,
         password_hash=hash_password("TempPass123"),
         role="teacher",
-        permissions=0,
+        permission_names=[],
         employee_id=emp.id,
         is_active=True,
     )

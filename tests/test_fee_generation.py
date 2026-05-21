@@ -83,13 +83,13 @@ def session(_backend):
 
 @pytest.fixture
 def client_admin(_backend):
-    """已登入的 admin 帳號 client（permissions=-1 表全開）。"""
+    """已登入的 admin 帳號 client（permission_names=-1 表全開）。"""
     with _backend["session_factory"]() as s:
         u = User(
             username="gen_admin",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
         )
         s.add(u)
@@ -384,13 +384,13 @@ def client_fees_writer(_backend):
     """FEES_WRITE 但無 ACTIVITY_PAYMENT_APPROVE 的 admin。"""
     from utils.permissions import Permission
 
-    perms = int(Permission.FEES_READ | Permission.FEES_WRITE)
+    perms = ["FEES_READ", "FEES_WRITE"]
     with _backend["session_factory"]() as s:
         u = User(
             username="gen_fees_only",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=perms,
+            permission_names=perms,
             is_active=True,
         )
         s.add(u)

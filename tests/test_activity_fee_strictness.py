@@ -71,15 +71,17 @@ def _create_user(
     session,
     *,
     username: str,
-    permissions: int,
+    permission_names,
     role: str = "admin",
     password: str = "TempPass123",
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(u)
@@ -166,7 +168,7 @@ class TestDeletePaymentSoftDelete:
             _create_user(
                 s,
                 username="write_only",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             rec = ActivityPaymentRecord(
@@ -196,9 +198,11 @@ class TestDeletePaymentSoftDelete:
             _create_user(
                 s,
                 username="boss",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             rec = ActivityPaymentRecord(
@@ -227,9 +231,11 @@ class TestDeletePaymentSoftDelete:
             _create_user(
                 s,
                 username="boss",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             rec = ActivityPaymentRecord(
@@ -269,9 +275,11 @@ class TestDeletePaymentSoftDelete:
             _create_user(
                 s,
                 username="boss",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             rec = ActivityPaymentRecord(
@@ -313,7 +321,7 @@ class TestRefundRequirements:
             _create_user(
                 s,
                 username="write_only",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             s.commit()
@@ -339,7 +347,7 @@ class TestRefundRequirements:
             _create_user(
                 s,
                 username="write_only",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, course_price=5000, paid_amount=5000, is_paid=True)
             s.commit()
@@ -365,7 +373,7 @@ class TestRefundRequirements:
             _create_user(
                 s,
                 username="write_only",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             s.commit()
@@ -391,7 +399,7 @@ class TestRefundRequirements:
             _create_user(
                 s,
                 username="write_only",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, course_price=5000, paid_amount=5000, is_paid=True)
             s.commit()
@@ -424,9 +432,11 @@ class TestBatchPaymentLocked:
             _create_user(
                 s,
                 username="boss",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             s.commit()
@@ -448,7 +458,7 @@ class TestUpdatePaymentConfirmAmount:
             _create_user(
                 s,
                 username="write_only",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             reg = _setup_reg(s, course_price=5000, paid_amount=5000, is_paid=True)
             s.commit()
@@ -481,7 +491,7 @@ class TestPhoneConflictCrossTerm:
             _create_user(
                 s,
                 username="admin",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             # 啟用報名
             from models.database import ActivityRegistrationSettings
@@ -537,7 +547,7 @@ class TestOperatorDesensitization:
             _create_user(
                 s,
                 username="read_only",
-                permissions=Permission.ACTIVITY_READ,
+                permission_names=["ACTIVITY_READ"],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             s.add(
@@ -568,8 +578,7 @@ class TestOperatorDesensitization:
             _create_user(
                 s,
                 username="boss",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_PAYMENT_APPROVE"],
             )
             reg = _setup_reg(s, paid_amount=500, is_paid=True)
             s.add(

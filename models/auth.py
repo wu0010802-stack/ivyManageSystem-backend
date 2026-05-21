@@ -8,12 +8,14 @@ from sqlalchemy import (
     Column,
     Integer,
     String,
-    BigInteger,
+    Text,
     DateTime,
     Boolean,
     ForeignKey,
     Index,
+    JSON,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 
 from models.base import Base
@@ -39,11 +41,11 @@ class User(Base):
         default="teacher",
         comment="角色: teacher/admin/hr/supervisor/parent",
     )
-    permissions = Column(
-        BigInteger,
+    permission_names = Column(
+        JSON().with_variant(ARRAY(Text), "postgresql"),
         nullable=True,
         default=None,
-        comment="功能模組權限位元遮罩 (-1=全部權限, NULL=使用角色預設; parent 恆為 0)",
+        comment="權限名稱集合（NULL=依角色預設；['*']=全部；[]=無；其他=顯式 perm names）",
     )
     is_active = Column(Boolean, default=True, comment="帳號是否啟用")
     must_change_password = Column(

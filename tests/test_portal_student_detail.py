@@ -56,11 +56,7 @@ def detail_client(tmp_path):
 
 
 def _seed(sf) -> dict:
-    perm = int(
-        Permission.STUDENTS_READ.value
-        | Permission.PORTFOLIO_READ.value
-        | Permission.STUDENTS_HEALTH_READ.value
-    )
+    perm = ["STUDENTS_READ", "PORTFOLIO_READ", "STUDENTS_HEALTH_READ"]
     with sf() as session:
         emp = Employee(
             employee_id="E1", name="老師A", is_active=True, base_salary=30000
@@ -145,7 +141,7 @@ def _seed(sf) -> dict:
             password_hash="!",
             role="teacher",
             employee_id=emp.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -154,7 +150,7 @@ def _seed(sf) -> dict:
             password_hash="!",
             role="teacher",
             employee_id=emp_other.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -180,7 +176,7 @@ def _token(uid: int, emp_id: int, username: str, perm: int) -> str:
             "employee_id": emp_id,
             "role": "teacher",
             "name": username,
-            "permissions": perm,
+            "permission_names": perm,
             "token_version": 0,
         }
     )

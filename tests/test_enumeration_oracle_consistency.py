@@ -87,7 +87,7 @@ def _setup_parent(
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_user_id,
         token_version=0,
@@ -128,7 +128,7 @@ def _parent_token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )
@@ -151,22 +151,22 @@ def _create_teacher_user(
     *,
     username: str,
     employee: Employee,
-    permissions: int | None = None,
+    permission_names=None,
 ) -> User:
-    if permissions is None:
-        permissions = (
-            Permission.STUDENTS_READ
-            | Permission.STUDENTS_WRITE
-            | Permission.DISMISSAL_CALLS_READ
-            | Permission.DISMISSAL_CALLS_WRITE
-            | Permission.ANNOUNCEMENTS_READ
-        )
+    if permission_names is None:
+        permission_names = [
+            "STUDENTS_READ",
+            "STUDENTS_WRITE",
+            "DISMISSAL_CALLS_READ",
+            "DISMISSAL_CALLS_WRITE",
+            "ANNOUNCEMENTS_READ",
+        ]
     user = User(
         employee_id=employee.id,
         username=username,
         password_hash=hash_password("TempPass123"),
         role="teacher",
-        permissions=int(permissions),
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
         token_version=0,
@@ -183,7 +183,7 @@ def _teacher_token(user: User) -> str:
             "employee_id": user.employee_id,
             "role": user.role,
             "name": user.username,
-            "permissions": user.permissions,
+            "permission_names": user.permission_names,
             "token_version": user.token_version or 0,
         }
     )
@@ -1035,7 +1035,7 @@ class TestF011_PortalLeavesCompensatory:
             session,
             username="t_comp_a",
             employee=emp_a,
-            permissions=Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+            permission_names=["STUDENTS_READ", "STUDENTS_WRITE"],
         )
         # B 的加班記錄（A 無權使用）
         ot_b = OvertimeRecord(
@@ -1112,7 +1112,7 @@ class TestF011_PortalLeavesCompensatory:
                 s,
                 username="t_comp_own",
                 employee=emp,
-                permissions=Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE"],
             )
             ot = OvertimeRecord(
                 employee_id=emp.id,

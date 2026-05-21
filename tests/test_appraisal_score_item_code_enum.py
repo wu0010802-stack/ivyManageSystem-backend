@@ -41,8 +41,8 @@ def test_score_item_code_auto_vs_manual_partition():
 
 
 def test_appraisal_rule_write_permission_bit_unique():
-    # 確認 bit 53 沒被其他 Permission 佔用
-    used_bits = {p.value for p in Permission}
-    assert (1 << 53) in used_bits, "APPRAISAL_RULE_WRITE 未定義"
-    # 沒有兩個 Permission 共享同 bit
-    assert len(used_bits) == len(list(Permission))
+    # text[] 版本：確認 APPRAISAL_RULE_WRITE 存在於 enum，且所有 Permission name 唯一
+    used_names = {p.value for p in Permission}
+    assert "APPRAISAL_RULE_WRITE" in used_names, "APPRAISAL_RULE_WRITE 未定義"
+    # 沒有兩個 Permission 共享同 name
+    assert len(used_names) == len(list(Permission))

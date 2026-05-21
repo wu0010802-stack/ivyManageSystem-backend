@@ -81,7 +81,7 @@ def _make_test_app():
     from utils.auth import get_current_user
 
     async def _mock_user():
-        return {"id": 1, "username": "test", "role": "admin", "permissions": -1}
+        return {"id": 1, "username": "test", "role": "admin", "permission_names": ["*"]}
 
     app.dependency_overrides[get_current_user] = _mock_user
     app.include_router(router)

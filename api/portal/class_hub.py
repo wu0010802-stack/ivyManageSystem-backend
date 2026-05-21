@@ -21,7 +21,7 @@ from services.portal_class_hub_service import (
     resolve_teacher_classroom,
 )
 from utils.auth import get_current_user
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +98,11 @@ def get_class_hub_today(
     now = datetime.now()
     employee_id = current_user.get("employee_id")
 
-    # 權限遮罩；-1 (或全位元) 表示管理員擁有全部權限
-    perms = int(current_user.get("permissions", 0) or 0)
+    # 權限名稱集合；["*"] 表示管理員擁有全部權限
+    perms = current_user.get("permission_names")
 
-    def has(p: int) -> bool:
-        return perms < 0 or (perms & p) != 0
+    def has(p: "Permission") -> bool:
+        return has_permission(perms, p)
 
     # 無 employee_id 或無班級 → 空殼
     classroom = (

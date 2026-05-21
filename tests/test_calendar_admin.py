@@ -73,7 +73,7 @@ def _login_admin(client, session_factory):
                 username="admin",
                 password_hash=hash_password("AdminPass1"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
             )
         )
@@ -102,7 +102,7 @@ def _login_with_permissions(client, session_factory, username, permissions_int):
                 username=username,
                 password_hash=hash_password("Pass1234"),
                 role="staff",
-                permissions=permissions_int,
+                permission_names=permissions_int,
                 is_active=True,
             )
         )
@@ -505,7 +505,7 @@ def test_leave_without_permission_excluded(calendar_admin_client):
     """無 LEAVES_READ 的 caller 不應看到 leave layer，但能看到 event。"""
     client, sf = calendar_admin_client
     # CALENDAR (1<<2) but no LEAVES_READ (1<<5)
-    tok = _login_with_permissions(client, sf, "viewer", 1 << 2)
+    tok = _login_with_permissions(client, sf, "viewer", ["CALENDAR"])
     emp_id = _make_employee(sf)
     with sf() as s:
         s.add(
@@ -573,7 +573,9 @@ def test_activity_layer_joins_course_name(calendar_admin_client):
 def test_activity_without_permission_excluded(calendar_admin_client):
     """無 ACTIVITY_READ (1<<27) caller 看不到 activity layer。"""
     client, sf = calendar_admin_client
-    tok = _login_with_permissions(client, sf, "viewer_act", 1 << 2)  # CALENDAR only
+    tok = _login_with_permissions(
+        client, sf, "viewer_act", ["CALENDAR"]
+    )  # CALENDAR only
     with sf() as s:
         course = ActivityCourse(name="繪畫", price=1500)
         s.add(course)
@@ -751,7 +753,7 @@ def test_employee_with_only_calendar_bit_sees_event_and_holiday_only(
     """只持 CALENDAR bit 的 caller 只看到 event + holiday，其餘 layer return []。"""
     client, sf = calendar_admin_client
     # CALENDAR=1<<2 only — no leaves/activity/appraisal/meetings bits
-    tok = _login_with_permissions(client, sf, "calonly", 1 << 2)
+    tok = _login_with_permissions(client, sf, "calonly", ["CALENDAR"])
     emp_id = _make_employee(sf, name="X 老師", employee_id="E0099")
     with sf() as s:
         s.add_all(

@@ -76,7 +76,7 @@ def _make_parent(session, *, line_user_id="U1", username=None) -> User:
         username=username or f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_user_id,
         token_version=0,
@@ -159,7 +159,7 @@ def _make_admin(session, *, username="admin") -> User:
         username=username,
         password_hash="x",
         role="admin",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         token_version=0,
     )
@@ -190,7 +190,7 @@ def _parent_token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )
@@ -577,7 +577,7 @@ class TestRoleIsolation:
                 username="staff",
                 password_hash="x",
                 role="staff",
-                permissions=0,
+                permission_names=[],
                 is_active=True,
                 token_version=0,
             )
@@ -589,7 +589,7 @@ class TestRoleIsolation:
                     "employee_id": None,
                     "role": "staff",
                     "name": "staff",
-                    "permissions": 0,
+                    "permission_names": [],
                     "token_version": 0,
                 }
             )

@@ -57,7 +57,7 @@ def client_with_db(tmp_path):
             password_hash=hash_password("Admin1234"),
             role="admin",
             is_active=True,
-            permissions=-1,
+            permission_names=["*"],
             employee_id=emp_id,
         )
         session.add(admin)
@@ -72,7 +72,7 @@ def client_with_db(tmp_path):
             "employee_id": emp_id,
             "role": "admin",
             "name": "王小明",
-            "permissions": -1,
+            "permission_names": ["*"],
             "token_version": 0,
         }
     )

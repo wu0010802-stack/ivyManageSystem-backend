@@ -68,12 +68,12 @@ def notification_client(tmp_path):
     engine.dispose()
 
 
-def _create_admin(session, *, username="notify_admin", password="TempPass123", permissions=0) -> User:
+def _create_admin(session, *, username="notify_admin", password="TempPass123", permission_names=[]) -> User:
     admin = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(admin)
@@ -105,12 +105,7 @@ class TestNotificationSummary:
         with session_factory() as session:
             _create_admin(
                 session,
-                permissions=(
-                    Permission.APPROVALS
-                    | Permission.ACTIVITY_READ
-                    | Permission.CALENDAR
-                    | Permission.EMPLOYEES_READ
-                ),
+                permission_names=["APPROVALS", "ACTIVITY_READ", "CALENDAR", "EMPLOYEES_READ"],
             )
             employee = _create_employee(session, employee_id="E001", name="王小明")
             session.add(
@@ -187,7 +182,7 @@ class TestNotificationSummary:
         today = date.today()
 
         with session_factory() as session:
-            _create_admin(session, username="calendar_only", permissions=Permission.CALENDAR)
+            _create_admin(session, username="calendar_only", permission_names=["CALENDAR"])
             session.add(
                 SchoolEvent(
                     title="校務活動",
@@ -217,12 +212,7 @@ class TestNotificationSummary:
             _create_admin(
                 session,
                 username="empty_user",
-                permissions=(
-                    Permission.APPROVALS
-                    | Permission.ACTIVITY_READ
-                    | Permission.CALENDAR
-                    | Permission.EMPLOYEES_READ
-                ),
+                permission_names=["APPROVALS", "ACTIVITY_READ", "CALENDAR", "EMPLOYEES_READ"],
             )
             session.commit()
 

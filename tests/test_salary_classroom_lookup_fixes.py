@@ -437,7 +437,7 @@ class TestSimulateUsesPeriodAccrualOverride:
                     username="admin",
                     password_hash=hash_password("pw"),
                     role="admin",
-                    permissions=int(Permission.SALARY_READ),
+                    permission_names=["SALARY_READ"],
                     is_active=True,
                     must_change_password=False,
                 )

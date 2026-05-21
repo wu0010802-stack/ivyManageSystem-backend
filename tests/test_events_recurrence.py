@@ -59,7 +59,7 @@ def _login_admin(client, session_factory):
                 username="admin",
                 password_hash=hash_password("AdminPass1"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
             )
         )

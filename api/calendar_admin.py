@@ -42,7 +42,7 @@ LAYER_FETCHERS: dict[
 def _fetch_event(
     session: Session, from_: date, to: date, current_user: dict
 ) -> list[CalendarFeedItem]:
-    if not has_permission(current_user.get("permissions", 0), Permission.CALENDAR):
+    if not has_permission(current_user.get("permission_names"), Permission.CALENDAR):
         return []
     stmt = (
         select(
@@ -129,7 +129,7 @@ LAYER_FETCHERS["event"] = _fetch_event
 def _fetch_holiday(
     session: Session, from_: date, to: date, current_user: dict
 ) -> list[CalendarFeedItem]:
-    if not has_permission(current_user.get("permissions", 0), Permission.CALENDAR):
+    if not has_permission(current_user.get("permission_names"), Permission.CALENDAR):
         return []
 
     holiday_rows = session.execute(
@@ -177,7 +177,7 @@ LAYER_FETCHERS["holiday"] = _fetch_holiday
 def _fetch_leave(
     session: Session, from_: date, to: date, current_user: dict
 ) -> list[CalendarFeedItem]:
-    if not has_permission(current_user.get("permissions", 0), Permission.LEAVES_READ):
+    if not has_permission(current_user.get("permission_names"), Permission.LEAVES_READ):
         return []
     stmt = (
         select(
@@ -232,7 +232,9 @@ def _fetch_activity(
     以維持「第 N 堂」對使用者的穩定語意；用 SQL window function 一次算出，再以
     outer where 過濾 date window 與課程 JOIN — 單 query、無 N+1。
     """
-    if not has_permission(current_user.get("permissions", 0), Permission.ACTIVITY_READ):
+    if not has_permission(
+        current_user.get("permission_names"), Permission.ACTIVITY_READ
+    ):
         return []
 
     session_no_col = (
@@ -290,7 +292,7 @@ def _fetch_appraisal(
     僅落 window 內者下發；id 用 `{cycle_id}:{milestone}` 區分。
     """
     if not has_permission(
-        current_user.get("permissions", 0), Permission.APPRAISAL_READ
+        current_user.get("permission_names"), Permission.APPRAISAL_READ
     ):
         return []
     # 三日期任一落 window 都要拉 cycle
@@ -340,7 +342,7 @@ def _fetch_meeting(
     session: Session, from_: date, to: date, current_user: dict
 ) -> list[CalendarFeedItem]:
     """園務會議層：DISTINCT (date, type) 聚合，多員工出席同場只下發一筆。"""
-    if not has_permission(current_user.get("permissions", 0), Permission.MEETINGS):
+    if not has_permission(current_user.get("permission_names"), Permission.MEETINGS):
         return []
     stmt = (
         select(MeetingRecord.meeting_date, MeetingRecord.meeting_type)

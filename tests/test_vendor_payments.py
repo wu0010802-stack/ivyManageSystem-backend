@@ -84,9 +84,16 @@ def client_with_db(tmp_path, monkeypatch):
 def _make_user(
     session,
     username: str,
-    permissions: int,
+    permission_names,
     password: str = "TempPass123",
 ) -> int:
+    # permission_names: list[str] | Permission | str；單一 Permission 自動 wrap
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
+    elif permission_names is None:
+        permission_names = []
+    else:
+        permission_names = list(permission_names)
     emp = Employee(
         employee_id=f"E-{username}",
         name=f"員工{username}",
@@ -99,7 +106,7 @@ def _make_user(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         employee_id=emp.id,
     )
@@ -136,7 +143,7 @@ class TestVendorPaymentCRUD:
             _make_user(
                 session,
                 "vp_admin",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
 
         _login(client, "vp_admin")
@@ -229,7 +236,7 @@ class TestVendorPaymentValidation:
             _make_user(
                 session,
                 "vp_val",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
         _login(client, "vp_val")
         res = client.post(
@@ -244,7 +251,7 @@ class TestVendorPaymentValidation:
             _make_user(
                 session,
                 "vp_val2",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
         _login(client, "vp_val2")
         res = client.post(
@@ -261,7 +268,7 @@ class TestVendorPaymentFilters:
             _make_user(
                 session,
                 "vp_filter",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
         _login(client, "vp_filter")
         ids = []
@@ -293,7 +300,7 @@ class TestVendorPaymentSignature:
             _make_user(
                 session,
                 "vp_sig",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
         _login(client, "vp_sig")
         pid = client.post("/api/vendor-payments", json=_payment_payload()).json()["id"]
@@ -311,7 +318,7 @@ class TestVendorPaymentSignature:
             _make_user(
                 session,
                 "vp_sig2",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
         _login(client, "vp_sig2")
         pid = client.post("/api/vendor-payments", json=_payment_payload()).json()["id"]
@@ -331,7 +338,7 @@ class TestVendorPaymentAttachments:
             _make_user(
                 session,
                 "vp_att",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
         _login(client, "vp_att")
         pid = client.post("/api/vendor-payments", json=_payment_payload()).json()["id"]
@@ -373,7 +380,7 @@ class TestVendorPaymentAttachments:
             _make_user(
                 session,
                 "vp_att2",
-                Permission.VENDOR_PAYMENT_READ | Permission.VENDOR_PAYMENT_WRITE,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
             )
         _login(client, "vp_att2")
         pid = client.post("/api/vendor-payments", json=_payment_payload()).json()["id"]

@@ -83,7 +83,7 @@ def _create_admin_login(client, sf, username="admin", password="AdminPass123"):
                 username=username,
                 password_hash=hash_password(password),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 must_change_password=False,
             )

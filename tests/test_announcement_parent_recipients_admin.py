@@ -71,7 +71,7 @@ def _seed_minimal(session):
         username="admin",
         password_hash=hash_password("Pw0rd!aa"),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
         token_version=0,
     )
@@ -108,7 +108,7 @@ def _admin_token(user: User) -> str:
             "employee_id": user.employee_id,
             "role": user.role,
             "name": user.username,
-            "permissions": user.permissions if user.permissions is not None else -1,
+            "permission_names": user.permission_names if user.permission_names is not None else -1,
             "token_version": user.token_version or 0,
         }
     )
@@ -355,7 +355,7 @@ class TestPermissionIsolation:
                 username="teacher_t01",
                 password_hash=hash_password("Pw0rd!aa"),
                 role="teacher",
-                permissions=-1,  # 即使全權限也應因 role=='teacher' 被擋
+                permission_names=["*"],  # 即使全權限也應因 role=='teacher' 被擋
                 is_active=True,
                 token_version=0,
             )
@@ -368,7 +368,7 @@ class TestPermissionIsolation:
                     "employee_id": teacher.employee_id,
                     "role": "teacher",
                     "name": teacher.username,
-                    "permissions": -1,
+                    "permission_names": ["*"],
                     "token_version": 0,
                 }
             )
@@ -388,7 +388,7 @@ class TestPermissionIsolation:
                 username="parent_line_Uxxx",
                 password_hash="!LINE_ONLY",
                 role="parent",
-                permissions=0,
+                permission_names=[],
                 is_active=True,
                 line_user_id="Uxxx",
                 token_version=0,
@@ -402,7 +402,7 @@ class TestPermissionIsolation:
                     "employee_id": None,
                     "role": "parent",
                     "name": parent.username,
-                    "permissions": 0,
+                    "permission_names": [],
                     "token_version": 0,
                 }
             )

@@ -70,11 +70,7 @@ def _add_admin(session, username="admin", password="TempPass123"):
             role="admin",
             # F-027：/students/search 同時要求 STUDENTS_READ 才能拉學生目錄，
             # 媒合測試需要這個 bit 才能跑通完整流程。
-            permissions=(
-                Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.STUDENTS_READ
-            ),
+            permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "STUDENTS_READ"],
             is_active=True,
         )
     )

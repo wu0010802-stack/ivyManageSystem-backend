@@ -77,12 +77,12 @@ def _seed_emp(session, *, emp_no, name="員工"):
     return e
 
 
-def _seed_user(session, *, username, role, employee_id, permissions):
+def _seed_user(session, *, username, role, employee_id, permission_names):
     u = User(
         username=username,
         password_hash=hash_password("Passw0rd!"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
         employee_id=employee_id,
@@ -127,11 +127,7 @@ def _login(client, username):
     )
 
 
-APPROVE_OT = (
-    int(Permission.APPROVALS)
-    | int(Permission.OVERTIME_WRITE)
-    | int(Permission.OVERTIME_READ)
-)
+APPROVE_OT = ["APPROVALS", "OVERTIME_WRITE", "OVERTIME_READ"]
 
 
 class TestOvertimeRejectionReasonRequired:
@@ -144,14 +140,14 @@ class TestOvertimeRejectionReasonRequired:
                 username="ot_rej_sub",
                 role="teacher",
                 employee_id=sub_emp.id,
-                permissions=int(Permission.OVERTIME_READ),
+                permission_names=["OVERTIME_READ"],
             )
             _seed_user(
                 s,
                 username="ot_rej_sup",
                 role="supervisor",
                 employee_id=sup_emp.id,
-                permissions=APPROVE_OT,
+                permission_names=APPROVE_OT,
             )
             _seed_policy(
                 s,
@@ -246,14 +242,14 @@ class TestOvertimeRejectionReasonRequired:
                 username="ot_ra_sub",
                 role="teacher",
                 employee_id=sub_emp.id,
-                permissions=int(Permission.OVERTIME_READ),
+                permission_names=["OVERTIME_READ"],
             )
             _seed_user(
                 s,
                 username="ot_ra_sup",
                 role="supervisor",
                 employee_id=sup_emp.id,
-                permissions=APPROVE_OT,
+                permission_names=APPROVE_OT,
             )
             _seed_policy(
                 s,

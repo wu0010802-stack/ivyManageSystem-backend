@@ -119,7 +119,7 @@ class TestPosReceiptPdfEndpoint:
                 username="no_perm",
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=Permission.SALARY_READ,
+                permission_names=["SALARY_READ"],
                 is_active=True,
             )
             s.add(u)

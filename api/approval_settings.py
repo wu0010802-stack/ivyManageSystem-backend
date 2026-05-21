@@ -25,22 +25,23 @@ DOC_TYPE_PERMISSIONS = {
 
 # 預設審核矩陣（申請人角色 → 可審核角色）
 DEFAULT_POLICIES = [
-    {"submitter_role": "teacher",    "approver_roles": "supervisor,hr,admin"},
+    {"submitter_role": "teacher", "approver_roles": "supervisor,hr,admin"},
     {"submitter_role": "supervisor", "approver_roles": "hr,admin"},
-    {"submitter_role": "hr",         "approver_roles": "admin"},
-    {"submitter_role": "admin",      "approver_roles": "admin"},
+    {"submitter_role": "hr", "approver_roles": "admin"},
+    {"submitter_role": "admin", "approver_roles": "admin"},
 ]
 
 # 角色層級（數字越大層級越高）
 ROLE_HIERARCHY = {
-    "teacher":    1,
+    "teacher": 1,
     "supervisor": 2,
-    "hr":         3,
-    "admin":      4,
+    "hr": 3,
+    "admin": 4,
 }
 
 
 # ============ Pydantic Models ============
+
 
 class PolicyItem(BaseModel):
     submitter_role: str
@@ -53,6 +54,7 @@ class PolicyUpdateRequest(BaseModel):
 
 
 # ============ Routes ============
+
 
 @router.get("/approval-settings/policies")
 def get_approval_policies(
@@ -106,21 +108,27 @@ def update_approval_policies(
                         ),
                     )
 
-            policy = session.query(ApprovalPolicy).filter(
-                ApprovalPolicy.submitter_role == item.submitter_role,
-                ApprovalPolicy.doc_type == "all",
-            ).first()
+            policy = (
+                session.query(ApprovalPolicy)
+                .filter(
+                    ApprovalPolicy.submitter_role == item.submitter_role,
+                    ApprovalPolicy.doc_type == "all",
+                )
+                .first()
+            )
 
             if policy:
                 policy.approver_roles = item.approver_roles
                 policy.is_active = item.is_active
             else:
-                session.add(ApprovalPolicy(
-                    doc_type="all",
-                    submitter_role=item.submitter_role,
-                    approver_roles=item.approver_roles,
-                    is_active=item.is_active,
-                ))
+                session.add(
+                    ApprovalPolicy(
+                        doc_type="all",
+                        submitter_role=item.submitter_role,
+                        approver_roles=item.approver_roles,
+                        is_active=item.is_active,
+                    )
+                )
 
         session.commit()
         logger.warning("審核政策已由 %s 更新", current_user.get("username"))
@@ -136,7 +144,9 @@ def update_approval_policies(
 
 @router.get("/approval-settings/logs")
 def get_approval_logs(
-    doc_type: Optional[str] = Query(None, description="leave / overtime / punch_correction"),
+    doc_type: Optional[str] = Query(
+        None, description="leave / overtime / punch_correction"
+    ),
     doc_id: Optional[int] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
@@ -144,13 +154,17 @@ def get_approval_logs(
     if current_user.get("role") == "teacher":
         raise HTTPException(status_code=403, detail="教師帳號不可直接存取管理端 API")
     if current_user.get("role") != "admin" and not doc_type:
-        raise HTTPException(status_code=400, detail="非管理員查詢簽核紀錄時必須指定 doc_type")
+        raise HTTPException(
+            status_code=400, detail="非管理員查詢簽核紀錄時必須指定 doc_type"
+        )
 
     if doc_type and doc_type not in DOC_TYPE_PERMISSIONS:
-        raise HTTPException(status_code=400, detail="doc_type 僅接受 leave、overtime、punch_correction")
+        raise HTTPException(
+            status_code=400, detail="doc_type 僅接受 leave、overtime、punch_correction"
+        )
 
     if doc_type and current_user.get("role") != "admin":
-        user_permissions = current_user.get("permissions", 0)
+        user_permissions = current_user.get("permission_names")
         if not has_permission(user_permissions, DOC_TYPE_PERMISSIONS[doc_type]):
             raise HTTPException(status_code=403, detail="您沒有此簽核類型的查詢權限")
 

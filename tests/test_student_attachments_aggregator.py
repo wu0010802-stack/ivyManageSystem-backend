@@ -62,7 +62,7 @@ def app_client(tmp_path):
             username="admin",
             password_hash="$2b$12$dummy",
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             token_version=0,
         )
@@ -121,7 +121,7 @@ def app_client(tmp_path):
             "sub": "admin",
             "user_id": ids["admin_id"],
             "role": "admin",
-            "permissions": -1,
+            "permission_names": ["*"],
             "token_version": 0,
         }
     )

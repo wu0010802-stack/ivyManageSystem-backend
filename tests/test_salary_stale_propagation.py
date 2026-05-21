@@ -100,7 +100,7 @@ def _admin_login(client, sf, username="admin", password="AdminPass123"):
                 username=username,
                 password_hash=hash_password(password),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 must_change_password=False,
             )
@@ -679,7 +679,7 @@ class TestLineBotMySalaryFiltersDraft:
                 username="user_a",
                 password_hash=hash_password("Pw1234567890"),
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 is_active=True,
                 line_user_id="LINE_X",
                 must_change_password=False,

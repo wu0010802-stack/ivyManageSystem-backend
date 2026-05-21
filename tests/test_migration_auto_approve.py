@@ -96,7 +96,7 @@ def _setup_family(s):
     )
     s.add(student)
     user = User(
-        username="p", password_hash="!", role="parent", permissions=0, is_active=True
+        username="p", password_hash="!", role="parent", permission_names=[], is_active=True
     )
     s.add(user)
     s.flush()
@@ -221,7 +221,7 @@ def test_migration_preserves_existing_recorded_by(db, monkeypatch):
         username="t",
         password_hash="!",
         role="teacher",
-        permissions=0,
+        permission_names=[],
         is_active=True,
     )
     s.add(teacher)

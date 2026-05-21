@@ -22,7 +22,6 @@ from startup.seed import (
 from startup.migrations import (
     run_alembic_upgrade,
     migrate_school_year_to_roc,
-    migrate_permissions_rw,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,4 +162,3 @@ def run_maintenance_tasks():
     """執行部署/維運任務：schema migration 與資料回填。"""
     run_alembic_upgrade()
     migrate_school_year_to_roc()
-    migrate_permissions_rw()

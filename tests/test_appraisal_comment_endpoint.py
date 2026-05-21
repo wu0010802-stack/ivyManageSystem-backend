@@ -79,11 +79,13 @@ def client_with_db(tmp_path):
 
 def _create_user(session, username, perms, password="TempPass123"):
     """admin 角色、無 employee_id（避免 assert_not_self_approval 誤殺）。"""
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -199,7 +201,7 @@ def test_comment_requires_read_permission(client_with_db):
     """完全沒考核權限 → 403（endpoint 入口最低門檻是 APPRAISAL_READ）。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(s, "noperm", Permission(0))
+        _create_user(s, "noperm", [])
         s.commit()
         summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
         summary_id = summary.id
@@ -223,7 +225,7 @@ def test_comment_blocks_self_approval(client_with_db):
             username="self_user",
             password_hash=hash_password("TempPass123"),
             role="teacher",
-            permissions=int(Permission.APPRAISAL_READ),
+            permission_names=["APPRAISAL_READ"],
             is_active=True,
             employee_id=emp_id,
         )

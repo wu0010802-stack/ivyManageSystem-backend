@@ -60,11 +60,7 @@ def _mk_admin(session, username="emp_admin"):
         username=username,
         password_hash=hash_password("TempPass123"),
         role="admin",
-        permissions=int(
-            Permission.EMPLOYEES_READ
-            | Permission.EMPLOYEES_WRITE
-            | Permission.SALARY_WRITE
-        ),
+        permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE", "SALARY_WRITE"],
         is_active=True,
     )
     session.add(user)
@@ -78,7 +74,7 @@ def _mk_reader(session, username="emp_reader"):
         username=username,
         password_hash=hash_password("TempPass123"),
         role="staff",
-        permissions=int(Permission.EMPLOYEES_READ),
+        permission_names=["EMPLOYEES_READ"],
         is_active=True,
     )
     session.add(user)

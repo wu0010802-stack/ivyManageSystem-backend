@@ -17,7 +17,7 @@ from api.portal._shared import (
 )
 from models.database import get_session
 from utils.auth import verify_ws_token
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 from utils.ws_hub import (
     WS_CLOSE_FORBIDDEN,
     WS_CLOSE_INVALID_TOKEN,
@@ -83,11 +83,10 @@ async def portal_contact_book_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="此帳號無權限訂閱聯絡簿")
         return
 
-    permissions = payload.get("permissions", 0)
+    perms = payload.get("permission_names")
     if not (
-        permissions == -1
-        or (permissions & Permission.PORTFOLIO_READ.value)
-        or (permissions & Permission.PORTFOLIO_WRITE.value)
+        has_permission(perms, Permission.PORTFOLIO_READ)
+        or has_permission(perms, Permission.PORTFOLIO_WRITE)
     ):
         await ws.close(
             code=WS_CLOSE_FORBIDDEN, reason="權限不足，需要 portfolio 讀取權限"

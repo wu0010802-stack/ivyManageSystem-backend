@@ -298,12 +298,7 @@ def _seed_teacher_with_n_classrooms(
     sf, n: int = 4, students_per_class: int = 5
 ) -> dict:
     """造一位帶 n 個班的教師（query count regression test 用）。"""
-    perm = int(
-        Permission.DASHBOARD.value
-        | Permission.PORTFOLIO_READ.value
-        | Permission.PORTFOLIO_WRITE.value
-        | Permission.PARENT_MESSAGES_WRITE.value
-    )
+    perm = ["DASHBOARD", "PORTFOLIO_READ", "PORTFOLIO_WRITE", "PARENT_MESSAGES_WRITE"]
     with sf() as session:
         emp = Employee(
             employee_id="E_QC", name="多班老師", is_active=True, base_salary=30000
@@ -333,7 +328,7 @@ def _seed_teacher_with_n_classrooms(
             password_hash="!",
             role="teacher",
             employee_id=emp.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -344,19 +339,14 @@ def _seed_teacher_with_n_classrooms(
             "username": u.username,
             "token_version": u.token_version or 0,
             "employee_id": emp.id,
-            "permissions": perm,
+            "permission_names": perm,
             "classroom_ids": classroom_ids,
         }
 
 
 def _seed_teacher(sf) -> dict:
     """造一位班導 + 3 個學生班，回傳 primitive 值（避免 DetachedInstance）。"""
-    perm = int(
-        Permission.DASHBOARD.value
-        | Permission.PORTFOLIO_READ.value
-        | Permission.PORTFOLIO_WRITE.value
-        | Permission.PARENT_MESSAGES_WRITE.value
-    )
+    perm = ["DASHBOARD", "PORTFOLIO_READ", "PORTFOLIO_WRITE", "PARENT_MESSAGES_WRITE"]
     with sf() as session:
         emp = Employee(
             employee_id="E01", name="王老師", is_active=True, base_salary=30000
@@ -381,7 +371,7 @@ def _seed_teacher(sf) -> dict:
             password_hash="!",
             role="teacher",
             employee_id=emp.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -393,7 +383,7 @@ def _seed_teacher(sf) -> dict:
             "token_version": u.token_version or 0,
             "employee_id": emp.id,
             "classroom_id": classroom.id,
-            "permissions": perm,
+            "permission_names": perm,
         }
 
 
@@ -404,7 +394,7 @@ def _token(seed: dict) -> str:
             "employee_id": seed["employee_id"],
             "role": "teacher",
             "name": seed["username"],
-            "permissions": seed["permissions"],
+            "permission_names": seed["permission_names"],
             "token_version": seed["token_version"],
         }
     )

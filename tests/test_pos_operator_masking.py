@@ -66,11 +66,13 @@ def pos_client(tmp_path):
 
 
 def _create_user(session, *, username, perms, role="staff"):
+    if isinstance(perms, str):
+        perms = [perms]
     u = User(
         username=username,
         password_hash=hash_password("Passw0rd!"),
         role=role,
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
         must_change_password=False,
     )
@@ -118,8 +120,8 @@ def _seed_payment(session):
     session.flush()
 
 
-_READ_ONLY_PERMS = int(Permission.ACTIVITY_READ)
-_FINANCE_PERMS = int(Permission.ACTIVITY_READ | Permission.ACTIVITY_PAYMENT_APPROVE)
+_READ_ONLY_PERMS = ["ACTIVITY_READ"]
+_FINANCE_PERMS = ["ACTIVITY_READ", "ACTIVITY_PAYMENT_APPROVE"]
 
 
 class TestOperatorMasking:

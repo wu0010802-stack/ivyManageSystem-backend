@@ -69,12 +69,14 @@ def pos_client(tmp_path):
     engine.dispose()
 
 
-def _make_user(session, *, username, permissions, employee_id=None, role="admin"):
+def _make_user(session, *, username, permission_names, employee_id=None, role="admin"):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,
@@ -136,7 +138,7 @@ class TestPositionSalaryUpdateUpperBound:
             _make_user(
                 s,
                 username="settings_admin",
-                permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+                permission_names=["SETTINGS_READ", "SETTINGS_WRITE"],
             )
             s.commit()
 
@@ -154,7 +156,7 @@ class TestPositionSalaryUpdateUpperBound:
             _make_user(
                 s,
                 username="settings_admin",
-                permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+                permission_names=["SETTINGS_READ", "SETTINGS_WRITE"],
             )
             s.commit()
 
@@ -181,7 +183,7 @@ class TestSyncPermissionTightening:
             _make_user(
                 s,
                 username="settings_only",
-                permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+                permission_names=["SETTINGS_READ", "SETTINGS_WRITE"],
             )
             s.commit()
 
@@ -201,7 +203,7 @@ class TestSyncPermissionTightening:
             _make_user(
                 s,
                 username="salary_admin",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
             )
             s.commit()
 
@@ -227,7 +229,7 @@ class TestSyncRequiresReason:
             _make_user(
                 s,
                 username="salary_admin",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
             )
             s.commit()
 
@@ -244,7 +246,7 @@ class TestSyncRequiresReason:
             _make_user(
                 s,
                 username="salary_admin",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
             )
             s.commit()
 
@@ -271,7 +273,7 @@ class TestSyncLargeDeltaRequiresApproval:
             _make_user(
                 s,
                 username="salary_admin",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
             )
             s.commit()
 
@@ -297,11 +299,7 @@ class TestSyncLargeDeltaRequiresApproval:
             _make_user(
                 s,
                 username="salary_approver",
-                permissions=(
-                    Permission.SALARY_READ
-                    | Permission.SALARY_WRITE
-                    | Permission.ACTIVITY_PAYMENT_APPROVE
-                ),
+                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.commit()
 
@@ -332,7 +330,7 @@ class TestSyncSelfEditGuard:
             _make_user(
                 s,
                 username="self_sync",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
                 employee_id=emp.id,
             )
             s.commit()

@@ -59,7 +59,7 @@ def app_client(tmp_path, monkeypatch):
             username="admin",
             password_hash="$2b$12$dummy",
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             token_version=0,
         )
@@ -94,7 +94,7 @@ def _make_test_token(role: str, user_id: int, username: str) -> str:
             "sub": username,
             "user_id": user_id,
             "role": role,
-            "permissions": -1,  # -1 = 全部權限
+            "permission_names": ["*"],  # -1 = 全部權限
             "token_version": 0,
         }
     )

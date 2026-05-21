@@ -84,8 +84,7 @@ def _seed_admin(sf):
             username="admin_legacy_upload",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=int(Permission.ATTENDANCE_READ)
-            | int(Permission.ATTENDANCE_WRITE),
+            permission_names=["ATTENDANCE_READ", "ATTENDANCE_WRITE"],
             employee_id=None,  # 純 admin 走 unrestricted 路徑
             is_active=True,
             must_change_password=False,

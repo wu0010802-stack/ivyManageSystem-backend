@@ -86,7 +86,7 @@ def _seed(session, *, ack_deadline, line_id="UD"):
         username=f"p_{line_id}",
         password_hash="!LINE",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_id,
         token_version=0,
@@ -135,7 +135,7 @@ def _token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )

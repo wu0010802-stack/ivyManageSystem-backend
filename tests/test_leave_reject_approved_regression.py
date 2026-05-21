@@ -91,7 +91,7 @@ def _create_admin(session, username: str, password: str) -> User:
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
         must_change_password=False,
     )

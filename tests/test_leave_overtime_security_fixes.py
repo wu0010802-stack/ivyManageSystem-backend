@@ -92,13 +92,13 @@ def _emp(session, employee_id: str, name: str) -> Employee:
     return e
 
 
-def _user(session, *, username, password, role, permissions, employee=None) -> User:
+def _user(session, *, username, password, role, permission_names, employee=None) -> User:
     u = User(
         employee_id=employee.id if employee else None,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -162,7 +162,7 @@ class TestOvertimeUpdateReverseTimeRejected:
                 username="ot_admin",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             ot_id = ot.id
@@ -200,7 +200,7 @@ class TestApprovedLeaveRejectsNewAttachment:
                 username="l_teacher",
                 password="TeachPass123",
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 employee=emp,
             )
             session.commit()
@@ -228,7 +228,7 @@ class TestPortalCompLeaveSourceOvertimeValidation:
             username="c_teacher",
             password="CompPass123",
             role="teacher",
-            permissions=0,
+            permission_names=[],
             employee=emp,
         )
         # 補休配額 - 避免 quota 檢查擋住測試
@@ -365,7 +365,7 @@ class TestImportLeavesHoursGuard:
                 username="imp_admin",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
 
@@ -408,7 +408,7 @@ class TestApproveLeaveHoursGuardDefenseInDepth:
             username="imp_admin2",
             password="AdminPass123",
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
         )
         session.flush()
         return leave.id
@@ -473,7 +473,7 @@ class TestApproveOvertimeRejectsInvalidPendingRecord:
                 username="ot_admin2",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             ot_id = ot.id

@@ -30,7 +30,7 @@ def has_payment_approve(current_user: dict) -> bool:
     用於：大額退費審批、DELETE payment 軟刪審批。避免只有 ACTIVITY_WRITE 的一線員工
     直接執行敏感金流動作。
     """
-    perms = current_user.get("permissions", 0)
+    perms = current_user.get("permission_names")
     return has_permission(perms, Permission.ACTIVITY_PAYMENT_APPROVE)
 
 

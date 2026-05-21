@@ -19,7 +19,7 @@ from utils.auth import verify_ws_token
 from api.portal._shared import (
     _get_teacher_classroom_ids as _get_teacher_classroom_ids_shared,
 )
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 from utils.ws_hub import (
     BROADCAST_RETRY_DELAY,
     MAX_BROADCAST_RETRIES,
@@ -203,8 +203,7 @@ async def admin_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="教師帳號不可存取管理端接送通知")
         return
 
-    permissions = payload.get("permissions", 0)
-    if not (permissions == -1 or (permissions & Permission.STUDENTS_READ.value)):
+    if not has_permission(payload.get("permission_names"), Permission.STUDENTS_READ):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="權限不足，需要學生讀取權限")
         return
 

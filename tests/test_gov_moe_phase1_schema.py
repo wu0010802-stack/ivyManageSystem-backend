@@ -5,15 +5,17 @@ from utils.permissions import (
     PERMISSION_LABELS,
     ROLE_TEMPLATES,
     PERMISSION_GROUPS,
+    WILDCARD,
+    has_permission,
 )
 
 
-def test_gov_reports_view_permission_bit():
-    assert Permission.GOV_REPORTS_VIEW.value == 1 << 50
+def test_gov_reports_view_permission_name():
+    assert Permission.GOV_REPORTS_VIEW.value == "GOV_REPORTS_VIEW"
 
 
-def test_gov_reports_export_permission_bit():
-    assert Permission.GOV_REPORTS_EXPORT.value == 1 << 51
+def test_gov_reports_export_permission_name():
+    assert Permission.GOV_REPORTS_EXPORT.value == "GOV_REPORTS_EXPORT"
 
 
 def test_gov_reports_permissions_have_labels():
@@ -23,26 +25,28 @@ def test_gov_reports_permissions_have_labels():
 
 def test_admin_role_has_gov_reports_permissions():
     admin_perms = ROLE_TEMPLATES["admin"]
-    assert admin_perms & Permission.GOV_REPORTS_VIEW.value
-    assert admin_perms & Permission.GOV_REPORTS_EXPORT.value
+    # admin 角色為 wildcard ["*"]：has_permission 經 WILDCARD 快徑回 True
+    assert has_permission(admin_perms, Permission.GOV_REPORTS_VIEW)
+    assert has_permission(admin_perms, Permission.GOV_REPORTS_EXPORT)
+    assert admin_perms == [WILDCARD]
 
 
 def test_hr_role_has_gov_reports_view_and_export():
     hr_perms = ROLE_TEMPLATES["hr"]
-    assert hr_perms & Permission.GOV_REPORTS_VIEW.value
-    assert hr_perms & Permission.GOV_REPORTS_EXPORT.value
+    assert has_permission(hr_perms, Permission.GOV_REPORTS_VIEW)
+    assert has_permission(hr_perms, Permission.GOV_REPORTS_EXPORT)
 
 
 def test_supervisor_role_has_view_but_not_export():
     supervisor_perms = ROLE_TEMPLATES["supervisor"]
-    assert supervisor_perms & Permission.GOV_REPORTS_VIEW.value
-    assert not (supervisor_perms & Permission.GOV_REPORTS_EXPORT.value)
+    assert has_permission(supervisor_perms, Permission.GOV_REPORTS_VIEW)
+    assert not has_permission(supervisor_perms, Permission.GOV_REPORTS_EXPORT)
 
 
 def test_teacher_role_has_no_gov_reports_permissions():
     teacher_perms = ROLE_TEMPLATES["teacher"]
-    assert not (teacher_perms & Permission.GOV_REPORTS_VIEW.value)
-    assert not (teacher_perms & Permission.GOV_REPORTS_EXPORT.value)
+    assert not has_permission(teacher_perms, Permission.GOV_REPORTS_VIEW)
+    assert not has_permission(teacher_perms, Permission.GOV_REPORTS_EXPORT)
 
 
 from models.classroom import Student

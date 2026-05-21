@@ -90,7 +90,7 @@ def _admin(session) -> User:
         username="hr_admin",
         password_hash=hash_password("AdminPass123"),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
         must_change_password=False,
     )

@@ -65,13 +65,13 @@ def _add_user(
     session,
     username="admin",
     password="TempPass123",
-    perms=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+    perms=["ACTIVITY_READ", "ACTIVITY_WRITE"],
 ):
     u = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=perms,
+        permission_names=perms,
         is_active=True,
     )
     session.add(u)
