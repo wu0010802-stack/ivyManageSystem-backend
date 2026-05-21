@@ -216,12 +216,24 @@ def on_startup():
 async def _activity_waitlist_sweeper():
     """每 10 分鐘掃描候補轉正過期，發放逾期放棄與即將到期提醒。
 
-    多 worker 部署時以 env ACTIVITY_WAITLIST_SWEEPER_ENABLED=1 在「其中一個」
-    worker 上啟用即可，其他 worker 預設不跑避免 Line 通知重發。
+    DEPRECATED：本 sweeper 與 ``services/activity_waitlist_scheduler.py`` 完全
+    重複（兩者都呼叫 ``activity_service.sweep_expired_pending_promotions``）。
+    後者是「仿 salary_snapshot 抽出的標準 scheduler」即繼任者，env flag
+    ``ACTIVITY_WAITLIST_SCHEDULER_ENABLED=1`` 啟用，預設 300 秒間隔。
+
+    本函式仍保留以維護 backward compat（既有部署可能還用 ``ACTIVITY_WAITLIST_SWEEPER_ENABLED``
+    舊 flag）。為避免 user 同時開兩個 flag 造成 LINE 通知重發，本 sweeper 用
+    與 activity_waitlist_scheduler **相同** scheduler_name 共享 advisory lock
+    namespace，互斥仍然有效。
+
+    Follow-up（不在 leader-election rollout 範圍）：確認 prod 不再用舊 flag
+    後可整段刪除（縮 main.py 約 33 行）。
     """
     import asyncio
+    import time
     from services.activity_service import activity_service
     from models.database import get_session
+    from utils.advisory_lock import try_scheduler_lock
 
     interval = int(os.getenv("ACTIVITY_WAITLIST_SWEEP_INTERVAL_SECONDS", "600"))
     logger.info("候補過期掃描器啟動，間隔 %s 秒", interval)
@@ -230,14 +242,22 @@ async def _activity_waitlist_sweeper():
             await asyncio.sleep(interval)
             session = get_session()
             try:
-                result = activity_service.sweep_expired_pending_promotions(session)
-                session.commit()
-                if result["expired"] or result["reminded"]:
-                    logger.info(
-                        "候補過期掃描：expired=%s reminded=%s",
-                        result["expired"],
-                        result["reminded"],
-                    )
+                with try_scheduler_lock(
+                    session,
+                    scheduler_name="activity_waitlist_sweep",
+                    run_key=str(int(time.time() // 300)),
+                ) as acquired:
+                    if not acquired:
+                        session.commit()
+                        continue
+                    result = activity_service.sweep_expired_pending_promotions(session)
+                    session.commit()
+                    if result["expired"] or result["reminded"]:
+                        logger.info(
+                            "候補過期掃描：expired=%s reminded=%s",
+                            result["expired"],
+                            result["reminded"],
+                        )
             finally:
                 session.close()
         except asyncio.CancelledError:
