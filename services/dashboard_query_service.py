@@ -3,7 +3,6 @@
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 
-from cachetools import TTLCache
 from sqlalchemy import and_, case, func
 
 from models.database import (
@@ -19,6 +18,7 @@ from models.database import (
 from services.activity_service import activity_service
 from services.report_cache_service import report_cache_service
 from services.student_attendance_report import build_attendance_summary
+from utils.cache_layer import get_cache
 from utils.permissions import Permission, has_permission
 from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
 
@@ -32,22 +32,19 @@ HOME_STUDENT_ATTENDANCE_CACHE_TTL_SECONDS = 300
 # 通知摘要被前端每 10 秒輪詢，用短暫快取避免高頻 DB 查詢
 NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS = 15
 
+# scope: global（dashboard 為全 school admin 共用視圖）
+# 三個 namespace 拆分：events / approval / notification
+# 注意：通知摘要 (notification) cache key 含 (user_permissions, user_id)
+#       因此即使 namespace 是 global，仍然在 key 層級依 user 區分
+_CACHE_NS_DASHBOARD_EVENTS = "dashboard_events"
+_CACHE_NS_DASHBOARD_APPROVAL = "dashboard_approval"
+_CACHE_NS_DASHBOARD_NOTIFICATION = "dashboard_notification"
+
 
 class DashboardQueryService:
-    def __init__(self):
-        # 依 user_permissions 分組快取，最多 128 種不同權限組合
-        self._notification_cache: TTLCache = TTLCache(
-            maxsize=128, ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS
-        )
-        # 審核摘要與行事曆是全系統共用資料（非個人化），可跨不同權限組合共用快取
-        # maxsize=1：同一天只需快取一份；key = date ISO string
-        self._approval_cache: TTLCache = TTLCache(
-            maxsize=1, ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS
-        )
-        # maxsize=8：依 (date, days) 組合，最多 8 種查詢視窗
-        self._events_cache: TTLCache = TTLCache(
-            maxsize=8, ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS
-        )
+    # __init__ removed — no instance state; class is now methods-only.
+    # Singleton `dashboard_query_service = DashboardQueryService()` at module
+    # bottom still works (Python supplies default __init__).
 
     def _priority_for_count(self, count: int) -> str:
         if count >= 5:
@@ -60,8 +57,8 @@ class DashboardQueryService:
         self, session, *, days: int = 7, today: date | None = None
     ) -> list[dict]:
         today = today or date.today()
-        cache_key = (today.isoformat(), days)
-        cached = self._events_cache.get(cache_key)
+        cache_key = f"{today.isoformat()}:{days}"
+        cached = get_cache().get(_CACHE_NS_DASHBOARD_EVENTS, cache_key)
         if cached is not None:
             return cached
 
@@ -92,13 +89,18 @@ class DashboardQueryService:
             }
             for ev in events
         ]
-        self._events_cache[cache_key] = result
+        get_cache().set(
+            _CACHE_NS_DASHBOARD_EVENTS,
+            cache_key,
+            result,
+            ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS,
+        )
         return result
 
     def build_approval_summary(self, session, *, today: date | None = None) -> dict:
         today = today or date.today()
         cache_key = today.isoformat()
-        cached = self._approval_cache.get(cache_key)
+        cached = get_cache().get(_CACHE_NS_DASHBOARD_APPROVAL, cache_key)
         if cached is not None:
             return cached
 
@@ -167,7 +169,12 @@ class DashboardQueryService:
             "this_month_pending_leaves": this_month_leaves,
             "this_month_pending_overtimes": this_month_overtimes,
         }
-        self._approval_cache[cache_key] = result
+        get_cache().set(
+            _CACHE_NS_DASHBOARD_APPROVAL,
+            cache_key,
+            result,
+            ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS,
+        )
         return result
 
     def build_student_attendance_summary(
@@ -367,12 +374,10 @@ class DashboardQueryService:
         user_permissions: int,
         current_user: dict | None = None,
     ) -> dict:
-        # 為支援班級 scope，將 cache key 從 user_permissions 升為 (user_permissions, user_id)
-        cache_key = (
-            user_permissions,
-            current_user.get("user_id") if current_user else None,
-        )
-        cached = self._notification_cache.get(cache_key)
+        # 為支援班級 scope，cache key 含 (user_permissions, user_id)
+        user_id_part = current_user.get("user_id") if current_user else "anonymous"
+        cache_key = f"{user_permissions}:{user_id_part}"
+        cached = get_cache().get(_CACHE_NS_DASHBOARD_NOTIFICATION, cache_key)
         if cached is not None:
             return cached
         action_items = []
@@ -478,7 +483,12 @@ class DashboardQueryService:
             "action_items": action_items,
             "reminders": reminders,
         }
-        self._notification_cache[cache_key] = result
+        get_cache().set(
+            _CACHE_NS_DASHBOARD_NOTIFICATION,
+            cache_key,
+            result,
+            ttl=NOTIFICATION_SUMMARY_CACHE_TTL_SECONDS,
+        )
         return result
 
 
