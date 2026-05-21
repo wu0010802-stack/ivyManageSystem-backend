@@ -11,17 +11,20 @@
 新程式請改用 `get_backend().save() / .read() / .public_url()`。
 """
 
-import os
 from pathlib import Path
 from typing import Protocol
+
+from config import settings
 
 _DEFAULT_ROOT = Path(__file__).resolve().parent.parent / "data" / "uploads"
 
 
 def get_storage_root() -> Path:
     """取得本機儲存根目錄（不建立）。僅 LocalStorage 與 legacy shim 用。"""
-    raw = os.getenv("STORAGE_ROOT")
-    return Path(raw).expanduser().resolve() if raw else _DEFAULT_ROOT
+    root = settings.storage.root
+    if root is None:
+        return _DEFAULT_ROOT
+    return root.expanduser().resolve()
 
 
 def get_storage_path(module: str) -> Path:
@@ -128,7 +131,7 @@ def get_backend() -> StorageBackend:
     if _BACKEND_SINGLETON is not None:
         return _BACKEND_SINGLETON
 
-    name = os.getenv("STORAGE_BACKEND", "local").lower()
+    name = settings.storage.backend.lower()
     if name == "supabase":
         from utils.supabase_storage import SupabaseStorage
 

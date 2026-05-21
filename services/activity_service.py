@@ -3,7 +3,6 @@ services/activity_service.py — 課後才藝報名業務邏輯
 """
 
 import logging
-import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -29,31 +28,22 @@ def _now_taipei_naive() -> datetime:
 OCCUPYING_STATUSES = ("enrolled", "promoted_pending")
 
 
+from config import get_settings
+
+
 def _get_confirm_window_hours() -> int:
-    """確認窗口長度（小時）。預設 48h，透過 env 覆寫。"""
-    try:
-        val = int(os.getenv("ACTIVITY_WAITLIST_CONFIRM_WINDOW_HOURS", "48"))
-        return val if val > 0 else 48
-    except (TypeError, ValueError):
-        return 48
+    """確認窗口長度（小時）。預設 48h，透過 settings 覆寫。"""
+    return get_settings().scheduler.activity_waitlist_confirm_window_hours
 
 
 def _get_reminder_offset_hours() -> int:
     """發送「剩餘 X 小時」提醒的 deadline 前置時數。預設 24h。"""
-    try:
-        val = int(os.getenv("ACTIVITY_WAITLIST_REMINDER_OFFSET_HOURS", "24"))
-        return val if val > 0 else 24
-    except (TypeError, ValueError):
-        return 24
+    return get_settings().scheduler.activity_waitlist_reminder_offset_hours
 
 
 def _get_final_reminder_offset_hours() -> int:
     """T-6h 最後提醒的 deadline 前置時數。預設 6h。"""
-    try:
-        val = int(os.getenv("ACTIVITY_WAITLIST_FINAL_REMINDER_OFFSET_HOURS", "6"))
-        return val if val > 0 else 6
-    except (TypeError, ValueError):
-        return 6
+    return get_settings().scheduler.activity_waitlist_final_reminder_offset_hours
 
 
 from models.activity import (

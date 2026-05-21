@@ -59,6 +59,7 @@ from models.database import (
     User,
 )
 from models.guardian import Guardian
+from config import get_settings, reset_for_tests
 from utils.auth import hash_password
 from utils.permissions import Permission
 
@@ -670,64 +671,56 @@ class TestF043_DevRouterMount:
 
     def test_should_mount_dev_router_when_env_is_development(self, monkeypatch):
         monkeypatch.setenv("ENV", "development")
-        # 重新 import 確保拿到最新 helper（main 模組可能已快取）
-        import importlib
-        import main as main_module
-
-        importlib.reload(main_module)
-        try:
-            assert main_module._should_mount_dev_router() is True
-        finally:
-            # 復原 ENV，避免影響後續測試
-            monkeypatch.delenv("ENV", raising=False)
-            importlib.reload(main_module)
+        reset_for_tests()
+        assert get_settings().core.dev_router_should_mount is True
 
     @pytest.mark.parametrize("allowed_env", ["development", "dev", "local", "test"])
-    def test_should_mount_dev_router_for_each_allowed_env(self, allowed_env):
-        # 直接呼叫 helper（不必 reload main，邏輯在 helper 內以 os.environ 為準）
-        with patch.dict(os.environ, {"ENV": allowed_env}):
-            from main import _should_mount_dev_router
-
-            assert _should_mount_dev_router() is True
+    def test_should_mount_dev_router_for_each_allowed_env(
+        self, allowed_env, monkeypatch
+    ):
+        monkeypatch.setenv("ENV", allowed_env)
+        reset_for_tests()
+        assert (
+            get_settings().core.dev_router_should_mount is True
+        ), f"ENV={allowed_env} 應掛 dev_router"
 
     @pytest.mark.parametrize(
         "blocked_env", ["staging", "production", "prod", "qa", "stage"]
     )
-    def test_should_not_mount_dev_router_for_non_allowed_env(self, blocked_env):
-        with patch.dict(os.environ, {"ENV": blocked_env}):
-            from main import _should_mount_dev_router
+    def test_should_not_mount_dev_router_for_non_allowed_env(
+        self, blocked_env, monkeypatch
+    ):
+        monkeypatch.setenv("ENV", blocked_env)
+        reset_for_tests()
+        assert (
+            get_settings().core.dev_router_should_mount is False
+        ), f"ENV={blocked_env} 不應掛 dev_router"
 
-            assert (
-                _should_mount_dev_router() is False
-            ), f"ENV={blocked_env} 不應掛 dev_router"
+    def test_should_not_mount_dev_router_when_env_unset(self, monkeypatch):
+        # 完全清掉 ENV 環境變數；未設 ENV → model_fields_set 不含 env → False
+        monkeypatch.delenv("ENV", raising=False)
+        reset_for_tests()
+        assert (
+            get_settings().core.dev_router_should_mount is False
+        ), "未設 ENV 不應掛 dev_router（白名單收斂）"
 
-    def test_should_not_mount_dev_router_when_env_unset(self):
-        # 完全清掉 ENV 環境變數
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ENV", None)
-            from main import _should_mount_dev_router
-
-            assert (
-                _should_mount_dev_router() is False
-            ), "未設 ENV 不應掛 dev_router（白名單收斂）"
-
-    def test_main_uses_should_mount_dev_router_helper(self):
-        """確保 main.py 的 mount 條件確實是呼叫 _should_mount_dev_router(),
-        而不是舊的 not _is_production() 黑名單。
+    def test_main_uses_dev_router_should_mount_property(self):
+        """確保 main.py 的 mount 條件使用 settings.core.dev_router_should_mount，
+        而不是舊的 _should_mount_dev_router() helper 或 not _is_production() 黑名單。
         """
         import inspect
 
         import main as main_module
 
         src = inspect.getsource(main_module)
-        # 必須出現新的白名單調用
+        # 必須出現新的 Settings property 調用
         assert (
-            "_should_mount_dev_router()" in src
-        ), "main.py 必須使用 _should_mount_dev_router() 作 dev_router mount 條件"
+            "settings.core.dev_router_should_mount" in src
+        ), "main.py 必須使用 settings.core.dev_router_should_mount 作 dev_router mount 條件"
         # 不應再用舊的 not _is_production() 包 dev_router
-        # （仍可保留 _is_production 給其他用途，但不能直接守 dev_router 掛載）
-        # 用簡單檢查：沒有 'if not _is_production():' 後面緊跟 include_router(dev_router)
         assert "if not _is_production():\n    from api.dev import" not in src
+        # 不應再有舊 helper 定義
+        assert "_should_mount_dev_router" not in src
 
 
 # ─────────────────────────────────────────────────────────────────────────

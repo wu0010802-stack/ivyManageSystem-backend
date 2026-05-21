@@ -18,7 +18,6 @@ api/activity/_shared.py 保留 re-export 維持既有 import surface
 
 import hashlib
 import hmac
-import os
 import secrets
 from datetime import datetime, timedelta
 
@@ -28,17 +27,13 @@ _ACTIVITY_TOKEN_DOMAIN = b"activity_query_token:v1"
 
 
 def _query_token_ttl_days() -> int:
-    """讀環境變數 ACTIVITY_QUERY_TOKEN_TTL_DAYS（預設 180 天）。
+    """讀 ACTIVITY_QUERY_TOKEN_TTL_DAYS 設定（預設 180 天）。
 
     180 天涵蓋一個學期完整活動期 + 部分緩衝；業主可調為更短（例 90）強化。
-    invalid 值 fallback 預設值，不 raise（避免一個壞 env 卡住整個公開報名頁）。
     """
-    raw = os.getenv("ACTIVITY_QUERY_TOKEN_TTL_DAYS", "180")
-    try:
-        v = int(raw)
-        return v if v > 0 else 180
-    except (TypeError, ValueError):
-        return 180
+    from config import get_settings
+
+    return get_settings().misc.activity_query_token_ttl_days
 
 
 def is_query_token_expired(issued_at) -> bool:

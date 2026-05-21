@@ -54,23 +54,35 @@ _PARENT_URL = (
 def guard_engine():
     """Build a fresh parent_engine with the guard installed (forces env on)."""
     os.environ["PARENT_RLS_GUARD_ENABLED"] = "1"
+    from config import reset_for_tests
+
+    reset_for_tests()
     try:
         eng = parent_db.get_parent_engine_for_url(_PARENT_URL)
         yield eng
     finally:
         eng.dispose()
         os.environ.pop("PARENT_RLS_GUARD_ENABLED", None)
+        from config import reset_for_tests
+
+        reset_for_tests()
 
 
 @pytest.fixture
 def no_guard_engine():
     """Build a fresh parent_engine WITHOUT the guard (env off)."""
     os.environ.pop("PARENT_RLS_GUARD_ENABLED", None)
+    from config import reset_for_tests
+
+    reset_for_tests()
     eng = parent_db.get_parent_engine_for_url(_PARENT_URL)
     try:
         yield eng
     finally:
         eng.dispose()
+        from config import reset_for_tests
+
+        reset_for_tests()
 
 
 # ---------------------------------------------------------------------------

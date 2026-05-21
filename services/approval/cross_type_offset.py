@@ -14,14 +14,14 @@ Feature flag: 環境變數 `ENABLE_LEAVE_OT_OFFSET` 預設 false。
   避免雙重抵扣。
 """
 
-import os
 from typing import Optional
 
+from config import get_settings
 from models.database import LeaveRecord, OvertimeRecord
 
 
 def _is_enabled() -> bool:
-    return os.environ.get("ENABLE_LEAVE_OT_OFFSET", "").lower() in ("1", "true", "yes")
+    return bool(get_settings().misc.enable_leave_ot_offset)
 
 
 def resolve_cross_type_offset(session, leave: LeaveRecord) -> Optional[OvertimeRecord]:

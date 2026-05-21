@@ -10,6 +10,8 @@ from datetime import date
 from typing import Optional, List, Any
 from io import BytesIO
 
+from config import settings
+
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -2209,8 +2211,6 @@ def get_leave_attachment(
     backend 為 local：直接 stream bytes（既有行為）
     backend 為 supabase：302 redirect 到 signed URL（TTL 預設 1 小時）
     """
-    import os
-
     from fastapi.responses import RedirectResponse, Response as _Response
     from utils.storage import LocalStorage, get_backend
 
@@ -2233,7 +2233,7 @@ def get_leave_attachment(
             data = backend.read(_UPLOAD_MODULE, key)
             return _Response(content=data, media_type="application/octet-stream")
 
-        ttl = int(os.getenv("SUPABASE_STORAGE_SIGNED_URL_TTL", "3600"))
+        ttl = settings.storage.supabase_signed_url_ttl
         url = backend.signed_url(_UPLOAD_MODULE, key, ttl)
         return RedirectResponse(url, status_code=302)
     finally:

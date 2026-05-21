@@ -20,15 +20,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # ── 部分 1：raise_safe_500 行為 ─────────────────────────────────────
 
 
-def _reload_errors_with_env(env_value: str):
-    os.environ["ENV"] = env_value
+def _reload_errors():
+    """settings cache 已由呼叫端 reset；重載 errors 模組以套用新 env。"""
     from utils import errors
 
     return importlib.reload(errors)
 
 
-def test_raise_safe_500_production_does_not_leak_message():
-    errors = _reload_errors_with_env("production")
+def test_raise_safe_500_production_does_not_leak_message(monkeypatch):
+    monkeypatch.setenv("ENV", "production")
+    from config import reset_for_tests
+
+    reset_for_tests()
+    errors = _reload_errors()
     try:
         errors.raise_safe_500(ValueError("DB column user_id missing"))
     except Exception as exc:
@@ -40,8 +44,12 @@ def test_raise_safe_500_production_does_not_leak_message():
         assert detail == "系統內部錯誤，請聯繫管理員"
 
 
-def test_raise_safe_500_development_includes_message_for_debugging():
-    errors = _reload_errors_with_env("development")
+def test_raise_safe_500_development_includes_message_for_debugging(monkeypatch):
+    monkeypatch.setenv("ENV", "development")
+    from config import reset_for_tests
+
+    reset_for_tests()
+    errors = _reload_errors()
     try:
         errors.raise_safe_500(ValueError("dev-only message"))
     except Exception as exc:

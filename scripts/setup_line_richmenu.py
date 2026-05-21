@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import sys
 import urllib.parse
 from typing import Optional
 
 import requests
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -190,8 +191,8 @@ def main() -> None:
     require: LINE_CHANNEL_ACCESS_TOKEN, LIFF_ID 環境變數
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-    liff_id = os.environ.get("LIFF_ID") or os.environ.get("VITE_LIFF_ID")
+    token = settings.line.channel_access_token
+    liff_id = settings.line.liff_id or settings.line.vite_liff_id
     if not token:
         print("ERROR: 環境變數 LINE_CHANNEL_ACCESS_TOKEN 未設定", file=sys.stderr)
         sys.exit(1)

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from config import settings, get_settings
 from utils.sentry_init import capture_exception, init_sentry
 from services.insurance_service import InsuranceService
 from services.salary_engine import SalaryEngine
@@ -130,7 +131,7 @@ def _configure_logging():
     level = logging.INFO
     rid_filter = RequestIdLogFilter()
 
-    if os.environ.get("ENV", "development").lower() in ("production", "prod"):
+    if settings.core.is_production:
         try:
             from pythonjsonlogger import jsonlogger
 
@@ -170,28 +171,6 @@ logger = logging.getLogger(__name__)
 init_sentry()
 
 
-def _is_production() -> bool:
-    return os.environ.get("ENV", "development").lower() in ("production", "prod")
-
-
-# F-043：dev_router mount 採白名單（allowlist）模式。
-# 舊實作 `not _is_production()` 黑名單在 ENV=staging / test / 未設 ENV 等
-# 「非 production / 非 prod」字面值時都會掛上 dev_router → /api/dev/employee-salary-debug
-# 暴露任意員工薪資完整明細（僅需 SETTINGS_READ）。改為白名單後：
-# 只有 ENV ∈ {development, dev, local, test} 才掛 dev_router；
-# 其他值（含 staging / production / 未設 / 拼錯）一律不掛，攻擊面收斂。
-_DEV_ROUTER_ENV_ALLOWLIST = frozenset({"development", "dev", "local", "test"})
-
-
-def _should_mount_dev_router() -> bool:
-    """依 ENV 環境變數決定是否掛載 /api/dev/*。
-
-    僅 ENV ∈ DEV_ROUTER_ENV_ALLOWLIST 才回 True。F-043：staging / 未設
-    ENV 一律回 False，避免 dev 端點外洩。
-    """
-    return os.environ.get("ENV", "").lower() in _DEV_ROUTER_ENV_ALLOWLIST
-
-
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -202,9 +181,7 @@ insurance_service = InsuranceService()
 salary_engine = SalaryEngine(load_from_db=True, insurance_service=insurance_service)
 line_service = LineService()
 # 家長入口 LIFF 認證；channel_id 可為空，端點會回 503 直到正確設定
-line_login_service = LineLoginService(
-    channel_id=os.environ.get("LINE_LOGIN_CHANNEL_ID", "")
-)
+line_login_service = LineLoginService(channel_id=settings.line.login_channel_id or "")
 
 
 def on_startup():
@@ -222,7 +199,7 @@ def on_startup():
     except Exception:
         logger.exception("CJK font 預熱失敗（PDF 端點將於首次呼叫時再試）")
     # 資安掃描 2026-05-07 P1：啟動時 log env，取代 /health/ready 公開暴露
-    env_label = os.environ.get("ENV", "development").lower()
+    env_label = settings.core.env.lower()
     logger.info("Application started successfully (env=%s).", env_label)
 
 
@@ -236,7 +213,7 @@ async def _activity_waitlist_sweeper():
     from services.activity_service import activity_service
     from models.database import get_session
 
-    interval = int(os.getenv("ACTIVITY_WAITLIST_SWEEP_INTERVAL_SECONDS", "600"))
+    interval = settings.scheduler.activity_waitlist_sweep_interval_seconds
     logger.info("候補過期掃描器啟動，間隔 %s 秒", interval)
     while True:
         try:
@@ -276,11 +253,7 @@ async def app_lifespan(app_instance: FastAPI):
     on_startup()
     # 只有 env 啟用時才跑 sweeper（避免多 worker 重複發送通知）
     sweeper_task = None
-    if os.getenv("ACTIVITY_WAITLIST_SWEEPER_ENABLED", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
+    if settings.scheduler.activity_waitlist_sweeper_enabled:
         sweeper_task = asyncio.create_task(_activity_waitlist_sweeper())
 
     # 自動畢業排程：需要 AUTO_GRADUATION_ENABLED=1；建議僅在單一 worker 上啟用
@@ -348,11 +321,7 @@ async def app_lifespan(app_instance: FastAPI):
     medication_reminder_task = None
     medication_reminder_stop_event: asyncio.Event | None = None
     try:
-        if os.getenv("MEDICATION_REMINDER_ENABLED", "").lower() in (
-            "1",
-            "true",
-            "yes",
-        ):
+        if settings.scheduler.medication_reminder_enabled:
             from services.medication_reminder_scheduler import (
                 medication_reminder_loop,
             )
@@ -548,14 +517,10 @@ async def app_lifespan(app_instance: FastAPI):
 
 # 環境判斷需早於 FastAPI() 建構，docs/redoc/openapi 在 prod 預設關閉以避免
 # 完整 router/schema/權限欄位地圖被未認證者抓走（攻擊面地圖洩漏）。
-_env_name = os.environ.get("ENV", "development").lower()
-_is_prod_env = _env_name in ("production", "prod")
-_cors_env = os.environ.get("CORS_ORIGINS", "")
-_docs_force_enable = os.environ.get("ENABLE_API_DOCS", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+_env_name = settings.core.env.lower()
+_is_prod_env = settings.core.is_production
+_cors_origins = settings.network.cors_origins
+_docs_force_enable = settings.core.enable_api_docs
 _docs_enabled = _docs_force_enable or not _is_prod_env
 
 app = FastAPI(
@@ -578,8 +543,8 @@ register_exception_handlers(app)
 # CORS
 # ---------------------------------------------------------------------------
 
-if _cors_env:
-    CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
+if _cors_origins:
+    CORS_ORIGINS = _cors_origins
 elif _is_prod_env:
     raise RuntimeError("CORS_ORIGINS 環境變數未設定，正式環境不允許使用開發預設來源。")
 else:
@@ -667,7 +632,7 @@ from api.analytics import router as analytics_router
 app.include_router(analytics_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
-if _should_mount_dev_router():
+if settings.core.dev_router_should_mount:
     from api.dev import router as dev_router, init_dev_services
 
     init_dev_services(salary_engine)
@@ -730,9 +695,9 @@ app.add_middleware(RequestLoggingMiddleware)
 # 防 Host header injection / 開放重新導向 / 快取毒化。
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
-_allowed_hosts_env = os.environ.get("ALLOWED_HOSTS", "")
-if _allowed_hosts_env:
-    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+_allowed_hosts = settings.network.allowed_hosts
+if _allowed_hosts:
+    ALLOWED_HOSTS = _allowed_hosts
 elif _is_prod_env:
     raise RuntimeError(
         "ALLOWED_HOSTS 環境變數未設定，正式環境必須明列允許的 Host header（防 Host header 攻擊）。"
@@ -759,7 +724,7 @@ if __name__ == "__main__":
     # X-Forwarded-For / Forwarded 標頭重寫 request.client.host。
     # forwarded_allow_ips 可由 TRUSTED_PROXY_IPS 控制；預設 "*" 接受任何
     # 前代理（dev 友善）。Prod 應設為 LB 內網 IP / CIDR。
-    forwarded_allow = os.getenv("TRUSTED_PROXY_IPS", "*")
+    forwarded_allow = settings.network.trusted_proxy_ips
     uvicorn.run(
         app,
         host="0.0.0.0",

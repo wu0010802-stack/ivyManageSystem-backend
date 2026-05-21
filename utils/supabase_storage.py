@@ -12,9 +12,10 @@ Supabase Storage 實作，作為 utils.storage.StorageBackend 的雲端版本。
 """
 
 import logging
-import os
 
 from supabase import create_client
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +39,8 @@ class SupabaseStorage:
     """Supabase Storage backend。"""
 
     def __init__(self) -> None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        url = settings.storage.supabase_url
+        key = settings.storage.supabase_service_role_key
         if not url or not key:
             raise RuntimeError(
                 "STORAGE_BACKEND=supabase 需要設定 SUPABASE_URL 與 SUPABASE_SERVICE_ROLE_KEY"

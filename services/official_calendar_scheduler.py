@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from config import get_settings, settings
 from models.base import session_scope
 from services.official_calendar import ensure_official_calendar_synced
 
@@ -24,18 +24,9 @@ logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
-# 預設一天一次；環境變數可調（單位：秒）。最低 60 秒避免 hammering。
-CHECK_INTERVAL_SECONDS = max(
-    int(os.getenv("OFFICIAL_CALENDAR_SYNC_INTERVAL", "86400")), 60
-)
-
 
 def scheduler_enabled() -> bool:
-    return os.getenv("OFFICIAL_CALENDAR_SYNC_ENABLED", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    return bool(get_settings().scheduler.official_calendar_sync_enabled)
 
 
 def _years_to_sync(now: datetime | None = None) -> list[int]:
@@ -62,9 +53,11 @@ def sync_official_calendar_once() -> dict[int, str]:
 
 
 async def run_official_calendar_scheduler(stop_event: asyncio.Event) -> None:
+    # 最低 60 秒避免 hammering（與原邏輯一致）
+    interval = max(settings.scheduler.official_calendar_sync_interval, 60)
     logger.info(
         "official calendar scheduler started (interval=%ds, tz=Asia/Taipei)",
-        CHECK_INTERVAL_SECONDS,
+        interval,
     )
     while not stop_event.is_set():
         try:
@@ -74,6 +67,6 @@ async def run_official_calendar_scheduler(stop_event: asyncio.Event) -> None:
         except Exception:
             logger.exception("official calendar scheduler tick crashed; continuing")
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=CHECK_INTERVAL_SECONDS)
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             continue

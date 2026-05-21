@@ -16,11 +16,11 @@ Why opt-in：本模組會每日推 LINE 訊息；無 LINE 設定的環境（dev 
 
 import asyncio
 import logging
-import os
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from config import get_settings, settings
 from models.database import get_session
 
 logger = logging.getLogger(__name__)
@@ -35,11 +35,7 @@ CHECK_INTERVAL_SECONDS = 60
 
 
 def scheduler_enabled() -> bool:
-    return os.getenv("FINANCE_RECONCILIATION_ENABLED", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    return bool(get_settings().scheduler.finance_reconciliation_enabled)
 
 
 def _default_line_push(text: str) -> bool:

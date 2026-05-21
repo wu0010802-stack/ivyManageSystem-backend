@@ -23,11 +23,12 @@ tests using the migration-created roles.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from typing import Generator
 from urllib.parse import urlparse, urlunparse
+
+from config import get_settings
 
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -89,18 +90,14 @@ def get_parent_engine_for_url(
     #
     # Gated by env var to keep prod fast-path quiet — RLS policies are still
     # the data-layer source of truth; guard is a developer-experience aid.
-    if os.environ.get("PARENT_RLS_GUARD_ENABLED", "").lower() in ("1", "true", "yes"):
+    if get_settings().parent_db.rls_guard_enabled:
         _install_parent_engine_guard(engine)
 
     # Per-session metrics: count queries + total elapsed via dbapi-level
     # before_cursor_execute listener. Always-on by default (cheap; just a
     # counter increment per query). Disable with PARENT_RLS_METRICS_DISABLED=1
     # if you have a hot path that genuinely doesn't want any listener overhead.
-    if os.environ.get("PARENT_RLS_METRICS_DISABLED", "").lower() not in (
-        "1",
-        "true",
-        "yes",
-    ):
+    if not get_settings().parent_db.rls_metrics_disabled:
         _install_parent_engine_metrics(engine)
 
     return engine
@@ -303,9 +300,10 @@ def _build_parent_url_from_env() -> str | None:
     Returns None when any of the three env vars is missing — caller treats
     that as "parent RLS engine not configured" and routes accordingly.
     """
-    user = os.environ.get("PARENT_DB_USER")
-    pw = os.environ.get("PARENT_DB_PASSWORD")
-    base = os.environ.get("DATABASE_URL", "")
+    _cfg = get_settings()
+    user = _cfg.parent_db.user
+    pw = _cfg.parent_db.password
+    base = _cfg.core.database_url
     if not user or not pw or not base:
         return None
     parsed = urlparse(base)

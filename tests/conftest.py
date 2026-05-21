@@ -164,3 +164,18 @@ def test_db_session(tmp_path):
     base_module._engine = old_engine
     base_module._SessionFactory = old_session_factory
     test_engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache():
+    """每個 test 進場前 + 收尾後都清 Settings lru_cache。
+
+    進場 reset 保證 test 從乾淨 cache 開始（避免上個 test 的 cache 殘留 + monkeypatch
+    在進入 test 函式時設好 env，需要 reset 才能讓 settings 看到新值）。
+    收尾 reset 避免污染後續 test。
+    """
+    from config import reset_for_tests
+
+    reset_for_tests()
+    yield
+    reset_for_tests()

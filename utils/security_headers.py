@@ -9,13 +9,13 @@ utils/security_headers.py — HTTP 安全標頭 Middleware
   - Content-Security-Policy                限制資源載入來源
 """
 
-import os
-
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-_is_prod = os.environ.get("ENV", "development").lower() in ("production", "prod")
+from config import settings
+
+_is_prod = settings.core.is_production
 
 
 def _build_csp() -> str:
@@ -31,12 +31,9 @@ def _build_csp() -> str:
     style，移除成本高且報酬有限，屬於工程取捨。
     """
     script_extras = ""
-    hashes = os.environ.get("CSP_SCRIPT_HASHES", "").strip()
-    if hashes:
-        # 允許空白分隔；單個 hash 必須形如 'sha256-XXX'
-        token_list = [h.strip() for h in hashes.split() if h.strip()]
-        if token_list:
-            script_extras = " " + " ".join(token_list)
+    token_list = [h.strip() for h in settings.network.csp_script_hashes if h.strip()]
+    if token_list:
+        script_extras = " " + " ".join(token_list)
 
     return (
         "default-src 'self'; "

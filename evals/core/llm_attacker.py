@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 from abc import ABC, abstractmethod
 from datetime import date, timedelta
 from typing import Any
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ class LLMAttacker(Attacker):
                 "anthropic SDK 未安裝。pip install anthropic 或改用 heuristic mode。"
             ) from exc
         self.client = anthropic.Anthropic(
-            api_key=api_key or os.environ.get("ANTHROPIC_API_KEY")
+            api_key=api_key or settings.misc.anthropic_api_key
         )
         self.model = model
         self.max_tokens = max_tokens
@@ -333,7 +334,7 @@ def build_attacker(mode: str = "auto", **kwargs) -> Attacker:
     if mode == "offline-claude":
         return OfflineClaudeAttacker()
     # auto
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    if settings.misc.anthropic_api_key:
         try:
             return LLMAttacker(**kwargs)
         except RuntimeError as exc:

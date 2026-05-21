@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+from config import settings
 
 from fastapi import (
     APIRouter,
@@ -64,8 +65,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/students", tags=["portfolio-growth-reports"])
 
-REPORT_ROOT = Path(os.environ.get("GROWTH_REPORT_ROOT", "instance/growth_reports"))
-MAX_PDF_SIZE_BYTES = int(os.environ.get("GROWTH_REPORT_MAX_BYTES", 50 * 1024 * 1024))
+REPORT_ROOT = settings.storage.growth_report_root
+MAX_PDF_SIZE_BYTES = settings.storage.growth_report_max_bytes
 
 # Module-level LINE service (injected via init_growth_reports_line_service)
 _line_service = None

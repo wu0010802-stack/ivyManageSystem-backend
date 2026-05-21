@@ -10,22 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any
 
+from config import get_settings, settings
 from models.base import session_scope
 
 logger = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = int(os.getenv("ACTIVITY_WAITLIST_CHECK_INTERVAL", "300"))
-
 
 def scheduler_enabled() -> bool:
-    return os.getenv("ACTIVITY_WAITLIST_SCHEDULER_ENABLED", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    return bool(get_settings().scheduler.activity_waitlist_scheduler_enabled)
 
 
 def _get_activity_service() -> Any:
@@ -45,9 +39,10 @@ def check_and_sweep_once() -> dict:
 
 async def run_activity_waitlist_scheduler(stop_event: asyncio.Event) -> None:
     """每 CHECK_INTERVAL_SECONDS 巡檢一次；失敗 log 不中斷。"""
+    interval = settings.scheduler.activity_waitlist_check_interval
     logger.info(
         "activity waitlist scheduler started (interval=%ds)",
-        CHECK_INTERVAL_SECONDS,
+        interval,
     )
     while not stop_event.is_set():
         try:
@@ -66,6 +61,6 @@ async def run_activity_waitlist_scheduler(stop_event: asyncio.Event) -> None:
         except Exception:
             logger.exception("activity waitlist scheduler tick failed; continuing")
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=CHECK_INTERVAL_SECONDS)
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             continue
