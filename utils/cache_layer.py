@@ -50,49 +50,55 @@ class MemoryCache:
         self._default_maxsize = default_maxsize
         self._stores: dict[str, TTLCache] = {}
         self._lock = threading.Lock()
-        # store 的建立用 lock 保護避免 race；TTLCache 內部 op 是 thread-safe（GIL+Lock）
+        # cachetools.TTLCache 文件明示「not thread-safe」（內部 linked-list 維護）。
+        # FastAPI sync route 經 run_in_threadpool 可能並發進入，所以 get/set/delete/
+        # clear_namespace 都在 self._lock 內保護。鎖開銷 µs 級，對 cache 路徑可吃。
 
     def _get_store(self, namespace: str, *, ttl_hint: int | None = None) -> TTLCache:
         """取出 namespace 對應的 TTLCache；不存在則 lazy 建立。
 
-        TTLCache 的 ttl 是 per-store 的，set() 時不能 override 個別 entry 的 ttl。
-        我們的解法：第一次 set 用該 ttl 建 store；後續同 namespace 用不同 ttl 時
-        以「最大 ttl」更新 store（避免短 ttl 把長 ttl 的舊資料提早 evict）。
+        TTLCache 的 ttl 是 per-store 的常數，set() 時無法 override 個別 entry 的 ttl。
+        本實作採 **first-write-wins**：第一次 set 用 ttl_hint 建 store，之後同 namespace
+        的 set 一律忽略傳入的 ttl，沿用 store 建立時的 ttl。
+
+        Why first-write-wins: 11 個 PR1 callsite 每個各擁有獨立 namespace 且使用固定
+        TTL 常數，混用不同 ttl 的需求不存在。若未來有需求，請用不同 namespace 分離。
         """
+        # caller 已持 self._lock；不再二次鎖
         store = self._stores.get(namespace)
-        if store is not None:
-            return store
-        with self._lock:
-            store = self._stores.get(namespace)
-            if store is None:
-                ttl = ttl_hint if ttl_hint is not None else 60
-                store = TTLCache(maxsize=self._default_maxsize, ttl=ttl)
-                self._stores[namespace] = store
+        if store is None:
+            ttl = ttl_hint if ttl_hint is not None else 60
+            store = TTLCache(maxsize=self._default_maxsize, ttl=ttl)
+            self._stores[namespace] = store
         return store
 
     def get(self, namespace: str, key: str) -> Any | None:
-        store = self._stores.get(namespace)
-        if store is None:
-            return None
-        return store.get(key)
+        with self._lock:
+            store = self._stores.get(namespace)
+            if store is None:
+                return None
+            return store.get(key)
 
     def set(self, namespace: str, key: str, value: Any, ttl: int) -> None:
-        store = self._get_store(namespace, ttl_hint=ttl)
-        store[key] = value
+        with self._lock:
+            store = self._get_store(namespace, ttl_hint=ttl)
+            store[key] = value
 
     def delete(self, namespace: str, key: str) -> None:
-        store = self._stores.get(namespace)
-        if store is None:
-            return
-        store.pop(key, None)
+        with self._lock:
+            store = self._stores.get(namespace)
+            if store is None:
+                return
+            store.pop(key, None)
 
     def clear_namespace(self, namespace: str) -> int:
-        store = self._stores.pop(namespace, None)
-        if store is None:
-            return 0
-        size = len(store)
-        store.clear()
-        return size
+        with self._lock:
+            store = self._stores.pop(namespace, None)
+            if store is None:
+                return 0
+            size = len(store)
+            store.clear()
+            return size
 
 
 # ── Singleton ────────────────────────────────────────────────────────────
