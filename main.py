@@ -120,8 +120,16 @@ from startup.bootstrap import run_startup_bootstrap
 
 
 def _configure_logging():
-    """設定日誌：生產環境使用 JSON 格式，開發環境使用可讀格式。"""
+    """設定日誌：生產環境使用 JSON 格式，開發環境使用可讀格式。
+
+    所有 handler 一律掛 RequestIdLogFilter，讓任何 logger 出來的 record
+    都帶 `request_id` 欄位（middleware 之外取到預設值 "-"）。
+    """
+    from utils.request_logging import RequestIdLogFilter
+
     level = logging.INFO
+    rid_filter = RequestIdLogFilter()
+
     if os.environ.get("ENV", "development").lower() in ("production", "prod"):
         try:
             from pythonjsonlogger import jsonlogger
@@ -129,10 +137,11 @@ def _configure_logging():
             handler = logging.StreamHandler()
             handler.setFormatter(
                 jsonlogger.JsonFormatter(
-                    fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+                    fmt="%(asctime)s %(levelname)s %(name)s %(request_id)s %(message)s",
                     rename_fields={"asctime": "timestamp", "levelname": "level"},
                 )
             )
+            handler.addFilter(rid_filter)
             logging.root.handlers.clear()
             logging.root.addHandler(handler)
             logging.root.setLevel(level)
@@ -140,13 +149,17 @@ def _configure_logging():
             # python-json-logger 未安裝時 fallback 到純文字
             logging.basicConfig(
                 level=level,
-                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                format="%(asctime)s [%(levelname)s] %(name)s [rid=%(request_id)s]: %(message)s",
             )
+            for h in logging.root.handlers:
+                h.addFilter(rid_filter)
     else:
         logging.basicConfig(
             level=level,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            format="%(asctime)s [%(levelname)s] %(name)s [rid=%(request_id)s]: %(message)s",
         )
+        for h in logging.root.handlers:
+            h.addFilter(rid_filter)
 
 
 _configure_logging()
