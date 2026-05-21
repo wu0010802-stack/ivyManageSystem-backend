@@ -18,8 +18,6 @@ def _today_taipei() -> date:
 
 from typing import Optional
 
-from cachetools import TTLCache
-
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
 from services.report_cache_service import report_cache_service
