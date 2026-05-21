@@ -15,7 +15,7 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
-from cachetools import TTLCache
+from utils.cache_layer import get_cache
 from sqlalchemy.orm import joinedload
 
 from services.salary.utils import lock_and_premark_stale
@@ -88,17 +88,18 @@ def _mark_shift_emp_stale(session, employee_id: int, target_date: date) -> None:
         )
 
 
-# ShiftType 很少變動，使用 TTLCache 減少重複 DB 查詢（5 分鐘 TTL）
-_shift_type_cache: TTLCache = TTLCache(maxsize=3, ttl=300)
+# scope: global  — ShiftType 是全系統共用設定，無 per-user 隔離需求
+_CACHE_NS_SHIFT_TYPE = "shift_type"
+_CACHE_TTL_SHIFT_TYPE = 300  # 5 分鐘
 
 
 def _clear_shift_type_cache():
-    _shift_type_cache.clear()
+    get_cache().clear_namespace(_CACHE_NS_SHIFT_TYPE)
 
 
 def _get_all_shift_types_cached(session) -> list:
-    """回傳 list[dict]，快取 5 分鐘"""
-    cached = _shift_type_cache.get("all")
+    """回傳 list[dict]，快取 5 分鐘。"""
+    cached = get_cache().get(_CACHE_NS_SHIFT_TYPE, "all")
     if cached is not None:
         return cached
     types = session.query(ShiftType).order_by(ShiftType.sort_order).all()
@@ -113,17 +114,15 @@ def _get_all_shift_types_cached(session) -> list:
         }
         for t in types
     ]
-    _shift_type_cache["all"] = result
+    get_cache().set(_CACHE_NS_SHIFT_TYPE, "all", result, ttl=_CACHE_TTL_SHIFT_TYPE)
     return result
 
 
 def _get_shift_type_id_map_cached(session) -> dict:
-    """回傳 {id: SimpleNamespace(work_start, work_end, name, is_active)}，快取 5 分鐘。
-    用於需要 .work_start / .work_end 屬性存取的場景（如工時計算）。
-    """
+    """回傳 {id: SimpleNamespace(work_start, work_end, name, is_active)}，快取 5 分鐘。"""
     from types import SimpleNamespace
 
-    cached = _shift_type_cache.get("id_map")
+    cached = get_cache().get(_CACHE_NS_SHIFT_TYPE, "id_map")
     if cached is not None:
         return cached
     types = session.query(ShiftType).all()
@@ -138,7 +137,7 @@ def _get_shift_type_id_map_cached(session) -> dict:
         )
         for t in types
     }
-    _shift_type_cache["id_map"] = result
+    get_cache().set(_CACHE_NS_SHIFT_TYPE, "id_map", result, ttl=_CACHE_TTL_SHIFT_TYPE)
     return result
 
 
