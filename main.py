@@ -555,6 +555,12 @@ app = FastAPI(
     openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
+# 全域 exception handler：envelope 化 BusinessError / 422 / unhandled；
+# HTTPException 透傳原 detail shape（保 943 處 inline 與既有測試 assertion 相容）。
+from utils.exception_handlers import register_exception_handlers
+
+register_exception_handlers(app)
+
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
