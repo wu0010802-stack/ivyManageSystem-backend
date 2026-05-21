@@ -31,6 +31,44 @@ if not _jwt_secret:
         raise RuntimeError("JWT_SECRET_KEY 環境變數未設定，正式環境不允許啟動。")
 
 JWT_SECRET_KEY = _jwt_secret
+
+
+# ── Multi-key support for rotation ────────────────────────────────────────
+# 設計：docs/superpowers/specs/2026-05-21-jwt-secret-rotation-design.md
+# JWT_SECRET_KEY 為 current（簽 + 驗第一順位）；
+# JWT_SECRET_KEYS_OLDS 為 JSON list of accept-only secrets，rotation 過渡期用。
+import json as _json
+
+
+def _kid_for(secret: str) -> str:
+    """kid = sha256(secret) 前 12 hex chars。確定性、不洩漏 secret。"""
+    return hashlib.sha256(secret.encode()).hexdigest()[:12]
+
+
+_olds_raw = os.environ.get("JWT_SECRET_KEYS_OLDS", "[]")
+try:
+    _olds = _json.loads(_olds_raw)
+    if not isinstance(_olds, list) or not all(isinstance(k, str) for k in _olds):
+        raise ValueError("JWT_SECRET_KEYS_OLDS 必須是 JSON list of strings")
+except (_json.JSONDecodeError, ValueError) as _e:
+    if _is_dev:
+        logger.warning("JWT_SECRET_KEYS_OLDS 解析失敗，視為空 list：%s", _e)
+        _olds = []
+    else:
+        raise RuntimeError(f"JWT_SECRET_KEYS_OLDS 解析失敗：{_e}")
+
+_CURRENT_KID: str = _kid_for(JWT_SECRET_KEY)
+# verify 查表：kid → secret。current 永遠在內；olds 接著加。
+_VERIFY_KEYS: dict[str, str] = {_CURRENT_KID: JWT_SECRET_KEY}
+for _old in _olds:
+    if not _old:
+        continue
+    _VERIFY_KEYS[_kid_for(_old)] = _old
+
+# 過渡期：沒帶 kid header 的 legacy token，依序試這個 list。
+_LEGACY_TRY_ORDER: list[str] = [JWT_SECRET_KEY] + [k for k in _olds if k]
+# ──────────────────────────────────────────────────────────────────────────
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 15  # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
 JWT_REFRESH_GRACE_HOURS = 2  # 過期後仍允許刷新的寬限時間（2 小時）；搭配 token_version 機制，帳號停用後舊 token 立即失效
