@@ -144,7 +144,7 @@ def test_create_limiter_factory_respects_env(monkeypatch, db):
     )
 
     # 注意：切到 Settings 後，env 透過 lru_cache 讀進來，所以每次改 env 後要 reset_for_tests()
-    # 才能讓 settings.network.rate_limit_backend 看到新值（之前直接 os.environ.get() 不需此步驟）。
+    # 才能讓 settings.network.rate_limit_backend 看到新值（之前直接讀 env 不需此步驟）。
 
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
     reset_for_tests()
