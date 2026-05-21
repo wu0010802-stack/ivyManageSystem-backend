@@ -228,6 +228,8 @@ from services.activity_classroom_lookup import (  # noqa: F401, E402
 # - server secret 沿用 JWT_SECRET_KEY（dev 重啟會 invalidate 所有 token，已有 warning）
 # - 到期：query_token_issued_at + ACTIVITY_QUERY_TOKEN_TTL_DAYS（預設 180 天）。
 #   過期/未發 token 一律拒絕並引導改用 /public/query 三欄比對。Refs: 資安掃描 2026-05-07 P0。
+# DEPRECATION（2026-05-21）：JWT secret rotation 後既有 token 會失效；
+# 參見 docs/superpowers/specs/2026-05-21-jwt-secret-rotation-design.md。
 _ACTIVITY_TOKEN_DOMAIN = b"activity_query_token:v1"
 
 
