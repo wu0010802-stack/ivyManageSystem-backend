@@ -14,8 +14,9 @@ Perf：home_summary 的 9 個內部 query 用 60s in-process TTLCache
 
 from datetime import date, datetime, timedelta
 
-from cachetools import TTLCache
 from fastapi import APIRouter, Depends
+
+from utils.cache_layer import get_cache
 
 from models.activity import ActivityRegistration, RegistrationCourse
 from models.classroom import StudentAttendance
@@ -41,8 +42,10 @@ from .fees import compute_fees_summary
 
 router = APIRouter(prefix="/home", tags=["parent-home"])
 
-# user_id → (home_summary_payload)；60s TTL，maxsize=512（同時上線家長上限）
-_home_summary_cache: TTLCache = TTLCache(maxsize=512, ttl=60)
+# user_id → home_summary_payload；60s TTL
+# scope: user — key 為 user_id，user 間天然隔離
+_CACHE_NS_PARENT_HOME_SUMMARY = "parent_home_summary"
+_CACHE_TTL_PARENT_HOME_SUMMARY = 60  # 1 分鐘
 
 
 def _count_pending_activity_promotions(session, student_ids: list[int]) -> int:
@@ -104,7 +107,7 @@ def home_summary(
     - pending_event_acks: int
     """
     user_id = current_user["user_id"]
-    cached = _home_summary_cache.get(user_id)
+    cached = get_cache().get(_CACHE_NS_PARENT_HOME_SUMMARY, str(user_id))
     if cached is not None:
         return cached
 
@@ -164,7 +167,12 @@ def home_summary(
             "recent_leave_reviews": _count_recent_leave_reviews(session, user_id),
         },
     }
-    _home_summary_cache[user_id] = result
+    get_cache().set(
+        _CACHE_NS_PARENT_HOME_SUMMARY,
+        str(user_id),
+        result,
+        ttl=_CACHE_TTL_PARENT_HOME_SUMMARY,
+    )
     return result
 
 

@@ -28,7 +28,7 @@ from api.parent_portal import (
 )
 from api.parent_portal._shared import resolve_parent_display_name
 from api.parent_portal.auth import _bind_failures, _hash_code
-from api.parent_portal.home import _home_summary_cache
+from api.parent_portal.home import _CACHE_NS_PARENT_HOME_SUMMARY
 from models.database import (
     Base,
     Guardian,
@@ -37,6 +37,7 @@ from models.database import (
     User,
 )
 from utils.auth import create_access_token
+from utils.cache_layer import get_cache
 
 
 class FakeLineLoginService:
@@ -69,7 +70,7 @@ def parent_app(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
     _bind_failures.clear()
-    _home_summary_cache.clear()
+    get_cache().clear_namespace(_CACHE_NS_PARENT_HOME_SUMMARY)
 
     fake_line = FakeLineLoginService(
         {
@@ -94,7 +95,7 @@ def parent_app(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
     _bind_failures.clear()
-    _home_summary_cache.clear()
+    get_cache().clear_namespace(_CACHE_NS_PARENT_HOME_SUMMARY)
     base_module._engine = old_engine
     base_module._SessionFactory = old_factory
     engine.dispose()
