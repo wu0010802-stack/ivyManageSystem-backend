@@ -59,6 +59,9 @@ def app_clients(tmp_path):
     init_contact_book_line_service(line_service)
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_router)
     app.include_router(portal_router)
 

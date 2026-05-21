@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from utils.errors import raise_safe_500
 from utils.etag import etag_response
+from utils.exceptions import BusinessError
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
@@ -400,13 +401,11 @@ async def create_employee(
             .first()
         )
         if existing:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "EMPLOYEE_ID_DUPLICATE",
-                    "message": f"員工編號 {emp.employee_id} 已存在，請改用其他編號",
-                    "context": {"employee_id": emp.employee_id},
-                },
+            raise BusinessError(
+                "EMPLOYEE_ID_DUPLICATE",
+                f"員工編號 {emp.employee_id} 已存在，請改用其他編號",
+                400,
+                extra={"context": {"employee_id": emp.employee_id}},
             )
 
         emp_data = emp.model_dump()
@@ -454,7 +453,7 @@ async def create_employee(
         session.add(employee)
         session.commit()
         return {"message": "員工新增成功", "id": employee.id}
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         session.rollback()

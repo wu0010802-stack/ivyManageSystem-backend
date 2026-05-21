@@ -44,6 +44,7 @@ from services.contact_book_service import (
     publish_entry,
 )
 from utils.auth import require_permission
+from utils.exceptions import BusinessError
 from utils.file_upload import (
     read_upload_with_size_check,
     safe_attachment_filename,
@@ -374,11 +375,11 @@ def update_entry(
         if expected_version is not None and entry.version != expected_version:
             # 衝突：回 409 + 完整 current_entry payload，前端可局部寫回不必整撈
             current_photos = _load_photos(session, entry.id)
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "VERSION_CONFLICT",
-                    "message": "聯絡簿已被他人更新，請重新整理後再編輯",
+            raise BusinessError(
+                "VERSION_CONFLICT",
+                "聯絡簿已被他人更新，請重新整理後再編輯",
+                409,
+                extra={
                     "current_version": entry.version,
                     "current_entry": _entry_to_dict(entry, current_photos),
                 },

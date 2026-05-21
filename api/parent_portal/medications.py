@@ -50,6 +50,7 @@ from services.medication_service import (
     find_allergy_conflicts,
 )
 from utils.auth import require_parent_role
+from utils.exceptions import BusinessError
 from utils.file_upload import (
     read_upload_with_size_check,
     safe_attachment_filename,
@@ -274,11 +275,11 @@ def create_medication_order(
         medication_name=payload.medication_name,
     )
     if conflicts and not payload.acknowledge_allergy_warning:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "ALLERGY_WARNING",
-                "message": "用藥名稱可能與孩童過敏原相關，請確認後重送並帶 acknowledge_allergy_warning=true",
+        raise BusinessError(
+            "ALLERGY_WARNING",
+            "用藥名稱可能與孩童過敏原相關，請確認後重送並帶 acknowledge_allergy_warning=true",
+            409,
+            extra={
                 "allergens": [
                     {
                         "id": a.id,
