@@ -67,6 +67,14 @@ for _old in _olds:
 
 # 過渡期：沒帶 kid header 的 legacy token，依序試這個 list。
 _LEGACY_TRY_ORDER: list[str] = [JWT_SECRET_KEY] + [k for k in _olds if k]
+
+# Runbook 用：rotation 操作者看 log 確認新 env 已被載入。kid 是 sha256 截短不洩漏 secret。
+logger.info(
+    "JWT _VERIFY_KEYS 載入 %d 個 kid：%s（current=%s）",
+    len(_VERIFY_KEYS),
+    list(_VERIFY_KEYS.keys()),
+    _CURRENT_KID,
+)
 # ──────────────────────────────────────────────────────────────────────────
 
 JWT_ALGORITHM = "HS256"
