@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Optional
 
-from cachetools import TTLCache
+from utils.cache_layer import get_cache
 from fastapi import HTTPException
 from utils.masking import mask_bank_account
 from pydantic import BaseModel, field_validator, model_validator
@@ -27,8 +27,9 @@ from models.database import (
 )
 from utils.auth import get_current_user
 
-# ShiftType 很少異動，使用 TTLCache 5 分鐘，避免每次請求全表查詢
-_shift_type_cache: TTLCache = TTLCache(maxsize=2, ttl=300)
+# scope: global
+_CACHE_NS_PORTAL_SHIFT_TYPE = "portal_shift_type"
+_CACHE_TTL_PORTAL_SHIFT_TYPE = 300  # 5 分鐘
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +247,7 @@ def _get_employee_shift_for_date(session, employee_id: int, target_date: date):
 def _get_shift_type_map(session, active_only: bool = False) -> dict:
     """取得 ShiftType {id: SimpleNamespace} 對照表（快取 5 分鐘）"""
     cache_key = "active" if active_only else "all"
-    cached = _shift_type_cache.get(cache_key)
+    cached = get_cache().get(_CACHE_NS_PORTAL_SHIFT_TYPE, cache_key)
     if cached is not None:
         return cached
     from models.database import ShiftType
@@ -265,7 +266,9 @@ def _get_shift_type_map(session, active_only: bool = False) -> dict:
         )
         for st in query.all()
     }
-    _shift_type_cache[cache_key] = result
+    get_cache().set(
+        _CACHE_NS_PORTAL_SHIFT_TYPE, cache_key, result, ttl=_CACHE_TTL_PORTAL_SHIFT_TYPE
+    )
     return result
 
 
