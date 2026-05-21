@@ -419,6 +419,23 @@ def decode_token_allow_expired(token: str) -> dict:
     return payload
 
 
+def decode_token_for_audit(token: str | None) -> dict | None:
+    """專供 audit 路徑使用的 decode：multi-key 容忍、verify_exp=False、不檢 jti / token_version。
+
+    純粹從 token 抽 user_id / name 寫 audit log。失敗一律回 None，**不** 拋例外。
+
+    安全性：本函式僅供 audit log 寫入路徑使用，**不可** 用於授權判斷。
+    呼叫端不得用回傳值通過 require_permission / get_current_user 等守衛。
+    """
+    if not token:
+        return None
+    try:
+        _check_token_algorithm(token)
+        return _decode_with_keys(token, allow_expired=True)
+    except (JWTError, HTTPException):
+        return None
+
+
 async def get_current_user(request: Request):
     """FastAPI dependency: extract and verify JWT from httpOnly Cookie or Authorization header.
 

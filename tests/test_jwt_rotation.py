@@ -313,3 +313,57 @@ class TestDecodeTokenAllowExpiredMultiKey:
             auth.decode_token_allow_expired(token)
         assert excinfo.value.status_code == 401
         assert "刷新期限" in excinfo.value.detail
+
+
+class TestDecodeTokenForAudit:
+
+    def test_audit_decode_works_with_current_kid(self, monkeypatch):
+        """current kid 簽的有效 token → 回傳 payload"""
+        auth = _reload_auth(monkeypatch, current="aud-cur")
+        token = auth.create_access_token({"user_id": 42, "name": "alice"})
+        payload = auth.decode_token_for_audit(token)
+        assert payload["user_id"] == 42
+        assert payload["name"] == "alice"
+
+    def test_audit_decode_works_with_expired_token(self, monkeypatch):
+        """已過期 token 也能解（audit 不檢 exp）"""
+        import time
+
+        auth = _reload_auth(monkeypatch, current="aud-exp")
+        past_exp = int(time.time()) - 99999  # 大幅過期
+        token = _craft_token(
+            {"alg": "HS256", "kid": auth._CURRENT_KID},
+            {"user_id": 42, "name": "bob", "exp": past_exp},
+            "aud-exp",
+        )
+        payload = auth.decode_token_for_audit(token)
+        assert payload["user_id"] == 42
+
+    def test_audit_decode_works_with_old_kid_in_olds(self, monkeypatch):
+        """rotation 期間，olds 中的舊 kid token 也能 audit decode"""
+        auth = _reload_auth(monkeypatch, current="new-aud", olds='["old-aud"]')
+        old_kid = _expected_kid("old-aud")
+        token = _craft_token(
+            {"alg": "HS256", "kid": old_kid},
+            {"user_id": 99, "name": "carol", "exp": 9999999999},
+            "old-aud",
+        )
+        payload = auth.decode_token_for_audit(token)
+        assert payload["user_id"] == 99
+
+    def test_audit_decode_returns_none_on_invalid_token(self, monkeypatch):
+        """token 不可解 → 回 None，不拋"""
+        auth = _reload_auth(monkeypatch, current="aud-cur")
+        assert auth.decode_token_for_audit("garbage") is None
+        assert auth.decode_token_for_audit("") is None
+        assert auth.decode_token_for_audit(None) is None
+
+    def test_audit_decode_returns_none_on_unknown_kid(self, monkeypatch):
+        """未知 kid → 回 None（一致地不拋）"""
+        auth = _reload_auth(monkeypatch, current="aud-cur")
+        token = _craft_token(
+            {"alg": "HS256", "kid": "fakefakefake"},
+            {"user_id": 1, "exp": 9999999999},
+            "aud-cur",
+        )
+        assert auth.decode_token_for_audit(token) is None
