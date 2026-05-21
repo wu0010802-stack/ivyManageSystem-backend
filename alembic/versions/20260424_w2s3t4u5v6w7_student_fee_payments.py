@@ -1,3 +1,4 @@
+# alembic-lint: skip-symmetry (PostgreSQL drop_table cascade-drops indexes and constraints; explicit drop_index/drop_constraint not needed)
 """create student_fee_payments (append-only fee collection log) + backfill
 
 Revision ID: w2s3t4u5v6w7

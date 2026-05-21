@@ -1,3 +1,4 @@
+# alembic-lint: skip-symmetry (upgrade uses op.execute(text("CREATE UNIQUE INDEX...")) which lint cannot detect; downgrade has matching op.drop_index)
 """enforce single-active for AttendancePolicy/BonusConfig/InsuranceRate
 
 修正薪資設定鏈路問題：歷史資料或併發更新可能在
