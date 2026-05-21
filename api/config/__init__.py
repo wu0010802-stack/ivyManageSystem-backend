@@ -5,7 +5,7 @@ System configuration router
 import logging
 from typing import Optional
 
-from cachetools import TTLCache
+from utils.cache_layer import get_cache
 from fastapi import APIRouter, Depends, HTTPException, Request
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
@@ -67,17 +67,27 @@ _INSURANCE_FIELDS = [
 
 logger = logging.getLogger(__name__)
 
-# 設定快取（5 分鐘 TTL，最多 16 個 key）
-_cache = TTLCache(maxsize=16, ttl=300)
+# scope: global — 全系統共用設定，無 per-user 隔離需求
+_CACHE_TTL_CONFIG = 300  # 5 分鐘
+_CACHE_KEY_TO_NAMESPACE = {
+    "titles": "config_titles",
+    "attendance_policy": "config_attendance_policy",
+    "insurance_rates": "config_insurance_rates",
+    "deduction_types": "config_deduction_types",
+    "bonus_types": "config_bonus_types",
+    "bonus": "config_bonus",
+}
 
 
-def _clear_cache(*keys):
-    """清除指定的快取 key，不指定則全部清除"""
-    if keys:
-        for k in keys:
-            _cache.pop(k, None)
-    else:
-        _cache.clear()
+def _clear_cache(*keys: str) -> None:
+    """清除指定 namespace，不指定則全部 config namespace 都清。"""
+    namespaces = (
+        [_CACHE_KEY_TO_NAMESPACE[k] for k in keys]
+        if keys
+        else list(_CACHE_KEY_TO_NAMESPACE.values())
+    )
+    for ns in namespaces:
+        get_cache().clear_namespace(ns)
 
 
 def _trigger_engine_grade_reload() -> None:
@@ -192,7 +202,7 @@ def get_attendance_policy(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
     """取得考勤政策設定"""
-    cached = _cache.get("attendance_policy")
+    cached = get_cache().get("config_attendance_policy", "v")
     if cached is not None:
         return cached
 
@@ -215,7 +225,7 @@ def get_attendance_policy(
             "missing_punch_deduction": policy.missing_punch_deduction,
             "festival_bonus_months": policy.festival_bonus_months,
         }
-        _cache["attendance_policy"] = result
+        get_cache().set("config_attendance_policy", "v", result, ttl=_CACHE_TTL_CONFIG)
         return result
     finally:
         session.close()
@@ -455,7 +465,7 @@ def get_insurance_rates(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
     """取得勞健保費率設定"""
-    cached = _cache.get("insurance_rates")
+    cached = get_cache().get("config_insurance_rates", "v")
     if cached is not None:
         return cached
 
@@ -482,7 +492,7 @@ def get_insurance_rates(
             "pension_employer_rate": rate.pension_employer_rate,
             "average_dependents": rate.average_dependents,
         }
-        _cache["insurance_rates"] = result
+        get_cache().set("config_insurance_rates", "v", result, ttl=_CACHE_TTL_CONFIG)
         return result
     finally:
         session.close()
@@ -739,7 +749,7 @@ def get_all_configs(
 def get_job_titles(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
-    cached = _cache.get("titles")
+    cached = get_cache().get("config_titles", "v")
     if cached is not None:
         return cached
 
@@ -754,7 +764,7 @@ def get_job_titles(
         result = [
             {"id": t.id, "name": t.name, "bonus_grade": t.bonus_grade} for t in titles
         ]
-        _cache["titles"] = result
+        get_cache().set("config_titles", "v", result, ttl=_CACHE_TTL_CONFIG)
         return result
     finally:
         session.close()
@@ -869,7 +879,7 @@ def delete_job_title(
 async def get_deduction_types(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
-    cached = _cache.get("deduction_types")
+    cached = get_cache().get("config_deduction_types", "v")
     if cached is not None:
         return cached
     session = get_session()
@@ -891,7 +901,7 @@ async def get_deduction_types(
             }
             for i in items
         ]
-        _cache["deduction_types"] = result
+        get_cache().set("config_deduction_types", "v", result, ttl=_CACHE_TTL_CONFIG)
         return result
     finally:
         session.close()
@@ -920,7 +930,7 @@ async def create_deduction_type(
 async def get_bonus_types(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
-    cached = _cache.get("bonus_types")
+    cached = get_cache().get("config_bonus_types", "v")
     if cached is not None:
         return cached
     session = get_session()
@@ -941,7 +951,7 @@ async def get_bonus_types(
             }
             for i in items
         ]
-        _cache["bonus_types"] = result
+        get_cache().set("config_bonus_types", "v", result, ttl=_CACHE_TTL_CONFIG)
         return result
     finally:
         session.close()
