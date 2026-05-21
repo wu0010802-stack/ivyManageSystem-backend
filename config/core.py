@@ -36,3 +36,15 @@ class CoreSettings(BaseSettings):
     @property
     def dev_router_enabled(self) -> bool:
         return self.env.strip().lower() in _DEV_ROUTER_ENVS
+
+    @property
+    def dev_router_should_mount(self) -> bool:
+        """嚴格判斷：ENV 必須顯式設為 dev 值才 mount dev router。
+
+        未設 ENV（model_fields_set 不含 env，default 'development' fallback）視為「未配置 dev」，
+        回 False。對齊原 main.py:_should_mount_dev_router 的安全保守邏輯
+        （unset ENV → 不 mount dev router）。
+        """
+        if "env" not in self.model_fields_set:
+            return False
+        return self.dev_router_enabled

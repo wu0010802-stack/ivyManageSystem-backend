@@ -158,28 +158,6 @@ logger = logging.getLogger(__name__)
 init_sentry()
 
 
-def _is_production() -> bool:
-    return get_settings().core.is_production
-
-
-# F-043：dev_router mount 採白名單（allowlist）模式。
-# 舊實作 `not _is_production()` 黑名單在 ENV=staging / test / 未設 ENV 等
-# 「非 production / 非 prod」字面值時都會掛上 dev_router → /api/dev/employee-salary-debug
-# 暴露任意員工薪資完整明細（僅需 SETTINGS_READ）。改為白名單後：
-# 只有 ENV ∈ {development, dev, local, test} 才掛 dev_router；
-# 其他值（含 staging / production / 未設 / 拼錯）一律不掛，攻擊面收斂。
-_DEV_ROUTER_ENV_ALLOWLIST = frozenset({"development", "dev", "local", "test"})
-
-
-def _should_mount_dev_router() -> bool:
-    """依 ENV 環境變數決定是否掛載 /api/dev/*。
-
-    僅 ENV ∈ DEV_ROUTER_ENV_ALLOWLIST 才回 True。F-043：staging / 未設
-    ENV 一律回 False，避免 dev 端點外洩。
-    """
-    return os.environ.get("ENV", "").lower() in _DEV_ROUTER_ENV_ALLOWLIST
-
-
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -641,7 +619,7 @@ from api.analytics import router as analytics_router
 app.include_router(analytics_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
-if _should_mount_dev_router():
+if settings.core.dev_router_should_mount:
     from api.dev import router as dev_router, init_dev_services
 
     init_dev_services(salary_engine)
