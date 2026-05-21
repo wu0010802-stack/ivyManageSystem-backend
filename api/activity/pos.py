@@ -14,7 +14,6 @@ api/activity/pos.py — 課後才藝 POS 快速收銀端點
 """
 
 import logging
-import os
 import re
 import uuid
 from collections import defaultdict
@@ -23,6 +22,7 @@ from io import BytesIO
 from typing import List, Literal, Optional
 from urllib.parse import quote
 
+from config import settings
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -94,14 +94,8 @@ _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT = 30_000
 
 
 def _resolve_cash_warning_threshold() -> int:
-    raw = os.getenv("POS_CASH_DEPOSIT_WARNING_THRESHOLD", "")
-    if not raw:
-        return _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT
-    try:
-        v = int(raw)
-        return v if v > 0 else _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT
-    except (TypeError, ValueError):
-        return _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT
+    v = settings.misc.pos_cash_deposit_warning_threshold
+    return v if v > 0 else _CASH_DEPOSIT_WARNING_THRESHOLD_DEFAULT
 
 
 # Rate limiter：同 IP 每分鐘最多 60 次 checkout（約 1 張/秒，足以應付連按）

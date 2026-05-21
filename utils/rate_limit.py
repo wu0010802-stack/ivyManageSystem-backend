@@ -171,9 +171,9 @@ def create_limiter(
     - `postgres`：PG-backed（多 worker 安全；推薦 production）
     - `memory` 或未設定：in-process dict（單 worker 開發/小型部署）
     """
-    import os
+    from config import settings
 
-    backend = os.environ.get("RATE_LIMIT_BACKEND", "memory").lower()
+    backend = settings.network.rate_limit_backend.lower()
     if backend == "postgres":
         return PostgresLimiter(
             max_calls=max_calls,

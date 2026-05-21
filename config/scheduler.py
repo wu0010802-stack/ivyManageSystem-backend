@@ -19,18 +19,18 @@ class SchedulerSettings(BaseSettings):
     activity_waitlist_final_reminder_offset_hours: int = 6
     activity_waitlist_confirm_window_hours: int = 48
 
-    # Medication reminder
+    # Medication reminder (default 對齊 services/medication_reminder_scheduler.py 原碼)
     medication_reminder_enabled: BoolEnv = False
-    medication_reminder_check_interval: int = 60
-    medication_reminder_hour: int = 8
-    medication_reminder_minute: int = 0
+    medication_reminder_check_interval: int = 300
+    medication_reminder_hour: int = 7
+    medication_reminder_minute: int = 30
 
-    # Auto graduation
+    # Auto graduation (default 對齊 services/graduation_scheduler.py 原碼)
     auto_graduation_enabled: BoolEnv = False
-    auto_graduation_check_interval: int = 86400
+    auto_graduation_check_interval: int = 3600
     auto_graduation_month: int = 7
     auto_graduation_day: int = 31
-    auto_graduation_preview_days: int = 30
+    auto_graduation_preview_days: int = 7
 
     # Salary auto snapshot
     salary_auto_snapshot_enabled: BoolEnv = False

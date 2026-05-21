@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,10 +11,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class StorageSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
-    backend: Literal["local", "supabase"] = Field(
-        default="local", validation_alias="STORAGE_BACKEND"
-    )
-    root: Path = Field(default=Path("./uploads"), validation_alias="STORAGE_ROOT")
+    # 型別保留 str（不用 Literal），讓 utils/storage.py 自己驗證並 raise
+    # ValueError("未知的 STORAGE_BACKEND: ...")（對齊原 get_backend() 行為）。
+    backend: str = Field(default="local", validation_alias="STORAGE_BACKEND")
+    # default None：未設 env 時由 utils/storage.py 決定 fallback root（保留原本 <repo>/data/uploads 慣例）
+    root: Path | None = Field(default=None, validation_alias="STORAGE_ROOT")
     supabase_url: str | None = Field(default=None, validation_alias="SUPABASE_URL")
     supabase_service_role_key: str | None = Field(
         default=None, validation_alias="SUPABASE_SERVICE_ROLE_KEY", repr=False

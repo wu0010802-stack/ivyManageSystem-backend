@@ -18,10 +18,11 @@ trusted proxy 透過環境變數 `TRUSTED_PROXY_IPS` 設定（逗號分隔 IP / 
 
 import ipaddress
 import logging
-import os
 from typing import Optional
 
 from fastapi import Request
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ _DEFAULT_PRIVATE_NETWORKS = (
 
 def _parse_trusted_proxies() -> tuple:
     """讀環境變數 TRUSTED_PROXY_IPS，回傳 ip_network tuple。失敗時 fallback RFC1918。"""
-    raw = (os.getenv("TRUSTED_PROXY_IPS") or "").strip()
+    raw = (settings.network.trusted_proxy_ips or "").strip()
     if not raw:
         return _DEFAULT_PRIVATE_NETWORKS
     nets = []

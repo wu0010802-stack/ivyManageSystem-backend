@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
+
+from config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,7 @@ _JWT_BLOCKLIST_GC_INTERVAL_SEC = 6 * 60 * 60
 
 
 def scheduler_enabled() -> bool:
-    return os.environ.get("SECURITY_GC_DISABLED", "").lower() not in (
-        "1",
-        "true",
-        "yes",
-    )
+    return not bool(get_settings().scheduler.security_gc_disabled)
 
 
 async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:

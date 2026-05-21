@@ -14,9 +14,9 @@ def test_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = MiscSettings()
     assert s.anthropic_api_key is None
-    assert s.pos_cash_deposit_warning_threshold == 5000
+    assert s.pos_cash_deposit_warning_threshold == 30_000
     assert s.enable_leave_ot_offset is False
-    assert s.activity_query_token_ttl_days == 30
+    assert s.activity_query_token_ttl_days == 180
     assert s.ivy_mcp_username is None
     assert s.ivy_mcp_password is None
 

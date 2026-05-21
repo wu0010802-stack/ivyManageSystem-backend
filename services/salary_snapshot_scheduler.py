@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from config import get_settings, settings
 from models.base import session_scope
 from models.salary import SalaryRecord, SalarySnapshot
 from services.salary_snapshot_service import create_month_end_snapshots
@@ -26,15 +26,9 @@ logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
-CHECK_INTERVAL_SECONDS = int(os.getenv("SALARY_SNAPSHOT_CHECK_INTERVAL", "3600"))
-
 
 def scheduler_enabled() -> bool:
-    return os.getenv("SALARY_AUTO_SNAPSHOT_ENABLED", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    return bool(get_settings().scheduler.salary_auto_snapshot_enabled)
 
 
 def _today_taipei() -> date:
@@ -78,10 +72,11 @@ def check_and_snapshot_once(today: Optional[date] = None) -> int:
 
 
 async def run_salary_snapshot_scheduler(stop_event: asyncio.Event) -> None:
-    """每 CHECK_INTERVAL_SECONDS 巡檢一次；缺就補。"""
+    """每 salary_snapshot_check_interval 巡檢一次；缺就補。"""
+    interval = settings.scheduler.salary_snapshot_check_interval
     logger.info(
         "salary snapshot scheduler started (interval=%ds, tz=Asia/Taipei)",
-        CHECK_INTERVAL_SECONDS,
+        interval,
     )
     while not stop_event.is_set():
         try:
@@ -91,6 +86,6 @@ async def run_salary_snapshot_scheduler(stop_event: asyncio.Event) -> None:
         except Exception:
             logger.exception("salary snapshot scheduler tick failed; continuing")
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=CHECK_INTERVAL_SECONDS)
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             continue

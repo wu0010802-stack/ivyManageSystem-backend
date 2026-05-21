@@ -26,3 +26,11 @@ class GeocodingSettings(BaseSettings):
     timeout_seconds: int = Field(
         default=8, validation_alias="GEOCODING_TIMEOUT_SECONDS"
     )
+    google_geocoding_url: str = Field(
+        default="https://maps.googleapis.com/maps/api/geocode/json",
+        validation_alias="GOOGLE_GEOCODING_URL",
+    )
+    nominatim_url: str = Field(
+        default="https://nominatim.openstreetmap.org/search",
+        validation_alias="GEOCODING_NOMINATIM_URL",
+    )

@@ -19,19 +19,16 @@ LOW-5 設計選擇：
 """
 
 import logging
-import os
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
-_is_dev = os.environ.get("ENV", "development").lower() in (
-    "development",
-    "dev",
-    "local",
-)
+_is_dev = settings.core.env.lower() in ("development", "dev", "local")
 
 
 def _resolve_samesite() -> str:
-    raw = os.environ.get("COOKIE_SAMESITE", "strict").lower()
+    raw = settings.network.cookie_samesite.lower()
     if raw not in ("strict", "lax", "none"):
         logger.warning("COOKIE_SAMESITE=%s 不被支援，回退 strict", raw)
         return "strict"

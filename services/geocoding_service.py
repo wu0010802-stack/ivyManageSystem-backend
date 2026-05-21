@@ -5,7 +5,6 @@ services/geocoding_service.py — 招生地址 geocoding provider abstraction
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
@@ -13,24 +12,17 @@ from typing import Optional
 
 import requests
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
-_GEOCODING_TIMEOUT = float(os.environ.get("GEOCODING_TIMEOUT_SECONDS", "8"))
-_GOOGLE_GEOCODING_URL = os.environ.get(
-    "GOOGLE_GEOCODING_URL",
-    "https://maps.googleapis.com/maps/api/geocode/json",
-)
-_NOMINATIM_GEOCODING_URL = os.environ.get(
-    "GEOCODING_NOMINATIM_URL",
-    "https://nominatim.openstreetmap.org/search",
-)
-_GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
-_GEOCODING_PROVIDER = os.environ.get("GEOCODING_PROVIDER", "").strip().lower()
-_GEOCODING_USER_AGENT = os.environ.get(
-    "GEOCODING_USER_AGENT",
-    "ivyManageSystem/1.0 (+https://example.invalid)",
-).strip()
-_GEOCODING_CONTACT_EMAIL = os.environ.get("GEOCODING_CONTACT_EMAIL", "").strip()
+_GEOCODING_TIMEOUT = float(settings.geocoding.timeout_seconds)
+_GOOGLE_GEOCODING_URL = settings.geocoding.google_geocoding_url
+_NOMINATIM_GEOCODING_URL = settings.geocoding.nominatim_url
+_GOOGLE_MAPS_API_KEY = (settings.geocoding.google_maps_api_key or "").strip()
+_GEOCODING_PROVIDER = settings.geocoding.provider.lower()
+_GEOCODING_USER_AGENT = settings.geocoding.user_agent
+_GEOCODING_CONTACT_EMAIL = (settings.geocoding.contact_email or "").strip()
 
 _nominatim_lock = threading.Lock()
 _last_nominatim_request_at = 0.0
@@ -57,8 +49,7 @@ def can_geocode() -> bool:
 def _normalize_query_address(address: str) -> str:
     normalized = " ".join((address or "").strip().split())
     normalized = (
-        normalized
-        .replace("台灣", "臺灣")
+        normalized.replace("台灣", "臺灣")
         .replace("台北", "臺北")
         .replace("台中", "臺中")
         .replace("台南", "臺南")
@@ -82,19 +73,23 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
 
 
 def _strip_floor_suffix(address: str) -> str:
-    stripped = re.sub(r'(?:[Bb]\d+|地下\d+樓|\d+樓(?:之\d+)?|之\d+)$', '', address).strip()
-    stripped = re.sub(r'[之\-]\d+$', '', stripped).strip()
+    stripped = re.sub(
+        r"(?:[Bb]\d+|地下\d+樓|\d+樓(?:之\d+)?|之\d+)$", "", address
+    ).strip()
+    stripped = re.sub(r"[之\-]\d+$", "", stripped).strip()
     return stripped
 
 
 def _extract_address_parts(address: str) -> Optional[tuple[str, str, str]]:
     base = address.removeprefix("臺灣 ").strip()
-    matched = re.match(r'(?P<city>.+?[縣市])(?P<district>.+?(?:區|鄉|鎮|市))(?P<detail>.+)', base)
+    matched = re.match(
+        r"(?P<city>.+?[縣市])(?P<district>.+?(?:區|鄉|鎮|市))(?P<detail>.+)", base
+    )
     if not matched:
         return None
-    city = matched.group('city').strip()
-    district = matched.group('district').strip()
-    detail = matched.group('detail').strip()
+    city = matched.group("city").strip()
+    district = matched.group("district").strip()
+    detail = matched.group("detail").strip()
     if not city or not district or not detail:
         return None
     return city, district, detail
@@ -102,15 +97,15 @@ def _extract_address_parts(address: str) -> Optional[tuple[str, str, str]]:
 
 def _simplify_road_segment(detail: str) -> str:
     simplified = _strip_floor_suffix(detail)
-    simplified = re.sub(r'(?:\d+號.*)$', '', simplified).strip()
-    simplified = re.sub(r'(?:\d+弄.*)$', '', simplified).strip()
-    simplified = re.sub(r'(?:\d+巷.*)$', '', simplified).strip()
+    simplified = re.sub(r"(?:\d+號.*)$", "", simplified).strip()
+    simplified = re.sub(r"(?:\d+弄.*)$", "", simplified).strip()
+    simplified = re.sub(r"(?:\d+巷.*)$", "", simplified).strip()
     return simplified
 
 
 def _reorder_detail_for_nominatim(detail: str) -> str:
     reordered = _strip_floor_suffix(detail)
-    reordered = re.sub(r'([路街道段巷弄])(\d)', r'\1 \2', reordered)
+    reordered = re.sub(r"([路街道段巷弄])(\d)", r"\1 \2", reordered)
     return reordered.strip()
 
 
@@ -130,17 +125,19 @@ def _build_nominatim_query_candidates(address: str) -> list[str]:
     road_only = _simplify_road_segment(detail_no_floor)
     district_scope = f"{district} {city}"
 
-    candidates.extend([
-        f"{detail} {district} {city}",
-        f"{detail_reordered} {district} {city}",
-        f"{detail_no_floor} {district} {city}",
-        f"{detail_no_floor_reordered} {district} {city}",
-        f"{city}{district}{detail_no_floor}",
-        f"{road_only} {district} {city}",
-        f"{city}{district}{road_only}",
-        district_scope,
-        f"{city}{district}",
-    ])
+    candidates.extend(
+        [
+            f"{detail} {district} {city}",
+            f"{detail_reordered} {district} {city}",
+            f"{detail_no_floor} {district} {city}",
+            f"{detail_no_floor_reordered} {district} {city}",
+            f"{city}{district}{detail_no_floor}",
+            f"{road_only} {district} {city}",
+            f"{city}{district}{road_only}",
+            district_scope,
+            f"{city}{district}",
+        ]
+    )
     return _dedupe_keep_order(candidates)
 
 
@@ -172,7 +169,11 @@ def _geocode_with_google(address: str) -> Optional[dict]:
     payload = resp.json()
     results = payload.get("results") or []
     if payload.get("status") != "OK" or not results:
-        logger.warning("Google geocoding 無結果: status=%s address=%s", payload.get("status"), address)
+        logger.warning(
+            "Google geocoding 無結果: status=%s address=%s",
+            payload.get("status"),
+            address,
+        )
         return None
 
     top = results[0]
@@ -243,5 +244,7 @@ def geocode_address(address: str) -> Optional[dict]:
             return _geocode_with_google(address)
         return _geocode_with_nominatim(address)
     except Exception as exc:
-        logger.warning("geocode_address 失敗 provider=%s address=%s err=%s", provider, address, exc)
+        logger.warning(
+            "geocode_address 失敗 provider=%s address=%s err=%s", provider, address, exc
+        )
         return None

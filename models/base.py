@@ -2,7 +2,6 @@
 models/base.py — Base、engine、session 管理
 """
 
-import os
 import logging
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,6 +10,8 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+
+from config import settings
 
 # 載入 .env（backend/.env）
 _env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -24,8 +25,8 @@ Base = declarative_base()
 # 資料庫連線管理
 # ---------------------------------------------------------------------------
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-_is_dev = os.environ.get("ENV", "development").lower() in (
+DATABASE_URL: str = settings.core.database_url or ""
+_is_dev = settings.core.env.lower() in (
     "development",
     "dev",
     "local",
@@ -39,27 +40,13 @@ if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL 環境變數未設定，正式環境不允許啟動。")
 
 
-def _env_int(name: str, default: int) -> int:
-    """讀取 int 環境變數；無效或缺失時 fallback 到 default。"""
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning(
-            "環境變數 %s=%r 不是合法整數，回退使用預設 %s", name, raw, default
-        )
-        return default
-
-
 # 連線池參數可由 env 覆寫（audit J.P0.1）。
 # 預設值（5+5=10/pod）對 Supabase Session Mode 安全；單機開發或 Transaction
 # Mode 部署可調高（例：DB_POOL_SIZE=10 DB_POOL_MAX_OVERFLOW=20）。
-_DB_POOL_SIZE = _env_int("DB_POOL_SIZE", 5)
-_DB_POOL_MAX_OVERFLOW = _env_int("DB_POOL_MAX_OVERFLOW", 5)
-_DB_POOL_TIMEOUT = _env_int("DB_POOL_TIMEOUT", 15)
-_DB_POOL_RECYCLE = _env_int("DB_POOL_RECYCLE", 1800)
+_DB_POOL_SIZE = settings.core.db_pool_size
+_DB_POOL_MAX_OVERFLOW = settings.core.db_pool_max_overflow
+_DB_POOL_TIMEOUT = settings.core.db_pool_timeout
+_DB_POOL_RECYCLE = settings.core.db_pool_recycle
 
 _engine = None
 _SessionFactory = None

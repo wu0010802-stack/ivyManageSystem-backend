@@ -6,13 +6,14 @@ file paths, package versions) to API clients in production.
 """
 
 import logging
-import os
 
 from fastapi import HTTPException
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
-_is_dev = os.environ.get("ENV", "development").lower() in ("development", "dev", "local")
+_is_dev = settings.core.env.lower() in ("development", "dev", "local")
 
 _GENERIC_500_MESSAGE = "系統內部錯誤，請聯繫管理員"
 

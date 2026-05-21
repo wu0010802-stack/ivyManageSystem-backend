@@ -29,11 +29,11 @@ def test_defaults(monkeypatch):
     assert s.ivykids_data_url == "https://www.ivykids.tw/manage/make_an_appointment/"
     assert s.ivykids_sync_enabled is False
     assert s.ivykids_sync_interval_minutes == 10
-    assert s.campus_name is None
+    assert s.campus_name == "本園"  # 對齊 services 原 default
     assert s.campus_lat is None
     assert s.campus_lng is None
     assert s.campus_travel_mode == "driving"
-    assert s.market_timeout_seconds == 8
+    assert s.market_timeout_seconds == 12  # 對齊 services 原 default
 
 
 def test_lat_lng_float(monkeypatch):

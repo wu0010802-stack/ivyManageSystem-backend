@@ -42,13 +42,14 @@ def test_defaults(monkeypatch):
     # interval defaults
     assert s.activity_waitlist_sweep_interval_seconds == 600
     assert s.activity_waitlist_check_interval == 300
-    assert s.medication_reminder_check_interval == 60
-    assert s.auto_graduation_check_interval == 86400
+    assert s.medication_reminder_check_interval == 300
+    assert s.auto_graduation_check_interval == 3600
     # time-of-day
-    assert s.medication_reminder_hour == 8
-    assert s.medication_reminder_minute == 0
+    assert s.medication_reminder_hour == 7
+    assert s.medication_reminder_minute == 30
     assert s.auto_graduation_month == 7
     assert s.auto_graduation_day == 31
+    assert s.auto_graduation_preview_days == 7
 
 
 def test_bool_env_parsing(monkeypatch):

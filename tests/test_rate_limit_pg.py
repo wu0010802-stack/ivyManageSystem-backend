@@ -136,25 +136,32 @@ def test_cleanup_rate_limit_buckets(db):
 
 
 def test_create_limiter_factory_respects_env(monkeypatch, db):
+    from config import reset_for_tests
     from utils.rate_limit import (
         PostgresLimiter,
         SlidingWindowLimiter,
         create_limiter,
     )
 
+    # 注意：切到 Settings 後，env 透過 lru_cache 讀進來，所以每次改 env 後要 reset_for_tests()
+    # 才能讓 settings.network.rate_limit_backend 看到新值（之前直接 os.environ.get() 不需此步驟）。
+
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
+    reset_for_tests()
     assert isinstance(
         create_limiter(max_calls=1, window_seconds=1, name="m"),
         SlidingWindowLimiter,
     )
 
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "postgres")
+    reset_for_tests()
     assert isinstance(
         create_limiter(max_calls=1, window_seconds=1, name="p"),
         PostgresLimiter,
     )
 
     monkeypatch.delenv("RATE_LIMIT_BACKEND", raising=False)
+    reset_for_tests()
     assert isinstance(
         create_limiter(max_calls=1, window_seconds=1, name="d"),
         SlidingWindowLimiter,

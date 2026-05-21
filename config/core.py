@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .validators import BoolEnv
 
-_DEV_ROUTER_ENVS = frozenset({"development", "dev", "test", "testing", ""})
+_DEV_ROUTER_ENVS = frozenset({"development", "dev", "local", "test"})
 
 
 class CoreSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
     env: str = "development"
-    database_url: str = "postgresql://localhost:5432/ivymanagement"
+    database_url: str | None = None
     jwt_secret_key: str | None = None
     jwt_absolute_lifetime_hours: int = 8
     enable_api_docs: BoolEnv = False
     admin_init_username: str | None = None
     admin_init_password: str | None = None
+
+    # 連線池參數（5 base + 5 overflow = 10/pod 對 Supabase Session Mode 安全）
+    db_pool_size: int = Field(default=5, validation_alias="DB_POOL_SIZE")
+    db_pool_max_overflow: int = Field(
+        default=5, validation_alias="DB_POOL_MAX_OVERFLOW"
+    )
+    db_pool_timeout: int = Field(default=15, validation_alias="DB_POOL_TIMEOUT")
+    db_pool_recycle: int = Field(default=1800, validation_alias="DB_POOL_RECYCLE")
 
     @property
     def is_production(self) -> bool:

@@ -5,12 +5,13 @@ Portal - leave management endpoints
 import calendar as cal_module
 import json
 import logging
-import os
 import re
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
+
+from config import settings
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from utils.errors import raise_safe_500
@@ -603,7 +604,7 @@ def get_leave_attachment(
             data = backend.read(_UPLOAD_MODULE, key)
             return _Response(content=data, media_type="application/octet-stream")
 
-        ttl = int(os.getenv("SUPABASE_STORAGE_SIGNED_URL_TTL", "3600"))
+        ttl = settings.storage.supabase_signed_url_ttl
         url = backend.signed_url(_UPLOAD_MODULE, key, ttl)
         return RedirectResponse(url, status_code=302)
     finally:

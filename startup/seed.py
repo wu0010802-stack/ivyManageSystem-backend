@@ -5,9 +5,10 @@ startup/seed.py — 預設資料 Seed 函式
 """
 
 import logging
-import os
 
 from sqlalchemy.exc import IntegrityError
+
+from config import settings
 
 from models.database import (
     get_session,
@@ -37,7 +38,7 @@ OFFICIAL_JOB_TITLES = [
 
 
 def _is_production() -> bool:
-    return os.environ.get("ENV", "development").lower() in ("production", "prod")
+    return settings.core.is_production
 
 
 def seed_class_grades():
@@ -288,8 +289,8 @@ def seed_default_admin():
     """
     from utils.auth import hash_password
 
-    init_username = os.environ.get("ADMIN_INIT_USERNAME", "").strip()
-    init_password = os.environ.get("ADMIN_INIT_PASSWORD", "").strip()
+    init_username = (settings.core.admin_init_username or "").strip()
+    init_password = (settings.core.admin_init_password or "").strip()
 
     if not init_password:
         if _is_production():

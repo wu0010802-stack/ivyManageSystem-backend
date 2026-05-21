@@ -6,7 +6,6 @@ import asyncio
 import html
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
@@ -46,7 +45,9 @@ _DATE_PATTERNS = (
 _TEXT_EMPTY_MARKERS = {"", "-", "--", "未填寫", "無", "n/a", "na", "none"}
 _FIELD_KEY_CLEANER = re.compile(r"[\s:：_\-()/]+")
 _TAG_RE = re.compile(r"(?is)<[^>]+>")
-_BLOCK_TAG_RE = re.compile(r"(?is)</?(?:br|p|div|tr|td|th|li|label|option|section|article|h\d)[^>]*>")
+_BLOCK_TAG_RE = re.compile(
+    r"(?is)</?(?:br|p|div|tr|td|th|li|label|option|section|article|h\d)[^>]*>"
+)
 _SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style)\b.*?>.*?</\1>")
 _TAG_ATTR_RE = re.compile(
     r"([A-Za-z_:][\w:.-]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+))"
@@ -90,31 +91,15 @@ class IvykidsBackendRecord:
     transfer_term: Optional[bool] = None
 
 
-def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    stripped = value.strip()
-    return stripped or default
+from config import get_settings
 
-
-def _get_login_url() -> str:
-    return _get_env("IVYKIDS_LOGIN_URL", DEFAULT_LOGIN_URL) or DEFAULT_LOGIN_URL
-
-
-def _get_data_url() -> str:
-    return _get_env("IVYKIDS_DATA_URL", DEFAULT_DATA_URL) or DEFAULT_DATA_URL
-
-
-IVYKIDS_LOGIN_URL = _get_login_url()
-IVYKIDS_DATA_URL = _get_data_url()
+IVYKIDS_LOGIN_URL = get_settings().recruitment.ivykids_login_url
+IVYKIDS_DATA_URL = get_settings().recruitment.ivykids_data_url
 
 
 def _get_credentials() -> tuple[str, str]:
-    return (
-        _get_env("IVYKIDS_USERNAME", "") or "",
-        _get_env("IVYKIDS_PASSWORD", "") or "",
-    )
+    s = get_settings().recruitment
+    return (s.ivykids_username or "", s.ivykids_password or "")
 
 
 def sync_configured() -> bool:
@@ -123,8 +108,7 @@ def sync_configured() -> bool:
 
 
 def scheduler_requested() -> bool:
-    flag = (_get_env("IVYKIDS_SYNC_ENABLED", "false") or "false").lower()
-    return flag in {"1", "true", "yes", "on"}
+    return bool(get_settings().recruitment.ivykids_sync_enabled)
 
 
 def scheduler_configured() -> bool:
@@ -132,11 +116,7 @@ def scheduler_configured() -> bool:
 
 
 def get_sync_interval_minutes() -> int:
-    raw = _get_env("IVYKIDS_SYNC_INTERVAL_MINUTES", str(DEFAULT_SYNC_INTERVAL_MINUTES))
-    try:
-        return max(1, int(raw or DEFAULT_SYNC_INTERVAL_MINUTES))
-    except (TypeError, ValueError):
-        return DEFAULT_SYNC_INTERVAL_MINUTES
+    return max(1, get_settings().recruitment.ivykids_sync_interval_minutes)
 
 
 def _parse_datetime_value(value: Optional[str]) -> Optional[datetime]:
@@ -187,7 +167,7 @@ def _parse_datetime_value(value: Optional[str]) -> Optional[datetime]:
 
 
 def get_sync_created_at_cutoff() -> Optional[datetime]:
-    raw = _get_env("IVYKIDS_SYNC_CREATED_AT_CUTOFF", DEFAULT_SYNC_CREATED_AT_CUTOFF)
+    raw = get_settings().recruitment.ivykids_sync_created_at_cutoff
     cutoff = _parse_datetime_value(raw)
     if raw and cutoff is None:
         logger.warning(
@@ -199,12 +179,14 @@ def get_sync_created_at_cutoff() -> Optional[datetime]:
 
 def _build_requests_session() -> requests.Session:
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        ),
-    })
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+            ),
+        }
+    )
     return session
 
 
@@ -482,10 +464,16 @@ def parse_backend_record_detail(page_html: str) -> dict[str, Any]:
             _pick_detail_value(field_map, "birthday", "birthdate", "生日", "出生日期")
         ),
         "grade": _pick_detail_value(field_map, "grade", "適讀班級", "班別", "就讀班別"),
-        "address": _pick_detail_value(field_map, "address", "addr", "地址", "住址", "家庭住址"),
+        "address": _pick_detail_value(
+            field_map, "address", "addr", "地址", "住址", "家庭住址"
+        ),
         "district": _pick_detail_value(field_map, "district", "行政區", "地區", "區域"),
-        "referrer": _pick_detail_value(field_map, "referrer", "介紹者", "接待人員", "接待老師"),
-        "notes": _pick_detail_value(field_map, "notes", "note", "remark", "備註", "其他備註"),
+        "referrer": _pick_detail_value(
+            field_map, "referrer", "介紹者", "接待人員", "接待老師"
+        ),
+        "notes": _pick_detail_value(
+            field_map, "notes", "note", "remark", "備註", "其他備註"
+        ),
         "parent_response": _pick_detail_value(
             field_map,
             "parentresponse",
@@ -503,7 +491,9 @@ def parse_backend_record_detail(page_html: str) -> dict[str, Any]:
             _pick_detail_value(field_map, "hasdeposit", "deposit", "是否預繳", "預繳")
         ),
         "enrolled": _parse_bool(
-            _pick_detail_value(field_map, "enrolled", "是否報到", "已報到", "是否註冊", "已註冊")
+            _pick_detail_value(
+                field_map, "enrolled", "是否報到", "已報到", "是否註冊", "已註冊"
+            )
         ),
         "transfer_term": _parse_bool(
             _pick_detail_value(field_map, "transferterm", "轉其他學期", "轉學期")
@@ -514,7 +504,9 @@ def parse_backend_record_detail(page_html: str) -> dict[str, Any]:
 def _login_session(http_session: requests.Session) -> None:
     username, password = _get_credentials()
     if not (username and password):
-        raise RuntimeError("未設定 IVYKIDS_USERNAME / IVYKIDS_PASSWORD，無法同步義華校官網。")
+        raise RuntimeError(
+            "未設定 IVYKIDS_USERNAME / IVYKIDS_PASSWORD，無法同步義華校官網。"
+        )
 
     response = http_session.post(
         _get_login_url(),
@@ -538,7 +530,9 @@ def _extract_status_label(cell_html: Optional[str]) -> Optional[str]:
     return _strip_tags(before_br)
 
 
-def _parse_backend_list_row(row_html: str, page_url: str) -> Optional[IvykidsBackendRecord]:
+def _parse_backend_list_row(
+    row_html: str, page_url: str
+) -> Optional[IvykidsBackendRecord]:
     """解析義華後台列表的一列 <tr>。
 
     義華後台核心欄位固定為最後 8 欄：
@@ -689,9 +683,17 @@ def enrich_backend_records(
             enriched.append(record)
             continue
         try:
-            enriched.append(fetch_backend_record_detail(record, http_session=http_session, authenticated=True))
+            enriched.append(
+                fetch_backend_record_detail(
+                    record, http_session=http_session, authenticated=True
+                )
+            )
         except Exception as exc:  # pragma: no cover - 失敗時保留列表資料即可
-            logger.warning("義華校官網明細解析失敗：external_id=%s error=%s", record.external_id, exc)
+            logger.warning(
+                "義華校官網明細解析失敗：external_id=%s error=%s",
+                record.external_id,
+                exc,
+            )
             enriched.append(record)
     return enriched
 
@@ -705,7 +707,11 @@ def _deserialize_counts(raw_value: Optional[str]) -> dict[str, int]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {str(key): int(value) for key, value in parsed.items() if isinstance(value, (int, float))}
+    return {
+        str(key): int(value)
+        for key, value in parsed.items()
+        if isinstance(value, (int, float))
+    }
 
 
 def _serialize_counts(counts: dict[str, int]) -> str:
@@ -767,9 +773,11 @@ def _release_sync_lock() -> None:
 
 
 def _get_or_create_sync_state(session) -> RecruitmentSyncState:
-    state = session.query(RecruitmentSyncState).filter(
-        RecruitmentSyncState.provider_name == IVYKIDS_BACKEND_SOURCE
-    ).first()
+    state = (
+        session.query(RecruitmentSyncState)
+        .filter(RecruitmentSyncState.provider_name == IVYKIDS_BACKEND_SOURCE)
+        .first()
+    )
     if state:
         return state
 
@@ -794,18 +802,24 @@ def _build_status_payload(state: Optional[RecruitmentSyncState]) -> dict[str, An
         "scheduler_enabled": scheduler_on,
         "sync_interval_minutes": get_sync_interval_minutes(),
         "sync_in_progress": bool(state.sync_in_progress) if state else False,
-        "last_synced_at": state.last_synced_at.isoformat() if state and state.last_synced_at else None,
+        "last_synced_at": (
+            state.last_synced_at.isoformat() if state and state.last_synced_at else None
+        ),
         "last_sync_status": state.last_sync_status if state else None,
         "last_sync_message": state.last_sync_message if state else None,
         "last_sync_counts": counts,
         "message": state.last_sync_message if state else None,
     }
     if not provider_available:
-        payload["message"] = "尚未設定 IVYKIDS_USERNAME / IVYKIDS_PASSWORD，義華校官網同步未啟用。"
+        payload["message"] = (
+            "尚未設定 IVYKIDS_USERNAME / IVYKIDS_PASSWORD，義華校官網同步未啟用。"
+        )
     elif provider_available and not scheduler_on and scheduler_requested():
         payload["message"] = "已設定義華校同步帳密，但自動同步尚未啟用。"
     elif provider_available and not scheduler_requested():
-        payload["message"] = payload["message"] or "義華校官網手動同步可用，自動同步尚未啟用。"
+        payload["message"] = (
+            payload["message"] or "義華校官網手動同步可用，自動同步尚未啟用。"
+        )
     return payload
 
 
@@ -823,7 +837,9 @@ def _merge_text(existing: Optional[str], incoming: Optional[str]) -> Optional[st
     return _normalize_text(incoming) or _normalize_text(existing)
 
 
-def _merge_bool(existing: Optional[bool], incoming: Optional[bool], default: bool = False) -> bool:
+def _merge_bool(
+    existing: Optional[bool], incoming: Optional[bool], default: bool = False
+) -> bool:
     if incoming is not None:
         return bool(incoming)
     if existing is not None:
@@ -879,8 +895,12 @@ def _apply_record_to_synced_record(
     synced_record.phone = _merge_text(synced_record.phone, record.phone)
     synced_record.source = _merge_text(synced_record.source, record.source)
     synced_record.external_id = record.external_id
-    synced_record.external_status = _merge_text(synced_record.external_status, record.status)
-    synced_record.external_created_at = record.created_at or synced_record.external_created_at
+    synced_record.external_status = _merge_text(
+        synced_record.external_status, record.status
+    )
+    synced_record.external_created_at = (
+        record.created_at or synced_record.external_created_at
+    )
     synced_record.birthday = record.birthday or synced_record.birthday
     synced_record.grade = _merge_text(synced_record.grade, record.grade)
     synced_record.address = _merge_text(synced_record.address, record.address)
@@ -998,13 +1018,17 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
         ]
         existing_by_id: dict[str, RecruitmentIvykidsRecord] = {}
         if upsert_ids:
-            existing_rows = session.query(RecruitmentIvykidsRecord).filter(
-                RecruitmentIvykidsRecord.external_id.in_(upsert_ids)
-            ).all()
+            existing_rows = (
+                session.query(RecruitmentIvykidsRecord)
+                .filter(RecruitmentIvykidsRecord.external_id.in_(upsert_ids))
+                .all()
+            )
             existing_by_id = {row.external_id: row for row in existing_rows}
 
         for record in records:
-            if not _record_meets_created_at_cutoff(record.created_at, created_at_cutoff):
+            if not _record_meets_created_at_cutoff(
+                record.created_at, created_at_cutoff
+            ):
                 skipped += 1
                 if len(preview) < PREVIEW_LIMIT:
                     preview.append(_preview_item(record, "skipped"))
@@ -1015,8 +1039,10 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
             if existing is None:
                 existing = RecruitmentIvykidsRecord(
                     external_id=record.external_id,
-                    month=record.month or f"{datetime.now().year - 1911}.{datetime.now().month:02d}",
-                    child_name=_normalize_text(record.child_name) or f"外部資料-{record.external_id}",
+                    month=record.month
+                    or f"{datetime.now().year - 1911}.{datetime.now().month:02d}",
+                    child_name=_normalize_text(record.child_name)
+                    or f"外部資料-{record.external_id}",
                     has_deposit=False,
                     enrolled=False,
                     transfer_term=False,
@@ -1044,9 +1070,7 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
         state.sync_in_progress = False
         state.last_synced_at = synced_at
         state.last_sync_status = "success"
-        state.last_sync_message = (
-            f"{IVYKIDS_PROVIDER_LABEL}同步完成：新增 {inserted} 筆、更新 {updated} 筆、略過 {skipped} 筆。"
-        )
+        state.last_sync_message = f"{IVYKIDS_PROVIDER_LABEL}同步完成：新增 {inserted} 筆、更新 {updated} 筆、略過 {skipped} 筆。"
         state.last_sync_counts = _serialize_counts(counts)
         session.flush()
 
@@ -1085,13 +1109,15 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
         state.sync_in_progress = False
         state.last_sync_status = "failed"
         state.last_sync_message = str(exc)
-        state.last_sync_counts = _serialize_counts({
-            "inserted": 0,
-            "updated": 0,
-            "skipped": 0,
-            "total_fetched": 0,
-            "page_count": 0,
-        })
+        state.last_sync_counts = _serialize_counts(
+            {
+                "inserted": 0,
+                "updated": 0,
+                "skipped": 0,
+                "total_fetched": 0,
+                "page_count": 0,
+            }
+        )
         session.flush()
         return {
             "provider_available": True,
@@ -1104,7 +1130,9 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
             "page_count": 0,
             "message": str(exc),
             "preview": [],
-            "last_synced_at": state.last_synced_at.isoformat() if state.last_synced_at else None,
+            "last_synced_at": (
+                state.last_synced_at.isoformat() if state.last_synced_at else None
+            ),
             "sync_in_progress": False,
             "scheduler_enabled": scheduler_configured(),
             "sync_interval_minutes": get_sync_interval_minutes(),
@@ -1112,7 +1140,9 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
         }
 
 
-def sync_backend_records(session=None, max_pages: int = MAX_SYNC_PAGES, trigger: str = "manual") -> dict[str, Any]:
+def sync_backend_records(
+    session=None, max_pages: int = MAX_SYNC_PAGES, trigger: str = "manual"
+) -> dict[str, Any]:
     """義華校官網同步入口。
 
     - session 已給定（測試 / 已 in transaction caller）：直接走 _run_sync，由 caller
@@ -1144,7 +1174,9 @@ async def run_sync_scheduler(stop_event: asyncio.Event) -> None:
         return
 
     interval_seconds = get_sync_interval_minutes() * 60
-    logger.info("義華校官網自動同步已啟用，每 %s 分鐘執行一次", get_sync_interval_minutes())
+    logger.info(
+        "義華校官網自動同步已啟用，每 %s 分鐘執行一次", get_sync_interval_minutes()
+    )
 
     while not stop_event.is_set():
         try:
@@ -1152,6 +1184,8 @@ async def run_sync_scheduler(stop_event: asyncio.Event) -> None:
             break
         except asyncio.TimeoutError:
             try:
-                await asyncio.to_thread(sync_backend_records, None, MAX_SYNC_PAGES, "scheduler")
+                await asyncio.to_thread(
+                    sync_backend_records, None, MAX_SYNC_PAGES, "scheduler"
+                )
             except Exception:  # pragma: no cover - 保險用
                 logger.exception("義華校官網排程同步發生未預期錯誤")

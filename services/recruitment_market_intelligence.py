@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
@@ -12,6 +11,7 @@ from typing import Any, Iterable, Optional
 import requests
 from sqlalchemy import case, func
 
+from config import settings
 from models.recruitment import (
     CompetitorSchool,
     RecruitmentAreaInsightCache,
@@ -23,53 +23,24 @@ from services.geocoding_service import current_geocoding_provider, geocode_addre
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
-GOOGLE_GEOCODING_URL = os.environ.get(
-    "GOOGLE_GEOCODING_URL",
-    "https://maps.googleapis.com/maps/api/geocode/json",
-).strip()
-GOOGLE_ROUTES_API_URL = os.environ.get(
-    "GOOGLE_ROUTES_API_URL",
-    "https://routes.googleapis.com/directions/v2:computeRoutes",
-).strip()
-GOOGLE_PLACES_TEXT_API_URL = os.environ.get(
-    "GOOGLE_PLACES_TEXT_API_URL",
-    "https://places.googleapis.com/v1/places:searchText",
-).strip()
-TGOS_QUERY_ADDR_URL = os.environ.get(
-    "TGOS_QUERY_ADDR_URL",
-    "http://gis.tgos.tw/addrws/v30/QueryAddr.asmx/QueryAddr",
-).strip()
-TGOS_APP_ID = os.environ.get("TGOS_APP_ID", "").strip()
-TGOS_API_KEY = os.environ.get("TGOS_API_KEY", "").strip()
-TGOS_ROUTE_URL = os.environ.get(
-    "TGOS_ROUTE_URL",
-    "http://gis.tgos.tw/TGRoute/TGRoute.aspx",
-).strip()
-NLSC_TOWN_QUERY_URL = os.environ.get(
-    "NLSC_TOWN_QUERY_URL",
-    "https://api.nlsc.gov.tw/other/TownVillagePointQuery",
-).strip()
-NLSC_LAND_USE_URL = os.environ.get(
-    "NLSC_LAND_USE_URL",
-    "https://api.nlsc.gov.tw/other/LandUsePointQuery",
-).strip()
-RECRUITMENT_POPULATION_DENSITY_URL = os.environ.get(
-    "RECRUITMENT_POPULATION_DENSITY_URL", ""
-).strip()
-RECRUITMENT_POPULATION_AGE_URL = os.environ.get(
-    "RECRUITMENT_POPULATION_AGE_URL", ""
-).strip()
-RECRUITMENT_CAMPUS_NAME = (
-    os.environ.get("RECRUITMENT_CAMPUS_NAME", "本園").strip() or "本園"
-)
-RECRUITMENT_CAMPUS_ADDRESS = os.environ.get("RECRUITMENT_CAMPUS_ADDRESS", "").strip()
-RECRUITMENT_CAMPUS_LAT = os.environ.get("RECRUITMENT_CAMPUS_LAT", "").strip()
-RECRUITMENT_CAMPUS_LNG = os.environ.get("RECRUITMENT_CAMPUS_LNG", "").strip()
-RECRUITMENT_CAMPUS_TRAVEL_MODE = (
-    os.environ.get("RECRUITMENT_CAMPUS_TRAVEL_MODE", "driving").strip() or "driving"
-)
-REQUEST_TIMEOUT = float(os.environ.get("RECRUITMENT_MARKET_TIMEOUT_SECONDS", "12"))
+GOOGLE_MAPS_API_KEY = (settings.geocoding.google_maps_api_key or "").strip()
+GOOGLE_GEOCODING_URL = settings.geocoding.google_geocoding_url
+GOOGLE_ROUTES_API_URL = settings.recruitment.google_routes_api_url
+GOOGLE_PLACES_TEXT_API_URL = settings.recruitment.google_places_text_api_url
+TGOS_QUERY_ADDR_URL = settings.recruitment.tgos_query_addr_url
+TGOS_APP_ID = (settings.recruitment.tgos_app_id or "").strip()
+TGOS_API_KEY = (settings.recruitment.tgos_api_key or "").strip()
+TGOS_ROUTE_URL = settings.recruitment.tgos_route_url
+NLSC_TOWN_QUERY_URL = settings.recruitment.nlsc_town_query_url
+NLSC_LAND_USE_URL = settings.recruitment.nlsc_land_use_url
+RECRUITMENT_POPULATION_DENSITY_URL = settings.recruitment.population_density_url
+RECRUITMENT_POPULATION_AGE_URL = settings.recruitment.population_age_url
+RECRUITMENT_CAMPUS_NAME = settings.recruitment.campus_name
+RECRUITMENT_CAMPUS_ADDRESS = (settings.recruitment.campus_address or "").strip()
+RECRUITMENT_CAMPUS_LAT = settings.recruitment.campus_lat
+RECRUITMENT_CAMPUS_LNG = settings.recruitment.campus_lng
+RECRUITMENT_CAMPUS_TRAVEL_MODE = settings.recruitment.campus_travel_mode or "driving"
+REQUEST_TIMEOUT = float(settings.recruitment.market_timeout_seconds)
 GOOGLE_PLACES_PAGE_SIZE = 20
 GOOGLE_PLACES_MAX_RESULTS = 60  # Google Places New Text Search 每次上限
 # MOE gap-fill：每次 request 最多對新學校呼叫 geocoding API 的次數上限
@@ -1258,8 +1229,8 @@ def get_default_campus_payload() -> dict[str, Any]:
     return {
         "campus_name": RECRUITMENT_CAMPUS_NAME,
         "campus_address": RECRUITMENT_CAMPUS_ADDRESS,
-        "campus_lat": _safe_float(RECRUITMENT_CAMPUS_LAT),
-        "campus_lng": _safe_float(RECRUITMENT_CAMPUS_LNG),
+        "campus_lat": RECRUITMENT_CAMPUS_LAT,
+        "campus_lng": RECRUITMENT_CAMPUS_LNG,
         "travel_mode": (
             RECRUITMENT_CAMPUS_TRAVEL_MODE
             if RECRUITMENT_CAMPUS_TRAVEL_MODE in SUPPORTED_TRAVEL_MODES
@@ -1682,12 +1653,16 @@ def sync_market_intelligence(session, *, hotspot_limit: int = 200) -> dict[str, 
             .all()
         ]
         # 批次查既有快取，避免逐一 first() 造成 N 次 round-trip
-        existing_cache = {
-            cache.address: cache
-            for cache in session.query(RecruitmentGeocodeCache)
-            .filter(RecruitmentGeocodeCache.address.in_(hotspot_addresses))
-            .all()
-        } if hotspot_addresses else {}
+        existing_cache = (
+            {
+                cache.address: cache
+                for cache in session.query(RecruitmentGeocodeCache)
+                .filter(RecruitmentGeocodeCache.address.in_(hotspot_addresses))
+                .all()
+            }
+            if hotspot_addresses
+            else {}
+        )
         hotspot_rows = []
         for address in hotspot_addresses:
             row = existing_cache.get(address)

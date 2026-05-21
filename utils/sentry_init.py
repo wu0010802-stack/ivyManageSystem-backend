@@ -11,10 +11,11 @@
 
 import hashlib
 import logging
-import os
 import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,7 @@ def init_sentry() -> bool:
 
     成功 init 回 True；DSN 缺、空白、或 sentry-sdk 未安裝皆回 False。
     """
-    dsn = (os.environ.get("SENTRY_DSN") or "").strip()
+    dsn = (settings.sentry.dsn or "").strip()
     if not dsn:
         return False
     try:
@@ -233,15 +234,9 @@ def init_sentry() -> bool:
         logger.warning("sentry-sdk 未安裝；Sentry 整合略過")
         return False
 
-    env = (
-        os.environ.get("SENTRY_ENVIRONMENT")
-        or os.environ.get("ENV", "development").lower()
-    )
-    release = os.environ.get("SENTRY_RELEASE") or None
-    try:
-        traces_rate = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
-    except ValueError:
-        traces_rate = 0.1
+    env = settings.sentry.environment or settings.core.env.lower()
+    release = settings.sentry.release or None
+    traces_rate = settings.sentry.traces_sample_rate
 
     sentry_sdk.init(
         dsn=dsn,

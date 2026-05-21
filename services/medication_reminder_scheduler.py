@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from config import settings
 from models.database import session_scope
 from models.portfolio import StudentMedicationOrder
 
@@ -29,11 +29,11 @@ logger = logging.getLogger(__name__)
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 # 觸發時刻（可由環境變數覆寫）
-REMINDER_HOUR = int(os.getenv("MEDICATION_REMINDER_HOUR", "7"))
-REMINDER_MINUTE = int(os.getenv("MEDICATION_REMINDER_MINUTE", "30"))
+REMINDER_HOUR = settings.scheduler.medication_reminder_hour
+REMINDER_MINUTE = settings.scheduler.medication_reminder_minute
 
 # 檢查週期：每 5 分鐘巡檢一次（寬容度夠又不會太頻繁）
-CHECK_INTERVAL_SECONDS = int(os.getenv("MEDICATION_REMINDER_CHECK_INTERVAL", "300"))
+CHECK_INTERVAL_SECONDS = settings.scheduler.medication_reminder_check_interval
 
 
 def _now_taipei() -> datetime:

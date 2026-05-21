@@ -16,7 +16,9 @@ def test_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = CoreSettings()
     assert s.env == "development"
-    assert s.database_url == "postgresql://localhost:5432/ivymanagement"
+    assert (
+        s.database_url is None
+    )  # dev fallback handled by models/base.py, not settings
     assert s.enable_api_docs is False
     assert s.jwt_absolute_lifetime_hours == 8
     assert s.admin_init_username is None

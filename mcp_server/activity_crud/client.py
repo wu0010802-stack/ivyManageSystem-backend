@@ -13,10 +13,11 @@ env：
 
 from __future__ import annotations
 
-import os
 from typing import Any, Optional
 
 import httpx
+
+from config import settings
 
 
 class IvyApiError(Exception):
@@ -45,11 +46,9 @@ class IvyApiClient:
         timeout: float = 30.0,
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ):
-        self.base_url = base_url or os.environ.get(
-            "IVY_API_BASE_URL", "http://localhost:8088"
-        )
-        self.username = username or os.environ.get("IVY_MCP_USERNAME") or ""
-        self.password = password or os.environ.get("IVY_MCP_PASSWORD") or ""
+        self.base_url = base_url or settings.misc.ivy_api_base_url
+        self.username = username or settings.misc.ivy_mcp_username or ""
+        self.password = password or settings.misc.ivy_mcp_password or ""
         if not self.username or not self.password:
             raise IvyApiError(
                 500,

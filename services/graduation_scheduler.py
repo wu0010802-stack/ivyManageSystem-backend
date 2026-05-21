@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from config import settings
 from models.classroom import (
     LIFECYCLE_ACTIVE,
     LIFECYCLE_GRADUATED,
@@ -36,14 +36,14 @@ logger = logging.getLogger(__name__)
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 # 學年結束日（下學期最後一天）— 目前為幼兒園常態 7/31
-GRADUATION_MONTH = int(os.getenv("AUTO_GRADUATION_MONTH", "7"))
-GRADUATION_DAY = int(os.getenv("AUTO_GRADUATION_DAY", "31"))
+GRADUATION_MONTH = settings.scheduler.auto_graduation_month
+GRADUATION_DAY = settings.scheduler.auto_graduation_day
 
 # 預告期間：畢業日前 N 天顯示「即將畢業」提示（給 notification 聚合用）
-PREVIEW_WINDOW_DAYS = int(os.getenv("AUTO_GRADUATION_PREVIEW_DAYS", "7"))
+PREVIEW_WINDOW_DAYS = settings.scheduler.auto_graduation_preview_days
 
 # 檢查週期：每天檢查一次即可；此處容錯用 1 小時巡檢以降低 miss 機率
-CHECK_INTERVAL_SECONDS = int(os.getenv("AUTO_GRADUATION_CHECK_INTERVAL", "3600"))
+CHECK_INTERVAL_SECONDS = settings.scheduler.auto_graduation_check_interval
 
 
 def _today_taipei() -> date:
@@ -159,7 +159,9 @@ def run_auto_graduation(effective_date: Optional[date] = None) -> dict:
 
 
 def scheduler_enabled() -> bool:
-    return os.getenv("AUTO_GRADUATION_ENABLED", "").lower() in ("1", "true", "yes")
+    from config import get_settings
+
+    return get_settings().scheduler.auto_graduation_enabled
 
 
 async def run_auto_graduation_scheduler(stop_event: asyncio.Event) -> None:

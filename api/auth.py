@@ -4,11 +4,12 @@ Authentication & user management router
 
 import ipaddress
 import logging
-import os
 import time
 from collections import defaultdict
 from datetime import datetime
 from typing import Optional
+
+from config import settings
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from utils.errors import raise_safe_500
@@ -46,11 +47,11 @@ logger = logging.getLogger(__name__)
 
 
 def _get_school_wifi_networks() -> list:
-    raw = os.getenv("SCHOOL_WIFI_IPS", "").strip()
-    if not raw:
+    raw_list = settings.network.school_wifi_ips
+    if not raw_list:
         return []
     result = []
-    for entry in raw.split(","):
+    for entry in raw_list:
         entry = entry.strip()
         if entry:
             try:

@@ -16,7 +16,7 @@ def test_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = StorageSettings()
     assert s.backend == "local"
-    assert s.root == Path("./uploads")
+    assert s.root is None  # env 沒設則 None，由 utils/storage.py 決定 fallback
     assert s.supabase_url is None
     assert s.supabase_service_role_key is None
     assert s.supabase_signed_url_ttl == 3600

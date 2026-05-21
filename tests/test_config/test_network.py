@@ -18,7 +18,9 @@ def test_defaults(monkeypatch):
     assert s.allowed_hosts == []
     assert s.trusted_proxy_ips == "*"
     assert s.csp_script_hashes == []
-    assert s.cookie_samesite == "lax"
+    assert (
+        s.cookie_samesite == "strict"
+    )  # 對齊 utils/cookie.py 原始安全預設（CSRF 最強防護）
     assert s.school_wifi_ips == []
     assert s.rate_limit_backend == "memory"
 
