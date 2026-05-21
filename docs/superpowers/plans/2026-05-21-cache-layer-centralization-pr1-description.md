@@ -48,7 +48,7 @@
 - 14 new `tests/test_cache_layer.py` 全綠
 - 全套 pytest：**4630 passed**, 6 skipped；零本 PR 引入的回歸
 - `grep -rn "from cachetools" api/ services/` 無輸出
-- 13 commits 一一獨立，皆 Conventional Commits 格式
+- 14 commits 一一獨立，皆 Conventional Commits 格式
 
 ### Pre-existing 失敗（與本 PR 無關，merge 前確認 main 同樣紅）
 - 3× `test_audit_router::TestAuditListFilters::*`（filter_by_entity_id / filter_by_ip_address / changes_field_deserialized）
