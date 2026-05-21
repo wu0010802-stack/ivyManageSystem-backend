@@ -14,11 +14,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from models.base import session_scope
 from services.official_calendar import ensure_official_calendar_synced
+from utils.advisory_lock import try_scheduler_lock
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +48,32 @@ def _years_to_sync(now: datetime | None = None) -> list[int]:
     return years
 
 
-def sync_official_calendar_once() -> dict[int, str]:
-    """對當年（必要時加下一年）執行一次強制同步，回傳 {year: status} 結果。"""
+def sync_official_calendar_once(today: date | None = None) -> dict[int, str]:
+    """對當年（必要時加下一年）執行一次強制同步，回傳 {year: status} 結果。
+
+    多 worker 部署時以 advisory lock 確保同一日只有一個 worker 真的對上游發 request。
+    取不到鎖（其他 worker 正在同步）回傳 ``{}``，外層 loop 不會 log（自然 falsy）。
+    """
+    today = today or datetime.now(TAIPEI_TZ).date()
     results: dict[int, str] = {}
-    for year in _years_to_sync():
-        try:
-            with session_scope() as session:
-                info = ensure_official_calendar_synced(session, year, force=True)
-                results[year] = info.get("status", "unknown")
-        except Exception:
-            logger.exception("官方日曆排程同步失敗：year=%s", year)
-            results[year] = "error"
+    with session_scope() as lock_session:
+        with try_scheduler_lock(
+            lock_session,
+            scheduler_name="official_calendar",
+            run_key=today.isoformat(),
+        ) as acquired:
+            if not acquired:
+                return {}
+            for year in _years_to_sync():
+                try:
+                    with session_scope() as session:
+                        info = ensure_official_calendar_synced(
+                            session, year, force=True
+                        )
+                        results[year] = info.get("status", "unknown")
+                except Exception:
+                    logger.exception("官方日曆排程同步失敗：year=%s", year)
+                    results[year] = "error"
     return results
 
 
