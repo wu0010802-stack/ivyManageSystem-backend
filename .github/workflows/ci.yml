@@ -151,3 +151,35 @@ jobs:
       - name: Run drift check
         working-directory: ivy-frontend
         run: npm run gen:api:check
+
+  alembic-heads:
+    name: Alembic Single Head Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Assert single Alembic head
+        env:
+          ENV: development
+          DATABASE_URL: postgresql://dummy:dummy@localhost:5432/dummy
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+        run: |
+          HEAD_COUNT=$(alembic heads | grep -c '(head)')
+          if [ "$HEAD_COUNT" -ne 1 ]; then
+            echo "::error::Expected 1 Alembic head, got $HEAD_COUNT"
+            alembic heads
+            exit 1
+          fi
+          echo "Single head OK ($HEAD_COUNT)"
