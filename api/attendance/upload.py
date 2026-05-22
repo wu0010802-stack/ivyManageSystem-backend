@@ -23,6 +23,7 @@ from models.database import (
 )
 from utils.auth import require_staff_permission
 from utils.attendance_guards import assert_no_self_in_batch
+from utils.attendance_leave_merge import merge_attendance_with_leave
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
@@ -499,6 +500,7 @@ async def upload_attendance(
                             existing.late_minutes = late_minutes
                             existing.early_leave_minutes = early_leave_minutes
                             existing.remark = f"部門: {department}"
+                            merge_attendance_with_leave(existing, session)
                         else:
                             attendance = Attendance(
                                 employee_id=employee.id,
@@ -515,6 +517,7 @@ async def upload_attendance(
                                 remark=f"部門: {department}",
                             )
                             session.add(attendance)
+                            merge_attendance_with_leave(attendance, session)
                             attendance_cache[(employee.id, attendance_date)] = (
                                 attendance
                             )
@@ -756,6 +759,7 @@ async def upload_attendance(
                                 existing.early_leave_minutes = detail["early_minutes"]
 
                             existing.remark = "Legacy Upload"
+                            merge_attendance_with_leave(existing, session)
                         else:
                             att = Attendance(
                                 employee_id=employee.id,
@@ -776,6 +780,7 @@ async def upload_attendance(
                                 remark="Legacy Upload",
                             )
                             session.add(att)
+                            merge_attendance_with_leave(att, session)
                             legacy_attendance_cache[(employee.id, a_date)] = att
 
                         db_save_count += 1
@@ -990,6 +995,7 @@ async def upload_attendance_csv(
                     existing.late_minutes = late_minutes
                     existing.early_leave_minutes = early_leave_minutes
                     existing.remark = f"部門: {row.department}"
+                    merge_attendance_with_leave(existing, session)
                 else:
                     attendance = Attendance(
                         employee_id=employee.id,
@@ -1006,6 +1012,7 @@ async def upload_attendance_csv(
                         remark=f"部門: {row.department}",
                     )
                     session.add(attendance)
+                    merge_attendance_with_leave(attendance, session)
                     csv_attendance_cache[(employee.id, attendance_date)] = attendance
 
                 results["success"] += 1

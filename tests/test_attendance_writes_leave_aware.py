@@ -1,12 +1,16 @@
 """W-1, W-2: create_or_update_attendance_record 接 merge helper 整合測試
+W-3: upload_attendance Excel 批次匯入接 merge helper 整合測試
 
 W-1: admin 對已有 approved full-day leave 的日期手動補打卡 → leave_record_id 仍對齊
 W-2: admin 重複編輯同一 row → leave_record_id 保留
+W-3: approve 半天請假 09:00-13:00 → Excel upload 該日 punch_in=09:30
+     → leave_record_id 對齊 / partial_leave_hours=4 / late=0
 """
 
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
@@ -23,6 +27,7 @@ from api.auth import router as auth_router
 from models.base import Base
 from models.database import Attendance, Employee, LeaveRecord, User
 from utils.auth import hash_password
+from utils.attendance_leave_merge import merge_attendance_with_leave
 from utils.permissions import Permission
 
 # ── Fixtures ───────────────────────────────────────────────────────────
@@ -227,3 +232,82 @@ class TestAdminWriteWithLeave:
             assert (
                 row.leave_record_id == leave_id
             ), f"重複編輯後 leave_record_id 應保留 {leave_id}，實際為 {row.leave_record_id}"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TestExcelUploadWithLeave
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestExcelUploadWithLeave:
+    def test_w3_upload_row_leave_aware(self, att_client):
+        """W-3: approve 半天請假 09:00-13:00 → Excel upload 該日 punch_in=09:30
+        → leave_record_id 對齊 / partial_leave_hours=4 / late=0
+        (late-aware: 請假涵蓋 09:00-13:00，09:30 punch_in 在假期內 → late=0)
+
+        測試策略:直接構造 Attendance 物件並呼叫 merge_attendance_with_leave,
+        模擬 upload_attendance 每個 Excel row 的 build+merge 流程。
+        """
+        client, sf = att_client
+        leave_date = date(2026, 5, 22)
+
+        with sf() as s:
+            target = _make_employee(s, employee_id="E_W3", name="W3員工")
+            # 半天請假 09:00-13:00，4 小時
+            lv = LeaveRecord(
+                employee_id=target.id,
+                leave_type="personal",
+                start_date=leave_date,
+                end_date=leave_date,
+                leave_hours=4.0,
+                start_time="09:00",
+                end_time="13:00",
+                is_approved=True,
+            )
+            s.add(lv)
+            s.commit()
+            target_id = target.id
+            leave_id = lv.id
+
+        # 模擬 upload_attendance 對 Excel row 構造的 Attendance（punch_in=09:30）
+        # 上傳前 caller 算出 late（因為 09:30 > 09:00），但 merge 後應歸零
+        with sf() as s:
+            att = Attendance(
+                employee_id=target_id,
+                attendance_date=leave_date,
+                punch_in_time=datetime(2026, 5, 22, 9, 30),
+                punch_out_time=datetime(2026, 5, 22, 18, 0),
+                status="late",
+                is_late=True,
+                is_early_leave=False,
+                is_missing_punch_in=False,
+                is_missing_punch_out=False,
+                late_minutes=30,
+                early_leave_minutes=0,
+                remark="部門: 測試",
+            )
+            s.add(att)
+            # 在 session.add 後、session.commit 前呼叫 merge（對齊 upload 流程）
+            merge_attendance_with_leave(att, s)
+            s.commit()
+
+        # 驗證 merge 結果
+        with sf() as s:
+            row = (
+                s.query(Attendance)
+                .filter(
+                    Attendance.employee_id == target_id,
+                    Attendance.attendance_date == leave_date,
+                )
+                .first()
+            )
+            assert row is not None, "Attendance row 未寫入"
+            assert (
+                row.leave_record_id == leave_id
+            ), f"leave_record_id 應為 {leave_id}，實際為 {row.leave_record_id}"
+            assert row.partial_leave_hours == Decimal(
+                "4.0"
+            ), f"partial_leave_hours 應為 4.0，實際為 {row.partial_leave_hours}"
+            assert (
+                row.late_minutes == 0
+            ), f"leave-aware 後 late_minutes 應為 0，實際為 {row.late_minutes}"
