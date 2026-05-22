@@ -190,6 +190,75 @@ def _do_toggle_deposit(session, visit, *, to_stage: Stage, actor_user_id):
     return None, log_id  # (student_id, log_id)
 
 
+def _do_convert(session, visit, *, classroom_id, actor_user_id):
+    """deposited → enrolled：呼叫 convert_recruitment_to_student（會寫 event log + ChangeLog）。"""
+    from services.recruitment_conversion import convert_recruitment_to_student
+    from models.recruitment import RecruitmentEventLog
+
+    if classroom_id is None:
+        raise RecruitmentFunnelError(
+            "已預繳→已報到 需要 classroom_id",
+            code="CONVERT_NEED_CLASSROOM",
+        )
+    result = convert_recruitment_to_student(
+        session,
+        recruitment_visit_id=visit.id,
+        student_id_code=None,  # 走自動產號路徑
+        classroom_id=classroom_id,
+        recorded_by=actor_user_id,
+    )
+    # convert 內部已寫 funnel event log（converted）— 撈出 id
+    last_log = (
+        session.query(RecruitmentEventLog)
+        .filter_by(recruitment_visit_id=visit.id, event_type="converted")
+        .order_by(RecruitmentEventLog.id.desc())
+        .first()
+    )
+    return result.student_id, last_log.id
+
+
+def _do_activate(session, visit, student, *, actor_user_id):
+    """enrolled → active: lifecycle 升級。"""
+    student.lifecycle_status = "active"
+    log_id = _write_event_log(
+        session,
+        visit_id=visit.id,
+        event_type="activated",
+        from_stage="enrolled",
+        to_stage="active",
+        student_id=student.id,
+        actor_user_id=actor_user_id,
+    )
+    return student.id, log_id
+
+
+def _do_revert_activate(session, visit, student, *, actor_user_id, reason):
+    """active → enrolled: lifecycle 降級；若已有 attendance 則 warning（不擋）。"""
+    from models.classroom import StudentAttendance
+
+    warnings: list[str] = []
+    has_attendance = (
+        session.query(StudentAttendance)
+        .filter(StudentAttendance.student_id == student.id)
+        .limit(1)
+        .first()
+    )
+    if has_attendance:
+        warnings.append("student_has_attendance_after_active")
+    student.lifecycle_status = "enrolled"
+    log_id = _write_event_log(
+        session,
+        visit_id=visit.id,
+        event_type="revert_activated",
+        from_stage="active",
+        to_stage="enrolled",
+        student_id=student.id,
+        actor_user_id=actor_user_id,
+        reason=reason,
+    )
+    return student.id, log_id, warnings
+
+
 def transition_visit(
     session: Session,
     visit_id: int,
@@ -230,8 +299,36 @@ def transition_visit(
             to_stage=to_stage,
             actor_user_id=actor_user_id,
         )
+
+    # Task 8: deposited → enrolled
+    elif from_stage == "deposited" and to_stage == "enrolled":
+        student_id, log_id = _do_convert(
+            session,
+            visit,
+            classroom_id=classroom_id,
+            actor_user_id=actor_user_id,
+        )
+
+    # Task 9: enrolled ↔ active
+    elif from_stage == "enrolled" and to_stage == "active":
+        student_id, log_id = _do_activate(
+            session,
+            visit,
+            student,
+            actor_user_id=actor_user_id,
+        )
+    elif from_stage == "active" and to_stage == "enrolled":
+        student_id, log_id, ws = _do_revert_activate(
+            session,
+            visit,
+            student,
+            actor_user_id=actor_user_id,
+            reason=reason,
+        )
+        warnings.extend(ws)
+
     else:
-        # 其他 dispatch 在 Task 8-10 補
+        # 其他 dispatch 在 Task 10 補
         raise NotImplementedError(f"transition {from_stage} → {to_stage} 尚未實作")
 
     return TransitionResult(
