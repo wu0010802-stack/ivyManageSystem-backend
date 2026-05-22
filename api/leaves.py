@@ -904,7 +904,52 @@ def update_leave(
 
             lock_and_premark_stale(session, leave.employee_id, _affected_months)
 
+        # ── 在 model 寫回前 snapshot（reapply 需要舊範圍）─────────────────────
+        old_sync_snapshot = {
+            "start_date": leave.start_date,
+            "end_date": leave.end_date,
+            "start_time": leave.start_time,
+            "end_time": leave.end_time,
+            "leave_type": leave.leave_type,
+            "leave_hours": leave.leave_hours,
+            "is_approved": leave.is_approved,
+        }
+
         _apply_leave_update_and_revoke(leave, data, current_user, leave_id)
+
+        # ── 考勤同步 hook（Hook 3/4）────────────────────────────────────────────
+        # Hook 3（退審路徑）：was_approved=True → _apply_leave_update_and_revoke 後
+        #   leave.is_approved=None → revert
+        # Hook 4（改關鍵欄仍 approved，罕見）：reapply
+        # LeaveAttendanceConflict / LeavePartialTimeMissing → 422
+        from services import employee_leave_attendance_sync as sync
+
+        _key_fields_changed = any(
+            old_sync_snapshot[k] != getattr(leave, k)
+            for k in (
+                "start_date",
+                "end_date",
+                "start_time",
+                "end_time",
+                "leave_type",
+                "leave_hours",
+            )
+        )
+        try:
+            if old_sync_snapshot["is_approved"] is True and leave.is_approved is None:
+                # 退審路徑（Hook 3）
+                sync.revert(session, leave_id)
+            elif (
+                old_sync_snapshot["is_approved"] is True
+                and leave.is_approved is True
+                and _key_fields_changed
+            ):
+                # 改關鍵欄但仍 approved（Hook 4，罕見）
+                sync.reapply(session, leave_id, old_snapshot=old_sync_snapshot)
+        except (sync.LeaveAttendanceConflict, sync.LeavePartialTimeMissing) as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        # ────────────────────────────────────────────────────────────────────────
+
         session.commit()
 
         after_snapshot = {

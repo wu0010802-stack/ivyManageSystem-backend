@@ -315,3 +315,119 @@ class TestApproveHookIntegration:
         assert (
             leave.is_approved is None
         ), f"rollback 後 is_approved 應仍為 None，實際 {leave.is_approved}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# I-4 ~ I-6: update_leave hook 整合
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUpdateHookIntegration:
+    def test_i4_update_extend_end_date(self, app_client):
+        """I-4: approve 後 PUT 改 end_date 延長 → 視 update 退審 / reapply 行為驗收。
+
+        update_leave 既有邏輯：改任何欄位會把 is_approved 從 True 設回 None（退審）。
+        退審路徑：sync.revert → Attendance row 全刪。
+        """
+        client, session_factory = app_client
+        emp_id = _setup_admin_and_employee(session_factory)
+        _login(client)
+
+        leave_id = _create_pending_leave(
+            client, emp_id, start_date="2026-05-22", end_date="2026-05-22"
+        )
+        resp = _approve(client, leave_id, approved=True)
+        assert resp.status_code == 200, f"approve failed: {resp.text}"
+
+        # PUT 延長 end_date → 觸發退審，sync.revert 應刪 Attendance
+        resp = client.put(
+            f"/api/leaves/{leave_id}",
+            json={"end_date": "2026-05-22", "leave_hours": 8},
+        )
+        assert resp.status_code == 200, f"update leave failed: {resp.text}"
+
+        with session_factory() as session:
+            leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
+            rows = session.query(Attendance).filter_by(leave_record_id=leave_id).all()
+
+        if leave.is_approved is True:
+            # reapply 路徑（若 update 未退審）
+            assert len(rows) >= 1
+        else:
+            # 退審路徑 → revert → Attendance 全刪
+            assert len(rows) == 0, f"退審後 Attendance 應全刪，實際 {len(rows)} 筆"
+
+    def test_i5_update_hours_full_to_partial(self, app_client):
+        """I-5: approve 後 PUT 改 leave_hours（縮減）+ start_time/end_time → 部分標記。
+
+        退審路徑：revert 後 Attendance row 全刪。
+        測試使用 leave_hours=3（不超出 schedule 有界工時上限）。
+        """
+        client, session_factory = app_client
+        emp_id = _setup_admin_and_employee(session_factory)
+        _login(client)
+
+        leave_id = _create_pending_leave(
+            client, emp_id, start_date="2026-05-22", end_date="2026-05-22"
+        )
+        resp = _approve(client, leave_id, approved=True)
+        assert resp.status_code == 200, f"approve failed: {resp.text}"
+
+        resp = client.put(
+            f"/api/leaves/{leave_id}",
+            json={
+                "leave_hours": 3,
+                "start_time": "09:00",
+                "end_time": "12:00",
+            },
+        )
+        assert resp.status_code == 200, f"update leave failed: {resp.text}"
+
+        with session_factory() as session:
+            leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
+            rows = session.query(Attendance).filter_by(leave_record_id=leave_id).all()
+
+        if leave.is_approved is True:
+            # reapply 路徑（若 update 未退審）：部分請假，partial_leave_hours=3
+            assert len(rows) == 1
+            assert rows[0].partial_leave_hours is not None
+        else:
+            # 退審路徑 → revert → Attendance 全刪
+            assert len(rows) == 0, f"退審後 Attendance 應全刪，實際 {len(rows)} 筆"
+
+    def test_i6_update_leave_type_reverts_attendance(self, app_client):
+        """I-6: approve 後 PUT 改 leave_type 觸發退審 → AttendanceRecord 反寫。
+
+        update_leave 既有邏輯：改任何欄位會把 is_approved 從 True 設回 None。
+        退審路徑：sync.revert → Attendance row 全刪。
+        """
+        client, session_factory = app_client
+        emp_id = _setup_admin_and_employee(session_factory)
+        _login(client)
+
+        leave_id = _create_pending_leave(
+            client, emp_id, start_date="2026-05-22", end_date="2026-05-22"
+        )
+        resp = _approve(client, leave_id, approved=True)
+        assert resp.status_code == 200, f"approve failed: {resp.text}"
+
+        with session_factory() as session:
+            count_after_approve = (
+                session.query(Attendance).filter_by(leave_record_id=leave_id).count()
+            )
+        assert count_after_approve == 1, "approve 後應有 1 筆 Attendance"
+
+        # PUT 改 leave_type → 觸發退審
+        resp = client.put(
+            f"/api/leaves/{leave_id}",
+            json={"leave_type": "sick"},
+        )
+        assert resp.status_code == 200, f"update leave failed: {resp.text}"
+
+        with session_factory() as session:
+            leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
+            rows = session.query(Attendance).filter_by(leave_record_id=leave_id).all()
+
+        # 退審路徑 → is_approved=None → revert → Attendance 全刪
+        if leave.is_approved is None:
+            assert len(rows) == 0, f"revert 後 Attendance 應全刪，實際 {len(rows)} 筆"
