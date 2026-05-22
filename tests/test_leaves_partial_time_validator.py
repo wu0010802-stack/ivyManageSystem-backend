@@ -9,7 +9,7 @@ Task 1 of employee-leave-attendance-sync:
 import os
 import sys
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
