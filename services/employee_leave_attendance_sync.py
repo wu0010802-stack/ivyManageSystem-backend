@@ -304,4 +304,19 @@ def reapply(
     leave_id: int,
     old_snapshot: dict | None = None,
 ) -> tuple[list[date], list[date]]:
-    raise NotImplementedError("Task 10 補完")
+    """update_leave 改了關鍵欄（日期/時段/leave_type/hours）時呼叫。
+
+    內部組合：revert（舊範圍）→ apply（新範圍）。
+    old_snapshot 必須由 caller 在 model 寫回前抓：
+      {start_date, end_date, start_time, end_time, leave_type, leave_hours}
+    revert 純靠 row.leave_record_id 找，不需要 old_snapshot 也能清舊 row；
+    但 API 仍保留 old_snapshot 參數供 hook（plan Task 13）在 model 寫回前 snapshot。
+    """
+    reverted = revert(session, leave_id)
+
+    leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
+    if leave is None or leave.is_approved is not True:
+        return reverted, []
+
+    applied = apply(session, leave_id)
+    return reverted, applied

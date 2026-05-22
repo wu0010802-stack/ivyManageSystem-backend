@@ -548,3 +548,97 @@ class TestRevert:
             .count()
         )
         assert count == 0
+
+
+# ── TestReapply ─────────────────────────────────────────────────────
+
+
+class TestReapply:
+    def test_u13_reapply_changes_dates(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """U-13: reapply 改日期 5/22-5/24 → 5/23-5/25
+        → 5/22 還原（刪除）; 5/25 新建; 5/23/5/24 保留
+        """
+        # 先 apply 原範圍(5/22-5/24)
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        # snapshot 舊範圍（caller 在 commit 前抓）
+        old_snapshot = {
+            "start_date": date(2026, 5, 22),
+            "end_date": date(2026, 5, 24),
+            "start_time": None,
+            "end_time": None,
+            "leave_type": "personal",
+            "leave_hours": 8.0,
+        }
+
+        # 改 leave 範圍到 5/23-5/25
+        approved_full_day_leave.start_date = date(2026, 5, 23)
+        approved_full_day_leave.end_date = date(2026, 5, 25)
+        db_session.commit()
+
+        reverted, applied = sync.reapply(
+            db_session,
+            approved_full_day_leave.id,
+            old_snapshot=old_snapshot,
+        )
+        db_session.flush()
+
+        rows = db_session.query(Attendance).order_by(Attendance.attendance_date).all()
+        dates = [r.attendance_date for r in rows]
+        # 5/22 被刪，5/23/5/24 保留，5/25 新建
+        assert dates == [date(2026, 5, 23), date(2026, 5, 24), date(2026, 5, 25)]
+        for row in rows:
+            assert row.status == AttendanceStatus.LEAVE.value
+            assert row.leave_record_id == approved_full_day_leave.id
+
+    def test_u14_reapply_full_day_to_partial(self, db_session, sample_employee):
+        """U-14: reapply 改 leave_hours 8→4(全天變半天) + 補 start_time/end_time
+        → 該日從 LEAVE 變 ABSENT + partial_leave_hours=4
+        """
+        from models.leave import LeaveRecord
+
+        lv = LeaveRecord(
+            employee_id=sample_employee.id,
+            leave_type="personal",
+            start_date=date(2026, 5, 22),
+            end_date=date(2026, 5, 22),
+            leave_hours=8.0,
+            is_approved=True,
+        )
+        db_session.add(lv)
+        db_session.commit()
+
+        # 第一次 apply（全天）
+        sync.apply(db_session, lv.id)
+        db_session.flush()
+        row = db_session.query(Attendance).first()
+        assert row.status == AttendanceStatus.LEAVE.value
+
+        # snapshot 舊狀態
+        old_snapshot = {
+            "start_date": date(2026, 5, 22),
+            "end_date": date(2026, 5, 22),
+            "start_time": None,
+            "end_time": None,
+            "leave_type": "personal",
+            "leave_hours": 8.0,
+        }
+
+        # 改 leave_hours 為 4（半天）+ 補 start_time/end_time
+        lv.leave_hours = 4.0
+        lv.start_time = "09:00"
+        lv.end_time = "13:00"
+        db_session.commit()
+
+        sync.reapply(db_session, lv.id, old_snapshot=old_snapshot)
+        db_session.flush()
+
+        row = db_session.query(Attendance).first()
+        # revert 後舊 row（無 punch）被刪，apply 半天無 punch → 新建 ABSENT row
+        assert row is not None
+        assert row.status == AttendanceStatus.ABSENT.value
+        assert row.partial_leave_hours == Decimal("4.00")
+        assert row.leave_record_id == lv.id
