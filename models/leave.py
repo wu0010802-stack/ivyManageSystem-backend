@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -136,6 +137,21 @@ class LeaveQuota(Base):
     __table_args__ = (
         UniqueConstraint("employee_id", "year", "leave_type", name="uq_leave_quota"),
         Index("ix_leave_quota_year", "year"),
+        Index(
+            "uq_leave_quotas_employee_school_year_type",
+            "employee_id",
+            "school_year",
+            "leave_type",
+            unique=True,
+            postgresql_where=text("school_year IS NOT NULL"),
+            sqlite_where=text("school_year IS NOT NULL"),
+        ),
+        Index(
+            "ix_leave_quotas_school_year",
+            "school_year",
+            postgresql_where=text("school_year IS NOT NULL"),
+            sqlite_where=text("school_year IS NOT NULL"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -143,6 +159,11 @@ class LeaveQuota(Base):
         Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
     )
     year = Column(Integer, nullable=False, comment="適用年度")
+    school_year = Column(
+        Integer,
+        nullable=True,
+        comment="民國學年；null = legacy year-based row",
+    )
     leave_type = Column(String(20), nullable=False, comment="假別")
     total_hours = Column(Float, nullable=False, comment="年度配額時數")
     note = Column(String(200), nullable=True, comment="備註（如年資計算依據）")
