@@ -203,6 +203,15 @@ def on_startup():
     env_label = settings.core.env.lower()
     logger.info("Application started successfully (env=%s).", env_label)
 
+    # term.changed handlers 註冊（import-time 觸發 @on_term_changed decorator）
+    import services.term_subscribers.classroom_carry_over  # noqa: F401
+    import services.term_subscribers.leave_quota_cutover  # noqa: F401
+    import services.term_subscribers.activity_semester_tag  # noqa: F401
+
+    from utils.term_events import list_handler_names
+
+    logger.info("term.changed handlers: %s", list_handler_names())
+
 
 async def _activity_waitlist_sweeper():
     """每 10 分鐘掃描候補轉正過期，發放逾期放棄與即將到期提醒。
