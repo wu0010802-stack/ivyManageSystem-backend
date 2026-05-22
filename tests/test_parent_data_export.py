@@ -297,3 +297,82 @@ def test_export_top_level_fields(export_client):
     assert "parent" in body
     assert body["parent"]["display_name"] is not None
     assert body["schema_version"] == 1
+
+
+def test_export_idor_cross_parent_isolation(export_client):
+    """另一個 parent 的 student 不可被本 user 拿到（IDOR 防護）。"""
+    client, session_factory = export_client
+
+    # 建第一個 parent（請求發起者）
+    user_id, _ = _seed_parent_with_student(
+        session_factory, student_name="自己的小孩", line_id="U_IDOR_SELF"
+    )
+
+    # 建第二個 parent 及其小孩（應不可見）
+    with session_factory() as session:
+        other_user = User(
+            username="parent_line_U_IDOR_OTHER",
+            password_hash="!LINE_ONLY",
+            role="parent",
+            permissions=0,
+            is_active=True,
+            line_user_id="U_IDOR_OTHER",
+            token_version=0,
+        )
+        session.add(other_user)
+        session.flush()
+
+        other_student = Student(
+            student_id="S_別人家小孩",
+            name="別人家小孩",
+            lifecycle_status="active",
+        )
+        session.add(other_student)
+        session.flush()
+
+        session.add(
+            Guardian(
+                student_id=other_student.id,
+                user_id=other_user.id,
+                name="別人家媽",
+                relation="母親",
+                is_primary=True,
+            )
+        )
+        session.commit()
+        other_student_id = other_student.id
+
+    with session_factory() as session:
+        user = session.query(User).filter(User.id == user_id).first()
+        token = _parent_token(user)
+
+    resp = client.get("/api/parent/me/data-export", cookies={"access_token": token})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    student_names = [s["name"] for s in body["students"]]
+    assert "別人家小孩" not in student_names
+    student_ids = [s["id"] for s in body["students"]]
+    assert other_student_id not in student_ids
+
+
+def test_export_413_when_payload_too_large(export_client, monkeypatch):
+    """payload size > _MAX_BYTES 時回 413。"""
+    client, session_factory = export_client
+    from api.parent_portal import data_export as de
+
+    user_id, _ = _seed_parent_with_student(
+        session_factory, student_name="尺寸測試", line_id="U_413"
+    )
+
+    with session_factory() as session:
+        user = session.query(User).filter(User.id == user_id).first()
+        token = _parent_token(user)
+
+    # 把 _MAX_BYTES 改成 1 byte，任何回應都超
+    monkeypatch.setattr(de, "_MAX_BYTES", 1)
+
+    resp = client.get("/api/parent/me/data-export", cookies={"access_token": token})
+    assert resp.status_code == 413
+    detail = resp.json()["detail"]
+    assert "50MB" in detail or "資料量" in detail

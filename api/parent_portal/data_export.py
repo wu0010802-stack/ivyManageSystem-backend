@@ -434,6 +434,7 @@ def _list_messages(session, student_id: int, user_id: int) -> list[dict]:
             .filter(
                 ParentMessageThread.student_id == student_id,
                 ParentMessageThread.parent_user_id == user_id,
+                ParentMessageThread.deleted_at.is_(None),
             )
             .order_by(ParentMessageThread.last_message_at.desc().nulls_last())
             .all()
@@ -464,6 +465,7 @@ def _list_messages(session, student_id: int, user_id: int) -> list[dict]:
                 (ParentMessage.thread_id == last_subq.c.thread_id)
                 & (ParentMessage.created_at == last_subq.c.max_at),
             )
+            .filter(ParentMessage.deleted_at.is_(None))
             .all()
         )
         last_by_thread: dict[int, ParentMessage] = {m.thread_id: m for m in last_msgs}
