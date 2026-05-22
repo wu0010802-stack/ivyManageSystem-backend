@@ -15,6 +15,7 @@ APPRAISAL_HALF_BONUS_FIRST/SECOND slot，供 salary engine 2 月 calculate 時 p
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -222,11 +223,15 @@ def _advisory_lock_payout(db: Session, payout_year: int) -> None:
 
     PostgreSQL：pg_advisory_xact_lock（transaction 結束自動釋放）。
     SQLite 測試環境：no-op（單寫入者，無並發）。
+
+    用 md5 計算穩定的 lock key，避免 Python 3.3+ PYTHONHASHSEED 隨機化在
+    多 worker 部署下產生不同 hash() 結果導致 advisory lock 失效。
     """
     if not _is_postgres(db):
         logger.debug("_advisory_lock_payout no-op (non-postgres): year=%s", payout_year)
         return
-    key = hash(("aye_payout", payout_year)) & 0x7FFF_FFFF_FFFF_FFFF
+    raw = hashlib.md5(f"aye_payout|{payout_year}".encode()).digest()
+    key = int.from_bytes(raw[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
     logger.debug("_advisory_lock_payout acquired: year=%s key=%d", payout_year, key)
 
