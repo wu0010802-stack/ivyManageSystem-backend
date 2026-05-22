@@ -131,6 +131,7 @@ from models.contact_book import (
 )
 from models.vendor_payment import VendorPayment  # noqa: F401
 from models.monthly_fixed_cost import MonthlyFixedCost  # noqa: F401
+from models.academic_term import AcademicTerm  # noqa: F401
 
 __all__ = [
     # base
