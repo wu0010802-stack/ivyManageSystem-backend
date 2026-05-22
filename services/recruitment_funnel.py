@@ -232,6 +232,40 @@ def _do_activate(session, visit, student, *, actor_user_id):
     return student.id, log_id
 
 
+def _do_revert_convert(session, visit, student, *, actor_user_id, reason):
+    """enrolled → deposited: 刪 Student（含 Guardian、ChangeLog），flip visit.enrolled=False。
+
+    呼叫前提：assert_student_revertable() 已通過。
+    """
+    from models.guardian import Guardian
+    from models.student_log import StudentChangeLog
+
+    assert_student_revertable(session, student.id)
+    student_id = student.id
+
+    session.query(Guardian).filter(Guardian.student_id == student_id).delete(
+        synchronize_session=False
+    )
+    session.query(StudentChangeLog).filter(
+        StudentChangeLog.student_id == student_id
+    ).delete(synchronize_session=False)
+    session.delete(student)
+    visit.enrolled = False
+
+    log_id = _write_event_log(
+        session,
+        visit_id=visit.id,
+        event_type="revert_converted",
+        from_stage="enrolled",
+        to_stage="deposited",
+        student_id=None,
+        actor_user_id=actor_user_id,
+        reason=reason,
+        metadata={"deleted_student_id": student_id},
+    )
+    return None, log_id  # student deleted
+
+
 def _do_revert_activate(session, visit, student, *, actor_user_id, reason):
     """active → enrolled: lifecycle 降級；若已有 attendance 則 warning（不擋）。"""
     from models.classroom import StudentAttendance
@@ -327,8 +361,62 @@ def transition_visit(
         )
         warnings.extend(ws)
 
+    # Task 10: enrolled → deposited / visited
+    elif from_stage == "enrolled" and to_stage in ("deposited", "visited"):
+        student_id, log_id = _do_revert_convert(
+            session,
+            visit,
+            student,
+            actor_user_id=actor_user_id,
+            reason=reason,
+        )
+        if to_stage == "visited":
+            # 再走 deposited → visited
+            visit.has_deposit = False
+            log_id = _write_event_log(
+                session,
+                visit_id=visit.id,
+                event_type="deposit_removed",
+                from_stage="deposited",
+                to_stage="visited",
+                actor_user_id=actor_user_id,
+                reason=reason,
+            )
+
+    # Task 10: active → deposited / visited (chain through active→enrolled first)
+    elif from_stage == "active" and to_stage in ("deposited", "visited"):
+        # 先 active → enrolled
+        student_id, log_id, ws = _do_revert_activate(
+            session,
+            visit,
+            student,
+            actor_user_id=actor_user_id,
+            reason=reason,
+        )
+        warnings.extend(ws)
+        # 重新 load student（剛 lifecycle 變 enrolled）
+        student2 = _load_student_by_visit(session, visit.id)
+        _, log_id = _do_revert_convert(
+            session,
+            visit,
+            student2,
+            actor_user_id=actor_user_id,
+            reason=reason,
+        )
+        student_id = None
+        if to_stage == "visited":
+            visit.has_deposit = False
+            log_id = _write_event_log(
+                session,
+                visit_id=visit.id,
+                event_type="deposit_removed",
+                from_stage="deposited",
+                to_stage="visited",
+                actor_user_id=actor_user_id,
+                reason=reason,
+            )
+
     else:
-        # 其他 dispatch 在 Task 10 補
         raise NotImplementedError(f"transition {from_stage} → {to_stage} 尚未實作")
 
     return TransitionResult(
