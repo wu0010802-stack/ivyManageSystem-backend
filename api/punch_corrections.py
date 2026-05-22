@@ -272,6 +272,7 @@ def approve_punch_correction(
             att,
             work_start_str=emp.work_start_time if emp else None,
             work_end_str=emp.work_end_time if emp else None,
+            session=session,
         )
 
         # 更新申請狀態

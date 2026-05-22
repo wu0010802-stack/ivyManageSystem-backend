@@ -1,10 +1,14 @@
 """W-1, W-2: create_or_update_attendance_record 接 merge helper 整合測試
 W-3: upload_attendance Excel 批次匯入接 merge helper 整合測試
+W-4: apply_attendance_status 補打卡核准路徑接 merge helper 整合測試
 
 W-1: admin 對已有 approved full-day leave 的日期手動補打卡 → leave_record_id 仍對齊
 W-2: admin 重複編輯同一 row → leave_record_id 保留
 W-3: approve 半天請假 09:00-13:00 → Excel upload 該日 punch_in=09:30
      → leave_record_id 對齊 / partial_leave_hours=4 / late=0
+W-4: approve 半天請假 09:00-13:00 後補打卡核准 punch_in=09:30
+     → apply_attendance_status(row, session=s) 後 leave_record_id 保留,
+       partial_leave_hours=4, late_minutes=0
 """
 
 import os
@@ -27,6 +31,7 @@ from api.auth import router as auth_router
 from models.base import Base
 from models.database import Attendance, Employee, LeaveRecord, User
 from utils.auth import hash_password
+from utils.attendance_calc import apply_attendance_status
 from utils.attendance_leave_merge import merge_attendance_with_leave
 from utils.permissions import Permission
 
@@ -289,6 +294,114 @@ class TestExcelUploadWithLeave:
             s.add(att)
             # 在 session.add 後、session.commit 前呼叫 merge（對齊 upload 流程）
             merge_attendance_with_leave(att, s)
+            s.commit()
+
+        # 驗證 merge 結果
+        with sf() as s:
+            row = (
+                s.query(Attendance)
+                .filter(
+                    Attendance.employee_id == target_id,
+                    Attendance.attendance_date == leave_date,
+                )
+                .first()
+            )
+            assert row is not None, "Attendance row 未寫入"
+            assert (
+                row.leave_record_id == leave_id
+            ), f"leave_record_id 應為 {leave_id}，實際為 {row.leave_record_id}"
+            assert row.partial_leave_hours == Decimal(
+                "4.0"
+            ), f"partial_leave_hours 應為 4.0，實際為 {row.partial_leave_hours}"
+            assert (
+                row.late_minutes == 0
+            ), f"leave-aware 後 late_minutes 應為 0，實際為 {row.late_minutes}"
+
+
+def _approve_partial_leave(
+    session,
+    emp_id: int,
+    leave_date: date,
+    start_time: str,
+    end_time: str,
+    leave_hours: float,
+) -> "LeaveRecord":
+    """建立一筆部分時段 approved leave（含 start_time/end_time）。"""
+    lv = LeaveRecord(
+        employee_id=emp_id,
+        leave_type="personal",
+        start_date=leave_date,
+        end_date=leave_date,
+        leave_hours=leave_hours,
+        start_time=start_time,
+        end_time=end_time,
+        is_approved=True,
+    )
+    session.add(lv)
+    session.flush()
+    return lv
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TestApplyAttendanceStatusWithLeave
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestApplyAttendanceStatusWithLeave:
+    def test_w4_apply_attendance_status_with_session_merges_leave(self, att_client):
+        """W-4: approve 半天請假 09:00-13:00 後補打卡核准 punch_in=09:30
+        → apply_attendance_status(row, session=s) 後:
+          - leave_record_id 對齊請假單
+          - partial_leave_hours == 4.0
+          - late_minutes == 0（請假涵蓋 09:00-13:00，09:30 在假期內 → 不遲到）
+
+        此測試驗證 apply_attendance_status 在補打卡核准路徑（punch_corrections.py）
+        中通過 session 參數呼叫 merge_attendance_with_leave。
+        """
+        client, sf = att_client
+        leave_date = date(2026, 5, 24)
+
+        with sf() as s:
+            target = _make_employee(s, employee_id="E_W4", name="W4員工")
+            lv = _approve_partial_leave(
+                s,
+                emp_id=target.id,
+                leave_date=leave_date,
+                start_time="09:00",
+                end_time="13:00",
+                leave_hours=4.0,
+            )
+            s.commit()
+            target_id = target.id
+            leave_id = lv.id
+
+        # 模擬補打卡核准：先建立一個「已遲到」Attendance，再呼叫 apply_attendance_status
+        # 傳入 session，預期 merge 後 leave_record_id 填入且 late 歸零
+        with sf() as s:
+            att = Attendance(
+                employee_id=target_id,
+                attendance_date=leave_date,
+                punch_in_time=datetime(2026, 5, 24, 9, 30),
+                punch_out_time=datetime(2026, 5, 24, 18, 0),
+                # 初始狀態：未 merge，呈現遲到
+                status="late",
+                is_late=True,
+                is_early_leave=False,
+                is_missing_punch_in=False,
+                is_missing_punch_out=False,
+                late_minutes=30,
+                early_leave_minutes=0,
+                remark="補打卡測試",
+            )
+            s.add(att)
+            s.flush()  # 取得 id，對齊補打卡核准流程
+            # 補打卡核准核心：apply_attendance_status 帶 session
+            apply_attendance_status(
+                att,
+                session=s,
+                work_start_str="09:00",
+                work_end_str="18:00",
+            )
             s.commit()
 
         # 驗證 merge 結果
