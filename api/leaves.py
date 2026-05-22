@@ -1085,6 +1085,23 @@ def delete_leave(
 
             lock_and_premark_stale(session, emp_id, leave_months)
 
+        # ── 考勤同步 hook（Hook 5: delete_leave revert）───────────────────────
+        # approved leave 被刪 → 先 revert attendance，再 delete LeaveRecord。
+        # FK ON DELETE SET NULL 是雙保險，但主路徑是 revert 主動清。
+        if leave.is_approved is True:
+            try:
+                from services import employee_leave_attendance_sync as sync
+
+                sync.revert(session, leave_id)
+            except Exception as e:
+                from services.employee_leave_attendance_sync import (
+                    LeaveAttendanceConflict,
+                )
+
+                if isinstance(e, LeaveAttendanceConflict):
+                    raise HTTPException(status_code=422, detail=str(e))
+                raise
+
         session.delete(leave)
         session.commit()
 

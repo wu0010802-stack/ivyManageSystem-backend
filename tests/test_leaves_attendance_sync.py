@@ -431,3 +431,60 @@ class TestUpdateHookIntegration:
         # 退審路徑 → is_approved=None → revert → Attendance 全刪
         if leave.is_approved is None:
             assert len(rows) == 0, f"revert 後 Attendance 應全刪，實際 {len(rows)} 筆"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# I-7: delete_leave hook 整合
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDeleteHookIntegration:
+
+    def test_i7_delete_approved_reverts_attendance(self, app_client):
+        """I-7: approve 後 DELETE → AttendanceRecord 反寫；leave row 刪。
+
+        步驟：
+        1. 建立 pending leave
+        2. approve → 確認 Attendance row 存在
+        3. DELETE /api/leaves/{id} → 200
+        4. 確認 Attendance row 已刪（revert）
+        5. 確認 LeaveRecord 已不存在
+        """
+        client, session_factory = app_client
+        emp_id = _setup_admin_and_employee(session_factory)
+        _login(client)
+
+        leave_id = _create_pending_leave(
+            client, emp_id, start_date="2026-05-22", end_date="2026-05-22"
+        )
+
+        # approve → Attendance row 應建立
+        resp = _approve(client, leave_id, approved=True)
+        assert resp.status_code == 200, f"approve failed: {resp.text}"
+
+        with session_factory() as session:
+            count_after_approve = (
+                session.query(Attendance)
+                .filter_by(employee_id=emp_id, leave_record_id=leave_id)
+                .count()
+            )
+        assert count_after_approve == 1, "approve 後應有 1 筆 Attendance"
+
+        # DELETE → 應觸發 sync.revert 再刪 leave
+        resp = client.delete(f"/api/leaves/{leave_id}")
+        assert resp.status_code == 200, f"delete failed: {resp.text}"
+
+        with session_factory() as session:
+            # Attendance row 應已 revert（刪除）
+            att_rows = (
+                session.query(Attendance)
+                .filter_by(employee_id=emp_id, leave_record_id=leave_id)
+                .all()
+            )
+            # LeaveRecord 應已刪除
+            leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
+
+        assert (
+            att_rows == []
+        ), f"delete 後 Attendance 應全刪（revert），實際 {len(att_rows)} 筆"
+        assert leave is None, "delete 後 LeaveRecord 應已刪除"
