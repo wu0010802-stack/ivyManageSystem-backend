@@ -49,12 +49,46 @@ def upgrade():
             f"請先跑 scripts/dedupe_attendance.py 清理再 upgrade。前 5 筆: {dups[:5]}"
         )
 
-    # Task 22 加 unique constraint + ix_attendance_leave_record_id
-    # Task 22 加 bad_leaves check
+    # 4. Online 加 unique constraint（CREATE UNIQUE INDEX CONCURRENTLY → ADD CONSTRAINT USING INDEX）
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_attendance_employee_date
+            ON attendances (employee_id, attendance_date)
+        """)
+    op.execute("""
+        ALTER TABLE attendances
+        ADD CONSTRAINT uq_attendance_employee_date
+        UNIQUE USING INDEX uq_attendance_employee_date
+    """)
+    with op.get_context().autocommit_block():
+        op.execute("""
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_attendance_leave_record_id
+            ON attendances (leave_record_id)
+        """)
+
+    # 5. Pre-flight validator：阻擋既有部分請假缺 start_time/end_time
+    bad_leaves = conn.execute(text("""
+        SELECT id, employee_id, start_date, leave_hours
+        FROM leave_records
+        WHERE is_approved = true
+          AND end_date >= CURRENT_DATE - INTERVAL '12 months'
+          AND (start_time IS NULL OR end_time IS NULL)
+          AND (leave_hours IS NOT NULL AND leave_hours < 8)
+    """)).fetchall()
+    if bad_leaves:
+        raise RuntimeError(
+            f"偵測到 {len(bad_leaves)} 筆已核可的部分請假缺 start_time/end_time，"
+            f"請先跑 scripts/fix_partial_leave_times.py 補時段或回到 pending 重審。"
+            f"前 5 筆: {bad_leaves[:5]}"
+        )
+
     # Task 23 加 _run_backfill
 
 
 def downgrade():
+    op.drop_constraint("uq_attendance_employee_date", "attendances", type_="unique")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_attendance_leave_record_id")
     op.drop_constraint("fk_attendance_leave", "attendances", type_="foreignkey")
     op.drop_column("attendances", "partial_leave_hours")
     op.drop_column("attendances", "leave_record_id")
