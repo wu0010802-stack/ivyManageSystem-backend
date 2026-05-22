@@ -25,6 +25,7 @@ class AcademicTermOut(BaseModel):
     semester: int
     start_date: date
     end_date: date
+    is_current: bool
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 

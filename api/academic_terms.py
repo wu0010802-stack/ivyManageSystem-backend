@@ -66,6 +66,7 @@ def create_term(
     except IntegrityError:
         session.rollback()
         raise HTTPException(409, detail="已存在 (school_year, semester) 的設定")
+    session.commit()
     session.refresh(term)
     logger.info("新增學年學期 %s-%s", term.school_year, term.semester)
     return term
@@ -89,6 +90,7 @@ def update_term(
     except IntegrityError:
         session.rollback()
         raise HTTPException(409, detail="違反 unique 約束 (school_year, semester)")
+    session.commit()
     session.refresh(term)
     logger.info("更新學年學期 id=%s → %s-%s", term_id, term.school_year, term.semester)
     return term
@@ -106,6 +108,7 @@ def delete_term(
         raise HTTPException(404, detail="學年學期不存在")
     session.delete(term)
     session.flush()
+    session.commit()
     logger.info("刪除學年學期 id=%s (%s-%s)", term_id, term.school_year, term.semester)
     return {"ok": True}
 
@@ -155,5 +158,6 @@ def set_current_term(
 
     fire_term_changed(old=old_term, new=new_term, session=session)
 
+    session.commit()
     session.refresh(new_term)
     return new_term
