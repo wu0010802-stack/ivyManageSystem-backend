@@ -116,3 +116,71 @@ def apply_attendance_status(
     attendance.early_leave_minutes = fields["early_leave_minutes"]
     attendance.status = fields["status"]
     return fields
+
+
+# ── leave-aware 遲到 / 早退分鐘計算純函式 ─────────────────────────────────────
+
+
+def _time_to_minutes(t: time) -> int:
+    return t.hour * 60 + t.minute
+
+
+def compute_late_minutes_with_leave(
+    punch_in: time,
+    scheduled_start: time,
+    leave_start: Optional[time],
+    leave_end: Optional[time],
+) -> int:
+    """計算遲到分鐘,扣除請假時段涵蓋的部分。
+
+    邏輯:
+    - 無請假 → late = max(0, punch_in - scheduled_start)
+    - 有請假 → 有效上班開始時間 = max(scheduled_start, leave_end if leave 涵蓋 scheduled_start else scheduled_start)
+              late = max(0, punch_in - 有效上班開始時間)
+    """
+    sched_m = _time_to_minutes(scheduled_start)
+    punch_m = _time_to_minutes(punch_in)
+
+    if leave_start is None or leave_end is None:
+        return max(0, punch_m - sched_m)
+
+    lv_start_m = _time_to_minutes(leave_start)
+    lv_end_m = _time_to_minutes(leave_end)
+
+    # 請假涵蓋 scheduled_start → 有效上班開始 = leave_end
+    if lv_start_m <= sched_m < lv_end_m:
+        effective_start_m = lv_end_m
+    else:
+        effective_start_m = sched_m
+
+    return max(0, punch_m - effective_start_m)
+
+
+def compute_early_leave_minutes_with_leave(
+    punch_out: time,
+    scheduled_end: time,
+    leave_start: Optional[time],
+    leave_end: Optional[time],
+) -> int:
+    """計算早退分鐘,扣除請假時段涵蓋的部分。
+
+    邏輯與遲到對稱:
+    - 無請假 → early = max(0, scheduled_end - punch_out)
+    - 請假涵蓋 scheduled_end → 有效下班結束 = leave_start
+    """
+    sched_m = _time_to_minutes(scheduled_end)
+    punch_m = _time_to_minutes(punch_out)
+
+    if leave_start is None or leave_end is None:
+        return max(0, sched_m - punch_m)
+
+    lv_start_m = _time_to_minutes(leave_start)
+    lv_end_m = _time_to_minutes(leave_end)
+
+    # 請假涵蓋 scheduled_end → 有效下班 = leave_start
+    if lv_start_m < sched_m <= lv_end_m:
+        effective_end_m = lv_start_m
+    else:
+        effective_end_m = sched_m
+
+    return max(0, effective_end_m - punch_m)
