@@ -253,6 +253,15 @@ class LeaveCreate(BaseModel):
         validate_leave_date_order(self.start_date, self.end_date)
         return self
 
+    @model_validator(mode="after")
+    def _validate_partial_leave_times(self) -> "LeaveCreate":
+        if self.leave_hours is not None and self.leave_hours < 8:
+            if not self.start_time or not self.end_time:
+                raise ValueError(
+                    "部分請假(leave_hours<8)必須提供 start_time 與 end_time"
+                )
+        return self
+
 
 class LeaveUpdate(BaseModel):
     leave_type: Optional[str] = None
@@ -302,6 +311,16 @@ class LeaveUpdate(BaseModel):
             )
         ):
             raise ValueError("請假區間不可跨月，若需跨越月底請拆成兩張假單分別申請")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_partial_leave_times(self) -> "LeaveUpdate":
+        # 只在 leave_hours 出現且 <8 時檢查
+        if self.leave_hours is not None and self.leave_hours < 8:
+            if not self.start_time or not self.end_time:
+                raise ValueError(
+                    "部分請假(leave_hours<8)必須提供 start_time 與 end_time"
+                )
         return self
 
 
