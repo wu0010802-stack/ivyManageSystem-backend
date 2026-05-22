@@ -236,7 +236,67 @@ def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
 
 
 def revert(session: Session, leave_id: int) -> list[date]:
-    raise NotImplementedError("Task 9 補完")
+    """把 leave 對 Attendance 的影響還原。Idempotent。
+
+    - 全天且無 punch → 刪除 row
+    - 全天有 punch（髒資料）→ 清 leave_*，status 退回 NORMAL，重算 late/early
+    - 部分假 → 清 leave_record_id / partial_leave_hours，status 退回 NORMAL，
+               重算 late/early（無 leave 加成）
+    回傳實際處理的日期列表。若無任何 row（已是 no-op 狀態）回傳 []。
+    """
+    rows = (
+        session.query(Attendance).filter(Attendance.leave_record_id == leave_id).all()
+    )
+
+    reverted: list[date] = []
+    for row in rows:
+        d = row.attendance_date
+
+        has_punch = row.punch_in_time is not None or row.punch_out_time is not None
+
+        if not has_punch:
+            # 無打卡 → 直接刪除 row
+            session.delete(row)
+        else:
+            # 有打卡 → 保留 punch，清 leave_* 欄位，重算 late/early
+            row.leave_record_id = None
+            row.partial_leave_hours = None
+
+            sched_start, sched_end = _get_employee_schedule(session, row.employee_id)
+
+            late_min = 0
+            if row.punch_in_time is not None:
+                punch_in_time_only = row.punch_in_time.time()
+                late_min = compute_late_minutes_with_leave(
+                    punch_in=punch_in_time_only,
+                    scheduled_start=sched_start,
+                    leave_start=None,
+                    leave_end=None,
+                )
+                row.late_minutes = late_min
+
+            early_min = 0
+            if row.punch_out_time is not None:
+                punch_out_time_only = row.punch_out_time.time()
+                early_min = compute_early_leave_minutes_with_leave(
+                    punch_out=punch_out_time_only,
+                    scheduled_end=sched_end,
+                    leave_start=None,
+                    leave_end=None,
+                )
+                row.early_leave_minutes = early_min
+
+            # 根據重算結果決定 status
+            if late_min > 0:
+                row.status = AttendanceStatus.LATE.value
+            elif early_min > 0:
+                row.status = AttendanceStatus.EARLY_LEAVE.value
+            else:
+                row.status = AttendanceStatus.NORMAL.value
+
+        reverted.append(d)
+
+    return reverted
 
 
 def reapply(

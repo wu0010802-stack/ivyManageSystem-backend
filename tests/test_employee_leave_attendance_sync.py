@@ -402,3 +402,149 @@ class TestApplyExceptionPaths:
 
         with pytest.raises(sync.LeavePartialTimeMissing):
             sync.apply(db_session, lv.id)
+
+
+# ── TestRevert ─────────────────────────────────────────────────────
+
+
+class TestRevert:
+    def test_u9_revert_full_day_no_punch_deletes_row(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """U-9: revert 全天假(無 punch) → attendance row 刪除"""
+        # 先 apply 建出 3 筆 LEAVE row
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        rows_before = (
+            db_session.query(Attendance)
+            .filter_by(employee_id=sample_employee.id)
+            .count()
+        )
+        assert rows_before == 3
+
+        # revert
+        reverted = sync.revert(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        assert sorted(reverted) == [
+            date(2026, 5, 22),
+            date(2026, 5, 23),
+            date(2026, 5, 24),
+        ]
+
+        rows_after = (
+            db_session.query(Attendance)
+            .filter_by(employee_id=sample_employee.id)
+            .count()
+        )
+        assert rows_after == 0
+
+    def test_u10_revert_full_day_with_punch_restores_normal(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """U-10: revert 全天假但有 punch(髒資料) → 退回 NORMAL / 清 leave_record_id"""
+        # 先 apply
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        # 模擬髒資料:5/22 的 row 加上 punch
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        row.punch_in_time = datetime.combine(date(2026, 5, 22), time(9, 0))
+        row.punch_out_time = datetime.combine(date(2026, 5, 22), time(18, 0))
+        db_session.flush()
+
+        sync.revert(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        # 5/23 / 5/24 無 punch → 刪除; 5/22 有 punch → 保留
+        remaining = (
+            db_session.query(Attendance).filter_by(employee_id=sample_employee.id).all()
+        )
+        assert len(remaining) == 1
+        row_after = remaining[0]
+        assert row_after.attendance_date == date(2026, 5, 22)
+        assert row_after.status == AttendanceStatus.NORMAL.value
+        assert row_after.leave_record_id is None
+        assert row_after.partial_leave_hours is None
+
+    def test_u11_revert_partial_restores_late_minutes(
+        self, db_session, sample_employee, approved_partial_morning_leave
+    ):
+        """U-11: revert 半天假 → punch 保留 / late 重算回 30 / 清 leave_record_id+partial"""
+        # 先建一個 LATE row（punch 09:30）再 apply
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.LATE.value,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(9, 30)),
+            late_minutes=30,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        sync.apply(db_session, approved_partial_morning_leave.id)
+        db_session.flush()
+
+        # apply 後 late_minutes 應歸零（leave 涵蓋 09:00-13:00）
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        assert row.late_minutes == 0
+
+        # revert
+        sync.revert(db_session, approved_partial_morning_leave.id)
+        db_session.flush()
+
+        row_after = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        # punch 仍在
+        assert row_after.punch_in_time is not None
+        assert row_after.punch_in_time.time() == time(9, 30)
+        # leave_record_id / partial_leave_hours 清掉
+        assert row_after.leave_record_id is None
+        assert row_after.partial_leave_hours is None
+        # late_minutes 重算回 30（09:30 - 09:00 = 30，無 leave 加成）
+        assert row_after.late_minutes == 30
+
+    def test_u12_revert_idempotent(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """U-12: revert 重跑兩次 → no-op，第二次 reverted=[]"""
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        sync.revert(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        # 第二次 revert 對同一 leave_id → 已無 row → 回傳空 list
+        reverted_second = sync.revert(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        assert reverted_second == []
+
+        # 確認 DB 無殘留
+        count = (
+            db_session.query(Attendance)
+            .filter_by(employee_id=sample_employee.id)
+            .count()
+        )
+        assert count == 0
