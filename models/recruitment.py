@@ -13,7 +13,9 @@ from sqlalchemy import (
     Text,
     Index,
     Float,
+    ForeignKey,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from models.base import Base
 
@@ -260,3 +262,40 @@ class CompetitorSchool(Base):
     )
 
     __table_args__ = (Index("idx_competitor_city_district", "city", "district"),)
+
+
+class RecruitmentEventLog(Base):
+    """招生漏斗階段事件流（visit 層級的 timeline）。"""
+
+    __tablename__ = "recruitment_event_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recruitment_visit_id = Column(
+        Integer,
+        ForeignKey("recruitment_visits.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type = Column(String(40), nullable=False)
+    from_stage = Column(String(20), nullable=True)
+    to_stage = Column(String(20), nullable=False)
+    student_id = Column(
+        Integer,
+        ForeignKey("students.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reason = Column(Text, nullable=True)
+    actor_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    metadata_json = Column(JSONB, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_recruitment_event_log_visit_time", "recruitment_visit_id", "created_at"
+        ),
+        Index("ix_recruitment_event_log_event_type", "event_type"),
+        Index("ix_recruitment_event_log_actor", "actor_user_id"),
+    )
