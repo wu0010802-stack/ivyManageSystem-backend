@@ -20,9 +20,12 @@ from datetime import date, datetime, time, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import and_, exists
+
 from config import settings
 from models.database import session_scope
 from models.portfolio import StudentMedicationOrder
+from models.student_leave import StudentLeaveRequest
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,26 @@ def _today_target_dt(today: date) -> datetime:
     )
 
 
+def _active_orders_query(session, today: date):
+    """今日須提醒的 medication orders（排除已核准請假學生）。
+
+    請假學生今日不在校，提醒會誤導家長並可能在接 LINE 推播後形成誤推。
+    """
+    leave_subq = exists().where(
+        and_(
+            StudentLeaveRequest.student_id == StudentMedicationOrder.student_id,
+            StudentLeaveRequest.status == "approved",
+            StudentLeaveRequest.start_date <= today,
+            StudentLeaveRequest.end_date >= today,
+        )
+    )
+    return (
+        session.query(StudentMedicationOrder)
+        .filter(StudentMedicationOrder.order_date == today)
+        .filter(~leave_subq)
+    )
+
+
 def count_today_medication_orders(today: Optional[date] = None) -> int:
     """查詢今日有用藥需求的學生數量，回傳 order count。
 
@@ -56,11 +79,7 @@ def count_today_medication_orders(today: Optional[date] = None) -> int:
     """
     today = today or _now_taipei().date()
     with session_scope() as session:
-        return (
-            session.query(StudentMedicationOrder)
-            .filter(StudentMedicationOrder.order_date == today)
-            .count()
-        )
+        return _active_orders_query(session, today).count()
 
 
 def run_medication_reminder(effective_date: Optional[date] = None) -> dict:
@@ -94,11 +113,7 @@ def run_medication_reminder(effective_date: Optional[date] = None) -> dict:
                     "skipped": True,
                 }
             try:
-                order_count = (
-                    session.query(StudentMedicationOrder)
-                    .filter(StudentMedicationOrder.order_date == today)
-                    .count()
-                )
+                order_count = _active_orders_query(session, today).count()
             except Exception:
                 logger.exception("用藥提醒查詢失敗")
                 return {

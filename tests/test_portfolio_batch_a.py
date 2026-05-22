@@ -884,3 +884,54 @@ class TestMedicationReminderScheduler:
         result = run_medication_reminder()
         assert result["order_count"] == 2
         assert result["date"] == date.today().isoformat()
+
+    def test_count_excludes_students_on_approved_leave(self, app_with_db, storage_root):
+        """請假學生不應出現在用藥提醒名單內，避免接 LINE 推播後家長收到誤推。"""
+        client, factory, _ = app_with_db
+        from models.database import StudentLeaveRequest, StudentMedicationOrder
+        from services.medication_reminder_scheduler import (
+            count_today_medication_orders,
+            run_medication_reminder,
+        )
+
+        today = date.today()
+        with factory() as s:
+            seed = _seed_classrooms_and_students(s)
+            _add_user(s, "super", "Pass1234", role="supervisor", perms=-1)
+            for st in (seed["st_a"], seed["st_b"]):
+                s.add(
+                    StudentMedicationOrder(
+                        student_id=st.id,
+                        order_date=today,
+                        medication_name="藥",
+                        dose="1",
+                        time_slots=["08:30"],
+                    )
+                )
+            # st_a 今天請假已核准
+            s.add(
+                StudentLeaveRequest(
+                    student_id=seed["st_a"].id,
+                    applicant_user_id=1,
+                    leave_type="病假",
+                    start_date=today,
+                    end_date=today,
+                    status="approved",
+                )
+            )
+            # st_b 同日有 pending 假單 → 不應被排除（未核准）
+            s.add(
+                StudentLeaveRequest(
+                    student_id=seed["st_b"].id,
+                    applicant_user_id=1,
+                    leave_type="病假",
+                    start_date=today,
+                    end_date=today,
+                    status="pending",
+                )
+            )
+            s.commit()
+
+        assert count_today_medication_orders() == 1
+        result = run_medication_reminder()
+        assert result["order_count"] == 1
