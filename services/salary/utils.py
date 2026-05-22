@@ -26,12 +26,14 @@ def is_attendance_waived(att) -> bool:
     return getattr(att, "confirmed_action", None) == "admin_waive"
 
 
-def _sum_leave_deduction(
+def _sum_leave_deduction_legacy(
     leaves,
     daily_salary: float,
     ytd_sick_hours_before_month: float = 0.0,
 ) -> float:
-    """計算請假扣款總額。
+    """計算請假扣款總額（舊版，以 LeaveRecord 列表為 SoT）。
+
+    保留供 Task 26 parity 測試對照用，勿刪。
 
     優先使用 LeaveRecord.deduction_ratio 欄位；
     若為 None，fallback 至 LEAVE_DEDUCTION_RULES[leave_type]（向後相容舊資料）。
@@ -86,6 +88,82 @@ def _sum_leave_deduction(
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
         )
         total += (lv.leave_hours / 8) * daily_salary * ratio
+    return total
+
+
+def _sum_leave_deduction(
+    att_leave_pairs,
+    daily_salary: float,
+    ytd_sick_hours_before_month: float = 0.0,
+) -> float:
+    """請假扣款（Attendance 為 SoT 的新版，以 (Attendance, LeaveRecord) tuples 為輸入）。
+
+    hours 來源以 Attendance 記錄為準：
+      - status == LEAVE（全日假）→ 8.0 小時
+      - partial_leave_hours > 0   → 部分時數
+      - 其餘                       → 0.0（不計扣）
+
+    保留業務規則與 _sum_leave_deduction_legacy 完全對齊：
+      - 病假 240hr 年度半薪上限（勞基法第 43 條）
+      - 病假依 start_date 由早到晚處理（先請的先享半薪額度）
+      - HR deduction_ratio 覆寫偵測（偏離標準 0.5 才視為人工覆寫）
+      - 非病假 fallback 至 LEAVE_DEDUCTION_RULES[leave_type]
+
+    Args:
+        att_leave_pairs:             (Attendance, LeaveRecord) tuple 列表
+        daily_salary:                日薪（base_salary / MONTHLY_BASE_DAYS）
+        ytd_sick_hours_before_month: 本月之前、同年度已核准病假時數（預設 0）
+    Returns:
+        扣款金額（浮點數，由呼叫端決定是否 round）
+    """
+    from models.attendance import AttendanceStatus
+
+    def _hours(att, lv) -> float:  # noqa: ARG001  lv 保留供未來擴充
+        if att.status == AttendanceStatus.LEAVE.value:
+            return 8.0
+        if att.partial_leave_hours is not None and float(att.partial_leave_hours) > 0:
+            return float(att.partial_leave_hours)
+        return 0.0
+
+    sick_pairs = sorted(
+        [(att, lv) for att, lv in att_leave_pairs if lv.leave_type == "sick"],
+        key=lambda x: getattr(x[1], "start_date", None) or date.min,
+    )
+    other_pairs = [(att, lv) for att, lv in att_leave_pairs if lv.leave_type != "sick"]
+    standard_sick_ratio = LEAVE_DEDUCTION_RULES.get("sick", 0.5)
+
+    total = 0.0
+    sick_used = float(ytd_sick_hours_before_month or 0.0)
+
+    for att, lv in sick_pairs:
+        hours = _hours(att, lv)
+        if hours <= 0:
+            continue
+        is_genuine_override = (
+            lv.deduction_ratio is not None and lv.deduction_ratio != standard_sick_ratio
+        )
+        if is_genuine_override:
+            total += (hours / 8) * daily_salary * lv.deduction_ratio
+        else:
+            half_paid = max(
+                0.0, min(SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS - sick_used, hours)
+            )
+            unpaid = hours - half_paid
+            total += (half_paid / 8) * daily_salary * 0.5
+            total += (unpaid / 8) * daily_salary * 1.0
+        sick_used += hours
+
+    for att, lv in other_pairs:
+        hours = _hours(att, lv)
+        if hours <= 0:
+            continue
+        ratio = (
+            lv.deduction_ratio
+            if lv.deduction_ratio is not None
+            else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
+        )
+        total += (hours / 8) * daily_salary * ratio
+
     return total
 
 

@@ -2321,9 +2321,22 @@ class SalaryEngine:
             )
             .all()
         )
+        # 新版 _sum_leave_deduction 用 (Attendance, LeaveRecord) tuples 為 SoT
+        from models.attendance import Attendance
+
+        att_leave_pairs = (
+            session.query(Attendance, LeaveRecord)
+            .join(LeaveRecord, Attendance.leave_record_id == LeaveRecord.id)
+            .filter(
+                Attendance.employee_id == emp.id,
+                Attendance.attendance_date.between(start_date, end_date),
+                Attendance.leave_record_id.isnot(None),
+            )
+            .all()
+        )
         ytd_sick_before = _get_ytd_sick_hours_before(session, emp.id, year, month)
         leave_deduction_total = _sum_leave_deduction(
-            approved_leaves, daily_salary, ytd_sick_hours_before_month=ytd_sick_before
+            att_leave_pairs, daily_salary, ytd_sick_hours_before_month=ytd_sick_before
         )
         personal_sick_leave_hours = sum(
             lv.leave_hours or 0
@@ -3095,6 +3108,23 @@ class SalaryEngine:
         for lv in all_leaves:
             leaves_by_emp[lv.employee_id].append(lv)
 
+        # 6a. 新版 _sum_leave_deduction 預載:(Attendance, LeaveRecord) tuples
+        from models.attendance import Attendance
+
+        all_att_leave = (
+            session.query(Attendance, LeaveRecord)
+            .join(LeaveRecord, Attendance.leave_record_id == LeaveRecord.id)
+            .filter(
+                Attendance.employee_id.in_(employee_ids),
+                Attendance.attendance_date.between(start_date, end_date),
+                Attendance.leave_record_id.isnot(None),
+            )
+            .all()
+        )
+        att_leave_pairs_by_emp = defaultdict(list)
+        for att, lv in all_att_leave:
+            att_leave_pairs_by_emp[att.employee_id].append((att, lv))
+
         # 6b. 年度累計病假時數（用於 30 日半薪上限判斷）
         ytd_sick_by_emp = _get_ytd_sick_hours_bulk(session, employee_ids, year, month)
 
@@ -3195,6 +3225,7 @@ class SalaryEngine:
             db_count_map=db_count_map,
             total_students=total_students,
             leaves_by_emp=leaves_by_emp,
+            att_leave_pairs_by_emp=att_leave_pairs_by_emp,
             ytd_sick_by_emp=ytd_sick_by_emp,
             ot_by_emp=ot_by_emp,
             meetings_by_emp=meetings_by_emp,
@@ -3332,6 +3363,7 @@ class SalaryEngine:
         art_to_classes = preload.art_to_classes
         total_students = preload.total_students
         leaves_by_emp = preload.leaves_by_emp
+        att_leave_pairs_by_emp = preload.att_leave_pairs_by_emp
         ytd_sick_by_emp = preload.ytd_sick_by_emp
         ot_by_emp = preload.ot_by_emp
         meetings_by_emp = preload.meetings_by_emp
@@ -3453,10 +3485,15 @@ class SalaryEngine:
         )
 
         # ── 請假、加班、會議（使用預載）
-        approved_leaves = leaves_by_emp[emp.id]
+        approved_leaves = leaves_by_emp[
+            emp.id
+        ]  # 保留:其他 path 仍用(personal_sick_leave_hours)
+        att_leave_pairs = att_leave_pairs_by_emp[
+            emp.id
+        ]  # 新版 _sum_leave_deduction 的輸入
         daily_salary = calc_daily_salary(emp_dict["base_salary"])
         leave_deduction_total = _sum_leave_deduction(
-            approved_leaves,
+            att_leave_pairs,
             daily_salary,
             ytd_sick_hours_before_month=ytd_sick_by_emp.get(emp.id, 0.0),
         )
