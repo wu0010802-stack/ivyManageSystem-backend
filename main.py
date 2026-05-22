@@ -271,6 +271,24 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("自動畢業排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # Recruitment funnel term advance scheduler
+    recruitment_term_advance_task = None
+    recruitment_term_advance_stop_event: asyncio.Event | None = None
+    try:
+        from services import recruitment_term_advance_scheduler as _rt_sched
+
+        if _rt_sched.scheduler_enabled():
+            recruitment_term_advance_stop_event = asyncio.Event()
+            recruitment_term_advance_task = asyncio.create_task(
+                _rt_sched.run_recruitment_term_advance_scheduler(
+                    recruitment_term_advance_stop_event
+                )
+            )
+            logger.info("recruitment term advance scheduler 已啟用")
+    except Exception as e:
+        logger.warning("招生漏斗升學期排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
     ivykids_sync_task = None
     ivykids_sync_stop_event: asyncio.Event | None = None
@@ -478,6 +496,17 @@ async def app_lifespan(app_instance: FastAPI):
                 finance_reconciliation_task.cancel()
                 try:
                     await finance_reconciliation_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if recruitment_term_advance_task is not None:
+            if recruitment_term_advance_stop_event is not None:
+                recruitment_term_advance_stop_event.set()
+            try:
+                await asyncio.wait_for(recruitment_term_advance_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                recruitment_term_advance_task.cancel()
+                try:
+                    await recruitment_term_advance_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源
