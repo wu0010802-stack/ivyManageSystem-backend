@@ -143,6 +143,19 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 
 ---
 
+## PII Retention 政策（spec 2026-05-22-parent-pii-retention-data-export-design.md）
+
+- **觸發**：學生 `lifecycle_status` 進入終態（graduated/transferred/withdrawn）寫 `terminal_entered_at` 戳記
+- **Retention 期**：預設 365 天（ENV `PII_RETENTION_TERMINAL_DAYS` 可調）
+- **抹除範圍**：Guardian.phone/email/relation/custody_note 設 NULL、name 改 `[已離校家長]`、user_id 解綁；不刪 Guardian row、不動 Student PII、不刪 User row
+- **復學自動取消**：`set_lifecycle_status` 從終態回非終態時 `terminal_entered_at=NULL`
+- **GC scheduler**：`services/pii_retention_scheduler.py` 每日跑；ENV `PII_RETENTION_GC_DISABLED=1` 關閉、`PII_RETENTION_GC_DRY_RUN=1` 只 log 不寫
+- **上線啟用流程**：dry-run 看 log → 人工確認清單 → 改 `PII_RETENTION_GC_DRY_RUN=0` 正式抹
+- **資料查閱權**（個資法 §10）：`GET /api/parent/me/data-export`，rate-limit 1/hr/user、50MB 上限
+- **lifecycle 變更規則**：所有 `Student.lifecycle_status` 變更**必經** `utils/student_lifecycle.set_lifecycle_status`（內部呼叫 `services/student_lifecycle.transition()` 已自動走 helper），不可直接 `.lifecycle_status =`
+
+---
+
 ### 錯誤監控（Sentry）
 
 `utils/sentry_init.py` 提供 `init_sentry()`（main.py 啟動時呼叫）與 `capture_exception(exc, level)`。
