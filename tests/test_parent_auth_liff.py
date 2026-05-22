@@ -40,6 +40,7 @@ from models.database import (
     User,
 )
 from utils.auth import create_access_token, hash_password
+from utils.exception_handlers import register_exception_handlers
 
 
 class FakeLineLoginService:
@@ -91,6 +92,7 @@ def parent_client(tmp_path):
     init_parent_line_service(fake_line)
 
     app = FastAPI()
+    register_exception_handlers(app)
     app.include_router(auth_router)
     app.include_router(parent_portal_router)
     app.include_router(parent_admin_router)
@@ -357,7 +359,7 @@ class TestAdminBindingCodeAndParentBind:
             )
             assert len(audits) == 1
 
-    def test_invalid_code_400(self, parent_client):
+    def test_invalid_code_returns_not_found_envelope(self, parent_client):
         client, _, _ = parent_client
         # 先 LIFF 拿 bind_token
         client.post(
@@ -368,8 +370,12 @@ class TestAdminBindingCodeAndParentBind:
             json={"code": "WRONGCOD"},
         )
         assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["code"] == "BIND_CODE_NOT_FOUND"
+        assert "請確認" in detail["message"]
+        assert "request_id" in detail
 
-    def test_used_code_cannot_be_reused(self, parent_client):
+    def test_used_code_returns_used_envelope(self, parent_client):
         client, session_factory, _ = parent_client
         with session_factory() as session:
             admin = _create_admin_user(session)
@@ -389,8 +395,11 @@ class TestAdminBindingCodeAndParentBind:
         )
         resp = client.post("/api/parent/auth/bind", json={"code": "USED1234"})
         assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["code"] == "BIND_CODE_USED"
+        assert "已被使用" in detail["message"]
 
-    def test_expired_code_cannot_be_used(self, parent_client):
+    def test_expired_code_returns_expired_envelope(self, parent_client):
         client, session_factory, _ = parent_client
         with session_factory() as session:
             admin = _create_admin_user(session)
@@ -410,6 +419,9 @@ class TestAdminBindingCodeAndParentBind:
         )
         resp = client.post("/api/parent/auth/bind", json={"code": "EXPI1234"})
         assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["code"] == "BIND_CODE_EXPIRED"
+        assert "已過期" in detail["message"]
 
     def test_bind_without_temp_token_returns_401(self, parent_client):
         client, _, _ = parent_client
@@ -493,6 +505,106 @@ class TestBindAdditional:
         with session_factory() as session:
             g = session.query(Guardian).first()
             assert g.user_id == parent_a_id  # 沒被改
+
+    def test_bind_additional_invalid_code_returns_not_found_envelope(
+        self, parent_client
+    ):
+        client, session_factory, _ = parent_client
+        with session_factory() as session:
+            parent_user = _create_existing_parent(session, "U_bind_add_unknown")
+            session.commit()
+            parent_user_id = parent_user.id
+
+        token = create_access_token(
+            {
+                "user_id": parent_user_id,
+                "employee_id": None,
+                "role": "parent",
+                "name": "parent_line_U_bind_add_unknown",
+                "permissions": 0,
+                "token_version": 0,
+            }
+        )
+        resp = client.post(
+            "/api/parent/auth/bind-additional",
+            json={"code": "NOSUCH00"},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["code"] == "BIND_CODE_NOT_FOUND"
+
+    def test_bind_additional_expired_code_returns_expired_envelope(self, parent_client):
+        client, session_factory, _ = parent_client
+        with session_factory() as session:
+            admin = _create_admin_user(session)
+            parent_user = _create_existing_parent(session, "U_bind_add_expired")
+            student = _create_student(session, "丙")
+            g = _create_guardian(session, student, "母親")
+            _seed_binding_code(
+                session,
+                g,
+                plain_code="EXPI5678",
+                created_by=admin.id,
+                expired=True,
+            )
+            session.commit()
+            parent_user_id = parent_user.id
+
+        token = create_access_token(
+            {
+                "user_id": parent_user_id,
+                "employee_id": None,
+                "role": "parent",
+                "name": "parent_line_U_bind_add_expired",
+                "permissions": 0,
+                "token_version": 0,
+            }
+        )
+        resp = client.post(
+            "/api/parent/auth/bind-additional",
+            json={"code": "EXPI5678"},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["code"] == "BIND_CODE_EXPIRED"
+
+    def test_bind_additional_used_code_returns_used_envelope(self, parent_client):
+        client, session_factory, _ = parent_client
+        with session_factory() as session:
+            admin = _create_admin_user(session)
+            parent_user = _create_existing_parent(session, "U_bind_add_used")
+            student = _create_student(session, "丁")
+            g = _create_guardian(session, student, "父親")
+            _seed_binding_code(
+                session,
+                g,
+                plain_code="USED5678",
+                created_by=admin.id,
+                used=True,
+            )
+            session.commit()
+            parent_user_id = parent_user.id
+
+        token = create_access_token(
+            {
+                "user_id": parent_user_id,
+                "employee_id": None,
+                "role": "parent",
+                "name": "parent_line_U_bind_add_used",
+                "permissions": 0,
+                "token_version": 0,
+            }
+        )
+        resp = client.post(
+            "/api/parent/auth/bind-additional",
+            json={"code": "USED5678"},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["code"] == "BIND_CODE_USED"
 
     def test_bind_additional_requires_parent_role(self, parent_client):
         client, session_factory, _ = parent_client
