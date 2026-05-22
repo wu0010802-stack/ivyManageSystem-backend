@@ -1389,6 +1389,24 @@ def approve_leave(
             comment=approval_comment,
         )
 
+        # ── 考勤同步 hook（leave↔attendance sync）────────────────────────────
+        # 在 ApprovalLog 寫入之後、cross_offset 及 commit 之前執行：
+        # - approved=True 且本次為真實核准（was_approved=False/None）→ apply
+        # - approved=False 且本次為撤銷已核准（was_approved=True）→ revert
+        # LeaveAttendanceConflict / LeavePartialTimeMissing → 422；
+        # 其他例外（如 RuntimeError）不被 catch，讓 FastAPI 500 + finally 的
+        # session.close() 觸發隱式 rollback，確保 leave.is_approved 不殘留。
+        from services import employee_leave_attendance_sync as sync
+
+        try:
+            if data.approved is True and not was_approved:
+                sync.apply(session, leave_id)
+            elif data.approved is False and was_approved:
+                sync.revert(session, leave_id)
+        except (sync.LeaveAttendanceConflict, sync.LeavePartialTimeMissing) as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        # ─────────────────────────────────────────────────────────────────────
+
         # ── leave↔OT 跨類抵扣（feature flag gated, v1 metadata-only）─────────
         # 條件：(1) 由 pending/rejected → approved 的真實變動 (2) feature flag 開啟
         # v1 行為：偵測到同員工同日已核准 OT 時，僅在 ApprovalLog 留下 metadata 軌跡；
