@@ -205,7 +205,7 @@ def resolve_current_academic_term(
         return _resolve_by_date(target_date)
 
     from models.academic_term import AcademicTerm
-    from models.shared_db import get_session
+    from models.base import get_session
 
     sess = session
     owned = False
