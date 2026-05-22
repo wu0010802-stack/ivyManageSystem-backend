@@ -316,6 +316,124 @@ def download_anomaly_report(
     )
 
 
+def _get_attendance_calendar_legacy(
+    session,
+    emp,
+    employee_id: int,
+    year: int,
+    month: int,
+):
+    """LEGACY: Task 27 之前的 leave_map join 邏輯。
+
+    保留供 Task 28 parity test 使用，merge 後一週 follow-up 刪除。
+    """
+    _, last_day = cal_module.monthrange(year, month)
+    start_date = date(year, month, 1)
+    end_date = date(year, month, last_day)
+
+    attendances = (
+        session.query(Attendance)
+        .filter(
+            Attendance.employee_id == employee_id,
+            Attendance.attendance_date >= start_date,
+            Attendance.attendance_date <= end_date,
+        )
+        .all()
+    )
+    att_map = {a.attendance_date: a for a in attendances}
+
+    leaves = (
+        session.query(LeaveRecord)
+        .filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.start_date <= end_date,
+            LeaveRecord.end_date >= start_date,
+            LeaveRecord.is_approved == True,
+        )
+        .all()
+    )
+
+    leave_map = {}
+    for lv in leaves:
+        d = max(lv.start_date, start_date)
+        while d <= min(lv.end_date, end_date):
+            leave_map[d] = lv
+            d = date.fromordinal(d.toordinal() + 1)
+
+    overtimes = (
+        session.query(OvertimeRecord)
+        .filter(
+            OvertimeRecord.employee_id == employee_id,
+            OvertimeRecord.overtime_date >= start_date,
+            OvertimeRecord.overtime_date <= end_date,
+            OvertimeRecord.is_approved == True,
+        )
+        .all()
+    )
+    ot_map = {o.overtime_date: o for o in overtimes}
+
+    days = []
+    work_days = 0
+    late_count = 0
+    leave_days = 0
+    overtime_hours = 0
+
+    for day_num in range(1, last_day + 1):
+        d = date(year, month, day_num)
+        att = att_map.get(d)
+        lv = leave_map.get(d)
+        ot = ot_map.get(d)
+
+        day_data = {
+            "date": d.isoformat(),
+            "weekday": d.weekday(),
+            "punch_in": (
+                att.punch_in_time.strftime("%H:%M")
+                if att and att.punch_in_time
+                else None
+            ),
+            "punch_out": (
+                att.punch_out_time.strftime("%H:%M")
+                if att and att.punch_out_time
+                else None
+            ),
+            "status": att.status if att else None,
+            "is_late": att.is_late if att else False,
+            "late_minutes": att.late_minutes if att else 0,
+            "is_early_leave": att.is_early_leave if att else False,
+            "leave_type": lv.leave_type if lv else None,
+            "leave_type_label": (LEAVE_TYPE_LABELS.get(lv.leave_type) if lv else None),
+            "leave_hours": lv.leave_hours if lv else 0,
+            "overtime_hours": ot.hours if ot else 0,
+            "overtime_type": ot.overtime_type if ot else None,
+            "remark": att.remark if att else None,
+        }
+        days.append(day_data)
+
+        if att:
+            work_days += 1
+            if att.is_late:
+                late_count += 1
+        if lv:
+            leave_days += lv.leave_hours / 8
+        if ot:
+            overtime_hours += ot.hours
+
+    return {
+        "employee_name": emp.name,
+        "employee_id": emp.employee_id,
+        "year": year,
+        "month": month,
+        "days": days,
+        "summary": {
+            "work_days": work_days,
+            "late_count": late_count,
+            "leave_days": round(leave_days, 1),
+            "overtime_hours": round(overtime_hours, 1),
+        },
+    }
+
+
 @router.get("/calendar")
 def get_attendance_calendar(
     employee_id: int = Query(...),
@@ -323,7 +441,11 @@ def get_attendance_calendar(
     month: int = Query(...),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
-    """取得員工月出勤日曆資料"""
+    """取得員工月出勤日曆資料。
+
+    使用 Attendance outerjoin LeaveRecord（透過 leave_record_id）取代舊版
+    leave_map 字典 + while 迴圈補丁，以 AttendanceRecord 作為出勤唯一 SoT。
+    """
     session = get_session()
     try:
         emp = session.query(Employee).filter(Employee.id == employee_id).first()
@@ -334,8 +456,13 @@ def get_attendance_calendar(
         start_date = date(year, month, 1)
         end_date = date(year, month, last_day)
 
-        attendances = (
-            session.query(Attendance)
+        # 單一 outerjoin query 取代兩次 query + leave_map while 迴圈
+        rows = (
+            session.query(Attendance, LeaveRecord)
+            .outerjoin(
+                LeaveRecord,
+                Attendance.leave_record_id == LeaveRecord.id,
+            )
             .filter(
                 Attendance.employee_id == employee_id,
                 Attendance.attendance_date >= start_date,
@@ -343,25 +470,7 @@ def get_attendance_calendar(
             )
             .all()
         )
-        att_map = {a.attendance_date: a for a in attendances}
-
-        leaves = (
-            session.query(LeaveRecord)
-            .filter(
-                LeaveRecord.employee_id == employee_id,
-                LeaveRecord.start_date <= end_date,
-                LeaveRecord.end_date >= start_date,
-                LeaveRecord.is_approved == True,
-            )
-            .all()
-        )
-
-        leave_map = {}
-        for lv in leaves:
-            d = max(lv.start_date, start_date)
-            while d <= min(lv.end_date, end_date):
-                leave_map[d] = lv
-                d = date.fromordinal(d.toordinal() + 1)
+        att_lv_map = {att.attendance_date: (att, lv) for att, lv in rows}
 
         overtimes = (
             session.query(OvertimeRecord)
@@ -383,8 +492,7 @@ def get_attendance_calendar(
 
         for day_num in range(1, last_day + 1):
             d = date(year, month, day_num)
-            att = att_map.get(d)
-            lv = leave_map.get(d)
+            att, lv = att_lv_map.get(d, (None, None))
             ot = ot_map.get(d)
 
             day_data = {
