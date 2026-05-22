@@ -37,7 +37,6 @@ from services.student_lifecycle import (
     transition,
 )
 
-
 # ============ Fixtures ============
 
 
@@ -215,7 +214,9 @@ class TestTransitionIntegration:
         assert student.withdrawal_date == date(2026, 5, 1)
 
     def test_withdrawn_can_return_active(self, session, classroom):
-        student = _make_student(session, classroom, lifecycle_status=LIFECYCLE_WITHDRAWN)
+        student = _make_student(
+            session, classroom, lifecycle_status=LIFECYCLE_WITHDRAWN
+        )
         student.is_active = False
         student.status = "已退學"
         student.withdrawal_date = date(2026, 3, 1)
@@ -238,7 +239,9 @@ class TestTransitionIntegration:
         assert logs[-1].event_type == "復學"
 
     def test_illegal_transition_raises_and_no_changelog(self, session, classroom):
-        student = _make_student(session, classroom, lifecycle_status=LIFECYCLE_GRADUATED)
+        student = _make_student(
+            session, classroom, lifecycle_status=LIFECYCLE_GRADUATED
+        )
         student.is_active = False
         session.flush()
 
@@ -263,6 +266,79 @@ class TestTransitionIntegration:
 
         with pytest.raises(LifecycleTransitionError):
             transition(session, student, to_status=LIFECYCLE_ACTIVE)
+
+    def test_transition_to_terminal_sets_terminal_entered_at(self, session, classroom):
+        """transition() 走 set_lifecycle_status helper 後，terminal_entered_at 應被設定。
+
+        回歸測試 T5：確認 services/student_lifecycle.transition() 改用
+        set_lifecycle_status() 後，PII retention 所需的 terminal_entered_at 戳記
+        在每個終態轉移都能被正確填寫。
+        """
+        from datetime import datetime, timezone
+
+        for to_status in (
+            LIFECYCLE_GRADUATED,
+            LIFECYCLE_TRANSFERRED,
+            LIFECYCLE_WITHDRAWN,
+        ):
+            student = _make_student(
+                session, classroom, lifecycle_status=LIFECYCLE_ACTIVE
+            )
+            assert (
+                student.terminal_entered_at is None
+            ), f"{to_status}：轉移前 terminal_entered_at 應為 None"
+
+            before = datetime.now(timezone.utc)
+            transition(
+                session,
+                student,
+                to_status=to_status,
+                effective_date=date(2026, 7, 31),
+                reason="regression test",
+            )
+            session.flush()
+
+            assert student.lifecycle_status == to_status
+            assert (
+                student.terminal_entered_at is not None
+            ), f"transition({to_status!r}) 後 terminal_entered_at 不應為 None"
+            # 允許 naive UTC 比較
+            ts = student.terminal_entered_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            assert ts >= before, f"terminal_entered_at({ts}) 不晚於 before({before})"
+
+    def test_transition_to_non_terminal_clears_terminal_entered_at(
+        self, session, classroom
+    ):
+        """從終態復學回 active，terminal_entered_at 應被清除（取消 retention timer）。
+
+        回歸測試 T5：確認 withdrawn→active 復學走 set_lifecycle_status 時
+        terminal_entered_at 被清空。
+        """
+        from datetime import datetime, timezone
+
+        student = _make_student(
+            session, classroom, lifecycle_status=LIFECYCLE_WITHDRAWN
+        )
+        student.is_active = False
+        student.status = "已退學"
+        student.terminal_entered_at = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        session.flush()
+
+        transition(
+            session,
+            student,
+            to_status=LIFECYCLE_ACTIVE,
+            effective_date=date(2026, 5, 1),
+            reason="復學",
+        )
+        session.commit()
+
+        assert student.lifecycle_status == LIFECYCLE_ACTIVE
+        assert (
+            student.terminal_entered_at is None
+        ), "復學後 terminal_entered_at 應被清除"
 
 
 # ============ 資料完整性：ALLOWED_TRANSITIONS 所有 event_key 皆可查表 ============

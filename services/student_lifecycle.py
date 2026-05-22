@@ -30,6 +30,7 @@ from models.classroom import (
 )
 from models.student_log import LIFECYCLE_TO_EVENT_TYPE, StudentChangeLog
 from utils.academic import resolve_current_academic_term
+from utils.student_lifecycle import set_lifecycle_status
 
 # 合法狀態轉移表：{from_status: {to_status: event_key}}
 # event_key 對應 LIFECYCLE_TO_EVENT_TYPE（中文 event_type）
@@ -123,7 +124,16 @@ def transition(
     event_date = effective_date or date.today()
 
     # 更新 student 欄位（連動舊 is_active/status/graduation/withdrawal_date）
-    student.lifecycle_status = to_status
+    # set_lifecycle_status 維護 terminal_entered_at；audit=False 因呼叫端已寫
+    # StudentChangeLog（稽核軌跡），API 端有 AuditMiddleware，不重複寫 AuditLog
+    set_lifecycle_status(
+        session,
+        student,
+        to_status,
+        actor_user_id=recorded_by,
+        audit=False,
+        reason=reason,
+    )
     if to_status == LIFECYCLE_GRADUATED:
         student.is_active = False
         student.status = "已畢業"
