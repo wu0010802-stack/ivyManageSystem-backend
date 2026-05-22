@@ -4,7 +4,7 @@
 寫入策略採「並存模式」:全天 upsert status=LEAVE;半天/小時保留打卡並標記 leave_record_id。
 """
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 from typing import Iterable
 
@@ -12,6 +12,14 @@ from sqlalchemy.orm import Session
 
 from models.attendance import Attendance, AttendanceStatus
 from models.leave import LeaveRecord
+from utils.attendance_calc import (
+    compute_late_minutes_with_leave,
+    compute_early_leave_minutes_with_leave,
+)
+
+# 預設排班（若員工無自訂排班則 fallback）
+DEFAULT_SCHEDULED_START = time(9, 0)
+DEFAULT_SCHEDULED_END = time(18, 0)
 
 # ── 例外型別 ──────────────────────────────────────────────────────
 
@@ -62,6 +70,22 @@ def _iter_dates(leave: LeaveRecord) -> Iterable[date]:
     while d <= leave.end_date:
         yield d
         d += timedelta(days=1)
+
+
+def _parse_hhmm(s: str | None) -> time | None:
+    """解析 "HH:MM" 字串成 time，None 回傳 None。"""
+    if s is None:
+        return None
+    hh, mm = s.split(":")
+    return time(int(hh), int(mm))
+
+
+def _get_employee_schedule(session: Session, employee_id: int) -> tuple[time, time]:
+    """取員工排班上下班時間。若員工 model 無欄位則 fallback 預設。
+
+    plan 階段 simplest：先 fallback default。若日後員工 model 加排班欄，改這裡。
+    """
+    return DEFAULT_SCHEDULED_START, DEFAULT_SCHEDULED_END
 
 
 # ── 公開 API ──────────────────────────────────────────────────────
@@ -132,8 +156,83 @@ def _apply_full_day(session: Session, leave: LeaveRecord, d: date) -> None:
 
 
 def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
-    """半天/小時:Task 7 補完。"""
-    raise NotImplementedError("Task 7 補完")
+    """半天/小時：UPSERT 不覆蓋 punch_in/punch_out；
+    leave_record_id + partial_leave_hours 寫入；
+    late_minutes/early_leave_minutes 用 leave-aware 重算。
+    """
+    row = (
+        session.query(Attendance)
+        .filter_by(
+            employee_id=leave.employee_id,
+            attendance_date=d,
+        )
+        .first()
+    )
+
+    if row is None:
+        row = Attendance(
+            employee_id=leave.employee_id,
+            attendance_date=d,
+        )
+        session.add(row)
+
+    # Idempotent guard：已是本筆 leave 寫的且 partial_leave_hours 已填 → no-op
+    if row.leave_record_id == leave.id and row.partial_leave_hours is not None:
+        return
+
+    # 衝突 guard：row 已被別筆 leave 佔據
+    if row.leave_record_id is not None and row.leave_record_id != leave.id:
+        raise LeaveAttendanceConflict(
+            f"{d} employee_id={leave.employee_id} 已有 leave_record_id="
+            f"{row.leave_record_id}，無法新寫入 leave_id={leave.id}"
+        )
+
+    row.leave_record_id = leave.id
+    row.partial_leave_hours = Decimal(str(leave.leave_hours))
+
+    # 解析 leave start/end time（String "HH:MM" → time）
+    lv_start = _parse_hhmm(leave.start_time)
+    lv_end = _parse_hhmm(leave.end_time)
+
+    # 無打卡 → status=ABSENT
+    if row.punch_in_time is None and row.punch_out_time is None:
+        row.status = AttendanceStatus.ABSENT.value
+        row.late_minutes = 0
+        row.early_leave_minutes = 0
+        return
+
+    # 有打卡 → 用 leave-aware 重算 late/early_leave
+    sched_start, sched_end = _get_employee_schedule(session, leave.employee_id)
+
+    if row.punch_in_time is not None:
+        # punch_in_time 是 DateTime，需先轉成 time
+        punch_in_time_only = row.punch_in_time.time() if row.punch_in_time else None
+        row.late_minutes = compute_late_minutes_with_leave(
+            punch_in=punch_in_time_only,
+            scheduled_start=sched_start,
+            leave_start=lv_start,
+            leave_end=lv_end,
+        )
+
+    if row.punch_out_time is not None:
+        # punch_out_time 是 DateTime，需先轉成 time
+        punch_out_time_only = row.punch_out_time.time() if row.punch_out_time else None
+        row.early_leave_minutes = compute_early_leave_minutes_with_leave(
+            punch_out=punch_out_time_only,
+            scheduled_end=sched_end,
+            leave_start=lv_start,
+            leave_end=lv_end,
+        )
+
+    # 若 late 與 early_leave 都歸零，且原 status 為 LATE/EARLY_LEAVE → 退回 NORMAL
+    late_min = row.late_minutes or 0
+    early_min = row.early_leave_minutes or 0
+    if late_min == 0 and early_min == 0:
+        if row.status in (
+            AttendanceStatus.LATE.value,
+            AttendanceStatus.EARLY_LEAVE.value,
+        ):
+            row.status = AttendanceStatus.NORMAL.value
 
 
 def revert(session: Session, leave_id: int) -> list[date]:

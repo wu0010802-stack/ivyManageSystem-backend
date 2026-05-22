@@ -1,7 +1,7 @@
 """sync service unit tests U-1~U-15"""
 
 import pytest
-from datetime import date, time
+from datetime import date, time, datetime
 from decimal import Decimal
 
 from sqlalchemy import create_engine
@@ -187,3 +187,135 @@ class TestApplyFullDay:
         )
         assert row.status == AttendanceStatus.LEAVE.value
         assert row.leave_record_id == approved_full_day_leave.id
+
+
+# ── Task 7 fixtures ───────────────────────────────────────────────
+
+
+@pytest.fixture
+def approved_partial_morning_leave(db_session, sample_employee):
+    """5/22 半天 09:00-13:00(personal)，已核可"""
+    from models.leave import LeaveRecord
+
+    lv = LeaveRecord(
+        employee_id=sample_employee.id,
+        leave_type="personal",
+        start_date=date(2026, 5, 22),
+        end_date=date(2026, 5, 22),
+        leave_hours=4.0,
+        start_time="09:00",
+        end_time="13:00",
+        is_approved=True,
+    )
+    db_session.add(lv)
+    db_session.commit()
+    return lv
+
+
+@pytest.fixture
+def approved_partial_hour_leave(db_session, sample_employee):
+    """5/22 小時假 1.5hr 09:00-10:30，已核可"""
+    from models.leave import LeaveRecord
+
+    lv = LeaveRecord(
+        employee_id=sample_employee.id,
+        leave_type="personal",
+        start_date=date(2026, 5, 22),
+        end_date=date(2026, 5, 22),
+        leave_hours=1.5,
+        start_time="09:00",
+        end_time="10:30",
+        is_approved=True,
+    )
+    db_session.add(lv)
+    db_session.commit()
+    return lv
+
+
+class TestApplyPartial:
+    def test_u3_apply_partial_with_existing_late_row(
+        self, db_session, sample_employee, approved_partial_morning_leave
+    ):
+        """U-3: apply 半天 + 既有 LATE row → status 保持 LATE / partial_leave_hours=4 / late_minutes 重算"""
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.LATE.value,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(9, 30)),
+            late_minutes=30,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        sync.apply(db_session, approved_partial_morning_leave.id)
+        db_session.flush()
+
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        # punch 保留
+        assert row.punch_in_time is not None
+        assert row.punch_in_time.time() == time(9, 30)
+        # leave_record_id + partial_leave_hours 寫入
+        assert row.leave_record_id == approved_partial_morning_leave.id
+        assert row.partial_leave_hours == Decimal("4.00")
+        # late_minutes 重算：scheduled_start=09:00，請假 09:00-13:00 涵蓋 → late=0
+        assert row.late_minutes == 0
+        # status 退回 NORMAL（原 LATE，late_minutes 歸零後）
+        assert row.status == AttendanceStatus.NORMAL.value
+
+    def test_u4_apply_partial_no_punch_becomes_absent(
+        self, db_session, sample_employee, approved_partial_morning_leave
+    ):
+        """U-4: apply 半天 + 無 punch_in/out → status=ABSENT / partial_leave_hours=4"""
+        sync.apply(db_session, approved_partial_morning_leave.id)
+        db_session.flush()
+
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        assert row.status == AttendanceStatus.ABSENT.value
+        assert row.punch_in_time is None
+        assert row.leave_record_id == approved_partial_morning_leave.id
+        assert row.partial_leave_hours == Decimal("4.00")
+
+    def test_u5_apply_hourly_with_existing_normal(
+        self, db_session, sample_employee, approved_partial_hour_leave
+    ):
+        """U-5: apply 小時假 1.5hr + 既有 NORMAL row → NORMAL / partial_leave_hours=1.5"""
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.NORMAL.value,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(8, 50)),
+            punch_out_time=datetime.combine(date(2026, 5, 22), time(18, 0)),
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        sync.apply(db_session, approved_partial_hour_leave.id)
+        db_session.flush()
+
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        assert row.status == AttendanceStatus.NORMAL.value
+        assert row.punch_in_time is not None
+        assert row.punch_in_time.time() == time(8, 50)
+        assert row.partial_leave_hours == Decimal("1.5")
+        assert row.leave_record_id == approved_partial_hour_leave.id
