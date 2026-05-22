@@ -459,7 +459,8 @@ def set_current_term(
   - **其他法定**：`STATUTORY_QUOTA_HOURS[lt]`，note 標 `法定年度上限（學年制）`
 - **compensatory**（不在 QUOTA_LEAVE_TYPES，但要 carry-over）：
   - 從上學年 row `total_hours` 扣已核准已用部分、加上 carry-over 結餘
-  - 計算邏輯：`_calc_compensatory_balance(employee_id, old, session)`，回傳 `max(0, old_quota.total_hours - approved_used_in_old_term)`
+  - 計算邏輯：`_calc_compensatory_balance(employee_id, old, new, session)`，回傳 `max(0, old_quota.total_hours - approved_used_in_old_term)`
+  - **舊 quota 查詢 cold-start 相容**：第一次 toggle 時系統內全部是 legacy year-only row（`school_year=NULL`）。`_calc_compensatory_balance` 先找 `school_year == old.school_year` row，找不到 fallback 找 `school_year IS NULL AND year == old.start_date.year` legacy row；若都找不到才回 0。**避免** cutover 後所有員工補休 silently 歸零這個 P0 bug
   - `approved_used_in_old_term` 篩選條件：`LeaveRecord.employee_id == emp.id AND leave_type == "compensatory" AND is_approved == True AND start_date >= old.start_date AND start_date < new.start_date`
   - new row.total_hours = 結餘、note 標 `上學年結餘 X.X 小時 carry-over`
 - **idempotency**：handler 內 pre-check `school_year=new.school_year` row 是否已存在；存在則 skip 該 leave_type（連按兩次 set-current 不會 double-insert）

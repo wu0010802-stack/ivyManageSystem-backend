@@ -1035,14 +1035,46 @@ Create `tests/test_classroom_carry_over.py`:
 ```python
 """classroom_carry_over subscriber 單元測試。"""
 
+import os
+import sys
 from datetime import date
-import pytest
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import models.base as base_module
+from models.database import Base, Classroom, Student
 from models.academic_term import AcademicTerm
-from models.classroom import Classroom
-from models.student import Student
 from services.term_subscribers.classroom_carry_over import handle
 from utils.term_events import reset_handlers_for_tests
+
+
+@pytest.fixture
+def db_session(tmp_path):
+    """SQLite in-memory test session（swap base_module 全域 engine pattern）。"""
+    db_path = tmp_path / "term.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+
+    Base.metadata.create_all(engine)
+
+    session = session_factory()
+    yield session
+    session.close()
+
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_session_factory
+    engine.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -1076,8 +1108,7 @@ def _make_classroom(db_session, sy, sem, name="ABC"):
 def _make_student(db_session, classroom_id, student_id, is_active=True):
     s = Student(
         student_id=student_id,
-        chinese_name=f"學生{student_id}",
-        english_name=f"Student {student_id}",
+        name=f"學生{student_id}",
         gender="M",
         birthday=date(2020, 1, 1),
         classroom_id=classroom_id,
@@ -1419,14 +1450,46 @@ Create `tests/test_leave_quota_cutover.py`:
 ```python
 """leave_quota_cutover subscriber 單元測試。"""
 
+import os
+import sys
 from datetime import date
-import pytest
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import models.base as base_module
+from models.database import Base, Employee, LeaveQuota, LeaveRecord
 from models.academic_term import AcademicTerm
-from models.employee import Employee
-from models.leave import LeaveQuota, LeaveRecord
 from services.term_subscribers.leave_quota_cutover import handle
 from utils.term_events import reset_handlers_for_tests
+
+
+@pytest.fixture
+def db_session(tmp_path):
+    """SQLite in-memory test session（swap base_module 全域 engine pattern）。"""
+    db_path = tmp_path / "term.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+
+    Base.metadata.create_all(engine)
+
+    session = session_factory()
+    yield session
+    session.close()
+
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_session_factory
+    engine.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -1576,6 +1639,41 @@ class TestLeaveQuotaCutover:
             .first()
         )
         assert new_comp.total_hours == pytest.approx(10.0)
+
+    def test_compensatory_cold_start_falls_back_to_legacy_year_row(self, db_session):
+        """First toggle 時系統內只有 legacy year-only row → fallback 查到、結餘正確 carry-over。
+
+        Cold-start 真實情境：cutover 前 system 從未 emit term.changed，
+        所有 leave_quotas row 都是 school_year=NULL + year=西元年。
+        若 _calc_compensatory_balance 只查 school_year=old.school_year，會找不到 row、
+        全員補休 silently 變 0 = P0 data-loss bug。
+        """
+        old = _make_term(db_session, 114, 2, date(2026, 2, 1), date(2026, 7, 31))
+        new = _make_term(db_session, 115, 1, date(2026, 8, 1), date(2027, 1, 31))
+        emp = _make_emp(db_session)
+
+        # 模擬 first cutover 前的狀態：只有 legacy year-only row（school_year=NULL）
+        legacy = LeaveQuota(
+            employee_id=emp.id, year=2026, school_year=None,
+            leave_type="compensatory", total_hours=20.0,
+        )
+        db_session.add(legacy)
+        db_session.flush()
+
+        handle(old=old, new=new, session=db_session)
+
+        new_comp = (
+            db_session.query(LeaveQuota)
+            .filter(
+                LeaveQuota.employee_id == emp.id,
+                LeaveQuota.school_year == 115,
+                LeaveQuota.leave_type == "compensatory",
+            )
+            .first()
+        )
+        # 結餘應從 legacy row 拿到（20h），沒被誤判為 0
+        assert new_comp.total_hours == pytest.approx(20.0)
+        assert "carry-over" in (new_comp.note or "")
 
     def test_idempotent_repeated_handle(self, db_session):
         """同 school_year row 已存在則 skip，不會 double-insert。"""
@@ -1751,7 +1849,13 @@ def _calc_compensatory_balance(
     new: AcademicTerm,
     session: Session,
 ) -> float:
-    """補休結餘 = 上學年 row.total_hours - 已核准已用 (篩選 old term 區間)。"""
+    """補休結餘 = 上學年 row.total_hours - 已核准已用 (篩選 old term 區間)。
+
+    Cold-start 相容：first toggle 時系統內只有 legacy year-only row。
+    先按 school_year 查、找不到 fallback 找 (school_year IS NULL AND year=old.start_date.year)
+    的 legacy row。避免全員 silently 歸零。
+    """
+    # 學年 row 優先
     old_quota = (
         session.query(LeaveQuota)
         .filter(
@@ -1761,6 +1865,18 @@ def _calc_compensatory_balance(
         )
         .first()
     )
+    # Cold-start fallback：legacy year-only row
+    if not old_quota:
+        old_quota = (
+            session.query(LeaveQuota)
+            .filter(
+                LeaveQuota.employee_id == employee_id,
+                LeaveQuota.school_year.is_(None),
+                LeaveQuota.year == old.start_date.year,
+                LeaveQuota.leave_type == "compensatory",
+            )
+            .first()
+        )
     if not old_quota:
         return 0.0
     approved_used = (
@@ -1800,6 +1916,9 @@ with school_year=X+1：
 - annual：hire_date → new_term.start_date 年資算（勞基法第38條）
 - QUOTA_LEAVE_TYPES 其他：STATUTORY_QUOTA_HOURS
 - compensatory：上學年 row.total - 已核准已用（篩 old.start_date ~ new.start_date 區間）
+  cold-start fallback：找不到 school_year row 時退回 legacy year-only row
+  (school_year IS NULL AND year=old.start_date.year)，避免 first toggle 全員補休
+  silently 歸零（advisor catch 的 P0 data-loss bug）
 
 同學年 1→2 / 初次設定 / 非典型切換 no-op。
 Idempotent：pre-check (employee_id, school_year, leave_type) 已存在則 skip。
@@ -2057,19 +2176,112 @@ Create `tests/test_term_change_integration.py`:
 涵蓋 spec §9.2 的 11 個整合 scenario。
 """
 
+import os
+import sys
 from datetime import date
+
 import pytest
-from fastapi import HTTPException
-from unittest.mock import patch
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import models.base as base_module
+from api.auth import _account_failures, _ip_attempts
+from api.auth import router as auth_router
+from api.academic_terms import router as academic_terms_router
+from models.database import Base, Classroom, Employee, LeaveQuota, LeaveRecord, Student, User
 from models.academic_term import AcademicTerm
-from models.classroom import Classroom
-from models.employee import Employee
-from models.leave import LeaveQuota
-from models.student import Student
+from utils.auth import hash_password
+from utils.permissions import Permission
 
 
-def _seed_term(client, session, *, school_year, semester, start_date, end_date):
+@pytest.fixture
+def term_test(tmp_path):
+    """整合測試 fixture：TestClient + session factory + admin login headers。
+
+    Returns:
+        (client, session_factory, admin_headers) tuple
+    """
+    db_path = tmp_path / "term_integration.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+
+    Base.metadata.create_all(engine)
+    _ip_attempts.clear()
+    _account_failures.clear()
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(academic_terms_router)
+
+    # 確保 subscriber 已 import 並註冊（test 不靠 lifespan 跑 on_startup）
+    from utils.term_events import reset_handlers_for_tests
+    reset_handlers_for_tests()
+    import services.term_subscribers.classroom_carry_over   # noqa: F401
+    import services.term_subscribers.leave_quota_cutover    # noqa: F401
+    import services.term_subscribers.activity_semester_tag  # noqa: F401
+
+    # 建 admin user
+    with session_factory() as s:
+        admin = User(
+            username="admin",
+            password_hash=hash_password("TempPass123"),
+            role="admin",
+            permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+            is_active=True,
+        )
+        s.add(admin)
+        s.commit()
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "TempPass123"},
+        )
+        assert resp.status_code == 200, resp.text
+        token = resp.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {token}"}
+
+        yield client, session_factory, admin_headers
+
+    _ip_attempts.clear()
+    _account_failures.clear()
+    reset_handlers_for_tests()
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_session_factory
+    engine.dispose()
+
+
+@pytest.fixture
+def client(term_test):
+    return term_test[0]
+
+
+@pytest.fixture
+def db_session(term_test):
+    """每個 test 內取得 fresh session（與 TestClient 共用 sqlite engine）。"""
+    _, session_factory, _ = term_test
+    s = session_factory()
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def admin_headers(term_test):
+    return term_test[2]
+
+
+def _seed_term(session, *, school_year, semester, start_date, end_date):
     """Helper：直接 INSERT term row（繞過 /academic-terms POST 簡化 setup）。"""
     t = AcademicTerm(
         school_year=school_year, semester=semester,
@@ -2090,8 +2302,7 @@ def _seed_classroom(session, sy, sem, name="ABC"):
 def _seed_student(session, classroom_id, student_id):
     s = Student(
         student_id=student_id,
-        chinese_name=f"S{student_id}",
-        english_name=f"S{student_id}",
+        name=f"S{student_id}",
         gender="M",
         birthday=date(2020, 1, 1),
         classroom_id=classroom_id,
@@ -2115,7 +2326,7 @@ class TestTermChangeIntegration:
     ):
         """old=None 時 3 subscriber 全 no-op。"""
         t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2132,13 +2343,13 @@ class TestTermChangeIntegration:
     ):
         """114-1 → 114-2：classroom 複製、學生遷移、quota 不動。"""
         old_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=114, semester=1,
             start_date=date(2025, 8, 1), end_date=date(2026, 1, 31),
         )
         old_t.is_current = True
         new_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=114, semester=2,
             start_date=date(2026, 2, 1), end_date=date(2026, 7, 31),
         )
@@ -2166,13 +2377,13 @@ class TestTermChangeIntegration:
     ):
         """114-2 → 115-1：classroom 不動、每員工生 new quota row。"""
         old_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=114, semester=2,
             start_date=date(2026, 2, 1), end_date=date(2026, 7, 31),
         )
         old_t.is_current = True
         new_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2199,13 +2410,13 @@ class TestTermChangeIntegration:
         """補休結餘 carry-over：舊 row 8h、used 2h → 新 row 6h。"""
         from models.leave import LeaveRecord
         old_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=114, semester=2,
             start_date=date(2026, 2, 1), end_date=date(2026, 7, 31),
         )
         old_t.is_current = True
         new_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2243,13 +2454,13 @@ class TestTermChangeIntegration:
     ):
         """特休年資 reference = new.start_date。"""
         old_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=114, semester=2,
             start_date=date(2026, 2, 1), end_date=date(2026, 7, 31),
         )
         old_t.is_current = True
         new_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2276,7 +2487,7 @@ class TestTermChangeIntegration:
         self, client, db_session, admin_headers
     ):
         t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2298,48 +2509,68 @@ class TestTermChangeIntegration:
     def test_handler_raise_rolls_back_entire_transaction(
         self, client, db_session, admin_headers
     ):
-        """leave_quota_cutover handler raise → is_current 不變、quota 不建立。"""
+        """leave_quota_cutover handler raise → is_current 不變、quota 不建立。
+
+        實作策略：直接 swap _HANDLERS 內 leave_quota_cutover 的 reference 為
+        raising stub。@on_term_changed 在 import time 把原 handler 函式 reference
+        存進 _HANDLERS list、不靠 lqc.handle 屬性查找，所以 patch.object(lqc, "handle")
+        無效（_HANDLERS 仍持有原 function object）；必須直接改 _HANDLERS list
+        才能 intercept。
+        """
+        from utils.term_events import _HANDLERS, register_handler, reset_handlers_for_tests
+
         old_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=114, semester=2,
             start_date=date(2026, 2, 1), end_date=date(2026, 7, 31),
         )
         old_t.is_current = True
         new_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
         _seed_emp(db_session)
         db_session.commit()
 
-        # Monkey patch leave_quota_cutover handle 強制 raise
-        from services.term_subscribers import leave_quota_cutover as lqc
-        original_handle = lqc.handle
+        # Positive assertion：boom 真的被呼叫，避免 rollback 是因為 handler
+        # 根本沒跑（false negative）
+        boom_called = []
 
         def boom(*, old, new, session):
+            boom_called.append(True)
             raise RuntimeError("simulated subscriber failure")
 
-        with patch.object(lqc, "handle", boom):
-            # 同時要 patch utils.term_events._HANDLERS 內的 reference
-            # 簡化做法：重新註冊 handler with patched fn
-            from utils.term_events import _HANDLERS
-            for i, (name, fn) in enumerate(_HANDLERS):
-                if name == "leave_quota_cutover":
-                    _HANDLERS[i] = (name, boom)
-                    break
+        # Snapshot 原本 handlers 後 swap leave_quota_cutover
+        original = list(_HANDLERS)
+        assert any(n == "leave_quota_cutover" for n, _ in original), (
+            "leave_quota_cutover not registered; fixture broken"
+        )
 
-            r = client.post(f"/api/academic-terms/{new_t.id}/set-current",
-                            headers=admin_headers)
-            assert r.status_code == 500 or r.status_code == 422
+        reset_handlers_for_tests()
+        for name, fn in original:
+            if name == "leave_quota_cutover":
+                register_handler(name, boom)
+            else:
+                register_handler(name, fn)
 
-            # Restore（避免影響其他 test）
-            for i, (name, fn) in enumerate(_HANDLERS):
-                if name == "leave_quota_cutover":
-                    _HANDLERS[i] = (name, original_handle)
-                    break
+        try:
+            r = client.post(
+                f"/api/academic-terms/{new_t.id}/set-current",
+                headers=admin_headers,
+            )
+            # FastAPI 對未捕捉 RuntimeError 預設回 500
+            assert r.status_code == 500
+            assert boom_called == [True], (
+                "boom handler 沒被呼叫 — registry swap 沒生效"
+            )
+        finally:
+            # 必還原 registry，否則污染後續 test
+            reset_handlers_for_tests()
+            for name, fn in original:
+                register_handler(name, fn)
 
-        # is_current 不應變更
+        # is_current 不應變更（rollback 成功的 invariant）
         db_session.expire_all()
         old_after = (
             db_session.query(AcademicTerm)
@@ -2355,6 +2586,12 @@ class TestTermChangeIntegration:
         assert new_after.is_current is False
         # quota 沒被寫入
         assert db_session.query(LeaveQuota).count() == 0
+        # classroom_carry_over 在 boom 前執行；即便有寫入也要被 rollback
+        assert (
+            db_session.query(Classroom)
+            .filter(Classroom.school_year == 115)
+            .count() == 0
+        )
 
     def test_idempotent_toggle_does_not_double_insert_quotas(
         self, client, db_session, admin_headers
@@ -2367,12 +2604,12 @@ class TestTermChangeIntegration:
         """
         from services.term_subscribers.leave_quota_cutover import handle as lqc_handle
         old_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=114, semester=2,
             start_date=date(2026, 2, 1), end_date=date(2026, 7, 31),
         )
         new_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2401,13 +2638,13 @@ class TestTermChangeIntegration:
         """跳級切換 113-2 → 115-1：classroom no-op + warning；quota no-op + info。"""
         import logging
         old_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=113, semester=2,
             start_date=date(2025, 2, 1), end_date=date(2025, 7, 31),
         )
         old_t.is_current = True
         new_t = _seed_term(
-            client, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2437,7 +2674,7 @@ class TestTermChangeIntegration:
 
         # 建一筆 is_current term
         t = _seed_term(
-            None, db_session,
+            db_session,
             school_year=115, semester=1,
             start_date=date(2026, 8, 1), end_date=date(2027, 1, 31),
         )
@@ -2466,7 +2703,7 @@ class TestTermChangeIntegration:
         assert fallback.id == legacy_row.id
 ```
 
-> 註：此檔需要 `client` / `db_session` / `admin_headers` 三個 fixture，它們應該都在既有 `tests/conftest.py` 或 `tests/conftest_*.py`。若 fixture name 不同（例如 `auth_admin` / `db`），對齊既有 router test 風格修正（grep 既有 router test 例如 `tests/test_academic_utils.py` 確認 fixture name）。
+> Fixture pattern：`term_test` 是 file-local（與 `tests/test_activity_academic_term.py:term_client` 同套路），`client` / `db_session` / `admin_headers` 為 derived fixtures。`conftest.py` 不需要動。
 
 - [ ] **Step 10.2: 跑整合測試**
 
@@ -2587,7 +2824,5 @@ Expected: 看到三個 handler 按預期順序、`Order OK`。
 
 ## 已知限制
 
-- `test_handler_raise_rolls_back_entire_transaction` 用 monkey-patch `_HANDLERS` 直接 swap handler，pattern 較 hacky；如果有 cleaner 的測試 helper 可重構（plan 階段不阻塞）
-- `db_session` / `client` / `admin_headers` fixture name 需與既有 `tests/conftest.py` 對齊；implementer 在 Task 6/7/10 第一次跑 test 時若 fixture 名不對，請 grep 既有 router test 找正確名稱
-- `Student` / `Employee` 模型欄位若與本 plan 假設不同（例如 `chinese_name` 實際叫 `name`），implementer 跑 test 時依錯誤訊息對齊既有欄位
-- `test_handler_raise_rolls_back_entire_transaction` 預期狀態碼為 500 或 422 — 視 FastAPI middleware 對 RuntimeError 的處理；若實際碼不同，依實測修正
+- `test_handler_raise_rolls_back_entire_transaction` 用 `_HANDLERS` swap intercept handler，pattern 較 hacky 但 advisor 確認 `patch.object(lqc, "handle", ...)` 對 `@on_term_changed` 註冊的 reference 無效，必須直接動 list；boom_called positive assertion 防 false-negative
+- 預期 status code 為 500（FastAPI 對未捕捉 RuntimeError 預設），若實際 middleware 改寫成 422 或其他，依實測修正
