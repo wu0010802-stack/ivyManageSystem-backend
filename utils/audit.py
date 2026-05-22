@@ -172,9 +172,12 @@ ENTITY_PATTERNS = [
     # 順序：special_bonuses 排在 /api/year_end/cycles 之前，first-match wins。
     # /api/year_end/cycles/{id}/settlements:* 歸 year_end_cycle；
     # 個別 /api/year_end/settlements/{id}/sign_*/finalize 走 year_end_settlement。
+    # appraisal-payout 為年終考核獎金計算與分配（2026-05-22 Task 6），
+    # POST /generate & DELETE /{year} 兩個寫操作須留 audit。
     (r"/api/year_end/cycles/\d+/special_bonuses", "year_end_special_bonus"),
     (r"/api/year_end/cycles", "year_end_cycle"),
     (r"/api/year_end/settlements", "year_end_settlement"),
+    (r"/api/year_end/appraisal-payout", "appraisal_payout"),
     # 廠商付款簽收：金流類，付款 + 簽收 + 附件異動全部留 audit。
     (r"/api/vendor-payments", "vendor_payment"),
     # 月度固定費用登錄：金流類，每筆 upsert/delete 全部留 audit。
@@ -251,6 +254,8 @@ ENTITY_LABELS = {
     "year_end_cycle": "年終週期",
     "year_end_settlement": "年終結算",
     "year_end_special_bonus": "年終特別獎金",
+    # 年終考核獎金 payout（2026-05-22 Task 6）
+    "appraisal_payout": "年終考核獎金分配",
     # 教師端跨功能搜尋 / 量測快照（bug sweep round 4 2026-05-14 補）
     # 兩者都是 GET 但回傳跨班 PII 或健康資料，必留稽核。
     "portal_search": "教師端跨功能搜尋",
