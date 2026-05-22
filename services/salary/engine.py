@@ -51,6 +51,7 @@ from .utils import (
 from . import festival as _festival
 from .totals import recompute_record_totals
 from services.student_enrollment import count_students_active_on
+from services.salary.appraisal_year_end import query_appraisal_year_end_bonus
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,14 @@ from .bulk_preload import (  # noqa: F401
 )
 
 
-def _fill_salary_record(salary_record, breakdown, engine):
+def _fill_salary_record(salary_record, breakdown, engine, session=None):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
 
     若 SalaryRecord.manual_overrides 不為空,清單內欄位視為「人工調整鎖定」,
     跳過 breakdown 覆寫,並從 record 重算 gross/total/net 確保總額一致。
+
+    session: SQLAlchemy Session，供 appraisal_year_end_bonus plugin query 用；
+             None 時跳過 plugin（向下相容既有 unit test）。
     """
     overrides = set(salary_record.manual_overrides or [])
 
@@ -131,6 +135,15 @@ def _fill_salary_record(salary_record, breakdown, engine):
             breakdown.festival_bonus
             + breakdown.overtime_bonus
             + breakdown.supervisor_dividend
+        )
+
+    # 考核年終獎金（2 月發放；不進 gross_salary；source of truth = special_bonus_items）
+    if session is not None:
+        salary_record.appraisal_year_end_bonus = query_appraisal_year_end_bonus(
+            session,
+            salary_record.employee_id,
+            salary_record.salary_year,
+            salary_record.salary_month,
         )
 
     # 成功重算 → 清除 stale 旗標(若為預載的舊 record 之前可能被標 True)
@@ -2917,7 +2930,7 @@ class SalaryEngine:
                 )
                 session.add(salary_record)
 
-            _fill_salary_record(salary_record, breakdown, self)
+            _fill_salary_record(salary_record, breakdown, self, session=session)
             session.flush()  # 取得 salary_record.id 供 discipline mark applied 用
 
             # 發放月才會有 period 累積 → 此時 mark applied pending 懲處
@@ -2940,7 +2953,7 @@ class SalaryEngine:
                     .first()
                 )
                 self._check_not_finalized(salary_record, emp.name, year, month)
-                _fill_salary_record(salary_record, breakdown, self)
+                _fill_salary_record(salary_record, breakdown, self, session=session)
                 session.flush()
                 self._mark_discipline_applied(
                     session, emp.id, year, month, salary_record.id
@@ -3560,7 +3573,7 @@ class SalaryEngine:
             )
             session.add(salary_record)
 
-        _fill_salary_record(salary_record, breakdown, self)
+        _fill_salary_record(salary_record, breakdown, self, session=session)
         return emp, breakdown
 
     def process_bulk_salary_calculation(
