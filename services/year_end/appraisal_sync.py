@@ -29,6 +29,7 @@ from models.appraisal import (
     AppraisalSummary,
     Semester,
     SummaryStatus,
+    CycleStatus,
 )
 from models.employee import Employee
 from models.year_end import SpecialBonusType
@@ -103,9 +104,7 @@ def resolve_target_cycles(
 
 def _cycle_is_finalized(cycle: AppraisalCycle) -> bool:
     """CycleStatus.CLOSED = 已封存 = finalized。"""
-    status = cycle.status
-    status_name = getattr(status, "name", str(status))
-    return status_name == "CLOSED"
+    return cycle.status == CycleStatus.CLOSED
 
 
 def preview_payout(db: Session, payout_year: int) -> list[PayoutPreviewRow]:
