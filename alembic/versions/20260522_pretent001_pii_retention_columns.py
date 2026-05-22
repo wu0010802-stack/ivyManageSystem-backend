@@ -65,7 +65,8 @@ def upgrade():
                   AND action IN ('UPDATE', 'CREATE')
                   AND (changes LIKE '%lifecycle_status%' OR summary LIKE '%lifecycle%')
                   AND entity_id ~ '^\\d+$'
-                GROUP BY entity_id
+                -- NOTE: audit_logs.entity_id 是 String(50)，須先用 regex 過濾純數字再 CAST
+                GROUP BY CAST(entity_id AS INTEGER)
             )
             UPDATE students s
             SET terminal_entered_at = COALESCE(lc.last_change_at, s.updated_at)
@@ -90,7 +91,7 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index("ix_guardians_pii_redacted_null", "guardians")
-    op.drop_index("ix_student_terminal_retention", "students")
+    op.drop_index("ix_guardians_pii_redacted_null", table_name="guardians")
+    op.drop_index("ix_student_terminal_retention", table_name="students")
     op.drop_column("guardians", "pii_redacted_at")
     op.drop_column("students", "terminal_entered_at")

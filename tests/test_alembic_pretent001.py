@@ -98,7 +98,7 @@ def _create_pretent001_prereq_tables(bind):
         Column("lifecycle_status", String(20), nullable=False, server_default="active"),
         Column("updated_at", DateTime, nullable=True),
         Column("created_at", DateTime, nullable=True),
-        Column("birthday", DateTime, nullable=True),
+        Column("birth_date", DateTime, nullable=True),
     )
     Table(
         "guardians",
