@@ -24,6 +24,9 @@ _ALL_VARS = (
     "OFFICIAL_CALENDAR_SYNC_INTERVAL",
     "FINANCE_RECONCILIATION_ENABLED",
     "SECURITY_GC_DISABLED",
+    "PII_RETENTION_GC_DISABLED",
+    "PII_RETENTION_GC_DRY_RUN",
+    "PII_RETENTION_TERMINAL_DAYS",
 )
 
 
@@ -39,6 +42,10 @@ def test_defaults(monkeypatch):
     assert s.official_calendar_sync_enabled is False
     assert s.finance_reconciliation_enabled is False
     assert s.security_gc_disabled is False
+    # PII retention defaults: disabled + dry-run + 365 天
+    assert s.pii_retention_gc_disabled is True
+    assert s.pii_retention_gc_dry_run is True
+    assert s.pii_retention_terminal_days == 365
     # interval defaults
     assert s.activity_waitlist_sweep_interval_seconds == 600
     assert s.activity_waitlist_check_interval == 300
@@ -68,3 +75,24 @@ def test_int_parsing(monkeypatch):
     s = SchedulerSettings()
     assert s.activity_waitlist_sweep_interval_seconds == 1200
     assert s.medication_reminder_hour == 9
+
+
+def test_pii_retention_defaults(monkeypatch):
+    """PII retention 預設安全：disabled + dry-run + 365 天。"""
+    for var in _ALL_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = SchedulerSettings()
+    assert s.pii_retention_gc_disabled is True
+    assert s.pii_retention_gc_dry_run is True
+    assert s.pii_retention_terminal_days == 365
+
+
+def test_pii_retention_env_override(monkeypatch):
+    """PII retention env override."""
+    monkeypatch.setenv("PII_RETENTION_GC_DISABLED", "0")
+    monkeypatch.setenv("PII_RETENTION_GC_DRY_RUN", "0")
+    monkeypatch.setenv("PII_RETENTION_TERMINAL_DAYS", "180")
+    s = SchedulerSettings()
+    assert s.pii_retention_gc_disabled is False
+    assert s.pii_retention_gc_dry_run is False
+    assert s.pii_retention_terminal_days == 180
