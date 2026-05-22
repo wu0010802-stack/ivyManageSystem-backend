@@ -80,3 +80,59 @@ def next_student_id_code(session: Session, school_year: int, class_code: str) ->
         if m and m.group(1) == str(school_year) and m.group(2) == class_code:
             max_seq = max(max_seq, int(m.group(3)))
     return f"{prefix}{max_seq + 1:02d}"
+
+
+# ── 還原守衛 ─────────────────────────────────────────────────────────────────
+
+
+class RecruitmentFunnelError(ValueError):
+    """Funnel 業務錯誤（caller catch → HTTP 400）。"""
+
+    def __init__(self, message: str, code: str = "FUNNEL_ERROR"):
+        super().__init__(message)
+        self.code = code
+
+
+# 下游業務白名單 — 任一存在則無法 revert convert
+# 格式：(模組路徑, 類別名, FK 欄位名, 友善標籤)
+# 注意：只列確認有 student_id 欄位的 model。
+# StudentFeePayment / StudentFeeRefund 透過 record_id 間接關聯，不在此列。
+# StudentMedicationLog 透過 order_id 間接關聯，不在此列。
+# GuardianBindingCode 以 guardian_id 關聯，不在此列。
+_REVERT_BLOCKERS: list[tuple[str, str, str, str]] = [
+    ("models.classroom", "StudentAttendance", "student_id", "出席紀錄"),
+    ("models.fees", "StudentFeeRecord", "student_id", "繳費資料"),
+    ("models.classroom", "StudentAssessment", "student_id", "評量"),
+    ("models.classroom", "StudentIncident", "student_id", "獎懲紀錄"),
+    ("models.portfolio", "StudentObservation", "student_id", "觀察"),
+    ("models.portfolio", "StudentAllergy", "student_id", "過敏資料"),
+    ("models.portfolio", "StudentMedicationOrder", "student_id", "餵藥單"),
+    ("models.portfolio", "StudentMeasurement", "student_id", "體溫/體重紀錄"),
+    ("models.portfolio", "StudentMilestone", "student_id", "里程碑"),
+]
+
+
+def assert_student_revertable(session: Session, student_id: int) -> None:
+    """檢查 student 是否有下游業務記錄；任一存在則 raise RecruitmentFunnelError。
+
+    caller 應在 destructive revert 前呼叫此函式，防止業務資料孤兒化。
+    """
+    import importlib
+
+    for module_path, class_name, fk_col, label in _REVERT_BLOCKERS:
+        try:
+            module = importlib.import_module(module_path)
+            model = getattr(module, class_name, None)
+        except ImportError:
+            continue
+        if model is None:
+            continue
+        column = getattr(model, fk_col, None)
+        if column is None:
+            continue
+        exists = session.query(model).filter(column == student_id).limit(1).first()
+        if exists is not None:
+            raise RecruitmentFunnelError(
+                f"該學生已有業務資料（{label}），請走退學流程而非退回 funnel",
+                code="REVERT_STUDENT_HAS_DATA",
+            )
