@@ -4,7 +4,12 @@ import pytest
 from datetime import date, time
 from decimal import Decimal
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from services import employee_leave_attendance_sync as sync
+from models.base import Base
+from models.attendance import Attendance, AttendanceStatus
 
 
 class TestExceptions:
@@ -74,3 +79,111 @@ class _FakeLeave:
 
 def make_leave(**kwargs):
     return _FakeLeave(**kwargs)
+
+
+# ── SQLAlchemy 整合 fixture（U-1 / U-2）────────────────────────────
+
+
+@pytest.fixture
+def db_session(tmp_path):
+    """In-memory SQLite session，建全套 schema。"""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    s = SessionLocal()
+    yield s
+    s.close()
+    engine.dispose()
+
+
+@pytest.fixture
+def sample_employee(db_session):
+    """建一個測試員工（僅填 nullable=False 且無 default 的欄位）。"""
+    from models.employee import Employee
+
+    emp = Employee(
+        employee_id="T001",
+        name="測試員工",
+        base_salary=36000,
+        is_active=True,
+    )
+    db_session.add(emp)
+    db_session.commit()
+    return emp
+
+
+@pytest.fixture
+def approved_full_day_leave(db_session, sample_employee):
+    """5/22~5/24 全天 personal 假，已核可。"""
+    from models.leave import LeaveRecord
+
+    lv = LeaveRecord(
+        employee_id=sample_employee.id,
+        leave_type="personal",
+        start_date=date(2026, 5, 22),
+        end_date=date(2026, 5, 24),
+        leave_hours=8.0,
+        start_time=None,
+        end_time=None,
+        is_approved=True,
+    )
+    db_session.add(lv)
+    db_session.commit()
+    return lv
+
+
+class TestApplyFullDay:
+    def test_u1_apply_full_day_no_existing_attendance(
+        self, db_session, approved_full_day_leave
+    ):
+        """U-1: apply 全天 3 天 + 無既有 attendance → 建 3 筆 status=LEAVE / punch=NULL"""
+        written = sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        assert written == [date(2026, 5, 22), date(2026, 5, 23), date(2026, 5, 24)]
+
+        rows = (
+            db_session.query(Attendance)
+            .filter_by(employee_id=approved_full_day_leave.employee_id)
+            .order_by(Attendance.attendance_date)
+            .all()
+        )
+
+        assert len(rows) == 3
+        for row in rows:
+            assert row.status == AttendanceStatus.LEAVE.value
+            assert row.punch_in_time is None
+            assert row.punch_out_time is None
+            assert row.leave_record_id == approved_full_day_leave.id
+            assert row.partial_leave_hours is None
+            assert row.late_minutes == 0
+
+    def test_u2_apply_full_day_overwrites_existing_absent(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """U-2: apply 全天請假 + 其中一天既有 ABSENT row → 更新為 LEAVE"""
+        # 預先建 5/23 ABSENT row
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 23),
+            status=AttendanceStatus.ABSENT.value,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 23),
+            )
+            .first()
+        )
+        assert row.status == AttendanceStatus.LEAVE.value
+        assert row.leave_record_id == approved_full_day_leave.id

@@ -64,11 +64,76 @@ def _iter_dates(leave: LeaveRecord) -> Iterable[date]:
         d += timedelta(days=1)
 
 
-# ── 公開 API(後續 Task 補完) ────────────────────────────────────
+# ── 公開 API ──────────────────────────────────────────────────────
 
 
 def apply(session: Session, leave_id: int) -> list[date]:
-    raise NotImplementedError("Task 6/7 補完")
+    """把 approved leave 寫入 Attendance。Idempotent。
+
+    Pre-condition: leave 必須是 is_approved=True；否則 raise LeaveNotApproved。
+    回傳實際寫入的日期列表。
+    """
+    leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
+    if leave is None:
+        raise LeaveNotApproved(f"leave_id={leave_id} 不存在")
+    if leave.is_approved is not True:
+        raise LeaveNotApproved(
+            f"leave_id={leave_id} 不是已核可(is_approved={leave.is_approved})"
+        )
+
+    _assert_leave_time_consistent(leave)
+
+    written: list[date] = []
+    for d in _iter_dates(leave):
+        if _is_full_day(leave):
+            _apply_full_day(session, leave, d)
+        else:
+            _apply_partial(session, leave, d)  # Task 7 補完
+        written.append(d)
+    return written
+
+
+def _apply_full_day(session: Session, leave: LeaveRecord, d: date) -> None:
+    """全天:upsert status=LEAVE,清打卡,leave_record_id 寫入。"""
+    row = (
+        session.query(Attendance)
+        .filter_by(
+            employee_id=leave.employee_id,
+            attendance_date=d,
+        )
+        .first()
+    )
+
+    if row is None:
+        row = Attendance(
+            employee_id=leave.employee_id,
+            attendance_date=d,
+        )
+        session.add(row)
+
+    # Idempotent guard:已是本筆 leave 寫的 → no-op
+    if row.leave_record_id == leave.id and row.status == AttendanceStatus.LEAVE.value:
+        return
+
+    # 衝突 guard:row 已被別筆 leave 佔據
+    if row.leave_record_id is not None and row.leave_record_id != leave.id:
+        raise LeaveAttendanceConflict(
+            f"{d} employee_id={leave.employee_id} 已有 leave_record_id="
+            f"{row.leave_record_id},無法覆蓋為 leave_id={leave.id}"
+        )
+
+    row.status = AttendanceStatus.LEAVE.value
+    row.punch_in_time = None
+    row.punch_out_time = None
+    row.late_minutes = 0
+    row.early_leave_minutes = 0
+    row.leave_record_id = leave.id
+    row.partial_leave_hours = None
+
+
+def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
+    """半天/小時:Task 7 補完。"""
+    raise NotImplementedError("Task 7 補完")
 
 
 def revert(session: Session, leave_id: int) -> list[date]:
