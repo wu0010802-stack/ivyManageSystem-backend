@@ -86,7 +86,7 @@ class TestSumLeaveDeduction:
     """驗證請假扣款使用 deduction_ratio 欄位優先。"""
 
     def test_uses_deduction_ratio_when_present(self):
-        from services.salary.utils import _sum_leave_deduction
+        from services.salary.utils import _sum_leave_deduction_legacy as _sum_leave_deduction
 
         class FakeLeave:
             def __init__(self, hours, ratio, leave_type="事假"):
@@ -99,7 +99,7 @@ class TestSumLeaveDeduction:
         assert total == 500
 
     def test_fallback_to_leave_type_rules_when_ratio_none(self):
-        from services.salary.utils import _sum_leave_deduction
+        from services.salary.utils import _sum_leave_deduction_legacy as _sum_leave_deduction
         from services.salary.constants import LEAVE_DEDUCTION_RULES
 
         class FakeLeave:
@@ -117,7 +117,7 @@ class TestSumLeaveDeduction:
         assert total == 1000 * expected_ratio
 
     def test_unknown_leave_type_with_no_ratio_defaults_to_full_deduction(self):
-        from services.salary.utils import _sum_leave_deduction
+        from services.salary.utils import _sum_leave_deduction_legacy as _sum_leave_deduction
 
         class FakeLeave:
             def __init__(self):
@@ -130,7 +130,7 @@ class TestSumLeaveDeduction:
         assert total == 1000
 
     def test_partial_day_leave_pro_rated(self):
-        from services.salary.utils import _sum_leave_deduction
+        from services.salary.utils import _sum_leave_deduction_legacy as _sum_leave_deduction
 
         class FakeLeave:
             def __init__(self, hours, ratio):
@@ -143,6 +143,6 @@ class TestSumLeaveDeduction:
         assert total == 500
 
     def test_empty_list_returns_zero(self):
-        from services.salary.utils import _sum_leave_deduction
+        from services.salary.utils import _sum_leave_deduction_legacy as _sum_leave_deduction
 
         assert _sum_leave_deduction([], daily_salary=1000) == 0

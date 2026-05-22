@@ -581,17 +581,22 @@ class TestDailySalaryBaseConsistency:
             )
             session.add(teacher)
             session.flush()
-            session.add(
-                LeaveRecord(
-                    employee_id=teacher.id,
-                    leave_type="personal",
-                    leave_hours=8,
-                    start_date=date(2026, 3, 5),
-                    end_date=date(2026, 3, 5),
-                    is_approved=True,
-                    deduction_ratio=1.0,
-                )
+            leave = LeaveRecord(
+                employee_id=teacher.id,
+                leave_type="personal",
+                leave_hours=8,
+                start_date=date(2026, 3, 5),
+                end_date=date(2026, 3, 5),
+                is_approved=True,
+                deduction_ratio=1.0,
             )
+            session.add(leave)
+            session.flush()
+            # 本 PR 之後 leave_deduction 從 Attendance 讀,需透過 sync.apply
+            # 寫對應 Attendance row(對齊新版 _sum_leave_deduction 取數源)
+            from services.employee_leave_attendance_sync import apply
+
+            apply(session, leave.id)
             session.commit()
             tid = teacher.id
 

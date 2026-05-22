@@ -15,7 +15,12 @@ from services.salary.hourly import (
     _calc_daily_hourly_pay,
     _compute_hourly_daily_hours as _hourly_compute,
 )
-from services.salary.utils import get_working_days, get_bonus_distribution_month, get_meeting_deduction_period_start, calc_daily_salary
+from services.salary.utils import (
+    get_working_days,
+    get_bonus_distribution_month,
+    get_meeting_deduction_period_start,
+    calc_daily_salary,
+)
 from services.salary.constants import (
     MONTHLY_BASE_DAYS,
     MAX_DAILY_WORK_HOURS,
@@ -26,8 +31,12 @@ from services.salary.constants import (
     LEAVE_DEDUCTION_RULES,
 )
 from services.salary.breakdown import SalaryBreakdown
-from services.salary.proration import _prorate_base_salary, _prorate_for_period, _build_expected_workdays
-from services.salary.utils import _sum_leave_deduction
+from services.salary.proration import (
+    _prorate_base_salary,
+    _prorate_for_period,
+    _build_expected_workdays,
+)
+from services.salary.utils import _sum_leave_deduction, _sum_leave_deduction_legacy
 
 
 def _compute_hourly_daily_hours(
@@ -39,7 +48,9 @@ def _compute_hourly_daily_hours(
 
     實作委派至 services.salary.hourly._compute_hourly_daily_hours。
     """
-    return _hourly_compute(punch_in, punch_out, work_end_t, max_hours=MAX_DAILY_WORK_HOURS)
+    return _hourly_compute(
+        punch_in, punch_out, work_end_t, max_hours=MAX_DAILY_WORK_HOURS
+    )
 
 
 __all__ = [
@@ -63,4 +74,5 @@ __all__ = [
     "_prorate_for_period",
     "_build_expected_workdays",
     "_sum_leave_deduction",
+    "_sum_leave_deduction_legacy",
 ]
