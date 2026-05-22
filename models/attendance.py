@@ -16,6 +16,7 @@ from sqlalchemy import (
     Index,
     Text,
     Numeric,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -67,6 +68,19 @@ class Attendance(Base):
     confirmed_by = Column(String(100), nullable=True, comment="確認操作者")
     confirmed_at = Column(DateTime, nullable=True, comment="確認時間")
 
+    leave_record_id = Column(
+        Integer,
+        ForeignKey("leave_records.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="關聯請假單 ID（全天/半天假同步寫入時填入）",
+    )
+    partial_leave_hours = Column(
+        Numeric(4, 2),
+        nullable=True,
+        comment="半天/部分假時數（null = 全天或無假）",
+    )
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -80,6 +94,9 @@ class Attendance(Base):
             "is_early_leave",
             "is_missing_punch_in",
             "is_missing_punch_out",
+        ),
+        UniqueConstraint(
+            "employee_id", "attendance_date", name="uq_attendance_employee_date"
         ),
     )
 
