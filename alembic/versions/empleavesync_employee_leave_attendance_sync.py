@@ -82,7 +82,82 @@ def upgrade():
             f"前 5 筆: {bad_leaves[:5]}"
         )
 
-    # Task 23 加 _run_backfill
+    # 6. Backfill(env IVY_SKIP_BACKFILL=1 可跳)
+    import os
+
+    if not os.getenv("IVY_SKIP_BACKFILL"):
+        _run_backfill(conn)
+
+
+def _run_backfill(conn) -> None:
+    """把近 12 個月所有 is_approved=True 的請假記錄同步至 attendances。
+
+    SAVEPOINT 單筆隔離：
+    - LeaveAttendanceConflict → 放行 + 寫 audit_logs（不終止整批）
+    - 其他例外 → fail-loud RuntimeError（終止 migration）
+    進度每 100 筆 print 一次。
+    """
+    from services.employee_leave_attendance_sync import (
+        apply,
+        LeaveAttendanceConflict,
+        LeaveNotApproved,
+    )
+    from sqlalchemy.orm import Session
+    from models.audit import AuditLog
+
+    result = conn.execute(text("""
+            SELECT id
+            FROM leave_records
+            WHERE is_approved = true
+              AND end_date >= CURRENT_DATE - INTERVAL '12 months'
+            ORDER BY id
+        """))
+    leave_ids = [row[0] for row in result.fetchall()]
+
+    total = len(leave_ids)
+    print(f"[empleavesync backfill] 共 {total} 筆 approved leaves 待同步")
+
+    session = Session(bind=conn)
+    skipped_conflicts = 0
+    applied_count = 0
+
+    for i, lid in enumerate(leave_ids, start=1):
+        sp = session.begin_nested()  # SAVEPOINT
+        try:
+            apply(session, lid)
+            sp.commit()
+            applied_count += 1
+        except LeaveAttendanceConflict as exc:
+            sp.rollback()
+            skipped_conflicts += 1
+            # 寫 audit_logs 記錄衝突
+            audit = AuditLog(
+                action="UPDATE",
+                entity_type="leave_records",
+                entity_id=str(lid),
+                summary=f"[backfill] LeaveAttendanceConflict: {exc}",
+            )
+            session.add(audit)
+            session.flush()
+        except LeaveNotApproved:
+            # 極罕見：查詢後被撤銷，忽略即可
+            sp.rollback()
+        except Exception as exc:
+            sp.rollback()
+            raise RuntimeError(
+                f"[empleavesync backfill] leave_id={lid} 同步失敗，終止 backfill。原因: {exc}"
+            ) from exc
+
+        if i % 100 == 0 or i == total:
+            print(
+                f"[empleavesync backfill] 進度 {i}/{total}，"
+                f"已套用 {applied_count}，衝突跳過 {skipped_conflicts}"
+            )
+
+    print(
+        f"[empleavesync backfill] 完成。"
+        f"套用 {applied_count} / 衝突跳過 {skipped_conflicts} / 共 {total}"
+    )
 
 
 def downgrade():
