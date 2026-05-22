@@ -206,6 +206,13 @@ class Student(Base):
     disability_cert_no = Column(String(50), nullable=True, comment="鑑定證明文號")
     disability_cert_expiry = Column(Date, nullable=True, comment="鑑定到期日")
 
+    # PII retention 欄位（pretent001）
+    terminal_entered_at = Column(
+        DateTime,
+        nullable=True,
+        comment="進入終態（graduated/transferred/withdrawn）的 UTC 時間戳，供 PII GC 計算 365 天保留期",
+    )
+
     __table_args__ = (
         Index("ix_student_classroom", "classroom_id", "is_active"),
         Index("ix_student_enrollment_grad", "enrollment_date", "graduation_date"),
