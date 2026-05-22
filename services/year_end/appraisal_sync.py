@@ -369,11 +369,16 @@ def generate_payouts(
                 if summary_id
                 else "appraisal_summary:none"
             )
+            # partition 對應的 appraisal cycle（earlier=N-1.下, later=N.上）
+            appraisal_cycle_id = (
+                earlier_cycle.id if partition == "earlier" else later_cycle.id
+            )
             calc_meta = {
                 "cycle_not_finalized": not cycle_finalized,
                 "summary_status": "FINALIZED" if summary_id else "MISSING",
                 "snapshot_at": datetime.now(tz=timezone.utc).isoformat(),
                 "partition": partition,
+                "appraisal_cycle_id": appraisal_cycle_id,
             }
             _upsert_special_bonus_item(
                 db,

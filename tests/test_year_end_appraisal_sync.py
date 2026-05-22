@@ -415,6 +415,39 @@ def test_generate_payouts_writes_source_ref_and_calc_meta(
     assert "summary_status" in item.calc_meta
 
 
+def test_generate_payouts_writes_appraisal_cycle_id_in_calc_meta(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+    two_appraisal_cycles,
+):
+    """calc_meta.appraisal_cycle_id 是真正的 AppraisalCycle.id（不是 AppraisalSummary.id）。"""
+    earlier_cycle, later_cycle = two_appraisal_cycles
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+
+    first = test_db_session.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+        )
+    )
+    second = test_db_session.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+        )
+    )
+    assert first is not None
+    assert second is not None
+    assert first.calc_meta["appraisal_cycle_id"] == earlier_cycle.id
+    assert second.calc_meta["appraisal_cycle_id"] == later_cycle.id
+
+
 def test_void_payouts_deletes_only_appraisal_half_bonus_items(
     test_db_session,
     setup_summaries_for_both_employees,
