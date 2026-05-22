@@ -288,6 +288,7 @@ def import_recruitment_records(
 
 # ============ 招生訪視 → 正式學生 轉化 ============
 
+
 class ConvertRecordRequest(BaseModel):
     student_id_code: str = Field(..., min_length=1, max_length=20, description="學號")
     classroom_id: Optional[int] = None
@@ -299,7 +300,12 @@ class ConvertRecordRequest(BaseModel):
     )
 
 
-@router.post("/records/{record_id}/convert", status_code=201)
+@router.post(
+    "/records/{record_id}/convert",
+    status_code=201,
+    summary="[deprecated] 改用 POST /recruitment/funnel/visits/{visit_id}/transition",
+    deprecated=True,
+)
 def convert_recruitment_record_to_student(
     record_id: int,
     payload: ConvertRecordRequest,
