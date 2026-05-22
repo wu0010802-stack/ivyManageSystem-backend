@@ -16,7 +16,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Text,
-    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import relationship
@@ -135,7 +134,15 @@ class LeaveQuota(Base):
 
     __tablename__ = "leave_quotas"
     __table_args__ = (
-        UniqueConstraint("employee_id", "year", "leave_type", name="uq_leave_quota"),
+        Index(
+            "uq_leave_quota_legacy",
+            "employee_id",
+            "year",
+            "leave_type",
+            unique=True,
+            postgresql_where=text("school_year IS NULL"),
+            sqlite_where=text("school_year IS NULL"),
+        ),
         Index("ix_leave_quota_year", "year"),
         Index(
             "uq_leave_quotas_employee_school_year_type",

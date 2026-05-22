@@ -151,11 +151,19 @@ def assert_sick_leave_within_statutory_caps(
 # ============ Helpers ============
 
 
-def _calc_annual_leave_hours(hire_date: "date | None", year: int) -> float:
-    """依勞基法第38條計算特休配額時數，以 year 年 12/31 為基準日計算年資"""
+def _calc_annual_leave_hours(
+    hire_date: "date | None",
+    year: int,
+    reference_date: "date | None" = None,
+) -> float:
+    """依勞基法第38條計算特休配額時數。
+
+    reference_date 未提供時 fallback 為 date(year, 12, 31)（向後相容既有 caller）。
+    leave_quota_cutover handler 顯式傳入 new_term.start_date。
+    """
     if hire_date is None:
         return 0.0
-    ref = date(year, 12, 31)
+    ref = reference_date or date(year, 12, 31)
     if hire_date > ref:
         return 0.0
 
