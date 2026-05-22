@@ -112,6 +112,138 @@ _REVERT_BLOCKERS: list[tuple[str, str, str, str]] = [
 ]
 
 
+from dataclasses import dataclass, field
+from datetime import datetime
+
+
+@dataclass
+class TransitionResult:
+    visit_id: int
+    from_stage: Stage
+    to_stage: Stage
+    student_id: Optional[int]
+    event_log_id: int
+    warnings: list[str] = field(default_factory=list)
+
+
+def _load_visit_locked(session: Session, visit_id: int):
+    """讀 visit row。Postgres 用 SELECT FOR UPDATE 鎖；其他 dialect 跳過鎖。"""
+    from models.recruitment import RecruitmentVisit
+
+    q = session.query(RecruitmentVisit).filter(RecruitmentVisit.id == visit_id)
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        q = q.with_for_update()
+    return q.first()
+
+
+def _load_student_by_visit(session: Session, visit_id: int):
+    from models.classroom import Student
+
+    return (
+        session.query(Student).filter(Student.recruitment_visit_id == visit_id).first()
+    )
+
+
+def _write_event_log(
+    session: Session,
+    *,
+    visit_id: int,
+    event_type: str,
+    from_stage: Optional[Stage],
+    to_stage: Stage,
+    student_id: Optional[int] = None,
+    actor_user_id: Optional[int] = None,
+    reason: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> int:
+    from models.recruitment import RecruitmentEventLog
+
+    log = RecruitmentEventLog(
+        recruitment_visit_id=visit_id,
+        event_type=event_type,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        student_id=student_id,
+        actor_user_id=actor_user_id,
+        reason=reason,
+        metadata_json=metadata,
+        created_at=datetime.now(),
+    )
+    session.add(log)
+    session.flush()
+    return log.id
+
+
+def _do_toggle_deposit(session, visit, *, to_stage: Stage, actor_user_id):
+    """visited ↔ deposited 互相切換 has_deposit 旗標。"""
+    visit.has_deposit = to_stage == "deposited"
+    event_type = "deposit_added" if to_stage == "deposited" else "deposit_removed"
+    from_stage_str: Stage = "visited" if to_stage == "deposited" else "deposited"
+    log_id = _write_event_log(
+        session,
+        visit_id=visit.id,
+        event_type=event_type,
+        from_stage=from_stage_str,
+        to_stage=to_stage,
+        actor_user_id=actor_user_id,
+    )
+    return None, log_id  # (student_id, log_id)
+
+
+def transition_visit(
+    session: Session,
+    visit_id: int,
+    to_stage: Stage,
+    actor_user_id: Optional[int],
+    *,
+    classroom_id: Optional[int] = None,
+    reason: Optional[str] = None,
+) -> TransitionResult:
+    """單一 atomic stage transition。
+
+    流程：lock visit → derive from_stage → 規則檢查 → dispatch sub-action → 寫 event log → flush。
+    Commit/rollback 由 caller 負責。
+    """
+    visit = _load_visit_locked(session, visit_id)
+    if visit is None:
+        raise RecruitmentFunnelError(
+            f"招生訪視不存在：id={visit_id}", code="VISIT_NOT_FOUND"
+        )
+    student = _load_student_by_visit(session, visit_id)
+    from_stage = derive_stage(visit, student)
+
+    if from_stage == to_stage:
+        raise RecruitmentFunnelError(f"已在 {to_stage} 階段", code="STAGE_ALREADY")
+    if is_destructive(from_stage, to_stage) and not (reason and reason.strip()):
+        raise RecruitmentFunnelError(
+            "destructive 操作需提供 reason", code="REASON_REQUIRED"
+        )
+
+    warnings: list[str] = []
+
+    # === Dispatch ===
+    # Task 6: visited ↔ deposited
+    if {from_stage, to_stage} == {"visited", "deposited"}:
+        student_id, log_id = _do_toggle_deposit(
+            session,
+            visit,
+            to_stage=to_stage,
+            actor_user_id=actor_user_id,
+        )
+    else:
+        # 其他 dispatch 在 Task 8-10 補
+        raise NotImplementedError(f"transition {from_stage} → {to_stage} 尚未實作")
+
+    return TransitionResult(
+        visit_id=visit.id,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        student_id=student_id,
+        event_log_id=log_id,
+        warnings=warnings,
+    )
+
+
 def assert_student_revertable(session: Session, student_id: int) -> None:
     """檢查 student 是否有下游業務記錄；任一存在則 raise RecruitmentFunnelError。
 

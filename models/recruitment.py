@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     Index,
     Float,
+    JSON,
     ForeignKey,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -265,7 +266,10 @@ class CompetitorSchool(Base):
 
 
 class RecruitmentEventLog(Base):
-    """招生漏斗階段事件流（visit 層級的 timeline）。"""
+    """招生漏斗階段事件流（visit 層級的 timeline）。
+
+    PG 用 JSONB；SQLite（測試）退化為 JSON。
+    """
 
     __tablename__ = "recruitment_event_log"
 
@@ -289,7 +293,8 @@ class RecruitmentEventLog(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    metadata_json = Column(JSONB, nullable=True)
+    # PG=JSONB / SQLite=JSON（with_variant pattern，見 models/appraisal.py）
+    metadata_json = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
     __table_args__ = (
