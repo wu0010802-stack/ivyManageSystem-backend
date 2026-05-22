@@ -18,6 +18,7 @@ from models.base import get_session_dep
 from schemas.academic_term import AcademicTermIn, AcademicTermOut
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.term_events import fire_term_changed
 
 logger = logging.getLogger(__name__)
 
@@ -107,3 +108,52 @@ def delete_term(
     session.flush()
     logger.info("刪除學年學期 id=%s (%s-%s)", term_id, term.school_year, term.semester)
     return {"ok": True}
+
+
+@router.post("/{term_id}/set-current", response_model=AcademicTermOut)
+def set_current_term(
+    term_id: int,
+    session: Session = Depends(get_session_dep),
+    current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
+) -> AcademicTerm:
+    """admin「正式開新學期」翻牌。
+
+    流程（同 transaction）：
+    1. 找 new term (term_id) — 不存在 → 404
+    2. 找舊 is_current term (可能 None) — 與 new term 相同 → 409 no-op
+    3. UPDATE 舊 row.is_current=false（若有），UPDATE new row.is_current=true
+    4. flush 讓 partial unique index 立刻檢查 singleton
+    5. fire_term_changed(old, new, session) — 三個 subscriber 同 session 串註執行
+    """
+    new_term = session.query(AcademicTerm).filter(AcademicTerm.id == term_id).first()
+    if not new_term:
+        raise HTTPException(404, detail="學年學期設定不存在")
+
+    old_term = (
+        session.query(AcademicTerm).filter(AcademicTerm.is_current.is_(True)).first()
+    )
+    if old_term and old_term.id == new_term.id:
+        raise HTTPException(409, detail="已是目前學期，無需切換")
+
+    if old_term:
+        old_term.is_current = False
+    new_term.is_current = True
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            500, detail="is_current singleton 違反，請聯絡管理員"
+        ) from exc
+
+    logger.info(
+        "學期切換：%s → %s（操作者 user_id=%s）",
+        f"{old_term.school_year}-{old_term.semester}" if old_term else "(none)",
+        f"{new_term.school_year}-{new_term.semester}",
+        current_user.get("user_id"),
+    )
+
+    fire_term_changed(old=old_term, new=new_term, session=session)
+
+    session.refresh(new_term)
+    return new_term
