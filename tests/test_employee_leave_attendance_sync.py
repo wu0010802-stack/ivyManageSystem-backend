@@ -319,3 +319,86 @@ class TestApplyPartial:
         assert row.punch_in_time.time() == time(8, 50)
         assert row.partial_leave_hours == Decimal("1.5")
         assert row.leave_record_id == approved_partial_hour_leave.id
+
+
+class TestApplyExceptionPaths:
+    def test_u6_apply_unapproved_leave_raises(self, db_session, sample_employee):
+        """U-6: apply 對 unapproved leave → raise LeaveNotApproved"""
+        from models.leave import LeaveRecord
+
+        lv = LeaveRecord(
+            employee_id=sample_employee.id,
+            leave_type="personal",
+            start_date=date(2026, 5, 22),
+            end_date=date(2026, 5, 22),
+            leave_hours=8.0,
+            is_approved=None,  # pending
+        )
+        db_session.add(lv)
+        db_session.commit()
+
+        with pytest.raises(sync.LeaveNotApproved):
+            sync.apply(db_session, lv.id)
+
+    def test_u7_apply_idempotent_no_change_on_second_call(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """U-7: apply 重跑兩次 → 第二次 no-op，row 不變"""
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+        rows_first = (
+            db_session.query(Attendance).order_by(Attendance.attendance_date).all()
+        )
+        snapshot_first = [
+            (r.attendance_date, r.status, r.leave_record_id) for r in rows_first
+        ]
+
+        # 第二次
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+        rows_second = (
+            db_session.query(Attendance).order_by(Attendance.attendance_date).all()
+        )
+        snapshot_second = [
+            (r.attendance_date, r.status, r.leave_record_id) for r in rows_second
+        ]
+
+        assert snapshot_first == snapshot_second
+        assert len(rows_second) == 3  # 沒重複插
+
+    def test_u8_apply_conflict_with_other_leave_id(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """U-8: apply 同日已有其他 leave_record_id → raise LeaveAttendanceConflict"""
+        # 預先建一筆 row 帶不同 leave_record_id=9999
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 23),
+            status=AttendanceStatus.LEAVE.value,
+            leave_record_id=9999,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        with pytest.raises(sync.LeaveAttendanceConflict):
+            sync.apply(db_session, approved_full_day_leave.id)
+
+    def test_u15_apply_partial_missing_time_raises(self, db_session, sample_employee):
+        """U-15: apply 對部分請假但缺 start_time/end_time → raise LeavePartialTimeMissing"""
+        from models.leave import LeaveRecord
+
+        lv = LeaveRecord(
+            employee_id=sample_employee.id,
+            leave_type="personal",
+            start_date=date(2026, 5, 22),
+            end_date=date(2026, 5, 22),
+            leave_hours=4.0,
+            start_time=None,  # 故意缺
+            end_time=None,
+            is_approved=True,
+        )
+        db_session.add(lv)
+        db_session.commit()
+
+        with pytest.raises(sync.LeavePartialTimeMissing):
+            sync.apply(db_session, lv.id)
