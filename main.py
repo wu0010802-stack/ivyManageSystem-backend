@@ -73,6 +73,7 @@ from api.line_webhook import router as line_webhook_router, init_webhook_service
 from api.gov_reports import router as gov_reports_router, init_gov_report_services
 from api.gov_moe import router as gov_moe_router
 from api.fees import router as fees_router
+from api.academic_terms import router as academic_terms_router
 from api.recruitment import router as recruitment_router
 from api.recruitment_ivykids import router as recruitment_ivykids_router
 from api.recruitment_gov_kindergartens import (
@@ -677,6 +678,7 @@ app.include_router(line_webhook_router)
 app.include_router(gov_reports_router)
 app.include_router(gov_moe_router, prefix="/api")
 app.include_router(fees_router)
+app.include_router(academic_terms_router)
 app.include_router(recruitment_router)
 app.include_router(recruitment_ivykids_router)
 app.include_router(recruitment_gov_kindergartens_router)
