@@ -40,6 +40,7 @@ from .notifications import router as notifications_router
 from .parent_downloads import router as parent_downloads_router
 from .profile import router as profile_router
 from .assistant import router as assistant_router
+from .data_export import router as data_export_router
 
 # 家長端 router（前綴 /api/parent，並掛 require_parent_role 統一擋線）
 parent_router = APIRouter(
@@ -73,6 +74,7 @@ parent_router.include_router(milestones_router)
 parent_router.include_router(measurements_router)
 parent_router.include_router(photos_router)
 parent_router.include_router(assistant_router)
+parent_router.include_router(data_export_router)
 
 
 # 行政端綁定碼 router（前綴 /api/guardians，需 GUARDIANS_WRITE）
