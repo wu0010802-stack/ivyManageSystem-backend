@@ -190,6 +190,47 @@ def _calc_annual_leave_hours(
         return float(days * 8)
 
 
+def _resolve_quota_row(
+    session,
+    employee_id: int,
+    leave_type: str,
+    *,
+    target_date: "date | None" = None,
+) -> "LeaveQuota | None":
+    """讀 quota row：先按學年（DB-aware）查、找不到 fallback 到西元年 legacy row。
+
+    過渡期相容：新 cutover 後寫 school_year-tagged row、舊 init_leave_quotas
+    仍寫 year-only row（school_year=NULL）。讀路徑優先學年、無則 fallback。
+    """
+    from utils.academic import resolve_current_academic_term
+
+    school_year, _ = resolve_current_academic_term(
+        target_date=target_date, session=session
+    )
+    row = (
+        session.query(LeaveQuota)
+        .filter(
+            LeaveQuota.employee_id == employee_id,
+            LeaveQuota.school_year == school_year,
+            LeaveQuota.leave_type == leave_type,
+        )
+        .first()
+    )
+    if row:
+        return row
+    legacy_year = (target_date or date.today()).year
+    return (
+        session.query(LeaveQuota)
+        .filter(
+            LeaveQuota.employee_id == employee_id,
+            LeaveQuota.school_year.is_(None),
+            LeaveQuota.year == legacy_year,
+            LeaveQuota.leave_type == leave_type,
+        )
+        .first()
+    )
+
+
 def _get_used_hours(session, employee_id: int, year: int, leave_type: str) -> float:
     """查詢該年度已核准的請假時數"""
     result = (
@@ -417,7 +458,7 @@ def _check_compensatory_quota(
     exclude_id: int = None,
     include_pending: bool = True,
 ) -> None:
-    """補休配額專用檢查。
+    """補休配額專用檢查（學年優先讀）。
 
     補休不在 QUOTA_LEAVE_TYPES(它由加班核准動態累積,不該被 init_leave_quotas 初始化),
     但建立/核准補休假單時仍需驗證不超過累積配額。
@@ -426,15 +467,7 @@ def _check_compensatory_quota(
     任何申請小時都會超限。_check_quota 在 quota is None 時略過(假設配額未初始化),
     對補休是錯誤策略。
     """
-    quota = (
-        session.query(LeaveQuota)
-        .filter(
-            LeaveQuota.employee_id == employee_id,
-            LeaveQuota.year == year,
-            LeaveQuota.leave_type == "compensatory",
-        )
-        .first()
-    )
+    quota = _resolve_quota_row(session, employee_id, "compensatory")
     total = float(quota.total_hours) if quota else 0.0
 
     approved = _get_approved_hours_in_year(
@@ -492,15 +525,8 @@ def _check_quota(
     if leave_type not in QUOTA_LEAVE_TYPES:
         return
 
-    quota = (
-        session.query(LeaveQuota)
-        .filter(
-            LeaveQuota.employee_id == employee_id,
-            LeaveQuota.year == year,
-            LeaveQuota.leave_type == leave_type,
-        )
-        .first()
-    )
+    # 學年優先 + 西元年 fallback（過渡期相容）
+    quota = _resolve_quota_row(session, employee_id, leave_type)
 
     if quota is None:
         return  # 配額未初始化，略過檢查
