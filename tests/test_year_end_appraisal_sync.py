@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import func, select
 
 from models.year_end import SpecialBonusType
 from models.appraisal import (
@@ -235,3 +236,217 @@ def test_preview_payout_one_cycle_only_marks_warning(
     assert rows[0].earlier_amount == Decimal("0")
     assert rows[0].later_amount == Decimal("5400")
     assert "not_participated_in_earlier" in rows[0].warnings
+
+
+# === Task 4: generate_payouts + void_payouts tests ===
+
+from models.year_end import SpecialBonusItem, YearEndCycle  # noqa: E402
+from services.year_end.appraisal_sync import (  # noqa: E402
+    GenerateResult,
+    generate_payouts,
+    void_payouts,
+)
+
+
+@pytest.fixture
+def sample_resigned_employee(test_db_session):
+    emp = Employee(
+        employee_id="E_T4_002",
+        name="陳離職",
+        id_number="A222222222",
+        hire_date=date(2024, 8, 1),
+        is_active=False,
+    )
+    test_db_session.add(emp)
+    test_db_session.flush()
+    return emp
+
+
+@pytest.fixture
+def setup_summaries_for_both_employees(
+    test_db_session,
+    two_appraisal_cycles,
+    sample_active_employee,
+    sample_resigned_employee,
+):
+    """為 active + resigned 員工各建兩 cycle finalized summaries。"""
+    earlier, later = two_appraisal_cycles
+    for emp in [sample_active_employee, sample_resigned_employee]:
+        p1 = AppraisalParticipant(
+            cycle_id=earlier.id,
+            employee_id=emp.id,
+            role_group=RoleGroup.HEAD_TEACHER,
+            hire_months_in_cycle=Decimal("6"),
+        )
+        p2 = AppraisalParticipant(
+            cycle_id=later.id,
+            employee_id=emp.id,
+            role_group=RoleGroup.HEAD_TEACHER,
+            hire_months_in_cycle=Decimal("6"),
+        )
+        test_db_session.add_all([p1, p2])
+        test_db_session.flush()
+        test_db_session.add_all(
+            [
+                AppraisalSummary(
+                    participant_id=p1.id,
+                    cycle_id=earlier.id,
+                    base_score=Decimal("100"),
+                    total_score=Decimal("80"),
+                    grade=Grade.GOOD,
+                    bonus_amount=Decimal("6400"),
+                    status=SummaryStatus.FINALIZED,
+                ),
+                AppraisalSummary(
+                    participant_id=p2.id,
+                    cycle_id=later.id,
+                    base_score=Decimal("100"),
+                    total_score=Decimal("90"),
+                    grade=Grade.OUTSTANDING,
+                    bonus_amount=Decimal("7200"),
+                    status=SummaryStatus.FINALIZED,
+                ),
+            ]
+        )
+        test_db_session.flush()
+
+
+def test_generate_payouts_active_only_by_default(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+    sample_resigned_employee,
+):
+    result = generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+    assert isinstance(result, GenerateResult)
+    cycle = test_db_session.scalar(
+        select(YearEndCycle).where(YearEndCycle.academic_year == 114)
+    )
+    assert cycle is not None
+    items = test_db_session.scalars(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.year_end_cycle_id == cycle.id,
+            SpecialBonusItem.bonus_type.in_(
+                [
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+                ]
+            ),
+        )
+    ).all()
+    emp_ids = {i.employee_id for i in items}
+    assert sample_active_employee.id in emp_ids
+    assert sample_resigned_employee.id not in emp_ids
+
+
+def test_generate_payouts_includes_inactive_when_selected(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_resigned_employee,
+):
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids={sample_resigned_employee.id},
+        generated_by=1,
+    )
+    cycle = test_db_session.scalar(
+        select(YearEndCycle).where(YearEndCycle.academic_year == 114)
+    )
+    items = test_db_session.scalars(
+        select(SpecialBonusItem).where(SpecialBonusItem.year_end_cycle_id == cycle.id)
+    ).all()
+    assert sample_resigned_employee.id in {i.employee_id for i in items}
+
+
+def test_generate_payouts_idempotent(
+    test_db_session,
+    setup_summaries_for_both_employees,
+):
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+    test_db_session.flush()
+    count_first = test_db_session.scalar(
+        select(func.count()).select_from(SpecialBonusItem)
+    )
+
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+    test_db_session.flush()
+    count_second = test_db_session.scalar(
+        select(func.count()).select_from(SpecialBonusItem)
+    )
+    assert count_first == count_second
+
+
+def test_generate_payouts_writes_source_ref_and_calc_meta(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+):
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+    item = test_db_session.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+        )
+    )
+    assert item is not None
+    assert item.source_ref.startswith("appraisal_summary:")
+    assert "cycle_not_finalized" in item.calc_meta
+    assert "summary_status" in item.calc_meta
+
+
+def test_void_payouts_deletes_only_appraisal_half_bonus_items(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+):
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+    cycle = test_db_session.scalar(
+        select(YearEndCycle).where(YearEndCycle.academic_year == 114)
+    )
+
+    # 模擬一筆非 APPRAISAL_HALF 的 special_bonus_item
+    test_db_session.add(
+        SpecialBonusItem(
+            year_end_cycle_id=cycle.id,
+            employee_id=sample_active_employee.id,
+            bonus_type=SpecialBonusType.SEMESTER_DIVIDEND_FIRST,
+            period_label="114上",
+            amount=Decimal("500"),
+        )
+    )
+    test_db_session.flush()
+
+    deleted = void_payouts(test_db_session, payout_year=2026, voided_by=1)
+    remaining = test_db_session.scalars(
+        select(SpecialBonusItem).where(SpecialBonusItem.year_end_cycle_id == cycle.id)
+    ).all()
+    # active 員工 2 筆 (FIRST+SECOND) 都被刪
+    assert deleted == 2
+    assert len(remaining) == 1
+    assert remaining[0].bonus_type == SpecialBonusType.SEMESTER_DIVIDEND_FIRST

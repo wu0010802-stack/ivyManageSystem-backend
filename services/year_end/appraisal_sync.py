@@ -15,12 +15,14 @@ APPRAISAL_HALF_BONUS_FIRST/SECOND slot，供 salary engine 2 月 calculate 時 p
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from models.appraisal import (
@@ -32,7 +34,9 @@ from models.appraisal import (
     CycleStatus,
 )
 from models.employee import Employee
-from models.year_end import SpecialBonusType
+from models.year_end import SpecialBonusItem, SpecialBonusType, YearEndCycle
+
+logger = logging.getLogger(__name__)
 
 
 def civil_year_to_target_academic_year(civil_year: int) -> int:
@@ -203,3 +207,228 @@ def preview_payout(db: Session, payout_year: int) -> list[PayoutPreviewRow]:
             )
         )
     return result
+
+
+# === Task 4: transactional write — generate_payouts + void_payouts ===
+
+
+def _is_postgres(db: Session) -> bool:
+    """判斷是否連接 PostgreSQL（SQLite 測試環境返回 False）。"""
+    return (db.bind is not None) and db.bind.dialect.name == "postgresql"
+
+
+def _advisory_lock_payout(db: Session, payout_year: int) -> None:
+    """transaction-scope advisory lock；避免並行 generate。
+
+    PostgreSQL：pg_advisory_xact_lock（transaction 結束自動釋放）。
+    SQLite 測試環境：no-op（單寫入者，無並發）。
+    """
+    if not _is_postgres(db):
+        logger.debug("_advisory_lock_payout no-op (non-postgres): year=%s", payout_year)
+        return
+    key = hash(("aye_payout", payout_year)) & 0x7FFF_FFFF_FFFF_FFFF
+    db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
+    logger.debug("_advisory_lock_payout acquired: year=%s key=%d", payout_year, key)
+
+
+@dataclass
+class GenerateResult:
+    cycle_id: int
+    generated_count: int  # 寫入/更新的 SpecialBonusItem 筆數
+    affected_employee_count: int
+    total_amount: Decimal
+    skipped_inactive_count: int  # 過濾掉的 inactive 員工數
+    warnings: list[str] = field(default_factory=list)
+
+
+def _upsert_special_bonus_item(
+    db: Session,
+    *,
+    cycle_id: int,
+    employee_id: int,
+    bonus_type: SpecialBonusType,
+    period_label: str,
+    amount: Decimal,
+    source_ref: str,
+    calc_meta: dict,
+    created_by: int,
+) -> None:
+    """idempotent upsert：先查後寫，相容 SQLite 與 PostgreSQL。
+
+    PostgreSQL 生產環境上層 advisory lock 已防止並發，SELECT-then-INSERT/UPDATE
+    可安全使用。若未來需要去掉 advisory lock，可換成 pg_insert ON CONFLICT。
+    """
+    existing = db.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.year_end_cycle_id == cycle_id,
+            SpecialBonusItem.employee_id == employee_id,
+            SpecialBonusItem.bonus_type == bonus_type,
+            SpecialBonusItem.period_label == period_label,
+        )
+    )
+    now_utc = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    if existing is None:
+        db.add(
+            SpecialBonusItem(
+                year_end_cycle_id=cycle_id,
+                employee_id=employee_id,
+                bonus_type=bonus_type,
+                period_label=period_label,
+                amount=amount,
+                source_ref=source_ref,
+                calc_meta=calc_meta,
+                created_by=created_by,
+            )
+        )
+    else:
+        existing.amount = amount
+        existing.source_ref = source_ref
+        existing.calc_meta = calc_meta
+        existing.updated_at = now_utc
+
+
+def generate_payouts(
+    db: Session,
+    payout_year: int,
+    included_inactive_employee_ids: set[int],
+    generated_by: int,
+) -> GenerateResult:
+    """transactional：upsert YearEndCycle + 對每員工兩筆 SpecialBonusItem。
+
+    呼叫端應在 router 用 transactional dep 包；本函式只 flush 不 commit。
+
+    - ACTIVE 員工預設全寫；
+    - INACTIVE 員工須在 included_inactive_employee_ids 中才寫。
+    - ON CONFLICT（uq_special_bonus_item）→ UPDATE → idempotent。
+    - pg_advisory_xact_lock 防並行 generate race（SQLite 環境 no-op）。
+    """
+    _advisory_lock_payout(db, payout_year)
+
+    target_academic_year = civil_year_to_target_academic_year(payout_year)
+    rows = preview_payout(db, payout_year)
+
+    # upsert YearEndCycle（最小 shell；start/end/bonus_calc_date 依學年算出）
+    # 學年 N（民國）= 西元 N+1911 年 8 月 ～ N+1912 年 7 月
+    # bonus_calc_date 預設為 payout_year 年 1 月 15 日（結算基準日）
+    from datetime import date as _date
+
+    civil_start_year = target_academic_year + 1911
+    cycle = db.scalar(
+        select(YearEndCycle).where(YearEndCycle.academic_year == target_academic_year)
+    )
+    if cycle is None:
+        cycle = YearEndCycle(
+            academic_year=target_academic_year,
+            start_date=_date(civil_start_year, 8, 1),
+            end_date=_date(civil_start_year + 1, 7, 31),
+            bonus_calc_date=_date(payout_year, 1, 15),
+        )
+        db.add(cycle)
+        db.flush()
+
+    earlier_cycle, later_cycle = resolve_target_cycles(db, payout_year)
+    earlier_finalized = _cycle_is_finalized(earlier_cycle)
+    later_finalized = _cycle_is_finalized(later_cycle)
+
+    written_count = 0
+    affected_emp_ids: set[int] = set()
+    total = Decimal(0)
+    skipped_inactive = 0
+
+    for row in rows:
+        if row.is_inactive and row.employee_id not in included_inactive_employee_ids:
+            skipped_inactive += 1
+            continue
+
+        for bonus_type, amount, summary_id, cycle_finalized, partition in [
+            (
+                SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+                row.earlier_amount,
+                row.earlier_summary_id,
+                earlier_finalized,
+                "earlier",
+            ),
+            (
+                SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+                row.later_amount,
+                row.later_summary_id,
+                later_finalized,
+                "later",
+            ),
+        ]:
+            period_label = map_bonus_type_to_period_label(
+                bonus_type, target_academic_year
+            )
+            source_ref = (
+                f"appraisal_summary:{summary_id}"
+                if summary_id
+                else "appraisal_summary:none"
+            )
+            calc_meta = {
+                "cycle_not_finalized": not cycle_finalized,
+                "summary_status": "FINALIZED" if summary_id else "MISSING",
+                "snapshot_at": datetime.now(tz=timezone.utc).isoformat(),
+                "partition": partition,
+            }
+            _upsert_special_bonus_item(
+                db,
+                cycle_id=cycle.id,
+                employee_id=row.employee_id,
+                bonus_type=bonus_type,
+                period_label=period_label,
+                amount=amount,
+                source_ref=source_ref,
+                calc_meta=calc_meta,
+                created_by=generated_by,
+            )
+            written_count += 1
+
+        affected_emp_ids.add(row.employee_id)
+        total += row.earlier_amount + row.later_amount
+
+    db.flush()
+    return GenerateResult(
+        cycle_id=cycle.id,
+        generated_count=written_count,
+        affected_employee_count=len(affected_emp_ids),
+        total_amount=total,
+        skipped_inactive_count=skipped_inactive,
+        warnings=[],
+    )
+
+
+def void_payouts(db: Session, payout_year: int, voided_by: int) -> int:
+    """刪除 target academic_year 下所有 APPRAISAL_HALF_BONUS_* items。
+
+    只刪考核績效獎金兩個 type；不動其他 SpecialBonusType。
+    voided_by 由 router 層 audit middleware 處理，此函式接受但不直接使用。
+    """
+    _advisory_lock_payout(db, payout_year)
+    target_academic_year = civil_year_to_target_academic_year(payout_year)
+    cycle = db.scalar(
+        select(YearEndCycle).where(YearEndCycle.academic_year == target_academic_year)
+    )
+    if cycle is None:
+        return 0
+    items = db.scalars(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.year_end_cycle_id == cycle.id,
+            SpecialBonusItem.bonus_type.in_(
+                [
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+                ]
+            ),
+        )
+    ).all()
+    deleted = len(items)
+    for item in items:
+        db.delete(item)
+    db.flush()
+    logger.info(
+        "void_payouts: deleted %d APPRAISAL_HALF_BONUS items for academic_year=%s (voided_by=%s)",
+        deleted,
+        target_academic_year,
+        voided_by,
+    )
+    return deleted
