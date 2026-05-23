@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-from cachetools import TTLCache
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from models.database import (
@@ -23,6 +22,7 @@ from models.database import (
 )
 from utils.auth import require_staff_permission
 from utils.attendance_guards import assert_no_self_in_batch
+from utils.cache_layer import get_cache
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
@@ -42,17 +42,23 @@ def _upload_dir() -> Path:
 
 _EXCEL_EXT_RE = re.compile(r"^\.[a-z0-9]+$")
 
-# ShiftType 很少異動，快取 5 分鐘，避免每次上傳重複查詢
-_shift_type_cache: TTLCache = TTLCache(maxsize=1, ttl=300)
+# scope: global
+_CACHE_NS_ATTENDANCE_SHIFT_TYPE = "attendance_shift_type"
+_CACHE_TTL_ATTENDANCE_SHIFT_TYPE = 300  # 5 分鐘
 
 
 def _get_shift_type_id_map(session) -> dict:
     """回傳 {id: ShiftType ORM} 快取 5 分鐘。"""
-    cached = _shift_type_cache.get("id_map")
+    cached = get_cache().get(_CACHE_NS_ATTENDANCE_SHIFT_TYPE, "id_map")
     if cached is not None:
         return cached
     result = {st.id: st for st in session.query(ShiftType).all()}
-    _shift_type_cache["id_map"] = result
+    get_cache().set(
+        _CACHE_NS_ATTENDANCE_SHIFT_TYPE,
+        "id_map",
+        result,
+        ttl=_CACHE_TTL_ATTENDANCE_SHIFT_TYPE,
+    )
     return result
 
 

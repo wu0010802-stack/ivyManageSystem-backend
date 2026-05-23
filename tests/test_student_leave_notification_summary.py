@@ -18,7 +18,11 @@ from models.database import (
     StudentLeaveRequest,
     User,
 )
-from services.dashboard_query_service import dashboard_query_service
+from services.dashboard_query_service import (
+    _CACHE_NS_DASHBOARD_NOTIFICATION,
+    dashboard_query_service,
+)
+from utils.cache_layer import get_cache
 from utils.permissions import Permission
 
 
@@ -92,7 +96,7 @@ def test_admin_sees_recent_parent_leave_count(session):
     )
     session.commit()
 
-    dashboard_query_service._notification_cache.clear()
+    get_cache().clear_namespace(_CACHE_NS_DASHBOARD_NOTIFICATION)
 
     summary = dashboard_query_service.build_notification_summary(
         session,
@@ -106,7 +110,7 @@ def test_admin_sees_recent_parent_leave_count(session):
 
 
 def test_no_permission_no_block(session):
-    dashboard_query_service._notification_cache.clear()
+    get_cache().clear_namespace(_CACHE_NS_DASHBOARD_NOTIFICATION)
     summary = dashboard_query_service.build_notification_summary(
         session,
         user_permissions=0,

@@ -5,8 +5,10 @@
 - PUT  /bonus              建立新版本（複製舊欄位 → 套用變更 → mark stale）
 - GET  /bonus/history      所有歷史版本
 
-依賴 __init__ 的 _cache / _clear_cache / _mark_existing_salary_stale_for_config /
-_salary_engine 經 lazy back-import 取得（同 .line / .position_salary pattern）。
+依賴 __init__ 的 _clear_cache / _CACHE_TTL_CONFIG /
+_mark_existing_salary_stale_for_config / _salary_engine 經 lazy back-import 取得
+（同 .line / .position_salary pattern）；cache 本身改走 utils.cache_layer.get_cache()
+namespace = "config_bonus"。
 """
 
 import logging
@@ -22,6 +24,7 @@ from models.database import (
     GradeTarget,
 )
 from utils.auth import require_staff_permission
+from utils.cache_layer import get_cache
 from utils.constants import MIN_CONFIG_YEAR, MAX_CONFIG_YEAR
 from utils.errors import raise_safe_500
 from utils.finance_guards import has_finance_approve, require_adjustment_reason
@@ -102,9 +105,7 @@ def get_bonus_config(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
     """取得獎金設定"""
-    from . import _cache  # lazy back-import
-
-    cached = _cache.get("bonus")
+    cached = get_cache().get("config_bonus", "v")
     if cached is not None:
         return cached
 
@@ -141,7 +142,9 @@ def get_bonus_config(
             "overtime_assistant_baby": config.overtime_assistant_baby,
             "school_wide_target": config.school_wide_target,
         }
-        _cache["bonus"] = result
+        from . import _CACHE_TTL_CONFIG  # lazy back-import
+
+        get_cache().set("config_bonus", "v", result, ttl=_CACHE_TTL_CONFIG)
         return result
     finally:
         session.close()

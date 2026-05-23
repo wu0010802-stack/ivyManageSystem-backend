@@ -16,7 +16,12 @@ import models.base as base_module
 from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
 from api.notifications import router as notifications_router
-from services.dashboard_query_service import dashboard_query_service
+from services.dashboard_query_service import (
+    _CACHE_NS_DASHBOARD_APPROVAL,
+    _CACHE_NS_DASHBOARD_EVENTS,
+    _CACHE_NS_DASHBOARD_NOTIFICATION,
+)
+from utils.cache_layer import get_cache
 from models.database import (
     Base,
     Employee,
@@ -50,9 +55,10 @@ def notification_client(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
     # 重置 dashboard_query_service 的跨請求快取，避免不同測試的 SQLite DB 資料互相污染
-    dashboard_query_service._notification_cache.clear()
-    dashboard_query_service._approval_cache.clear()
-    dashboard_query_service._events_cache.clear()
+    cache = get_cache()
+    cache.clear_namespace(_CACHE_NS_DASHBOARD_NOTIFICATION)
+    cache.clear_namespace(_CACHE_NS_DASHBOARD_APPROVAL)
+    cache.clear_namespace(_CACHE_NS_DASHBOARD_EVENTS)
 
     app = FastAPI()
     app.include_router(auth_router)
@@ -68,7 +74,9 @@ def notification_client(tmp_path):
     engine.dispose()
 
 
-def _create_admin(session, *, username="notify_admin", password="TempPass123", permissions=0) -> User:
+def _create_admin(
+    session, *, username="notify_admin", password="TempPass123", permissions=0
+) -> User:
     admin = User(
         username=username,
         password_hash=hash_password(password),
@@ -94,11 +102,15 @@ def _create_employee(session, *, employee_id: str, name: str) -> Employee:
 
 
 def _login(client: TestClient, username="notify_admin", password="TempPass123"):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 class TestNotificationSummary:
-    def test_summary_aggregates_action_items_and_reminders_by_permission(self, notification_client):
+    def test_summary_aggregates_action_items_and_reminders_by_permission(
+        self, notification_client
+    ):
         client, session_factory = notification_client
         today = date.today()
 
@@ -129,7 +141,8 @@ class TestNotificationSummary:
                     overtime_date=today,
                     overtime_type="weekday",
                     start_time=datetime.combine(today, datetime.min.time()),
-                    end_time=datetime.combine(today, datetime.min.time()) + timedelta(hours=2),
+                    end_time=datetime.combine(today, datetime.min.time())
+                    + timedelta(hours=2),
                     hours=2,
                     is_approved=None,
                 )
@@ -143,7 +156,14 @@ class TestNotificationSummary:
                     is_approved=None,
                 )
             )
-            session.add(ParentInquiry(name="家長甲", phone="0912", question="想詢問上課時間", is_read=False))
+            session.add(
+                ParentInquiry(
+                    name="家長甲",
+                    phone="0912",
+                    question="想詢問上課時間",
+                    is_read=False,
+                )
+            )
             session.add(
                 SchoolEvent(
                     title="親師座談",
@@ -187,7 +207,9 @@ class TestNotificationSummary:
         today = date.today()
 
         with session_factory() as session:
-            _create_admin(session, username="calendar_only", permissions=Permission.CALENDAR)
+            _create_admin(
+                session, username="calendar_only", permissions=Permission.CALENDAR
+            )
             session.add(
                 SchoolEvent(
                     title="校務活動",
@@ -196,7 +218,14 @@ class TestNotificationSummary:
                     is_active=True,
                 )
             )
-            session.add(ParentInquiry(name="家長乙", phone="0922", question="未授權不應看見", is_read=False))
+            session.add(
+                ParentInquiry(
+                    name="家長乙",
+                    phone="0922",
+                    question="未授權不應看見",
+                    is_read=False,
+                )
+            )
             session.commit()
 
         login_res = _login(client, username="calendar_only")
@@ -210,7 +239,9 @@ class TestNotificationSummary:
         assert data["action_items"] == []
         assert [item["type"] for item in data["reminders"]] == ["calendar"]
 
-    def test_summary_returns_empty_arrays_when_no_notifications(self, notification_client):
+    def test_summary_returns_empty_arrays_when_no_notifications(
+        self, notification_client
+    ):
         client, session_factory = notification_client
 
         with session_factory() as session:

@@ -37,6 +37,7 @@ from models.database import (
 )
 from models.fees import StudentFeeRecord
 from utils.auth import create_access_token
+from utils.cache_layer import get_cache
 
 
 @pytest.fixture
@@ -52,7 +53,7 @@ def home_client(tmp_path):
     base_module._engine = db_engine
     base_module._SessionFactory = session_factory
     Base.metadata.create_all(db_engine)
-    home_module._home_summary_cache.clear()
+    get_cache().clear_namespace(home_module._CACHE_NS_PARENT_HOME_SUMMARY)
     app = FastAPI()
     app.include_router(parent_portal_router)
 
@@ -65,7 +66,7 @@ def home_client(tmp_path):
 
     with TestClient(app) as client:
         yield client, session_factory
-    home_module._home_summary_cache.clear()
+    get_cache().clear_namespace(home_module._CACHE_NS_PARENT_HOME_SUMMARY)
     base_module._engine = old_engine
     base_module._SessionFactory = old_session_factory
     db_engine.dispose()

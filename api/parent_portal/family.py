@@ -10,7 +10,6 @@ Perf：30s in-process TTLCache（key=(user_id, student_id, limit)）；
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sqlalchemy import and_, exists, or_
@@ -31,6 +30,7 @@ from models.database import (
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
 from utils.auth import require_parent_role
+from utils.cache_layer import get_cache
 
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
@@ -38,7 +38,9 @@ from ._shared import _assert_student_owned, _get_parent_student_ids
 router = APIRouter(prefix="/family", tags=["parent-family"])
 
 # (user_id, student_id, limit) → timeline payload；30s TTL
-_timeline_cache: TTLCache = TTLCache(maxsize=512, ttl=30)
+# scope: user — key 內含 user_id，user 間天然隔離
+_CACHE_NS_PARENT_FAMILY_TIMELINE = "parent_family_timeline"
+_CACHE_TTL_PARENT_FAMILY_TIMELINE = 30  # 30 秒
 
 
 @router.get("/timeline")
@@ -67,13 +69,18 @@ def family_timeline(
     user_id = current_user["user_id"]
     _assert_student_owned(session, user_id, student_id, for_write=False)
 
-    cache_key = (user_id, student_id, limit)
-    cached = _timeline_cache.get(cache_key)
+    cache_key = f"{user_id}:{student_id}:{limit}"
+    cached = get_cache().get(_CACHE_NS_PARENT_FAMILY_TIMELINE, cache_key)
     if cached is not None:
         return cached
 
     items = _collect_timeline_items(session, user_id, student_id, limit)
-    _timeline_cache[cache_key] = items
+    get_cache().set(
+        _CACHE_NS_PARENT_FAMILY_TIMELINE,
+        cache_key,
+        items,
+        ttl=_CACHE_TTL_PARENT_FAMILY_TIMELINE,
+    )
     return items
 
 

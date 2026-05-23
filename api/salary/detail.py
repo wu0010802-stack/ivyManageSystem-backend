@@ -12,9 +12,7 @@ _salary_engine 採 endpoint 內 lazy import 取最新值。
 """
 
 import io
-import threading
 
-from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
@@ -28,6 +26,7 @@ from services.salary_field_breakdown import (
     build_salary_debug_snapshot,
 )
 from utils.auth import require_staff_permission
+from utils.cache_layer import get_cache
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
 from utils.permissions import Permission
 from utils.salary_access import (
@@ -40,29 +39,30 @@ router = APIRouter()
 # ── 薪資 debug snapshot 快取 ─────────────────────────────────────────────
 # 同一筆薪資在 UI 切換不同欄位時，snapshot 內容不變（~13 個 DB 查詢）。
 # 用 record_id 為 key、(version, data) 為 value，版本更動即失效避免陳舊資料。
-_SNAPSHOT_CACHE_TTL_SEC = 60
-_SNAPSHOT_CACHE_MAX_SIZE = 256
-_snapshot_cache: TTLCache = TTLCache(
-    maxsize=_SNAPSHOT_CACHE_MAX_SIZE, ttl=_SNAPSHOT_CACHE_TTL_SEC
-)
-_snapshot_cache_lock = threading.Lock()
+# scope: global（snapshot 本身不含 PII 跨 user，且 record_id 已 unique）
+_CACHE_NS_SALARY_SNAPSHOT = "salary_snapshot"
+_CACHE_TTL_SALARY_SNAPSHOT = 60  # 1 分鐘
 
 
 def _snapshot_cache_get(record_id: int, version: int):
-    with _snapshot_cache_lock:
-        entry = _snapshot_cache.get(record_id)
-        if entry is None:
-            return None
-        cached_version, data = entry
-        if cached_version != version:
-            _snapshot_cache.pop(record_id, None)
-            return None
-        return data
+    entry = get_cache().get(_CACHE_NS_SALARY_SNAPSHOT, str(record_id))
+    if entry is None:
+        return None
+    cached_version, data = entry
+    if cached_version != version:
+        # version mismatch：失效該筆。worst case 兩 thread 都 delete（idempotent）
+        get_cache().delete(_CACHE_NS_SALARY_SNAPSHOT, str(record_id))
+        return None
+    return data
 
 
 def _snapshot_cache_put(record_id: int, version: int, data: dict) -> None:
-    with _snapshot_cache_lock:
-        _snapshot_cache[record_id] = (version, data)
+    get_cache().set(
+        _CACHE_NS_SALARY_SNAPSHOT,
+        str(record_id),
+        (version, data),
+        ttl=_CACHE_TTL_SALARY_SNAPSHOT,
+    )
 
 
 @router.get("/salaries/{record_id}/audit-log")

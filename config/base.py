@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .cache import CacheSettings
 from .core import CoreSettings
 from .geocoding import GeocodingSettings
 from .line import LineSettings
@@ -67,6 +68,7 @@ class Settings(BaseSettings):
     recruitment: RecruitmentSettings = Field(default_factory=RecruitmentSettings)
     geocoding: GeocodingSettings = Field(default_factory=GeocodingSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    cache: CacheSettings = Field(default_factory=CacheSettings)
     misc: MiscSettings = Field(default_factory=MiscSettings)
 
     def model_dump_safe(self) -> dict[str, Any]:
