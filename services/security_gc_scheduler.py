@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 
 from config import get_settings
+from models.base import session_scope
+from utils.advisory_lock import try_scheduler_lock
 
 logger = logging.getLogger(__name__)
 
@@ -57,24 +60,45 @@ async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
 
 
 def _run_rate_limit_gc() -> None:
+    # 多 worker 部署時以 advisory lock（5 分鐘窗口 bucket）避免兩 worker 同時 DELETE
+    # 相同列；cleanup_rate_limit_buckets 內部用自己的 connection，advisory lock 是
+    # namespace mutex 不會干擾。
     try:
         from utils.rate_limit import cleanup_rate_limit_buckets
 
-        deleted = cleanup_rate_limit_buckets(retention_minutes=60)
-        logger.info("rate_limit_buckets GC: 已刪除 %s 列", deleted)
+        with session_scope() as lock_session:
+            with try_scheduler_lock(
+                lock_session,
+                scheduler_name="security_rate_limit_gc",
+                run_key=str(int(time.time() // _RATE_LIMIT_GC_INTERVAL_SEC)),
+            ) as acquired:
+                if not acquired:
+                    return
+                deleted = cleanup_rate_limit_buckets(retention_minutes=60)
+                logger.info("rate_limit_buckets GC: 已刪除 %s 列", deleted)
     except Exception as e:
         logger.warning("rate_limit GC 發生例外: %s", e)
 
 
 def _run_jwt_blocklist_gc() -> None:
+    # 多 worker 部署時以 advisory lock（6 小時窗口 bucket）互斥；cleanup_jwt_blocklist
+    # 內部用自己的 connection，advisory lock 不阻擋實際 DELETE。
     try:
         from utils.auth import cleanup_jwt_blocklist
 
-        deleted = cleanup_jwt_blocklist()
-        logger.info(
-            "jwt_blocklist GC at %s: 已刪除 %s 列",
-            datetime.now(timezone.utc).isoformat(),
-            deleted,
-        )
+        with session_scope() as lock_session:
+            with try_scheduler_lock(
+                lock_session,
+                scheduler_name="security_jwt_blocklist_gc",
+                run_key=str(int(time.time() // _JWT_BLOCKLIST_GC_INTERVAL_SEC)),
+            ) as acquired:
+                if not acquired:
+                    return
+                deleted = cleanup_jwt_blocklist()
+                logger.info(
+                    "jwt_blocklist GC at %s: 已刪除 %s 列",
+                    datetime.now(timezone.utc).isoformat(),
+                    deleted,
+                )
     except Exception as e:
         logger.warning("jwt_blocklist GC 發生例外: %s", e)
