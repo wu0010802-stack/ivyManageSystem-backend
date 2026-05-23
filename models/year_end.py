@@ -63,11 +63,11 @@ class YearEndSettlementStatus(str, enum.Enum):
 
 
 class SpecialBonusType(str, enum.Enum):
-    """8 種特別獎金 + 1 通用類型。
+    """9 種特別獎金 + 1 通用類型。
 
     對應 Excel「年終獎金總表」B 欄各列：
-      APPRAISAL_HALF_BONUS_FIRST  : 113上(或 N 上)考核獎金 — 來自 appraisal_summaries
-      APPRAISAL_HALF_BONUS_SECOND : 113下(或 N 下)考核獎金 — 來自 appraisal_summaries
+      APPRAISAL_HALF_BONUS_FIRST  : 較早那一筆（年終發放時對應「上學年下學期 = N-1.下」）— 來自 appraisal_summaries
+      APPRAISAL_HALF_BONUS_SECOND : 較晚那一筆（年終發放時對應「本學年上學期 = N.上」）— 來自 appraisal_summaries
       SEMESTER_DIVIDEND_FIRST     : N上學期紅利（舊生 500 + 才藝 1000）
       SEMESTER_DIVIDEND_SECOND    : N下學期紅利
       AFTER_CLASS_AWARD           : N上鼓勵推動才藝班獎金（按班級人數）
@@ -75,6 +75,9 @@ class SpecialBonusType(str, enum.Enum):
       EXCESS_ENROLLMENT           : N上超額獎金（每月超額幼生）
       FESTIVAL_DIFF               : N.8-N+1.01 節慶獎金差額（多退少補，可為負）
       CUSTOM                      : 其他客製化（保留擴充用）
+
+    ⚠️ APPRAISAL_HALF_BONUS_FIRST/SECOND 的 FIRST/SECOND 是「時間順序」（FIRST=較早=前一學年下學期，SECOND=較晚=本學年上學期），
+    與 AppraisalCycle.Semester.FIRST/SECOND（學期上下）正好相反。由 services/year_end/appraisal_sync.py 依 calendar payout year 自動 map。
     """
 
     APPRAISAL_HALF_BONUS_FIRST = "APPRAISAL_HALF_BONUS_FIRST"
@@ -112,12 +115,12 @@ class YearEndCycle(Base):
     """年度週期，一個民國學年一筆（學年 = N年8月～N+1年7月）。"""
 
     __tablename__ = "year_end_cycles"
-    __table_args__ = (
-        UniqueConstraint("academic_year", name="uq_year_end_cycle_year"),
-    )
+    __table_args__ = (UniqueConstraint("academic_year", name="uq_year_end_cycle_year"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    academic_year: Mapped[int] = mapped_column(Integer, nullable=False, comment="民國學年")
+    academic_year: Mapped[int] = mapped_column(
+        Integer, nullable=False, comment="民國學年"
+    )
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
     bonus_calc_date: Mapped[date] = mapped_column(
@@ -426,10 +429,16 @@ class YearEndSettlement(Base):
 
     # step 4: 扣項（皆為負或 0）
     deduction_leave_late: Mapped[Decimal] = mapped_column(
-        Numeric(10, 2), nullable=False, default=Decimal("0"), comment="去年底前請假遲到合併"
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0"),
+        comment="去年底前請假遲到合併",
     )
     deduction_meeting: Mapped[Decimal] = mapped_column(
-        Numeric(10, 2), nullable=False, default=Decimal("0"), comment="自強活動/機構會議未參加"
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0"),
+        comment="自強活動/機構會議未參加",
     )
     deduction_personal_leave: Mapped[Decimal] = mapped_column(
         Numeric(10, 2), nullable=False, default=Decimal("0"), comment="事假"

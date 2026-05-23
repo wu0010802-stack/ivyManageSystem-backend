@@ -239,6 +239,13 @@ class SalaryRecord(Base):
         comment="獨立轉帳獎金金額（festival+overtime+supervisor_dividend）",
     )
     supervisor_dividend = Column(Money, default=0, comment="主管紅利（獨立轉帳）")
+    appraisal_year_end_bonus = Column(
+        Money,
+        default=0,
+        nullable=False,
+        server_default="0",
+        comment="考核年終獎金（2/5 與月薪同發；自 special_bonus_items 兩筆 APPRAISAL_HALF_BONUS_* SUM；不進 gross_salary）",
+    )
 
     remark = Column(Text, comment="備註")
 

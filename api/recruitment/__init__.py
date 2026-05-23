@@ -22,6 +22,7 @@ from services import recruitment_market_intelligence as market_service
 
 from api.recruitment import (
     competitors as _competitors,
+    funnel as _funnel,
     hotspots as _hotspots,
     market as _market,
     periods as _periods,
@@ -100,6 +101,7 @@ router.include_router(_hotspots.router)
 router.include_router(_market.router)
 router.include_router(_competitors.router)
 router.include_router(_periods.router)
+router.include_router(_funnel.router)
 
 
 __all__ = [

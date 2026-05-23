@@ -73,6 +73,7 @@ from api.line_webhook import router as line_webhook_router, init_webhook_service
 from api.gov_reports import router as gov_reports_router, init_gov_report_services
 from api.gov_moe import router as gov_moe_router
 from api.fees import router as fees_router
+from api.academic_terms import router as academic_terms_router
 from api.recruitment import router as recruitment_router
 from api.recruitment_ivykids import router as recruitment_ivykids_router
 from api.recruitment_gov_kindergartens import (
@@ -269,6 +270,24 @@ async def app_lifespan(app_instance: FastAPI):
             )
     except Exception as e:
         logger.warning("自動畢業排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
+    # Recruitment funnel term advance scheduler
+    recruitment_term_advance_task = None
+    recruitment_term_advance_stop_event: asyncio.Event | None = None
+    try:
+        from services import recruitment_term_advance_scheduler as _rt_sched
+
+        if _rt_sched.scheduler_enabled():
+            recruitment_term_advance_stop_event = asyncio.Event()
+            recruitment_term_advance_task = asyncio.create_task(
+                _rt_sched.run_recruitment_term_advance_scheduler(
+                    recruitment_term_advance_stop_event
+                )
+            )
+            logger.info("recruitment term advance scheduler 已啟用")
+    except Exception as e:
+        logger.warning("招生漏斗升學期排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
     # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
@@ -506,6 +525,17 @@ async def app_lifespan(app_instance: FastAPI):
                     await finance_reconciliation_task
                 except (asyncio.CancelledError, Exception):
                     pass
+        if recruitment_term_advance_task is not None:
+            if recruitment_term_advance_stop_event is not None:
+                recruitment_term_advance_stop_event.set()
+            try:
+                await asyncio.wait_for(recruitment_term_advance_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                recruitment_term_advance_task.cancel()
+                try:
+                    await recruitment_term_advance_task
+                except (asyncio.CancelledError, Exception):
+                    pass
         # Graceful Shutdown：釋放資源
         logger.info("Application shutting down — releasing resources…")
         # 關閉所有 WebSocket 連線
@@ -674,6 +704,7 @@ app.include_router(line_webhook_router)
 app.include_router(gov_reports_router)
 app.include_router(gov_moe_router, prefix="/api")
 app.include_router(fees_router)
+app.include_router(academic_terms_router)
 app.include_router(recruitment_router)
 app.include_router(recruitment_ivykids_router)
 app.include_router(recruitment_gov_kindergartens_router)

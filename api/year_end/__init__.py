@@ -65,6 +65,12 @@ logger = logging.getLogger(__name__)
 
 year_end_router = APIRouter(prefix="/api/year_end", tags=["year_end"])
 
+from api.year_end.appraisal_payout import (  # noqa: E402
+    router as appraisal_payout_router,
+)
+
+year_end_router.include_router(appraisal_payout_router)
+
 
 # ===== Cycles =====
 

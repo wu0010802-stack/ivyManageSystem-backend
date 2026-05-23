@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -37,7 +37,7 @@ class ConversionResult:
 def convert_recruitment_to_student(
     session: Session,
     recruitment_visit_id: int,
-    student_id_code: str,
+    student_id_code: Optional[str] = None,
     *,
     classroom_id: Optional[int] = None,
     enrollment_date: Optional[date] = None,
@@ -64,9 +64,7 @@ def convert_recruitment_to_student(
         .first()
     )
     if visit is None:
-        raise RecruitmentConversionError(
-            f"招生訪視不存在：id={recruitment_visit_id}"
-        )
+        raise RecruitmentConversionError(f"招生訪視不存在：id={recruitment_visit_id}")
 
     # 重複轉化檢查
     existing = (
@@ -77,6 +75,27 @@ def convert_recruitment_to_student(
     if existing is not None:
         raise RecruitmentConversionError(
             f"此招生訪視已轉化為學生（student_id={existing.id}）"
+        )
+
+    # 學號自動產生（caller 顯式傳 None 才走自動產生；空字串維持「學號不可為空」原行為）
+    if student_id_code is None:
+        if classroom_id is None:
+            raise RecruitmentConversionError(
+                "未指定學號時需提供 classroom_id 以自動產生學號"
+            )
+        from models.classroom import Classroom
+        from services.recruitment_funnel import next_student_id_code
+
+        classroom = session.get(Classroom, classroom_id)
+        if classroom is None or not classroom.class_code:
+            raise RecruitmentConversionError(
+                f"classroom_id={classroom_id} 不存在或缺 class_code"
+            )
+        auto_year, _ = resolve_current_academic_term()
+        student_id_code = next_student_id_code(
+            session,
+            school_year=auto_year,
+            class_code=classroom.class_code,
         )
 
     # 學號唯一性
@@ -143,6 +162,22 @@ def convert_recruitment_to_student(
         recorded_by=recorded_by,
     )
     session.add(change_log)
+    session.flush()
+
+    # Funnel event log（Task 7）— 與 ChangeLog 並存，前者紀錄漏斗 stage 變動
+    from models.recruitment import RecruitmentEventLog
+
+    funnel_log = RecruitmentEventLog(
+        recruitment_visit_id=visit.id,
+        event_type="converted",
+        from_stage="deposited",
+        to_stage="enrolled",
+        student_id=student.id,
+        actor_user_id=recorded_by,
+        metadata_json={"student_id_code": code, "classroom_id": classroom_id},
+        created_at=datetime.now(),
+    )
+    session.add(funnel_log)
     session.flush()
 
     # 更新 recruitment 狀態（enrolled 旗標）— 不變更 visit 其他欄位

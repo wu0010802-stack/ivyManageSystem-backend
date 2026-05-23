@@ -14,7 +14,6 @@ from models.year_end import (
     YearEndSettlementStatus,
 )
 
-
 # ===== YearEndCycle =====
 
 
@@ -137,3 +136,47 @@ class YearEndImportResultOut(BaseModel):
     special_bonuses_upserted: int
     class_targets_upserted: int
     skipped_unresolved_names: list[str]
+
+
+# ===== 考核年終 Payout（Task 6）=====
+
+
+class PayoutPreviewRow(BaseModel):
+    employee_id: int
+    employee_name: str
+    role_group: str
+    earlier_summary_id: Optional[int] = None
+    earlier_amount: Decimal
+    earlier_cycle_finalized: bool
+    later_summary_id: Optional[int] = None
+    later_amount: Decimal
+    later_cycle_finalized: bool
+    total_amount: Decimal
+    is_inactive: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
+class PayoutGenerateRequest(BaseModel):
+    year: int = Field(..., ge=2024, le=2099)
+    included_inactive_employee_ids: list[int] = Field(default_factory=list)
+
+
+class PayoutGenerateResult(BaseModel):
+    cycle_id: int
+    generated_count: int
+    affected_employee_count: int
+    total_amount: Decimal
+    skipped_inactive_count: int
+    warnings: list[str] = Field(default_factory=list)
+
+
+class PayoutItem(BaseModel):
+    """已生成的 special_bonus_item 顯示 schema。"""
+
+    id: int
+    employee_id: int
+    bonus_type: str
+    period_label: str
+    amount: Decimal
+    source_ref: Optional[str] = None
+    calc_meta: dict[str, Any]

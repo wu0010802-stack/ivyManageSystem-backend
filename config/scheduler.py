@@ -40,6 +40,11 @@ class SchedulerSettings(BaseSettings):
     official_calendar_sync_enabled: BoolEnv = False
     official_calendar_sync_interval: int = 86400
 
+    # Recruitment funnel term advance
+    recruitment_term_advance_enabled: BoolEnv = True
+    recruitment_term_advance_check_interval: int = 86400  # 1 天
+    recruitment_term_advance_window_days: int = 90
+
     # Misc schedulers
     finance_reconciliation_enabled: BoolEnv = False
     security_gc_disabled: BoolEnv = False
