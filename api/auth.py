@@ -734,20 +734,11 @@ def logout(request: Request):
     audit_username = None
     audit_user_id = None
     if token:
-        try:
-            from jose import jwt as _jose_jwt
-            from utils.auth import JWT_SECRET_KEY, JWT_ALGORITHM
+        from utils.auth import decode_token_for_audit
 
-            _payload = _jose_jwt.decode(
-                token,
-                JWT_SECRET_KEY,
-                algorithms=[JWT_ALGORITHM],
-                options={"verify_exp": False},
-            )
-            audit_user_id = _payload.get("user_id")
-            audit_username = _payload.get("name")
-        except Exception:
-            pass  # token 格式無效，audit 仍繼續執行
+        _payload = decode_token_for_audit(token) or {}
+        audit_user_id = _payload.get("user_id")
+        audit_username = _payload.get("name")
 
     if token:
         try:

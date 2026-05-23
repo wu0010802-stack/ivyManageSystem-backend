@@ -14,6 +14,13 @@ domain salt 與 silent-success 設計：
 
 api/activity/_shared.py 保留 re-export 維持既有 import surface
 （api/activity/public.py / registrations.py 等模組仍可從 _shared 取）。
+
+DEPRECATION（2026-05-21）：本模組借用 JWT_SECRET_KEY 做 HMAC，未支援
+multi-key rotation。JWT secret rotation 後（JWT_SECRET_KEY 變值），
+既有外發 activity query token 會失效。
+
+Follow-up：解耦到專屬 env ACTIVITY_TOKEN_HMAC_KEY 並支援 olds list 容忍
+rotation。spec 連結：docs/superpowers/specs/2026-05-21-jwt-secret-rotation-design.md
 """
 
 import hashlib

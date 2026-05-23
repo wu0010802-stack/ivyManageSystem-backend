@@ -28,6 +28,52 @@ if not _jwt_secret:
         raise RuntimeError("JWT_SECRET_KEY 環境變數未設定，正式環境不允許啟動。")
 
 JWT_SECRET_KEY = _jwt_secret
+
+
+# ── Multi-key support for rotation ────────────────────────────────────────
+# 設計：docs/superpowers/specs/2026-05-21-jwt-secret-rotation-design.md
+# JWT_SECRET_KEY 為 current（簽 + 驗第一順位）；
+# JWT_SECRET_KEYS_OLDS 為 JSON list of accept-only secrets，rotation 過渡期用。
+import json as _json
+
+
+def _kid_for(secret: str) -> str:
+    """kid = sha256(secret) 前 12 hex chars。確定性、不洩漏 secret。"""
+    return hashlib.sha256(secret.encode()).hexdigest()[:12]
+
+
+_olds_raw = os.environ.get("JWT_SECRET_KEYS_OLDS", "[]")
+try:
+    _olds = _json.loads(_olds_raw)
+    if not isinstance(_olds, list) or not all(isinstance(k, str) for k in _olds):
+        raise ValueError("JWT_SECRET_KEYS_OLDS 必須是 JSON list of strings")
+except (_json.JSONDecodeError, ValueError) as _e:
+    if _is_dev:
+        logger.warning("JWT_SECRET_KEYS_OLDS 解析失敗，視為空 list：%s", _e)
+        _olds = []
+    else:
+        raise RuntimeError(f"JWT_SECRET_KEYS_OLDS 解析失敗：{_e}")
+
+_CURRENT_KID: str = _kid_for(JWT_SECRET_KEY)
+# verify 查表：kid → secret。current 永遠在內；olds 接著加。
+_VERIFY_KEYS: dict[str, str] = {_CURRENT_KID: JWT_SECRET_KEY}
+for _old in _olds:
+    if not _old:
+        continue
+    _VERIFY_KEYS[_kid_for(_old)] = _old
+
+# 過渡期：沒帶 kid header 的 legacy token，依序試這個 list。
+_LEGACY_TRY_ORDER: list[str] = [JWT_SECRET_KEY] + [k for k in _olds if k]
+
+# Runbook 用：rotation 操作者看 log 確認新 env 已被載入。kid 是 sha256 截短不洩漏 secret。
+logger.info(
+    "JWT _VERIFY_KEYS 載入 %d 個 kid：%s（current=%s）",
+    len(_VERIFY_KEYS),
+    list(_VERIFY_KEYS.keys()),
+    _CURRENT_KID,
+)
+# ──────────────────────────────────────────────────────────────────────────
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 15  # Access token 有效期（分鐘）；短期 token 將帳號停用後的暴露窗口從 24h 縮至最長 15min
 JWT_REFRESH_GRACE_HOURS = 2  # 過期後仍允許刷新的寬限時間（2 小時）；搭配 token_version 機制，帳號停用後舊 token 立即失效
@@ -162,7 +208,12 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode.setdefault("iat", iat_ts)
     to_encode.setdefault("original_iat", iat_ts)
     to_encode.setdefault("jti", secrets.token_urlsafe(16))
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(
+        to_encode,
+        JWT_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+        headers={"kid": _CURRENT_KID},
+    )
 
 
 def is_token_revoked(jti: str) -> bool:
@@ -268,13 +319,47 @@ def _check_token_algorithm(token: str) -> None:
         raise HTTPException(status_code=401, detail="無效或過期的 Token")
 
 
-def decode_token(token: str) -> dict:
-    _check_token_algorithm(token)
+def _decode_with_keys(token: str, *, allow_expired: bool = False) -> dict:
+    """Multi-key 容忍的 JWT decode。已先過 _check_token_algorithm。
+
+    解析順序：
+    1. 有 kid header → 用 _VERIFY_KEYS[kid]（未知 kid → 401）
+    2. 無 kid（過渡期 legacy token）→ 依序試 _LEGACY_TRY_ORDER
+    3. 都失敗 → 401
+    """
+    options = {"verify_exp": False} if allow_expired else {}
+
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        return payload
+        header = jwt.get_unverified_header(token)
     except JWTError:
         raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+    kid = header.get("kid")
+    if kid:
+        secret = _VERIFY_KEYS.get(kid)
+        if not secret:
+            raise HTTPException(status_code=401, detail="無效或過期的 Token")
+        try:
+            return jwt.decode(
+                token, secret, algorithms=[JWT_ALGORITHM], options=options
+            )
+        except JWTError:
+            raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+    # legacy（無 kid）：依序試 _LEGACY_TRY_ORDER
+    for secret in _LEGACY_TRY_ORDER:
+        try:
+            return jwt.decode(
+                token, secret, algorithms=[JWT_ALGORITHM], options=options
+            )
+        except JWTError:
+            continue
+    raise HTTPException(status_code=401, detail="無效或過期的 Token")
+
+
+def decode_token(token: str) -> dict:
+    _check_token_algorithm(token)
+    return _decode_with_keys(token, allow_expired=False)
 
 
 def verify_ws_token(token: str) -> dict:
@@ -323,33 +408,37 @@ def decode_token_allow_expired(token: str) -> dict:
     回傳 payload，若 token 無效、超出寬限期、或 jti 已被廢止則拋出 401。
     """
     _check_token_algorithm(token)
-    try:
-        # 先嘗試正常解碼（未過期）
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        # Token 已過期，跳過 exp 驗證取出 payload
-        payload = jwt.decode(
-            token,
-            JWT_SECRET_KEY,
-            algorithms=[JWT_ALGORITHM],
-            options={"verify_exp": False},
+    # 一律 allow_expired=True 解，再手動檢 exp + grace。簽章錯誤仍會 raise 401。
+    payload = _decode_with_keys(token, allow_expired=True)
+    exp = payload.get("exp", 0)
+    now = datetime.now(timezone.utc).timestamp()
+    grace_seconds = JWT_REFRESH_GRACE_HOURS * 3600
+    if now - exp > grace_seconds:
+        raise HTTPException(
+            status_code=401, detail="Token 已超過可刷新期限，請重新登入"
         )
-        # 檢查是否在寬限期內
-        exp = payload.get("exp", 0)
-        now = datetime.now(timezone.utc).timestamp()
-        grace_seconds = JWT_REFRESH_GRACE_HOURS * 3600
-        if now - exp > grace_seconds:
-            raise HTTPException(
-                status_code=401, detail="Token 已超過可刷新期限，請重新登入"
-            )
-    except JWTError:
-        raise HTTPException(status_code=401, detail="無效的 Token，請重新登入")
-
     # JTI 廢止檢查：與 decode_token 對齊。logout 廢止後的 token 在寬限期內仍可解碼，
     # 必須額外擋住才能讓 /refresh / /end-impersonate 不被遺失的 cookie 反覆利用。
     if is_token_revoked(payload.get("jti", "")):
         raise HTTPException(status_code=401, detail="Token 已廢止，請重新登入")
     return payload
+
+
+def decode_token_for_audit(token: str | None) -> dict | None:
+    """專供 audit 路徑使用的 decode：multi-key 容忍、verify_exp=False、不檢 jti / token_version。
+
+    純粹從 token 抽 user_id / name 寫 audit log。失敗一律回 None，**不** 拋例外。
+
+    安全性：本函式僅供 audit log 寫入路徑使用，**不可** 用於授權判斷。
+    呼叫端不得用回傳值通過 require_permission / get_current_user 等守衛。
+    """
+    if not token:
+        return None
+    try:
+        _check_token_algorithm(token)
+        return _decode_with_keys(token, allow_expired=True)
+    except (JWTError, HTTPException):
+        return None
 
 
 async def get_current_user(request: Request):

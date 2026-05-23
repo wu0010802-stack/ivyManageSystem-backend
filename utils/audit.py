@@ -324,7 +324,12 @@ def _build_summary(method, path, entity_type):
 
 
 def _extract_user_from_header(request: Request):
-    """從 Cookie 或 Authorization header 靜默解析 JWT，不拋錯"""
+    """從 Cookie 或 Authorization header 靜默解析 JWT，不拋錯。
+
+    走 utils.auth.decode_token_for_audit：multi-key 容忍、verify_exp=False。
+    與舊版差異：舊版 verify_exp=True 會讓過期 token 抽不到 user_id；新版即使
+    token 已過期仍能還原 user_id / name，audit log 更完整。
+    """
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("authorization", "")
@@ -334,14 +339,10 @@ def _extract_user_from_header(request: Request):
     if not token:
         return None, None
 
-    try:
-        from jose import jwt
-        from utils.auth import JWT_SECRET_KEY, JWT_ALGORITHM
+    from utils.auth import decode_token_for_audit
 
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        return payload.get("user_id"), payload.get("name")
-    except Exception:
-        return None, None
+    payload = decode_token_for_audit(token) or {}
+    return payload.get("user_id"), payload.get("name")
 
 
 def _write_audit_sync(payload: dict) -> None:
