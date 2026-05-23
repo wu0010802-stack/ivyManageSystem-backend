@@ -212,3 +212,72 @@ jobs:
             exit 1
           fi
           echo "Single head OK ($HEAD_COUNT)"
+
+  alembic-roundtrip:
+    name: Alembic Roundtrip
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: ivymanagement_roundtrip
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: HEAD↔baseline roundtrip
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_roundtrip
+          ENV: development
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+        # Why pkgutil iter over `models/*`: the literal one-liner in the PR2
+        # spec (`from models.database import get_engine; Base.metadata.create_all(...)`)
+        # only loads the subset of models that `models/database.py` re-exports
+        # (e.g. omits `student_log`, `appraisal`, `fees`, `gov_moe`, `year_end`).
+        # Production matches via `main.py`'s router-import chain, which
+        # transitively imports every model module before `startup/migrations.py`
+        # calls `Base.metadata.create_all`. Iterating `models.__path__` is the
+        # self-contained equivalent.
+        # BASELINE is the alembic revision below which we cannot downgrade
+        # (baseline contains only op.alter_column, no create_table). Mirrors
+        # startup/migrations.py:ALEMBIC_BASELINE_REVISION; keep them in sync.
+        run: |
+          BASELINE=4ddf3ebad3e8
+          python3 -c "
+          import pkgutil, importlib, models
+          for m in pkgutil.iter_modules(models.__path__):
+              try:
+                  importlib.import_module(f'models.{m.name}')
+              except Exception as e:
+                  raise RuntimeError(f'bootstrap failed importing models.{m.name}: {e}') from e
+          from models.base import Base
+          from models.database import get_engine
+          Base.metadata.create_all(get_engine())
+          print(f'create_all OK ({len(Base.metadata.sorted_tables)} tables)')
+          "
+          alembic stamp heads
+          alembic downgrade "$BASELINE"
+          alembic upgrade heads
+          alembic downgrade "$BASELINE"
+          echo "Roundtrip OK"
