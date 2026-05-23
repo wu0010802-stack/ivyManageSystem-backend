@@ -20,7 +20,7 @@ from sqlalchemy.orm import relationship
 
 
 from models.base import Base
-from utils.academic import resolve_current_academic_term
+from utils.academic import default_current_academic_term_for_column
 
 # ============ 學生生命週期狀態 ============
 # 狀態機定義（合法轉移見 services/student_lifecycle.py）
@@ -44,12 +44,12 @@ LIFECYCLE_STATUSES = [
 
 
 def _default_school_year() -> int:
-    school_year, _ = resolve_current_academic_term()
+    school_year, _ = default_current_academic_term_for_column()
     return school_year
 
 
 def _default_semester() -> int:
-    _, semester = resolve_current_academic_term()
+    _, semester = default_current_academic_term_for_column()
     return semester
 
 
