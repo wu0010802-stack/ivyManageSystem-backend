@@ -349,6 +349,21 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("安全支援表 GC 排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # PII 保留期 GC：逾期帳號/訪客資料回收；預設 disabled + dry-run，user 手動 review log 後再啟用
+    pii_retention_task = None
+    pii_retention_stop_event: asyncio.Event | None = None
+    try:
+        from services import pii_retention_scheduler as _pii_gc
+
+        if _pii_gc.scheduler_enabled():
+            pii_retention_stop_event = asyncio.Event()
+            pii_retention_task = asyncio.create_task(
+                _pii_gc.run_pii_retention_scheduler(pii_retention_stop_event)
+            )
+    except Exception as e:
+        logger.warning("PII 保留期 GC 排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # 官方日曆每日同步：需要 OFFICIAL_CALENDAR_SYNC_ENABLED=1；建議僅單一 worker 啟用
     official_calendar_task = None
     official_calendar_stop_event: asyncio.Event | None = None
@@ -456,6 +471,17 @@ async def app_lifespan(app_instance: FastAPI):
                 security_gc_task.cancel()
                 try:
                     await security_gc_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if pii_retention_task is not None:
+            if pii_retention_stop_event is not None:
+                pii_retention_stop_event.set()
+            try:
+                await asyncio.wait_for(pii_retention_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pii_retention_task.cancel()
+                try:
+                    await pii_retention_task
                 except (asyncio.CancelledError, Exception):
                     pass
         if official_calendar_task is not None:

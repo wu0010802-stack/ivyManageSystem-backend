@@ -43,3 +43,9 @@ class SchedulerSettings(BaseSettings):
     # Misc schedulers
     finance_reconciliation_enabled: BoolEnv = False
     security_gc_disabled: BoolEnv = False
+
+    # PII Retention GC（spec 2026-05-22-parent-pii-retention-data-export-design.md）
+    # 預設全 OFF + dry-run：上線後 user 手動 review log 才開正式抹
+    pii_retention_gc_disabled: BoolEnv = True
+    pii_retention_gc_dry_run: BoolEnv = True
+    pii_retention_terminal_days: int = 365

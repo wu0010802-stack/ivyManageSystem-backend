@@ -20,7 +20,6 @@ from sqlalchemy import (
 
 from models.base import Base
 
-
 GUARDIAN_RELATIONS = ["父親", "母親", "祖父", "祖母", "外公", "外婆", "監護人", "其他"]
 
 
@@ -60,6 +59,11 @@ class Guardian(Base):
     )
     sort_order = Column(Integer, default=0, nullable=False)
     deleted_at = Column(DateTime, nullable=True, comment="軟刪除時間")
+    pii_redacted_at = Column(
+        DateTime,
+        nullable=True,
+        comment="Guardian PII 被 retention GC 抹除的時間戳；NOT NULL 即已抹過避免重複 GC",
+    )
 
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(
