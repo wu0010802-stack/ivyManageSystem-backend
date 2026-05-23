@@ -1,3 +1,4 @@
+# alembic-lint: skip-symmetry (op.create_table lives in a module-level helper not directly inside upgrade(); lint cannot see across helper functions)
 """split ivykids recruitment records into dedicated table
 
 建立獨立的 recruitment_ivykids_records，

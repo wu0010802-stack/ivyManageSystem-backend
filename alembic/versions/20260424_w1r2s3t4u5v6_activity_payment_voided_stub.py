@@ -1,3 +1,4 @@
+# alembic-lint: skip-symmetry (intentional revert-stub: upgrade() is pass; downgrade() drops columns added by an earlier revision)
 """stub for reverted 'activity_payment_voided' migration
 
 Revision ID: w1r2s3t4u5v6

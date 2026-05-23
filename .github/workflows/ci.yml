@@ -281,3 +281,19 @@ jobs:
           alembic upgrade heads
           alembic downgrade "$BASELINE"
           echo "Roundtrip OK"
+
+  alembic-symmetry-lint:
+    name: Alembic Symmetry Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run symmetry lint
+        run: python3 scripts/lint_alembic_symmetry.py alembic/versions/

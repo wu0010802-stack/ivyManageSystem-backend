@@ -1,3 +1,4 @@
+# alembic-lint: skip-symmetry (PostgreSQL drop_table cascade-drops indexes; explicit drop_index for each create_index not needed)
 """portfolio batch a: attachments, observations, allergies, medication orders/logs
 
 Revision ID: y4u5v6w7x8y9
