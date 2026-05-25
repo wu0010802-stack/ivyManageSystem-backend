@@ -23,7 +23,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy import event
+from sqlalchemy.orm import Session, sessionmaker
 
 from services.notification.channel_matrix import CHANNEL_MATRIX, Channel
 from services.notification.event_types import NOTIFICATION_EVENT_TYPES
@@ -94,9 +95,6 @@ def enqueue(
 
 
 # ────────────────────── Hooks ──────────────────────
-
-from sqlalchemy import event  # noqa: E402
-from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 _HOOKS_INSTALLED: set[sessionmaker] = set()
 
