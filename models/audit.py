@@ -4,7 +4,7 @@ models/audit.py — 操作審計模型
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, Index
+from sqlalchemy import Column, ForeignKey, Integer, String, DateTime, Text, Index
 
 from models.base import Base
 
@@ -17,6 +17,7 @@ class AuditLog(Base):
         Index("ix_audit_created", "created_at"),
         Index("ix_audit_entity", "entity_type", "entity_id"),
         Index("ix_audit_user", "user_id"),
+        Index("ix_audit_logs_ack_created", "acknowledged_at", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -33,3 +34,10 @@ class AuditLog(Base):
     )
     ip_address = Column(String(45), nullable=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True, comment="ack 時間")
+    acknowledged_by = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="ack 操作者",
+    )
