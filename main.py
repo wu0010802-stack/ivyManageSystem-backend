@@ -111,6 +111,7 @@ from api.student_leaves import router as student_leaves_router
 from api.appraisal import appraisal_router
 from api.year_end import year_end_router
 from api.calendar_admin import router as calendar_admin_router
+from api.offboarding import router as offboarding_router
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -760,6 +761,7 @@ app.include_router(student_leaves_router)
 app.include_router(appraisal_router)
 app.include_router(year_end_router)
 app.include_router(calendar_admin_router, prefix="/api/calendar")
+app.include_router(offboarding_router, prefix="/api")
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）
