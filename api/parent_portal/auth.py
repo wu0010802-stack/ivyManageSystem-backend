@@ -54,6 +54,7 @@ from utils.auth import (
     require_parent_role,
     JWT_EXPIRE_MINUTES,
 )
+from utils.exceptions import BusinessError
 from utils.request_ip import get_client_ip
 from utils.cookie import (
     clear_access_token_cookie,
@@ -354,6 +355,36 @@ def _claim_binding_code_atomic(
     return binding
 
 
+def _diagnose_binding_failure(session, code_hash: str) -> str:
+    """atomic claim 失敗後的診斷 SELECT：回傳具體原因供前端分流文案。
+
+    回傳值為 BusinessError code 字串：
+    - "BIND_CODE_NOT_FOUND"：DB 找不到該 code_hash（輸入錯誤 / 已 GC）
+    - "BIND_CODE_EXPIRED"：找得到但 expires_at <= now（過期優先於已用）
+    - "BIND_CODE_USED"：找得到且未過期但 used_at IS NOT NULL
+
+    race note：並發 claim 成功使本 caller 落到 used 分支，回 BIND_CODE_USED 即真相，
+    無需額外鎖定。
+    """
+    row = (
+        session.query(GuardianBindingCode)
+        .filter(GuardianBindingCode.code_hash == code_hash)
+        .first()
+    )
+    if row is None:
+        return "BIND_CODE_NOT_FOUND"
+    if row.expires_at is not None and row.expires_at <= _now():
+        return "BIND_CODE_EXPIRED"
+    return "BIND_CODE_USED"
+
+
+_BIND_FAILURE_MESSAGES = {
+    "BIND_CODE_NOT_FOUND": "綁定碼不存在，請確認輸入是否正確",
+    "BIND_CODE_EXPIRED": "綁定碼已過期，請向園所索取新碼",
+    "BIND_CODE_USED": "綁定碼已被使用，請向園所索取新碼",
+}
+
+
 def _username_for_line(line_user_id: str) -> str:
     """家長 User 的 username 規則：parent_line_<完整 line_user_id>。
 
@@ -492,7 +523,12 @@ def bind_first_child(
         if binding is None:
             session.rollback()
             _record_bind_failure(line_user_id)
-            raise HTTPException(status_code=400, detail="綁定碼無效、已使用或已過期")
+            failure_code = _diagnose_binding_failure(session, code_hash)
+            raise BusinessError(
+                code=failure_code,
+                message=_BIND_FAILURE_MESSAGES[failure_code],
+                http_status=400,
+            )
 
         # 防同 LINE userId 重複建：若已有 parent User，僅補綁這筆 Guardian.user_id
         existing_user = (
@@ -595,7 +631,12 @@ def bind_additional_child(
         )
         if binding is None:
             session.rollback()
-            raise HTTPException(status_code=400, detail="綁定碼無效、已使用或已過期")
+            failure_code = _diagnose_binding_failure(session, code_hash)
+            raise BusinessError(
+                code=failure_code,
+                message=_BIND_FAILURE_MESSAGES[failure_code],
+                http_status=400,
+            )
         guardian = (
             session.query(Guardian).filter(Guardian.id == binding.guardian_id).first()
         )
