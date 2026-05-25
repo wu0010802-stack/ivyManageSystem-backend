@@ -24,7 +24,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Integer, case, func, or_
+from sqlalchemy import Integer, and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from models.activity import ActivityRegistration
@@ -460,7 +460,18 @@ def aggregate_all_active_employees_status(
     )
 
     employees = (
-        session.query(Employee).filter(Employee.is_active == True).all()  # noqa: E712
+        session.query(Employee)
+        .filter(
+            or_(
+                Employee.is_active == True,  # noqa: E712
+                and_(
+                    Employee.resign_date.isnot(None),
+                    Employee.resign_date >= cycle.start_date,
+                    Employee.resign_date <= cycle.end_date,
+                ),
+            )
+        )
+        .all()
     )
     if not employees:
         return []
