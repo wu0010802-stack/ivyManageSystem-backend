@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.salary_engine import _sum_leave_deduction
+from services.salary_engine import _sum_leave_deduction_legacy as _sum_leave_deduction
 
 
 def _make_leave(leave_type: str, leave_hours: float, deduction_ratio=None):

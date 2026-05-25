@@ -307,6 +307,7 @@ async def create_or_update_attendance_record(
             existing.is_missing_punch_out = is_missing_punch_out
             existing.late_minutes = late_minutes
             existing.early_leave_minutes = early_leave_minutes
+            att_row = existing
             message = "考勤記錄已更新"
         else:
             attendance = Attendance(
@@ -323,7 +324,14 @@ async def create_or_update_attendance_record(
                 early_leave_minutes=early_leave_minutes,
             )
             session.add(attendance)
+            att_row = attendance
             message = "考勤記錄已新增"
+
+        # leave-aware 合併:在 commit 前把當日有效 leave 的 leave_record_id /
+        # partial_leave_hours 寫入 att_row,避免 sync 寫入的欄位被 admin 手動編輯蓋掉。
+        from utils.attendance_leave_merge import merge_attendance_with_leave
+
+        merge_attendance_with_leave(att_row, session)
 
         # 考勤異動會改變遲到/早退/缺打卡計數,進而影響薪資扣款計算;
         # 該月若有未封存薪資需標 stale,讓 finalize 守衛擋下舊薪資。

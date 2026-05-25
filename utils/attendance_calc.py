@@ -14,8 +14,14 @@ Refs: 邏輯漏洞 audit 2026-05-07 P0 (#6)。
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time
-from typing import Optional, TypedDict
+from typing import TYPE_CHECKING, Optional, TypedDict
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_WORK_START = "08:00"
 DEFAULT_WORK_END = "17:00"
@@ -96,10 +102,15 @@ def apply_attendance_status(
     *,
     work_start_str: Optional[str],
     work_end_str: Optional[str],
+    session: Optional["Session"] = None,
 ) -> AttendanceStatusFields:
     """讀取 attendance.punch_in_time / punch_out_time / attendance_date 重算並寫回。
 
     供已有 ORM 物件的呼叫端使用（如 punch_corrections approve）。
+
+    若傳入 session，會在重算後呼叫 merge_attendance_with_leave 讓
+    leave_record_id / partial_leave_hours / late_minutes 對齊當日有效請假單。
+    不傳 session 時跳過 merge（向下相容舊呼叫端）；建議新呼叫端一律傳入 session。
     """
     fields = recompute_attendance_status(
         attendance_date=attendance.attendance_date,
@@ -115,4 +126,85 @@ def apply_attendance_status(
     attendance.late_minutes = fields["late_minutes"]
     attendance.early_leave_minutes = fields["early_leave_minutes"]
     attendance.status = fields["status"]
+
+    if session is not None:
+        # leave-aware merge：重算後再以當日有效請假單覆寫 leave_record_id /
+        # partial_leave_hours / late_minutes（請假涵蓋遲到時段時 late→0）。
+        from utils.attendance_leave_merge import merge_attendance_with_leave
+
+        merge_attendance_with_leave(attendance, session)
+    else:
+        logger.warning(
+            "apply_attendance_status 未傳 session，跳過 leave-aware merge。"
+            "建議補打卡核准等寫入路徑傳入 session 參數。"
+        )
+
     return fields
+
+
+# ── leave-aware 遲到 / 早退分鐘計算純函式 ─────────────────────────────────────
+
+
+def _time_to_minutes(t: time) -> int:
+    return t.hour * 60 + t.minute
+
+
+def compute_late_minutes_with_leave(
+    punch_in: time,
+    scheduled_start: time,
+    leave_start: Optional[time],
+    leave_end: Optional[time],
+) -> int:
+    """計算遲到分鐘,扣除請假時段涵蓋的部分。
+
+    邏輯:
+    - 無請假 → late = max(0, punch_in - scheduled_start)
+    - 有請假 → 有效上班開始時間 = max(scheduled_start, leave_end if leave 涵蓋 scheduled_start else scheduled_start)
+              late = max(0, punch_in - 有效上班開始時間)
+    """
+    sched_m = _time_to_minutes(scheduled_start)
+    punch_m = _time_to_minutes(punch_in)
+
+    if leave_start is None or leave_end is None:
+        return max(0, punch_m - sched_m)
+
+    lv_start_m = _time_to_minutes(leave_start)
+    lv_end_m = _time_to_minutes(leave_end)
+
+    # 請假涵蓋 scheduled_start → 有效上班開始 = leave_end
+    if lv_start_m <= sched_m < lv_end_m:
+        effective_start_m = lv_end_m
+    else:
+        effective_start_m = sched_m
+
+    return max(0, punch_m - effective_start_m)
+
+
+def compute_early_leave_minutes_with_leave(
+    punch_out: time,
+    scheduled_end: time,
+    leave_start: Optional[time],
+    leave_end: Optional[time],
+) -> int:
+    """計算早退分鐘,扣除請假時段涵蓋的部分。
+
+    邏輯與遲到對稱:
+    - 無請假 → early = max(0, scheduled_end - punch_out)
+    - 請假涵蓋 scheduled_end → 有效下班結束 = leave_start
+    """
+    sched_m = _time_to_minutes(scheduled_end)
+    punch_m = _time_to_minutes(punch_out)
+
+    if leave_start is None or leave_end is None:
+        return max(0, sched_m - punch_m)
+
+    lv_start_m = _time_to_minutes(leave_start)
+    lv_end_m = _time_to_minutes(leave_end)
+
+    # 請假涵蓋 scheduled_end → 有效下班 = leave_start
+    if lv_start_m < sched_m <= lv_end_m:
+        effective_end_m = lv_start_m
+    else:
+        effective_end_m = sched_m
+
+    return max(0, effective_end_m - punch_m)

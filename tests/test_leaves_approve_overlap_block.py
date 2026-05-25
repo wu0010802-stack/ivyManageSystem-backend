@@ -69,6 +69,8 @@ def _patches_for_approve(leave, conflict=None):
         patch("api.leaves._salary_engine", None),  # 跳過薪資重算
         patch("api.leaves._check_overlap", return_value=conflict),
         patch("services.leave_policy.requires_supporting_document", return_value=False),
+        patch("services.employee_leave_attendance_sync.apply"),  # 跳過考勤同步 hook
+        patch("services.employee_leave_attendance_sync.revert"),  # 跳過考勤同步 hook
     ]
 
 

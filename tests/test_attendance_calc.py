@@ -220,3 +220,79 @@ class TestApplyAttendanceStatus:
         assert att.is_late is False
         assert att.late_minutes == 0
         assert att.status == "normal"
+
+
+# ── C-1~C-6: leave-aware 遲到/早退分鐘計算 ───────────────────────────────────
+
+from datetime import time
+from utils.attendance_calc import compute_late_minutes_with_leave
+
+
+class TestComputeLateMinutesWithLeave:
+    """C-1~C-6:leave-aware 遲到分鐘計算"""
+
+    def test_c1_no_leave_normal_late(self):
+        # 上班 09:00、打卡 09:30、無請假 → late=30
+        result = compute_late_minutes_with_leave(
+            punch_in=time(9, 30),
+            scheduled_start=time(9, 0),
+            leave_start=None,
+            leave_end=None,
+        )
+        assert result == 30
+
+    def test_c2_leave_covers_punch_time(self):
+        # 上班 09:00、打卡 09:30、請假 09:00-10:00 → late=0
+        result = compute_late_minutes_with_leave(
+            punch_in=time(9, 30),
+            scheduled_start=time(9, 0),
+            leave_start=time(9, 0),
+            leave_end=time(10, 0),
+        )
+        assert result == 0
+
+    def test_c3_leave_starts_before_work(self):
+        # 上班 09:00、打卡 09:30、請假 08:00-10:00 → late=0
+        result = compute_late_minutes_with_leave(
+            punch_in=time(9, 30),
+            scheduled_start=time(9, 0),
+            leave_start=time(8, 0),
+            leave_end=time(10, 0),
+        )
+        assert result == 0
+
+    def test_c4_leave_ends_before_punch(self):
+        # 上班 09:00、打卡 09:30、請假 09:00-09:15 → late=15
+        # (請假涵蓋 09:00-09:15,有效上班開始時間變 09:15,打卡 09:30 遲 15 分)
+        result = compute_late_minutes_with_leave(
+            punch_in=time(9, 30),
+            scheduled_start=time(9, 0),
+            leave_start=time(9, 0),
+            leave_end=time(9, 15),
+        )
+        assert result == 15
+
+    def test_c5_leave_short_punch_late(self):
+        # 上班 09:00、打卡 10:00、請假 09:00-09:30 → late=30
+        # (有效上班 09:30,打卡 10:00 遲 30 分)
+        result = compute_late_minutes_with_leave(
+            punch_in=time(10, 0),
+            scheduled_start=time(9, 0),
+            leave_start=time(9, 0),
+            leave_end=time(9, 30),
+        )
+        assert result == 30
+
+    def test_c6_early_leave_covered(self):
+        # 早退場景:scheduled_end=18:00、punch_out=17:30、請假 17:30-18:00 → early_leave=0
+        # (重用同函式:把 scheduled_start 當 scheduled_end 反向計算)
+        # 為了精確,實作獨立 `compute_early_leave_minutes_with_leave`,測試先寫呼叫
+        from utils.attendance_calc import compute_early_leave_minutes_with_leave
+
+        result = compute_early_leave_minutes_with_leave(
+            punch_out=time(17, 30),
+            scheduled_end=time(18, 0),
+            leave_start=time(17, 30),
+            leave_end=time(18, 0),
+        )
+        assert result == 0

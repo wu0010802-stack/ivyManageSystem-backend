@@ -30,6 +30,7 @@ class _BulkSalaryPreload:
     db_count_map: dict
     total_students: int
     leaves_by_emp: dict
+    att_leave_pairs_by_emp: dict
     ytd_sick_by_emp: dict
     ot_by_emp: dict
     meetings_by_emp: dict

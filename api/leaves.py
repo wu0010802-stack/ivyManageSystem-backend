@@ -255,6 +255,15 @@ class LeaveCreate(BaseModel):
         validate_leave_date_order(self.start_date, self.end_date)
         return self
 
+    @model_validator(mode="after")
+    def _validate_partial_leave_times(self) -> "LeaveCreate":
+        if self.leave_hours is not None and self.leave_hours < 8:
+            if not self.start_time or not self.end_time:
+                raise ValueError(
+                    "部分請假(leave_hours<8)必須提供 start_time 與 end_time"
+                )
+        return self
+
 
 class LeaveUpdate(BaseModel):
     leave_type: Optional[str] = None
@@ -304,6 +313,16 @@ class LeaveUpdate(BaseModel):
             )
         ):
             raise ValueError("請假區間不可跨月，若需跨越月底請拆成兩張假單分別申請")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_partial_leave_times(self) -> "LeaveUpdate":
+        # 只在 leave_hours 出現且 <8 時檢查
+        if self.leave_hours is not None and self.leave_hours < 8:
+            if not self.start_time or not self.end_time:
+                raise ValueError(
+                    "部分請假(leave_hours<8)必須提供 start_time 與 end_time"
+                )
         return self
 
 
@@ -887,7 +906,52 @@ def update_leave(
 
             lock_and_premark_stale(session, leave.employee_id, _affected_months)
 
+        # ── 在 model 寫回前 snapshot（reapply 需要舊範圍）─────────────────────
+        old_sync_snapshot = {
+            "start_date": leave.start_date,
+            "end_date": leave.end_date,
+            "start_time": leave.start_time,
+            "end_time": leave.end_time,
+            "leave_type": leave.leave_type,
+            "leave_hours": leave.leave_hours,
+            "is_approved": leave.is_approved,
+        }
+
         _apply_leave_update_and_revoke(leave, data, current_user, leave_id)
+
+        # ── 考勤同步 hook（Hook 3/4）────────────────────────────────────────────
+        # Hook 3（退審路徑）：was_approved=True → _apply_leave_update_and_revoke 後
+        #   leave.is_approved=None → revert
+        # Hook 4（改關鍵欄仍 approved，罕見）：reapply
+        # LeaveAttendanceConflict / LeavePartialTimeMissing → 422
+        from services import employee_leave_attendance_sync as sync
+
+        _key_fields_changed = any(
+            old_sync_snapshot[k] != getattr(leave, k)
+            for k in (
+                "start_date",
+                "end_date",
+                "start_time",
+                "end_time",
+                "leave_type",
+                "leave_hours",
+            )
+        )
+        try:
+            if old_sync_snapshot["is_approved"] is True and leave.is_approved is None:
+                # 退審路徑（Hook 3）
+                sync.revert(session, leave_id)
+            elif (
+                old_sync_snapshot["is_approved"] is True
+                and leave.is_approved is True
+                and _key_fields_changed
+            ):
+                # 改關鍵欄但仍 approved（Hook 4，罕見）
+                sync.reapply(session, leave_id, old_snapshot=old_sync_snapshot)
+        except (sync.LeaveAttendanceConflict, sync.LeavePartialTimeMissing) as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        # ────────────────────────────────────────────────────────────────────────
+
         session.commit()
 
         after_snapshot = {
@@ -1022,6 +1086,23 @@ def delete_leave(
             # commit→recalc 鎖延伸：見 update_leave 同款註解（封 finalize race window）
 
             lock_and_premark_stale(session, emp_id, leave_months)
+
+        # ── 考勤同步 hook（Hook 5: delete_leave revert）───────────────────────
+        # approved leave 被刪 → 先 revert attendance，再 delete LeaveRecord。
+        # FK ON DELETE SET NULL 是雙保險，但主路徑是 revert 主動清。
+        if leave.is_approved is True:
+            try:
+                from services import employee_leave_attendance_sync as sync
+
+                sync.revert(session, leave_id)
+            except Exception as e:
+                from services.employee_leave_attendance_sync import (
+                    LeaveAttendanceConflict,
+                )
+
+                if isinstance(e, LeaveAttendanceConflict):
+                    raise HTTPException(status_code=422, detail=str(e))
+                raise
 
         session.delete(leave)
         session.commit()
@@ -1371,6 +1452,24 @@ def approve_leave(
             approver=current_user,
             comment=approval_comment,
         )
+
+        # ── 考勤同步 hook（leave↔attendance sync）────────────────────────────
+        # 在 ApprovalLog 寫入之後、cross_offset 及 commit 之前執行：
+        # - approved=True 且本次為真實核准（was_approved=False/None）→ apply
+        # - approved=False 且本次為撤銷已核准（was_approved=True）→ revert
+        # LeaveAttendanceConflict / LeavePartialTimeMissing → 422；
+        # 其他例外（如 RuntimeError）不被 catch，讓 FastAPI 500 + finally 的
+        # session.close() 觸發隱式 rollback，確保 leave.is_approved 不殘留。
+        from services import employee_leave_attendance_sync as sync
+
+        try:
+            if data.approved is True and not was_approved:
+                sync.apply(session, leave_id)
+            elif data.approved is False and was_approved:
+                sync.revert(session, leave_id)
+        except (sync.LeaveAttendanceConflict, sync.LeavePartialTimeMissing) as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        # ─────────────────────────────────────────────────────────────────────
 
         # ── leave↔OT 跨類抵扣（feature flag gated, v1 metadata-only）─────────
         # 條件：(1) 由 pending/rejected → approved 的真實變動 (2) feature flag 開啟

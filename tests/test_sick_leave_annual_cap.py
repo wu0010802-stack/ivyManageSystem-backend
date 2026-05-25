@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.salary.utils import _sum_leave_deduction
+from services.salary.utils import _sum_leave_deduction_legacy as _sum_leave_deduction
 from services.salary.constants import SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS
 
 

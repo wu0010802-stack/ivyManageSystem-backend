@@ -20,9 +20,24 @@ from .constants import (
     POSITION_GRADE_MAP,
 )
 from .breakdown import SalaryBreakdown
-from .hourly import _calc_lunch_overlap_hours, _compute_hourly_daily_hours, _calc_daily_hourly_pay
-from .proration import _prorate_base_salary, _prorate_for_period, _build_expected_workdays
-from .utils import _sum_leave_deduction, get_working_days, get_bonus_distribution_month, get_meeting_deduction_period_start, calc_daily_salary
+from .hourly import (
+    _calc_lunch_overlap_hours,
+    _compute_hourly_daily_hours,
+    _calc_daily_hourly_pay,
+)
+from .proration import (
+    _prorate_base_salary,
+    _prorate_for_period,
+    _build_expected_workdays,
+)
+from .utils import (
+    _sum_leave_deduction,
+    _sum_leave_deduction_legacy,
+    get_working_days,
+    get_bonus_distribution_month,
+    get_meeting_deduction_period_start,
+    calc_daily_salary,
+)
 from .festival import (
     get_position_grade,
     get_festival_bonus_base,
@@ -62,6 +77,7 @@ __all__ = [
     "_prorate_for_period",
     "_build_expected_workdays",
     "_sum_leave_deduction",
+    "_sum_leave_deduction_legacy",
     "get_working_days",
     "get_bonus_distribution_month",
     "get_meeting_deduction_period_start",
