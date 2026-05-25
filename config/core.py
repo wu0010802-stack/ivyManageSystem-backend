@@ -16,6 +16,9 @@ class CoreSettings(BaseSettings):
     env: str = "development"
     database_url: str | None = None
     jwt_secret_key: str | None = Field(default=None, repr=False)
+    # JWT rotation 用，accept-only 舊 secrets 的 JSON list 字串
+    # 設計：docs/superpowers/specs/2026-05-21-jwt-secret-rotation-design.md
+    jwt_secret_keys_olds: str = Field(default="[]", repr=False)
     jwt_absolute_lifetime_hours: int = 8
     enable_api_docs: BoolEnv = False
     admin_init_username: str | None = None

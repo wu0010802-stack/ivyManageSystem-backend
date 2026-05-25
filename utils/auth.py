@@ -42,7 +42,7 @@ def _kid_for(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()[:12]
 
 
-_olds_raw = os.environ.get("JWT_SECRET_KEYS_OLDS", "[]")
+_olds_raw = settings.core.jwt_secret_keys_olds
 try:
     _olds = _json.loads(_olds_raw)
     if not isinstance(_olds, list) or not all(isinstance(k, str) for k in _olds):
