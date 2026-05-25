@@ -159,3 +159,99 @@ def test_all_permissions_have_labels():
 
     for perm in Permission:
         assert perm.value in PERMISSION_LABELS, f"missing label for {perm.value}"
+
+
+def test_role_templates_principal_inherits_supervisor():
+    """principal 必須含 supervisor 全部 + 3 條額外。"""
+    sup_set = set(ROLE_TEMPLATES["supervisor"])
+    pri_set = set(ROLE_TEMPLATES["principal"])
+    assert sup_set.issubset(pri_set)
+    extras = pri_set - sup_set
+    assert extras == {
+        Permission.SALARY_READ.value,
+        Permission.AUDIT_LOGS.value,
+        Permission.GOV_REPORTS_EXPORT.value,
+    }
+
+
+def test_role_templates_principal_excludes_write_and_admin_permissions():
+    """principal 不可含 SALARY_WRITE / USER_MANAGEMENT_* / SETTINGS_*。"""
+    pri = ROLE_TEMPLATES["principal"]
+    assert Permission.SALARY_WRITE.value not in pri
+    assert Permission.USER_MANAGEMENT_READ.value not in pri
+    assert Permission.USER_MANAGEMENT_WRITE.value not in pri
+    assert Permission.SETTINGS_READ.value not in pri
+    assert Permission.SETTINGS_WRITE.value not in pri
+
+
+def test_role_labels_principal_zh():
+    """principal 中文 label = 園長。"""
+    from utils.permissions import ROLE_LABELS
+
+    assert ROLE_LABELS["principal"] == "園長"
+
+
+def test_role_templates_accountant_pure_finance():
+    """accountant 只含財務 + EMPLOYEES_READ；不可含 EMPLOYEES_WRITE / 考勤 / 學生 / 招生 / 政府匯出。"""
+    acc = set(ROLE_TEMPLATES["accountant"])
+    forbidden = {
+        Permission.EMPLOYEES_WRITE.value,
+        Permission.ATTENDANCE_READ.value,
+        Permission.ATTENDANCE_WRITE.value,
+        Permission.LEAVES_READ.value,
+        Permission.STUDENTS_READ.value,
+        Permission.RECRUITMENT_READ.value,
+        Permission.GOV_REPORTS_EXPORT.value,
+        Permission.YEAR_END_FINALIZE.value,
+    }
+    assert forbidden.isdisjoint(acc), f"accountant 不該含: {forbidden & acc}"
+
+
+def test_role_templates_accountant_includes_finance_core():
+    """accountant 必須含薪資/廠商/學費/年終讀寫 + APPRAISAL_ACCOUNTING。"""
+    acc = set(ROLE_TEMPLATES["accountant"])
+    required = {
+        Permission.EMPLOYEES_READ.value,
+        Permission.SALARY_READ.value,
+        Permission.SALARY_WRITE.value,
+        Permission.FEES_READ.value,
+        Permission.FEES_WRITE.value,
+        Permission.VENDOR_PAYMENT_READ.value,
+        Permission.VENDOR_PAYMENT_WRITE.value,
+        Permission.YEAR_END_READ.value,
+        Permission.YEAR_END_WRITE.value,
+        Permission.APPRAISAL_ACCOUNTING.value,
+    }
+    assert required.issubset(acc), f"accountant 缺: {required - acc}"
+
+
+def test_role_labels_accountant_zh():
+    from utils.permissions import ROLE_LABELS
+
+    assert ROLE_LABELS["accountant"] == "會計"
+
+
+def test_role_descriptions_complete():
+    """每個 ROLE_TEMPLATES key 都有對應 ROLE_DESCRIPTIONS。"""
+    from utils.permissions import ROLE_DESCRIPTIONS
+
+    assert set(ROLE_TEMPLATES.keys()) == set(ROLE_DESCRIPTIONS.keys())
+
+
+def test_role_descriptions_non_empty():
+    """ROLE_DESCRIPTIONS 每個值非空字串。"""
+    from utils.permissions import ROLE_DESCRIPTIONS
+
+    for role, desc in ROLE_DESCRIPTIONS.items():
+        assert isinstance(desc, str) and len(desc) > 0, f"{role} description 空"
+
+
+def test_get_permissions_definition_includes_role_descriptions():
+    """get_permissions_definition().roles[*] 應含 description 欄位。"""
+    definition = get_permissions_definition()
+    roles = definition["roles"]
+    for role_key in ROLE_TEMPLATES.keys():
+        assert role_key in roles, f"roles 缺 {role_key}"
+        assert "description" in roles[role_key], f"{role_key} 缺 description"
+        assert "label" in roles[role_key]
+        assert "permissions" in roles[role_key]
