@@ -310,6 +310,9 @@ def get_offboarding_detail(
             certificate_pdf_path=record.certificate_pdf_path,
             nhi_unenroll_submitted_at=record.nhi_unenroll_submitted_at,
             magic_link_active=_is_magic_link_active(record),
+            magic_link_expires_at=record.magic_link_expires_at,
+            magic_link_download_count=record.magic_link_download_count or 0,
+            magic_link_last_used_at=record.magic_link_last_used_at,
             closed_at=record.closed_at,
         )
     finally:

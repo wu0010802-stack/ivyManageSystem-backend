@@ -773,3 +773,73 @@ def test_patch_nhi_unenroll_sets_timestamp(integrated_client):
     # 驗 GET 也反映清空
     r4 = client.get(f"/api/offboarding/{emp_id}")
     assert r4.json()["nhi_unenroll_submitted_at"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 8: OffboardingDetailResponse magic-link metadata 欄位
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_get_detail_returns_magic_link_metadata(integrated_client):
+    """process + POST magic-link → GET detail 驗 magic-link metadata 三欄。
+
+    驗證：
+    - magic_link_active = True（token 剛產，未過期/未撤/count=0）
+    - magic_link_expires_at != None
+    - magic_link_download_count = 0
+    - magic_link_last_used_at = None
+    """
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="ml_meta_admin")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    # 建員工
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"MLM{_counter:04d}",
+            name="魔術連結員工",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=45000,  # daily_wage = 1500
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    # 建 leave quota
+    with sf() as session:
+        session.add(
+            LeaveQuota(
+                employee_id=emp_id,
+                year=2026,
+                leave_type="annual",
+                total_hours=80,
+            )
+        )
+        session.commit()
+
+    # process 離職（建立 OffboardingRecord）
+    process_res = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-06-15", "resign_reason": "測試"},
+    )
+    assert process_res.status_code == 200, process_res.text
+
+    # 產 magic-link
+    ml_res = client.post(f"/api/offboarding/{emp_id}/magic-link")
+    assert ml_res.status_code == 200, ml_res.text
+
+    # GET detail 驗 magic-link metadata 三欄
+    response = client.get(f"/api/offboarding/{emp_id}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["magic_link_active"] is True
+    assert body["magic_link_expires_at"] is not None
+    assert body["magic_link_download_count"] == 0
+    assert body["magic_link_last_used_at"] is None

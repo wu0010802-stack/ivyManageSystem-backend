@@ -83,6 +83,9 @@ class OffboardingDetailResponse(BaseModel):
     certificate_pdf_path: Optional[str]
     nhi_unenroll_submitted_at: Optional[datetime]
     magic_link_active: bool  # 派生：token_hash & not revoked & not expired & count<3
+    magic_link_expires_at: Optional[datetime] = None
+    magic_link_download_count: int = 0
+    magic_link_last_used_at: Optional[datetime] = None
     closed_at: Optional[datetime]
 
 
