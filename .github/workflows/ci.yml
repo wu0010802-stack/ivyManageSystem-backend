@@ -251,35 +251,21 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_roundtrip
           ENV: development
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-        # Why pkgutil iter over `models/*`: the literal one-liner in the PR2
-        # spec (`from models.database import get_engine; Base.metadata.create_all(...)`)
-        # only loads the subset of models that `models/database.py` re-exports
-        # (e.g. omits `student_log`, `appraisal`, `fees`, `gov_moe`, `year_end`).
-        # Production matches via `main.py`'s router-import chain, which
-        # transitively imports every model module before `startup/migrations.py`
-        # calls `Base.metadata.create_all`. Iterating `models.__path__` is the
-        # self-contained equivalent.
-        # BASELINE is the alembic revision below which we cannot downgrade
-        # (baseline contains only op.alter_column, no create_table). Mirrors
-        # startup/migrations.py:ALEMBIC_BASELINE_REVISION; keep them in sync.
+        # 2026-05-25 改寫：移除原 stamp-only 步驟（已知 chronic bug — 多個歷史
+        # migration 的 downgrade 假設 upgrade 跑過、不寫 IF EXISTS guard，stamp
+        # 後 downgrade 會撞「object does not exist」）。
+        #
+        # 改為純「真 upgrade → 真 downgrade → 真 upgrade」roundtrip：
+        #   1. 從空 DB upgrade 到 head（exercise 每個 migration 的 upgrade）
+        #   2. downgrade 到 baseline（exercise 每個 migration 的 downgrade，
+        #      此時 schema 是 upgrade 後的真實狀態，IF EXISTS 不必要）
+        #   3. 再 upgrade 到 head（驗證 downgrade 後仍可重 upgrade）
+        # BASELINE 是不可再降的最早 revision（只有 alter_column，無 create_table）。
         run: |
           BASELINE=4ddf3ebad3e8
-          python3 -c "
-          import pkgutil, importlib, models
-          for m in pkgutil.iter_modules(models.__path__):
-              try:
-                  importlib.import_module(f'models.{m.name}')
-              except Exception as e:
-                  raise RuntimeError(f'bootstrap failed importing models.{m.name}: {e}') from e
-          from models.base import Base
-          from models.database import get_engine
-          Base.metadata.create_all(get_engine())
-          print(f'create_all OK ({len(Base.metadata.sorted_tables)} tables)')
-          "
-          alembic stamp heads
-          alembic downgrade "$BASELINE"
           alembic upgrade heads
           alembic downgrade "$BASELINE"
+          alembic upgrade heads
           echo "Roundtrip OK"
 
   alembic-symmetry-lint:
