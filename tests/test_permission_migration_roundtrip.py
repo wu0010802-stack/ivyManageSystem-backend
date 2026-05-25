@@ -7,8 +7,9 @@ import pytest
 
 # 動態 load migration 模組（檔名含 timestamp，import path 不穩）
 # 用 revision id (permtxt01) 抓而非 filename slug：robust to filename drift + 絕對路徑（不依賴 cwd）
+# pattern 用 "permtxt01_permissions" 以區隔 mergeheads02 之類的 merge migration 檔名含 "permtxt01"
 _VERSIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
-_paths = sorted(_VERSIONS_DIR.glob("*permtxt01*.py"))
+_paths = sorted(_VERSIONS_DIR.glob("*permtxt01_permissions*.py"))
 assert (
     len(_paths) == 1
 ), f"預期找到 1 個 permtxt01 migration，實際 {len(_paths)}: {_paths}"
