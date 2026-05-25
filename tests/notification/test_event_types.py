@@ -1,6 +1,5 @@
 """event_type 常數與集合的契約測試。"""
 
-import pytest
 from services.notification.event_types import NOTIFICATION_EVENT_TYPES
 
 
