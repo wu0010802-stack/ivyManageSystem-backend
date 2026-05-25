@@ -125,13 +125,37 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 反向 5
-    op.drop_index("ix_notif_log_source", table_name="notification_logs")
-    op.drop_index("ix_notif_log_recipient_created", table_name="notification_logs")
-    op.drop_index("ix_notif_log_recipient_unread", table_name="notification_logs")
-    op.drop_table("notification_logs")
+    """反向 upgrade。
 
-    # 反向 4
+    為支援 stamp-only DB（Alembic Roundtrip CI 從 metadata.create_all 建表後直接
+    stamp 到 head 再跑 downgrade）下的健全性，所有 DROP / rename 都使用 IF EXISTS
+    或先 SELECT 偵測 — 不存在的物件不應阻擋 downgrade。
+    """
+    bind = op.get_bind()
+    is_pg = bind.dialect.name == "postgresql"
+
+    # 反向 5: drop notification_logs (含 3 indexes)
+    if is_pg:
+        op.execute("DROP INDEX IF EXISTS ix_notif_log_source")
+        op.execute("DROP INDEX IF EXISTS ix_notif_log_recipient_created")
+        op.execute("DROP INDEX IF EXISTS ix_notif_log_recipient_unread")
+        op.execute("DROP TABLE IF EXISTS notification_logs")
+    else:
+        for idx in (
+            "ix_notif_log_source",
+            "ix_notif_log_recipient_created",
+            "ix_notif_log_recipient_unread",
+        ):
+            try:
+                op.drop_index(idx, table_name="notification_logs")
+            except Exception:
+                pass
+        try:
+            op.drop_table("notification_logs")
+        except Exception:
+            pass
+
+    # 反向 4: 取消 event_type 前綴 (stamp-only DB 無 row → 0 rows affected, 安全)
     in_clause = ",".join(f"'parent.{ev}'" for ev in PARENT_OLD_EVENT_TYPES)
     op.execute(
         f"UPDATE notification_preferences "
@@ -139,16 +163,50 @@ def downgrade() -> None:
         f"WHERE event_type IN ({in_clause})"
     )
 
-    # 反向 3
-    op.drop_index("ix_notif_pref_user_event", table_name="notification_preferences")
+    # 反向 3: drop index (stamp-only DB 無此 index → IF EXISTS 安全)
+    if is_pg:
+        op.execute("DROP INDEX IF EXISTS ix_notif_pref_user_event")
+    else:
+        try:
+            op.drop_index(
+                "ix_notif_pref_user_event", table_name="notification_preferences"
+            )
+        except Exception:
+            pass
 
-    # 反向 2
-    bind = op.get_bind()
-    if bind.dialect.name == "postgresql":
-        op.execute(
-            "ALTER TABLE notification_preferences "
-            "RENAME CONSTRAINT uq_notif_pref_triple TO uq_parent_notif_pref_triple"
-        )
+    # 反向 2: rename constraint (stamp-only DB constraint 仍是舊名)
+    if is_pg:
+        op.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'uq_notif_pref_triple'
+                ) THEN
+                    ALTER TABLE notification_preferences
+                    RENAME CONSTRAINT uq_notif_pref_triple TO uq_parent_notif_pref_triple;
+                END IF;
+            END $$;
+            """)
 
-    # 反向 1
-    op.rename_table("notification_preferences", "parent_notification_preferences")
+    # 反向 1: rename table back (stamp-only DB 表已是新名 → 偵測後 rename；舊名 → 跳過)
+    if is_pg:
+        op.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'notification_preferences'
+                ) THEN
+                    ALTER TABLE notification_preferences
+                    RENAME TO parent_notification_preferences;
+                END IF;
+            END $$;
+            """)
+    else:
+        try:
+            op.rename_table(
+                "notification_preferences", "parent_notification_preferences"
+            )
+        except Exception:
+            pass
