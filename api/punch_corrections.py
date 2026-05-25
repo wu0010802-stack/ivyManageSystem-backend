@@ -27,7 +27,6 @@ from services.salary.finalize_guard import (
     assert_months_not_finalized,
     collect_months_from_dates,
 )
-from services.notification.approval_notifier import notify_approval
 
 logger = logging.getLogger(__name__)
 
@@ -194,26 +193,33 @@ def approve_punch_correction(
                 correction.attendance_date,
                 current_user.get("username"),
             )
-            # 個人 LINE 推播（審核結果）
-            if _line_service is not None:
-                emp_user = (
-                    session.query(User)
-                    .filter(User.employee_id == correction.employee_id)
-                    .first()
-                )
-                emp = (
-                    session.query(Employee)
-                    .filter(Employee.id == correction.employee_id)
-                    .first()
-                )
-                notify_approval(
-                    line_service=_line_service,
-                    doc_type="punch_correction",
-                    action="reject",
-                    line_user_id=emp_user.line_user_id if emp_user else None,
-                    name=emp.name if emp else "員工",
-                    context={"target_date": correction.attendance_date},
-                    rejection_reason=correction.rejection_reason,
+            # 個人推播（審核結果）
+            from services.notification import dispatch
+
+            _owner_user = (
+                session.query(User)
+                .filter(User.employee_id == correction.employee_id)
+                .first()
+            )
+            if _owner_user is not None:
+                dispatch.enqueue(
+                    session=session,
+                    event_type="punch_correction.rejected",
+                    recipient_user_id=_owner_user.id,
+                    context={
+                        "reviewer_name": current_user.get("name")
+                        or current_user.get("username", ""),
+                        "target_date": (
+                            correction.attendance_date.isoformat()
+                            if hasattr(correction.attendance_date, "isoformat")
+                            else str(correction.attendance_date)
+                        ),
+                        "correction_id": correction.id,
+                        "rejection_reason": correction.rejection_reason,
+                    },
+                    sender_id=current_user.get("user_id"),
+                    source_entity_type="punch_correction",
+                    source_entity_id=correction.id,
                 )
             return {"message": "補打卡申請已駁回"}
 
@@ -307,20 +313,32 @@ def approve_punch_correction(
             correction.attendance_date,
             current_user.get("username"),
         )
-        # 個人 LINE 推播（審核結果）。emp 已於上方 fetch；user 另查一次。
-        if _line_service is not None:
-            emp_user = (
-                session.query(User)
-                .filter(User.employee_id == correction.employee_id)
-                .first()
-            )
-            notify_approval(
-                line_service=_line_service,
-                doc_type="punch_correction",
-                action="approve",
-                line_user_id=emp_user.line_user_id if emp_user else None,
-                name=emp.name if emp else "員工",
-                context={"target_date": correction.attendance_date},
+        # 個人推播（審核結果）
+        from services.notification import dispatch
+
+        _owner_user = (
+            session.query(User)
+            .filter(User.employee_id == correction.employee_id)
+            .first()
+        )
+        if _owner_user is not None:
+            dispatch.enqueue(
+                session=session,
+                event_type="punch_correction.approved",
+                recipient_user_id=_owner_user.id,
+                context={
+                    "reviewer_name": current_user.get("name")
+                    or current_user.get("username", ""),
+                    "target_date": (
+                        correction.attendance_date.isoformat()
+                        if hasattr(correction.attendance_date, "isoformat")
+                        else str(correction.attendance_date)
+                    ),
+                    "correction_id": correction.id,
+                },
+                sender_id=current_user.get("user_id"),
+                source_entity_type="punch_correction",
+                source_entity_id=correction.id,
             )
         return {"message": "補打卡申請已核准，考勤記錄已更新"}
     except HTTPException:
