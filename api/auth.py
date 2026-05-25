@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
-from utils.audit import write_login_audit
+from utils.audit import write_login_audit, mark_soft_delete
 from utils.request_ip import get_client_ip
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
 from utils.auth import (
@@ -1151,6 +1151,9 @@ def update_user(
 
         if data.is_active is not None:
             user.is_active = data.is_active
+            # 帳號停用（True → False）為軟刪語意，顯式標記
+            if not user.is_active and old_is_active:
+                mark_soft_delete(request, "user", user.username or f"#{user.id}")
 
         # 帳號停用、角色或權限實際變更時，遞增 token_version
         # 使所有已持有的 token 在下次嘗試 refresh 時立即被拒絕（最長 15 分鐘後完全失效）
@@ -1163,6 +1166,7 @@ def update_user(
             user.token_version = (user.token_version or 0) + 1
 
         # 建立變更摘要並傳給 AuditMiddleware
+        # 注意：純停用（軟刪）已由 mark_soft_delete 設定 audit_summary，不再重疊。
         changes = []
         if data.role is not None and user.role != old_role:
             changes.append(f"角色 {old_role} → {user.role}")
@@ -1176,8 +1180,11 @@ def update_user(
             else:
                 changes.append("權限未變更")
         if data.is_active is not None and user.is_active != old_is_active:
-            changes.append("帳號" + ("啟用" if user.is_active else "停用"))
-        if changes:
+            if user.is_active:
+                # 啟用帳號：一般變更摘要
+                changes.append("帳號啟用")
+            # 停用帳號已由 mark_soft_delete 處理，不加到 changes
+        if changes and not hasattr(request.state, "audit_summary"):
             request.state.audit_summary = "修改使用者帳號：" + "、".join(changes)
 
         session.commit()

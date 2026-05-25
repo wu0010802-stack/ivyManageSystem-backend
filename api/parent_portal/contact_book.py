@@ -27,7 +27,7 @@ from models.database import (
     StudentContactBookReply,
 )
 from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK
-from utils.audit import write_explicit_audit
+from utils.audit import mark_soft_delete, write_explicit_audit
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -453,9 +453,7 @@ def delete_reply(
     if row.deleted_at:
         return {"message": "回覆已刪除"}
     row.deleted_at = datetime.now()
+    mark_soft_delete(request, "contact_book_entry", str(reply_id))
     session.flush()
     request.state.audit_entity_id = str(entry.id)
-    request.state.audit_summary = (
-        f"家長刪除聯絡簿回覆：entry={entry.id} reply={reply_id}"
-    )
     return {"message": "刪除成功"}

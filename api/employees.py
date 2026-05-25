@@ -32,7 +32,7 @@ from utils.finance_guards import (
 )
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
-from utils.audit import write_explicit_audit
+from utils.audit import write_explicit_audit, mark_soft_delete
 from utils.salary_access import can_view_salary_of
 from utils.validators import parse_optional_date
 
@@ -706,6 +706,7 @@ async def update_employee(
 @router.delete("/employees/{employee_id}")
 async def delete_employee(
     employee_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
     """刪除員工（軟刪除，設為離職）"""
@@ -719,6 +720,7 @@ async def delete_employee(
         if employee.is_active:
             employee.is_active = False
             changed = True
+            mark_soft_delete(request, "employee", employee.name or f"#{employee.id}")
         if not employee.resign_date:
             employee.resign_date = date.today()
             changed = True
@@ -745,6 +747,7 @@ async def delete_employee(
 async def offboard_employee(
     employee_id: int,
     req: OffboardRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
     """[DEPRECATED] 改用 POST /api/offboarding/{id}/process。
@@ -794,6 +797,12 @@ async def offboard_employee(
 
         # 向後相容 response shape（前端尚未切換到 /offboarding/{id}/process 期間）
         emp = session.query(Employee).filter_by(id=employee_id).first()
+
+        # audit: 離職日 <= today 代表 process_offboarding 已把 emp.is_active 設成 False
+        # → 顯式標記軟刪，audit summary 改「軟刪 員工 ...」
+        if emp and not result["is_active_after"]:
+            mark_soft_delete(request, "employee", emp.name or f"#{emp.id}")
+
         return {
             "message": "離職資料已更新（deprecated; use POST /offboarding/{id}/process）",
             "id": employee_id,

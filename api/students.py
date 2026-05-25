@@ -38,7 +38,7 @@ from models.classroom import (
 
 logger = logging.getLogger(__name__)
 
-from utils.audit import write_explicit_audit
+from utils.audit import mark_soft_delete, write_explicit_audit
 
 
 def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
@@ -1181,6 +1181,7 @@ async def get_student_profile(
 async def transition_student_lifecycle(
     student_id: int,
     item: LifecycleTransitionRequest,
+    request: Request,
     current_user: dict = Depends(
         require_staff_permission(Permission.STUDENTS_LIFECYCLE_WRITE)
     ),
@@ -1190,6 +1191,7 @@ async def transition_student_lifecycle(
     副作用：轉入終態 (withdrawn/transferred/graduated) 時：
     - 取消該生進行中的接送通知 + WS 廣播
     - 軟刪該生當學期才藝報名
+    - 標記 AuditMiddleware soft-delete summary（request 傳入 set_lifecycle_status）
     """
     session = get_session()
     dismissal_broadcasts: list[dict] = []
@@ -1211,6 +1213,7 @@ async def transition_student_lifecycle(
                 reason=item.reason,
                 notes=item.notes,
                 recorded_by=current_user.get("user_id"),
+                request=request,
             )
         except LifecycleTransitionError as e:
             session.rollback()
@@ -1440,6 +1443,7 @@ async def update_guardian(
 @router.delete("/students/guardians/{guardian_id}")
 async def delete_guardian(
     guardian_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
 ):
     """軟刪除監護人。"""
@@ -1454,6 +1458,8 @@ async def delete_guardian(
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
 
         guardian.deleted_at = datetime.now()
+        mark_soft_delete(request, "guardian", guardian.name or str(guardian_id))
+        request.state.audit_entity_id = str(guardian.student_id)
         guardian.is_primary = False  # 軟刪後不再是主要聯絡人
 
         student = (

@@ -44,6 +44,7 @@ from utils.file_upload import (
     safe_attachment_filename,
     validate_file_signature,
 )
+from utils.audit import mark_soft_delete
 from utils.permissions import Permission
 from utils.portfolio_access import assert_student_access
 from utils.portfolio_storage import (
@@ -244,13 +245,10 @@ async def delete_attachment(
             assert_student_access(session, current_user, student_id)
 
             att.deleted_at = datetime.now()
+            mark_soft_delete(request, "attachment", str(attachment_id))
             session.flush()
 
             request.state.audit_entity_id = str(student_id)
-            request.state.audit_summary = (
-                f"軟刪除附件：attachment_id={attachment_id}, "
-                f"owner={att.owner_type}#{att.owner_id}"
-            )
             logger.info(
                 "軟刪除附件：id=%d owner=%s#%d student_id=%d operator=%s",
                 attachment_id,
