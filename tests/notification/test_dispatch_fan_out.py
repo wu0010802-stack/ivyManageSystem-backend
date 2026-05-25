@@ -95,7 +95,21 @@ def test_fan_out_line_adapter_failure_marks_channels_failed(test_db_session):
 
 def test_fan_out_parent_event_skips_in_app(test_db_session):
     """家長域 v1 不寫 in_app（matrix 沒給 in_app）。"""
-    from models.database import NotificationLog
+    from datetime import datetime
+
+    from models.database import NotificationLog, User
+
+    # _fan_out 會呼叫 _resolve_line_user_id，需要有 User row 才能 resolve 成功
+    user = User(
+        username="parent_u42",
+        password_hash="x",
+        line_user_id="Uparen42",
+        line_follow_confirmed_at=datetime.now(),
+        is_active=True,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()  # commit so log_session (new session in _fan_out) can see the row
+    recipient_id = user.id
 
     mock_ws = MagicMock()
     mock_la = MagicMock()
@@ -107,6 +121,7 @@ def test_fan_out_parent_event_skips_in_app(test_db_session):
             _pevt(
                 "parent.announcement",
                 ("line",),
+                recipient_user_id=recipient_id,
                 context={"title": "x", "preview": "y", "announcement_id": 1},
             )
         )

@@ -20,7 +20,7 @@ session 必須來自 models.base.get_session_factory()，parent_db / spike_rls
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from typing import Optional
 
 from sqlalchemy import event
@@ -189,6 +189,28 @@ def _pref_enabled(session, user_id, event_type: str, channel: str) -> bool:
         return False
 
 
+def _resolve_line_user_id(session, user_id) -> str | None:
+    """User.id → User.line_user_id（active + line_follow_confirmed 才回）。
+
+    沿用 line_service.should_push_to_parent 的可達性檢查；fail-closed。
+    用於 _fan_out 在 call LINE adapter 前 pre-resolve；caller 仍用 int User.id。
+    """
+    if user_id is None:
+        return None
+    try:
+        from models.database import User
+
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user or not user.is_active:
+            return None
+        if not user.line_user_id or not user.line_follow_confirmed_at:
+            return None
+        return user.line_user_id
+    except Exception as exc:
+        logger.warning("_resolve_line_user_id failed (fail-closed): %s", exc)
+        return None
+
+
 def _fan_out(evt: PendingEvent) -> None:
     """tx commit 後實際發送：寫 log → 過 gate → 呼叫 adapter。
 
@@ -245,7 +267,26 @@ def _fan_out(evt: PendingEvent) -> None:
         for ch in active_channels:
             if ch == "in_app":
                 continue
-            adapter = _get_line_adapter() if ch == "line" else _get_ws_adapter()
+            if ch == "line":
+                line_user_id = _resolve_line_user_id(log_session, evt.recipient_user_id)
+                if line_user_id is None:
+                    failed.append({"channel": "line", "error": "unreachable_user"})
+                    continue
+                # 包裝 evt 把 recipient_user_id 改為 LINE user_id (str)
+                line_evt = _dc_replace(evt, recipient_user_id=line_user_id)
+                try:
+                    _get_line_adapter().send(line_evt, rendered, log_id=log_id or 0)
+                    succeeded.append("line")
+                except Exception as exc:
+                    logger.exception(
+                        "LINE channel failed event=%s user=%s",
+                        evt.event_type,
+                        evt.recipient_user_id,
+                    )
+                    failed.append({"channel": "line", "error": type(exc).__name__})
+                continue
+            # ws or others
+            adapter = _get_ws_adapter()
             try:
                 adapter.send(evt, rendered, log_id=log_id or 0)
                 succeeded.append(ch)

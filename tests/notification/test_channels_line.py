@@ -37,18 +37,19 @@ def test_line_adapter_fallback_push_text_for_unmapped_event_type():
     assert "內文" in args[1]
 
 
-def test_line_adapter_skips_when_recipient_is_int_with_warning(caplog):
-    """Phase 1 fallback：未 resolve 為 LINE user_id 的 int 應 skip + warning。"""
+def test_line_adapter_raises_when_recipient_is_int():
+    """LineAdapter 收到非 str recipient_user_id 應 raise ValueError。
+    Phase 2: _fan_out 已 pre-resolve User.id → line_user_id 後才呼叫；任何傳 int 進來
+    都是調用方錯誤，應 fail-fast 而非 silently skip。"""
     fake_ls = MagicMock()
     adapter = LineAdapter(fake_ls)
-    with caplog.at_level("WARNING"):
+    with pytest.raises(ValueError, match="_resolve_line_user_id"):
         adapter.send(
             _evt("leave.approved", recipient_user_id=42),
             Rendered(title="t", body="b", deep_link=None),
             log_id=1,
         )
     fake_ls.push_text_to_user.assert_not_called()
-    assert any("recipient_user_id" in r.message for r in caplog.records)
 
 
 def test_line_adapter_calls_handler_when_registered():
