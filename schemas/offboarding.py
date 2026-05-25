@@ -88,3 +88,15 @@ class OffboardingDetailResponse(BaseModel):
 
 class NhiUnenrollRequest(BaseModel):
     submitted: bool
+
+
+class MagicLinkResponse(BaseModel):
+    employee_id: int
+    token: str  # 明文（只此一次回，admin 複製貼 email）
+    expires_at: datetime
+    download_url: str  # 完整 URL：/api/offboarding/download?token=...
+
+
+class MagicLinkRevokeResponse(BaseModel):
+    employee_id: int
+    revoked_at: datetime

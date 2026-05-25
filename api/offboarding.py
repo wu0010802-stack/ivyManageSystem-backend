@@ -19,6 +19,8 @@ from models.salary import SalaryRecord
 from schemas.offboarding import (
     AppraisalInFlightCycle,
     LeaveSnapshotPreview,
+    MagicLinkResponse,
+    MagicLinkRevokeResponse,
     NhiUnenrollRequest,
     OffboardingDetailResponse,
     OffboardingPreview,
@@ -29,7 +31,11 @@ from schemas.offboarding import (
     SalaryRecordTarget,
     StepResultModel,
 )
-from services.offboarding.magic_link import is_active as _is_magic_link_active
+from services.offboarding.magic_link import (
+    generate_token as ml_generate_token,
+    is_active as _is_magic_link_active,
+    revoke_token as ml_revoke_token,
+)
 from services.offboarding.orchestrator import OffboardingError, process_offboarding
 from services.offboarding.steps.snapshot_leave import _resolve_daily_wage
 from utils.auth import require_staff_permission
@@ -228,6 +234,73 @@ def get_offboarding_detail(
             nhi_unenroll_submitted_at=record.nhi_unenroll_submitted_at,
             magic_link_active=_is_magic_link_active(record),
             closed_at=record.closed_at,
+        )
+    finally:
+        session.close()
+
+
+@router.post("/{employee_id}/magic-link", response_model=MagicLinkResponse)
+def post_magic_link(
+    employee_id: int,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
+):
+    """admin 產 magic-link token（30 天 / 3 次上限）。覆寫舊 hash（重發即作廢前一個）。"""
+    session: Session = get_session()
+    try:
+        record = (
+            session.query(EmployeeOffboardingRecord)
+            .filter_by(employee_id=employee_id)
+            .first()
+        )
+        if record is None:
+            raise HTTPException(404, "OFFBOARDING_RECORD_NOT_FOUND")
+        token = ml_generate_token(session, record)
+        session.commit()
+
+        request.state.audit_entity_id = str(employee_id)
+        request.state.audit_summary = (
+            f"離職 magic-link 產生：employee/{employee_id} "
+            f"expires_at={record.magic_link_expires_at.isoformat()}"
+        )
+
+        return MagicLinkResponse(
+            employee_id=employee_id,
+            token=token,
+            expires_at=record.magic_link_expires_at,
+            download_url=f"/api/offboarding/download?token={token}",
+        )
+    finally:
+        session.close()
+
+
+@router.delete("/{employee_id}/magic-link", response_model=MagicLinkRevokeResponse)
+def delete_magic_link(
+    employee_id: int,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
+):
+    """admin 撤 magic-link token。"""
+    session: Session = get_session()
+    try:
+        record = (
+            session.query(EmployeeOffboardingRecord)
+            .filter_by(employee_id=employee_id)
+            .first()
+        )
+        if record is None:
+            raise HTTPException(404, "OFFBOARDING_RECORD_NOT_FOUND")
+        if record.magic_link_token_hash is None:
+            raise HTTPException(404, "NO_ACTIVE_MAGIC_LINK")
+        ml_revoke_token(session, record)
+        session.commit()
+
+        request.state.audit_entity_id = str(employee_id)
+        request.state.audit_summary = f"離職 magic-link 撤銷：employee/{employee_id}"
+
+        return MagicLinkRevokeResponse(
+            employee_id=employee_id,
+            revoked_at=record.magic_link_revoked_at,
         )
     finally:
         session.close()
