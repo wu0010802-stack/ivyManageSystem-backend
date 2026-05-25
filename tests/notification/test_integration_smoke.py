@@ -12,19 +12,44 @@ from services.notification import dispatch
 from models.database import NotificationLog
 
 
-def test_full_lifecycle_employee_event_writes_log_row_and_calls_adapters(test_db_session):
+def test_full_lifecycle_employee_event_writes_log_row_and_calls_adapters(
+    test_db_session,
+):
     """員工域：enqueue → commit → 應寫 log row + line/ws adapter 被呼叫。"""
-    with patch("services.notification.dispatch._inbox_ws_push") as mock_ipush, \
-         patch("services.notification.dispatch._get_line_adapter") as mock_get_la:
+    from datetime import datetime
+
+    from models.database import User
+
+    # _fan_out 的 _resolve_line_user_id 需要有 line_user_id + follow confirmed 的 active user
+    user = User(
+        username="emp_u42",
+        password_hash="x",
+        line_user_id="Uemp42",
+        line_follow_confirmed_at=datetime.now(),
+        is_active=True,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+    recipient_id = user.id
+
+    with (
+        patch("services.notification.dispatch._inbox_ws_push") as mock_ipush,
+        patch("services.notification.dispatch._get_line_adapter") as mock_get_la,
+    ):
         mock_la = MagicMock()
         mock_get_la.return_value = mock_la
 
         dispatch.enqueue(
             test_db_session,
             event_type="leave.approved",
-            recipient_user_id=42,
-            context={"reviewer_name": "張主任", "leave_type": "事假",
-                     "start": "2026-06-01", "end": "2026-06-02", "leave_id": 1},
+            recipient_user_id=recipient_id,
+            context={
+                "reviewer_name": "張主任",
+                "leave_type": "事假",
+                "start": "2026-06-01",
+                "end": "2026-06-02",
+                "leave_id": 1,
+            },
             sender_id=7,
             source_entity_type="leave_request",
             source_entity_id=1,
@@ -34,7 +59,7 @@ def test_full_lifecycle_employee_event_writes_log_row_and_calls_adapters(test_db
     rows = test_db_session.query(NotificationLog).all()
     assert len(rows) == 1
     row = rows[0]
-    assert row.recipient_user_id == 42
+    assert row.recipient_user_id == recipient_id
     assert row.sender_id == 7
     assert row.event_type == "leave.approved"
     assert row.source_entity_id == 1
@@ -47,8 +72,26 @@ def test_full_lifecycle_employee_event_writes_log_row_and_calls_adapters(test_db
 
 def test_full_lifecycle_parent_event_no_log_row_still_calls_adapters(test_db_session):
     """家長域：無 in_app channel → 不寫 log row，但 adapter 仍呼叫。"""
-    with patch("services.notification.dispatch._get_line_adapter") as mock_get_la, \
-         patch("services.notification.dispatch._get_ws_adapter") as mock_get_ws:
+    from datetime import datetime
+
+    from models.database import User
+
+    # _resolve_line_user_id 需 active user with line_user_id + follow confirmed
+    user = User(
+        username="parent_u99",
+        password_hash="x",
+        line_user_id="Uparen99",
+        line_follow_confirmed_at=datetime.now(),
+        is_active=True,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+    recipient_id = user.id
+
+    with (
+        patch("services.notification.dispatch._get_line_adapter") as mock_get_la,
+        patch("services.notification.dispatch._get_ws_adapter") as mock_get_ws,
+    ):
         mock_la = MagicMock()
         mock_ws = MagicMock()
         mock_get_la.return_value = mock_la
@@ -57,9 +100,13 @@ def test_full_lifecycle_parent_event_no_log_row_still_calls_adapters(test_db_ses
         dispatch.enqueue(
             test_db_session,
             event_type="parent.message_received",
-            recipient_user_id=99,
-            context={"teacher_name": "王老師", "student_name": "小明",
-                     "body_preview": "今天很乖", "thread_id": 7},
+            recipient_user_id=recipient_id,
+            context={
+                "teacher_name": "王老師",
+                "student_name": "小明",
+                "body_preview": "今天很乖",
+                "thread_id": 7,
+            },
         )
         test_db_session.commit()
 
@@ -77,10 +124,16 @@ def test_full_lifecycle_rollback_does_not_send(test_db_session):
         mock_get_la.return_value = mock_la
 
         dispatch.enqueue(
-            test_db_session, event_type="leave.approved",
+            test_db_session,
+            event_type="leave.approved",
             recipient_user_id=42,
-            context={"reviewer_name": "X", "leave_type": "事假",
-                     "start": "2026-06-01", "end": "2026-06-02", "leave_id": 1},
+            context={
+                "reviewer_name": "X",
+                "leave_type": "事假",
+                "start": "2026-06-01",
+                "end": "2026-06-02",
+                "leave_id": 1,
+            },
         )
         test_db_session.rollback()
 

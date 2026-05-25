@@ -28,24 +28,14 @@ class LineAdapter:
         # log_id 留作 Phase 4 push receipt 追蹤；v1 不用
         handler = LINE_HANDLERS.get(evt.event_type)
         if handler is None:
+            if not isinstance(evt.recipient_user_id, str):
+                raise ValueError(
+                    f"LINE adapter 收到非 str recipient_user_id={evt.recipient_user_id!r}; "
+                    "_fan_out 應先呼叫 _resolve_line_user_id"
+                )
             text = (rendered.title or "") + (
                 "\n" + rendered.body if rendered.body else ""
             )
-            if evt.recipient_user_id is None:
-                logger.warning(
-                    "LINE adapter fallback：event=%s 無 recipient_user_id 跳過",
-                    evt.event_type,
-                )
-                return
-            # 注意：recipient_user_id 在 enqueue 時是 int (User.id)，但 LineService
-            # 需 LINE user_id (str)。Phase 1 fallback 暫時只支援 str；Phase 2 caller
-            # 遷移時 _fan_out 會 pre-resolve User.id → user.line_user_id 並傳 str。
-            if not isinstance(evt.recipient_user_id, str):
-                logger.warning(
-                    "LINE adapter fallback：recipient_user_id 非 LINE user_id (int=%s) 跳過",
-                    evt.recipient_user_id,
-                )
-                return
             self._ls.push_text_to_user(evt.recipient_user_id, text)
             return
         handler(self._ls, evt, rendered)

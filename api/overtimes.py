@@ -66,7 +66,6 @@ from services.salary.finalize_guard import (
     collect_months_from_dates,
     assert_months_not_finalized,
 )
-from services.notification.approval_notifier import notify_approval
 from utils.approval_helpers import (
     _get_submitter_role,
     _check_approval_eligibility,
@@ -290,25 +289,6 @@ def _notify_and_recalc_overtime(
     LINE 通知失敗不影響主流程（僅記錄 warning）。
     薪資重算失敗則在 result 中寫入 warning 訊息，由 API 回傳給前端。
     """
-    # 個人 LINE 推播（審核結果）
-    if _line_service is not None:
-        emp_user = (
-            session.query(User).filter(User.employee_id == ot.employee_id).first()
-        )
-        emp = session.query(Employee).filter(Employee.id == ot.employee_id).first()
-        ot_type_label = OVERTIME_TYPE_LABELS.get(ot.overtime_type, ot.overtime_type)
-        notify_approval(
-            line_service=_line_service,
-            doc_type="overtime",
-            action="approve" if approved else "reject",
-            line_user_id=emp_user.line_user_id if emp_user else None,
-            name=emp.name if emp else "員工",
-            context={
-                "ot_date": ot.overtime_date,
-                "ot_type": ot_type_label,
-            },
-        )
-
     # 核准或撤銷已核准狀態後都需要重算薪資
     if (approved or was_approved) and _salary_engine is not None:
         try:
@@ -1144,6 +1124,37 @@ def approve_overtime(
             approver=current_user,
             comment=cleaned_reason,
         )
+
+        # 審核結果通知（dispatch，tx commit 前登錄；after_commit hook 自動 fan-out）
+        # lazy import 避免 circular: api.overtimes → dispatch → ws → contact_book_ws → ...
+        from services.notification import dispatch
+
+        _overtime_owner_user = (
+            session.query(User).filter(User.employee_id == ot.employee_id).first()
+        )
+        if _overtime_owner_user is not None:
+            dispatch.enqueue(
+                session=session,
+                event_type="overtime.approved" if approved else "overtime.rejected",
+                recipient_user_id=_overtime_owner_user.id,
+                context={
+                    "reviewer_name": current_user.get("name")
+                    or current_user.get("username", ""),
+                    "ot_date": (
+                        ot.overtime_date.isoformat()
+                        if hasattr(ot.overtime_date, "isoformat")
+                        else str(ot.overtime_date)
+                    ),
+                    "ot_type": OVERTIME_TYPE_LABELS.get(
+                        ot.overtime_type, ot.overtime_type
+                    ),
+                    "overtime_id": overtime_id,
+                },
+                sender_id=current_user.get("user_id"),
+                source_entity_type="overtime",
+                source_entity_id=overtime_id,
+            )
+
         session.commit()
 
         # 高風險：已核准 → 駁回 顯式標記，AuditLogView 可篩

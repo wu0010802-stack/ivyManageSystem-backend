@@ -73,7 +73,6 @@ from api.leaves_quota import (
 )
 from api.leaves_workday import workday_router, validate_leave_hours_against_schedule
 from services.leave_policy import requires_supporting_document
-from services.notification.approval_notifier import notify_approval
 from services.approval.cross_type_offset import resolve_cross_type_offset
 
 _UPLOAD_MODULE = "leave_attachments"
@@ -1504,6 +1503,42 @@ def approve_leave(
                     "leave #%d 跨類抵扣偵測失敗：%s", leave_id, exc, exc_info=True
                 )
 
+        # 審核結果通知（dispatch，tx commit 前登錄；after_commit hook 自動 fan-out）
+        # lazy import 避免 circular: api.leaves → dispatch → ws → contact_book_ws → portal → leaves
+        from services.notification import dispatch
+
+        _leave_owner_user = (
+            session.query(User).filter(User.employee_id == leave.employee_id).first()
+        )
+        if _leave_owner_user is not None:
+            dispatch.enqueue(
+                session=session,
+                event_type="leave.approved" if data.approved else "leave.rejected",
+                recipient_user_id=_leave_owner_user.id,
+                context={
+                    "reviewer_name": current_user.get("name")
+                    or current_user.get("username", ""),
+                    "leave_type": leave.leave_type,
+                    "start": (
+                        leave.start_date.isoformat()
+                        if hasattr(leave.start_date, "isoformat")
+                        else str(leave.start_date)
+                    ),
+                    "end": (
+                        leave.end_date.isoformat()
+                        if hasattr(leave.end_date, "isoformat")
+                        else str(leave.end_date)
+                    ),
+                    "leave_id": leave_id,
+                    "rejection_reason": (
+                        data.rejection_reason if not data.approved else None
+                    ),
+                },
+                sender_id=current_user.get("user_id"),
+                source_entity_type="leave_request",
+                source_entity_id=leave_id,
+            )
+
         session.commit()
 
         # AuditLog changes：留下完整的 before/after + ApprovalLog 連結
@@ -1549,30 +1584,6 @@ def approve_leave(
         result = {"message": "已核准" if data.approved else "已駁回"}
         if warning:
             result["warning"] = warning
-
-        # 個人 LINE 推播（審核結果）
-        if _line_service is not None:
-            emp_user = (
-                session.query(User)
-                .filter(User.employee_id == leave.employee_id)
-                .first()
-            )
-            emp = (
-                session.query(Employee).filter(Employee.id == leave.employee_id).first()
-            )
-            notify_approval(
-                line_service=_line_service,
-                doc_type="leave",
-                action="approve" if data.approved else "reject",
-                line_user_id=emp_user.line_user_id if emp_user else None,
-                name=emp.name if emp else "員工",
-                context={
-                    "leave_type": leave.leave_type,
-                    "start": leave.start_date,
-                    "end": leave.end_date,
-                },
-                rejection_reason=data.rejection_reason,
-            )
 
         # 核准狀態變動（approve 或 reject-of-approved）後，自動重算該員工所有涉及月份的薪資
         if approval_changed and _salary_engine is not None:
@@ -1925,25 +1936,18 @@ def batch_approve_leaves(
             try:
                 session.commit()
 
-                # 批次預載 LINE 通知所需的 User 與 Employee（1+1 查詢取代 2N）
-                _line_user_map: dict = {}
-                _emp_name_map: dict = {}
-                if _line_service is not None:
-                    change_emp_ids = list(
-                        {lv.employee_id for _, lv, _, _, _ in changes}
-                    )
-                    for u in (
-                        session.query(User)
-                        .filter(User.employee_id.in_(change_emp_ids))
-                        .all()
-                    ):
-                        _line_user_map[u.employee_id] = u
-                    for e in (
-                        session.query(Employee.id, Employee.name)
-                        .filter(Employee.id.in_(change_emp_ids))
-                        .all()
-                    ):
-                        _emp_name_map[e.id] = e.name
+                # 批次預載通知所需的 User（1 查詢取代 N）
+                _user_map: dict = {}
+                change_emp_ids = list({lv.employee_id for _, lv, _, _, _ in changes})
+                for u in (
+                    session.query(User)
+                    .filter(User.employee_id.in_(change_emp_ids))
+                    .all()
+                ):
+                    _user_map[u.employee_id] = u
+
+                # 通知 pending 列表：recalc 成功後收集，loop 結束後統一 enqueue+commit
+                _pending_notifs: list = []
 
                 for (
                     leave_id,
@@ -2011,27 +2015,62 @@ def batch_approve_leaves(
                             )
 
                     if not recalc_failed:
-                        # 修補 2026-05-11 P2-12：LINE 推播挪到 recalc 成功後才發，
+                        # 修補 2026-05-11 P2-12：通知挪到 recalc 成功後才收集，
                         # 避免「重算失敗但員工已收到核准通知」與 DB 矛盾的場景。
-                        if _line_service is not None:
-                            emp_user = _line_user_map.get(leave.employee_id)
-                            emp_name = _emp_name_map.get(leave.employee_id, "員工")
-                            notify_approval(
-                                line_service=_line_service,
-                                doc_type="leave",
-                                action="approve" if data.approved else "reject",
-                                line_user_id=(
-                                    emp_user.line_user_id if emp_user else None
-                                ),
-                                name=emp_name,
-                                context={
-                                    "leave_type": leave.leave_type,
-                                    "start": leave.start_date,
-                                    "end": leave.end_date,
-                                },
-                                rejection_reason=data.rejection_reason,
+                        # 通知統一在 loop 結束後 enqueue+commit，避免 stale-mark
+                        # 中途 commit 提前觸發 after_commit fan-out。
+                        _owner_user = _user_map.get(leave.employee_id)
+                        if _owner_user is not None:
+                            _pending_notifs.append(
+                                dict(
+                                    event_type=(
+                                        "leave.approved"
+                                        if data.approved
+                                        else "leave.rejected"
+                                    ),
+                                    recipient_user_id=_owner_user.id,
+                                    context={
+                                        "reviewer_name": current_user.get("name")
+                                        or current_user.get("username", ""),
+                                        "leave_type": leave.leave_type,
+                                        "start": (
+                                            leave.start_date.isoformat()
+                                            if hasattr(leave.start_date, "isoformat")
+                                            else str(leave.start_date)
+                                        ),
+                                        "end": (
+                                            leave.end_date.isoformat()
+                                            if hasattr(leave.end_date, "isoformat")
+                                            else str(leave.end_date)
+                                        ),
+                                        "leave_id": leave_id,
+                                        "rejection_reason": (
+                                            data.rejection_reason
+                                            if not data.approved
+                                            else None
+                                        ),
+                                    },
+                                    sender_id=current_user.get("user_id"),
+                                    source_entity_type="leave_request",
+                                    source_entity_id=leave_id,
+                                )
                             )
                         succeeded.append(leave_id)
+
+                # 統一 enqueue 並 commit，讓 after_commit hook 觸發 fan-out
+                # lazy import 避免 circular（同 single approval 路徑）
+                if _pending_notifs:
+                    from services.notification import dispatch
+
+                    for _notif in _pending_notifs:
+                        dispatch.enqueue(session=session, **_notif)
+                    try:
+                        session.commit()
+                    except Exception:
+                        logger.warning(
+                            "批次審核通知 dispatch commit 失敗", exc_info=True
+                        )
+                        session.rollback()
             except Exception as e:
                 session.rollback()
                 for leave_id, *_ in changes:
