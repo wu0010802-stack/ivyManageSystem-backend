@@ -29,6 +29,7 @@ from schemas.offboarding import (
     SalaryRecordTarget,
     StepResultModel,
 )
+from services.offboarding.magic_link import is_active as _is_magic_link_active
 from services.offboarding.orchestrator import OffboardingError, process_offboarding
 from services.offboarding.steps.snapshot_leave import _resolve_daily_wage
 from utils.auth import require_staff_permission
@@ -189,28 +190,6 @@ def process_offboarding_endpoint(
         )
     finally:
         session.close()
-
-
-def _is_magic_link_active(record: EmployeeOffboardingRecord) -> bool:
-    """派生：magic link 是否仍有效（4 條件 AND）。
-
-    1. token_hash 已設（有產 token）
-    2. 未被撤銷（revoked_at == None）
-    3. 未過期（expires_at == None 或尚未過期）
-    4. 下載次數 < 3
-    """
-    if not record.magic_link_token_hash:
-        return False
-    if record.magic_link_revoked_at is not None:
-        return False
-    if (
-        record.magic_link_expires_at is not None
-        and record.magic_link_expires_at < datetime.now()
-    ):
-        return False
-    if (record.magic_link_download_count or 0) >= 3:
-        return False
-    return True
 
 
 @router.get("/{employee_id}", response_model=OffboardingDetailResponse)
