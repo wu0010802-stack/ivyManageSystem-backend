@@ -612,3 +612,164 @@ def test_preview_does_not_write_to_db(integrated_client):
     with sf() as session:
         reloaded = session.query(Employee).filter_by(id=emp_id).first()
         assert reloaded.resign_date is None  # 純讀
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 11: GET /offboarding/{id} + PATCH /offboarding/{id}/nhi-unenroll
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_get_detail_returns_full_record(integrated_client):
+    """happy path：process 後 GET，驗 leave_balance_snapshot 等欄位。
+
+    員工 base_salary = 1500 * 30 = 45000；
+    leave quota 80 小時 → remaining_days = 10.0。
+    """
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="get_detail_admin")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    # 建員工
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"GD1{_counter:04d}",
+            name="李四",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=45000,  # daily_wage = 45000 / 30 = 1500
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    # 建 leave quota（80 小時 = 10 天）
+    with sf() as session:
+        session.add(
+            LeaveQuota(
+                employee_id=emp_id,
+                year=2026,
+                leave_type="annual",
+                total_hours=80,
+            )
+        )
+        session.commit()
+
+    # process 離職
+    process_res = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-06-15", "resign_reason": "另謀高就"},
+    )
+    assert process_res.status_code == 200, process_res.text
+
+    # GET detail
+    response = client.get(f"/api/offboarding/{emp_id}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["employee_id"] == emp_id
+    assert body["employee_name"] == "李四"
+    assert body["resign_reason"] == "另謀高就"
+    assert body["leave_snapshot_at"] is not None
+    assert body["leave_balance_snapshot"]["remaining_days"] == 10.0
+    assert body["magic_link_active"] is False  # Phase 1 未產 token
+
+
+def test_get_detail_404_for_employee_without_record(integrated_client):
+    """無離職紀錄的員工 GET → 404 OFFBOARDING_RECORD_NOT_FOUND。"""
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="get_detail_404_admin")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    # 建員工（未觸發離職流程）
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"GD2{_counter:04d}",
+            name=f"未離職員工{_counter}",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=45000,
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    response = client.get(f"/api/offboarding/{emp_id}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "OFFBOARDING_RECORD_NOT_FOUND"
+
+
+def test_patch_nhi_unenroll_sets_timestamp(integrated_client):
+    """PATCH nhi-unenroll submitted=true 設時間戳；submitted=false 清空。"""
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="nhi_unenroll_admin")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    # 建員工
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"NHI{_counter:04d}",
+            name=f"健保退保員工{_counter}",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=45000,
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    # 建 leave quota
+    with sf() as session:
+        session.add(
+            LeaveQuota(
+                employee_id=emp_id,
+                year=2026,
+                leave_type="annual",
+                total_hours=80,
+            )
+        )
+        session.commit()
+
+    # process 離職（先建 OffboardingRecord）
+    process_res = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-06-15"},
+    )
+    assert process_res.status_code == 200, process_res.text
+
+    # PATCH submitted=true → 應有時間戳
+    r1 = client.patch(
+        f"/api/offboarding/{emp_id}/nhi-unenroll",
+        json={"submitted": True},
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["nhi_unenroll_submitted_at"] is not None
+
+    # 驗 GET 也反映
+    r2 = client.get(f"/api/offboarding/{emp_id}")
+    assert r2.json()["nhi_unenroll_submitted_at"] is not None
+
+    # PATCH submitted=false → 清空
+    r3 = client.patch(
+        f"/api/offboarding/{emp_id}/nhi-unenroll",
+        json={"submitted": False},
+    )
+    assert r3.status_code == 200, r3.text
+    assert r3.json()["nhi_unenroll_submitted_at"] is None
+
+    # 驗 GET 也反映清空
+    r4 = client.get(f"/api/offboarding/{emp_id}")
+    assert r4.json()["nhi_unenroll_submitted_at"] is None

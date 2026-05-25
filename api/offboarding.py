@@ -6,7 +6,7 @@ Phase 3 補：list
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -14,10 +14,13 @@ from sqlalchemy.orm import Session
 from models.auth import User
 from models.database import get_session
 from models.employee import Employee
+from models.offboarding import EmployeeOffboardingRecord
 from models.salary import SalaryRecord
 from schemas.offboarding import (
     AppraisalInFlightCycle,
     LeaveSnapshotPreview,
+    NhiUnenrollRequest,
+    OffboardingDetailResponse,
     OffboardingPreview,
     OffboardingPreviewRequest,
     OffboardingPreviewResponse,
@@ -146,7 +149,7 @@ def process_offboarding_endpoint(
     """
     session: Session = get_session()
     try:
-        operator_user_id = int(current_user.get("user_id") or current_user.get("sub"))
+        operator_user_id = current_user["user_id"]
         try:
             result = process_offboarding(
                 session=session,
@@ -163,14 +166,11 @@ def process_offboarding_endpoint(
         session.commit()
 
         # audit log（既有 middleware pattern：在 request.state 記）
-        request.state.audit_action = "OFFBOARDING_PROCESSED"
-        request.state.audit_target = f"employee/{employee_id}"
-        request.state.audit_meta = {
-            "resign_date": str(result["resign_date"]),
-            "steps_completed": [
-                s["step"] for s in result["steps"] if s["status"] == "completed"
-            ],
-        }
+        request.state.audit_entity_id = str(employee_id)
+        request.state.audit_summary = (
+            f"離職處理：employee/{employee_id} resign_date={result['resign_date']} "
+            f"steps_completed={[s['step'] for s in result['steps'] if s['status'] == 'completed']}"
+        )
 
         logger.warning(
             "離職處理完成：employee_id=%s resign_date=%s operator=%s",
@@ -187,5 +187,108 @@ def process_offboarding_endpoint(
             steps=[StepResultModel(**s) for s in result["steps"]],
             certificate_download_url=None,  # Phase 2 才補
         )
+    finally:
+        session.close()
+
+
+def _is_magic_link_active(record: EmployeeOffboardingRecord) -> bool:
+    """派生：magic link 是否仍有效（4 條件 AND）。
+
+    1. token_hash 已設（有產 token）
+    2. 未被撤銷（revoked_at == None）
+    3. 未過期（expires_at == None 或尚未過期）
+    4. 下載次數 < 3
+    """
+    if not record.magic_link_token_hash:
+        return False
+    if record.magic_link_revoked_at is not None:
+        return False
+    if (
+        record.magic_link_expires_at is not None
+        and record.magic_link_expires_at < datetime.now()
+    ):
+        return False
+    if (record.magic_link_download_count or 0) >= 3:
+        return False
+    return True
+
+
+@router.get("/{employee_id}", response_model=OffboardingDetailResponse)
+def get_offboarding_detail(
+    employee_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
+):
+    """取得員工離職 checklist 完整紀錄。
+
+    gated by EMPLOYEES_READ；record 不存在回 404 OFFBOARDING_RECORD_NOT_FOUND。
+    """
+    session: Session = get_session()
+    try:
+        record = (
+            session.query(EmployeeOffboardingRecord)
+            .filter_by(employee_id=employee_id)
+            .first()
+        )
+        if record is None:
+            raise HTTPException(status_code=404, detail="OFFBOARDING_RECORD_NOT_FOUND")
+
+        emp = session.query(Employee).filter_by(id=employee_id).first()
+        return OffboardingDetailResponse(
+            employee_id=record.employee_id,
+            employee_name=emp.name if emp else "",
+            resign_date=record.resign_date,
+            resign_reason=record.resign_reason,
+            opened_at=record.opened_at,
+            opened_by_user_id=record.opened_by_user_id,
+            appraisal_marked_at=record.appraisal_marked_at,
+            leave_snapshot_at=record.leave_snapshot_at,
+            user_revoked_at=record.user_revoked_at,
+            certificate_generated_at=record.certificate_generated_at,
+            leave_balance_snapshot=record.leave_balance_snapshot,
+            certificate_pdf_path=record.certificate_pdf_path,
+            nhi_unenroll_submitted_at=record.nhi_unenroll_submitted_at,
+            magic_link_active=_is_magic_link_active(record),
+            closed_at=record.closed_at,
+        )
+    finally:
+        session.close()
+
+
+@router.patch("/{employee_id}/nhi-unenroll")
+def patch_nhi_unenroll(
+    employee_id: int,
+    req: NhiUnenrollRequest,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
+):
+    """手動標記全民健保退保申報狀態。
+
+    submitted=true → 設 nhi_unenroll_submitted_at = now()
+    submitted=false → 清空（設 None）
+    gated by EMPLOYEES_WRITE。
+    """
+    session: Session = get_session()
+    try:
+        record = (
+            session.query(EmployeeOffboardingRecord)
+            .filter_by(employee_id=employee_id)
+            .first()
+        )
+        if record is None:
+            raise HTTPException(status_code=404, detail="OFFBOARDING_RECORD_NOT_FOUND")
+
+        record.nhi_unenroll_submitted_at = datetime.now() if req.submitted else None
+        session.commit()
+
+        # audit log（正確 key：middleware 讀 audit_entity_id / audit_summary）
+        request.state.audit_entity_id = str(employee_id)
+        request.state.audit_summary = (
+            f"健保退保標記：employee/{employee_id} submitted={req.submitted}"
+        )
+
+        return {
+            "employee_id": employee_id,
+            "nhi_unenroll_submitted_at": record.nhi_unenroll_submitted_at,
+        }
     finally:
         session.close()
