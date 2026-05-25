@@ -38,13 +38,13 @@ PARENT_NOTIFICATION_CHANNELS = ("line",)  # v1 只支援 LINE
 class ParentNotificationPreference(Base):
     """家長通知偏好（稀疏 row）。"""
 
-    __tablename__ = "parent_notification_preferences"
+    __tablename__ = "notification_preferences"
     __table_args__ = (
         UniqueConstraint(
             "user_id",
             "event_type",
             "channel",
-            name="uq_parent_notif_pref_triple",
+            name="uq_notif_pref_triple",
         ),
         Index("ix_parent_notif_pref_user", "user_id"),
     )

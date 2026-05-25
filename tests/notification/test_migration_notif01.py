@@ -21,29 +21,42 @@ def test_notif01_upgrade_renames_table_creates_logs_and_backfills_prefix(
 ):
     """upgrade: rename + backfill + 建 notification_logs；downgrade 反向。
 
-    conftest.test_db_session 用 Base.metadata.create_all 建全部 ORM 表，
-    包含 notification_logs（Task 3 model）。
-    本測試要模擬 notif01 之前的狀態：
-      - parent_notification_preferences 存在（conftest 已建）
-      - notification_logs 不存在（先 DROP 還原 pre-migration 狀態）
+    conftest.test_db_session 用 Base.metadata.create_all 建全部 ORM 表。
+    Task 3 model 之後 NotificationPreference.__tablename__ 為 "notification_preferences"
+    (Task 4 model 更新對齊 migration)，所以 create_all 建出的是「migration 後」狀態。
+
+    本測試要模擬 notif01 之前的 DB 狀態：
+      - 必須有 parent_notification_preferences（舊表名）
+      - 不可有 notification_preferences（新表名）
+      - 不可有 notification_logs（新表）
+    因此 setup 階段 DROP 新表 + 用 raw SQL 建舊表名，再跑 upgrade。
     """
     from models.notification_log import NotificationLog
     from models.parent_notification import ParentNotificationPreference
 
-    # Task 3 model 已被 create_all 建立，先 DROP 還原 pre-notif01 狀態
+    # 還原 pre-notif01 狀態：DROP 新表、用 raw SQL 建舊表名
+    # ParentNotificationPreference 的 __tablename__ 在 Task 4 已對齊 migration
+    # 為 "notification_preferences"，所以 drop 的是新表
     NotificationLog.__table__.drop(test_db_session.bind, checkfirst=True)
+    ParentNotificationPreference.__table__.drop(test_db_session.bind, checkfirst=True)
     test_db_session.commit()
 
-    # parent_notification_preferences 已由 create_all 建立，此行 no-op
-    ParentNotificationPreference.__table__.create(test_db_session.bind, checkfirst=True)
-
-    # 預建一筆舊家長 pref row 驗 backfill
+    test_db_session.execute(text("""
+        CREATE TABLE parent_notification_preferences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            event_type VARCHAR(40) NOT NULL,
+            channel VARCHAR(10) NOT NULL DEFAULT 'line',
+            enabled BOOLEAN NOT NULL DEFAULT 1,
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+        """))
     test_db_session.execute(
-        ParentNotificationPreference.__table__.insert().values(
-            user_id=999,
-            event_type="message_received",
-            channel="line",
-            enabled=True,
+        text(
+            "INSERT INTO parent_notification_preferences "
+            "(user_id, event_type, channel, enabled) "
+            "VALUES (999, 'message_received', 'line', 1)"
         )
     )
     test_db_session.commit()
