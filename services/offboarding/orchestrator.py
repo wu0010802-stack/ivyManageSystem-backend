@@ -108,16 +108,41 @@ def process_offboarding(
     if resign_date <= today:
         emp.is_active = False
 
+    from services.offboarding.steps import (
+        mark_appraisal,
+        snapshot_leave,
+        revoke_user,
+    )
+
     steps_result: list[StepResult] = []
-    # Phase 1 4 step 會於後續 task 加入：mark_appraisal, snapshot_leave,
-    # prefill_leave_payout, revoke_user. 此 orchestrator 殼初版 steps 為空。
-    # Phase 2 加 generate_certificate 為第 5 step。
+    user_account_revoked = False
+
+    try:
+        # Step 1: mark_appraisal
+        steps_result.append(mark_appraisal.run(session, record))
+
+        # Step 2: snapshot_leave
+        steps_result.append(snapshot_leave.run(session, record))
+
+        # Step 3: prefill_leave_payout（同模組 prefill_salary）
+        steps_result.append(snapshot_leave.prefill_salary(session, record))
+
+        # Step 4: revoke_user
+        revoke_result = revoke_user.run(session, record)
+        steps_result.append(revoke_result)
+        if revoke_result["status"] == "completed" and revoke_result["payload"].get(
+            "username"
+        ):
+            user_account_revoked = True
+
+    except OffboardingError:
+        raise  # 由 endpoint 層 catch + session.rollback
 
     return OffboardingResult(
         employee_id=employee_id,
         resign_date=resign_date,
         is_active_after=emp.is_active,
-        user_account_revoked=False,  # revoke_user step 加入後修
+        user_account_revoked=user_account_revoked,
         steps=steps_result,
         certificate_pdf_path=None,
     )
