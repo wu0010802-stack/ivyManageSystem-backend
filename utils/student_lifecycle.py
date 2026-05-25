@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from models.audit import AuditLog
 from models.classroom import (
@@ -17,6 +18,9 @@ from models.classroom import (
     LIFECYCLE_TRANSFERRED,
     LIFECYCLE_WITHDRAWN,
 )
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 _TERMINAL_LIFECYCLE = frozenset(
     {LIFECYCLE_GRADUATED, LIFECYCLE_TRANSFERRED, LIFECYCLE_WITHDRAWN}
@@ -31,6 +35,7 @@ def set_lifecycle_status(
     actor_user_id: int | None = None,
     audit: bool = True,
     reason: str | None = None,
+    request: "Request | None" = None,
 ) -> None:
     """原子化變更 lifecycle_status + 維護 terminal_entered_at + 寫 audit_log。
 
@@ -52,6 +57,14 @@ def set_lifecycle_status(
     elif was_terminal and not is_terminal:
         student.terminal_entered_at = None
     # 終態 → 終態 或 非終態 → 非終態：戳記不動
+
+    # 非終態 → 終態 且有 HTTP request context：顯式標記軟刪，讓 AuditMiddleware
+    # 產出 "軟刪 學生 xxx" summary（業務語意是「離開系統」而非 UPDATE）。
+    # request=None 的 caller（排程器 / 批量遷移）由 if 守衛自動略過，不影響現有呼叫。
+    if not was_terminal and is_terminal and request is not None:
+        from utils.audit import mark_soft_delete
+
+        mark_soft_delete(request, "student", student.name or f"#{student.id}")
 
     if audit:
         session.add(

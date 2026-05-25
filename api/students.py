@@ -1181,6 +1181,7 @@ async def get_student_profile(
 async def transition_student_lifecycle(
     student_id: int,
     item: LifecycleTransitionRequest,
+    request: Request,
     current_user: dict = Depends(
         require_staff_permission(Permission.STUDENTS_LIFECYCLE_WRITE)
     ),
@@ -1190,6 +1191,7 @@ async def transition_student_lifecycle(
     副作用：轉入終態 (withdrawn/transferred/graduated) 時：
     - 取消該生進行中的接送通知 + WS 廣播
     - 軟刪該生當學期才藝報名
+    - 標記 AuditMiddleware soft-delete summary（request 傳入 set_lifecycle_status）
     """
     session = get_session()
     dismissal_broadcasts: list[dict] = []
@@ -1211,6 +1213,7 @@ async def transition_student_lifecycle(
                 reason=item.reason,
                 notes=item.notes,
                 recorded_by=current_user.get("user_id"),
+                request=request,
             )
         except LifecycleTransitionError as e:
             session.rollback()

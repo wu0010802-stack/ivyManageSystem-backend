@@ -13,9 +13,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 from models.classroom import (
     LIFECYCLE_ACTIVE,
@@ -109,6 +112,8 @@ def transition(
     reason: Optional[str] = None,
     notes: Optional[str] = None,
     recorded_by: Optional[int] = None,
+    *,
+    request: "Optional[Request]" = None,
 ) -> LifecycleTransitionResult:
     """執行狀態轉移：驗證 → 更新 student → 寫 ChangeLog。
 
@@ -133,6 +138,7 @@ def transition(
         actor_user_id=recorded_by,
         audit=False,
         reason=reason,
+        request=request,
     )
     if to_status == LIFECYCLE_GRADUATED:
         student.is_active = False
