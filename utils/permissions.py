@@ -307,6 +307,43 @@ ROLE_LABELS: Dict[str, str] = {
     "parent": "家長",
 }
 
+# principal 角色：supervisor 全部 + 薪資審視 + 稽核 + 政府報表匯出
+ROLE_TEMPLATES["principal"] = ROLE_TEMPLATES["supervisor"] + [
+    Permission.SALARY_READ.value,
+    Permission.AUDIT_LOGS.value,
+    Permission.GOV_REPORTS_EXPORT.value,
+]
+ROLE_LABELS["principal"] = "園長"
+
+# accountant 角色：純財務，13 條，不含 EMPLOYEES_WRITE
+ROLE_TEMPLATES["accountant"] = [
+    Permission.DASHBOARD.value,
+    Permission.REPORTS.value,
+    Permission.GOV_REPORTS_VIEW.value,
+    Permission.EMPLOYEES_READ.value,  # 要看誰可申報薪資（不含 WRITE）
+    Permission.SALARY_READ.value,
+    Permission.SALARY_WRITE.value,
+    Permission.FEES_READ.value,
+    Permission.FEES_WRITE.value,
+    Permission.VENDOR_PAYMENT_READ.value,
+    Permission.VENDOR_PAYMENT_WRITE.value,
+    Permission.YEAR_END_READ.value,
+    Permission.YEAR_END_WRITE.value,  # 不含 FINALIZE（簽核屬 supervisor/principal）
+    Permission.APPRAISAL_ACCOUNTING.value,  # 核考核獎金數字
+]
+ROLE_LABELS["accountant"] = "會計"
+
+# 角色說明（給前端 SettingsUsersTab 卡片顯示）
+ROLE_DESCRIPTIONS: Dict[str, str] = {
+    "admin": "唯一能改帳號、系統設定",
+    "principal": "業務全包 + 薪資審視，不動帳號",
+    "supervisor": "教務管理、招生轉換、考核全程",
+    "hr": "員工資料、薪資發放、年終、廠商付款",
+    "accountant": "純財務（薪資/學費/廠商/年終）",
+    "teacher": "公告、考勤、放學接送、學生檔案",
+    "parent": "家長端登入，無管理端權限",
+}
+
 
 # 權限名稱對照表 (供前端使用)
 PERMISSION_LABELS: Dict[str, str] = {
@@ -592,6 +629,7 @@ def get_permissions_definition() -> Dict:
         role: {
             "permissions": perms,
             "label": ROLE_LABELS.get(role, role),
+            "description": ROLE_DESCRIPTIONS.get(role, ""),
         }
         for role, perms in ROLE_TEMPLATES.items()
     }
