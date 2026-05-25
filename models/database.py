@@ -124,6 +124,7 @@ from models.parent_message import (
     ParentMessageThread,
 )
 from models.parent_notification import ParentNotificationPreference
+from models.notification_log import NotificationLog  # noqa: F401  (re-export)
 from models.contact_book import (
     StudentContactBookEntry,
     StudentContactBookAck,
@@ -264,10 +265,14 @@ __all__ = [
     "LineWebhookEvent",
     # parent notification preferences (Phase 6)
     "ParentNotificationPreference",
+    # notification log (dispatcher audit trail)
+    "NotificationLog",
     # LINE webhook reply context (Phase 5)
     "LineReplyContext",
     # vendor payment（園務行政）
     "VendorPayment",
     # monthly fixed cost（月度損益表 Phase 2 手動登錄）
     "MonthlyFixedCost",
+    # academic term（招生漏斗 Phase A）
+    "AcademicTerm",
 ]
