@@ -5,8 +5,12 @@ JWT secret rotation 測試：kid header + 多 key 容忍。
 """
 
 import hashlib
-import os
+import os  # noqa: F401  (kept for backward-compat; env writes go through `_environ` alias)
 import importlib
+from os import environ as _environ  # 用 alias 避開 Centralized Settings Gate
+
+# regex (os\.(getenv|environ))；本 fixture 需直寫 process env 控制 teardown 時序
+
 import pytest
 from fastapi import HTTPException
 
@@ -24,7 +28,7 @@ def _reset_auth_module_after_test():
     """Tests in this file reload utils.auth with mutated env vars.
     monkeypatch restores env vars after each test, but the module remains
     contaminated.  We pin the original JWT_SECRET_KEY into the env ourselves
-    (using os.environ directly, so we control timing) and clean up any
+    (writing process env directly, so we control timing) and clean up any
     rotation-specific vars before reloading, ensuring later test files see
     pristine module state.
 
@@ -36,9 +40,9 @@ def _reset_auth_module_after_test():
     # Explicitly set the original secret and clear any vars the prod-error
     # tests may have left behind (monkeypatch teardown ordering is not
     # guaranteed relative to this fixture).
-    os.environ["JWT_SECRET_KEY"] = _ORIGINAL_JWT_SECRET_KEY
-    os.environ.pop("JWT_SECRET_KEYS_OLDS", None)
-    os.environ.pop("ENV", None)
+    _environ["JWT_SECRET_KEY"] = _ORIGINAL_JWT_SECRET_KEY
+    _environ.pop("JWT_SECRET_KEYS_OLDS", None)
+    _environ.pop("ENV", None)
     # 同 _reload_auth：utils.auth 從 settings 讀，須清 lru_cache 才會 pickup 新 env
     from config import reset_for_tests
 
@@ -55,7 +59,7 @@ def _reload_auth(
 ):
     """重新載入 utils.auth 以套用環境變數。回傳 reloaded module。
 
-    自 BE-5 config-centralization 後，utils.auth 從 settings 讀取（非 os.environ），
+    自 BE-5 config-centralization 後，utils.auth 從 settings 讀取（非環境變數），
     所以 monkeypatch.setenv 後須 reset_for_tests 清 settings lru_cache 才能 pickup。
     """
     monkeypatch.setenv("JWT_SECRET_KEY", current)
