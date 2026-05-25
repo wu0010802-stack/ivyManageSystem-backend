@@ -108,6 +108,13 @@ def process_offboarding(
     if resign_date <= today:
         emp.is_active = False
 
+    # 離職觸發全 unfinalized SalaryRecord stale：proration / daily_wage 改動
+    # 影響任何未封存月（保留 api/employees.py:520 原 endpoint 行為）。
+    # 注意：prefill_salary step 也會標當月 stale，這裡是 superset 不衝突。
+    from api.employees import _mark_employee_salary_stale
+
+    _mark_employee_salary_stale(session, employee_id)
+
     from services.offboarding.steps import (
         mark_appraisal,
         snapshot_leave,
