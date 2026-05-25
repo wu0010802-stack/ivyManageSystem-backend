@@ -65,7 +65,7 @@ def _make_parent(
             username="p",
             password_hash="!",
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=is_active,
             line_user_id=line_user_id,
             line_follow_confirmed_at=datetime.now() if follow_confirmed else None,

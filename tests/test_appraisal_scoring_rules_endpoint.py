@@ -63,11 +63,13 @@ def client_with_db(tmp_path):
 def _create_user(
     session, username, perms, password="TempPass123", role="admin"
 ) -> User:
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -187,7 +189,7 @@ class TestCreateScoringRule:
             _create_user(
                 s,
                 "admin1",
-                Permission.APPRAISAL_RULE_WRITE | Permission.APPRAISAL_READ,
+                ["APPRAISAL_RULE_WRITE", "APPRAISAL_READ"],
             )
             s.commit()
         assert _login(client, "admin1").status_code == 200
@@ -212,7 +214,7 @@ class TestCreateScoringRule:
             _create_user(
                 s,
                 "admin1",
-                Permission.APPRAISAL_RULE_WRITE | Permission.APPRAISAL_READ,
+                ["APPRAISAL_RULE_WRITE", "APPRAISAL_READ"],
             )
             s.commit()
         assert _login(client, "admin1").status_code == 200
@@ -234,7 +236,7 @@ class TestCreateScoringRule:
             _create_user(
                 s,
                 "admin1",
-                Permission.APPRAISAL_RULE_WRITE | Permission.APPRAISAL_READ,
+                ["APPRAISAL_RULE_WRITE", "APPRAISAL_READ"],
             )
             s.add(
                 AppraisalScoringRule(
@@ -263,7 +265,7 @@ class TestCreateScoringRule:
             _create_user(
                 s,
                 "admin1",
-                Permission.APPRAISAL_RULE_WRITE | Permission.APPRAISAL_READ,
+                ["APPRAISAL_RULE_WRITE", "APPRAISAL_READ"],
             )
             s.commit()
         assert _login(client, "admin1").status_code == 200

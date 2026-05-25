@@ -72,16 +72,18 @@ def _create_user(
     username,
     password,
     role,
-    permissions,
+    permission_names,
     employee_id=None,
     is_active=True,
 ):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee_id,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=is_active,
         must_change_password=False,
     )
@@ -97,7 +99,7 @@ def _login(client, username, password):
 
 
 # 「非 admin 但持有 USER_MANAGEMENT_WRITE」的權限組合（hr 自訂）
-NON_ADMIN_PERMS = int(Permission.USER_MANAGEMENT_WRITE) | int(Permission.EMPLOYEES_READ)
+NON_ADMIN_PERMS = ["USER_MANAGEMENT_WRITE", "EMPLOYEES_READ"]
 
 
 # ====================================================================
@@ -117,7 +119,7 @@ class TestCreateUser:
                 username="hr_user",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             session.commit()
 
@@ -129,7 +131,7 @@ class TestCreateUser:
                 "username": "ghost_admin",
                 "password": "Strong!@#1234",
                 "role": "admin",
-                "permissions": int(Permission.USER_MANAGEMENT_WRITE),
+                "permission_names": ["USER_MANAGEMENT_WRITE"],
             },
         )
         assert res.status_code == 403
@@ -144,7 +146,7 @@ class TestCreateUser:
                 username="hr_user2",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             session.commit()
 
@@ -156,7 +158,7 @@ class TestCreateUser:
                 "username": "fake_hr",
                 "password": "Strong!@#1234",
                 "role": "hr",
-                "permissions": -1,
+                "permission_names": ["*"],
             },
         )
         assert res.status_code == 403
@@ -173,7 +175,7 @@ class TestCreateUser:
                 username="hr_user3",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             session.commit()
 
@@ -186,7 +188,7 @@ class TestCreateUser:
                 "username": "lower_user",
                 "password": "Strong!@#1234",
                 "role": "hr",
-                "permissions": int(Permission.EMPLOYEES_READ),
+                "permission_names": ["EMPLOYEES_READ"],
             },
         )
         assert res.status_code == 201, f"預期 201，實際 {res.status_code}: {res.json()}"
@@ -200,7 +202,7 @@ class TestCreateUser:
                 username="root_admin",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
 
@@ -212,7 +214,7 @@ class TestCreateUser:
                 "username": "new_admin",
                 "password": "Strong!@#1234",
                 "role": "admin",
-                "permissions": -1,
+                "permission_names": ["*"],
             },
         )
         assert res.status_code == 201, f"預期 201，實際 {res.status_code}: {res.json()}"
@@ -235,14 +237,14 @@ class TestUpdateUser:
                 username="hr_u",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             target = _create_user(
                 session,
                 username="root_admin",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             target_id = target.id
@@ -251,7 +253,7 @@ class TestUpdateUser:
 
         res = client.put(
             f"/api/auth/users/{target_id}",
-            json={"permissions": 0, "is_active": False},
+            json={"permission_names": [], "is_active": False},
         )
         assert res.status_code == 403
         assert "管理員" in res.json()["detail"]
@@ -265,7 +267,7 @@ class TestUpdateUser:
                 username="self_promote",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             session.commit()
             self_id = self_user.id
@@ -274,7 +276,7 @@ class TestUpdateUser:
 
         res = client.put(
             f"/api/auth/users/{self_id}",
-            json={"role": "admin", "permissions": -1},
+            json={"role": "admin", "permission_names": ["*"]},
         )
         assert res.status_code == 403
         assert "admin" in res.json()["detail"]
@@ -288,14 +290,14 @@ class TestUpdateUser:
                 username="hr_u2",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             target = _create_user(
                 session,
                 username="some_teacher",
                 password="TchPass1234",
                 role="teacher",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
             )
             session.commit()
             target_id = target.id
@@ -305,7 +307,7 @@ class TestUpdateUser:
         # caller 僅持 USER_MANAGEMENT_WRITE | EMPLOYEES_READ；此處嘗試授予 -1
         res = client.put(
             f"/api/auth/users/{target_id}",
-            json={"permissions": -1},
+            json={"permission_names": ["*"]},
         )
         assert res.status_code == 403
         assert "超出" in res.json()["detail"]
@@ -319,14 +321,14 @@ class TestUpdateUser:
                 username="hr_u3",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             target = _create_user(
                 session,
                 username="some_hr",
                 password="HrPass1234",
                 role="hr",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
             )
             session.commit()
             target_id = target.id
@@ -335,7 +337,7 @@ class TestUpdateUser:
 
         res = client.put(
             f"/api/auth/users/{target_id}",
-            json={"permissions": int(Permission.EMPLOYEES_READ)},
+            json={"permission_names": ["EMPLOYEES_READ"]},
         )
         assert res.status_code == 200, f"預期 200，實際 {res.status_code}: {res.json()}"
 
@@ -348,7 +350,7 @@ class TestUpdateUser:
                 username="root_admin_x",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             admin_id = admin_user.id
@@ -371,15 +373,14 @@ class TestUpdateUser:
                 username="hr_dis_min",
                 password="HrMin1234",
                 role="hr",
-                permissions=int(Permission.USER_MANAGEMENT_WRITE),
+                permission_names=["USER_MANAGEMENT_WRITE"],
             )
             target = _create_user(
                 session,
                 username="hr_dis_full",
                 password="HrFull1234",
                 role="hr",
-                permissions=int(Permission.USER_MANAGEMENT_WRITE)
-                | int(Permission.SALARY_READ),
+                permission_names=["USER_MANAGEMENT_WRITE", "SALARY_READ"],
             )
             session.commit()
             target_id = target.id
@@ -402,14 +403,14 @@ class TestUpdateUser:
                 username="root_admin_y",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             target = _create_user(
                 session,
                 username="some_target",
                 password="TgtPass1234",
                 role="teacher",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
             )
             session.commit()
             target_id = target.id
@@ -419,7 +420,7 @@ class TestUpdateUser:
 
         res = client.put(
             f"/api/auth/users/{target_id}",
-            json={"role": "hr", "permissions": int(Permission.EMPLOYEES_READ)},
+            json={"role": "hr", "permission_names": ["EMPLOYEES_READ"]},
         )
         assert res.status_code == 200, f"預期 200，實際 {res.status_code}: {res.json()}"
 
@@ -446,14 +447,14 @@ class TestResetPassword:
                 username="hr_reset",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             target = _create_user(
                 session,
                 username="root_admin_r",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             target_id = target.id
@@ -476,14 +477,14 @@ class TestResetPassword:
                 username="hr_reset2",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             target = _create_user(
                 session,
                 username="some_teacher_r",
                 password="TchPass1234",
                 role="teacher",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
             )
             session.commit()
             target_id = target.id
@@ -505,14 +506,14 @@ class TestResetPassword:
                 username="root_admin_z",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             target = _create_user(
                 session,
                 username="other_admin",
                 password="OtherPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             target_id = target.id
@@ -539,7 +540,7 @@ class TestResetPassword:
                 password="HrMin1234",
                 role="hr",
                 # 只有 USER_MANAGEMENT_WRITE，無 SALARY_READ
-                permissions=int(Permission.USER_MANAGEMENT_WRITE),
+                permission_names=["USER_MANAGEMENT_WRITE"],
             )
             target = _create_user(
                 session,
@@ -547,8 +548,7 @@ class TestResetPassword:
                 password="HrFull1234",
                 role="hr",
                 # 多了 SALARY_READ，caller 無此權
-                permissions=int(Permission.USER_MANAGEMENT_WRITE)
-                | int(Permission.SALARY_READ),
+                permission_names=["USER_MANAGEMENT_WRITE", "SALARY_READ"],
             )
             session.commit()
             target_id = target.id
@@ -580,14 +580,14 @@ class TestDeleteUser:
                 username="hr_del",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             target = _create_user(
                 session,
                 username="root_admin_d",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             target_id = target.id
@@ -607,14 +607,14 @@ class TestDeleteUser:
                 username="hr_del2",
                 password="HrPass1234",
                 role="hr",
-                permissions=NON_ADMIN_PERMS,
+                permission_names=NON_ADMIN_PERMS,
             )
             target = _create_user(
                 session,
                 username="del_target",
                 password="TgtPass1234",
                 role="teacher",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
             )
             session.commit()
             target_id = target.id
@@ -633,15 +633,14 @@ class TestDeleteUser:
                 username="hr_del_min",
                 password="HrMin1234",
                 role="hr",
-                permissions=int(Permission.USER_MANAGEMENT_WRITE),
+                permission_names=["USER_MANAGEMENT_WRITE"],
             )
             target = _create_user(
                 session,
                 username="hr_del_full",
                 password="HrFull1234",
                 role="hr",
-                permissions=int(Permission.USER_MANAGEMENT_WRITE)
-                | int(Permission.SALARY_READ),
+                permission_names=["USER_MANAGEMENT_WRITE", "SALARY_READ"],
             )
             session.commit()
             target_id = target.id
@@ -661,7 +660,7 @@ class TestDeleteUser:
                 username="self_del_admin",
                 password="AdminPass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             admin_id = admin_user.id

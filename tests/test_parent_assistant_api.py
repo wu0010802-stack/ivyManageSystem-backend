@@ -50,7 +50,7 @@ def parent_client(tmp_path, monkeypatch):
             username="parent_assistant_test",
             password_hash="!",
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=True,
             token_version=0,
         )
@@ -80,7 +80,7 @@ def parent_client(tmp_path, monkeypatch):
                 "employee_id": None,
                 "role": "parent",
                 "name": parent.username,
-                "permissions": 0,
+                "permission_names": [],
                 "token_version": 0,
             }
         )

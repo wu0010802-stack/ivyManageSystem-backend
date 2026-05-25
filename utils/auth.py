@@ -517,8 +517,8 @@ def require_permission(permission):
     from utils.permissions import has_permission
 
     async def check_permission(current_user: dict = Depends(get_current_user)):
-        user_permissions = current_user.get("permissions", 0)
-        if not has_permission(user_permissions, permission):
+        user_perms = current_user.get("permission_names")
+        if not has_permission(user_perms, permission):
             raise HTTPException(status_code=403, detail="您沒有此功能的存取權限")
         return current_user
 

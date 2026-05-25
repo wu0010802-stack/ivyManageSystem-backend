@@ -70,7 +70,7 @@ def client_admin(_backend):
             username="adj_admin",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
         )
         s.add(u)

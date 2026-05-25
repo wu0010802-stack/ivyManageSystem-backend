@@ -70,7 +70,7 @@ def _login_admin(client, session_factory):
                 username="admin",
                 password_hash=hash_password("AdminPass1"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
             )
         )
@@ -221,7 +221,7 @@ def test_iep_scope_班導_only_sees_own_classroom(gov_moe_client):
             username="t1",
             password_hash=hash_password("Teach123"),
             role="teacher",
-            permissions=(1 << 48),  # STUDENTS_SPECIAL_NEEDS_WRITE
+            permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE"],  # STUDENTS_SPECIAL_NEEDS_WRITE
             is_active=True,
             employee_id=emp.id,
         )
@@ -306,7 +306,7 @@ def test_iep_create_rejects_cross_classroom_student(gov_moe_client):
                 username="teacher_a",
                 password_hash=hash_password("Teach123"),
                 role="teacher",
-                permissions=(1 << 48),  # STUDENTS_SPECIAL_NEEDS_WRITE
+                permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE"],  # STUDENTS_SPECIAL_NEEDS_WRITE
                 is_active=True,
                 employee_id=emp.id,
             )
@@ -445,7 +445,7 @@ def test_iep_supervisor_can_approve_and_close(gov_moe_client):
             username="dir1",
             password_hash=hash_password("DirPass1"),
             role="teacher",
-            permissions=(1 << 48),  # STUDENTS_SPECIAL_NEEDS_WRITE
+            permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE"],  # STUDENTS_SPECIAL_NEEDS_WRITE
             is_active=True,
             employee_id=emp.id,
         )
@@ -501,7 +501,7 @@ def test_iep_班導_cannot_approve(gov_moe_client):
             username="t1",
             password_hash=hash_password("Teach123"),
             role="teacher",
-            permissions=(1 << 48),
+            permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE"],
             is_active=True,
             employee_id=emp.id,
         )

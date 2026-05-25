@@ -38,7 +38,7 @@ from models.portfolio import (
 from utils.audit import write_audit_in_session, write_explicit_audit
 from utils.auth import get_current_user
 from utils.masking import mask_phone
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 from utils.portfolio_access import (
     can_view_student_health,
     can_view_student_special_needs,
@@ -65,8 +65,7 @@ def _is_admin_like(current_user: dict) -> bool:
     role = current_user.get("role")
     if role in ("admin", "supervisor"):
         return True
-    perms = int(current_user.get("permissions", 0) or 0)
-    return perms < 0  # admin: -1
+    return "*" in (current_user.get("permission_names") or [])
 
 
 def _classroom_role(emp_id: int, classroom: Classroom) -> str:
@@ -324,8 +323,9 @@ def get_students_measurements_latest(
 
     用途：批次量測 sheet 的預填參考。
     """
-    perms = int(current_user.get("permissions", 0) or 0)
-    if not (perms & int(Permission.PORTFOLIO_READ) or perms < 0):
+    if not has_permission(
+        current_user.get("permission_names"), Permission.PORTFOLIO_READ
+    ):
         raise HTTPException(status_code=403, detail="缺少 PORTFOLIO_READ 權限")
 
     session = get_session()

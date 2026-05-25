@@ -73,7 +73,7 @@ def _seed(session):
         username="audit_admin",
         password_hash=hash_password("Temp123456"),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
     )
     cls = Classroom(name="大班", school_year=2025, semester=1)

@@ -73,8 +73,8 @@ def monthly_ctx(tmp_path):
     app.include_router(auth_router)
     app.include_router(gov_moe_router, prefix="/api")
 
-    export_perms = int(Permission.GOV_REPORTS_EXPORT | Permission.GOV_REPORTS_VIEW)
-    view_perms = int(Permission.GOV_REPORTS_VIEW)
+    export_perms = ["GOV_REPORTS_EXPORT", "GOV_REPORTS_VIEW"]
+    view_perms = ["GOV_REPORTS_VIEW"]
 
     with sf() as s:
         s.add(
@@ -82,7 +82,7 @@ def monthly_ctx(tmp_path):
                 username="export_admin",
                 password_hash=hash_password("ExportPass1"),
                 role="admin",
-                permissions=export_perms,
+                permission_names=export_perms,
                 is_active=True,
             )
         )
@@ -91,7 +91,7 @@ def monthly_ctx(tmp_path):
                 username="view_admin",
                 password_hash=hash_password("ViewPass1"),
                 role="admin",
-                permissions=view_perms,
+                permission_names=view_perms,
                 is_active=True,
             )
         )
@@ -100,7 +100,7 @@ def monthly_ctx(tmp_path):
                 username="no_perm_admin",
                 password_hash=hash_password("NopermPass1"),
                 role="admin",
-                permissions=0,
+                permission_names=[],
                 is_active=True,
             )
         )

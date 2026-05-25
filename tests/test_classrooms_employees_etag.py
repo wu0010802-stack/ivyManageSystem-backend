@@ -61,10 +61,7 @@ def client(tmp_path):
                 username="etag_admin",
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=Permission.CLASSROOMS_READ
-                | Permission.CLASSROOMS_WRITE
-                | Permission.EMPLOYEES_READ
-                | Permission.EMPLOYEES_WRITE,
+                permission_names=["CLASSROOMS_READ", "CLASSROOMS_WRITE", "EMPLOYEES_READ", "EMPLOYEES_WRITE"],
                 is_active=True,
             )
             session.add(user)

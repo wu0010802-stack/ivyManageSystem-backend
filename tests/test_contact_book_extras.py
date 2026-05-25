@@ -128,13 +128,13 @@ def _seed(session) -> tuple[User, Employee, Classroom, list[Student]]:
     classroom = Classroom(name="A班", is_active=True, head_teacher_id=emp.id)
     session.add(classroom)
     session.flush()
-    write_perm = int(Permission.PORTFOLIO_READ.value | Permission.PORTFOLIO_WRITE.value)
+    write_perm = [Permission.PORTFOLIO_READ.value, Permission.PORTFOLIO_WRITE.value]
     user = User(
         username="t1",
         password_hash="!",
         role="teacher",
         employee_id=emp.id,
-        permissions=write_perm,
+        permission_names=write_perm,
         is_active=True,
         token_version=0,
     )
@@ -158,9 +158,10 @@ def _token(user: User, emp_id: int) -> str:
             "employee_id": emp_id,
             "role": "teacher",
             "name": user.username,
-            "permissions": int(
-                Permission.PORTFOLIO_READ.value | Permission.PORTFOLIO_WRITE.value
-            ),
+            "permission_names": [
+                Permission.PORTFOLIO_READ.value,
+                Permission.PORTFOLIO_WRITE.value,
+            ],
             "token_version": user.token_version or 0,
         }
     )

@@ -79,11 +79,14 @@ def client_with_db(tmp_path):
 
 def _create_user(session, username, perms, password="TempPass123"):
     """admin 角色、無 employee_id（避免 assert_not_self_approval 誤殺）。"""
+    # 單一 Permission/str → wrap 成 list
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)

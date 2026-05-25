@@ -72,21 +72,20 @@ def portal_client(tmp_path):
     engine.dispose()
 
 
-def _teacher_perm(extra: int = 0) -> int:
-    return (
-        int(
-            Permission.STUDENTS_READ.value
-            | Permission.PORTFOLIO_READ.value
-            | Permission.GUARDIANS_READ.value
-            | Permission.STUDENTS_HEALTH_READ.value
-        )
-        | extra
-    )
+def _teacher_perm(extra=None) -> list[str]:
+    base = ["STUDENTS_READ", "PORTFOLIO_READ", "GUARDIANS_READ", "STUDENTS_HEALTH_READ"]
+    if extra is None:
+        return base
+    if isinstance(extra, str):
+        return base + [extra]
+    return base + list(extra)
 
 
 def _seed(sf, *, with_special_needs_perm: bool = False) -> dict:
     perm = _teacher_perm(
-        Permission.STUDENTS_SPECIAL_NEEDS_READ.value if with_special_needs_perm else 0
+        Permission.STUDENTS_SPECIAL_NEEDS_READ.value
+        if with_special_needs_perm
+        else None
     )
     with sf() as session:
         emp = Employee(
@@ -179,7 +178,7 @@ def _seed(sf, *, with_special_needs_perm: bool = False) -> dict:
             password_hash="!",
             role="teacher",
             employee_id=emp.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -188,7 +187,7 @@ def _seed(sf, *, with_special_needs_perm: bool = False) -> dict:
             password_hash="!",
             role="teacher",
             employee_id=emp_other.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -215,7 +214,7 @@ def _token(uid: int, emp_id: int, perm: int) -> str:
             "employee_id": emp_id,
             "role": "teacher",
             "name": "tester",
-            "permissions": perm,
+            "permission_names": perm,
             "token_version": 0,
         }
     )

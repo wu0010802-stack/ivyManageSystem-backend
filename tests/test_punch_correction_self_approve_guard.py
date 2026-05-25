@@ -96,15 +96,17 @@ def _make_user(
     *,
     username: str,
     role: str,
-    permissions: int,
+    permission_names,
     employee_id: int | None = None,
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee_id,
         username=username,
         password_hash=hash_password("Passw0rd!"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -156,7 +158,7 @@ def _login(client: TestClient, username: str):
     )
 
 
-APPROVALS_PERMS = int(Permission.APPROVALS) | int(Permission.ATTENDANCE_READ)
+APPROVALS_PERMS = ["APPROVALS", "ATTENDANCE_READ"]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -179,7 +181,7 @@ class TestF015PunchCorrectionApprove:
                 s,
                 username="self_approver",
                 role="supervisor",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=emp.id,
             )
             # 設 policy 允許 supervisor 審 supervisor，確保「角色資格」這層
@@ -214,7 +216,7 @@ class TestF015PunchCorrectionApprove:
                 s,
                 username="teacher_sub",
                 role="teacher",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=sub_emp.id,
             )
             # 主管 user（持 APPROVALS）
@@ -222,7 +224,7 @@ class TestF015PunchCorrectionApprove:
                 s,
                 username="supervisor_ok",
                 role="supervisor",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=sup_emp.id,
             )
             # 政策：teacher 的補打卡可由 supervisor 審
@@ -253,14 +255,14 @@ class TestF015PunchCorrectionApprove:
                 s,
                 username="teacher_sub2",
                 role="teacher",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=sub_emp.id,
             )
             _make_user(
                 s,
                 username="admin_with_eid",
                 role="admin",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=admin_emp.id,
             )
             # 不設 ApprovalPolicy → 走 admin fallback
@@ -285,14 +287,14 @@ class TestF015PunchCorrectionApprove:
                 s,
                 username="teacher_target",
                 role="teacher",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=target_emp.id,
             )
             _make_user(
                 s,
                 username="pure_admin",
                 role="admin",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=None,
             )
             # 不設 policy → admin fallback

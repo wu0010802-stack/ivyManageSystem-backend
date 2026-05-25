@@ -55,14 +55,16 @@ def client(tmp_path):
     engine.dispose()
 
 
-def _login(c, sf, *, permissions=-1):
+def _login(c, sf, *, permission_names=["*"]):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     with sf() as s:
         s.add(
             User(
                 username="fc_admin",
                 password_hash=hash_password("FcPass123"),
                 role="admin",
-                permissions=permissions,
+                permission_names=permission_names,
                 is_active=True,
                 must_change_password=False,
             )
@@ -231,7 +233,7 @@ class TestUpsertEndpoint:
     def test_requires_write_permission(self, client):
         """登入但無 VENDOR_PAYMENT_WRITE permission 不可寫。"""
         c, sf = client
-        _login(c, sf, permissions=0)  # 無權限
+        _login(c, sf, permission_names=[])  # 無權限
         r = c.put(
             "/api/monthly-fixed-costs",
             json={

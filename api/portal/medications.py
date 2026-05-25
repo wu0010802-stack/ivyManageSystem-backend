@@ -52,9 +52,9 @@ def list_today_medications(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        is_admin_like = int(
-            current_user.get("permissions", 0) or 0
-        ) < 0 or current_user.get("role") in ("admin", "supervisor")
+        is_admin_like = "*" in (
+            current_user.get("permission_names") or []
+        ) or current_user.get("role") in ("admin", "supervisor")
 
         if is_admin_like and classroom_id:
             classroom_ids = [classroom_id]

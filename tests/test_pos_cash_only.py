@@ -282,9 +282,7 @@ def _approve_admin(session):
     """建立具 ACTIVITY_PAYMENT_APPROVE 權限的管理員（簽核日結需要）。"""
     return _create_admin(
         session,
-        permissions=Permission.ACTIVITY_READ
-        | Permission.ACTIVITY_WRITE
-        | Permission.ACTIVITY_PAYMENT_APPROVE,
+        permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
     )
 
 

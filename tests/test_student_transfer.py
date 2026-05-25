@@ -64,7 +64,7 @@ def seed_data(session):
     s3 = Student(student_id="S003", name="小美", classroom_id=class_b.id)
     session.add_all([s1, s2, s3])
 
-    admin = User(username="admin", password_hash="x", role="admin", permissions=-1)
+    admin = User(username="admin", password_hash="x", role="admin", permission_names=["*"])
     session.add(admin)
     session.commit()
 
@@ -251,7 +251,7 @@ class TestBulkTransferStudents:
         current_user = {
             "user_id": user_id,
             "username": "admin",
-            "permissions": -1,
+            "permission_names": ["*"],
             "role": "admin",
         }
         request = SimpleNamespace(state=SimpleNamespace())

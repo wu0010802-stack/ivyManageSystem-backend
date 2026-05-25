@@ -39,7 +39,7 @@ from services.portal_dashboard_service import (
     has_attendance_today,
 )
 from utils.auth import get_current_user
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 
 from ._shared import (
     _get_employee,
@@ -272,10 +272,8 @@ def get_home_summary(
 
         # actions：跨站待辦計數
         unread_messages = 0
-        if (
-            int(current_user.get("permissions", 0) or 0)
-            & int(Permission.PARENT_MESSAGES_WRITE.value)
-            or int(current_user.get("permissions", 0) or 0) < 0
+        if has_permission(
+            current_user.get("permission_names"), Permission.PARENT_MESSAGES_WRITE
         ):
             unread_messages = count_unread_for_teacher(session, teacher_user_id=user_id)
 

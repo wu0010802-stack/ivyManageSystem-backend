@@ -46,7 +46,7 @@ def session(tmp_path):
 
 def _make_family(s):
     user = User(
-        username="p", password_hash="!", role="parent", permissions=0, is_active=True
+        username="p", password_hash="!", role="parent", permission_names=[], is_active=True
     )
     s.add(user)
     s.flush()
@@ -89,7 +89,7 @@ def test_apply_writes_attendance_with_null_recorded_by(session):
 def test_apply_preserves_existing_recorded_by_on_conflict(session):
     user, student = _make_family(session)
     teacher = User(
-        username="t", password_hash="!", role="teacher", permissions=0, is_active=True
+        username="t", password_hash="!", role="teacher", permission_names=[], is_active=True
     )
     session.add(teacher)
     session.flush()

@@ -79,11 +79,13 @@ def client_with_db(tmp_path):
 
 def _create_user(session, username, perms, password="TempPass123"):
     """admin 角色、無 employee_id（避免 assert_not_self_approval 誤殺）。"""
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -162,9 +164,7 @@ def test_reject_supervisor_to_draft(client_with_db):
     """SUPERVISOR_SIGNED + APPRAISAL_REVIEW + 預設 to_status → DRAFT。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer1", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
-        )
+        _create_user(s, "reviewer1", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
         summary_id = summary.id
@@ -193,7 +193,7 @@ def test_reject_accounting_default_to_supervisor(client_with_db):
         _create_user(
             s,
             "accountant1",
-            Permission.APPRAISAL_READ | Permission.APPRAISAL_ACCOUNTING,
+            ["APPRAISAL_READ", "APPRAISAL_ACCOUNTING"],
         )
         s.commit()
         summary = _seed_summary(s, SummaryStatus.ACCOUNTING_SIGNED)
@@ -219,7 +219,7 @@ def test_reject_accounting_to_draft_explicit(client_with_db):
         _create_user(
             s,
             "accountant2",
-            Permission.APPRAISAL_READ | Permission.APPRAISAL_ACCOUNTING,
+            ["APPRAISAL_READ", "APPRAISAL_ACCOUNTING"],
         )
         s.commit()
         summary = _seed_summary(s, SummaryStatus.ACCOUNTING_SIGNED)
@@ -244,7 +244,7 @@ def test_reject_finalized_to_accounting(client_with_db):
         _create_user(
             s,
             "finalizer1",
-            Permission.APPRAISAL_READ | Permission.APPRAISAL_FINALIZE,
+            ["APPRAISAL_READ", "APPRAISAL_FINALIZE"],
         )
         s.commit()
         summary = _seed_summary(s, SummaryStatus.FINALIZED)
@@ -268,9 +268,7 @@ def test_reject_draft_returns_400(client_with_db):
     """DRAFT 無法退簽。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer2", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
-        )
+        _create_user(s, "reviewer2", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         summary = _seed_summary(s, SummaryStatus.DRAFT)
         summary_id = summary.id
@@ -286,9 +284,7 @@ def test_reject_invalid_to_status(client_with_db):
     """SUPERVISOR_SIGNED 試圖退到 ACCOUNTING_SIGNED 應該拒絕（前進方向不是退簽）。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer3", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
-        )
+        _create_user(s, "reviewer3", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
         summary_id = summary.id
@@ -307,9 +303,7 @@ def test_reject_reason_too_short(client_with_db):
     """reason < 10 字 → 422（Pydantic min_length 攔截）。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer4", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
-        )
+        _create_user(s, "reviewer4", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
         summary_id = summary.id
@@ -325,7 +319,7 @@ def test_reject_requires_permission(client_with_db):
     """完全沒考核權限 → 403（endpoint 入口最低門檻是 APPRAISAL_READ）。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(s, "noperm", Permission(0))
+        _create_user(s, "noperm", [])
         s.commit()
         summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
         summary_id = summary.id

@@ -72,7 +72,7 @@ def _make_parent_user(sf, *, with_line=True, follow=True):
             username="p",
             password_hash="!",
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=True,
             line_user_id="U001" if with_line else None,
             line_follow_confirmed_at=datetime.now() if follow else None,
@@ -90,7 +90,7 @@ def _token(uid: int) -> str:
             "employee_id": None,
             "role": "parent",
             "name": "p",
-            "permissions": 0,
+            "permission_names": [],
             "token_version": 0,
         }
     )

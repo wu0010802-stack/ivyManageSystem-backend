@@ -34,11 +34,7 @@ from utils.permissions import Permission
 
 from tests.test_activity_pos import _create_admin, _login, _setup_reg
 
-APPROVE_PERMS = (
-    Permission.ACTIVITY_READ
-    | Permission.ACTIVITY_WRITE
-    | Permission.ACTIVITY_PAYMENT_APPROVE
-)
+APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
 
 
 @pytest.fixture
@@ -92,7 +88,7 @@ class TestAddRegistrationPaymentVoidedReplay:
         """收款 → void → 同 key 重送 → 409，不可被當 replay。"""
         client, sf = reg_payment_client
         with sf() as s:
-            _create_admin(s, permissions=APPROVE_PERMS)
+            _create_admin(s, permission_names=APPROVE_PERMS)
             reg = _setup_reg(s, student_name="王測試", paid_amount=0)
             s.commit()
             reg_id = reg.id
@@ -130,7 +126,7 @@ class TestAddRegistrationPaymentVoidedReplay:
         """確認 409 後 DB 不會多出新紀錄、paid_amount 仍歸零。"""
         client, sf = reg_payment_client
         with sf() as s:
-            _create_admin(s, permissions=APPROVE_PERMS)
+            _create_admin(s, permission_names=APPROVE_PERMS)
             reg = _setup_reg(s, student_name="陳測試", paid_amount=0)
             s.commit()
             reg_id = reg.id
@@ -184,7 +180,7 @@ class TestAddRegistrationPaymentVoidedReplay:
         """收款 → 同 key 重送（未 void） → 200 + 同樣 paid_amount。"""
         client, sf = reg_payment_client
         with sf() as s:
-            _create_admin(s, permissions=APPROVE_PERMS)
+            _create_admin(s, permission_names=APPROVE_PERMS)
             reg = _setup_reg(s, student_name="李測試", paid_amount=0)
             s.commit()
             reg_id = reg.id

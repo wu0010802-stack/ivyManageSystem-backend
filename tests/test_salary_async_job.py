@@ -72,7 +72,7 @@ def _login_admin(client, session_factory):
                 username="async_admin",
                 password_hash=hash_password("AsyncPass123"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 must_change_password=False,
             )

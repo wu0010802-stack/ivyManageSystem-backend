@@ -25,7 +25,7 @@ from sqlalchemy import or_
 from models.database import get_session
 from models.contact_book import ContactBookTemplate
 from utils.auth import require_permission
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +67,9 @@ class TemplateUpdate(BaseModel):
 
 
 def _has_publish_permission(current_user: dict) -> bool:
-    perms = int(current_user.get("permissions", 0) or 0)
-    if perms == -1 or perms < 0:  # admin（permissions=-1）
-        return True
-    return bool(perms & int(Permission.PORTFOLIO_PUBLISH.value))
+    return has_permission(
+        current_user.get("permission_names"), Permission.PORTFOLIO_PUBLISH
+    )
 
 
 def _template_to_dict(tpl: ContactBookTemplate) -> dict:

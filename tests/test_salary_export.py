@@ -45,9 +45,9 @@ def salary_export_client(tmp_path):
 
     # 清除模組層 snapshot cache，避免不同測試重複使用同一 record_id 時讀到舊資料。
     from api.salary import detail as salary_detail
-    from utils.cache_layer import get_cache
 
-    get_cache().clear_namespace(salary_detail._CACHE_NS_SALARY_SNAPSHOT)
+    with salary_detail._snapshot_cache_lock:
+        salary_detail._snapshot_cache.clear()
 
     init_salary_services(SalaryEngine(load_from_db=False), MagicMock())
 
@@ -77,12 +77,14 @@ def _create_employee(session, employee_id: str, name: str) -> Employee:
     return employee
 
 
-def _create_user(session, username: str, permissions: int) -> User:
+def _create_user(session, username: str, permission_names) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         username=username,
         password_hash=hash_password("TempPass123"),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -103,7 +105,7 @@ class TestSalaryExcelExport:
 
         with session_factory() as session:
             employee = _create_employee(session, "E001", "王小明")
-            _create_user(session, "salary_admin", int(Permission.SALARY_READ))
+            _create_user(session, "salary_admin", ["SALARY_READ"])
             session.add(
                 SalaryRecord(
                     employee_id=employee.id,
@@ -144,7 +146,7 @@ class TestSalaryExcelExport:
 
         with session_factory() as session:
             employee = _create_employee(session, "E020", "對賬老師")
-            _create_user(session, "salary_recon_admin", int(Permission.SALARY_READ))
+            _create_user(session, "salary_recon_admin", ["SALARY_READ"])
             session.add(
                 SalaryRecord(
                     employee_id=employee.id,
@@ -247,7 +249,7 @@ class TestSalaryExcelExport:
 
         with session_factory() as session:
             employee = _create_employee(session, "E011", "備註老師")
-            _create_user(session, "salary_excel_admin", int(Permission.SALARY_READ))
+            _create_user(session, "salary_excel_admin", ["SALARY_READ"])
             session.add(
                 SalaryRecord(
                     employee_id=employee.id,
@@ -283,7 +285,7 @@ class TestSalaryFieldBreakdownApi:
         with session_factory() as session:
             employee = _create_employee(session, "E002", "林老師")
             employee.birthday = date(2020, 3, 10)
-            _create_user(session, "salary_breakdown_admin", int(Permission.SALARY_READ))
+            _create_user(session, "salary_breakdown_admin", ["SALARY_READ"])
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -321,7 +323,7 @@ class TestSalaryFieldBreakdownApi:
         with session_factory() as session:
             employee = _create_employee(session, "E003", "王老師")
             employee.birthday = date(2020, 5, 10)
-            _create_user(session, "salary_birthday_admin", int(Permission.SALARY_READ))
+            _create_user(session, "salary_birthday_admin", ["SALARY_READ"])
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -351,7 +353,7 @@ class TestSalaryFieldBreakdownApi:
         with session_factory() as session:
             employee = _create_employee(session, "E004", "陳老師")
             _create_user(
-                session, "salary_breakdown_invalid", int(Permission.SALARY_READ)
+                session, "salary_breakdown_invalid", ["SALARY_READ"]
             )
             session.add(
                 SalaryRecord(employee_id=employee.id, salary_year=2026, salary_month=3)
@@ -370,7 +372,7 @@ class TestSalaryFieldBreakdownApi:
 
         with session_factory() as session:
             _create_user(
-                session, "salary_breakdown_missing", int(Permission.SALARY_READ)
+                session, "salary_breakdown_missing", ["SALARY_READ"]
             )
             session.commit()
 
@@ -391,7 +393,9 @@ class TestSalaryFieldBreakdownApi:
             employee = _create_employee(session, "E101", "全月老師")
             employee.base_salary = 36000
             employee.hire_date = date(2024, 1, 1)
-            _create_user(session, "salary_base_full", int(Permission.SALARY_READ))
+            _create_user(
+                session, "salary_base_full", ["SALARY_READ"]
+            )
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -426,7 +430,9 @@ class TestSalaryFieldBreakdownApi:
             employee = _create_employee(session, "E102", "月中入職老師")
             employee.base_salary = 31000
             employee.hire_date = date(2026, 3, 16)  # 2026/3 共 31 天，做 16 天
-            _create_user(session, "salary_base_proration", int(Permission.SALARY_READ))
+            _create_user(
+                session, "salary_base_proration", ["SALARY_READ"]
+            )
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -462,7 +468,9 @@ class TestSalaryFieldBreakdownApi:
             employee.base_salary = 36000
             employee.insurance_salary_level = 36300
             employee.dependents = 0
-            _create_user(session, "salary_labor_ins", int(Permission.SALARY_READ))
+            _create_user(
+                session, "salary_labor_ins", ["SALARY_READ"]
+            )
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -500,7 +508,9 @@ class TestSalaryFieldBreakdownApi:
             employee.insurance_salary_level = 36300
             employee.dependents = 2
             employee.extra_dependents_quarterly = 1
-            _create_user(session, "salary_health_ins", int(Permission.SALARY_READ))
+            _create_user(
+                session, "salary_health_ins", ["SALARY_READ"]
+            )
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -539,7 +549,7 @@ class TestSalaryManualAdjustApi:
             _create_user(
                 session,
                 "salary_write_admin",
-                int(Permission.SALARY_WRITE | Permission.SALARY_READ),
+                ["SALARY_WRITE", "SALARY_READ"],
             )
             record = SalaryRecord(
                 employee_id=employee.id,
@@ -595,7 +605,7 @@ class TestSalaryManualAdjustApi:
             _create_user(
                 session,
                 "salary_write_finalized",
-                int(Permission.SALARY_WRITE | Permission.SALARY_READ),
+                ["SALARY_WRITE", "SALARY_READ"],
             )
             record = SalaryRecord(
                 employee_id=employee.id,

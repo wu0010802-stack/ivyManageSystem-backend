@@ -63,7 +63,7 @@ def app_client(tmp_path):
             username="parent_a",
             password_hash="$2b$12$dummy",
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=True,
             token_version=0,
         )
@@ -115,7 +115,7 @@ def app_client(tmp_path):
             "sub": "parent_a",
             "user_id": parent_id,
             "role": "parent",
-            "permissions": 0,
+            "permission_names": [],
             "token_version": 0,
         }
     )
@@ -225,7 +225,7 @@ def test_second_guardian_ack_does_not_overwrite_first(app_client):
             username="parent_mother",
             password_hash="$2b$12$dummy",
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=True,
             token_version=0,
         )
@@ -257,7 +257,7 @@ def test_second_guardian_ack_does_not_overwrite_first(app_client):
             "sub": "parent_mother",
             "user_id": second_user_id,
             "role": "parent",
-            "permissions": 0,
+            "permission_names": [],
             "token_version": 0,
         }
     )

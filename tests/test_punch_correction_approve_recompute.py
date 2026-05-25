@@ -99,15 +99,17 @@ def _make_user(
     *,
     username: str,
     role: str,
-    permissions: int,
+    permission_names,
     employee_id: int | None = None,
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         employee_id=employee_id,
         username=username,
         password_hash=hash_password("Passw0rd!"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -116,7 +118,7 @@ def _make_user(
     return u
 
 
-APPROVALS_PERMS = int(Permission.APPROVALS) | int(Permission.ATTENDANCE_READ)
+APPROVALS_PERMS = ["APPROVALS", "ATTENDANCE_READ"]
 
 
 def _login(client: TestClient, username: str):
@@ -140,14 +142,14 @@ class TestApproveRecomputesAttendanceFields:
                 s,
                 username="emp_late",
                 role="teacher",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=emp.id,
             )
             _make_user(
                 s,
                 username="sup_ok",
                 role="supervisor",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=sup_emp.id,
             )
             policy = ApprovalPolicy(
@@ -230,14 +232,14 @@ class TestApproveRecomputesAttendanceFields:
                 s,
                 username="emp_early",
                 role="teacher",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=emp.id,
             )
             _make_user(
                 s,
                 username="sup_ok2",
                 role="supervisor",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=sup_emp.id,
             )
             s.add(
@@ -318,14 +320,14 @@ class TestApproveRecomputesAttendanceFields:
                 s,
                 username="emp_custom",
                 role="teacher",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=emp.id,
             )
             _make_user(
                 s,
                 username="sup_ok3",
                 role="supervisor",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=sup_emp.id,
             )
             s.add(
@@ -406,14 +408,14 @@ class TestApproveRecomputesAttendanceFields:
                 s,
                 username="emp_partial",
                 role="teacher",
-                permissions=int(Permission.ATTENDANCE_READ),
+                permission_names=["ATTENDANCE_READ"],
                 employee_id=emp.id,
             )
             _make_user(
                 s,
                 username="sup_ok4",
                 role="supervisor",
-                permissions=APPROVALS_PERMS,
+                permission_names=APPROVALS_PERMS,
                 employee_id=sup_emp.id,
             )
             s.add(

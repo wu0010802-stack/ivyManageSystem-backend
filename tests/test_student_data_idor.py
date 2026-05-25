@@ -115,15 +115,17 @@ def _create_user(
     username: str,
     password: str,
     role: str,
-    permissions: int,
+    permission_names,
     employee: Employee | None = None,
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee.id if employee else None,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -200,27 +202,13 @@ def _seed_two_classrooms(session) -> dict:
 
 
 # 一般教師（僅有 STUDENTS_READ/WRITE，無健康/特需）
-_BASIC_PERMS = int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE)
+_BASIC_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE"]
 # 教師加上健康讀取
-_HEALTH_READ_PERMS = int(
-    Permission.STUDENTS_READ
-    | Permission.STUDENTS_WRITE
-    | Permission.STUDENTS_HEALTH_READ
-)
+_HEALTH_READ_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE", "STUDENTS_HEALTH_READ"]
 # 教師加上特殊需求讀取（無健康）
-_SPECIAL_NEEDS_ONLY_PERMS = int(
-    Permission.STUDENTS_READ
-    | Permission.STUDENTS_WRITE
-    | Permission.STUDENTS_SPECIAL_NEEDS_READ
-)
+_SPECIAL_NEEDS_ONLY_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE", "STUDENTS_SPECIAL_NEEDS_READ"]
 # 教師持兩者全（健康 + 特需）
-_FULL_PERMS = int(
-    Permission.STUDENTS_READ
-    | Permission.STUDENTS_WRITE
-    | Permission.STUDENTS_HEALTH_READ
-    | Permission.STUDENTS_SPECIAL_NEEDS_READ
-    | Permission.CLASSROOMS_READ
-)
+_FULL_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE", "STUDENTS_HEALTH_READ", "STUDENTS_SPECIAL_NEEDS_READ", "CLASSROOMS_READ"]
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +229,7 @@ class TestF018HealthFieldMasking:
                 username="adm_basic",
                 password="Pass1234",
                 role="admin",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=None,
             )
             st_a_id = seed["st_a"].id
@@ -266,7 +254,7 @@ class TestF018HealthFieldMasking:
                 username="adm_basic_list",
                 password="Pass1234",
                 role="admin",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=None,
             )
             s.commit()
@@ -292,7 +280,7 @@ class TestF018HealthFieldMasking:
                 username="cls_reader",
                 password="Pass1234",
                 role="admin",
-                permissions=int(Permission.STUDENTS_READ | Permission.CLASSROOMS_READ),
+                permission_names=["STUDENTS_READ", "CLASSROOMS_READ"],
                 employee=None,
             )
             cls_a_id = seed["cls_a"].id
@@ -318,7 +306,7 @@ class TestF018HealthFieldMasking:
                 username="prof_basic",
                 password="Pass1234",
                 role="admin",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=None,
             )
             st_a_id = seed["st_a"].id
@@ -341,7 +329,7 @@ class TestF018HealthFieldMasking:
                 username="t_a_full",
                 password="Pass1234",
                 role="admin",
-                permissions=_FULL_PERMS,
+                permission_names=_FULL_PERMS,
                 employee=None,
             )
             st_a_id = seed["st_a"].id
@@ -372,7 +360,7 @@ class TestF018HealthFieldMasking:
                 username="t_only_sn",
                 password="Pass1234",
                 role="admin",
-                permissions=_SPECIAL_NEEDS_ONLY_PERMS,
+                permission_names=_SPECIAL_NEEDS_ONLY_PERMS,
                 employee=None,
             )
             st_a_id = seed["st_a"].id
@@ -416,7 +404,7 @@ class TestF019CommunicationsScope:
                 username="tA_create_other",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             other = seed["st_b"].id
@@ -442,7 +430,7 @@ class TestF019CommunicationsScope:
                 username="tA_list_other",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_log(s, seed["st_b"].id)
@@ -462,7 +450,7 @@ class TestF019CommunicationsScope:
                 username="tA_list_default",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_log(s, seed["st_a"].id)
@@ -486,7 +474,7 @@ class TestF019CommunicationsScope:
                 username="tA_upd_other",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             log_id = self._seed_log(s, seed["st_b"].id)
@@ -505,7 +493,7 @@ class TestF019CommunicationsScope:
                 username="tA_del_other",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             log_id = self._seed_log(s, seed["st_b"].id)
@@ -522,7 +510,7 @@ class TestF019CommunicationsScope:
                 username="tA_own",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             own_id = seed["st_a"].id
@@ -558,7 +546,7 @@ class TestF019CommunicationsScope:
                 username="admin_unr",
                 password="Pass1234",
                 role="admin",
-                permissions=int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE),
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE"],
                 employee=None,
             )
             log_id = self._seed_log(s, seed["st_b"].id)
@@ -584,7 +572,7 @@ class TestF020AttendanceScope:
                 username="att_tA",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             other_id = seed["st_b"].id
@@ -621,7 +609,7 @@ class TestF020AttendanceScope:
                 username="att_tA_byStu",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             other_id = seed["st_b"].id
@@ -639,7 +627,7 @@ class TestF020AttendanceScope:
                 username="att_tA_daily",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             other_cls = seed["cls_b"].id
@@ -659,7 +647,7 @@ class TestF020AttendanceScope:
                 username="att_tA_own",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             own_id = seed["st_a"].id
@@ -690,7 +678,7 @@ class TestF020AttendanceScope:
                 username="att_admin",
                 password="Pass1234",
                 role="admin",
-                permissions=int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE),
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE"],
                 employee=None,
             )
             other_id = seed["st_b"].id
@@ -717,7 +705,7 @@ class TestF020AttendanceScope:
                 username="att_tA_export",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             s.commit()
@@ -735,7 +723,7 @@ class TestF020AttendanceScope:
                 username="att_tA_exp_o",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             other_cls = seed["cls_b"].id
@@ -762,7 +750,7 @@ class TestF021LeavesList:
                 username="lv_tA_list",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             other_cls = seed["cls_b"].id
@@ -781,7 +769,7 @@ class TestF021LeavesList:
                 username="lv_tA_nofilter",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_PERMS,
+                permission_names=_BASIC_PERMS,
                 employee=seed["emp_a"],
             )
             st_a_id = seed["st_a"].id
@@ -827,7 +815,7 @@ class TestF021LeavesList:
                 username="lv_adm_all",
                 password="Pass1234",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 employee=None,
             )
             leave_a = StudentLeaveRequest(

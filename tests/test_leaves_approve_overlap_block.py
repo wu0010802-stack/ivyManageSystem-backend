@@ -129,7 +129,7 @@ class TestSingleApproveOverlapBlock:
                 current_user={
                     "username": "admin",
                     "role": "supervisor",
-                    "permissions": int(Permission.ACTIVITY_PAYMENT_APPROVE),
+                    "permission_names": ["ACTIVITY_PAYMENT_APPROVE"],
                 },
             )
             assert result.get("warning") is not None

@@ -76,7 +76,7 @@ def _setup(s):
         username="p1",
         password_hash="!",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         token_version=0,
     )
@@ -121,7 +121,7 @@ def _token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": 0,
         }
     )

@@ -6,11 +6,11 @@
 2. teacher 角色模板包含這兩個權限
 3. hr / supervisor 角色模板不包含這兩個權限（portal 非管理端功能）
 4. has_permission 對各角色的判斷正確
-5. admin（permissions=-1）仍擁有全部權限
+5. admin（wildcard ["*"]）仍擁有全部權限
 """
 
 import pytest
-from utils.permissions import Permission, ROLE_TEMPLATES, has_permission
+from utils.permissions import Permission, ROLE_TEMPLATES, WILDCARD, has_permission
 
 
 class TestDismissalCallsPermissionDefined:
@@ -20,37 +20,26 @@ class TestDismissalCallsPermissionDefined:
     def test_dismissal_calls_write_exists(self):
         assert hasattr(Permission, "DISMISSAL_CALLS_WRITE")
 
-    def test_read_and_write_are_distinct_bits(self):
-        read = Permission.DISMISSAL_CALLS_READ.value
-        write = Permission.DISMISSAL_CALLS_WRITE.value
-        assert read != write
-        assert read & write == 0, "READ 與 WRITE 應使用不同位元"
-
-    def test_no_collision_with_existing_permissions(self):
-        """新增位元不得與現有任何 Permission 值重複"""
-        new_bits = {
-            Permission.DISMISSAL_CALLS_READ.value,
-            Permission.DISMISSAL_CALLS_WRITE.value,
-        }
-        existing = {
-            p.value for p in Permission
-            if p not in (Permission.DISMISSAL_CALLS_READ,
-                         Permission.DISMISSAL_CALLS_WRITE,
-                         Permission.ALL)
-        }
-        assert not new_bits & existing, "新權限位元與現有權限衝突"
+    def test_read_and_write_are_distinct_names(self):
+        """READ 與 WRITE 應為不同的權限名稱字串。"""
+        assert (
+            Permission.DISMISSAL_CALLS_READ.value
+            != Permission.DISMISSAL_CALLS_WRITE.value
+        )
 
 
 class TestTeacherRoleTemplateIncludesDismissal:
     def test_teacher_has_dismissal_calls_read(self):
         perms = ROLE_TEMPLATES["teacher"]
-        assert has_permission(perms, Permission.DISMISSAL_CALLS_READ), \
-            "teacher 角色應包含 DISMISSAL_CALLS_READ"
+        assert has_permission(
+            perms, Permission.DISMISSAL_CALLS_READ
+        ), "teacher 角色應包含 DISMISSAL_CALLS_READ"
 
     def test_teacher_has_dismissal_calls_write(self):
         perms = ROLE_TEMPLATES["teacher"]
-        assert has_permission(perms, Permission.DISMISSAL_CALLS_WRITE), \
-            "teacher 角色應包含 DISMISSAL_CALLS_WRITE（需能 acknowledge/complete）"
+        assert has_permission(
+            perms, Permission.DISMISSAL_CALLS_WRITE
+        ), "teacher 角色應包含 DISMISSAL_CALLS_WRITE（需能 acknowledge/complete）"
 
 
 class TestNonTeacherRolesExcludeDismissal:
@@ -75,7 +64,7 @@ class TestNonTeacherRolesExcludeDismissal:
 
 class TestAdminHasAllPermissions:
     def test_admin_has_dismissal_calls_read(self):
-        assert has_permission(-1, Permission.DISMISSAL_CALLS_READ)
+        assert has_permission([WILDCARD], Permission.DISMISSAL_CALLS_READ)
 
     def test_admin_has_dismissal_calls_write(self):
-        assert has_permission(-1, Permission.DISMISSAL_CALLS_WRITE)
+        assert has_permission([WILDCARD], Permission.DISMISSAL_CALLS_WRITE)

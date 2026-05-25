@@ -86,11 +86,13 @@ def client_with_db(tmp_path):
 def _create_user_with_employee(
     session, username, perms, employee_id, password="TempPass123"
 ):
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
         employee_id=employee_id,
     )
@@ -120,21 +122,21 @@ def _login(client, username, password="TempPass123"):
 
 
 # 完整簽核權限
-APPRAISAL_ALL = (
-    Permission.APPRAISAL_READ
-    | Permission.APPRAISAL_EVENT_WRITE
-    | Permission.APPRAISAL_REVIEW
-    | Permission.APPRAISAL_ACCOUNTING
-    | Permission.APPRAISAL_FINALIZE
-)
-YEAR_END_ALL = (
-    Permission.YEAR_END_READ
-    | Permission.YEAR_END_WRITE
-    | Permission.YEAR_END_FINALIZE
+APPRAISAL_ALL = [
+    "APPRAISAL_READ",
+    "APPRAISAL_EVENT_WRITE",
+    "APPRAISAL_REVIEW",
+    "APPRAISAL_ACCOUNTING",
+    "APPRAISAL_FINALIZE",
+]
+YEAR_END_ALL = [
+    "YEAR_END_READ",
+    "YEAR_END_WRITE",
+    "YEAR_END_FINALIZE",
     # 年終簽核端點實際用 APPRAISAL_REVIEW / APPRAISAL_ACCOUNTING 權限位元
-    | Permission.APPRAISAL_REVIEW
-    | Permission.APPRAISAL_ACCOUNTING
-)
+    "APPRAISAL_REVIEW",
+    "APPRAISAL_ACCOUNTING",
+]
 
 
 def _seed_appraisal_summary(sf, target_status: SummaryStatus):

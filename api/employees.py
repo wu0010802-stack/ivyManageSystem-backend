@@ -256,7 +256,7 @@ def get_employees(
             q = q.filter(Employee.name.ilike(like) | Employee.employee_id.ilike(like))
         employees = q.offset(skip).limit(limit).all()
         can_view_full_account = has_permission(
-            current_user.get("permissions", 0), Permission.SALARY_WRITE
+            current_user.get("permission_names"), Permission.SALARY_WRITE
         )
 
         result = []
@@ -346,7 +346,7 @@ async def get_employee(
         if not employee:
             raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
         can_view_full_account = has_permission(
-            current_user.get("permissions", 0), Permission.SALARY_WRITE
+            current_user.get("permission_names"), Permission.SALARY_WRITE
         )
 
         # Get classroom name if assigned

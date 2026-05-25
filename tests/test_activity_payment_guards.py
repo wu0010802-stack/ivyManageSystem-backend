@@ -32,9 +32,9 @@ from utils.activity_constants import (
 )
 from utils.permissions import Permission
 
-APPROVER = {"permissions": Permission.ACTIVITY_PAYMENT_APPROVE.value}
-LINE_STAFF = {"permissions": 0}
-ALL_PERMS = {"permissions": -1}
+APPROVER = {"permission_names": ["ACTIVITY_PAYMENT_APPROVE"]}
+LINE_STAFF = {"permission_names": []}
+ALL_PERMS = {"permission_names": ["*"]}
 
 
 @pytest.fixture

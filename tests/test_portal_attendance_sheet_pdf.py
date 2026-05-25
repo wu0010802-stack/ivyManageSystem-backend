@@ -64,7 +64,7 @@ def _create_employee_user(session, username, name="王教師"):
         password_hash=hash_password("TempPass123"),
         role="teacher",
         employee_id=emp.id,
-        permissions=0,
+        permission_names=[],
         is_active=True,
     )
     session.add(user)

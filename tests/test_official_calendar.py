@@ -65,13 +65,18 @@ def official_calendar_env(tmp_path):
 
 
 def _create_user(
-    session, username: str, permissions: int, password: str = "TempPass123"
+    session, username: str, permission_names, password: str = "TempPass123"
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
+    elif isinstance(permission_names, int):
+        # 舊測試以 0 代表 "無權限" — 轉成空 list
+        permission_names = []
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )

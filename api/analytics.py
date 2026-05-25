@@ -16,7 +16,7 @@ from services.analytics.churn_service import (
 from services.analytics.funnel_service import build_funnel
 from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ def get_at_risk(
     ),
 ):
     today = date.today()
-    can_read = bool(
-        int(current_user.get("permissions", 0)) & int(Permission.STUDENTS_READ)
+    can_read = has_permission(
+        current_user.get("permission_names"), Permission.STUDENTS_READ
     )
     with session_scope() as session:
         return report_cache_service.get_or_build(

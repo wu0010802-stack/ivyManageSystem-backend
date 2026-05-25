@@ -874,7 +874,7 @@ class TestClassHubTodayEndpoint:
         u = _create_user(sess, employee_id=emp.id, username="t2")
         sess.commit()
         token = create_access_token(
-            {"sub": u.username, "employee_id": emp.id, "permissions": -1}
+            {"sub": u.username, "employee_id": emp.id, "permission_names": ["*"]}
         )
         resp = c.get(
             "/api/portal/class-hub/today",
@@ -942,7 +942,7 @@ class TestClassHubTodayEndpoint:
         )
         sess.commit()
         token = create_access_token(
-            {"sub": u.username, "employee_id": emp.id, "permissions": -1}
+            {"sub": u.username, "employee_id": emp.id, "permission_names": ["*"]}
         )
         resp = c.get(
             "/api/portal/class-hub/today",
@@ -996,7 +996,7 @@ class TestClassHubTodayEndpoint:
             role="teacher",
             employee_id=emp.id,
             is_active=True,
-            permissions=int(Permission.STUDENTS_READ),
+            permission_names=["STUDENTS_READ"],
         )
         sess.add(u)
         sess.flush()
@@ -1023,7 +1023,7 @@ class TestClassHubTodayEndpoint:
             {
                 "sub": u.username,
                 "employee_id": emp.id,
-                "permissions": int(Permission.STUDENTS_READ),
+                "permission_names": ["STUDENTS_READ"],
             }
         )
         resp = c.get(
@@ -1060,14 +1060,14 @@ class TestClassHubTodayEndpoint:
         from utils.permissions import Permission
 
         # STUDENTS_READ + STUDENTS_HEALTH_READ but NO PORTFOLIO_READ
-        u_perms = int(Permission.STUDENTS_READ | Permission.STUDENTS_HEALTH_READ)
+        u_perms = ["STUDENTS_READ", "STUDENTS_HEALTH_READ"]
         u = User(
             username="q",
             password_hash="x",
             role="teacher",
             employee_id=emp.id,
             is_active=True,
-            permissions=u_perms,
+            permission_names=u_perms,
         )
         sess.add(u)
         sess.commit()
@@ -1075,7 +1075,7 @@ class TestClassHubTodayEndpoint:
             {
                 "sub": u.username,
                 "employee_id": emp.id,
-                "permissions": u_perms,
+                "permission_names": u_perms,
             }
         )
         resp = c.get(

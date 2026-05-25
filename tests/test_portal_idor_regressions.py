@@ -79,7 +79,7 @@ def _create_user(
         username=username,
         password_hash=hash_password(password),
         role="teacher",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         must_change_password=False,
     )

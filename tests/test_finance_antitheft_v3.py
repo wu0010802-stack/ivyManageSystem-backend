@@ -100,13 +100,15 @@ def v3_client(tmp_path):
 
 
 def _make_user(
-    session, *, username, permissions, employee_id=None, role="admin"
+    session, *, username, permission_names, employee_id=None, role="admin"
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,
@@ -162,9 +164,7 @@ class TestUnfinalizeSalaryGuard:
             _make_user(
                 s,
                 username="hr_admin",
-                permissions=Permission.SALARY_READ
-                | Permission.SALARY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()
@@ -180,9 +180,7 @@ class TestUnfinalizeSalaryGuard:
             _make_user(
                 s,
                 username="hr_admin",
-                permissions=Permission.SALARY_READ
-                | Permission.SALARY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()
@@ -202,7 +200,7 @@ class TestUnfinalizeSalaryGuard:
             _make_user(
                 s,
                 username="hr_only",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
                 role="hr",
             )
             s.commit()
@@ -223,9 +221,7 @@ class TestUnfinalizeSalaryGuard:
             _make_user(
                 s,
                 username="hr_admin",
-                permissions=Permission.SALARY_READ
-                | Permission.SALARY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()
@@ -294,9 +290,7 @@ class TestUpdatePaymentMarkPaidGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()
@@ -318,9 +312,7 @@ class TestUpdatePaymentMarkPaidGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()
@@ -344,7 +336,7 @@ class TestUpdatePaymentMarkPaidGuard:
             _make_user(
                 s,
                 username="act_writer",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
                 role="staff",
             )
             s.commit()
@@ -367,9 +359,7 @@ class TestUpdatePaymentMarkPaidGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()
@@ -405,9 +395,7 @@ class TestActivityItemPriceGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permissions=Permission.ACTIVITY_READ
-                | Permission.ACTIVITY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()
@@ -424,7 +412,7 @@ class TestActivityItemPriceGuard:
             _make_user(
                 s,
                 username="act_writer",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
                 role="staff",
             )
             s.commit()
@@ -442,7 +430,7 @@ class TestActivityItemPriceGuard:
             _make_user(
                 s,
                 username="act_writer",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
                 role="staff",
             )
             s.commit()
@@ -497,9 +485,7 @@ class TestPunchCorrectionMarksSalaryStale:
             _make_user(
                 s,
                 username="pc_admin",
-                permissions=Permission.ATTENDANCE_READ
-                | Permission.ATTENDANCE_WRITE
-                | Permission.APPROVALS,
+                permission_names=["ATTENDANCE_READ", "ATTENDANCE_WRITE", "APPROVALS"],
                 role="admin",
             )
             s.commit()
@@ -588,7 +574,7 @@ class TestAdminWaiveSalaryRespect:
             _make_user(
                 s,
                 username="att_admin",
-                permissions=Permission.ATTENDANCE_READ | Permission.ATTENDANCE_WRITE,
+                permission_names=["ATTENDANCE_READ", "ATTENDANCE_WRITE"],
                 role="admin",
             )
             s.commit()
@@ -695,7 +681,7 @@ class TestPaymentReportVoidedHandling:
             _make_user(
                 s,
                 username="act_admin",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
                 role="admin",
             )
             s.commit()
@@ -757,7 +743,7 @@ class TestStudentDeactivateRefundGuard:
             _make_user(
                 s,
                 username="stu_writer",
-                permissions=Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE"],
                 role="admin",
             )
             s.commit()
@@ -801,9 +787,7 @@ class TestStudentDeactivateRefundGuard:
             _make_user(
                 s,
                 username="stu_admin",
-                permissions=Permission.STUDENTS_READ
-                | Permission.STUDENTS_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
                 role="admin",
             )
             s.commit()

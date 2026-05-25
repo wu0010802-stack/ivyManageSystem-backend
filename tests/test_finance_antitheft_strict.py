@@ -89,13 +89,15 @@ def strict_client(tmp_path):
 
 
 def _make_user(
-    session, *, username, permissions, employee_id=None, role="admin"
+    session, *, username, permission_names, employee_id=None, role="admin"
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,
@@ -150,7 +152,7 @@ class TestManualAdjustCumulativeDelta:
             _make_user(
                 s,
                 username="hr_writer",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
                 employee_id=None,
             )
             s.commit()
@@ -178,7 +180,7 @@ class TestManualAdjustCumulativeDelta:
             _make_user(
                 s,
                 username="hr_writer",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
                 employee_id=None,
             )
             s.commit()
@@ -238,7 +240,7 @@ class TestFeePaymentDateGuard:
             _make_user(
                 s,
                 username="fees_user",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
             )
             s.commit()
             rec_id = rec.id
@@ -262,7 +264,7 @@ class TestFeePaymentDateGuard:
             _make_user(
                 s,
                 username="fees_user",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
             )
             s.commit()
             rec_id = rec.id
@@ -286,7 +288,7 @@ class TestFeePaymentDateGuard:
             _make_user(
                 s,
                 username="fees_user",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
             )
             s.commit()
             rec_id = rec.id
@@ -317,7 +319,7 @@ class TestFeeRefundCumulative:
             _make_user(
                 s,
                 username="fees_writer",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
             )
             # 預先放兩筆累積 1000 的退款（門檻含等號方向：> 1000 才擋）
             s.add(
@@ -360,9 +362,7 @@ class TestFeeRefundCumulative:
             _make_user(
                 s,
                 username="finance_boss",
-                permissions=Permission.FEES_READ
-                | Permission.FEES_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["FEES_READ", "FEES_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.add(
                 StudentFeeRefund(
@@ -438,7 +438,7 @@ class TestActivityRefundCumulative:
             _make_user(
                 s,
                 username="act_writer",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             for _ in range(2):
                 s.add(
@@ -478,7 +478,7 @@ class TestActivityRefundCumulative:
             _make_user(
                 s,
                 username="act_writer",
-                permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
             from datetime import datetime as _dt
 
@@ -575,9 +575,7 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permissions=Permission.SALARY_READ
-                | Permission.SALARY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.commit()
 
@@ -596,9 +594,7 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permissions=Permission.SALARY_READ
-                | Permission.SALARY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.commit()
 
@@ -622,7 +618,7 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="hr_only",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
             )
             s.commit()
 
@@ -649,9 +645,7 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permissions=Permission.SALARY_READ
-                | Permission.SALARY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             )
             s.commit()
 

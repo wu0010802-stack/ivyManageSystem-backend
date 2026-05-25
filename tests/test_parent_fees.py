@@ -68,7 +68,7 @@ def _setup_family(
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_user_id,
         token_version=0,
@@ -136,7 +136,7 @@ def _parent_token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )

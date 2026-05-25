@@ -80,12 +80,14 @@ def _make_employee(session, *, name, base_salary=30000, hourly_rate=0):
     return emp
 
 
-def _make_user(session, *, username, permissions, employee_id=None, role="admin"):
+def _make_user(session, *, username, permission_names, employee_id=None, role="admin"):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,
@@ -112,7 +114,7 @@ def test_non_amount_field_update_no_reason_required(amtguard_client):
         _make_user(
             s,
             username="hr",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,
         )
         s.commit()
@@ -131,7 +133,7 @@ def test_amount_unchanged_value_not_treated_as_change(amtguard_client):
         _make_user(
             s,
             username="hr",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,
         )
         s.commit()
@@ -153,7 +155,7 @@ def test_amount_change_without_reason_400(amtguard_client):
         _make_user(
             s,
             username="hr",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,
         )
         s.commit()
@@ -173,7 +175,7 @@ def test_amount_change_above_threshold_without_approve_403(amtguard_client):
         _make_user(
             s,
             username="hr",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,
         )
         s.commit()
@@ -202,7 +204,7 @@ def test_amount_split_fields_above_threshold_403(amtguard_client):
         _make_user(
             s,
             username="hr",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,
         )
         s.commit()
@@ -231,11 +233,7 @@ def test_amount_change_with_reason_and_approve_succeeds(amtguard_client):
         _make_user(
             s,
             username="boss",
-            permissions=(
-                Permission.EMPLOYEES_READ
-                | Permission.EMPLOYEES_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE
-            ),
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
             employee_id=None,
         )
         s.commit()
@@ -261,7 +259,7 @@ def test_small_amount_change_with_reason_no_approve_succeeds(amtguard_client):
         _make_user(
             s,
             username="hr",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,
         )
         s.commit()

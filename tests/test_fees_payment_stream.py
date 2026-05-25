@@ -71,7 +71,7 @@ def _admin(session):
         username="stream_admin",
         password_hash=hash_password("Temp123456"),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
     )
     session.add(u)

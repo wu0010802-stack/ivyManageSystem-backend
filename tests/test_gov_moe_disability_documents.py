@@ -75,7 +75,7 @@ def _seed_admin(session_factory):
                 username="admin",
                 password_hash=hash_password("AdminPass1"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
             )
         )
@@ -89,7 +89,7 @@ def _seed_teacher(session_factory):
                 username="teacher",
                 password_hash=hash_password("TeacherPass1"),
                 role="teacher",
-                permissions=int(Permission.DASHBOARD),
+                permission_names=["DASHBOARD"],
                 is_active=True,
             )
         )
@@ -282,7 +282,7 @@ def test_view_only_user_cannot_write(gov_moe_client, sample_student):
                 username="viewer",
                 password_hash=hash_password("ViewPass1"),
                 role="hr",
-                permissions=int(Permission.GOV_REPORTS_VIEW),
+                permission_names=["GOV_REPORTS_VIEW"],
                 is_active=True,
             )
         )

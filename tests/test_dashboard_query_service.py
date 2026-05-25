@@ -112,10 +112,7 @@ class TestDashboardQueryService:
         summary = service.build_notification_summary(
             db_session,
             user_permissions=(
-                Permission.APPROVALS
-                | Permission.ACTIVITY_READ
-                | Permission.CALENDAR
-                | Permission.EMPLOYEES_READ
+                ["APPROVALS", "ACTIVITY_READ", "CALENDAR", "EMPLOYEES_READ"]
             ),
         )
 
@@ -138,7 +135,7 @@ class TestDashboardQueryService:
 
         sections = service.build_home_sections(
             db_session,
-            user_permissions=Permission.APPROVALS | Permission.STUDENTS_READ | Permission.ACTIVITY_READ,
+            user_permissions=["APPROVALS", "STUDENTS_READ", "ACTIVITY_READ"],
         )
 
         assert calls == ["approval", "student", "activity"]

@@ -88,15 +88,17 @@ def _make_user(
     session,
     *,
     username: str,
-    permissions: int,
+    permission_names,
     employee_id: int | None = None,
     role: str = "hr",
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,
@@ -113,7 +115,7 @@ def _login(client: TestClient, username: str):
 
 
 # 預設 ATTENDANCE 寫入權限組合
-ATT_PERMS = int(Permission.ATTENDANCE_READ) | int(Permission.ATTENDANCE_WRITE)
+ATT_PERMS = ["ATTENDANCE_READ", "ATTENDANCE_WRITE"]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -133,7 +135,7 @@ class TestF041AttendanceRecord:
             _make_user(
                 s,
                 username="hr_self",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=emp.id,
                 role="hr",
             )
@@ -171,7 +173,7 @@ class TestF041AttendanceRecord:
             _make_user(
                 s,
                 username="hr_del1",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=emp.id,
                 role="hr",
             )
@@ -198,7 +200,7 @@ class TestF041AttendanceRecord:
             _make_user(
                 s,
                 username="hr_del2",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=emp.id,
                 role="hr",
             )
@@ -220,7 +222,7 @@ class TestF041AttendanceRecord:
             _make_user(
                 s,
                 username="hr_ok",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=self_emp.id,
                 role="hr",
             )
@@ -248,7 +250,7 @@ class TestF041AttendanceRecord:
             _make_user(
                 s,
                 username="pure_admin",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=None,
                 role="admin",
             )
@@ -276,7 +278,7 @@ class TestF041AttendanceRecord:
             _make_user(
                 s,
                 username="admin_self",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=emp.id,
                 role="admin",
             )
@@ -326,7 +328,7 @@ class TestF042AnomaliesBatchConfirm:
             _make_user(
                 s,
                 username="hr_batch",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=self_emp.id,
                 role="hr",
             )
@@ -362,7 +364,7 @@ class TestF042AnomaliesBatchConfirm:
             _make_user(
                 s,
                 username="hr_batch_ok",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=self_emp.id,
                 role="hr",
             )
@@ -392,7 +394,7 @@ class TestF042AnomaliesBatchConfirm:
             _make_user(
                 s,
                 username="pure_admin_anom",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=None,
                 role="admin",
             )
@@ -423,7 +425,7 @@ class TestF046AttendanceUpload:
             _make_user(
                 s,
                 username="hr_csv",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=self_emp.id,
                 role="hr",
             )
@@ -470,7 +472,7 @@ class TestF046AttendanceUpload:
             _make_user(
                 s,
                 username="hr_csv_ok",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=self_emp.id,
                 role="hr",
             )
@@ -506,7 +508,7 @@ class TestF046AttendanceUpload:
             _make_user(
                 s,
                 username="pure_admin_csv",
-                permissions=ATT_PERMS,
+                permission_names=ATT_PERMS,
                 employee_id=None,
                 role="admin",
             )

@@ -64,12 +64,14 @@ def insurance_client(tmp_path):
     engine.dispose()
 
 
-def _create_user(session, username, permissions: int):
+def _create_user(session, username, permission_names):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password("Passw0rd!"),
         role="hr",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -113,8 +115,8 @@ def _seed_salary_record(session, employee_id, year, month, finalized=False):
     return rec
 
 
-SALARY_ONLY = int(Permission.SALARY_WRITE) | int(Permission.SALARY_READ)
-SALARY_PLUS_FINANCE = SALARY_ONLY | int(Permission.ACTIVITY_PAYMENT_APPROVE)
+SALARY_ONLY = ["SALARY_WRITE", "SALARY_READ"]
+SALARY_PLUS_FINANCE = SALARY_ONLY + ["ACTIVITY_PAYMENT_APPROVE"]
 
 
 _BRACKET_PAYLOAD = {
@@ -138,7 +140,7 @@ class TestUpsertBracketsGuards:
     def test_upsert_blocked_without_finance_approve(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "no_finance", permissions=SALARY_ONLY)
+            _create_user(s, "no_finance", permission_names=SALARY_ONLY)
             s.commit()
 
         assert _login(client, "no_finance").status_code == 200
@@ -149,7 +151,7 @@ class TestUpsertBracketsGuards:
     def test_upsert_blocked_when_reason_too_short(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "with_finance", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "with_finance", permission_names=SALARY_PLUS_FINANCE)
             s.commit()
 
         assert _login(client, "with_finance").status_code == 200
@@ -162,7 +164,7 @@ class TestUpsertBracketsGuards:
     def test_upsert_succeeds_and_marks_year_records_stale(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "with_finance", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "with_finance", permission_names=SALARY_PLUS_FINANCE)
             # 兩筆未封存薪資（同年）+ 一筆封存薪資（同年）+ 一筆其他年的紀錄
             _seed_salary_record(s, 1, 2026, 1, finalized=False)
             _seed_salary_record(s, 2, 2026, 3, finalized=False)
@@ -213,7 +215,7 @@ class TestDeleteBracketGuards:
     def test_delete_blocked_without_finance_approve(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "no_finance2", permissions=SALARY_ONLY)
+            _create_user(s, "no_finance2", permission_names=SALARY_ONLY)
             b = _seed_bracket(s, year=2026, amount=30000)
             s.commit()
             bid = b.id
@@ -230,7 +232,7 @@ class TestDeleteBracketGuards:
     def test_delete_succeeds_and_marks_stale(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "with_finance2", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "with_finance2", permission_names=SALARY_PLUS_FINANCE)
             b = _seed_bracket(s, year=2026, amount=30000)
             _seed_salary_record(s, 5, 2026, 4, finalized=False)
             s.commit()
@@ -258,7 +260,7 @@ class TestDeleteBracketGuards:
     def test_delete_blocked_when_reason_missing(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "with_finance3", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "with_finance3", permission_names=SALARY_PLUS_FINANCE)
             b = _seed_bracket(s, year=2026, amount=40000)
             s.commit()
             bid = b.id
@@ -275,7 +277,7 @@ class TestFinalizedMonthsLock:
     def test_put_blocked_when_finalized_months_exist(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "fin_a", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "fin_a", permission_names=SALARY_PLUS_FINANCE)
             _seed_salary_record(s, 10, 2026, 3, finalized=True)
             _seed_salary_record(s, 11, 2026, 4, finalized=True)
             s.commit()
@@ -291,7 +293,7 @@ class TestFinalizedMonthsLock:
     def test_put_succeeds_with_acknowledgement(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "fin_b", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "fin_b", permission_names=SALARY_PLUS_FINANCE)
             _seed_salary_record(s, 12, 2026, 3, finalized=True)
             s.commit()
 
@@ -304,7 +306,7 @@ class TestFinalizedMonthsLock:
         """該年沒有任何封存月份 → 不需要 ack。"""
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "fin_c", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "fin_c", permission_names=SALARY_PLUS_FINANCE)
             _seed_salary_record(s, 13, 2026, 5, finalized=False)
             s.commit()
 
@@ -315,7 +317,7 @@ class TestFinalizedMonthsLock:
     def test_delete_blocked_when_finalized_months_exist(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "fin_d", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "fin_d", permission_names=SALARY_PLUS_FINANCE)
             b = _seed_bracket(s, year=2026, amount=30000)
             _seed_salary_record(s, 14, 2026, 6, finalized=True)
             s.commit()
@@ -333,7 +335,7 @@ class TestFinalizedMonthsLock:
     def test_delete_succeeds_with_acknowledgement(self, insurance_client):
         client, sf = insurance_client
         with sf() as s:
-            _create_user(s, "fin_e", permissions=SALARY_PLUS_FINANCE)
+            _create_user(s, "fin_e", permission_names=SALARY_PLUS_FINANCE)
             b = _seed_bracket(s, year=2026, amount=30000)
             _seed_salary_record(s, 15, 2026, 6, finalized=True)
             s.commit()

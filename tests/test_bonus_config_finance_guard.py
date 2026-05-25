@@ -62,16 +62,16 @@ def client_with_db(tmp_path):
 
 def _login(client, sf, *, with_finance: bool):
     """建立 HR 帳號（SETTINGS_WRITE）+ 視 with_finance 決定是否帶金流簽核位元。"""
-    perms = Permission.SETTINGS_WRITE | Permission.SETTINGS_READ
+    perms = ["SETTINGS_WRITE", "SETTINGS_READ"]
     if with_finance:
-        perms |= Permission.ACTIVITY_PAYMENT_APPROVE
+        perms.append(Permission.ACTIVITY_PAYMENT_APPROVE.value)
     with sf() as s:
         s.add(
             User(
                 username="hr_user",
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=int(perms),
+                permission_names=perms,
                 is_active=True,
             )
         )

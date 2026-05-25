@@ -70,13 +70,13 @@ def _create_admin(
     session,
     username: str = "pos_admin",
     password: str = "TempPass123",
-    permissions: int = Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+    permission_names: list[str] = ["ACTIVITY_READ", "ACTIVITY_WRITE"],
 ) -> User:
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
     )
     session.add(user)

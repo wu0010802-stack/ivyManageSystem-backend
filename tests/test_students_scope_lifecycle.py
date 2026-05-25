@@ -98,12 +98,14 @@ def _create_emp(session, *, name="教師", emp_no="E001"):
     return e
 
 
-def _create_user(session, *, username, role, permissions, employee_id=None):
+def _create_user(session, *, username, role, permission_names, employee_id=None):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password("Passw0rd!"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
         employee_id=employee_id,
@@ -148,8 +150,8 @@ def _login(client, username):
     )
 
 
-READ_PERMS = int(Permission.STUDENTS_READ)
-WRITE_PERMS = int(Permission.STUDENTS_WRITE) | int(Permission.STUDENTS_READ)
+READ_PERMS = ["STUDENTS_READ"]
+WRITE_PERMS = ["STUDENTS_WRITE", "STUDENTS_READ"]
 
 
 # ── /api/students 主端點：admin 不變，teacher 由 require_staff_permission 擋 ──
@@ -161,7 +163,7 @@ class TestAdminCanWriteAndSeeTerminal:
     def test_admin_can_put_student(self, students_client):
         client, sf = students_client
         with sf() as s:
-            _create_user(s, username="adm", role="admin", permissions=WRITE_PERMS)
+            _create_user(s, username="adm", role="admin", permission_names=WRITE_PERMS)
             cls_a = _create_classroom(s)
             stu = _create_student(s, classroom_id=cls_a.id)
             s.commit()
@@ -177,7 +179,7 @@ class TestAdminCanWriteAndSeeTerminal:
     def test_supervisor_can_put_student(self, students_client):
         client, sf = students_client
         with sf() as s:
-            _create_user(s, username="sup", role="supervisor", permissions=WRITE_PERMS)
+            _create_user(s, username="sup", role="supervisor", permission_names=WRITE_PERMS)
             cls_a = _create_classroom(s)
             stu = _create_student(s, classroom_id=cls_a.id)
             s.commit()
@@ -194,7 +196,7 @@ class TestAdminCanWriteAndSeeTerminal:
         """admin 看終態學生不受影響（事後查歷史用）。"""
         client, sf = students_client
         with sf() as s:
-            _create_user(s, username="adm2", role="admin", permissions=READ_PERMS)
+            _create_user(s, username="adm2", role="admin", permission_names=READ_PERMS)
             cls_a = _create_classroom(s)
             stu = _create_student(
                 s, classroom_id=cls_a.id, lifecycle_status=LIFECYCLE_GRADUATED
@@ -209,7 +211,7 @@ class TestAdminCanWriteAndSeeTerminal:
     def test_admin_can_bulk_transfer(self, students_client):
         client, sf = students_client
         with sf() as s:
-            _create_user(s, username="adm3", role="admin", permissions=WRITE_PERMS)
+            _create_user(s, username="adm3", role="admin", permission_names=WRITE_PERMS)
             cls_a = _create_classroom(s, name="A")
             cls_b = _create_classroom(s, name="B")
             stu = _create_student(s, classroom_id=cls_a.id)
@@ -372,7 +374,7 @@ class TestParentAssertStudentOwnedForWrite:
             username=f"parent_{lifecycle}",
             password_hash=hash_password("Passw0rd!"),
             role="parent",
-            permissions=0,
+            permission_names=[],
             is_active=True,
             must_change_password=False,
         )

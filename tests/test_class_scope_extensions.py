@@ -120,15 +120,17 @@ def _create_user(
     username: str,
     password: str,
     role: str,
-    permissions: int,
+    permission_names,
     employee: Employee | None = None,
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee.id if employee else None,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -195,10 +197,10 @@ def _seed_two_classrooms(session) -> dict:
     }
 
 
-_BASIC_STUDENT_PERMS = int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE)
-_GUARDIANS_READ_PERMS = int(Permission.STUDENTS_READ | Permission.GUARDIANS_READ)
-_FEES_READ_PERMS = int(Permission.FEES_READ)
-_FEES_RW_PERMS = int(Permission.FEES_READ | Permission.FEES_WRITE)
+_BASIC_STUDENT_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE"]
+_GUARDIANS_READ_PERMS = ["STUDENTS_READ", "GUARDIANS_READ"]
+_FEES_READ_PERMS = ["FEES_READ"]
+_FEES_RW_PERMS = ["FEES_READ", "FEES_WRITE"]
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +242,7 @@ class TestF022_StudentChangeLogs:
                 username="cl_tA",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_log(s, seed["st_a"].id, seed["cls_a"].id)
@@ -264,7 +266,7 @@ class TestF022_StudentChangeLogs:
                 username="cl_tA_put",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             log_id = self._seed_log(s, seed["st_b"].id, seed["cls_b"].id)
@@ -283,7 +285,7 @@ class TestF022_StudentChangeLogs:
                 username="cl_tA_post",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             other_st = seed["st_b"].id
@@ -311,7 +313,7 @@ class TestF022_StudentChangeLogs:
                 username="cl_tA_sum",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_log(s, seed["st_a"].id, seed["cls_a"].id)
@@ -338,7 +340,7 @@ class TestF022_StudentChangeLogs:
                 username="cl_admin",
                 password="Pass1234",
                 role="admin",
-                permissions=int(Permission.STUDENTS_READ | Permission.STUDENTS_WRITE),
+                permission_names=["STUDENTS_READ", "STUDENTS_WRITE"],
                 employee=None,
             )
             log_id = self._seed_log(s, seed["st_b"].id, seed["cls_b"].id)
@@ -398,7 +400,7 @@ class TestF023_IncidentsAssessmentsList:
                 username="inc_tA",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_incident(s, seed["st_a"].id)
@@ -420,7 +422,7 @@ class TestF023_IncidentsAssessmentsList:
                 username="asm_tA",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_assessment(s, seed["st_a"].id)
@@ -442,7 +444,7 @@ class TestF023_IncidentsAssessmentsList:
                 username="inc_admin",
                 password="Pass1234",
                 role="admin",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=None,
             )
             self._seed_incident(s, seed["st_a"].id)
@@ -471,7 +473,7 @@ class TestF023_IncidentsAssessmentsList:
                 username="inc_tA_block",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             other_cls = seed["cls_b"].id
@@ -552,7 +554,7 @@ class TestF024_StudentsRecordsTimeline:
                 username="tl_tA",
                 password="Pass1234",
                 role="staff",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -577,7 +579,7 @@ class TestF024_StudentsRecordsTimeline:
                 username="tl_admin",
                 password="Pass1234",
                 role="admin",
-                permissions=_BASIC_STUDENT_PERMS,
+                permission_names=_BASIC_STUDENT_PERMS,
                 employee=None,
             )
             self._seed_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -618,7 +620,7 @@ class TestF025_GuardiansList:
                 username="gd_tA_other",
                 password="Pass1234",
                 role="staff",
-                permissions=_GUARDIANS_READ_PERMS,
+                permission_names=_GUARDIANS_READ_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_guardian(s, seed["st_b"].id)
@@ -636,7 +638,7 @@ class TestF025_GuardiansList:
                 username="gd_tA_own",
                 password="Pass1234",
                 role="staff",
-                permissions=_GUARDIANS_READ_PERMS,
+                permission_names=_GUARDIANS_READ_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_guardian(s, seed["st_a"].id)
@@ -655,7 +657,7 @@ class TestF025_GuardiansList:
                 username="gd_admin",
                 password="Pass1234",
                 role="admin",
-                permissions=_GUARDIANS_READ_PERMS,
+                permission_names=_GUARDIANS_READ_PERMS,
                 employee=None,
             )
             self._seed_guardian(s, seed["st_b"].id)
@@ -707,7 +709,7 @@ class TestF034_FeesRecords:
                 username="fee_tA_other",
                 password="Pass1234",
                 role="staff",
-                permissions=_FEES_READ_PERMS,
+                permission_names=_FEES_READ_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -725,7 +727,7 @@ class TestF034_FeesRecords:
                 username="fee_tA_own",
                 password="Pass1234",
                 role="staff",
-                permissions=_FEES_READ_PERMS,
+                permission_names=_FEES_READ_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -745,7 +747,7 @@ class TestF034_FeesRecords:
                 username="fee_tA_nofilter",
                 password="Pass1234",
                 role="staff",
-                permissions=_FEES_READ_PERMS,
+                permission_names=_FEES_READ_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -762,7 +764,7 @@ class TestF034_FeesRecords:
                 username="fee_admin",
                 password="Pass1234",
                 role="admin",
-                permissions=_FEES_READ_PERMS,
+                permission_names=_FEES_READ_PERMS,
                 employee=None,
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -793,7 +795,7 @@ class TestF034_FeesRecords:
                 username="fee_tA_pay",
                 password="Pass1234",
                 role="staff",
-                permissions=_FEES_RW_PERMS,
+                permission_names=_FEES_RW_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -819,7 +821,7 @@ class TestF034_FeesRecords:
                 username="fee_tA_refund",
                 password="Pass1234",
                 role="staff",
-                permissions=_FEES_RW_PERMS,
+                permission_names=_FEES_RW_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -841,7 +843,7 @@ class TestF034_FeesRecords:
                 username="fee_tA_refunds_list",
                 password="Pass1234",
                 role="staff",
-                permissions=_FEES_READ_PERMS,
+                permission_names=_FEES_READ_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -860,7 +862,7 @@ class TestF034_FeesRecords:
                 username="fee_tA_summary",
                 password="Pass1234",
                 role="staff",
-                permissions=_FEES_READ_PERMS,
+                permission_names=_FEES_READ_PERMS,
                 employee=seed["emp_a"],
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)
@@ -877,7 +879,7 @@ class TestF034_FeesRecords:
                 username="fee_admin_summary",
                 password="Pass1234",
                 role="admin",
-                permissions=_FEES_READ_PERMS,
+                permission_names=_FEES_READ_PERMS,
                 employee=None,
             )
             self._seed_fee_records(s, seed["st_a"].id, seed["st_b"].id)

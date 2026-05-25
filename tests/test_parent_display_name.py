@@ -109,7 +109,7 @@ def _make_parent_user(session, *, line_user_id="U1", display_name=None) -> User:
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_user_id,
         display_name=display_name,
@@ -145,7 +145,7 @@ def _parent_token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )
@@ -349,7 +349,7 @@ class TestLiffSyncDisplayName:
                 username="admin_for_binding",
                 password_hash="x",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 token_version=0,
             )

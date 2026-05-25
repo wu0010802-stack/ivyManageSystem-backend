@@ -57,7 +57,7 @@ def app_client():
                 username="admin",
                 password_hash=hash_password("admin123"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 token_version=0,
             )
@@ -87,7 +87,7 @@ def app_client():
                 "sub": "admin",
                 "user_id": admin_id,
                 "role": "admin",
-                "permissions": -1,
+                "permission_names": ["*"],
                 "token_version": 0,
             }
         )

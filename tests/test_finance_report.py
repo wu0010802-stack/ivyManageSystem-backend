@@ -98,7 +98,7 @@ def _seed_admin(sf, client):
                 username="fin_admin",
                 password_hash=hash_password("FinPass123"),
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 is_active=True,
                 must_change_password=False,
             )

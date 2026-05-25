@@ -70,7 +70,7 @@ def insurance_client(tmp_path):
     engine.dispose()
 
 
-_FINANCE_PERMS = int(Permission.SALARY_WRITE) | int(Permission.ACTIVITY_PAYMENT_APPROVE)
+_FINANCE_PERMS = ["SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
 
 
 def _create_admin(session):
@@ -78,7 +78,7 @@ def _create_admin(session):
         username="admin_ins",
         password_hash=hash_password("Passw0rd!"),
         role="admin",
-        permissions=_FINANCE_PERMS,
+        permission_names=_FINANCE_PERMS,
         is_active=True,
         must_change_password=False,
     )

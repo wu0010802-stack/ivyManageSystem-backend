@@ -76,11 +76,13 @@ def client_with_db(tmp_path):
 
 
 def _create_user(session, username, perms, password="TempPass123"):
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -229,7 +231,7 @@ def test_batch_sign_clears_rejected_fields(client_with_db):
         _create_user(
             s,
             "admin1",
-            Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW,
+            ["APPRAISAL_READ", "APPRAISAL_REVIEW"],
         )
         s.commit()
         summary = _seed_summary_with_rejection_residue(s, status=SummaryStatus.DRAFT)

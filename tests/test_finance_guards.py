@@ -28,15 +28,15 @@ from utils.permissions import Permission
 
 class TestHasFinanceApprove:
     def test_with_approve_bit_true(self):
-        user = {"permissions": Permission.ACTIVITY_PAYMENT_APPROVE.value}
+        user = {"permission_names": ["ACTIVITY_PAYMENT_APPROVE"]}
         assert has_finance_approve(user) is True
 
     def test_without_bit_false(self):
-        user = {"permissions": 0}
+        user = {"permission_names": []}
         assert has_finance_approve(user) is False
 
     def test_superuser_minus_one_true(self):
-        user = {"permissions": -1}
+        user = {"permission_names": ["*"]}
         assert has_finance_approve(user) is True
 
     def test_missing_permissions_key_default_zero(self):
@@ -48,7 +48,7 @@ class TestHasFinanceApprove:
 
 class TestRequireNotSelfEdit:
     def test_self_editing_sensitive_field_raises_403(self):
-        user = {"employee_id": 7, "permissions": 0}
+        user = {"employee_id": 7, "permission_names": []}
         with pytest.raises(HTTPException) as exc:
             require_not_self_edit(user, 7, ["base_salary", "name"])
         assert exc.value.status_code == 403
@@ -61,7 +61,7 @@ class TestRequireNotSelfEdit:
         require_not_self_edit(user, 7, ["name", "phone"])
 
     def test_pure_admin_no_employee_id_passes(self):
-        user = {"employee_id": None, "permissions": -1}
+        user = {"employee_id": None, "permission_names": ["*"]}
         # 純管理員可以改任何人的任何欄位
         require_not_self_edit(user, 999, ["base_salary", "hire_date"])
 
@@ -112,17 +112,17 @@ class TestRequireNotSelfSalaryRecord:
 
 class TestRequireFinanceApprove:
     def test_amount_under_threshold_passes_without_perm(self):
-        user = {"permissions": 0}
+        user = {"permission_names": []}
         # threshold = 1000, amount = 500 → 放行
         require_finance_approve(500, user)
 
     def test_amount_at_threshold_exactly_passes(self):
         # 等於閾值不算超過（> 才擋）
-        user = {"permissions": 0}
+        user = {"permission_names": []}
         require_finance_approve(FINANCE_APPROVAL_THRESHOLD, user)
 
     def test_amount_over_threshold_without_perm_raises(self):
-        user = {"permissions": 0}
+        user = {"permission_names": []}
         with pytest.raises(HTTPException) as exc:
             require_finance_approve(5000, user, action_label="退費")
         assert exc.value.status_code == 403
@@ -130,11 +130,11 @@ class TestRequireFinanceApprove:
         assert "NT$5,000" in exc.value.detail
 
     def test_amount_over_threshold_with_perm_passes(self):
-        user = {"permissions": Permission.ACTIVITY_PAYMENT_APPROVE.value}
+        user = {"permission_names": ["ACTIVITY_PAYMENT_APPROVE"]}
         require_finance_approve(99999, user)
 
     def test_custom_threshold(self):
-        user = {"permissions": 0}
+        user = {"permission_names": []}
         # 自訂 threshold=100，amount=200 應擋
         with pytest.raises(HTTPException):
             require_finance_approve(200, user, threshold=100)

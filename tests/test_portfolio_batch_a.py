@@ -139,14 +139,16 @@ def _add_user(
     password: str,
     *,
     role: str = "supervisor",
-    perms: int = -1,  # sentinel for 全權限（Permission.ALL 在 SQLite 上 overflow）
+    perms: list[str] | None = None,  # None → role default；["*"] = 全權限
     employee_id: int | None = None,
 ) -> User:
+    if perms is None:
+        perms = ["*"]
     u = User(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=perms,
+        permission_names=perms,
         is_active=True,
         employee_id=employee_id,
     )
@@ -533,10 +535,12 @@ class TestClassScope:
                 "Pass1234",
                 role="teacher",
                 perms=(
-                    Permission.PORTFOLIO_READ
-                    | Permission.PORTFOLIO_WRITE
-                    | Permission.STUDENTS_HEALTH_READ
-                    | Permission.STUDENTS_MEDICATION_ADMINISTER
+                    [
+                        "PORTFOLIO_READ",
+                        "PORTFOLIO_WRITE",
+                        "STUDENTS_HEALTH_READ",
+                        "STUDENTS_MEDICATION_ADMINISTER",
+                    ]
                 ),
                 employee_id=seed["emp_a"].id,
             )
@@ -563,7 +567,7 @@ class TestClassScope:
                 "super",
                 "Pass1234",
                 role="supervisor",
-                perms=-1,
+                perms=["*"],
             )
             st_b_id = seed["st_b"].id
         _login(client, "super", "Pass1234")
@@ -582,10 +586,7 @@ class TestClassScope:
                 "teacher_a",
                 "Pass1234",
                 role="teacher",
-                perms=(
-                    Permission.STUDENTS_HEALTH_READ
-                    | Permission.STUDENTS_MEDICATION_ADMINISTER
-                ),
+                perms=(["STUDENTS_HEALTH_READ", "STUDENTS_MEDICATION_ADMINISTER"]),
                 employee_id=seed["emp_a"].id,
             )
             # 兩班各一張今日 order
@@ -622,7 +623,7 @@ class TestHealthAndMedication:
         client, factory, _ = app_with_db
         with factory() as s:
             seed = _seed_classrooms_and_students(s)
-            _add_user(s, "super", "Pass1234", role="supervisor", perms=-1)
+            _add_user(s, "super", "Pass1234", role="supervisor", perms=["*"])
             st_id = seed["st_a"].id
         _login(client, "super", "Pass1234")
 
@@ -659,10 +660,7 @@ class TestHealthAndMedication:
                 "teacher_a",
                 "Pass1234",
                 role="teacher",
-                perms=(
-                    Permission.STUDENTS_HEALTH_READ
-                    | Permission.STUDENTS_MEDICATION_ADMINISTER
-                ),
+                perms=(["STUDENTS_HEALTH_READ", "STUDENTS_MEDICATION_ADMINISTER"]),
                 employee_id=seed["emp_a"].id,
             )
             st_id = seed["st_a"].id
@@ -678,7 +676,7 @@ class TestHealthAndMedication:
         client, factory, _ = app_with_db
         with factory() as s:
             seed = _seed_classrooms_and_students(s)
-            _add_user(s, "super", "Pass1234", role="supervisor", perms=-1)
+            _add_user(s, "super", "Pass1234", role="supervisor", perms=["*"])
             st_id = seed["st_a"].id
         _login(client, "super", "Pass1234")
 
@@ -702,7 +700,7 @@ class TestHealthAndMedication:
         client, factory, _ = app_with_db
         with factory() as s:
             seed = _seed_classrooms_and_students(s)
-            _add_user(s, "super", "Pass1234", role="supervisor", perms=-1)
+            _add_user(s, "super", "Pass1234", role="supervisor", perms=["*"])
             st_id = seed["st_a"].id
         _login(client, "super", "Pass1234")
 
@@ -739,7 +737,7 @@ class TestMedicationImmutability:
 
         with factory() as s:
             seed = _seed_classrooms_and_students(s)
-            _add_user(s, "super", "Pass1234", role="supervisor", perms=-1)
+            _add_user(s, "super", "Pass1234", role="supervisor", perms=["*"])
             order = StudentMedicationOrder(
                 student_id=seed["st_a"].id,
                 order_date=date.today(),
@@ -859,7 +857,7 @@ class TestMedicationReminderScheduler:
 
         with factory() as s:
             seed = _seed_classrooms_and_students(s)
-            _add_user(s, "super", "Pass1234", role="supervisor", perms=-1)
+            _add_user(s, "super", "Pass1234", role="supervisor", perms=["*"])
             # 今日 2 筆、昨日 1 筆
             from datetime import timedelta
 

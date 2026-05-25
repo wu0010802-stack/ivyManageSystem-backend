@@ -66,7 +66,7 @@ def seed_data(session):
     session.add_all([s1, s2])
     session.flush()
 
-    admin = User(username="admin", password_hash="x", role="admin", permissions=-1)
+    admin = User(username="admin", password_hash="x", role="admin", permission_names=["*"])
     session.add(admin)
     session.commit()
 
@@ -83,7 +83,7 @@ def seed_data(session):
 # ---------------------------------------------------------------------------
 
 def _admin_user(user_id=1):
-    return {"user_id": user_id, "username": "admin", "permissions": -1}
+    return {"user_id": user_id, "username": "admin", "permission_names": ["*"]}
 
 
 def _mock_manager():

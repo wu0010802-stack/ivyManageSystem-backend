@@ -38,7 +38,7 @@ from utils.permissions import Permission
 from tests.test_activity_pos import _create_admin, _login, _setup_reg
 
 # 不含 ACTIVITY_PAYMENT_APPROVE → 應被累積簽核擋下
-NO_APPROVE_PERMS = Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE
+NO_APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE"]
 
 
 @pytest.fixture
@@ -97,7 +97,7 @@ class TestMarkUnpaidCumulativeRefund:
     ):
         client, sf = cumulative_client
         with sf() as s:
-            _create_admin(s, permissions=NO_APPROVE_PERMS)
+            _create_admin(s, permission_names=NO_APPROVE_PERMS)
             reg = _setup_reg(s, student_name="王測試", paid_amount=900)
             s.commit()
             reg_id = reg.id
@@ -139,7 +139,7 @@ class TestWithdrawCourseCumulativeRefund:
         """
         client, sf = cumulative_client
         with sf() as s:
-            _create_admin(s, permissions=NO_APPROVE_PERMS)
+            _create_admin(s, permission_names=NO_APPROVE_PERMS)
             reg = _setup_reg(s, student_name="陳測試", paid_amount=1100)
             s.commit()
             reg_id = reg.id
@@ -175,7 +175,7 @@ class TestPriorVoidedRefundDoesNotCount:
     def test_voided_prior_refund_excluded_from_cumulative(self, cumulative_client):
         client, sf = cumulative_client
         with sf() as s:
-            _create_admin(s, permissions=NO_APPROVE_PERMS)
+            _create_admin(s, permission_names=NO_APPROVE_PERMS)
             reg = _setup_reg(s, student_name="李測試", paid_amount=900)
             s.commit()
             reg_id = reg.id

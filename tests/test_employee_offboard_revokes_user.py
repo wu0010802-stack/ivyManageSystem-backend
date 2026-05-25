@@ -71,12 +71,14 @@ def _seed_emp(session, *, name, emp_no="E001"):
     return e
 
 
-def _seed_user(session, *, username, role, employee_id, permissions, token_version=0):
+def _seed_user(
+    session, *, username, role, employee_id, permission_names, token_version=0
+):
     u = User(
         username=username,
         password_hash=hash_password("Passw0rd!"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
         employee_id=employee_id,
@@ -94,8 +96,8 @@ def _login(client, username):
     )
 
 
-ADMIN_PERMS = -1
-HR_PERMS = int(Permission.EMPLOYEES_WRITE) | int(Permission.EMPLOYEES_READ)
+ADMIN_PERMS = ["*"]
+HR_PERMS = ["EMPLOYEES_WRITE", "EMPLOYEES_READ"]
 
 
 class TestOffboardRevokesUser:
@@ -109,7 +111,7 @@ class TestOffboardRevokesUser:
                 username="admin1",
                 role="admin",
                 employee_id=None,
-                permissions=ADMIN_PERMS,
+                permission_names=ADMIN_PERMS,
             )
             target_emp = _seed_emp(s, name="離職員工", emp_no="E_LEAVE")
             target_user = _seed_user(
@@ -117,7 +119,7 @@ class TestOffboardRevokesUser:
                 username="leaving",
                 role="hr",
                 employee_id=target_emp.id,
-                permissions=HR_PERMS,
+                permission_names=HR_PERMS,
                 token_version=0,
             )
             s.commit()
@@ -153,7 +155,7 @@ class TestOffboardRevokesUser:
                 username="admin2",
                 role="admin",
                 employee_id=None,
-                permissions=ADMIN_PERMS,
+                permission_names=ADMIN_PERMS,
             )
             target_emp = _seed_emp(s, name="通知期員工", emp_no="E_NOTICE")
             target_user = _seed_user(
@@ -161,7 +163,7 @@ class TestOffboardRevokesUser:
                 username="notice_user",
                 role="teacher",
                 employee_id=target_emp.id,
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
             )
             s.commit()
             target_emp_id = target_emp.id
@@ -196,7 +198,7 @@ class TestOffboardRevokesUser:
                 username="admin3",
                 role="admin",
                 employee_id=None,
-                permissions=ADMIN_PERMS,
+                permission_names=ADMIN_PERMS,
             )
             target_emp = _seed_emp(s, name="無帳號員工", emp_no="E_NO_USER")
             s.commit()
@@ -225,7 +227,7 @@ class TestOffboardRevokesUser:
                 username="admin4",
                 role="admin",
                 employee_id=None,
-                permissions=ADMIN_PERMS,
+                permission_names=ADMIN_PERMS,
             )
             target_emp = _seed_emp(s, name="重複離職", emp_no="E_DUP")
             target_user = _seed_user(
@@ -233,7 +235,7 @@ class TestOffboardRevokesUser:
                 username="already_off",
                 role="teacher",
                 employee_id=target_emp.id,
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
                 token_version=5,
             )
             target_user.is_active = False

@@ -95,7 +95,7 @@ def _seed_with_meeting_absence(session_factory):
             username="adj_admin",
             password_hash=hash_password("AdjPass123"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             must_change_password=False,
         )
@@ -136,7 +136,7 @@ def _seed_hourly(session_factory):
             username="adj_admin",
             password_hash=hash_password("AdjPass123"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             must_change_password=False,
         )
@@ -236,13 +236,13 @@ class TestRecalculatePreservesHourlyTotal:
             # 給「能 manual_adjust 但不具 ACTIVITY_PAYMENT_APPROVE」的角色
             from utils.permissions import Permission
 
-            non_approve_perms = int(Permission.SALARY_WRITE | Permission.SALARY_READ)
+            non_approve_perms = ["SALARY_WRITE", "SALARY_READ"]
             user = User(
                 employee_id=None,
                 username="hr_no_approve",
                 password_hash=hash_password("HrPass1234"),
                 role="hr",
-                permissions=non_approve_perms,
+                permission_names=non_approve_perms,
                 is_active=True,
                 must_change_password=False,
             )

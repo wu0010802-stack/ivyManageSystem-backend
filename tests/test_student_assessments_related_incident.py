@@ -73,11 +73,13 @@ def client_with_db(tmp_path):
 
 
 def _create_user(session, username, perms, password="TempPass123") -> User:
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=perms,
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -109,7 +111,7 @@ class TestAssessmentRelatedIncident:
             _create_user(
                 session,
                 "admin1",
-                Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+                ["STUDENTS_READ", "STUDENTS_WRITE"],
             )
             _, s1, _ = _seed_classroom_and_students(session)
             inc = StudentIncident(
@@ -147,7 +149,7 @@ class TestAssessmentRelatedIncident:
             _create_user(
                 session,
                 "admin1",
-                Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+                ["STUDENTS_READ", "STUDENTS_WRITE"],
             )
             _, s1, s2 = _seed_classroom_and_students(session)
             other_inc = StudentIncident(
@@ -183,7 +185,7 @@ class TestAssessmentRelatedIncident:
             _create_user(
                 session,
                 "admin1",
-                Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+                ["STUDENTS_READ", "STUDENTS_WRITE"],
             )
             _, s1, _ = _seed_classroom_and_students(session)
             s1_id = s1.id
@@ -210,7 +212,7 @@ class TestAssessmentRelatedIncident:
             _create_user(
                 session,
                 "admin1",
-                Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+                ["STUDENTS_READ", "STUDENTS_WRITE"],
             )
             _, s1, _ = _seed_classroom_and_students(session)
             inc = StudentIncident(

@@ -69,7 +69,7 @@ def _admin(session, username="fees_admin"):
         username=username,
         password_hash=hash_password("Temp123456"),
         role="admin",
-        permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+        permission_names=["FEES_READ", "FEES_WRITE"],
         is_active=True,
     )
     session.add(user)

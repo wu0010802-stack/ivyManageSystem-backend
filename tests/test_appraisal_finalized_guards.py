@@ -72,13 +72,7 @@ def client_with_db(tmp_path):
     engine.dispose()
 
 
-APPRAISAL_ALL = (
-    Permission.APPRAISAL_READ
-    | Permission.APPRAISAL_EVENT_WRITE
-    | Permission.APPRAISAL_REVIEW
-    | Permission.APPRAISAL_ACCOUNTING
-    | Permission.APPRAISAL_FINALIZE
-)
+APPRAISAL_ALL = ["APPRAISAL_READ", "APPRAISAL_EVENT_WRITE", "APPRAISAL_REVIEW", "APPRAISAL_ACCOUNTING", "APPRAISAL_FINALIZE"]
 
 
 def _login(client, username="admin", password="TempPass123"):
@@ -103,7 +97,7 @@ def _seed_basic_cycle(sf, cycle_status=CycleStatus.OPEN):
             username="admin",
             password_hash=hash_password("TempPass123"),
             role="admin",
-            permissions=int(APPRAISAL_ALL),
+            permission_names=APPRAISAL_ALL,
             is_active=True,
         )
         s.add(admin_user)

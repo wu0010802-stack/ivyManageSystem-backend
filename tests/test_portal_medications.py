@@ -48,10 +48,10 @@ def med_client(tmp_path):
 
 def _seed_two_classrooms(sf) -> dict:
     """老師 A 帶 A 班（小明），老師 B 帶 B 班（小華）。各一張今日用藥單。"""
-    perm = int(
-        Permission.STUDENTS_HEALTH_READ.value
-        | Permission.STUDENTS_MEDICATION_ADMINISTER.value
-    )
+    perm = [
+        Permission.STUDENTS_HEALTH_READ.value,
+        Permission.STUDENTS_MEDICATION_ADMINISTER.value,
+    ]
     today = date.today()
     with sf() as session:
         e1 = Employee(employee_id="E1", name="老師A", is_active=True, base_salary=30000)
@@ -113,7 +113,7 @@ def _seed_two_classrooms(sf) -> dict:
             password_hash="!",
             role="teacher",
             employee_id=e1.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -122,7 +122,7 @@ def _seed_two_classrooms(sf) -> dict:
             password_hash="!",
             role="teacher",
             employee_id=e2.id,
-            permissions=perm,
+            permission_names=perm,
             is_active=True,
             token_version=0,
         )
@@ -146,7 +146,7 @@ def _token(uid: int, emp: int, perm: int, name: str = "t") -> str:
             "employee_id": emp,
             "role": "teacher",
             "name": name,
-            "permissions": perm,
+            "permission_names": perm,
             "token_version": 0,
         }
     )

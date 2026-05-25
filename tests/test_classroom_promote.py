@@ -209,7 +209,7 @@ class TestPromoteAcademicYear:
     def _run(self, session, payload: dict):
         from api.classrooms import promote_classrooms_to_academic_year, ClassroomPromoteAcademicYear
         item = ClassroomPromoteAcademicYear(**payload)
-        current_user = {"username": "admin", "user_id": 1, "permissions": -1}
+        current_user = {"username": "admin", "user_id": 1, "permission_names": ["*"]}
         session.close = MagicMock()
         with patch("api.classrooms.get_session", return_value=session):
             return asyncio.run(

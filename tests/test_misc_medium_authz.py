@@ -73,7 +73,7 @@ def _create_user(
     *,
     username,
     role,
-    permissions,
+    permission_names,
     employee_id=None,
     password="Pass1234",
 ):
@@ -82,7 +82,7 @@ def _create_user(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(permissions),
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -156,7 +156,7 @@ def _seed_f005(session) -> dict:
         session,
         username="emp_a",
         role="staff",
-        permissions=int(Permission.LEAVES_READ),
+        permission_names=["LEAVES_READ"],
         employee_id=emp_a.id,
     )
 
@@ -567,7 +567,7 @@ def _seed_f033(session) -> None:
         session,
         username="adm_export",
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
     )
     session.commit()
 
@@ -829,14 +829,14 @@ def _seed_f045(session):
         session,
         username="t_a",
         role="staff",
-        permissions=int(Permission.ANNOUNCEMENTS_READ | Permission.ANNOUNCEMENTS_WRITE),
+        permission_names=["ANNOUNCEMENTS_READ", "ANNOUNCEMENTS_WRITE"],
         employee_id=emp_a.id,
     )
     _create_user(
         session,
         username="adm_ann",
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
     )
     session.commit()
     return {

@@ -66,7 +66,7 @@ def _login_admin(client, session_factory):
             username="admin",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+            permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
             employee_id=None,
             is_active=True,
             must_change_password=False,

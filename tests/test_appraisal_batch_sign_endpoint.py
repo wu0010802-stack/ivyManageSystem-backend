@@ -78,11 +78,13 @@ def client_with_db(tmp_path):
 
 def _create_user(session, username, perms, password="TempPass123"):
     """admin 角色、無 employee_id（避免 assert_not_self_approval 誤殺）。"""
+    if isinstance(perms, str):
+        perms = [perms]
     user = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=int(perms),
+        permission_names=perms,
         is_active=True,
     )
     session.add(user)
@@ -167,7 +169,7 @@ def test_batch_sign_supervisor_happy(client_with_db):
     client, sf = client_with_db
     with sf() as s:
         _create_user(
-            s, "reviewer1", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
+            s, "reviewer1", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
         )
         s.commit()
         cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)
@@ -193,7 +195,7 @@ def test_batch_sign_partial_failure(client_with_db):
     client, sf = client_with_db
     with sf() as s:
         _create_user(
-            s, "reviewer2", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
+            s, "reviewer2", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
         )
         s.commit()
         cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)
@@ -219,7 +221,7 @@ def test_batch_sign_finalize_requires_finalize_permission(client_with_db):
     client, sf = client_with_db
     with sf() as s:
         _create_user(
-            s, "reviewer3", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
+            s, "reviewer3", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
         )
         s.commit()
         cycle, ids = _seed_n_summaries(s, 2, SummaryStatus.ACCOUNTING_SIGNED)
@@ -237,7 +239,7 @@ def test_batch_sign_cycle_locked_blocked(client_with_db):
     client, sf = client_with_db
     with sf() as s:
         _create_user(
-            s, "reviewer4", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
+            s, "reviewer4", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
         )
         s.commit()
         cycle, ids = _seed_n_summaries(s, 2, SummaryStatus.DRAFT)
@@ -257,7 +259,7 @@ def test_batch_sign_writes_log_per_summary(client_with_db):
     client, sf = client_with_db
     with sf() as s:
         _create_user(
-            s, "reviewer5", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
+            s, "reviewer5", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
         )
         s.commit()
         cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)
@@ -285,7 +287,7 @@ def test_batch_sign_unknown_summary_in_list(client_with_db):
     client, sf = client_with_db
     with sf() as s:
         _create_user(
-            s, "reviewer6", Permission.APPRAISAL_READ | Permission.APPRAISAL_REVIEW
+            s, "reviewer6", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
         )
         s.commit()
         cycle, ids = _seed_n_summaries(s, 2, SummaryStatus.DRAFT)

@@ -75,13 +75,13 @@ def session(_backend):
 
 @pytest.fixture
 def client_admin(_backend):
-    """已登入的 admin 帳號 client（permissions=-1 表全開）。"""
+    """已登入的 admin 帳號 client（permission_names=-1 表全開）。"""
     with _backend["session_factory"]() as s:
         u = User(
             username="refund_admin",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
         )
         s.add(u)
@@ -322,7 +322,7 @@ def test_suggest_non_admin_blocked_by_assert_student_access(_backend, setup_fee_
             # is_unrestricted 也不放行（非 admin/hr/supervisor）→ 走
             # assert_student_access 班級 scope 守衛
             role="finance",
-            permissions=int(Permission.FEES_READ),
+            permission_names=["FEES_READ"],
             employee_id=emp.id,
             is_active=True,
         )

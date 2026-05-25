@@ -272,7 +272,7 @@ def _build_user_payload(user: User) -> dict:
         "employee_id": None,
         "role": "parent",
         "name": user.username,
-        "permissions": 0,
+        "permission_names": [],
         "token_version": user.token_version or 0,
         "line_user_id": user.line_user_id,
     }
@@ -407,7 +407,7 @@ def _create_parent_user(
         username=_username_for_line(line_user_id),
         password_hash="!LINE_ONLY",  # sentinel，verify_password 永不通過
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         must_change_password=False,
         line_user_id=line_user_id,

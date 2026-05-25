@@ -89,12 +89,14 @@ def _make_employee(session, *, name="員工甲", base_salary=30000):
     return emp
 
 
-def _make_user(session, *, username, permissions, employee_id=None, role="admin"):
+def _make_user(session, *, username, permission_names, employee_id=None, role="admin"):
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     u = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,
@@ -124,7 +126,7 @@ class TestEmployeeSelfEdit:
             _make_user(
                 s,
                 username="self_edit",
-                permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+                permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
                 employee_id=emp.id,
             )
             s.commit()
@@ -149,7 +151,7 @@ class TestEmployeeSelfEdit:
             _make_user(
                 s,
                 username="self_edit",
-                permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+                permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
                 employee_id=emp.id,
             )
             s.commit()
@@ -175,7 +177,7 @@ class TestEmployeeSelfEdit:
             _make_user(
                 s,
                 username="pure_admin",
-                permissions=-1,  # 全部權限（含 ACTIVITY_PAYMENT_APPROVE）
+                permission_names=["*"],  # 全部權限（含 ACTIVITY_PAYMENT_APPROVE）
                 employee_id=None,
             )
             s.commit()
@@ -205,7 +207,7 @@ class TestEmployeeSelfEdit:
                 _make_user(
                     s,
                     username=f"indirect_{field}",
-                    permissions=Permission.EMPLOYEES_READ | Permission.EMPLOYEES_WRITE,
+                    permission_names=["EMPLOYEES_READ", "EMPLOYEES_WRITE"],
                     employee_id=emp.id,
                 )
                 s.commit()
@@ -256,7 +258,7 @@ class TestSalaryManualAdjustAntiTheft:
             _make_user(
                 s,
                 username="self_adj",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
                 employee_id=emp.id,
             )
             s.commit()
@@ -278,7 +280,7 @@ class TestSalaryManualAdjustAntiTheft:
         client, sf = antitheft_client
         with sf() as s:
             _emp, rec = _seed_salary_record(s)
-            _make_user(s, username="boss", permissions=-1, employee_id=None)
+            _make_user(s, username="boss", permission_names=["*"], employee_id=None)
             s.commit()
             rec_id = rec.id
 
@@ -297,7 +299,7 @@ class TestSalaryManualAdjustAntiTheft:
             _make_user(
                 s,
                 username="write_only_hr",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
                 employee_id=None,  # 純 HR 帳號，非員工本人
             )
             s.commit()
@@ -323,7 +325,7 @@ class TestSalaryManualAdjustAntiTheft:
             _make_user(
                 s,
                 username="write_only_hr",
-                permissions=Permission.SALARY_READ | Permission.SALARY_WRITE,
+                permission_names=["SALARY_READ", "SALARY_WRITE"],
                 employee_id=None,
             )
             s.commit()
@@ -348,9 +350,11 @@ class TestSalaryManualAdjustAntiTheft:
             _make_user(
                 s,
                 username="finance_boss",
-                permissions=Permission.SALARY_READ
-                | Permission.SALARY_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 employee_id=None,
             )
             s.commit()
@@ -406,7 +410,7 @@ class TestFeeRefundAntiTheft:
             _make_user(
                 s,
                 username="fees_user",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
                 employee_id=None,
             )
             s.commit()
@@ -427,7 +431,7 @@ class TestFeeRefundAntiTheft:
             _make_user(
                 s,
                 username="fees_user",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
                 employee_id=None,
             )
             s.commit()
@@ -449,7 +453,7 @@ class TestFeeRefundAntiTheft:
             _make_user(
                 s,
                 username="fees_user",
-                permissions=Permission.FEES_READ | Permission.FEES_WRITE,
+                permission_names=["FEES_READ", "FEES_WRITE"],
                 employee_id=None,
             )
             s.commit()
@@ -470,9 +474,11 @@ class TestFeeRefundAntiTheft:
             _make_user(
                 s,
                 username="finance_boss",
-                permissions=Permission.FEES_READ
-                | Permission.FEES_WRITE
-                | Permission.ACTIVITY_PAYMENT_APPROVE,
+                permission_names=[
+                    "FEES_READ",
+                    "FEES_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 employee_id=None,
             )
             s.commit()

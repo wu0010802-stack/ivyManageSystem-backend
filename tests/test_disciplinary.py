@@ -82,14 +82,14 @@ def _add_emp(session, employee_id="E001", name="王小明"):
 
 def _login(client, session_factory, username="disc_admin", perm=None):
     if perm is None:
-        perm = int(Permission.SALARY_READ | Permission.SALARY_WRITE)
+        perm = ["SALARY_READ", "SALARY_WRITE"]
     with session_factory() as session:
         session.add(
             User(
                 username=username,
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=perm,
+                permission_names=perm,
                 is_active=True,
                 must_change_password=False,
             )
@@ -464,7 +464,7 @@ class TestApi:
             client,
             session_factory,
             username="read_only",
-            perm=int(Permission.SALARY_READ),
+            perm=["SALARY_READ"],
         )
         res = client.post(
             "/api/disciplinary-actions",

@@ -33,12 +33,8 @@ from utils.permissions import Permission
 
 from tests.test_activity_pos import _create_admin, _login
 
-APPROVE_PERMS = (
-    Permission.ACTIVITY_READ
-    | Permission.ACTIVITY_WRITE
-    | Permission.ACTIVITY_PAYMENT_APPROVE
-)
-READ_ONLY = Permission.ACTIVITY_READ
+APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
+READ_ONLY = ["ACTIVITY_READ"]
 
 
 @pytest.fixture
@@ -150,7 +146,7 @@ def test_returns_operators_with_counts(operator_client):
     """收 2 筆（A）+ 退 1 筆（B），endpoint 回 2 個 operator，payment/refund 數正確。"""
     client, sf = operator_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _make_reg(s, student_name="王同學")
         _add_record(s, reg_id=reg.id, operator="alice", type_="payment", amount=500)
         _add_record(s, reg_id=reg.id, operator="alice", type_="payment", amount=300)
@@ -174,7 +170,7 @@ def test_orders_by_total_count_desc(operator_client):
     """A 收 5 筆、B 收 1 筆 → A 排第一。"""
     client, sf = operator_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _make_reg(s, student_name="李同學")
         for _ in range(5):
             _add_record(s, reg_id=reg.id, operator="heavy", type_="payment", amount=100)
@@ -192,7 +188,7 @@ def test_excludes_voided_records(operator_client):
     """voided 紀錄不計入。"""
     client, sf = operator_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _make_reg(s, student_name="陳同學")
         _add_record(s, reg_id=reg.id, operator="alice", type_="payment", amount=200)
         _add_record(s, reg_id=reg.id, operator="alice", type_="payment", amount=200)
@@ -211,7 +207,7 @@ def test_user_field_null_when_no_account(operator_client):
     """operator 沒對應 User → response 該筆 user=None。"""
     client, sf = operator_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _make_reg(s, student_name="林同學")
         # operator='ghost_account' 沒有對應 User row
         _add_record(s, reg_id=reg.id, operator="ghost_account", type_="payment")
@@ -229,7 +225,7 @@ def test_user_field_includes_display_name_role(operator_client):
     client, sf = operator_client
     with sf() as s:
         # 既有 admin（pos_admin）
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         # 新增帶 display_name 的個人帳號
         s.add(
             User(
@@ -237,7 +233,7 @@ def test_user_field_includes_display_name_role(operator_client):
                 password_hash=hash_password("Pw123456"),
                 role="staff",
                 display_name="愛麗絲老師",
-                permissions=APPROVE_PERMS,
+                permission_names=APPROVE_PERMS,
                 is_active=True,
             )
         )
@@ -264,7 +260,7 @@ def test_permission_guard_403_without_approve(operator_client):
                 username="reader",
                 password_hash=hash_password("Pw123456"),
                 role="staff",
-                permissions=READ_ONLY,
+                permission_names=READ_ONLY,
                 is_active=True,
             )
         )
@@ -279,7 +275,7 @@ def test_days_query_limits_window(operator_client):
     """早於 cutoff 的紀錄不計入。"""
     client, sf = operator_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _make_reg(s, student_name="周同學")
         # 60 天前的紀錄
         old_day = date.today() - timedelta(days=60)

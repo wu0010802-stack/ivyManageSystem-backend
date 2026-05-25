@@ -53,7 +53,7 @@ def _create_user(
     *,
     username: str,
     role: str,
-    permissions: int,
+    permission_names,
     employee_id: int | None = None,
     password: str = "Pass1234",
 ) -> User:
@@ -62,7 +62,7 @@ def _create_user(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(permissions),
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -133,7 +133,7 @@ def _seed_f035(session) -> None:
         session,
         username="adm_audit",
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
     )
     session.add(
         AuditLog(
@@ -248,7 +248,7 @@ def _seed_f044(session) -> dict:
         session,
         username="hr_a",
         role="staff",
-        permissions=int(Permission.STUDENTS_WRITE) | int(Permission.STUDENTS_READ),
+        permission_names=["STUDENTS_WRITE", "STUDENTS_READ"],
         employee_id=emp_a.id,
     )
     # 另一位 staff（同樣 custom role），不是建立者
@@ -256,7 +256,7 @@ def _seed_f044(session) -> dict:
         session,
         username="hr_b",
         role="staff",
-        permissions=int(Permission.STUDENTS_WRITE) | int(Permission.STUDENTS_READ),
+        permission_names=["STUDENTS_WRITE", "STUDENTS_READ"],
         employee_id=emp_b.id,
     )
     # admin：完整權限
@@ -264,14 +264,14 @@ def _seed_f044(session) -> dict:
         session,
         username="adm_d",
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
     )
     # supervisor：完整權限
     sup_u = _create_user(
         session,
         username="sup_d",
         role="supervisor",
-        permissions=-1,
+        permission_names=["*"],
     )
 
     # 由 hr_a 發起的接送通知

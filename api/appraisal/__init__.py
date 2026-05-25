@@ -987,7 +987,7 @@ def reject_summary(
     from utils.permissions import has_permission
 
     required = _resolve_reject_permission(summary.status)
-    user_perms = current_user.get("permissions", 0)
+    user_perms = current_user.get("permission_names")
     if not has_permission(user_perms, required):
         raise HTTPException(403, f"權限不足，需要 {required.name}")
 
@@ -1113,7 +1113,7 @@ def batch_sign_summaries(
         "ACCOUNTING": Permission.APPRAISAL_ACCOUNTING,
         "FINALIZE": Permission.APPRAISAL_FINALIZE,
     }[payload.stage]
-    user_perms = current_user.get("permissions", 0)
+    user_perms = current_user.get("permission_names")
     if not has_permission(user_perms, stage_perm):
         raise HTTPException(403, f"批次 {payload.stage} 需要 {stage_perm.name}")
 

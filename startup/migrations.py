@@ -11,8 +11,7 @@ from pathlib import Path
 from sqlalchemy import inspect as sa_inspect
 
 from models.base import Base
-from models.database import get_engine, get_session, User
-from utils.permissions import _RW_PAIRS
+from models.database import get_engine, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -146,31 +145,5 @@ def migrate_school_year_to_roc():
     except Exception:
         session.rollback()
         logger.exception("migrate_school_year_to_roc 失敗")
-    finally:
-        session.close()
-
-
-def migrate_permissions_rw():
-    """為既有非全權用戶自動補上 _WRITE 位元（冪等）"""
-    session = get_session()
-    try:
-        users = session.query(User).filter(User.permissions != -1).all()
-        updated = 0
-        for user in users:
-            old = user.permissions
-            new = old
-            for read_bit, write_bit in _RW_PAIRS:
-                if (old & read_bit.value) == read_bit.value:
-                    new = new | write_bit.value
-            if new != old:
-                user.permissions = new
-                updated += 1
-        if updated:
-            session.commit()
-            logger.info(
-                f"migrate_permissions_rw: 已更新 {updated} 位用戶的 WRITE 權限位元"
-            )
-        else:
-            logger.info("migrate_permissions_rw: 無需遷移（所有用戶已是最新）")
     finally:
         session.close()

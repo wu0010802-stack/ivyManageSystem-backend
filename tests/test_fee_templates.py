@@ -75,13 +75,13 @@ def session(_backend):
 
 @pytest.fixture
 def client_admin(_backend):
-    """已登入的 admin 帳號 client（permissions=-1 表全開）。"""
+    """已登入的 admin 帳號 client（permission_names=-1 表全開）。"""
     with _backend["session_factory"]() as s:
         u = User(
             username="tpl_admin",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
         )
         s.add(u)
@@ -105,7 +105,7 @@ def client_teacher(_backend):
             username="tpl_teacher",
             password_hash=hash_password("Temp123456"),
             role="teacher",
-            permissions=-1,  # 權限位元全開，但 role=teacher 仍應被 403
+            permission_names=["*"],  # 權限位元全開，但 role=teacher 仍應被 403
             is_active=True,
         )
         s.add(u)
@@ -275,13 +275,13 @@ def client_fees_writer(_backend):
     """只有 FEES_WRITE / 沒有 ACTIVITY_PAYMENT_APPROVE 的 admin。"""
     from utils.permissions import Permission
 
-    perms = int(Permission.FEES_READ | Permission.FEES_WRITE)
+    perms = ["FEES_READ", "FEES_WRITE"]
     with _backend["session_factory"]() as s:
         u = User(
             username="tpl_fees_only",
             password_hash=hash_password("Temp123456"),
             role="admin",
-            permissions=perms,
+            permission_names=perms,
             is_active=True,
         )
         s.add(u)
@@ -577,7 +577,7 @@ def test_blocked_create_template_captures_attempted_payload(_backend_with_audit)
                 username="tpl_audit_writer",
                 password_hash=hash_password("Temp123456"),
                 role="admin",
-                permissions=int(Permission.FEES_READ | Permission.FEES_WRITE),
+                permission_names=["FEES_READ", "FEES_WRITE"],
                 is_active=True,
             )
         )

@@ -70,7 +70,7 @@ def _create_admin(session):
         username="admin",
         password_hash=hash_password("pw"),
         role="admin",
-        permissions=int(Permission.SALARY_READ),
+        permission_names=["SALARY_READ"],
         is_active=True,
         must_change_password=False,
     )
@@ -286,7 +286,7 @@ class TestPeriodAccrualEndpoint:
                 username="noperm",
                 password_hash=hash_password("pw"),
                 role="teacher",
-                permissions=0,  # 無任何權限
+                permission_names=[],  # 無任何權限
                 is_active=True,
                 must_change_password=False,
             )

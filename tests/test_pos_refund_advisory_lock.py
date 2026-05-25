@@ -31,11 +31,7 @@ from utils.permissions import Permission
 
 from tests.test_activity_pos import _create_admin, _login, _setup_reg
 
-APPROVE_PERMS = (
-    Permission.ACTIVITY_READ
-    | Permission.ACTIVITY_WRITE
-    | Permission.ACTIVITY_PAYMENT_APPROVE
-)
+APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
 
 
 @pytest.fixture
@@ -74,7 +70,7 @@ def test_refund_acquires_advisory_lock_per_registration(lock_client, monkeypatch
     """單筆 refund 應對該 reg 呼叫 acquire_activity_refund_lock 一次。"""
     client, sf = lock_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _setup_reg(s, student_name="王退費", paid_amount=2000, is_paid=True)
         s.commit()
         reg_id = reg.id
@@ -112,7 +108,7 @@ def test_payment_does_not_acquire_refund_lock(lock_client, monkeypatch):
     """payment 路徑不應觸發 refund advisory lock（YAGNI；payment 由 _lock_regs 即足）。"""
     client, sf = lock_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _setup_reg(s, student_name="李繳費", paid_amount=0)
         s.commit()
         reg_id = reg.id
@@ -146,7 +142,7 @@ def test_multi_item_refund_acquires_lock_in_ascending_order(lock_client, monkeyp
     """多 item refund 應按 reg_id 升冪逐一取鎖（避免 deadlock）。"""
     client, sf = lock_client
     with sf() as s:
-        _create_admin(s, permissions=APPROVE_PERMS)
+        _create_admin(s, permission_names=APPROVE_PERMS)
         reg_a = _setup_reg(
             s,
             student_name="A 多筆",

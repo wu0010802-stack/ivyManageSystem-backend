@@ -169,7 +169,7 @@ def _create_admin_user(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
         must_change_password=False,
         token_version=0,
@@ -193,7 +193,7 @@ def _create_supervisor_user(session) -> User:
         username="supervisor1",
         password_hash=hash_password("Passw0rd!"),
         role="supervisor",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
         must_change_password=False,
         token_version=0,
@@ -209,7 +209,7 @@ def _create_existing_parent(session, line_user_id: str, name: str = "已綁家�
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         must_change_password=False,
         line_user_id=line_user_id,
@@ -227,7 +227,9 @@ def _admin_token(user: User) -> str:
             "employee_id": user.employee_id,
             "role": user.role,
             "name": user.username,
-            "permissions": user.permissions if user.permissions is not None else -1,
+            "permission_names": (
+                user.permission_names if user.permission_names is not None else -1
+            ),
             "token_version": user.token_version or 0,
         }
     )
@@ -458,7 +460,7 @@ class TestBindAdditional:
                 "employee_id": None,
                 "role": "parent",
                 "name": "parent_line_U_bound_parent_001",
-                "permissions": 0,
+                "permission_names": [],
                 "token_version": 0,
             }
         )
@@ -492,7 +494,7 @@ class TestBindAdditional:
                 "employee_id": None,
                 "role": "parent",
                 "name": "parent_line_U_parent_B",
-                "permissions": 0,
+                "permission_names": [],
                 "token_version": 0,
             }
         )
@@ -612,7 +614,7 @@ class TestBindAdditional:
             supervisor = _create_supervisor_user(session)
             session.commit()
             supervisor_id = supervisor.id
-            permissions = supervisor.permissions
+            permission_names = supervisor.permission_names
             token_version = supervisor.token_version or 0
 
         token = create_access_token(
@@ -621,7 +623,9 @@ class TestBindAdditional:
                 "employee_id": None,
                 "role": "supervisor",
                 "name": "supervisor1",
-                "permissions": permissions if permissions is not None else -1,
+                "permission_names": (
+                    permission_names if permission_names is not None else ["*"]
+                ),
                 "token_version": token_version,
             }
         )
@@ -653,7 +657,7 @@ class TestAdminEndpointIsolation:
                 "employee_id": None,
                 "role": "parent",
                 "name": "parent_line_U_evil_parent",
-                "permissions": 0,
+                "permission_names": [],
                 "token_version": 0,
             }
         )

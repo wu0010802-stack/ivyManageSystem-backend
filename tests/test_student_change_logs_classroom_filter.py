@@ -65,13 +65,13 @@ def _add_user(
     session,
     username="admin",
     password="TempPass123",
-    perms=Permission.STUDENTS_READ | Permission.STUDENTS_WRITE,
+    perms=["STUDENTS_READ", "STUDENTS_WRITE"],
 ):
     u = User(
         username=username,
         password_hash=hash_password(password),
         role="admin",
-        permissions=perms,
+        permission_names=perms,
         is_active=True,
     )
     session.add(u)
@@ -294,7 +294,7 @@ class TestPermission:
             _seed(s)
             # 覆寫 admin 權限，移除 STUDENTS_READ
             u = s.query(User).filter(User.username == "admin").first()
-            u.permissions = Permission.ATTENDANCE_READ
+            u.permission_names=["ATTENDANCE_READ"]
             s.commit()
         _login(client)
 

@@ -71,7 +71,7 @@ def _setup_family(
         username=f"parent_line_{line_user_id}",
         password_hash="!LINE_ONLY",
         role="parent",
-        permissions=0,
+        permission_names=[],
         is_active=True,
         line_user_id=line_user_id,
         token_version=0,
@@ -111,7 +111,7 @@ def _create_admin(session) -> User:
         username="admin",
         password_hash=hash_password("Passw0rd!"),
         role="admin",
-        permissions=-1,
+        permission_names=["*"],
         is_active=True,
         token_version=0,
     )
@@ -127,7 +127,7 @@ def _parent_token(user: User) -> str:
             "employee_id": None,
             "role": "parent",
             "name": user.username,
-            "permissions": 0,
+            "permission_names": [],
             "token_version": user.token_version or 0,
         }
     )
@@ -140,7 +140,7 @@ def _admin_token(user: User) -> str:
             "employee_id": user.employee_id,
             "role": user.role,
             "name": user.username,
-            "permissions": user.permissions if user.permissions is not None else -1,
+            "permission_names": user.permission_names if user.permission_names is not None else -1,
             "token_version": user.token_version or 0,
         }
     )
@@ -395,7 +395,7 @@ def test_teacher_approve_endpoint_removed(leave_client):
                 "employee_id": None,
                 "role": "admin",
                 "name": admin.username,
-                "permissions": -1,
+                "permission_names": ["*"],
                 "token_version": admin.token_version,
             }
         )
@@ -430,7 +430,7 @@ def test_teacher_list_default_returns_approved(leave_client):
                 "employee_id": None,
                 "role": "admin",
                 "name": admin.username,
-                "permissions": -1,
+                "permission_names": ["*"],
                 "token_version": admin.token_version,
             }
         )

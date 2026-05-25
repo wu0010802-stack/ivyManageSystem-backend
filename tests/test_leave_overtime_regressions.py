@@ -88,15 +88,17 @@ def _create_user(
     username: str,
     password: str,
     role: str,
-    permissions: int,
+    permission_names,
     employee: Employee | None = None,
 ) -> User:
+    if isinstance(permission_names, str):
+        permission_names = [permission_names]
     user = User(
         employee_id=employee.id if employee else None,
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=permissions,
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -123,7 +125,7 @@ class TestPortalLeaveDeductionRatio:
                 username="teacher_portal",
                 password="PortalPass123",
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 employee=employee,
             )
             session.commit()
@@ -168,7 +170,7 @@ class TestPortalLeaveDeductionRatio:
                 username="admin_leave_approve",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             leave_id = leave.id
@@ -195,7 +197,7 @@ class TestPortalLeaveDeductionRatio:
                 username="teacher_holiday_guard",
                 password="PortalPass123",
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 employee=employee,
             )
             session.commit()
@@ -239,7 +241,7 @@ class TestPortalLeaveDeductionRatio:
                 username="teacher_with_substitute",
                 password="PortalPass123",
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 employee=employee,
             )
             session.commit()
@@ -295,7 +297,7 @@ class TestPortalLeaveDeductionRatio:
                 username="admin_substitute_guard",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             leave_id = leave.id
@@ -334,7 +336,7 @@ class TestPortalLeaveDeductionRatio:
                 username="admin_force_substitute",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             leave_id = leave.id
@@ -368,7 +370,7 @@ class TestPortalSubstitutePendingCount:
                 username="substitute_portal",
                 password="PortalPass123",
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 employee=substitute,
             )
             _create_user(
@@ -376,7 +378,7 @@ class TestPortalSubstitutePendingCount:
                 username="other_substitute_portal",
                 password="PortalPass123",
                 role="teacher",
-                permissions=0,
+                permission_names=[],
                 employee=other_substitute,
             )
             session.add_all(
@@ -483,7 +485,7 @@ class TestLeaveScheduleGuard:
                 username="admin_update_guard",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             leave_id = leave.id
@@ -535,7 +537,7 @@ class TestApprovedOvertimeRollback:
                 username="admin_update_ot",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             overtime_id = overtime.id
@@ -596,7 +598,7 @@ class TestApprovedOvertimeRollback:
                 username="admin_delete_ot",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             overtime_id = overtime.id
@@ -650,7 +652,7 @@ class TestApprovedOvertimeRollback:
                 username="admin_reject_ot",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             session.commit()
             overtime_id = overtime.id
@@ -716,7 +718,7 @@ class TestSelfApprovalGuard:
                 username="dual_role_teacher",
                 password="DualPass123",
                 role="hr",
-                permissions=-1,
+                permission_names=["*"],
                 employee=employee,
             )
             session.commit()
@@ -753,7 +755,7 @@ class TestSelfApprovalGuard:
                 username="pure_admin_approver",
                 password="AdminPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 # employee=None（無 employee_id）
             )
             session.commit()
@@ -806,7 +808,7 @@ class TestBatchSelfApprovalGuard:
                 username="batch_self_approver",
                 password="BatchPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 employee=self_employee,
             )
             session.commit()
@@ -860,7 +862,7 @@ class TestBatchSelfApprovalGuard:
                 username="batch_ot_self_approver",
                 password="BatchOTPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
                 employee=self_employee,
             )
             session.commit()
@@ -907,7 +909,7 @@ class TestConcurrentApprovalQuotaGuard:
                 username="quota_race_approver",
                 password="QuotaPass123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             # 兩張各 8 小時的待審特休（總計 16 小時 > 配額 8 小時）
             leave1 = LeaveRecord(
@@ -960,7 +962,7 @@ class TestConcurrentApprovalQuotaGuard:
                 username="quota_seq_approver",
                 password="QuotaSeq123",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             # 第一張 8 小時（pending），第二張 8 小時（pending）
             leave_a = LeaveRecord(

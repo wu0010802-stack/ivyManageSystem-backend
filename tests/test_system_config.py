@@ -60,14 +60,14 @@ def sc_client(tmp_path):
 
 def _login(client, session_factory, username="sc_admin", perm=None):
     if perm is None:
-        perm = int(Permission.SETTINGS_READ | Permission.SETTINGS_WRITE)
+        perm = ["SETTINGS_READ", "SETTINGS_WRITE"]
     with session_factory() as session:
         session.add(
             User(
                 username=username,
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=perm,
+                permission_names=perm,
                 is_active=True,
                 must_change_password=False,
             )
@@ -183,7 +183,7 @@ class TestSystemConfigApi:
             client,
             session_factory,
             username="ro_user",
-            perm=int(Permission.SETTINGS_READ),
+            perm=["SETTINGS_READ"],
         )
         res = client.put(
             "/api/system-configs/bank.payer_account",
@@ -242,11 +242,7 @@ class TestSystemConfigApi:
         _login(
             client,
             session_factory,
-            perm=int(
-                Permission.SETTINGS_READ
-                | Permission.SETTINGS_WRITE
-                | Permission.SALARY_READ
-            ),
+            perm=["SETTINGS_READ", "SETTINGS_WRITE", "SALARY_READ"],
         )
 
         res = client.get("/api/salaries/2026/4/transfer-roster?type=base")

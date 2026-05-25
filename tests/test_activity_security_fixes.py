@@ -89,7 +89,7 @@ def _admin(session, username="sec_admin"):
         username=username,
         password_hash=hash_password("Temp123456"),
         role="admin",
-        permissions=Permission.ACTIVITY_READ | Permission.ACTIVITY_WRITE,
+        permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
         is_active=True,
     )
     session.add(user)

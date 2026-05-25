@@ -109,7 +109,7 @@ def _create_user(
     username,
     password="Pass1234",
     role,
-    permissions,
+    permission_names,
     employee_id=None,
 ):
     user = User(
@@ -117,7 +117,7 @@ def _create_user(
         username=username,
         password_hash=hash_password(password),
         role=role,
-        permissions=int(permissions),
+        permission_names=permission_names,
         is_active=True,
         must_change_password=False,
     )
@@ -165,7 +165,7 @@ class TestF012_FinalSalaryPreview:
                 s,
                 username="sv_self1",
                 role="supervisor",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -187,7 +187,7 @@ class TestF012_FinalSalaryPreview:
                 s,
                 username="sv_self2",
                 role="supervisor",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -207,7 +207,7 @@ class TestF012_FinalSalaryPreview:
                 s,
                 username="admin_a",
                 role="admin",
-                permissions=-1,
+                permission_names=["*"],
             )
             s.commit()
             target_id = target.id
@@ -226,7 +226,7 @@ class TestF012_FinalSalaryPreview:
                 s,
                 username="hr_a",
                 role="hr",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
             )
             s.commit()
             target_id = target.id
@@ -255,7 +255,7 @@ class TestF013_FestivalBonus:
                 s,
                 username="sv_fb",
                 role="supervisor",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 employee_id=emp.id,
             )
             s.commit()
@@ -272,7 +272,7 @@ class TestF013_FestivalBonus:
                 s,
                 username="sv_fb2",
                 role="supervisor",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
                 employee_id=emp.id,
             )
             s.commit()
@@ -290,7 +290,7 @@ class TestF013_FestivalBonus:
                 s,
                 username="hr_fb",
                 role="hr",
-                permissions=int(Permission.SALARY_READ),
+                permission_names=["SALARY_READ"],
             )
             s.commit()
 
@@ -305,7 +305,7 @@ class TestF013_FestivalBonus:
     def test_admin_200_on_both(self, field_leak_client):
         client, sf = field_leak_client
         with sf() as s:
-            _create_user(s, username="admin_fb", role="admin", permissions=-1)
+            _create_user(s, username="admin_fb", role="admin", permission_names=["*"])
             s.commit()
 
         _login(client, "admin_fb")
@@ -358,7 +358,7 @@ class TestF014_Contracts:
                 s,
                 username="sv_emp_viewer",
                 role="supervisor",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -379,7 +379,7 @@ class TestF014_Contracts:
                 s,
                 username="sv_emp_self",
                 role="supervisor",
-                permissions=int(Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -396,7 +396,7 @@ class TestF014_Contracts:
         client, sf = field_leak_client
         with sf() as s:
             _, other_emp = self._seed(s)
-            _create_user(s, username="adm_c", role="admin", permissions=-1)
+            _create_user(s, username="adm_c", role="admin", permission_names=["*"])
             s.commit()
             other_id = other_emp.id
 
@@ -418,7 +418,7 @@ class TestF014_Contracts:
                 s,
                 username="sv_emp_writer",
                 role="supervisor",
-                permissions=int(Permission.EMPLOYEES_WRITE | Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_WRITE", "EMPLOYEES_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -454,7 +454,7 @@ class TestF014_Contracts:
                 s,
                 username="sv_emp_updater",
                 role="supervisor",
-                permissions=int(Permission.EMPLOYEES_WRITE | Permission.EMPLOYEES_READ),
+                permission_names=["EMPLOYEES_WRITE", "EMPLOYEES_READ"],
                 employee_id=self_emp.id,
             )
             s.commit()
@@ -474,7 +474,7 @@ class TestF014_Contracts:
         client, sf = field_leak_client
         with sf() as s:
             other_emp = _create_employee(s, "C_other_adm", "他人")
-            _create_user(s, username="adm_w", role="admin", permissions=-1)
+            _create_user(s, username="adm_w", role="admin", permission_names=["*"])
             s.commit()
             other_id = other_emp.id
 
@@ -528,7 +528,7 @@ class TestF031_FinanceSummary:
                 s,
                 username="sv1",
                 role="supervisor",
-                permissions=int(Permission.REPORTS),
+                permission_names=["REPORTS"],
             )
             s.commit()
 
@@ -557,7 +557,7 @@ class TestF031_FinanceSummary:
                 s,
                 username="sv2",
                 role="supervisor",
-                permissions=int(Permission.REPORTS),
+                permission_names=["REPORTS"],
             )
             s.commit()
             emp_name = emp.name
@@ -587,7 +587,7 @@ class TestF031_FinanceSummary:
                 s,
                 username="custom_lite",
                 role="accountant_lite",
-                permissions=int(Permission.REPORTS) | int(Permission.SALARY_READ),
+                permission_names=["REPORTS", "SALARY_READ"],
             )
             s.commit()
 
@@ -614,7 +614,7 @@ class TestF031_FinanceSummary:
                 s,
                 username="hr_fd",
                 role="hr",
-                permissions=int(Permission.REPORTS) | int(Permission.SALARY_READ),
+                permission_names=["REPORTS", "SALARY_READ"],
             )
             s.commit()
 
@@ -629,7 +629,7 @@ class TestF031_FinanceSummary:
         client, sf = field_leak_client
         with sf() as s:
             _seed_salary_record(s)
-            _create_user(s, username="adm_fd", role="admin", permissions=-1)
+            _create_user(s, username="adm_fd", role="admin", permission_names=["*"])
             s.commit()
 
         _login(client, "adm_fd")
@@ -673,7 +673,7 @@ class TestF036_OvertimesExport:
                 s,
                 username="sv_ot",
                 role="supervisor",
-                permissions=int(Permission.OVERTIME_READ),
+                permission_names=["OVERTIME_READ"],
             )
             s.commit()
 
@@ -700,7 +700,7 @@ class TestF036_OvertimesExport:
                 s,
                 username="custom_ot",
                 role="hr_lite_assist",
-                permissions=int(Permission.OVERTIME_READ) | int(Permission.SALARY_READ),
+                permission_names=["OVERTIME_READ", "SALARY_READ"],
             )
             s.commit()
 
@@ -719,7 +719,7 @@ class TestF036_OvertimesExport:
                 s,
                 username="hr_ot",
                 role="hr",
-                permissions=int(Permission.OVERTIME_READ),
+                permission_names=["OVERTIME_READ"],
             )
             s.commit()
 
