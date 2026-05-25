@@ -5,10 +5,12 @@ Phase 2 補：certificate.pdf / magic-link / download
 Phase 3 補：list
 """
 
+import io
 import logging
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from models.auth import User
@@ -31,10 +33,13 @@ from schemas.offboarding import (
     SalaryRecordTarget,
     StepResultModel,
 )
+from services.offboarding.download_bundle import build_offboarding_zip
 from services.offboarding.magic_link import (
     generate_token as ml_generate_token,
     is_active as _is_magic_link_active,
+    record_download as ml_record_download,
     revoke_token as ml_revoke_token,
+    verify_token as ml_verify_token,
 )
 from services.offboarding.orchestrator import OffboardingError, process_offboarding
 from services.offboarding.steps.snapshot_leave import _resolve_daily_wage
@@ -193,6 +198,77 @@ def process_offboarding_endpoint(
             user_account_revoked=result["user_account_revoked"],
             steps=[StepResultModel(**s) for s in result["steps"]],
             certificate_download_url=None,  # Phase 2 才補
+        )
+    finally:
+        session.close()
+
+
+@router.get("/download")
+def download_offboarding_bundle(token: str, request: Request):
+    """**公開無 auth** download endpoint。
+
+    以 magic-link token 串流 ZIP 離職包（離職證明 PDF + 12 月薪資 PDF + 出勤 CSV）。
+    驗失敗統一 410 Gone，不暴露差異原因（防 enumeration）。
+
+    Security headers：
+    - Content-Disposition: attachment（強制下載，不在瀏覽器 inline render）
+    - X-Content-Type-Options: nosniff（防 MIME sniffing）
+    - Cache-Control: no-store（代理 / CDN 不快取含 PII 的 ZIP）
+
+    TODO follow-up：uvicorn access log token redaction（ASGI middleware 攔 query string
+    或 --access-log False）。目前 endpoint 本身不 echo token 到 logger，但 uvicorn
+    預設 access log 會記完整 URL（含 ?token=...），建議後續 PR 加 ASGI middleware
+    做 query string sanitize 或改用 --access-log False。
+    """
+    session: Session = get_session()
+    try:
+        record = ml_verify_token(session, token)
+        if record is None:
+            raise HTTPException(status_code=410, detail="LINK_NO_LONGER_VALID")
+
+        zip_bytes = build_offboarding_zip(session, record)
+        ml_record_download(session, record)
+
+        # audit log（公開 endpoint 仍記，但不 echo token）
+        request.state.audit_entity_id = str(record.employee_id)
+        request.state.audit_summary = (
+            f"離職 ZIP 下載：employee/{record.employee_id} "
+            f"count={record.magic_link_download_count}"
+        )
+
+        session.commit()
+
+        from urllib.parse import quote
+
+        emp = session.query(Employee).filter_by(id=record.employee_id).first()
+        emp_name = emp.name if emp else "employee"
+        utf8_filename = (
+            f"ivy-offboarding-{emp_name}-{record.resign_date.isoformat()}.zip"
+        )
+        # RFC 5987：ASCII fallback + UTF-8 percent-encoded（HTTP header 不能含 non-latin1）
+        ascii_filename = (
+            f"ivy-offboarding-{record.employee_id}-{record.resign_date.isoformat()}.zip"
+        )
+        content_disposition = (
+            f'attachment; filename="{ascii_filename}"; '
+            f"filename*=UTF-8''{quote(utf8_filename)}"
+        )
+
+        logger.info(
+            "離職 ZIP 下載：employee_id=%s count=%s size=%d bytes",
+            record.employee_id,
+            record.magic_link_download_count,
+            len(zip_bytes),
+        )
+
+        return StreamingResponse(
+            io.BytesIO(zip_bytes),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": content_disposition,
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+            },
         )
     finally:
         session.close()
