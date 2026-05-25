@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from api.portfolio.reports import _resolve_pdf_path
 from models.database import StudentGrowthReport
 from models.portfolio import REPORT_STATUS_READY
+from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
 
@@ -83,6 +84,7 @@ async def parent_list_reports(
 @router.get("/{report_id}/download")
 async def parent_download_report(
     report_id: int,
+    request: Request,
     student_id: int = Query(...),
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
@@ -121,6 +123,15 @@ async def parent_download_report(
         )
         # dep owns commit; flush to push UPDATE to DB before FileResponse.
         session.flush()
+        # 家長下載 PDF：不 dedup，每次都要可溯（個資法 §10 查閱/複製權）
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student_growth_report",
+            entity_id=str(report_id),
+            summary=f"家長下載成長報告 PDF：student_id={student_id} report_id={report_id}",
+            changes={"student_id": student_id, "period": r.period_label},
+        )
         return FileResponse(
             str(path),
             media_type="application/pdf",
