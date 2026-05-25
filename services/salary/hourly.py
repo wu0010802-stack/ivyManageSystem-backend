@@ -12,6 +12,7 @@ from .constants import (
     HOURLY_REGULAR_HOURS,
     HOURLY_OT1_CAP_HOURS,
 )
+from utils.rounding import round_half_up
 
 
 def _calc_lunch_overlap_hours(start: datetime, end: datetime, ref_date: date) -> float:
@@ -115,7 +116,7 @@ def _calc_daily_hourly_pay_with_cap(
     pay = rate * (
         regular + ot1 * HOURLY_OT1_RATE + ot2 * HOURLY_OT2_RATE + excess * 1.0
     )
-    return round(pay, 2), ot1 + ot2
+    return round_half_up(pay, 2), ot1 + ot2
 
 
 def _calc_daily_hourly_pay(hours: float, rate: float) -> float:

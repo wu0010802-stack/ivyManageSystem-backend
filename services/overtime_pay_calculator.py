@@ -26,6 +26,7 @@ from utils.constants import (
     WEEKDAY_FIRST_2H_RATE,
     WEEKDAY_THRESHOLD_HOURS,
 )
+from utils.rounding import round_half_up
 
 MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
 
@@ -48,8 +49,8 @@ def calculate_overtime_pay(
     if overtime_type == "weekday":
         # 平日：前2h × 1.34，超過 × 1.67
         if hours <= WEEKDAY_THRESHOLD_HOURS:
-            return round(hourly_base * hours * WEEKDAY_FIRST_2H_RATE)
-        return round(
+            return round_half_up(hourly_base * hours * WEEKDAY_FIRST_2H_RATE)
+        return round_half_up(
             hourly_base * WEEKDAY_THRESHOLD_HOURS * WEEKDAY_FIRST_2H_RATE
             + hourly_base * (hours - WEEKDAY_THRESHOLD_HOURS) * WEEKDAY_AFTER_2H_RATE
         )
@@ -57,13 +58,13 @@ def calculate_overtime_pay(
         # 休息日：最低計 2h，前2h × 1.33，3~8h × 1.67，超8h × 2.67
         billable = max(hours, RESTDAY_MIN_HOURS)
         if billable <= RESTDAY_FIRST_SEGMENT:
-            return round(hourly_base * billable * RESTDAY_FIRST_2H_RATE)
+            return round_half_up(hourly_base * billable * RESTDAY_FIRST_2H_RATE)
         elif billable <= RESTDAY_SECOND_SEGMENT:
-            return round(
+            return round_half_up(
                 hourly_base * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
                 + hourly_base * (billable - RESTDAY_FIRST_SEGMENT) * RESTDAY_MID_RATE
             )
-        return round(
+        return round_half_up(
             hourly_base * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
             + hourly_base
             * (RESTDAY_SECOND_SEGMENT - RESTDAY_FIRST_SEGMENT)
@@ -72,4 +73,4 @@ def calculate_overtime_pay(
         )
     else:
         # 例假日 / 國定假日：全部 × 2.0
-        return round(hourly_base * hours * HOLIDAY_RATE)
+        return round_half_up(hourly_base * hours * HOLIDAY_RATE)

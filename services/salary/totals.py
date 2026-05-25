@@ -9,6 +9,8 @@ Why: 原本 engine.py 的 _recompute_record_totals_from_fields 與 api/salary.py
     sum 不一致)。集中於此避免 drift。
 """
 
+from utils.rounding import round_half_up
+
 
 def recompute_record_totals(record):
     """從 SalaryRecord 各欄位重算 gross/total_deduction/net/bonus_amount/bonus_separate。
@@ -18,7 +20,7 @@ def recompute_record_totals(record):
     - 重算路徑(_fill_salary_record)在有 manual_overrides 時,以保留+新算的
       混合欄位值重算 totals,避免使用 breakdown 的 totals 與保留欄位脫節
     """
-    record.gross_salary = round(
+    record.gross_salary = round_half_up(
         (record.base_salary or 0)
         + (record.hourly_total or 0)
         + (record.performance_bonus or 0)
@@ -28,7 +30,7 @@ def recompute_record_totals(record):
         + (record.birthday_bonus or 0)
         + (record.overtime_pay or 0)
     )
-    record.total_deduction = round(
+    record.total_deduction = round_half_up(
         (record.labor_insurance_employee or 0)
         + (record.health_insurance_employee or 0)
         + (record.pension_employee or 0)
@@ -44,12 +46,12 @@ def recompute_record_totals(record):
     # 被當作「另行轉帳金額」使用，否則主管紅利會雙付。實際另行轉帳列只取 festival +
     # overtime（見 services/salary/salary_slip.py 既有實作）；前端目前未消費此欄位，
     # 加此註解避免未來誤用。
-    record.bonus_amount = round(
+    record.bonus_amount = round_half_up(
         (record.festival_bonus or 0)
         + (record.overtime_bonus or 0)
         + (record.supervisor_dividend or 0)
     )
     record.bonus_separate = (record.bonus_amount or 0) > 0
-    record.net_salary = round(
+    record.net_salary = round_half_up(
         (record.gross_salary or 0) - (record.total_deduction or 0)
     )

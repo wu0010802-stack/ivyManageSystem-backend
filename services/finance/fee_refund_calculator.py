@@ -11,6 +11,7 @@ from datetime import date
 from typing import Optional
 
 from services.workday_rules import classify_day
+from utils.rounding import round_half_up
 
 
 def calc_enrollment_refund(*, amount_due: int, T_total: int, T_served: int) -> dict:
@@ -35,11 +36,11 @@ def calc_enrollment_refund(*, amount_due: int, T_total: int, T_served: int) -> d
     ratio = T_served / T_total
     if ratio < 1 / 3:
         refund_ratio_label = "2/3"
-        refund_amount = round(amount_due * 2 / 3)
+        refund_amount = round_half_up(amount_due * 2 / 3)
         ratio_band = "<1/3"
     elif ratio < 2 / 3:
         refund_ratio_label = "1/3"
-        refund_amount = round(amount_due * 1 / 3)
+        refund_amount = round_half_up(amount_due * 1 / 3)
         ratio_band = "1/3..2/3"
     else:
         refund_ratio_label = "0"
@@ -52,7 +53,7 @@ def calc_enrollment_refund(*, amount_due: int, T_total: int, T_served: int) -> d
         "calc_payload": {
             "T_total": T_total,
             "T_served": T_served,
-            "served_ratio": round(ratio, 4),
+            "served_ratio": round_half_up(ratio, 4),
             "ratio": ratio_band,
             "refund_ratio": refund_ratio_label,
             "amount_due": amount_due,
@@ -165,12 +166,12 @@ def calc_monthly_refund(
         meal = int(breakdown.get("meal", 0) or 0)
         transport = int(breakdown.get("transport", 0) or 0)
         refundable_base = meal + transport
-        refund_amount = round(refundable_base * proportion)
+        refund_amount = round_half_up(refundable_base * proportion)
         refundable_components = [k for k in ("meal", "transport") if breakdown.get(k)]
         formula = f"(meal {meal} + transport {transport}) × {L_consecutive}/{work_days_in_month} = {refund_amount}"
     else:
         refundable_base = amount_due
-        refund_amount = round(amount_due * proportion)
+        refund_amount = round_half_up(amount_due * proportion)
         refundable_components = []
         formula = f"{amount_due} × {L_consecutive}/{work_days_in_month} = {refund_amount} (fallback)"
         warnings.append("無 breakdown,改按全額月費比例退,建議補設範本組成")
@@ -184,7 +185,7 @@ def calc_monthly_refund(
             "advance_filed": True,
             "refundable_components": refundable_components,
             "refundable_base": refundable_base,
-            "proportion": round(proportion, 4),
+            "proportion": round_half_up(proportion, 4),
             "breakdown_used": breakdown,
             "amount_due": amount_due,
             "formula": formula,
