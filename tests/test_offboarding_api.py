@@ -262,6 +262,230 @@ def test_router_registered(client):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 10: POST /offboarding/{id}/process
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_process_happy_path(integrated_client):
+    """happy path：4 step 完成 + user_account_revoked + SalaryRecord.unused_leave_payout=25200。
+
+    員工 base_salary = 1800 * 30 = 54000；
+    leave quota 112 小時 → remaining_days = 14.0；
+    payout = 14 * 1800 = 25200。
+    """
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="proc_admin_hp")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    # 建員工
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"OBP{_counter:04d}",
+            name=f"離職員工{_counter}",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=54000,
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    # 建 active User（供 revoke_user step）
+    with sf() as session:
+        _counter += 1
+        user = User(
+            employee_id=emp_id,
+            username=f"teacher_{_counter}",
+            password_hash=hash_password("pass"),
+            role="teacher",
+            is_active=True,
+            must_change_password=False,
+            token_version=1,
+        )
+        session.add(user)
+        session.commit()
+
+    # 建 leave quota（112 小時 = 14 天）
+    with sf() as session:
+        session.add(
+            LeaveQuota(
+                employee_id=emp_id,
+                year=2026,
+                leave_type="annual",
+                total_hours=112,
+            )
+        )
+        session.commit()
+
+    # 建離職當月 salary record（resign_date=2026-05-20 → 5 月）
+    with sf() as session:
+        sr = SalaryRecord(
+            employee_id=emp_id,
+            salary_year=2026,
+            salary_month=5,
+        )
+        session.add(sr)
+        session.commit()
+        sr_id = sr.id
+
+    # resign_date 用過去日期，確保 is_active=False + user_account_revoked=True
+    response = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-05-20", "resign_reason": "個人因素"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["is_active"] is False
+    assert body["user_account_revoked"] is True
+    steps = [s["step"] for s in body["steps"]]
+    assert "mark_appraisal" in steps
+    assert "snapshot_leave" in steps
+    assert "revoke_user" in steps
+
+    with sf() as session:
+        reloaded_sr = session.query(SalaryRecord).filter_by(id=sr_id).first()
+        assert float(reloaded_sr.unused_leave_payout) == 25200.0
+
+
+def test_process_already_offboarded_returns_409(integrated_client):
+    """第二次呼叫 process → 409 ALREADY_OFFBOARDED。"""
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="proc_admin_409")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"OB4{_counter:04d}",
+            name=f"二次離職{_counter}",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=54000,
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    with sf() as session:
+        session.add(
+            LeaveQuota(
+                employee_id=emp_id,
+                year=2026,
+                leave_type="annual",
+                total_hours=80,
+            )
+        )
+        session.commit()
+
+    # 第一次成功
+    r1 = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-06-15"},
+    )
+    assert r1.status_code == 200, r1.text
+
+    # 第二次 409
+    r2 = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-07-01"},
+    )
+    assert r2.status_code == 409
+    assert r2.json()["detail"] == "ALREADY_OFFBOARDED"
+
+
+def test_process_resign_before_hire_returns_400(integrated_client):
+    """resign_date < hire_date → 400 RESIGN_DATE_BEFORE_HIRE。"""
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="proc_admin_400")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"OB5{_counter:04d}",
+            name=f"早辭員工{_counter}",
+            hire_date=date(2025, 12, 1),
+            is_active=True,
+            base_salary=54000,
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    response = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2025-11-15"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "RESIGN_DATE_BEFORE_HIRE"
+
+
+def test_process_failure_rolls_back_all_changes(integrated_client):
+    """員工 base_salary=0（無日薪）→ 422，Employee/Record 全 rollback。"""
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="proc_admin_rb")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"OBR{_counter:04d}",
+            name=f"零薪員工{_counter}",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=0,  # _resolve_daily_wage → None → LEAVE_BALANCE_NOT_FOUND
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    response = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-06-15"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "LEAVE_BALANCE_NOT_FOUND"
+
+    # 驗 rollback：resign_date 未被寫入、is_active 仍為 True
+    with sf() as session:
+        reloaded = session.query(Employee).filter_by(id=emp_id).first()
+        assert reloaded.resign_date is None
+        assert reloaded.is_active is True
+
+    # 驗 rollback：OffboardingRecord 未被建立
+    from models.offboarding import EmployeeOffboardingRecord
+
+    with sf() as session:
+        assert (
+            session.query(EmployeeOffboardingRecord)
+            .filter_by(employee_id=emp_id)
+            .first()
+        ) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 9: POST /offboarding/{id}/preview
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def test_preview_returns_leave_snapshot_and_warnings(integrated_client):
     """happy path：回 200 + 正確 leave snapshot + salary_record_target.exists。
 

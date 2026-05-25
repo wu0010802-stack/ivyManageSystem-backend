@@ -21,12 +21,25 @@ from schemas.offboarding import (
     OffboardingPreview,
     OffboardingPreviewRequest,
     OffboardingPreviewResponse,
+    OffboardingProcessRequest,
+    OffboardingProcessResponse,
     SalaryRecordTarget,
+    StepResultModel,
 )
+from services.offboarding.orchestrator import OffboardingError, process_offboarding
 from services.offboarding.steps.snapshot_leave import _resolve_daily_wage
 from utils.auth import require_staff_permission
 from utils.leave_quota_helpers import get_annual_leave_balance
 from utils.permissions import Permission
+
+_ERROR_TO_STATUS: dict[str, int] = {
+    "EMPLOYEE_NOT_FOUND": 404,
+    "ALREADY_OFFBOARDED": 409,
+    "RESIGN_DATE_BEFORE_HIRE": 400,
+    "RESIGN_DATE_TOO_FAR_FUTURE": 400,
+    "LEAVE_BALANCE_NOT_FOUND": 422,
+    "CERTIFICATE_GENERATION_FAILED": 500,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +126,66 @@ def preview_offboarding(
                 certificate_pdf_ready_to_generate=False,  # Phase 2 才實作
             ),
             warnings=warnings,
+        )
+    finally:
+        session.close()
+
+
+@router.post("/{employee_id}/process", response_model=OffboardingProcessResponse)
+def process_offboarding_endpoint(
+    employee_id: int,
+    req: OffboardingProcessRequest,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
+):
+    """一鍵離職主處理 endpoint。
+
+    串接 orchestrator 的 4 step（mark_appraisal / snapshot_leave /
+    prefill_leave_payout / revoke_user），失敗時 rollback 並依
+    _ERROR_TO_STATUS 映射回 4xx/5xx。
+    """
+    session: Session = get_session()
+    try:
+        operator_user_id = int(current_user.get("user_id") or current_user.get("sub"))
+        try:
+            result = process_offboarding(
+                session=session,
+                employee_id=employee_id,
+                resign_date=req.resign_date,
+                resign_reason=req.resign_reason,
+                operator_user_id=operator_user_id,
+            )
+        except OffboardingError as e:
+            session.rollback()
+            status = _ERROR_TO_STATUS.get(e.code, 500)
+            raise HTTPException(status_code=status, detail=e.code)
+
+        session.commit()
+
+        # audit log（既有 middleware pattern：在 request.state 記）
+        request.state.audit_action = "OFFBOARDING_PROCESSED"
+        request.state.audit_target = f"employee/{employee_id}"
+        request.state.audit_meta = {
+            "resign_date": str(result["resign_date"]),
+            "steps_completed": [
+                s["step"] for s in result["steps"] if s["status"] == "completed"
+            ],
+        }
+
+        logger.warning(
+            "離職處理完成：employee_id=%s resign_date=%s operator=%s",
+            employee_id,
+            result["resign_date"],
+            current_user.get("username"),
+        )
+
+        return OffboardingProcessResponse(
+            employee_id=employee_id,
+            resign_date=result["resign_date"],
+            is_active=result["is_active_after"],
+            user_account_revoked=result["user_account_revoked"],
+            steps=[StepResultModel(**s) for s in result["steps"]],
+            certificate_download_url=None,  # Phase 2 才補
         )
     finally:
         session.close()
