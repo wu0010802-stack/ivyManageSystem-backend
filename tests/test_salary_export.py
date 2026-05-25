@@ -44,10 +44,11 @@ def salary_export_client(tmp_path):
     _account_failures.clear()
 
     # 清除模組層 snapshot cache，避免不同測試重複使用同一 record_id 時讀到舊資料。
-    from api.salary import detail as salary_detail
+    # main 的 cache 改走 utils.cache_layer.get_cache，按 namespace 清。
+    from utils.cache_layer import get_cache
+    from api.salary.detail import _CACHE_NS_SALARY_SNAPSHOT
 
-    with salary_detail._snapshot_cache_lock:
-        salary_detail._snapshot_cache.clear()
+    get_cache().clear_namespace(_CACHE_NS_SALARY_SNAPSHOT)
 
     init_salary_services(SalaryEngine(load_from_db=False), MagicMock())
 
@@ -352,9 +353,7 @@ class TestSalaryFieldBreakdownApi:
 
         with session_factory() as session:
             employee = _create_employee(session, "E004", "陳老師")
-            _create_user(
-                session, "salary_breakdown_invalid", ["SALARY_READ"]
-            )
+            _create_user(session, "salary_breakdown_invalid", ["SALARY_READ"])
             session.add(
                 SalaryRecord(employee_id=employee.id, salary_year=2026, salary_month=3)
             )
@@ -371,9 +370,7 @@ class TestSalaryFieldBreakdownApi:
         client, session_factory = salary_export_client
 
         with session_factory() as session:
-            _create_user(
-                session, "salary_breakdown_missing", ["SALARY_READ"]
-            )
+            _create_user(session, "salary_breakdown_missing", ["SALARY_READ"])
             session.commit()
 
         login_res = _login(client, "salary_breakdown_missing")
@@ -393,9 +390,7 @@ class TestSalaryFieldBreakdownApi:
             employee = _create_employee(session, "E101", "全月老師")
             employee.base_salary = 36000
             employee.hire_date = date(2024, 1, 1)
-            _create_user(
-                session, "salary_base_full", ["SALARY_READ"]
-            )
+            _create_user(session, "salary_base_full", ["SALARY_READ"])
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -430,9 +425,7 @@ class TestSalaryFieldBreakdownApi:
             employee = _create_employee(session, "E102", "月中入職老師")
             employee.base_salary = 31000
             employee.hire_date = date(2026, 3, 16)  # 2026/3 共 31 天，做 16 天
-            _create_user(
-                session, "salary_base_proration", ["SALARY_READ"]
-            )
+            _create_user(session, "salary_base_proration", ["SALARY_READ"])
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -468,9 +461,7 @@ class TestSalaryFieldBreakdownApi:
             employee.base_salary = 36000
             employee.insurance_salary_level = 36300
             employee.dependents = 0
-            _create_user(
-                session, "salary_labor_ins", ["SALARY_READ"]
-            )
+            _create_user(session, "salary_labor_ins", ["SALARY_READ"])
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,
@@ -508,9 +499,7 @@ class TestSalaryFieldBreakdownApi:
             employee.insurance_salary_level = 36300
             employee.dependents = 2
             employee.extra_dependents_quarterly = 1
-            _create_user(
-                session, "salary_health_ins", ["SALARY_READ"]
-            )
+            _create_user(session, "salary_health_ins", ["SALARY_READ"])
             record = SalaryRecord(
                 employee_id=employee.id,
                 salary_year=2026,

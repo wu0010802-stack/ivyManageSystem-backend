@@ -39,6 +39,10 @@ def _reset_auth_module_after_test():
     os.environ["JWT_SECRET_KEY"] = _ORIGINAL_JWT_SECRET_KEY
     os.environ.pop("JWT_SECRET_KEYS_OLDS", None)
     os.environ.pop("ENV", None)
+    # 同 _reload_auth：utils.auth 從 settings 讀，須清 lru_cache 才會 pickup 新 env
+    from config import reset_for_tests
+
+    reset_for_tests()
     importlib.reload(_auth_module_for_reset)
 
 
@@ -49,13 +53,20 @@ def _expected_kid(secret: str) -> str:
 def _reload_auth(
     monkeypatch, *, current: str, olds: str | None = None, env: str = "development"
 ):
-    """重新載入 utils.auth 以套用環境變數。回傳 reloaded module。"""
+    """重新載入 utils.auth 以套用環境變數。回傳 reloaded module。
+
+    自 BE-5 config-centralization 後，utils.auth 從 settings 讀取（非 os.environ），
+    所以 monkeypatch.setenv 後須 reset_for_tests 清 settings lru_cache 才能 pickup。
+    """
     monkeypatch.setenv("JWT_SECRET_KEY", current)
     monkeypatch.setenv("ENV", env)
     if olds is None:
         monkeypatch.delenv("JWT_SECRET_KEYS_OLDS", raising=False)
     else:
         monkeypatch.setenv("JWT_SECRET_KEYS_OLDS", olds)
+    from config import reset_for_tests
+
+    reset_for_tests()
     import utils.auth as auth_module
 
     return importlib.reload(auth_module)
