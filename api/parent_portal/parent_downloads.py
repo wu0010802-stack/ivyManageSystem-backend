@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
@@ -40,6 +40,7 @@ from models.portfolio import (
     ATTACHMENT_OWNER_STUDENT_LEAVE,
     REPORT_STATUS_READY,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 from utils.portfolio_storage import get_portfolio_storage
 
@@ -149,6 +150,7 @@ def _resolve_student_id_for_parent(session, owner_type: str, owner_id: int) -> i
 @router.get("/portfolio/{key:path}")
 def download_parent_portfolio(
     key: str,
+    request: Request,
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ) -> Response:
@@ -186,6 +188,23 @@ def download_parent_portfolio(
 
     # storage_key 用原始 mime；display/thumb 為 JPG
     mime = att.mime_type if key == att.storage_key else "image/jpeg"
+    # 家長下載 portfolio 檔案：不 dedup，每次下載都要可溯
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="portfolio_download",
+        entity_id=str(att.id),
+        summary=f"家長下載 portfolio 檔案：student_id={student_id} attachment_id={att.id}",
+        changes={
+            "student_id": student_id,
+            "owner_type": att.owner_type,
+            "key_kind": (
+                "original"
+                if key == att.storage_key
+                else ("display" if key == att.display_key else "thumb")
+            ),
+        },
+    )
     return FileResponse(
         path=str(path),
         media_type=mime,

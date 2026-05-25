@@ -33,6 +33,7 @@ from models.portfolio import (
     ATTACHMENT_OWNER_OBSERVATION,
     OBSERVATION_DOMAINS,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -185,6 +186,7 @@ def _observation_to_dict(
 @router.get("/{student_id}/observations")
 async def list_observations(
     student_id: int,
+    request: Request,
     from_date: Optional[date] = Query(None, alias="from"),
     to_date: Optional[date] = Query(None, alias="to"),
     domain: Optional[str] = Query(None),
@@ -223,6 +225,22 @@ async def list_observations(
             )
             attachments_map = _attachments_by_owner_ids(
                 session, ATTACHMENT_OWNER_OBSERVATION, [r.id for r in rows]
+            )
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student_observation",
+                entity_id=str(student_id),
+                summary=f"查詢學生觀察紀錄列表：student_id={student_id} total={total}",
+                changes={
+                    "from": from_date.isoformat() if from_date else None,
+                    "to": to_date.isoformat() if to_date else None,
+                    "domain": domain,
+                    "highlight_only": highlight_only,
+                    "total": total,
+                    "returned": len(rows),
+                },
+                dedup=True,
             )
             return {
                 "total": total,

@@ -600,12 +600,18 @@ class TestContactBookListQueryCount:
             tk = _teacher_token(user, emp)
             engine = session.get_bind()
 
-        # 計算 list endpoint 發出的 query 數
-        with QueryCounter(engine) as counter:
-            resp = client.get(
-                f"/api/portal/contact-book?classroom_id={cid}&log_date={today.isoformat()}",
-                cookies={"access_token": tk},
-            )
+        # 把 audit fire-and-forget 改 no-op：audit 寫入跑在 to_thread，
+        # QueryCounter 視排程偶爾抓到 1 筆 INSERT audit_logs 偶爾抓不到，
+        # 此 test 只在乎 N+1 不在乎 audit，stub 掉避免 CI flake。
+        # audit 邏輯本身已由 tests/test_audit_portfolio_coverage.py 覆蓋。
+        from unittest.mock import patch
+
+        with patch("utils.audit._schedule_audit_write", lambda payload: None):
+            with QueryCounter(engine) as counter:
+                resp = client.get(
+                    f"/api/portal/contact-book?classroom_id={cid}&log_date={today.isoformat()}",
+                    cookies={"access_token": tk},
+                )
 
         assert resp.status_code == 200, resp.text
         body = resp.json()

@@ -24,6 +24,7 @@ from sqlalchemy import or_
 
 from models.database import get_session
 from models.contact_book import ContactBookTemplate
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.permissions import Permission, has_permission
 
@@ -106,6 +107,7 @@ def _assert_can_modify(template: ContactBookTemplate, current_user: dict) -> Non
 
 @router.get("")
 def list_templates(
+    request: Request,
     include_archived: bool = Query(False),
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_WRITE)),
 ):
@@ -125,6 +127,18 @@ def list_templates(
             ContactBookTemplate.scope.desc(),  # 'shared' 排 'personal' 前
             ContactBookTemplate.updated_at.desc(),
         ).all()
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="contact_book_template",
+            entity_id=str(user_id),
+            summary=f"教師列範本：user_id={user_id} count={len(templates)}",
+            changes={
+                "include_archived": include_archived,
+                "count": len(templates),
+            },
+            dedup=True,
+        )
         return {"items": [_template_to_dict(t) for t in templates]}
     finally:
         session.close()

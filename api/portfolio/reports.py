@@ -56,6 +56,7 @@ from services.growth_report_collector import (
     summarize_attendance,
 )
 from services.growth_report_pdf import generate_growth_report_pdf
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -445,6 +446,7 @@ async def create_growth_report(
 @router.get("/{student_id}/growth-reports")
 async def list_growth_reports(
     student_id: int,
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
@@ -460,6 +462,15 @@ async def list_growth_reports(
                 .limit(limit)
                 .all()
             )
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student_growth_report",
+                entity_id=str(student_id),
+                summary=f"查詢成長報告列表：student_id={student_id} count={len(rows)}",
+                changes={"skip": skip, "limit": limit, "count": len(rows)},
+                dedup=True,
+            )
             return {"items": [_row_to_dict(r) for r in rows]}
     except HTTPException:
         raise
@@ -471,6 +482,7 @@ async def list_growth_reports(
 async def get_growth_report(
     student_id: int,
     report_id: int,
+    request: Request,
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
 ) -> dict:
     try:
@@ -483,6 +495,15 @@ async def get_growth_report(
             )
             if not r:
                 raise HTTPException(status_code=404, detail="報告不存在")
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student_growth_report",
+                entity_id=str(report_id),
+                summary=f"查看成長報告詳情：student_id={student_id} report_id={report_id}",
+                changes={"student_id": student_id, "period": r.period_label},
+                dedup=True,
+            )
             return _row_to_dict(r)
     except HTTPException:
         raise
@@ -522,10 +543,17 @@ async def download_growth_report(
                 raise HTTPException(status_code=410, detail="報告檔案已遺失")
             if not path.exists():
                 raise HTTPException(status_code=410, detail="報告檔案已遺失")
-            request.state.audit_entity_id = str(student_id)
-            request.state.audit_summary = (
-                f"下載成長報告：student_id={student_id} report_id={report_id} "
-                f"period={r.period_label}"
+            # PDF 下載不 dedup：每次下載都要可溯（個資法 §10 查閱/複製權）
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student_growth_report",
+                entity_id=str(report_id),
+                summary=(
+                    f"下載成長報告 PDF：student_id={student_id} report_id={report_id} "
+                    f"period={r.period_label}"
+                ),
+                changes={"student_id": student_id, "period": r.period_label},
             )
             return FileResponse(
                 str(path),
