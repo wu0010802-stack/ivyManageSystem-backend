@@ -600,12 +600,18 @@ class TestContactBookListQueryCount:
             tk = _teacher_token(user, emp)
             engine = session.get_bind()
 
-        # 計算 list endpoint 發出的 query 數
-        with QueryCounter(engine) as counter:
-            resp = client.get(
-                f"/api/portal/contact-book?classroom_id={cid}&log_date={today.isoformat()}",
-                cookies={"access_token": tk},
-            )
+        # 把 audit fire-and-forget 改 no-op：audit 寫入跑在 to_thread，
+        # QueryCounter 視排程偶爾抓到 1 筆 INSERT audit_logs 偶爾抓不到，
+        # 此 test 只在乎 N+1 不在乎 audit，stub 掉避免 CI flake。
+        # audit 邏輯本身已由 tests/test_audit_portfolio_coverage.py 覆蓋。
+        from unittest.mock import patch
+
+        with patch("utils.audit._schedule_audit_write", lambda payload: None):
+            with QueryCounter(engine) as counter:
+                resp = client.get(
+                    f"/api/portal/contact-book?classroom_id={cid}&log_date={today.isoformat()}",
+                    cookies={"access_token": tk},
+                )
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -614,10 +620,8 @@ class TestContactBookListQueryCount:
 
         # 目前 _load_photos 在迴圈每個 entry 各發一次 query → baseline ~17-20
         # Task 3B.3 批次修補後應降至 ≤ 9（photos 改 IN clause；auth+emp+classroom+roster+entries+photos+completion×2 共 9）
-        # audit 2026-05-25 加 write_explicit_audit READ：背景 thread INSERT audit_logs +1 query
-        # 已 dedup（同 classroom_id+log_date 60s 內只 1 筆），不是 N+1，僅 +1 overhead。
-        assert counter.count <= 10, (
-            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 10). "
+        assert counter.count <= 9, (
+            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 9). "
             f"Last 5 statements: {counter.statements[-5:]}"
         )
 
