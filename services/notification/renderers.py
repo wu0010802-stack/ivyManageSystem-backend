@@ -171,7 +171,7 @@ def _r_dismissal_created(ctx: dict) -> Rendered:
 
 @renderer("parent.message_received")
 def _r_parent_message(ctx: dict) -> Rendered:
-    snippet = (ctx.get("body_preview") or "(附件)").strip()
+    snippet = (ctx.get("body_preview") or "").strip() or "(附件)"
     if len(snippet) > 60:
         snippet = snippet[:60] + "…"
     title = f"💬 {ctx['teacher_name']} 傳了新訊息"
