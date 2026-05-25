@@ -273,6 +273,4 @@ __all__ = [
     "VendorPayment",
     # monthly fixed cost（月度損益表 Phase 2 手動登錄）
     "MonthlyFixedCost",
-    # academic term（招生漏斗 Phase A）
-    "AcademicTerm",
 ]
