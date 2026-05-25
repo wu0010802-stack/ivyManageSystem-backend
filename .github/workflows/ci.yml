@@ -48,7 +48,7 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30  # 2026-05-25: bumped from 15. 全套 5000+ 測試本地 ~20 min, CI 同量級
 
     services:
       postgres:
