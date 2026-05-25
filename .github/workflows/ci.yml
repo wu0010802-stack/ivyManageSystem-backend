@@ -48,7 +48,7 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # 2026-05-25: bumped from 15. 全套 5000+ 測試本地 ~20 min, CI 同量級
+    timeout-minutes: 60  # 2026-05-25: 15→30→60. CI 64% @ 30 min；含 5000+ test + spike_rls auth setup overhead
 
     services:
       postgres:
