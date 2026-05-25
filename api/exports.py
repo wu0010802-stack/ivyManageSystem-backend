@@ -11,6 +11,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.audit import write_explicit_audit
 from utils.auth import require_staff_permission
+from utils.rounding import round_half_up
 from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.masking import mask_bank_account
@@ -746,7 +747,7 @@ def export_overtimes(
                     start_t,
                     end_t,
                     ot.hours or 0,
-                    round(ot.overtime_pay or 0) if can_see_pay else "—",
+                    round_half_up(ot.overtime_pay or 0) if can_see_pay else "—",
                     ot.reason or "",
                     _approval_label(ot.is_approved),
                 ],

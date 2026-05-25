@@ -21,6 +21,7 @@ from models.database import (
 )
 from services.finance_report_service import build_finance_detail, build_finance_summary
 from services.monthly_pnl_service import build_monthly_pnl
+from utils.rounding import round_half_up
 from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
@@ -221,11 +222,11 @@ def _query_salary_monthly(session, year: int) -> list:
         {
             "month": int(row.month),
             "employee_count": int(row.employee_count),
-            "total_gross": round(float(row.total_gross or 0)),
-            "total_net": round(float(row.total_net or 0)),
-            "total_deductions": round(float(row.total_deductions or 0)),
-            "total_bonus": round(float(row.total_bonus or 0)),
-            "total_overtime_pay": round(float(row.total_overtime_pay or 0)),
+            "total_gross": round_half_up(float(row.total_gross or 0)),
+            "total_net": round_half_up(float(row.total_net or 0)),
+            "total_deductions": round_half_up(float(row.total_deductions or 0)),
+            "total_bonus": round_half_up(float(row.total_bonus or 0)),
+            "total_overtime_pay": round_half_up(float(row.total_overtime_pay or 0)),
             "employee_count_pending": pending_map.get(int(row.month), 0),
         }
         for row in finalized_rows

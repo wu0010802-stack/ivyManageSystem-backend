@@ -37,6 +37,7 @@ from utils.finance_guards import (
     require_not_self_salary_record,
 )
 from utils.permissions import Permission
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -198,8 +199,8 @@ def manual_adjust_salary(
         # 在套用變更前，記下舊的 festival_bonus / meeting_absence_deduction，
         # 用於 #2 連動：若管理員只改 meeting_absence_deduction，
         # 自動回推 raw festival 並重套新的扣減。
-        old_festival_bonus = round(record.festival_bonus or 0)
-        old_meeting_absence = round(record.meeting_absence_deduction or 0)
+        old_festival_bonus = round_half_up(record.festival_bonus or 0)
+        old_meeting_absence = round_half_up(record.meeting_absence_deduction or 0)
 
         changed_parts = []
         modified_fields = []  # 本次寫過的欄位名單,稍後合併入 record.manual_overrides
@@ -207,8 +208,8 @@ def manual_adjust_salary(
         for field, value in payload.items():
             if field not in EDITABLE_SALARY_FIELDS:
                 continue
-            old_value = round(getattr(record, field) or 0)
-            new_value = round(value or 0)
+            old_value = round_half_up(getattr(record, field) or 0)
+            new_value = round_half_up(value or 0)
             if old_value == new_value:
                 continue
             setattr(record, field, new_value)
@@ -228,7 +229,7 @@ def manual_adjust_salary(
         meeting_absence_in_payload = "meeting_absence_deduction" in payload
         festival_bonus_in_payload = "festival_bonus" in payload
         if meeting_absence_in_payload and not festival_bonus_in_payload:
-            new_meeting_absence = round(record.meeting_absence_deduction or 0)
+            new_meeting_absence = round_half_up(record.meeting_absence_deduction or 0)
             inferred_raw = old_festival_bonus + old_meeting_absence
             recomputed_festival = max(0, inferred_raw - new_meeting_absence)
             if recomputed_festival != old_festival_bonus:

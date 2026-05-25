@@ -45,6 +45,7 @@ from utils.excel_utils import (
     SafeWorksheet,
     sanitize_excel_value as _sanitize_excel_value,
 )
+from utils.rounding import round_half_up
 
 # ============ 確認動作標籤映射 ============
 
@@ -107,7 +108,7 @@ def _build_anomaly_rows(session, year: int, month: int, status_filter: str):
 
         items = []
         if att.is_late and att.late_minutes and att.late_minutes > 0:
-            deduction = round(daily_salary / 8 / 60 * att.late_minutes)
+            deduction = round_half_up(daily_salary / 8 / 60 * att.late_minutes)
             items.append(
                 {
                     "type": "late",

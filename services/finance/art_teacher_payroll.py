@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from models.database import ArtTeacherPayrollEntry, Employee
 from utils.excel_utils import SafeWorksheet
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ def recompute_entry_amounts(entry: ArtTeacherPayrollEntry) -> None:
 
     讓 API 端統一呼叫，避免前端送錯 total。
     """
-    base = round(float(entry.hours or 0) * float(entry.hourly_rate or 0))
+    base = round_half_up(float(entry.hours or 0) * float(entry.hourly_rate or 0))
     entry.base_amount = base
     entry.total_amount = (
         base + float(entry.excess_amount or 0) + float(entry.activity_bonus or 0)
