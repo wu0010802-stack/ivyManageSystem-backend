@@ -358,6 +358,40 @@ def _parse_entity_id(path):
     return match.group(1) if match else None
 
 
+def mark_soft_delete(request: Request, entity_type: str, entity_label: str) -> None:
+    """軟刪 endpoint 顯式呼叫，summary 形如「軟刪 員工 王小明」。
+
+    軟刪 = endpoint 內部 `deleted_at=now()` 或 `is_active=False`，
+    對外是 PATCH/PUT 但業務語意是刪除。middleware 看 HTTP method 看不出來，
+    必須 endpoint 顯式呼叫此 helper。
+    """
+    label = ENTITY_LABELS.get(entity_type, entity_type)
+    request.state.audit_summary = f"軟刪 {label} {entity_label}"
+    request.state.audit_delete_kind = "soft"
+
+
+def mark_hard_delete(request: Request, entity_type: str, entity_label: str) -> None:
+    """真刪 helper — 用於非 HTTP DELETE 但內部 `session.delete()` 的情境
+    （例如 PATCH 觸發 cascade 真刪）。HTTP DELETE 不需呼叫此 helper，
+    middleware 會自動加「(不可復原)」尾綴。
+    """
+    label = ENTITY_LABELS.get(entity_type, entity_type)
+    request.state.audit_summary = f"真刪 {label} {entity_label} (不可復原)"
+    request.state.audit_delete_kind = "hard"
+
+
+def _decorate_delete_summary(request: Request, summary: str) -> str:
+    """寫入前對 summary 補真刪尾綴：
+    - HTTP DELETE 且 endpoint 未自行標 audit_delete_kind → 加「(不可復原)」
+    - 其他情境（軟刪 / 已 hard / 非 DELETE）→ 維持原 summary
+    """
+    if request.method == "DELETE" and not getattr(
+        request.state, "audit_delete_kind", None
+    ):
+        return f"{summary} (不可復原)"
+    return summary
+
+
 def _build_summary(method, path, entity_type):
     """產生人類可讀的操作摘要"""
     action = METHOD_ACTION_MAP.get(method, method)
@@ -668,6 +702,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 summary = getattr(
                     request.state, "audit_summary", None
                 ) or _build_summary(method, path, entity_type)
+                summary = _decorate_delete_summary(request, summary)
             ip = get_client_ip(request)
 
             changes_raw = getattr(request.state, "audit_changes", None)
