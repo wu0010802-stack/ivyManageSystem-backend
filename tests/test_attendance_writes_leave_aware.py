@@ -37,7 +37,7 @@ from utils.permissions import Permission
 
 # ── Fixtures ───────────────────────────────────────────────────────────
 
-ATT_PERMS = int(Permission.ATTENDANCE_READ) | int(Permission.ATTENDANCE_WRITE)
+ATT_PERMS = ["ATTENDANCE_READ", "ATTENDANCE_WRITE"]
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ def _make_user(
     session,
     *,
     username: str,
-    permissions: int,
+    permissions: list[str],
     employee_id: int | None = None,
     role: str = "admin",
 ) -> User:
@@ -98,7 +98,7 @@ def _make_user(
         username=username,
         password_hash=hash_password("Temp123456"),
         role=role,
-        permissions=permissions,
+        permission_names=permissions,
         employee_id=employee_id,
         is_active=True,
         must_change_password=False,

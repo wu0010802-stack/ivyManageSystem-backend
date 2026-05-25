@@ -92,7 +92,7 @@ def _setup_admin_and_employee(session_factory) -> int:
             username="sync_admin",
             password_hash=hash_password("SyncAdmin123"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             must_change_password=False,
         )

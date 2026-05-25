@@ -78,7 +78,7 @@ def term_test(tmp_path):
             username="admin",
             password_hash=hash_password("TempPass123"),
             role="admin",
-            permissions=Permission.SETTINGS_READ | Permission.SETTINGS_WRITE,
+            permission_names=["SETTINGS_READ", "SETTINGS_WRITE"],
             is_active=True,
         )
         s.add(admin)

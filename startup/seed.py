@@ -333,7 +333,7 @@ def seed_default_admin():
             username=init_username,
             password_hash=hash_password(init_password),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             must_change_password=must_change,
         )
         session.add(admin_user)

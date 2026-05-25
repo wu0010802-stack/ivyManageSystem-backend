@@ -42,9 +42,9 @@ from utils.permissions import Permission  # noqa: E402
 PREFIX = "/api/year_end/appraisal-payout"
 
 # 需要 APPRAISAL_FINALIZE 的使用者
-FINALIZE_PERM = int(Permission.APPRAISAL_FINALIZE)
+FINALIZE_PERM = ["APPRAISAL_FINALIZE"]
 # 只有一個無關權限的使用者（YEAR_END_READ 不含 APPRAISAL_FINALIZE）
-VIEWER_PERM = int(Permission.YEAR_END_READ)
+VIEWER_PERM = ["YEAR_END_READ"]
 
 
 @pytest.fixture
@@ -88,7 +88,7 @@ def _seed_users(sf):
                 username="admin",
                 password_hash=hash_password("TempPass123"),
                 role="admin",
-                permissions=FINALIZE_PERM,
+                permission_names=FINALIZE_PERM,
                 is_active=True,
             )
         )
@@ -97,7 +97,7 @@ def _seed_users(sf):
                 username="viewer",
                 password_hash=hash_password("TempPass123"),
                 role="staff",
-                permissions=VIEWER_PERM,
+                permission_names=VIEWER_PERM,
                 is_active=True,
             )
         )

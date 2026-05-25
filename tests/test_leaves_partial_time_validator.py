@@ -81,7 +81,7 @@ def _setup_admin_and_employee(session_factory):
             username="v_admin",
             password_hash=hash_password("VAdmin123"),
             role="admin",
-            permissions=-1,
+            permission_names=["*"],
             is_active=True,
             must_change_password=False,
         )

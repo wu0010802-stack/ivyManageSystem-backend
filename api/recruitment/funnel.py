@@ -32,7 +32,7 @@ from services.recruitment_funnel import (
 )
 from utils.academic import resolve_current_academic_term
 from utils.auth import require_staff_permission, get_current_user
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 
 router = APIRouter(prefix="/funnel", tags=["recruitment-funnel"])
 
@@ -136,9 +136,9 @@ def post_transition(
     from_stage = derive_stage(visit, student)
 
     required = _required_permissions(from_stage, payload.to_stage)
-    user_perms = current_user.get("permissions", 0)
+    user_perms = current_user.get("permission_names") or []
     for p in required:
-        if not (int(user_perms) & p.value):
+        if not has_permission(user_perms, p):
             raise HTTPException(
                 403,
                 detail={"code": "PERMISSION_DENIED", "message": f"missing {p.name}"},
