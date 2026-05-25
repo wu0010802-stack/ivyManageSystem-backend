@@ -8,9 +8,10 @@ Phase 3 補：list
 import io
 import logging
 from datetime import date, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from models.auth import User
@@ -310,6 +311,39 @@ def get_offboarding_detail(
             nhi_unenroll_submitted_at=record.nhi_unenroll_submitted_at,
             magic_link_active=_is_magic_link_active(record),
             closed_at=record.closed_at,
+        )
+    finally:
+        session.close()
+
+
+@router.get("/{employee_id}/certificate.pdf")
+def get_certificate_pdf(
+    employee_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
+):
+    """admin 取離職證明 PDF。
+
+    gated by EMPLOYEES_READ；record 不存在或 certificate_pdf_path 空
+    → 404 CERTIFICATE_NOT_FOUND；檔案不存在 → 404 CERTIFICATE_FILE_MISSING。
+    """
+    session: Session = get_session()
+    try:
+        record = (
+            session.query(EmployeeOffboardingRecord)
+            .filter_by(employee_id=employee_id)
+            .first()
+        )
+        if record is None or not record.certificate_pdf_path:
+            raise HTTPException(status_code=404, detail="CERTIFICATE_NOT_FOUND")
+
+        pdf_path = Path(record.certificate_pdf_path)
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="CERTIFICATE_FILE_MISSING")
+
+        return FileResponse(
+            path=str(pdf_path),
+            media_type="application/pdf",
+            filename=pdf_path.name,
         )
     finally:
         session.close()
