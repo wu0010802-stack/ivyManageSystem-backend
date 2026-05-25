@@ -88,6 +88,9 @@ class Permission(str, Enum):
     VENDOR_PAYMENT_READ = "VENDOR_PAYMENT_READ"
     VENDOR_PAYMENT_WRITE = "VENDOR_PAYMENT_WRITE"
 
+    # DB-driven 自訂權限/角色 CRUD 守衛（(b) 子專案）
+    ROLES_MANAGE = "ROLES_MANAGE"
+
 
 # 位元值凍結快照——僅供 alembic upgrade()/downgrade() backfill 使用。
 # 一旦 migration 跑過 prod，請勿變更此表（保持歷史 migration 可重跑）。
@@ -307,6 +310,43 @@ ROLE_LABELS: Dict[str, str] = {
     "parent": "家長",
 }
 
+# principal 角色：supervisor 全部 + 薪資審視 + 稽核 + 政府報表匯出
+ROLE_TEMPLATES["principal"] = ROLE_TEMPLATES["supervisor"] + [
+    Permission.SALARY_READ.value,
+    Permission.AUDIT_LOGS.value,
+    Permission.GOV_REPORTS_EXPORT.value,
+]
+ROLE_LABELS["principal"] = "園長"
+
+# accountant 角色：純財務，13 條，不含 EMPLOYEES_WRITE
+ROLE_TEMPLATES["accountant"] = [
+    Permission.DASHBOARD.value,
+    Permission.REPORTS.value,
+    Permission.GOV_REPORTS_VIEW.value,
+    Permission.EMPLOYEES_READ.value,  # 要看誰可申報薪資（不含 WRITE）
+    Permission.SALARY_READ.value,
+    Permission.SALARY_WRITE.value,
+    Permission.FEES_READ.value,
+    Permission.FEES_WRITE.value,
+    Permission.VENDOR_PAYMENT_READ.value,
+    Permission.VENDOR_PAYMENT_WRITE.value,
+    Permission.YEAR_END_READ.value,
+    Permission.YEAR_END_WRITE.value,  # 不含 FINALIZE（簽核屬 supervisor/principal）
+    Permission.APPRAISAL_ACCOUNTING.value,  # 核考核獎金數字
+]
+ROLE_LABELS["accountant"] = "會計"
+
+# 角色說明（給前端 SettingsUsersTab 卡片顯示）
+ROLE_DESCRIPTIONS: Dict[str, str] = {
+    "admin": "唯一能改帳號、系統設定",
+    "principal": "業務全包 + 薪資審視，不動帳號",
+    "supervisor": "教務管理、招生轉換、考核全程",
+    "hr": "員工資料、薪資發放、年終、廠商付款",
+    "accountant": "純財務（薪資/學費/廠商/年終）",
+    "teacher": "公告、考勤、放學接送、學生檔案",
+    "parent": "家長端登入，無管理端權限",
+}
+
 
 # 權限名稱對照表 (供前端使用)
 PERMISSION_LABELS: Dict[str, str] = {
@@ -381,6 +421,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     # 廠商付款簽收
     "VENDOR_PAYMENT_READ": "廠商付款簽收 (檢視)",
     "VENDOR_PAYMENT_WRITE": "廠商付款簽收 (編輯/簽收)",
+    # DB-driven 自訂權限/角色 CRUD 守衛 ((b) 子專案)
+    "ROLES_MANAGE": "角色與權限管理",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -531,9 +573,18 @@ PERMISSION_GROUPS: List[Dict] = [
 # ---------------------------------------------------------------------------
 
 
-def get_role_default_permissions(role: str) -> List[str]:
-    """取得角色預設權限名稱清單；未知角色 fallback 為 teacher。"""
-    return list(ROLE_TEMPLATES.get(role, ROLE_TEMPLATES["teacher"]))
+def get_role_default_permissions(session, role_code: str) -> List[str]:
+    """從 DB roles 表拉指定 role 的預設 permissions。
+
+    fallback：未知 role 回 teacher 預設（既有行為）。
+    """
+    from models.permission_models import Role
+
+    role = session.query(Role).filter_by(code=role_code).first()
+    if role is None:
+        teacher_role = session.query(Role).filter_by(code="teacher").first()
+        return list(teacher_role.permissions) if teacher_role else []
+    return list(role.permissions)
 
 
 def has_permission(
@@ -579,25 +630,73 @@ def get_permission_list(user_perms: List[str] | None) -> List[str]:
     return [p for p in user_perms if p in Permission.__members__]
 
 
-def get_permissions_definition() -> Dict:
-    """取得完整權限定義供前端使用。"""
+def get_permissions_definition(session) -> Dict:
+    """取得完整權限定義（從 DB permission_definitions + roles 兩表拉，取代 in-code dict）。
+
+    runtime 從 DB 拉確保 admin runtime 改動立即生效。in-code dict 保留供 alembic
+    rolesdb01 seed 用，但 runtime 不再參考。
+    """
+    from models.permission_models import PermissionDefinition, Role
+
+    perm_defs = (
+        session.query(PermissionDefinition)
+        .order_by(PermissionDefinition.group_name, PermissionDefinition.code)
+        .all()
+    )
+    role_defs = session.query(Role).order_by(Role.is_core.desc(), Role.code).all()
+
     permissions = {
-        perm.value: {
-            "value": perm.value,
-            "label": PERMISSION_LABELS.get(perm.value, perm.value),
-        }
-        for perm in Permission
+        p.code: {"value": p.code, "label": p.label, "is_core": p.is_core}
+        for p in perm_defs
     }
+
+    # 動態組 groups：依 group_name 分群，對齊 SPLIT_MODULES 為 split_permissions
+    split_codes = set()
+    for sp in SPLIT_MODULES.values():
+        split_codes.add(sp["read"])
+        split_codes.add(sp["write"])
+
+    groups_map: Dict[str, Dict] = {}
+    for p in perm_defs:
+        if p.group_name not in groups_map:
+            groups_map[p.group_name] = {
+                "name": p.group_name,
+                "permissions": [],
+                "split_permissions": [],
+            }
+        if p.code not in split_codes:
+            groups_map[p.group_name]["permissions"].append(p.code)
+
+    # 把 SPLIT_MODULES 的 read/write 配對加進對應 group
+    for module_key, sp in SPLIT_MODULES.items():
+        read_def = next((p for p in perm_defs if p.code == sp["read"]), None)
+        if read_def and read_def.group_name in groups_map:
+            module_label = PERMISSION_LABELS.get(sp["read"], sp["read"]).replace(
+                " (檢視)", ""
+            )
+            groups_map[read_def.group_name]["split_permissions"].append(
+                {
+                    "module": module_label,
+                    "read": sp["read"],
+                    "write": sp["write"],
+                }
+            )
+
+    groups = list(groups_map.values())
+
     roles = {
-        role: {
-            "permissions": perms,
-            "label": ROLE_LABELS.get(role, role),
+        r.code: {
+            "label": r.label,
+            "description": r.description or "",
+            "permissions": list(r.permissions),
+            "is_core": r.is_core,
         }
-        for role, perms in ROLE_TEMPLATES.items()
+        for r in role_defs
     }
+
     return {
         "permissions": permissions,
-        "groups": PERMISSION_GROUPS,
+        "groups": groups,
         "roles": roles,
         "split_modules": SPLIT_MODULES,
     }

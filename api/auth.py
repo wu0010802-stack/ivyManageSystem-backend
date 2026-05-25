@@ -77,6 +77,7 @@ def _is_school_wifi(ip_str: str) -> bool:
 def _assert_can_manage_user(
     current_user: dict,
     *,
+    session=None,
     target_user: Optional[User] = None,
     payload_role: Optional[str] = None,
     payload_permission_names: Optional[List[str]] = None,
@@ -139,7 +140,11 @@ def _assert_can_manage_user(
 
     final_perms = payload_permission_names
     if final_perms is None and payload_role is not None:
-        final_perms = get_role_default_permissions(payload_role)
+        if session is None:
+            raise RuntimeError(
+                "_assert_can_manage_user 需要 session 才能解析 role 預設權限"
+            )
+        final_perms = get_role_default_permissions(session, payload_role)
 
     if final_perms is not None:
         final_set = set(final_perms)
@@ -1007,14 +1012,14 @@ def create_user(
     ),
 ):
     """建立使用者帳號"""
-    _assert_can_manage_user(
-        current_user,
-        payload_role=data.role,
-        payload_permission_names=data.permission_names,
-    )
-
     session = get_session()
     try:
+        _assert_can_manage_user(
+            current_user,
+            session=session,
+            payload_role=data.role,
+            payload_permission_names=data.permission_names,
+        )
         if session.query(User).filter(User.username == data.username).first():
             raise HTTPException(status_code=400, detail="帳號已存在")
 
@@ -1033,7 +1038,7 @@ def create_user(
         if data.permission_names is not None:
             final_permission_names = data.permission_names
         else:
-            final_permission_names = get_role_default_permissions(data.role)
+            final_permission_names = get_role_default_permissions(session, data.role)
 
         # 驗證密碼強度
         validate_password_strength(data.password)
@@ -1073,7 +1078,7 @@ def reset_password(
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
 
-        _assert_can_manage_user(current_user, target_user=user)
+        _assert_can_manage_user(current_user, session=session, target_user=user)
 
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
@@ -1094,8 +1099,12 @@ def reset_password(
 
 @router.get("/permissions")
 def get_permissions():
-    """取得權限定義（供前端渲染 UI）"""
-    return get_permissions_definition()
+    """取得權限定義（供前端渲染 UI）— 從 DB 拉，admin runtime 改動立即生效。"""
+    session = get_session()
+    try:
+        return get_permissions_definition(session)
+    finally:
+        session.close()
 
 
 @router.put("/users/{user_id}")
@@ -1120,6 +1129,7 @@ def update_user(
 
         _assert_can_manage_user(
             current_user,
+            session=session,
             target_user=user,
             payload_role=data.role,
             payload_permission_names=data.permission_names,
@@ -1134,7 +1144,7 @@ def update_user(
             user.role = data.role
             # 角色變更時，若未指定權限則套用新角色的預設權限
             if data.permission_names is None:
-                user.permission_names = get_role_default_permissions(data.role)
+                user.permission_names = get_role_default_permissions(session, data.role)
 
         if data.permission_names is not None:
             user.permission_names = data.permission_names
@@ -1199,7 +1209,7 @@ def delete_user(
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
 
-        _assert_can_manage_user(current_user, target_user=user)
+        _assert_can_manage_user(current_user, session=session, target_user=user)
 
         session.delete(user)
         session.commit()

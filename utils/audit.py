@@ -33,6 +33,15 @@ _AUDIT_BLOCK_DEDUP_WINDOW_SEC = 60
 _AUDIT_BLOCK_CACHE_MAX = 1000
 _audit_block_cache: dict[tuple[str, str, str], float] = {}
 
+# 2026-05-25：sensitive GET (READ) audit 量控，由 write_explicit_audit 呼叫端決定。
+# 家長端 list endpoint（contact-book / measurements）每次開頁就打，若一律寫
+# audit_logs 會放大數十倍。同 (user_id, entity_type, entity_id) 60s window 內
+# 只記第一筆，仍保留首次讀取軌跡。下載類（PDF/檔案）不應 dedup（每次下載要可溯）。
+# 多 worker 部署時每 worker 各自有 cache（最多 N× 通過率，仍有限）。
+_AUDIT_READ_DEDUP_WINDOW_SEC = 60
+_AUDIT_READ_CACHE_MAX = 2000
+_audit_read_cache: dict[tuple[str, int | str, str], float] = {}
+
 
 def _should_audit_block(ip: str | None, method: str, path: str) -> bool:
     """同 (ip, method, path) 在 60 秒內只 audit 一次 401/403。
@@ -59,6 +68,32 @@ def _should_audit_block(ip: str | None, method: str, path: str) -> bool:
     return True
 
 
+def _should_audit_read(
+    user_id: int | str | None,
+    entity_type: str,
+    entity_id: str | None,
+) -> bool:
+    """同 (user_id, entity_type, entity_id) 在 60 秒內只 audit 一次 READ。
+
+    僅供 write_explicit_audit 內部使用：caller 傳 dedup_key=True 才啟用。
+    下載類（PDF / 檔案）應傳 dedup_key=False 以保證每次下載都留軌跡。
+    用 entity_id 而非 path：同一筆 contact_book entry 透過 list / detail 兩個
+    path 進來都歸成同一 key，避免家長同分鐘來回切頁面寫 2 筆。
+    """
+    key = (str(user_id or "anon"), entity_type, str(entity_id or ""))
+    now = time.monotonic()
+    last = _audit_read_cache.get(key)
+    if last is not None and now - last < _AUDIT_READ_DEDUP_WINDOW_SEC:
+        return False
+    _audit_read_cache[key] = now
+    if len(_audit_read_cache) > _AUDIT_READ_CACHE_MAX:
+        cutoff = now - _AUDIT_READ_DEDUP_WINDOW_SEC
+        for k in list(_audit_read_cache.keys()):
+            if _audit_read_cache[k] < cutoff:
+                del _audit_read_cache[k]
+    return True
+
+
 # HTTP method → action mapping
 METHOD_ACTION_MAP = {
     "POST": "CREATE",
@@ -75,6 +110,16 @@ ENTITY_PATTERNS = [
     (r"/api/auth/change-password", "user"),
     (r"/api/attendance", "attendance"),
     (r"/api/employees", "employee"),
+    (r"/api/offboarding", "offboarding"),
+    # 學生 portfolio 子模組（必須排在 /api/students 之前，first-match wins）。
+    # 寫操作走細粒度 entity_type 後，audit-logs 可單獨篩 "成長報告刪除" 等場景，
+    # 不會混進真正改 student 主檔的 row。timeline / attachments 兩支 GET 由
+    # endpoint 自身呼叫 write_explicit_audit(entity_type="student") 保留為跨模組
+    # 聚合稽核（F-V6-03 設計），不在此分流。Refs: audit 2026-05-25。
+    (r"/api/students/\d+/milestones", "portfolio_milestone"),
+    (r"/api/students/\d+/measurements", "student_measurement"),
+    (r"/api/students/\d+/observations", "student_observation"),
+    (r"/api/students/\d+/growth-reports", "student_growth_report"),
     (r"/api/students", "student"),
     (r"/api/classrooms", "classroom"),
     (r"/api/leaves", "leave"),
@@ -133,6 +178,9 @@ ENTITY_PATTERNS = [
     (r"/api/parent/student-leaves", "parent_leave"),
     (r"/api/parent/contact-book", "contact_book_entry"),
     (r"/api/portal/parent-messages", "parent_message"),
+    # templates 必須排在 /api/portal/contact-book 之前；templates 是教師端
+    # 共用範本（個人/全域 promote），與單筆 entry 業務語意不同。
+    (r"/api/portal/contact-book/templates", "contact_book_template"),
     (r"/api/portal/contact-book", "contact_book_entry"),
     # 家長端 milestone react / acknowledge（GET 由 endpoint 顯式 audit；
     # POST 互動寫入 parent_reaction / parent_acknowledged_* 三欄，必留 audit
@@ -191,6 +239,7 @@ SKIP_PATHS = {_LOGIN_PATH}
 # 與前端下拉選項同步。新增 entity_type 請只在此處增補一次。
 ENTITY_LABELS = {
     "employee": "員工",
+    "offboarding": "員工離職",
     "student": "學生",
     "attendance": "考勤",
     "leave": "請假",
@@ -260,6 +309,13 @@ ENTITY_LABELS = {
     # 兩者都是 GET 但回傳跨班 PII 或健康資料，必留稽核。
     "portal_search": "教師端跨功能搜尋",
     "student_measurement": "學生量測",
+    # portfolio 子模組（audit 2026-05-25）
+    "portfolio_milestone": "學生里程碑",
+    "student_observation": "學生觀察紀錄",
+    "student_growth_report": "學生成長報告",
+    "contact_book_template": "聯絡簿範本",
+    # 家長端個別 PII 下載（成長報告附件 / portfolio 直連檔案）
+    "portfolio_download": "家長下載 portfolio 檔案",
     # 家長端 milestone 互動（react/acknowledge）— middleware 透過
     # ENTITY_PATTERNS 攔截 POST 寫入 audit_logs。
     "parent_milestone": "家長端里程碑互動",
@@ -442,6 +498,7 @@ def write_explicit_audit(
     summary: str,
     entity_id: str | None = None,
     changes: dict | None = None,
+    dedup: bool = False,
 ) -> None:
     """為 GET 匯出 / 敏感讀取顯式寫 AuditLog。
 
@@ -451,9 +508,15 @@ def write_explicit_audit(
 
     與 AuditMiddleware 同樣採 fire-and-forget 背景寫入,失敗只記 logger,
     不會阻斷或影響原請求回應。
+
+    dedup=True：同 (user_id, entity_type, entity_id) 60s 內只記第一筆。
+    給家長/教師端 list / read GET 使用以控量；下載類（PDF、檔案下載）
+    必須保持 dedup=False 保留每次下載軌跡。Refs: audit 2026-05-25。
     """
     try:
         user_id, username = _extract_user_from_header(request)
+        if dedup and not _should_audit_read(user_id, entity_type, entity_id):
+            return
         ip = get_client_ip(request)
         changes_json = None
         if changes is not None:

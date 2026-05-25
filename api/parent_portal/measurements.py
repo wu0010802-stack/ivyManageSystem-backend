@@ -10,10 +10,11 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from models.database import StudentMeasurement
+from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
 
@@ -51,6 +52,7 @@ _HARD_ROW_LIMIT = 500
 
 @router.get("")
 async def parent_list_measurements(
+    request: Request,
     student_id: int = Query(...),
     months: int = Query(24, ge=1, le=_MONTHS_MAX),
     current_user: dict = Depends(require_parent_role()),
@@ -70,6 +72,15 @@ async def parent_list_measurements(
             .limit(_HARD_ROW_LIMIT)
             .all()
         )
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student_measurement",
+            entity_id=str(student_id),
+            summary=f"家長查詢量測列表：student_id={student_id} months={months}",
+            changes={"months": months, "returned": len(rows)},
+            dedup=True,
+        )
         return {"items": [_to_dict(r) for r in rows]}
     except HTTPException:
         raise
@@ -79,6 +90,7 @@ async def parent_list_measurements(
 
 @router.get("/chart-data")
 async def parent_measurement_chart(
+    request: Request,
     student_id: int = Query(...),
     months: int = Query(24, ge=1, le=_MONTHS_MAX),
     current_user: dict = Depends(require_parent_role()),
@@ -98,6 +110,15 @@ async def parent_measurement_chart(
             .order_by(StudentMeasurement.measured_on.asc())
             .limit(_HARD_ROW_LIMIT)
             .all()
+        )
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="student_measurement",
+            entity_id=str(student_id),
+            summary=f"家長查詢量測圖表：student_id={student_id} months={months}",
+            changes={"months": months, "points": len(rows)},
+            dedup=True,
         )
         series: dict[str, list[dict]] = {
             "height": [],

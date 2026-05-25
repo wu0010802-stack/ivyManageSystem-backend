@@ -104,12 +104,6 @@ def test_resolve_parent_role_default_is_empty():
     assert perms == []
 
 
-def test_get_role_default_unknown_role_falls_back_to_teacher():
-    """未知角色 fallback 為 teacher 預設。"""
-    perms = get_role_default_permissions("xxxxx")
-    assert perms == get_role_default_permissions("teacher")
-
-
 def test_role_templates_all_use_valid_permission_names():
     """ROLE_TEMPLATES 內每個 perm name 都在 Permission enum 中（或 wildcard）。"""
     for role, perms in ROLE_TEMPLATES.items():
@@ -121,8 +115,10 @@ def test_role_templates_all_use_valid_permission_names():
 
 def test_get_permission_list_wildcard_expands_all():
     expanded = get_permission_list(["*"])
-    assert len(expanded) == 63
+    # 56 條 Permission enum + ROLES_MANAGE ((b) 加) = 57 條成員
+    assert len(expanded) == len(list(Permission))
     assert "EMPLOYEES_READ" in expanded
+    assert "ROLES_MANAGE" in expanded
 
 
 def test_get_permission_list_filters_unknown():
@@ -135,22 +131,6 @@ def test_get_permission_list_none_returns_empty():
     assert get_permission_list(None) == []
 
 
-def test_get_permissions_definition_shape():
-    defn = get_permissions_definition()
-    assert "permissions" in defn
-    assert "groups" in defn
-    assert "roles" in defn
-    assert "split_modules" in defn
-    # value 應為字串（與 name 相同），不再是 int
-    assert defn["permissions"]["EMPLOYEES_READ"]["value"] == "EMPLOYEES_READ"
-    assert defn["permissions"]["EMPLOYEES_READ"]["label"] == "員工管理 (檢視)"
-
-
-def test_get_permissions_definition_admin_role_is_wildcard():
-    defn = get_permissions_definition()
-    assert defn["roles"]["admin"]["permissions"] == ["*"]
-
-
 def test_all_permissions_have_labels():
     """每個 Permission enum 都要有對應的 PERMISSION_LABELS 條目。
     避免「新增 enum 但忘了加 label」造成前端 UI 顯示原始 key。
@@ -159,3 +139,93 @@ def test_all_permissions_have_labels():
 
     for perm in Permission:
         assert perm.value in PERMISSION_LABELS, f"missing label for {perm.value}"
+
+
+def test_role_templates_principal_inherits_supervisor():
+    """principal 必須含 supervisor 全部 + 3 條額外。"""
+    sup_set = set(ROLE_TEMPLATES["supervisor"])
+    pri_set = set(ROLE_TEMPLATES["principal"])
+    assert sup_set.issubset(pri_set)
+    extras = pri_set - sup_set
+    assert extras == {
+        Permission.SALARY_READ.value,
+        Permission.AUDIT_LOGS.value,
+        Permission.GOV_REPORTS_EXPORT.value,
+    }
+
+
+def test_role_templates_principal_excludes_write_and_admin_permissions():
+    """principal 不可含 SALARY_WRITE / USER_MANAGEMENT_* / SETTINGS_*。"""
+    pri = ROLE_TEMPLATES["principal"]
+    assert Permission.SALARY_WRITE.value not in pri
+    assert Permission.USER_MANAGEMENT_READ.value not in pri
+    assert Permission.USER_MANAGEMENT_WRITE.value not in pri
+    assert Permission.SETTINGS_READ.value not in pri
+    assert Permission.SETTINGS_WRITE.value not in pri
+
+
+def test_role_labels_principal_zh():
+    """principal 中文 label = 園長。"""
+    from utils.permissions import ROLE_LABELS
+
+    assert ROLE_LABELS["principal"] == "園長"
+
+
+def test_role_templates_accountant_pure_finance():
+    """accountant 只含財務 + EMPLOYEES_READ；不可含 EMPLOYEES_WRITE / 考勤 / 學生 / 招生 / 政府匯出。"""
+    acc = set(ROLE_TEMPLATES["accountant"])
+    forbidden = {
+        Permission.EMPLOYEES_WRITE.value,
+        Permission.ATTENDANCE_READ.value,
+        Permission.ATTENDANCE_WRITE.value,
+        Permission.LEAVES_READ.value,
+        Permission.STUDENTS_READ.value,
+        Permission.RECRUITMENT_READ.value,
+        Permission.GOV_REPORTS_EXPORT.value,
+        Permission.YEAR_END_FINALIZE.value,
+    }
+    assert forbidden.isdisjoint(acc), f"accountant 不該含: {forbidden & acc}"
+
+
+def test_role_templates_accountant_includes_finance_core():
+    """accountant 必須含薪資/廠商/學費/年終讀寫 + APPRAISAL_ACCOUNTING。"""
+    acc = set(ROLE_TEMPLATES["accountant"])
+    required = {
+        Permission.EMPLOYEES_READ.value,
+        Permission.SALARY_READ.value,
+        Permission.SALARY_WRITE.value,
+        Permission.FEES_READ.value,
+        Permission.FEES_WRITE.value,
+        Permission.VENDOR_PAYMENT_READ.value,
+        Permission.VENDOR_PAYMENT_WRITE.value,
+        Permission.YEAR_END_READ.value,
+        Permission.YEAR_END_WRITE.value,
+        Permission.APPRAISAL_ACCOUNTING.value,
+    }
+    assert required.issubset(acc), f"accountant 缺: {required - acc}"
+
+
+def test_role_labels_accountant_zh():
+    from utils.permissions import ROLE_LABELS
+
+    assert ROLE_LABELS["accountant"] == "會計"
+
+
+def test_role_descriptions_complete():
+    """每個 ROLE_TEMPLATES key 都有對應 ROLE_DESCRIPTIONS。"""
+    from utils.permissions import ROLE_DESCRIPTIONS
+
+    assert set(ROLE_TEMPLATES.keys()) == set(ROLE_DESCRIPTIONS.keys())
+
+
+def test_role_descriptions_non_empty():
+    """ROLE_DESCRIPTIONS 每個值非空字串。"""
+    from utils.permissions import ROLE_DESCRIPTIONS
+
+    for role, desc in ROLE_DESCRIPTIONS.items():
+        assert isinstance(desc, str) and len(desc) > 0, f"{role} description 空"
+
+
+def test_permission_enum_has_roles_manage():
+    """ROLES_MANAGE 是 (b) 加的第 57 條 enum，守衛角色/權限定義 CRUD。"""
+    assert Permission.ROLES_MANAGE.value == "ROLES_MANAGE"

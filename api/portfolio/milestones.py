@@ -25,6 +25,7 @@ from models.portfolio import (
     MILESTONE_SOURCE_MANUAL,
     MILESTONE_TYPES,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -115,6 +116,7 @@ def _milestone_to_dict(m: StudentMilestone) -> dict:
 @router.get("/{student_id}/milestones")
 async def list_milestones(
     student_id: int,
+    request: Request,
     milestone_type: Optional[str] = Query(None),
     from_date: Optional[date] = Query(None, alias="from"),
     to_date: Optional[date] = Query(None, alias="to"),
@@ -144,6 +146,21 @@ async def list_milestones(
                 .offset(skip)
                 .limit(limit)
                 .all()
+            )
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="portfolio_milestone",
+                entity_id=str(student_id),
+                summary=f"查詢學生里程碑列表：student_id={student_id} total={total}",
+                changes={
+                    "milestone_type": milestone_type,
+                    "from": from_date.isoformat() if from_date else None,
+                    "to": to_date.isoformat() if to_date else None,
+                    "total": total,
+                    "returned": len(rows),
+                },
+                dedup=True,
             )
             return {
                 "total": total,

@@ -746,7 +746,18 @@ async def offboard_employee(
     req: OffboardRequest,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
-    """辦理離職：設定離職日與離職原因，若離職日 <= 今天則同步設 is_active = False"""
+    """[DEPRECATED] 改用 POST /api/offboarding/{id}/process。
+
+    本 endpoint 保留作 deprecation passthrough，前端切完後（Phase 3）移除。
+    行為委由 services.offboarding.orchestrator.process_offboarding 統一執行（含
+    Employee.resign_date 設定、is_active 更新、User revoke、leave snapshot、
+    appraisal mark 等），response shape 保持向後相容。
+    """
+    from services.offboarding.orchestrator import (
+        OffboardingError,
+        process_offboarding,
+    )
+
     try:
         resign_d = datetime.strptime(req.resign_date, "%Y-%m-%d").date()
     except ValueError:
@@ -754,74 +765,45 @@ async def offboard_employee(
             status_code=400, detail="resign_date 格式錯誤，請使用 YYYY-MM-DD"
         )
 
-    with session_scope() as session:
-        emp = session.query(Employee).filter(Employee.id == employee_id).first()
-        if not emp:
-            raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
-
-        old_resign_date = emp.resign_date
-        old_is_active = emp.is_active
-
-        emp.resign_date = resign_d
-        emp.resign_reason = req.resign_reason
-
-        today = date.today()
-        if resign_d <= today:
-            emp.is_active = False
-        # 若 resign_date > today，保留 is_active = True（通知期）
-
-        # resign_date 或 is_active 任一發生變動即影響在職比例 / proration → 標 stale。
-        if old_resign_date != emp.resign_date or old_is_active != emp.is_active:
-            stale_marked = _mark_employee_salary_stale(session, employee_id)
-            if stale_marked:
-                logger.warning(
-                    "員工 %s 辦理離職觸發薪資重算旗標，影響 %d 筆未封存記錄",
-                    employee_id,
-                    stale_marked,
-                )
-
-        # ── 撤離職員工的 User 帳號（audit 2026-05-07 P1）────────────────────
-        # 只動 Employee.is_active 不動 User → 離職員工的 cookie 仍有效，可繼續
-        # 呼叫 /api/exports/employee-attendance 下載自己出勤月報、合約金額（若曾
-        # 為 admin/hr/supervisor）。離職日 <= 今天時：
-        # - User.is_active = False（get_current_user 立刻 401）
-        # - User.token_version += 1（任何已簽發的 cookie 因版本不符立刻失效）
-        # 通知期（resign_d > today）保留 User active 直到當日 cron 自動轉。
-        revoked_user_count = 0
-        if resign_d <= today:
-            user = (
-                session.query(User)
-                .filter(User.employee_id == employee_id, User.is_active.is_(True))
-                .first()
-            )
-            if user is not None:
-                user.is_active = False
-                user.token_version = (user.token_version or 0) + 1
-                revoked_user_count = 1
-                logger.warning(
-                    "員工 %s 離職連帶撤 User 帳號：username=%s token_version 升至 %d",
-                    employee_id,
-                    user.username,
-                    user.token_version,
-                )
-
-        logger.warning(
-            "辦理離職：employee_id=%s name=%s resign_date=%s operator=%s",
-            emp.employee_id,
-            emp.name,
-            resign_d,
-            current_user.get("sub"),
+    session = get_session()
+    try:
+        operator_user_id = int(
+            current_user.get("user_id") or current_user.get("sub") or 0
         )
+        try:
+            result = process_offboarding(
+                session=session,
+                employee_id=employee_id,
+                resign_date=resign_d,
+                resign_reason=req.resign_reason,
+                operator_user_id=operator_user_id,
+            )
+        except OffboardingError as e:
+            session.rollback()
+            _status_map = {
+                "EMPLOYEE_NOT_FOUND": 404,
+                "ALREADY_OFFBOARDED": 409,
+                "RESIGN_DATE_BEFORE_HIRE": 400,
+                "RESIGN_DATE_TOO_FAR_FUTURE": 400,
+                "LEAVE_BALANCE_NOT_FOUND": 422,
+            }
+            raise HTTPException(status_code=_status_map.get(e.code, 500), detail=e.code)
 
+        session.commit()
+
+        # 向後相容 response shape（前端尚未切換到 /offboarding/{id}/process 期間）
+        emp = session.query(Employee).filter_by(id=employee_id).first()
         return {
-            "message": "離職資料已更新",
-            "id": emp.id,
-            "name": emp.name,
-            "resign_date": resign_d.isoformat(),
-            "resign_reason": emp.resign_reason,
-            "is_active": emp.is_active,
-            "user_account_revoked": revoked_user_count > 0,
+            "message": "離職資料已更新（deprecated; use POST /offboarding/{id}/process）",
+            "id": employee_id,
+            "name": emp.name if emp else "",
+            "resign_date": result["resign_date"].isoformat(),
+            "resign_reason": req.resign_reason,
+            "is_active": result["is_active_after"],
+            "user_account_revoked": result["user_account_revoked"],
         }
+    finally:
+        session.close()
 
 
 @router.get("/employees/{employee_id}/final-salary-preview")

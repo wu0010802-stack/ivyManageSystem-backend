@@ -246,6 +246,13 @@ class SalaryRecord(Base):
         server_default="0",
         comment="考核年終獎金（2/5 與月薪同發；自 special_bonus_items 兩筆 APPRAISAL_HALF_BONUS_* SUM；不進 gross_salary）",
     )
+    unused_leave_payout = Column(
+        Money,
+        default=0,
+        nullable=False,
+        server_default="0",
+        comment="特休未休折現（§38；獨立 column 不進 gross_salary，仿 appraisal_year_end_bonus）",
+    )
 
     remark = Column(Text, comment="備註")
 

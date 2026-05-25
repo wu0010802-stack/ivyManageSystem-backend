@@ -85,3 +85,128 @@ class TestYearEndAuditCoverage:
         assert ENTITY_LABELS.get("year_end_cycle") == "年終週期"
         assert ENTITY_LABELS.get("year_end_settlement") == "年終結算"
         assert ENTITY_LABELS.get("year_end_special_bonus") == "年終特別獎金"
+
+
+class TestPortfolioGranularAuditCoverage:
+    """audit 2026-05-25：portfolio 子模組寫操作要走細粒度 entity_type，
+    不再混進 student 主檔 entity_type=student。
+
+    timeline / attachments 兩支 GET 由 endpoint 自身呼叫 write_explicit_audit
+    保留 entity_type='student'（跨模組聚合稽核 F-V6-03），不在此分流。
+    """
+
+    def test_milestones_write_mapped_to_portfolio_milestone(self):
+        assert (
+            _parse_entity_type("/api/students/123/milestones") == "portfolio_milestone"
+        )
+
+    def test_milestones_with_subpath_still_portfolio_milestone(self):
+        assert (
+            _parse_entity_type("/api/students/123/milestones/55")
+            == "portfolio_milestone"
+        )
+
+    def test_measurements_mapped_to_student_measurement(self):
+        assert (
+            _parse_entity_type("/api/students/7/measurements") == "student_measurement"
+        )
+        assert (
+            _parse_entity_type("/api/students/7/measurements/12")
+            == "student_measurement"
+        )
+
+    def test_observations_mapped_to_student_observation(self):
+        assert (
+            _parse_entity_type("/api/students/9/observations") == "student_observation"
+        )
+
+    def test_growth_reports_mapped_to_student_growth_report(self):
+        assert (
+            _parse_entity_type("/api/students/3/growth-reports")
+            == "student_growth_report"
+        )
+        assert (
+            _parse_entity_type("/api/students/3/growth-reports/77")
+            == "student_growth_report"
+        )
+
+    def test_students_root_still_student(self):
+        """fallback 仍要保留 — /api/students/{id} 本體與其他未列舉子路徑都是 student。"""
+        assert _parse_entity_type("/api/students/123") == "student"
+        assert _parse_entity_type("/api/students/123/timeline") == "student"
+        assert _parse_entity_type("/api/students/123/attachments") == "student"
+
+    def test_portfolio_entity_labels_present(self):
+        assert ENTITY_LABELS.get("portfolio_milestone") == "學生里程碑"
+        assert ENTITY_LABELS.get("student_observation") == "學生觀察紀錄"
+        assert ENTITY_LABELS.get("student_growth_report") == "學生成長報告"
+        assert ENTITY_LABELS.get("portfolio_download") == "家長下載 portfolio 檔案"
+
+
+class TestContactBookTemplateAuditCoverage:
+    """audit 2026-05-25：教師端 contact-book/templates 與 entry 業務不同，分流。"""
+
+    def test_templates_mapped_to_contact_book_template(self):
+        assert (
+            _parse_entity_type("/api/portal/contact-book/templates")
+            == "contact_book_template"
+        )
+
+    def test_templates_with_id_still_template(self):
+        assert (
+            _parse_entity_type("/api/portal/contact-book/templates/5/promote")
+            == "contact_book_template"
+        )
+
+    def test_contact_book_entry_unchanged(self):
+        """/api/portal/contact-book 本體仍歸 contact_book_entry。"""
+        assert _parse_entity_type("/api/portal/contact-book") == "contact_book_entry"
+        assert (
+            _parse_entity_type("/api/portal/contact-book/12/publish")
+            == "contact_book_entry"
+        )
+
+    def test_contact_book_template_label_present(self):
+        assert ENTITY_LABELS.get("contact_book_template") == "聯絡簿範本"
+
+
+class TestReadDedup:
+    """audit 2026-05-25：write_explicit_audit(dedup=True) 同 (user, entity_type,
+    entity_id) 60s 內只記第一筆，避免家長端 list endpoint 量爆。"""
+
+    def setup_method(self):
+        from utils import audit as audit_module
+
+        audit_module._audit_read_cache.clear()
+
+    def test_same_key_within_window_dedups(self):
+        from utils.audit import _should_audit_read
+
+        assert _should_audit_read(1, "contact_book_entry", "5") is True
+        assert _should_audit_read(1, "contact_book_entry", "5") is False
+        assert _should_audit_read(1, "contact_book_entry", "5") is False
+
+    def test_different_entity_id_not_deduped(self):
+        from utils.audit import _should_audit_read
+
+        assert _should_audit_read(1, "contact_book_entry", "5") is True
+        assert _should_audit_read(1, "contact_book_entry", "6") is True
+
+    def test_different_user_not_deduped(self):
+        from utils.audit import _should_audit_read
+
+        assert _should_audit_read(1, "contact_book_entry", "5") is True
+        assert _should_audit_read(2, "contact_book_entry", "5") is True
+
+    def test_different_entity_type_not_deduped(self):
+        """同學生同 ID 但不同 entity_type 不互相壓制。"""
+        from utils.audit import _should_audit_read
+
+        assert _should_audit_read(1, "student_measurement", "5") is True
+        assert _should_audit_read(1, "student_observation", "5") is True
+
+    def test_anon_user_keyed_distinctly(self):
+        from utils.audit import _should_audit_read
+
+        assert _should_audit_read(None, "student_measurement", "5") is True
+        assert _should_audit_read(None, "student_measurement", "5") is False

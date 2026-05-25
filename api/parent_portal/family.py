@@ -10,7 +10,7 @@ Perf：30s in-process TTLCache（key=(user_id, student_id, limit)）；
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from sqlalchemy import and_, exists, or_
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ from models.database import (
 )
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
+from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 from utils.cache_layer import get_cache
 
@@ -45,6 +46,7 @@ _CACHE_TTL_PARENT_FAMILY_TIMELINE = 30  # 30 秒
 
 @router.get("/timeline")
 def family_timeline(
+    request: Request,
     student_id: int = Query(..., ge=1),
     limit: int = Query(7, ge=1, le=50),
     current_user: dict = Depends(require_parent_role()),
@@ -68,6 +70,18 @@ def family_timeline(
     """
     user_id = current_user["user_id"]
     _assert_student_owned(session, user_id, student_id, for_write=False)
+
+    # family timeline 跨 6 來源（出勤/公告/聯絡簿/事件簽閱/用藥/請假），entity_type
+    # 暫歸 student（無更貼切類別）。dedup 防家長 30s cache miss 後反覆觸發。
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="student",
+        entity_id=str(student_id),
+        summary=f"家長查家校 timeline：student_id={student_id} limit={limit}",
+        changes={"student_id": student_id, "limit": limit, "source": "family_timeline"},
+        dedup=True,
+    )
 
     cache_key = f"{user_id}:{student_id}:{limit}"
     cached = get_cache().get(_CACHE_NS_PARENT_FAMILY_TIMELINE, cache_key)

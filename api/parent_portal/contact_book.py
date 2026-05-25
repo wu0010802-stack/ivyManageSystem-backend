@@ -27,6 +27,7 @@ from models.database import (
     StudentContactBookReply,
 )
 from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK
+from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -147,6 +148,7 @@ def _get_my_ack_at(session, entry_id: int, user_id: int) -> Optional[datetime]:
 
 @router.get("/today")
 def get_today(
+    request: Request,
     student_id: int = Query(..., gt=0),
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
@@ -165,6 +167,19 @@ def get_today(
         )
         .first()
     )
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="contact_book_entry",
+        entity_id=f"today:{student_id}:{today.isoformat()}",
+        summary=f"家長查今日聯絡簿：student_id={student_id}",
+        changes={
+            "student_id": student_id,
+            "log_date": today.isoformat(),
+            "has_entry": entry is not None,
+        },
+        dedup=True,
+    )
     if not entry:
         return {
             "student_id": student_id,
@@ -182,6 +197,7 @@ def get_today(
 
 @router.get("")
 def list_history(
+    request: Request,
     student_id: int = Query(..., gt=0),
     from_date: Optional[date] = Query(default=None, alias="from"),
     to_date: Optional[date] = Query(default=None, alias="to"),
@@ -240,6 +256,23 @@ def list_history(
         ):
             photo_map.setdefault(a.owner_id, []).append(a)
 
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="contact_book_entry",
+        entity_id=f"history:{student_id}:{from_date.isoformat()}",
+        summary=(
+            f"家長查聯絡簿歷史：student_id={student_id} "
+            f"from={from_date.isoformat()} to={to_date.isoformat()} count={len(rows)}"
+        ),
+        changes={
+            "student_id": student_id,
+            "from": from_date.isoformat(),
+            "to": to_date.isoformat(),
+            "count": len(rows),
+        },
+        dedup=True,
+    )
     return {
         "student_id": student_id,
         "from": from_date.isoformat(),
@@ -253,6 +286,7 @@ def list_history(
 @router.get("/{entry_id}")
 def get_detail(
     entry_id: int,
+    request: Request,
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ):
@@ -269,6 +303,19 @@ def get_detail(
         )
         .order_by(StudentContactBookReply.created_at.asc())
         .all()
+    )
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="contact_book_entry",
+        entity_id=str(entry_id),
+        summary=f"家長查聯絡簿詳情：entry_id={entry_id} student_id={entry.student_id}",
+        changes={
+            "student_id": entry.student_id,
+            "log_date": entry.log_date.isoformat() if entry.log_date else None,
+            "reply_count": len(replies),
+        },
+        dedup=True,
     )
     return {
         **_entry_to_dict(entry, photos, my_ack_at),

@@ -215,6 +215,12 @@ class Employee(Base):
     salaries = relationship(
         "SalaryRecord", back_populates="employee", cascade="all, delete-orphan"
     )
+    offboarding_record = relationship(
+        "EmployeeOffboardingRecord",
+        uselist=False,
+        back_populates="employee",
+        cascade="all, delete-orphan",
+    )
 
 
 class EmployeeEducation(Base):

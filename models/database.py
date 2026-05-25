@@ -136,6 +136,7 @@ from models.contact_book import (
 from models.vendor_payment import VendorPayment  # noqa: F401
 from models.monthly_fixed_cost import MonthlyFixedCost  # noqa: F401
 from models.academic_term import AcademicTerm  # noqa: F401
+from models.offboarding import EmployeeOffboardingRecord  # noqa: F401
 
 __all__ = [
     # base
@@ -277,4 +278,6 @@ __all__ = [
     "VendorPayment",
     # monthly fixed cost（月度損益表 Phase 2 手動登錄）
     "MonthlyFixedCost",
+    # employee offboarding checklist（Phase 1）
+    "EmployeeOffboardingRecord",
 ]
