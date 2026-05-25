@@ -13,6 +13,7 @@ import logging
 from services.attendance_parser import AttendanceResult
 
 from .constants import MONTHLY_BASE_DAYS
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def calculate_bonus(
     festival_bonus = base_amount * ratio
     overtime_bonus = max(0, current - target) * overtime_per
     return {
-        "festival_bonus": round(festival_bonus),
-        "overtime_bonus": round(overtime_bonus),
+        "festival_bonus": round_half_up(festival_bonus),
+        "overtime_bonus": round_half_up(overtime_bonus),
         "ratio": ratio,
     }

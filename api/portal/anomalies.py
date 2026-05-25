@@ -11,6 +11,7 @@ from utils.errors import raise_safe_500
 from models.database import get_session, Attendance, LeaveRecord
 from utils.auth import get_current_user
 from ._shared import _get_employee, AnomalyConfirm, WEEKDAY_NAMES
+from utils.rounding import round_half_up
 
 router = APIRouter()
 
@@ -43,7 +44,7 @@ def get_anomalies(
         for att in records:
             items = []
             if att.is_late and att.late_minutes and att.late_minutes > 0:
-                deduction = round(daily_salary / 8 / 60 * att.late_minutes)
+                deduction = round_half_up(daily_salary / 8 / 60 * att.late_minutes)
                 items.append({
                     "type": "late",
                     "type_label": "遲到",

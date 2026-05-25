@@ -9,6 +9,7 @@ from fastapi import HTTPException
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.overtime_pay_calculator import calculate_overtime_pay
+from utils.rounding import round_half_up
 from utils.constants import (
     DAILY_WORK_HOURS,
     HOLIDAY_RATE,
@@ -57,7 +58,7 @@ class TestCalculateOvertimePayValidation:
 class TestCalculateOvertimePayWeekday:
     def test_within_threshold_uses_first_rate(self):
         # 2h × 125 × 1.34 = 335
-        expected = round(
+        expected = round_half_up(
             _hourly(BASE) * WEEKDAY_THRESHOLD_HOURS * WEEKDAY_FIRST_2H_RATE
         )
         assert calculate_overtime_pay(BASE, 2, "weekday") == expected
@@ -65,7 +66,7 @@ class TestCalculateOvertimePayWeekday:
     def test_over_threshold_splits_rates(self):
         # 4h: 2h × 1.34 + 2h × 1.67
         h = _hourly(BASE)
-        expected = round(
+        expected = round_half_up(
             h * WEEKDAY_THRESHOLD_HOURS * WEEKDAY_FIRST_2H_RATE
             + h * (4 - WEEKDAY_THRESHOLD_HOURS) * WEEKDAY_AFTER_2H_RATE
         )
@@ -78,7 +79,7 @@ class TestCalculateOvertimePayWeekday:
         assert result_huge == result_max
 
     def test_one_hour_within_threshold(self):
-        expected = round(_hourly(BASE) * 1 * WEEKDAY_FIRST_2H_RATE)
+        expected = round_half_up(_hourly(BASE) * 1 * WEEKDAY_FIRST_2H_RATE)
         assert calculate_overtime_pay(BASE, 1, "weekday") == expected
 
 
@@ -86,7 +87,7 @@ class TestCalculateOvertimePayWeekend:
     def test_under_minimum_billed_as_min_hours(self):
         # 1h 應該被計為 2h
         h = _hourly(BASE)
-        expected = round(h * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE)
+        expected = round_half_up(h * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE)
         assert calculate_overtime_pay(BASE, 1, "weekend") == expected
         # 0.5h 也是同樣（但 hours <=0 return 0；0.5 > 0 走計算）
         assert calculate_overtime_pay(BASE, 0.5, "weekend") == expected
@@ -94,13 +95,13 @@ class TestCalculateOvertimePayWeekend:
     def test_within_first_segment(self):
         # 2h × 1.34
         h = _hourly(BASE)
-        expected = round(h * 2 * RESTDAY_FIRST_2H_RATE)
+        expected = round_half_up(h * 2 * RESTDAY_FIRST_2H_RATE)
         assert calculate_overtime_pay(BASE, 2, "weekend") == expected
 
     def test_in_second_segment(self):
         # 5h: 2h × 1.34 + 3h × 1.67
         h = _hourly(BASE)
-        expected = round(
+        expected = round_half_up(
             h * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
             + h * (5 - RESTDAY_FIRST_SEGMENT) * RESTDAY_MID_RATE
         )
@@ -109,7 +110,7 @@ class TestCalculateOvertimePayWeekend:
     def test_over_8_hours_uses_after_8h_rate(self):
         # 10h: 2h × 1.34 + 6h × 1.67 + 2h × 2.67
         h = _hourly(BASE)
-        expected = round(
+        expected = round_half_up(
             h * RESTDAY_FIRST_SEGMENT * RESTDAY_FIRST_2H_RATE
             + h * (RESTDAY_SECOND_SEGMENT - RESTDAY_FIRST_SEGMENT) * RESTDAY_MID_RATE
             + h * (10 - RESTDAY_SECOND_SEGMENT) * RESTDAY_AFTER_8H_RATE
@@ -120,12 +121,12 @@ class TestCalculateOvertimePayWeekend:
 class TestCalculateOvertimePayHoliday:
     def test_holiday_uses_double_rate(self):
         # 8h × 125 × 2 = 2000
-        expected = round(_hourly(BASE) * 8 * HOLIDAY_RATE)
+        expected = round_half_up(_hourly(BASE) * 8 * HOLIDAY_RATE)
         assert calculate_overtime_pay(BASE, 8, "holiday") == expected
 
     def test_unknown_type_falls_through_to_holiday(self):
         # function 以 else 分支接所有非 weekday/weekend：例假 / 國定 / 自訂 string
-        expected = round(_hourly(BASE) * 3 * HOLIDAY_RATE)
+        expected = round_half_up(_hourly(BASE) * 3 * HOLIDAY_RATE)
         assert calculate_overtime_pay(BASE, 3, "公假") == expected
 
     def test_holiday_respects_max_overtime_cap(self):

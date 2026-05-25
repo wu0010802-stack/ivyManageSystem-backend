@@ -29,6 +29,7 @@ from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
 from utils.rate_limit import SlidingWindowLimiter
 from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
+from utils.rounding import round_half_up
 
 # 政府申報 force 模式必填原因最短字數（高於一般金流的 5 字，避免敷衍繞過封存）
 _GOV_FORCE_REASON_MIN_LENGTH = 10
@@ -364,16 +365,16 @@ def export_labor_insurance(
                 and (sr.labor_insurance_employee or 0) > 0
                 and (sr.labor_insurance_employer or 0) > 0
             ):
-                labor_emp = round(sr.labor_insurance_employee or 0)
-                labor_er = round(sr.labor_insurance_employer or 0)
+                labor_emp = round_half_up(sr.labor_insurance_employee or 0)
+                labor_er = round_half_up(sr.labor_insurance_employer or 0)
                 # 政府補助 ≈ 總保費 * 10%；員工 20%，雇主 70%，故 gov = employee * 0.5
-                labor_gov = round(labor_emp * 0.5)
+                labor_gov = round_half_up(labor_emp * 0.5)
             else:
                 calc = _ins_calc(emp)
                 if calc:
-                    labor_emp = round(calc.labor_employee)
-                    labor_er = round(calc.labor_employer)
-                    labor_gov = round(calc.labor_government)
+                    labor_emp = round_half_up(calc.labor_employee)
+                    labor_er = round_half_up(calc.labor_employer)
+                    labor_gov = round_half_up(calc.labor_government)
                     # 分項投保：勞保 section 要拿 labor_insured_amount，不要用 legacy
                     # insured_amount（= 預設 salary 對應級距，可能與 labor 不同）
                     insured = int(calc.labor_insured_amount or calc.insured_amount)
@@ -568,8 +569,8 @@ def export_health_insurance(
                 and (sr.health_insurance_employee or 0) > 0
                 and (sr.health_insurance_employer or 0) > 0
             ):
-                health_emp = round(sr.health_insurance_employee or 0)
-                health_er = round(sr.health_insurance_employer or 0)
+                health_emp = round_half_up(sr.health_insurance_employee or 0)
+                health_er = round_half_up(sr.health_insurance_employer or 0)
                 calc = _ins_calc(emp)
                 insured_amt = (
                     int(calc.health_insured_amount or calc.insured_amount)
@@ -579,8 +580,8 @@ def export_health_insurance(
             else:
                 calc = _ins_calc(emp)
                 if calc:
-                    health_emp = round(calc.health_employee)
-                    health_er = round(calc.health_employer)
+                    health_emp = round_half_up(calc.health_employee)
+                    health_er = round_half_up(calc.health_employer)
                     # 分項投保：健保 section 用 health_insured_amount
                     insured_amt = int(calc.health_insured_amount or calc.insured_amount)
                 else:
@@ -708,7 +709,7 @@ def _estimate_withholding(annual_gross: float) -> int:
     taxable = annual_gross - _WITHHOLDING_DEDUCTION
     if taxable <= 0:
         return 0
-    return round(min(taxable, _WITHHOLDING_TAXABLE_CAP) * _WITHHOLDING_RATE)
+    return round_half_up(min(taxable, _WITHHOLDING_TAXABLE_CAP) * _WITHHOLDING_RATE)
 
 
 @router.get("/withholding")
@@ -776,7 +777,7 @@ def export_withholding(
         rows = []
         for _emp_id, data in sorted(agg.items(), key=lambda x: x[1]["name"]):
             # 全年所得 = 月薪合計 + 節慶獎金 + 超額獎金（均屬薪資所得）
-            annual_income = round(
+            annual_income = round_half_up(
                 data["gross"] + data["festival_bonus"] + data["overtime_bonus"]
             )
             withholding = _estimate_withholding(annual_income)
@@ -785,9 +786,9 @@ def export_withholding(
                     "name": data["name"],
                     "id_number": data["id_number"],
                     "annual_income": annual_income,
-                    "labor_emp": round(data["labor_emp"]),
-                    "health_emp": round(data["health_emp"]),
-                    "pension_emp": round(data["pension_emp"]),
+                    "labor_emp": round_half_up(data["labor_emp"]),
+                    "health_emp": round_half_up(data["health_emp"]),
+                    "pension_emp": round_half_up(data["pension_emp"]),
                     "withholding": withholding,
                     "note": "估算值" if withholding > 0 else "低於起徵點",
                 }
@@ -919,13 +920,13 @@ def export_pension(
             # 勞退：雇主提撥 > 0 才採用 record；= 0 或 None 一律走 fallback
             # （舊資料 pension_employer 為 0，過去 `is not None` 會誤採用）
             if sr and (sr.pension_employer or 0) > 0:
-                pension_er = round(sr.pension_employer or 0)
-                pension_self = round(sr.pension_employee or 0)
+                pension_er = round_half_up(sr.pension_employer or 0)
+                pension_self = round_half_up(sr.pension_employee or 0)
             else:
                 calc = _ins_calc(emp)
                 if calc:
-                    pension_er = round(calc.pension_employer)
-                    pension_self = round(calc.pension_employee)
+                    pension_er = round_half_up(calc.pension_employer)
+                    pension_self = round_half_up(calc.pension_employee)
                     # 分項投保：勞退 section 用 pension_insured_amount
                     insured = int(calc.pension_insured_amount or calc.insured_amount)
                 else:

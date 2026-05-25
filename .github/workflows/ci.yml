@@ -181,6 +181,48 @@ jobs:
           fi
           echo "✅ os.getenv allow-list 檢查通過"
 
+  money-rounding-gate:
+    name: Money Rounding Gate (round_half_up)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Block builtin round() in money paths
+        # 2026-05-25 rollout：金額計算統一用 utils.rounding.round_half_up，
+        # 避免 Python round() ROUND_HALF_EVEN（銀行家進位）與政府/勞健保/
+        # PG NUMERIC ROUND_HALF_UP 在 .5 邊界 50% 翻盤。
+        #
+        # 純金額路徑（賭注最高，blanket forbid builtin round）：
+        #   services/salary/        薪資 engine 全套
+        #   services/finance/       財報 / 退費 / 才藝老師薪資
+        #   services/insurance_service.py        勞健保計算
+        #   services/overtime_pay_calculator.py  加班費
+        #   services/transfer_roster.py          銀行轉帳名冊
+        #   api/gov_reports.py      政府申報書 ★最關鍵
+        #   api/salary/             試算 / 手動調整
+        #
+        # 混合用途檔（hours/ratios 也用 round，不納入此 gate）：
+        #   api/{employees,exports,reports}.py
+        #   api/attendance/, api/portal/, api/recruitment/
+        #   仰賴 code review 把關新增金額 round()
+        run: |
+          if git grep -nE '(^|[^_a-zA-Z])round\(' -- \
+               'services/salary/**.py' \
+               'services/finance/**.py' \
+               'services/insurance_service.py' \
+               'services/overtime_pay_calculator.py' \
+               'services/transfer_roster.py' \
+               'api/gov_reports.py' \
+               'api/salary/**.py'; then
+            echo "::error::金額路徑禁用 builtin round()（HALF_EVEN）"
+            echo "::error::請改用 from utils.rounding import round_half_up（ROUND_HALF_UP 對齊政府/勞健保標準）"
+            echo "::error::Refs: utils/rounding.py docstring + audit `.scratch/decimal_audit/audit_report.md`"
+            exit 1
+          fi
+          echo "✅ Money rounding gate passed"
+
   alembic-heads:
     name: Alembic Single Head Gate
     runs-on: ubuntu-latest

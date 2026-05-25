@@ -11,6 +11,7 @@ from models.base import session_scope
 from services import recruitment_market_intelligence as market_service
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ def get_campus_competition(
                                 else 0
                             ),
                             "avg_fee": (
-                                round(sum(s["fees"]) / len(s["fees"]))
+                                round_half_up(sum(s["fees"]) / len(s["fees"]))
                                 if s["fees"]
                                 else None
                             ),

@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from models.database import Employee, SalaryRecord, SystemConfig
 from utils.excel_utils import SafeWorksheet
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +72,14 @@ def _resolve_amount(record: SalaryRecord, roster_type: str) -> int:
       重複扣一次。salary_slip.py:145-147 的「另行轉帳」也只取 festival + overtime。
     """
     if roster_type == "base":
-        return int(round(float(record.net_salary or 0)))
+        return int(round_half_up(float(record.net_salary or 0)))
     if roster_type == "festival":
-        return int(round(float(record.festival_bonus or 0)))
+        return int(round_half_up(float(record.festival_bonus or 0)))
     if roster_type == "surplus":
-        return int(round(float(record.overtime_bonus or 0)))
+        return int(round_half_up(float(record.overtime_bonus or 0)))
     if roster_type == "art_teacher":
         # 才藝/鐘點老師整張薪資都走 net_salary（hourly 制無獎金分離議題）
-        return int(round(float(record.net_salary or 0)))
+        return int(round_half_up(float(record.net_salary or 0)))
     raise ValueError(f"unknown roster_type: {roster_type}")
 
 

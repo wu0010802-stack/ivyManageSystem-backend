@@ -10,6 +10,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import date
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -1001,7 +1002,7 @@ class InsuranceService:
         labor_emp = labor_bracket["labor_employee"]
         labor_er = labor_bracket["labor_employer"]
         # 政府補貼採 instance rate（受 InsuranceRate DB 設定影響），其他欄位由級距表決定
-        labor_gov = round(
+        labor_gov = round_half_up(
             labor_bracket["amount"] * self.labor_rate * self.labor_government_ratio
         )
 
@@ -1015,9 +1016,9 @@ class InsuranceService:
                 if self.labor_rate > 0
                 else 1.0
             )
-            labor_emp = round(labor_emp * ratio)
-            labor_er = round(labor_er * ratio)
-            labor_gov = round(labor_gov * ratio)
+            labor_emp = round_half_up(labor_emp * ratio)
+            labor_er = round_half_up(labor_er * ratio)
+            labor_gov = round_half_up(labor_gov * ratio)
 
         # 健保員工自付額依眷屬人數倍增（最多3人；負值以0計，防止DB舊資料或直接寫入產生負健保費）
         health_emp_base = health_bracket["health_employee"]
@@ -1031,7 +1032,7 @@ class InsuranceService:
 
         pension_er = pension_bracket["pension"]
         # 勞退自提採員工自選比例（0~6%）；雇主端 6% 仍依級距表
-        pension_emp = round(
+        pension_emp = round_half_up(
             pension_bracket["amount"] * pension_self_rate
         )  # 依勞基法以月提繳工資級距計算
 

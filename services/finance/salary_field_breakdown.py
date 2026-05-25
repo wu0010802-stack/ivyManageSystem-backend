@@ -29,6 +29,7 @@ from services.salary.utils import (
     get_meeting_deduction_period_start,
 )
 from services.student_enrollment import count_students_active_on
+from utils.rounding import round_half_up
 
 FIELD_LABELS = {
     "base_salary": "底薪",
@@ -161,14 +162,14 @@ def _calc_leave_deductions(
         )
         if is_genuine_override:
             effective_ratio = lv.deduction_ratio
-            deduction = round((hours / 8) * daily_salary * effective_ratio)
+            deduction = round_half_up((hours / 8) * daily_salary * effective_ratio)
             display_ratio = effective_ratio
         else:
             half_paid = max(
                 0.0, min(SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS - sick_used, hours)
             )
             unpaid = hours - half_paid
-            deduction = round(
+            deduction = round_half_up(
                 (half_paid / 8) * daily_salary * 0.5 + (unpaid / 8) * daily_salary * 1.0
             )
             # 顯示用綜合 ratio：若全在上限內則 0.5、全超過則 1.0、混合時取加權平均
@@ -195,7 +196,7 @@ def _calc_leave_deductions(
             if lv.deduction_ratio is not None
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
         )
-        deduction = round((lv.leave_hours / 8) * daily_salary * ratio)
+        deduction = round_half_up((lv.leave_hours / 8) * daily_salary * ratio)
         leave_deduction_total += deduction
         leave_breakdown.append(
             {
@@ -227,7 +228,7 @@ def _calc_overtime_details(approved_ot: list) -> dict:
             "date": _to_iso(o.overtime_date),
             "hours": o.hours or 0,
             "overtime_type": o.overtime_type or "",
-            "pay": round(o.overtime_pay or 0),
+            "pay": round_half_up(o.overtime_pay or 0),
             "remark": o.reason or "",
         }
         for o in approved_ot
@@ -311,7 +312,7 @@ def _build_meeting_stats(
         {
             "date": _to_iso(m.meeting_date),
             "attended": "出席" if m.attended else "缺席",
-            "pay": round(m.overtime_pay or 0) if m.attended else 0,
+            "pay": round_half_up(m.overtime_pay or 0) if m.attended else 0,
             "remark": m.remark or "",
         }
         for m in meetings
@@ -404,13 +405,13 @@ def _calc_festival_detail(
         )
         school_target = getattr(engine, "_school_wide_target", 160) or 160
         ratio = school_enrollment / school_target if school_target > 0 else 0
-        raw_result = round(supervisor_base * ratio) if is_eligible else 0
+        raw_result = round_half_up(supervisor_base * ratio) if is_eligible else 0
         detail = {
             "category": "主管",
             "base": supervisor_base,
             "enrollment": school_enrollment,
             "target": school_target,
-            "ratio": round(ratio, 4),
+            "ratio": round_half_up(ratio, 4),
             "eligible": is_eligible,
             "is_bonus_month": is_bonus_month,
             "result": raw_result,
@@ -422,13 +423,13 @@ def _calc_festival_detail(
         school_enrollment = office_staff_context["school_enrollment"]
         school_target = getattr(engine, "_school_wide_target", 160) or 160
         ratio = school_enrollment / school_target if school_target > 0 else 0
-        raw_result = round(office_bonus_base * ratio) if is_eligible else 0
+        raw_result = round_half_up(office_bonus_base * ratio) if is_eligible else 0
         detail = {
             "category": "辦公室",
             "base": office_bonus_base,
             "enrollment": school_enrollment,
             "target": school_target,
-            "ratio": round(ratio, 4),
+            "ratio": round_half_up(ratio, 4),
             "eligible": is_eligible,
             "is_bonus_month": is_bonus_month,
             "result": raw_result,
@@ -451,8 +452,8 @@ def _calc_festival_detail(
             cc["role"] if cc["role"] != "art_teacher" else "assistant_teacher",
             cc["grade_name"],
         )
-        raw_festival = round(base_amount * ratio) if is_eligible else 0
-        raw_overtime = round(overtime_count * overtime_per_person) if is_eligible else 0
+        raw_festival = round_half_up(base_amount * ratio) if is_eligible else 0
+        raw_overtime = round_half_up(overtime_count * overtime_per_person) if is_eligible else 0
         # 共用副班導：取 shared_other_classes（含 ≥ 3 班）；fallback 到舊的 shared_second_class
         other_classes = cc.get("shared_other_classes")
         if not other_classes:
@@ -464,16 +465,16 @@ def _calc_festival_detail(
             for oc in other_classes:
                 target_oc = engine.get_target_enrollment(oc["grade_name"], True, True)
                 ratio_oc = oc["current_enrollment"] / target_oc if target_oc > 0 else 0
-                festival_scores.append(round(base_amount * ratio_oc))
+                festival_scores.append(round_half_up(base_amount * ratio_oc))
                 overtime_target_oc = engine.get_overtime_target(
                     oc["grade_name"], True, True
                 )
                 overtime_count_oc = max(
                     0, oc["current_enrollment"] - overtime_target_oc
                 )
-                overtime_scores.append(round(overtime_count_oc * overtime_per_person))
-            raw_festival = round(sum(festival_scores) / len(festival_scores))
-            raw_overtime = round(sum(overtime_scores) / len(overtime_scores))
+                overtime_scores.append(round_half_up(overtime_count_oc * overtime_per_person))
+            raw_festival = round_half_up(sum(festival_scores) / len(festival_scores))
+            raw_overtime = round_half_up(sum(overtime_scores) / len(overtime_scores))
             # 維持舊欄位（前端可能讀取）：以首個 other class 為代表
             shared_second_repr = other_classes[0]
             target2 = engine.get_target_enrollment(
@@ -483,7 +484,7 @@ def _calc_festival_detail(
                 shared_second_repr["current_enrollment"] / target2 if target2 > 0 else 0
             )
             cc["shared_second_target"] = target2
-            cc["shared_second_ratio"] = round(ratio2, 4)
+            cc["shared_second_ratio"] = round_half_up(ratio2, 4)
         detail = {
             "category": "帶班老師",
             "role": cc["role"],
@@ -491,7 +492,7 @@ def _calc_festival_detail(
             "base": base_amount,
             "enrollment": cc["current_enrollment"],
             "target": target,
-            "ratio": round(ratio, 4),
+            "ratio": round_half_up(ratio, 4),
             "eligible": is_eligible,
             "is_bonus_month": is_bonus_month,
             "festival_result": raw_festival,
@@ -583,7 +584,7 @@ def _calc_absence_days(
     return {
         "absent_days": absent_days,
         "absent_count": len(absent_days),
-        "absence_deduction_amount": round(len(absent_days) * daily_salary),
+        "absence_deduction_amount": round_half_up(len(absent_days) * daily_salary),
     }
 
 
@@ -764,14 +765,14 @@ def build_salary_debug_snapshot(
     att_deduction_detail = []
     normal_late_deduction = 0
     for minutes in att["late_details"]:
-        deduction = round(minutes * per_minute_rate)
+        deduction = round_half_up(minutes * per_minute_rate)
         att_deduction_detail.append(
             {"minutes": minutes, "type": "per_minute", "deduction": deduction}
         )
         normal_late_deduction += deduction
-    early_deduction = round(att["total_early_min"] * per_minute_rate)
+    early_deduction = round_half_up(att["total_early_min"] * per_minute_rate)
 
-    gross_salary = round(
+    gross_salary = round_half_up(
         prorated_base
         + performance_bonus
         + special_bonus
@@ -780,7 +781,7 @@ def build_salary_debug_snapshot(
         + mtg["meeting_overtime_pay_total"]
         + ot_result["ot_pay"]
     )
-    total_deduction = round(
+    total_deduction = round_half_up(
         ins.labor_employee
         + ins.health_employee
         + ins.pension_employee
@@ -832,8 +833,8 @@ def build_salary_debug_snapshot(
             "early_rows": att["early_rows"],
         },
         "deduction_calc": {
-            "daily_salary": round(daily_salary),
-            "per_minute_rate": round(per_minute_rate, 4),
+            "daily_salary": round_half_up(daily_salary),
+            "per_minute_rate": round_half_up(per_minute_rate, 4),
             "late_deduction_detail": att_deduction_detail,
             "late_deduction": normal_late_deduction,
             "early_leave_deduction": early_deduction,
@@ -841,7 +842,7 @@ def build_salary_debug_snapshot(
         },
         "leave_breakdown": lv_result["leave_breakdown"],
         "leave_deduction_total": lv_result["leave_deduction_total"],
-        "overtime_pay": round(ot_result["ot_pay"]),
+        "overtime_pay": round_half_up(ot_result["ot_pay"]),
         "overtime_rows": ot_result["overtime_rows"],
         "meeting": {
             "attended": mtg["attended"],
@@ -854,7 +855,7 @@ def build_salary_debug_snapshot(
         },
         "classroom_context": classroom_context,
         "festival_bonus_detail": festival_detail,
-        "supervisor_dividend": round(supervisor_dividend),
+        "supervisor_dividend": round_half_up(supervisor_dividend),
         "insurance": {
             "insured_amount_raw": ins_result["insured_salary_raw"],
             "insured_amount": ins.insured_amount,
@@ -871,10 +872,10 @@ def build_salary_debug_snapshot(
             "is_quarterly_deduction_month": int(month) in QUARTERLY_DEDUCTION_MONTHS,
         },
         "salary_summary": {
-            "prorated_base_salary": round(prorated_base),
-            "proration_applied": round(prorated_base) != base_salary,
-            "performance_bonus": round(performance_bonus),
-            "special_bonus": round(special_bonus),
+            "prorated_base_salary": round_half_up(prorated_base),
+            "proration_applied": round_half_up(prorated_base) != base_salary,
+            "performance_bonus": round_half_up(performance_bonus),
+            "special_bonus": round_half_up(special_bonus),
             "birthday_bonus": birthday_bonus,
             "meeting_overtime_pay": mtg["meeting_overtime_pay_total"],
             "absent_count": absence["absent_count"],
@@ -908,7 +909,7 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
         "labor_insurance": "labor_insurance_employee",
         "health_insurance": "health_insurance_employee",
     }.get(field, field)
-    amount = round(getattr(record, record_attr) or 0)
+    amount = round_half_up(getattr(record, record_attr) or 0)
     data = {
         "title": title,
         "field": field,
@@ -1256,7 +1257,7 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
             {
                 "date": row["date"],
                 "minutes": row["minutes"],
-                "deduction": round(
+                "deduction": round_half_up(
                     row["minutes"] * snapshot["deduction_calc"]["per_minute_rate"]
                 ),
             }
@@ -1274,7 +1275,7 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
             {
                 "date": row["date"],
                 "minutes": row["minutes"],
-                "deduction": round(
+                "deduction": round_half_up(
                     row["minutes"] * snapshot["deduction_calc"]["per_minute_rate"]
                 ),
             }

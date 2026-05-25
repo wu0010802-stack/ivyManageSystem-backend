@@ -29,6 +29,7 @@ from utils.permissions import Permission
 from utils.salary_access import (
     enforce_self_or_full_salary as _enforce_self_or_full_salary,
 )
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -335,8 +336,8 @@ def simulate_salary(
             period_overtime_override=period_overtime_total,
         )
         breakdown.absent_count = absent_count
-        breakdown.absence_deduction = round(absence_amount)
-        breakdown.total_deduction = round(breakdown.total_deduction + absence_amount)
+        breakdown.absence_deduction = round_half_up(absence_amount)
+        breakdown.total_deduction = round_half_up(breakdown.total_deduction + absence_amount)
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
 
         actual_record = (
@@ -355,7 +356,7 @@ def simulate_salary(
         actual = _record_to_actual_dict(actual_record) if actual_record else None
         diff = (
             {
-                k: round(simulated.get(k, 0) - actual.get(k, 0))
+                k: round_half_up(simulated.get(k, 0) - actual.get(k, 0))
                 for k in _SIMULATE_COMPARE_KEYS
             }
             if actual

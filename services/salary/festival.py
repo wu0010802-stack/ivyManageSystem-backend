@@ -7,6 +7,7 @@ import logging
 from datetime import date, datetime
 from typing import Optional
 from dateutil.relativedelta import relativedelta
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +282,7 @@ def calculate_overtime_bonus(
     overtime_bonus = overtime_count * per_person
 
     return {
-        "overtime_bonus": round(overtime_bonus),
+        "overtime_bonus": round_half_up(overtime_bonus),
         "overtime_target": overtime_target,
         "overtime_count": overtime_count,
         "per_person": per_person,
@@ -350,7 +351,7 @@ def calculate_festival_bonus_v2(
     )
 
     return {
-        "festival_bonus": round(festival_bonus),
+        "festival_bonus": round_half_up(festival_bonus),
         "overtime_bonus": overtime_result["overtime_bonus"],
         "target": target,
         "ratio": ratio,

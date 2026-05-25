@@ -10,6 +10,7 @@ from services.salary_engine import (
     get_working_days,
 )
 from services.attendance_parser import AttendanceResult
+from utils.rounding import round_half_up
 
 
 # ──────────────────────────────────────────────
@@ -2110,14 +2111,14 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        assert calculate_overtime_pay(30000, 2, "weekday") == round(hourly * 2 * 1.34)
+        assert calculate_overtime_pay(30000, 2, "weekday") == round_half_up(hourly * 2 * 1.34)
 
     def test_weekday_beyond_2h(self):
         """平日4小時：前2h ×1.34 + 後2h ×1.67"""
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.34 + hourly * 2 * 1.67)
+        expected = round_half_up(hourly * 2 * 1.34 + hourly * 2 * 1.67)
         assert calculate_overtime_pay(30000, 4, "weekday") == expected
 
     def test_weekend_min_billing(self):
@@ -2125,7 +2126,7 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.34)
+        expected = round_half_up(hourly * 2 * 1.34)
         assert calculate_overtime_pay(30000, 0.5, "weekend") == expected
 
     def test_weekend_within_2h(self):
@@ -2133,7 +2134,7 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.34)
+        expected = round_half_up(hourly * 2 * 1.34)
         assert calculate_overtime_pay(30000, 2, "weekend") == expected
 
     def test_weekend_mid_range(self):
@@ -2141,7 +2142,7 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.34 + hourly * 2 * 1.67)
+        expected = round_half_up(hourly * 2 * 1.34 + hourly * 2 * 1.67)
         assert calculate_overtime_pay(30000, 4, "weekend") == expected
 
     def test_weekend_beyond_8h(self):
@@ -2149,7 +2150,7 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 2 * 1.34 + hourly * 6 * 1.67 + hourly * 2 * 2.67)
+        expected = round_half_up(hourly * 2 * 1.34 + hourly * 6 * 1.67 + hourly * 2 * 2.67)
         assert calculate_overtime_pay(30000, 10, "weekend") == expected
 
     def test_holiday_flat_rate(self):
@@ -2157,7 +2158,7 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round(hourly * 4 * 2.0)
+        expected = round_half_up(hourly * 4 * 2.0)
         assert calculate_overtime_pay(30000, 4, "holiday") == expected
 
 

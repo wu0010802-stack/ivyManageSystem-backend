@@ -69,6 +69,7 @@ from .bulk_preload import (  # noqa: F401
     _get_ytd_sick_hours_before,
     _get_ytd_sick_hours_bulk,
 )
+from utils.rounding import round_half_up
 
 
 def _fill_salary_record(salary_record, breakdown, engine, session=None):
@@ -1001,11 +1002,11 @@ class SalaryEngine:
         ]
         total_weight = sum(enrollments)
         if total_weight > 0:
-            averaged_festival_bonus = round(
+            averaged_festival_bonus = round_half_up(
                 sum(r["festival_bonus"] * w for r, w in zip(all_results, enrollments))
                 / total_weight
             )
-            averaged_overtime_bonus = round(
+            averaged_overtime_bonus = round_half_up(
                 sum(r["overtime_bonus"] * w for r, w in zip(all_results, enrollments))
                 / total_weight
             )
@@ -1389,7 +1390,7 @@ class SalaryEngine:
                 )
                 school_target = self._school_wide_target or 160
                 ratio = school_enrollment / school_target if school_target > 0 else 0
-                breakdown.festival_bonus = round(supervisor_festival_base * ratio)
+                breakdown.festival_bonus = round_half_up(supervisor_festival_base * ratio)
             else:
                 breakdown.festival_bonus = 0
             breakdown.overtime_bonus = 0
@@ -1401,7 +1402,7 @@ class SalaryEngine:
                 school_enrollment = office_staff_context.get("school_enrollment", 0)
                 school_target = self._school_wide_target or 160
                 ratio = school_enrollment / school_target if school_target > 0 else 0
-                breakdown.festival_bonus = round(office_base * ratio)
+                breakdown.festival_bonus = round_half_up(office_base * ratio)
             else:
                 breakdown.festival_bonus = 0
             breakdown.overtime_bonus = 0
@@ -1446,8 +1447,8 @@ class SalaryEngine:
             # 業務規則：6 月發 = 2-5 月每月各自比例的合計（不含 6 月本身）。
             # 期間每月的計算（含逐月在籍人數、達成率）由呼叫端透過
             # calculate_period_accrual_row 累計後傳入。
-            breakdown.festival_bonus = round(period_festival_override)
-            breakdown.overtime_bonus = round(period_overtime_override or 0)
+            breakdown.festival_bonus = round_half_up(period_festival_override)
+            breakdown.overtime_bonus = round_half_up(period_overtime_override or 0)
 
         # 事假+病假累計超過40小時：取消節慶獎金與超額獎金（兩者具「全勤」性質）。
         # 主管月紅利（supervisor_dividend）與職務掛鉤、不與出勤掛鉤，不受此條件影響。
@@ -1550,7 +1551,7 @@ class SalaryEngine:
                         self.insurance_service.health_max_insured,
                     )
                 )["health_employee"]
-                quarterly_extra = round(health_bracket_emp_base * extra_q * 3)
+                quarterly_extra = round_half_up(health_bracket_emp_base * extra_q * 3)
                 breakdown.health_insurance += quarterly_extra
         elif employee.get("employee_type") == "hourly":
             logger.warning(
@@ -1573,7 +1574,7 @@ class SalaryEngine:
             )
             hourly_pay = float(breakdown.hourly_total or 0)
             if suppl_rate > 0 and suppl_threshold > 0 and hourly_pay >= suppl_threshold:
-                suppl = round(hourly_pay * suppl_rate)
+                suppl = round_half_up(hourly_pay * suppl_rate)
                 breakdown.health_insurance = (breakdown.health_insurance or 0) + suppl
                 breakdown.supplementary_health_employee = suppl
 
@@ -1805,8 +1806,8 @@ class SalaryEngine:
         )
 
         # 最終一次舍入
-        breakdown.gross_salary = round(breakdown.gross_salary)
-        breakdown.total_deduction = round(breakdown.total_deduction)
+        breakdown.gross_salary = round_half_up(breakdown.gross_salary)
+        breakdown.total_deduction = round_half_up(breakdown.total_deduction)
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
 
         if breakdown.gross_salary < 0:
@@ -1921,7 +1922,7 @@ class SalaryEngine:
                     if target_enrollment > 0
                     else 0
                 )
-                festival_bonus = round(supervisor_base * ratio) if is_eligible else 0
+                festival_bonus = round_half_up(supervisor_base * ratio) if is_eligible else 0
                 if is_eligible:
                     remark = "全校比例(主管)"
 
@@ -1938,7 +1939,7 @@ class SalaryEngine:
                     if target_enrollment > 0
                     else 0
                 )
-                festival_bonus = round(bonus_base * ratio) if is_eligible else 0
+                festival_bonus = round_half_up(bonus_base * ratio) if is_eligible else 0
                 if is_eligible:
                     remark = "全校比例"
 
@@ -2265,8 +2266,8 @@ class SalaryEngine:
                     emp.id,
                     MAX_MONTHLY_OVERTIME_HOURS,
                 )
-            emp_dict["work_hours"] = round(total_hours, 2)
-            emp_dict["hourly_calculated_pay"] = round(total_hourly_pay, 2)
+            emp_dict["work_hours"] = round_half_up(total_hours, 2)
+            emp_dict["hourly_calculated_pay"] = round_half_up(total_hourly_pay, 2)
 
         return (
             AttendanceResult(
@@ -2701,9 +2702,9 @@ class SalaryEngine:
         overtime_after = max(0.0, float(overtime_total) - overtime_consumed)
 
         return (
-            int(round(festival_after)),
-            int(round(overtime_after)),
-            int(round(deducted)),
+            int(round_half_up(festival_after)),
+            int(round_half_up(overtime_after)),
+            int(round_half_up(deducted)),
         )
 
     def _mark_discipline_applied(
@@ -2870,8 +2871,8 @@ class SalaryEngine:
             )
 
             breakdown.absent_count = absent_count
-            breakdown.absence_deduction = round(absence_deduction_amount)
-            breakdown.total_deduction = round(
+            breakdown.absence_deduction = round_half_up(absence_deduction_amount)
+            breakdown.total_deduction = round_half_up(
                 breakdown.total_deduction + absence_deduction_amount
             )
             breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
@@ -3463,8 +3464,8 @@ class SalaryEngine:
                     emp.id,
                     MAX_MONTHLY_OVERTIME_HOURS,
                 )
-            emp_dict["work_hours"] = round(total_hours, 2)
-            emp_dict["hourly_calculated_pay"] = round(total_hourly_pay, 2)
+            emp_dict["work_hours"] = round_half_up(total_hours, 2)
+            emp_dict["hourly_calculated_pay"] = round_half_up(total_hourly_pay, 2)
 
         attendance_result = AttendanceResult(
             employee_name=emp.name,
@@ -3586,8 +3587,8 @@ class SalaryEngine:
         )
 
         breakdown.absent_count = absent_count
-        breakdown.absence_deduction = round(absence_deduction_amount)
-        breakdown.total_deduction = round(
+        breakdown.absence_deduction = round_half_up(absence_deduction_amount)
+        breakdown.total_deduction = round_half_up(
             breakdown.total_deduction + absence_deduction_amount
         )
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction

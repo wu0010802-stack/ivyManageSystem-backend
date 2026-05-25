@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from utils.errors import raise_safe_500
 from utils.etag import etag_response
 from utils.exceptions import BusinessError
+from utils.rounding import round_half_up
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
@@ -911,8 +912,8 @@ async def final_salary_preview(
         "pension": breakdown.pension_self,
         "net_salary": breakdown.net_salary,
         "unused_annual_leave_hours": unused_annual_hours,
-        "unused_annual_leave_compensation": round(unused_annual_compensation),
-        "net_salary_with_unused_annual": round(net_salary_with_unused_annual),
+        "unused_annual_leave_compensation": round_half_up(unused_annual_compensation),
+        "net_salary_with_unused_annual": round_half_up(net_salary_with_unused_annual),
     }
 
 
