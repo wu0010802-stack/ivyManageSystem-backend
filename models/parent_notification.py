@@ -72,3 +72,7 @@ class ParentNotificationPreference(Base):
     updated_at = Column(
         DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
     )
+
+
+# Phase 2 一次清理 class 名稱前的過渡相容 alias
+NotificationPreference = ParentNotificationPreference

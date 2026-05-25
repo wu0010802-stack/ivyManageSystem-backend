@@ -123,7 +123,10 @@ from models.parent_message import (
     ParentMessage,
     ParentMessageThread,
 )
-from models.parent_notification import ParentNotificationPreference
+from models.parent_notification import (
+    ParentNotificationPreference,
+    NotificationPreference,
+)  # noqa: F401
 from models.notification_log import NotificationLog  # noqa: F401  (re-export)
 from models.contact_book import (
     StudentContactBookEntry,
@@ -265,6 +268,7 @@ __all__ = [
     "LineWebhookEvent",
     # parent notification preferences (Phase 6)
     "ParentNotificationPreference",
+    "NotificationPreference",
     # notification log (dispatcher audit trail)
     "NotificationLog",
     # LINE webhook reply context (Phase 5)

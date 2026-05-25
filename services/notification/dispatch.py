@@ -26,8 +26,13 @@ from typing import Optional
 from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
+from models.base import get_session_factory
+from models.database import NotificationLog, NotificationPreference
+from services.notification._channels.line import LineAdapter
+from services.notification._channels.ws import WsAdapter, _inbox_ws_push
 from services.notification.channel_matrix import CHANNEL_MATRIX, Channel
 from services.notification.event_types import NOTIFICATION_EVENT_TYPES
+from services.notification.renderers import render
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +139,131 @@ def _clear_on_rollback(session: Session) -> None:
     session.info.pop(_QUEUE_KEY, None)
 
 
+# ────────────────────── Fan-out ──────────────────────
+
+# Adapter singletons（lazy-init；main.py 啟動後 LineAdapter 注入 LineService instance）
+_line_adapter: LineAdapter | None = None
+_ws_adapter: WsAdapter | None = None
+
+
+def _get_line_adapter() -> LineAdapter:
+    global _line_adapter
+    if _line_adapter is None:
+        # 從既有 line_service singleton 取（main.py: `line_service = LineService()`）
+        from main import line_service  # lazy 避免循環 import
+
+        _line_adapter = LineAdapter(line_service)
+    return _line_adapter
+
+
+def _get_ws_adapter() -> WsAdapter:
+    global _ws_adapter
+    if _ws_adapter is None:
+        _ws_adapter = WsAdapter()
+    return _ws_adapter
+
+
+def _pref_enabled(session, user_id, event_type: str, channel: str) -> bool:
+    """偏好 gate：缺 row = True；row 存在看 enabled 欄。
+
+    無 recipient（群組推播）視為 enabled（gate 不適用）。
+    DB 異常 fail-closed 沿用既有 should_push_to_parent 慣例。
+    """
+    if user_id is None:
+        return True
+    try:
+        row = (
+            session.query(NotificationPreference)
+            .filter(
+                NotificationPreference.user_id == user_id,
+                NotificationPreference.event_type == event_type,
+                NotificationPreference.channel == channel,
+            )
+            .first()
+        )
+        if row is None:
+            return True
+        return bool(row.enabled)
+    except Exception as exc:
+        logger.warning("_pref_enabled failed (fail-closed): %s", exc)
+        return False
+
+
 def _fan_out(evt: PendingEvent) -> None:
-    """Task 11 實作；現為 stub 讓 hook 測試可 mock。"""
-    raise NotImplementedError("Task 11 實作")
+    """tx commit 後實際發送：寫 log → 過 gate → 呼叫 adapter。
+
+    任何 channel 失敗只記 channels_failed，不 re-raise。
+    """
+    log_session = get_session_factory()()
+    try:
+        rendered = render(evt.event_type, evt.context)
+
+        # 篩 active channels：in_app 必（matrix 有就一定走）；line/ws 過 pref gate
+        active_channels: list[str] = []
+        for ch in evt.channels:
+            if ch == "in_app":
+                active_channels.append(ch)
+            elif _pref_enabled(log_session, evt.recipient_user_id, evt.event_type, ch):
+                active_channels.append(ch)
+
+        # 只有 in_app 在 matrix 內才寫 log row（家長域沒 in_app 就不寫，但仍跑 line/ws）
+        log_id: int | None = None
+        if "in_app" in evt.channels:
+            log_row = NotificationLog(
+                recipient_user_id=evt.recipient_user_id,
+                event_type=evt.event_type,
+                sender_id=evt.sender_id,
+                source_entity_type=evt.source_entity_type,
+                source_entity_id=evt.source_entity_id,
+                title=rendered.title,
+                body=rendered.body,
+                payload_json=dict(evt.context),
+                deep_link=rendered.deep_link,
+                channels_attempted=list(active_channels),
+                channels_succeeded=["in_app"],
+                channels_failed=[],
+            )
+            log_session.add(log_row)
+            log_session.commit()
+            log_id = log_row.id
+
+            # in_app 路徑後立刻推 inbox WS；失敗只 warning 不算 in_app failure
+            if evt.recipient_user_id is not None:
+                try:
+                    _inbox_ws_push(evt, rendered, log_id)
+                except Exception as exc:
+                    logger.warning(
+                        "inbox WS push 失敗 log_id=%s event=%s: %s",
+                        log_id,
+                        evt.event_type,
+                        exc,
+                    )
+
+        # 跑 line / ws adapter（in_app 已處理過跳過）
+        succeeded: list[str] = []
+        failed: list[dict] = []
+        for ch in active_channels:
+            if ch == "in_app":
+                continue
+            adapter = _get_line_adapter() if ch == "line" else _get_ws_adapter()
+            try:
+                adapter.send(evt, rendered, log_id=log_id or 0)
+                succeeded.append(ch)
+            except Exception as exc:
+                logger.exception(
+                    "channel %s failed event=%s recipient=%s",
+                    ch,
+                    evt.event_type,
+                    evt.recipient_user_id,
+                )
+                failed.append({"channel": ch, "error": type(exc).__name__})
+
+        # 更新 log row 的 channels_succeeded / channels_failed（若有寫 log）
+        if log_id is not None and (succeeded or failed):
+            row = log_session.query(NotificationLog).get(log_id)
+            if row is not None:
+                row.channels_succeeded = list(row.channels_succeeded) + succeeded
+                row.channels_failed = list(row.channels_failed) + failed
+                log_session.commit()
+    finally:
+        log_session.close()
