@@ -16,6 +16,7 @@ from services.insurance_service import (
     HEALTH_MAX_INSURED_SALARY,
     PENSION_MAX_INSURED_SALARY,
 )
+from utils.rounding import round_half_up
 
 
 @pytest.fixture
@@ -79,6 +80,6 @@ class TestThreeSystemCaps:
     def test_labor_government_share_respects_cap(self, service):
         """勞保政府負擔 10% 也以 45,800 為基底"""
         result = service.calculate(300000)
-        # 45800 × 12.5% × 10% = 572.5 ≈ 573 (or 572, 依 round)
-        expected = round(LABOR_MAX_INSURED_SALARY * 0.125 * 0.10)
+        # 45800 × 12.5% × 10% = 572.5 → 573 (ROUND_HALF_UP, 政府/勞健保標準)
+        expected = round_half_up(LABOR_MAX_INSURED_SALARY * 0.125 * 0.10)
         assert result.labor_government == expected
