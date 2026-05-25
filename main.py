@@ -760,6 +760,9 @@ app.include_router(student_leaves_router)
 app.include_router(appraisal_router)
 app.include_router(year_end_router)
 app.include_router(calendar_admin_router, prefix="/api/calendar")
+from api.permissions_admin import router as permissions_admin_router
+
+app.include_router(permissions_admin_router)
 
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）

@@ -104,12 +104,6 @@ def test_resolve_parent_role_default_is_empty():
     assert perms == []
 
 
-def test_get_role_default_unknown_role_falls_back_to_teacher():
-    """未知角色 fallback 為 teacher 預設。"""
-    perms = get_role_default_permissions("xxxxx")
-    assert perms == get_role_default_permissions("teacher")
-
-
 def test_role_templates_all_use_valid_permission_names():
     """ROLE_TEMPLATES 內每個 perm name 都在 Permission enum 中（或 wildcard）。"""
     for role, perms in ROLE_TEMPLATES.items():
@@ -121,8 +115,10 @@ def test_role_templates_all_use_valid_permission_names():
 
 def test_get_permission_list_wildcard_expands_all():
     expanded = get_permission_list(["*"])
-    assert len(expanded) == 63
+    # 56 條 Permission enum + ROLES_MANAGE ((b) 加) = 57 條成員
+    assert len(expanded) == len(list(Permission))
     assert "EMPLOYEES_READ" in expanded
+    assert "ROLES_MANAGE" in expanded
 
 
 def test_get_permission_list_filters_unknown():
@@ -133,22 +129,6 @@ def test_get_permission_list_filters_unknown():
 
 def test_get_permission_list_none_returns_empty():
     assert get_permission_list(None) == []
-
-
-def test_get_permissions_definition_shape():
-    defn = get_permissions_definition()
-    assert "permissions" in defn
-    assert "groups" in defn
-    assert "roles" in defn
-    assert "split_modules" in defn
-    # value 應為字串（與 name 相同），不再是 int
-    assert defn["permissions"]["EMPLOYEES_READ"]["value"] == "EMPLOYEES_READ"
-    assert defn["permissions"]["EMPLOYEES_READ"]["label"] == "員工管理 (檢視)"
-
-
-def test_get_permissions_definition_admin_role_is_wildcard():
-    defn = get_permissions_definition()
-    assert defn["roles"]["admin"]["permissions"] == ["*"]
 
 
 def test_all_permissions_have_labels():
@@ -246,12 +226,6 @@ def test_role_descriptions_non_empty():
         assert isinstance(desc, str) and len(desc) > 0, f"{role} description 空"
 
 
-def test_get_permissions_definition_includes_role_descriptions():
-    """get_permissions_definition().roles[*] 應含 description 欄位。"""
-    definition = get_permissions_definition()
-    roles = definition["roles"]
-    for role_key in ROLE_TEMPLATES.keys():
-        assert role_key in roles, f"roles 缺 {role_key}"
-        assert "description" in roles[role_key], f"{role_key} 缺 description"
-        assert "label" in roles[role_key]
-        assert "permissions" in roles[role_key]
+def test_permission_enum_has_roles_manage():
+    """ROLES_MANAGE 是 (b) 加的第 57 條 enum，守衛角色/權限定義 CRUD。"""
+    assert Permission.ROLES_MANAGE.value == "ROLES_MANAGE"

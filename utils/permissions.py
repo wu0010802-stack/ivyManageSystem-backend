@@ -88,6 +88,9 @@ class Permission(str, Enum):
     VENDOR_PAYMENT_READ = "VENDOR_PAYMENT_READ"
     VENDOR_PAYMENT_WRITE = "VENDOR_PAYMENT_WRITE"
 
+    # DB-driven 自訂權限/角色 CRUD 守衛（(b) 子專案）
+    ROLES_MANAGE = "ROLES_MANAGE"
+
 
 # 位元值凍結快照——僅供 alembic upgrade()/downgrade() backfill 使用。
 # 一旦 migration 跑過 prod，請勿變更此表（保持歷史 migration 可重跑）。
@@ -418,6 +421,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     # 廠商付款簽收
     "VENDOR_PAYMENT_READ": "廠商付款簽收 (檢視)",
     "VENDOR_PAYMENT_WRITE": "廠商付款簽收 (編輯/簽收)",
+    # DB-driven 自訂權限/角色 CRUD 守衛 ((b) 子專案)
+    "ROLES_MANAGE": "角色與權限管理",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -568,9 +573,18 @@ PERMISSION_GROUPS: List[Dict] = [
 # ---------------------------------------------------------------------------
 
 
-def get_role_default_permissions(role: str) -> List[str]:
-    """取得角色預設權限名稱清單；未知角色 fallback 為 teacher。"""
-    return list(ROLE_TEMPLATES.get(role, ROLE_TEMPLATES["teacher"]))
+def get_role_default_permissions(session, role_code: str) -> List[str]:
+    """從 DB roles 表拉指定 role 的預設 permissions。
+
+    fallback：未知 role 回 teacher 預設（既有行為）。
+    """
+    from models.permission_models import Role
+
+    role = session.query(Role).filter_by(code=role_code).first()
+    if role is None:
+        teacher_role = session.query(Role).filter_by(code="teacher").first()
+        return list(teacher_role.permissions) if teacher_role else []
+    return list(role.permissions)
 
 
 def has_permission(
@@ -616,26 +630,73 @@ def get_permission_list(user_perms: List[str] | None) -> List[str]:
     return [p for p in user_perms if p in Permission.__members__]
 
 
-def get_permissions_definition() -> Dict:
-    """取得完整權限定義供前端使用。"""
+def get_permissions_definition(session) -> Dict:
+    """取得完整權限定義（從 DB permission_definitions + roles 兩表拉，取代 in-code dict）。
+
+    runtime 從 DB 拉確保 admin runtime 改動立即生效。in-code dict 保留供 alembic
+    rolesdb01 seed 用，但 runtime 不再參考。
+    """
+    from models.permission_models import PermissionDefinition, Role
+
+    perm_defs = (
+        session.query(PermissionDefinition)
+        .order_by(PermissionDefinition.group_name, PermissionDefinition.code)
+        .all()
+    )
+    role_defs = session.query(Role).order_by(Role.is_core.desc(), Role.code).all()
+
     permissions = {
-        perm.value: {
-            "value": perm.value,
-            "label": PERMISSION_LABELS.get(perm.value, perm.value),
-        }
-        for perm in Permission
+        p.code: {"value": p.code, "label": p.label, "is_core": p.is_core}
+        for p in perm_defs
     }
+
+    # 動態組 groups：依 group_name 分群，對齊 SPLIT_MODULES 為 split_permissions
+    split_codes = set()
+    for sp in SPLIT_MODULES.values():
+        split_codes.add(sp["read"])
+        split_codes.add(sp["write"])
+
+    groups_map: Dict[str, Dict] = {}
+    for p in perm_defs:
+        if p.group_name not in groups_map:
+            groups_map[p.group_name] = {
+                "name": p.group_name,
+                "permissions": [],
+                "split_permissions": [],
+            }
+        if p.code not in split_codes:
+            groups_map[p.group_name]["permissions"].append(p.code)
+
+    # 把 SPLIT_MODULES 的 read/write 配對加進對應 group
+    for module_key, sp in SPLIT_MODULES.items():
+        read_def = next((p for p in perm_defs if p.code == sp["read"]), None)
+        if read_def and read_def.group_name in groups_map:
+            module_label = PERMISSION_LABELS.get(sp["read"], sp["read"]).replace(
+                " (檢視)", ""
+            )
+            groups_map[read_def.group_name]["split_permissions"].append(
+                {
+                    "module": module_label,
+                    "read": sp["read"],
+                    "write": sp["write"],
+                }
+            )
+
+    groups = list(groups_map.values())
+
     roles = {
-        role: {
-            "permissions": perms,
-            "label": ROLE_LABELS.get(role, role),
-            "description": ROLE_DESCRIPTIONS.get(role, ""),
+        r.code: {
+            "label": r.label,
+            "description": r.description or "",
+            "permissions": list(r.permissions),
+            "is_core": r.is_core,
         }
-        for role, perms in ROLE_TEMPLATES.items()
+        for r in role_defs
     }
+
     return {
         "permissions": permissions,
-        "groups": PERMISSION_GROUPS,
+        "groups": groups,
         "roles": roles,
         "split_modules": SPLIT_MODULES,
     }
