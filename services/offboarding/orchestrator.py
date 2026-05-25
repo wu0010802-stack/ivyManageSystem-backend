@@ -116,9 +116,10 @@ def process_offboarding(
     _mark_employee_salary_stale(session, employee_id)
 
     from services.offboarding.steps import (
+        generate_certificate,
         mark_appraisal,
-        snapshot_leave,
         revoke_user,
+        snapshot_leave,
     )
 
     steps_result: list[StepResult] = []
@@ -142,6 +143,10 @@ def process_offboarding(
         ):
             user_account_revoked = True
 
+        # Step 5: generate_certificate（Phase 2）
+        cert_result = generate_certificate.run(session, record)
+        steps_result.append(cert_result)
+
     except OffboardingError:
         raise  # 由 endpoint 層 catch + session.rollback
 
@@ -151,5 +156,5 @@ def process_offboarding(
         is_active_after=emp.is_active,
         user_account_revoked=user_account_revoked,
         steps=steps_result,
-        certificate_pdf_path=None,
+        certificate_pdf_path=record.certificate_pdf_path,  # Phase 2 起填入
     )

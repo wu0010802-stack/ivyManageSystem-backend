@@ -43,6 +43,9 @@ uploads/
 data/uploads/
 data/activity_posters/
 
+# Offboarding certificates（generated PDFs，不入 repo）
+storage/offboarding_certificates/
+
 # IDE
 .vscode/
 .idea/

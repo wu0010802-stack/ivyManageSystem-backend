@@ -227,13 +227,20 @@ def test_process_offboarding_creates_record_with_only_default_step_unimplemented
     assert record.opened_by_user_id == user.id
 
 
-def test_happy_path_all_4_steps_complete(
+def test_happy_path_all_5_steps_complete(
     db_session,
     employee_factory,
     user_factory,
     leave_quota_factory,
     salary_record_factory,
+    tmp_path,
+    monkeypatch,
 ):
+    # monkeypatch generate_certificate STORAGE_DIR → tmp_path 避免寫到真實磁碟
+    import services.offboarding.steps.generate_certificate as gc_mod
+
+    monkeypatch.setattr(gc_mod, "STORAGE_DIR", tmp_path)
+
     emp = employee_factory(daily_wage=1800)
     admin = user_factory()
     user_factory(employee_id=emp.id, is_active=True, token_version=1)
@@ -259,10 +266,12 @@ def test_happy_path_all_4_steps_complete(
         "snapshot_leave",
         "prefill_leave_payout",
         "revoke_user",
+        "generate_certificate",
     ]
     assert all(s["status"] == "completed" for s in result["steps"])
     assert result["user_account_revoked"] is True
     assert result["is_active_after"] is False
+    assert result["certificate_pdf_path"] is not None
 
 
 def test_snapshot_leave_failure_rolls_back_record(
