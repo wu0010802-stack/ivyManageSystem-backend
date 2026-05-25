@@ -31,7 +31,7 @@ from utils.finance_guards import (
 )
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
-from utils.audit import write_explicit_audit
+from utils.audit import write_explicit_audit, mark_soft_delete
 from utils.salary_access import can_view_salary_of
 from utils.validators import parse_optional_date
 
@@ -705,6 +705,7 @@ async def update_employee(
 @router.delete("/employees/{employee_id}")
 async def delete_employee(
     employee_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
     """刪除員工（軟刪除，設為離職）"""
@@ -718,6 +719,7 @@ async def delete_employee(
         if employee.is_active:
             employee.is_active = False
             changed = True
+            mark_soft_delete(request, "employee", employee.name or f"#{employee.id}")
         if not employee.resign_date:
             employee.resign_date = date.today()
             changed = True
@@ -744,6 +746,7 @@ async def delete_employee(
 async def offboard_employee(
     employee_id: int,
     req: OffboardRequest,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
     """辦理離職：設定離職日與離職原因，若離職日 <= 今天則同步設 is_active = False"""
@@ -768,6 +771,8 @@ async def offboard_employee(
         today = date.today()
         if resign_d <= today:
             emp.is_active = False
+            if old_is_active:
+                mark_soft_delete(request, "employee", emp.name or f"#{emp.id}")
         # 若 resign_date > today，保留 is_active = True（通知期）
 
         # resign_date 或 is_active 任一發生變動即影響在職比例 / proration → 標 stale。
