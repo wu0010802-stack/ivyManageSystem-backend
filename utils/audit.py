@@ -75,6 +75,7 @@ ENTITY_PATTERNS = [
     (r"/api/auth/change-password", "user"),
     (r"/api/attendance", "attendance"),
     (r"/api/employees", "employee"),
+    (r"/api/offboarding", "offboarding"),
     (r"/api/students", "student"),
     (r"/api/classrooms", "classroom"),
     (r"/api/leaves", "leave"),
@@ -191,6 +192,7 @@ SKIP_PATHS = {_LOGIN_PATH}
 # 與前端下拉選項同步。新增 entity_type 請只在此處增補一次。
 ENTITY_LABELS = {
     "employee": "員工",
+    "offboarding": "員工離職",
     "student": "學生",
     "attendance": "考勤",
     "leave": "請假",
