@@ -280,6 +280,13 @@ async def app_lifespan(app_instance: FastAPI):
     app_instance.state.main_loop = _main_loop
     set_main_loop(_main_loop)
 
+    # 通知中央 dispatcher：把 after_commit / after_rollback hook 綁到主庫 session factory
+    from services.notification import dispatch as _notification_dispatch
+    from models.base import get_session_factory as _get_factory
+
+    _notification_dispatch.install_session_hooks(_get_factory())
+    logger.info("notification dispatch hooks installed")
+
     on_startup()
     # 只有 env 啟用時才跑 sweeper（避免多 worker 重複發送通知）
     sweeper_task = None
