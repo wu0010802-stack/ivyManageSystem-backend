@@ -43,7 +43,7 @@ from services.contact_book_service import (
     copy_yesterday_to_today,
     publish_entry,
 )
-from utils.audit import write_explicit_audit
+from utils.audit import mark_soft_delete, write_explicit_audit
 from utils.auth import require_permission
 from utils.exceptions import BusinessError
 from utils.file_upload import (
@@ -825,12 +825,10 @@ def delete_photo(
         if att.deleted_at:
             return {"message": "附件已刪除"}
         att.deleted_at = datetime.now()
+        mark_soft_delete(request, "contact_book_entry", str(attachment_id))
         session.commit()
 
         request.state.audit_entity_id = str(entry_id)
-        request.state.audit_summary = (
-            f"教師刪除聯絡簿照片：entry={entry_id} attachment={attachment_id}"
-        )
         return {"message": "刪除成功"}
     finally:
         session.close()

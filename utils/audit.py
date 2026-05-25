@@ -229,6 +229,9 @@ ENTITY_PATTERNS = [
     (r"/api/vendor-payments", "vendor_payment"),
     # 月度固定費用登錄：金流類，每筆 upsert/delete 全部留 audit。
     (r"/api/monthly-fixed-costs", "monthly_fixed_cost"),
+    # 附件軟刪：缺此規則時 middleware _parse_entity_type 回 None → 短路跳過，
+    # 導致 DELETE /api/attachments/{id} 產生零 audit_logs row。
+    (r"/api/attachments", "attachment"),
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -239,6 +242,7 @@ SKIP_PATHS = {_LOGIN_PATH}
 ENTITY_LABELS = {
     "employee": "員工",
     "student": "學生",
+    "guardian": "監護人",
     "attendance": "考勤",
     "leave": "請假",
     "overtime": "加班",
@@ -276,6 +280,7 @@ ENTITY_LABELS = {
     "gov_report": "政府申報",
     # F-035：audit-logs 自身匯出（meta-audit）
     "audit_log": "操作紀錄",
+    "attachment": "附件",
     # 審核流程設定（policy 自身異動稽核）
     "approval_policy": "審核流程設定",
     "insurance_bracket": "勞健保級距",

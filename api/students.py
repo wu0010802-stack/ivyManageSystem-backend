@@ -38,7 +38,7 @@ from models.classroom import (
 
 logger = logging.getLogger(__name__)
 
-from utils.audit import write_explicit_audit
+from utils.audit import mark_soft_delete, write_explicit_audit
 
 
 def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
@@ -1440,6 +1440,7 @@ async def update_guardian(
 @router.delete("/students/guardians/{guardian_id}")
 async def delete_guardian(
     guardian_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
 ):
     """軟刪除監護人。"""
@@ -1454,6 +1455,8 @@ async def delete_guardian(
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
 
         guardian.deleted_at = datetime.now()
+        mark_soft_delete(request, "guardian", guardian.name or str(guardian_id))
+        request.state.audit_entity_id = str(guardian.student_id)
         guardian.is_primary = False  # 軟刪後不再是主要聯絡人
 
         student = (
