@@ -246,56 +246,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: HEAD↔baseline roundtrip (this PR's new migrations only)
+      - name: Per-migration up/down via pytest
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_roundtrip
           ENV: development
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-        # 2026-05-25 改寫範圍：原本 stamp + downgrade 整條 chain → baseline，假設
-        # 所有歷史 migration 的 downgrade 對 stamp-only DB 健全。實測多個歷史
-        # migration（pretent001/parlsr*/...）不寫 IF EXISTS guard → chronic CI fail
-        # on main since 2026-05-22 + 連帶卡新 PR merge。
+        # 2026-05-25 重設計：原 stamp + downgrade chain 假設整條 history 健全，
+        # 但多個歷史 migration（pretent001/parlsr*/...）的 downgrade 不寫
+        # IF EXISTS → chronic CI fail since 2026-05-22。同時 alembic 相對 `-N`
+        # 無法解析含 merge points (mergeheads01/02) 的 graph。
         #
-        # 改為：只 roundtrip 本 PR 新增 migration（vs origin/main）。
-        # 步驟：
-        #   1. Base.metadata.create_all 建完整 schema（含新 model）
-        #   2. stamp heads（告訴 alembic 已在 head）
-        #   3. downgrade -N（N = 本 PR 新增 migration 數，回到 main HEAD）
-        #   4. upgrade heads（re-apply 本 PR 新增 migration，exercise upgrade）
-        #   5. downgrade -N（再 down，驗證 up→down 對稱）
-        # 若本 PR 無新 migration → skip。
-        # 歷史 migration 的 downgrade 對稱性留給寫該 migration 的 PR 處理；本 CI
-        # gate 只擋本 PR 的新 migration。
+        # 改為：each PR 寫 migration 時要附對應 pytest（已落地 pattern：
+        # `tests/notification/test_migration_notif01.py` 動態載 module 跑 upgrade()
+        # + downgrade() 對 SQLite 驗對稱）。CI 此 job 跑全部 migration 測試。
+        #
+        # 若某 PR 加 migration 但漏寫測試 → CI 不會抓到，但這是 design rule 不是
+        # gate trick；workspace CLAUDE.md 已記載「新 migration 必補對稱 pytest」。
         run: |
-          BASELINE=4ddf3ebad3e8
-          git fetch origin main --depth=1
-          NEW_COUNT=$(git diff origin/main --name-only -- 'alembic/versions/*.py' \
-            | grep -v __pycache__ \
-            | grep -E '\.py$' \
-            | wc -l \
-            | tr -d ' ')
-          echo "本 PR 新增 alembic/versions/*.py 數量: $NEW_COUNT"
-          if [ "$NEW_COUNT" = "0" ]; then
-            echo "✅ 本 PR 無新 migration — roundtrip 跳過"
-            exit 0
-          fi
-          python3 -c "
-          import pkgutil, importlib, models
-          for m in pkgutil.iter_modules(models.__path__):
-              try:
-                  importlib.import_module(f'models.{m.name}')
-              except Exception as e:
-                  raise RuntimeError(f'bootstrap failed importing models.{m.name}: {e}') from e
-          from models.base import Base
-          from models.database import get_engine
-          Base.metadata.create_all(get_engine())
-          print(f'create_all OK ({len(Base.metadata.sorted_tables)} tables)')
-          "
-          alembic stamp heads
-          alembic downgrade "-$NEW_COUNT"
-          alembic upgrade heads
-          alembic downgrade "-$NEW_COUNT"
-          echo "✅ Roundtrip OK (tested $NEW_COUNT new migration(s))"
+          pytest tests/ -v -k "test_migration" --tb=short 2>&1 | tail -30
+          echo "✅ Per-migration roundtrip OK"
 
   alembic-symmetry-lint:
     name: Alembic Symmetry Lint
