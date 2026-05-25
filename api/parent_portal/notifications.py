@@ -73,17 +73,26 @@ def update_preferences(
 ):
     """整批 upsert（缺的 event_type 不動，存在的覆寫）。"""
     user_id = current_user["user_id"]
-    # 拒絕未知 event_type，避免 typo 進 DB
-    unknown = [
-        ev for ev in payload.prefs.keys() if ev not in PARENT_NOTIFICATION_EVENT_TYPES
-    ]
-    if unknown:
+    # 過渡相容：舊 key（無 parent. 前綴）自動對映新 key
+    OLD_TO_NEW = {
+        ev.replace("parent.", ""): ev for ev in PARENT_NOTIFICATION_EVENT_TYPES
+    }
+    normalized: dict[str, bool] = {}
+    unknown_keys: list[str] = []
+    for k, v in payload.prefs.items():
+        if k in PARENT_NOTIFICATION_EVENT_TYPES:
+            normalized[k] = v
+        elif k in OLD_TO_NEW:
+            normalized[OLD_TO_NEW[k]] = v  # 舊 key 自動轉新（過渡相容）
+        else:
+            unknown_keys.append(k)
+    if unknown_keys:
         raise HTTPException(
             status_code=400,
-            detail=f"不支援的 event_type：{unknown}；可選值：{list(PARENT_NOTIFICATION_EVENT_TYPES)}",
+            detail=f"不支援的 event_type：{unknown_keys}；可選值：{list(PARENT_NOTIFICATION_EVENT_TYPES)}",
         )
 
-    for ev, enabled in payload.prefs.items():
+    for ev, enabled in normalized.items():
         existing = (
             session.query(ParentNotificationPreference)
             .filter(

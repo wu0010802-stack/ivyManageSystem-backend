@@ -119,32 +119,32 @@ class TestPreferencesEndpoint:
         uid = _make_parent_user(sf)
         resp = client.put(
             "/api/parent/notifications/preferences",
-            json={"prefs": {"message_received": False}},
+            json={"prefs": {"parent.message_received": False}},
             cookies={"access_token": _token(uid)},
         )
         assert resp.status_code == 200
-        assert resp.json()["prefs"]["message_received"] is False
+        assert resp.json()["prefs"]["parent.message_received"] is False
         # 其他保持 True
-        assert resp.json()["prefs"]["announcement"] is True
+        assert resp.json()["prefs"]["parent.announcement"] is True
 
         # GET 應反映
         get_resp = client.get(
             "/api/parent/notifications/preferences",
             cookies={"access_token": _token(uid)},
         )
-        assert get_resp.json()["prefs"]["message_received"] is False
+        assert get_resp.json()["prefs"]["parent.message_received"] is False
 
     def test_put_re_enable_overrides(self, pref_client):
         client, sf = pref_client
         uid = _make_parent_user(sf)
         client.put(
             "/api/parent/notifications/preferences",
-            json={"prefs": {"announcement": False}},
+            json={"prefs": {"parent.announcement": False}},
             cookies={"access_token": _token(uid)},
         )
         client.put(
             "/api/parent/notifications/preferences",
-            json={"prefs": {"announcement": True}},
+            json={"prefs": {"parent.announcement": True}},
             cookies={"access_token": _token(uid)},
         )
         with sf() as session:
@@ -152,12 +152,33 @@ class TestPreferencesEndpoint:
                 session.query(ParentNotificationPreference)
                 .filter(
                     ParentNotificationPreference.user_id == uid,
-                    ParentNotificationPreference.event_type == "announcement",
+                    ParentNotificationPreference.event_type == "parent.announcement",
                 )
                 .first()
             )
             assert row is not None
             assert row.enabled is True
+
+    def test_put_accepts_old_keys_for_backward_compat(self, pref_client):
+        """PUT 收舊 key（無 parent. 前綴）應正常處理，GET 回傳新 key。"""
+        client, sf = pref_client
+        uid = _make_parent_user(sf)
+        # 送舊 key
+        resp = client.put(
+            "/api/parent/notifications/preferences",
+            json={"prefs": {"message_received": False}},
+            cookies={"access_token": _token(uid)},
+        )
+        assert resp.status_code == 200
+        # PUT response 應以新 key 回傳
+        assert resp.json()["prefs"]["parent.message_received"] is False
+
+        # GET 也應以新 key 反映
+        get_resp = client.get(
+            "/api/parent/notifications/preferences",
+            cookies={"access_token": _token(uid)},
+        )
+        assert get_resp.json()["prefs"]["parent.message_received"] is False
 
     def test_put_unknown_event_type_rejected(self, pref_client):
         client, sf = pref_client
@@ -181,7 +202,9 @@ class TestIsPrefEnabled:
         uid = _make_parent_user(sf)
         with sf() as session:
             assert (
-                is_pref_enabled(session, user_id=uid, event_type="message_received")
+                is_pref_enabled(
+                    session, user_id=uid, event_type="parent.message_received"
+                )
                 is True
             )
 
@@ -192,14 +215,16 @@ class TestIsPrefEnabled:
             session.add(
                 ParentNotificationPreference(
                     user_id=uid,
-                    event_type="message_received",
+                    event_type="parent.message_received",
                     channel="line",
                     enabled=False,
                 )
             )
             session.commit()
             assert (
-                is_pref_enabled(session, user_id=uid, event_type="message_received")
+                is_pref_enabled(
+                    session, user_id=uid, event_type="parent.message_received"
+                )
                 is False
             )
 
@@ -213,12 +238,12 @@ class TestPushGateRespectsPref:
     def test_disabled_pref_blocks_push_gate(self, pref_client):
         _, sf = pref_client
         uid = _make_parent_user(sf)
-        # Disable message_received
+        # Disable parent.message_received
         with sf() as session:
             session.add(
                 ParentNotificationPreference(
                     user_id=uid,
-                    event_type="message_received",
+                    event_type="parent.message_received",
                     channel="line",
                     enabled=False,
                 )
@@ -229,7 +254,7 @@ class TestPushGateRespectsPref:
         svc.configure(token="t", target_id="g", enabled=True)
         with sf() as session:
             line_id = svc.should_push_to_parent(
-                session, user_id=uid, event_type="message_received"
+                session, user_id=uid, event_type="parent.message_received"
             )
             assert line_id is None  # gate 擋住
 
@@ -240,7 +265,7 @@ class TestPushGateRespectsPref:
             session.add(
                 ParentNotificationPreference(
                     user_id=uid,
-                    event_type="message_received",
+                    event_type="parent.message_received",
                     channel="line",
                     enabled=False,
                 )
@@ -250,8 +275,8 @@ class TestPushGateRespectsPref:
         svc = LineService()
         svc.configure(token="t", target_id="g", enabled=True)
         with sf() as session:
-            # announcement 沒 row → enabled 預設 → 通過
+            # parent.announcement 沒 row → enabled 預設 → 通過
             line_id = svc.should_push_to_parent(
-                session, user_id=uid, event_type="announcement"
+                session, user_id=uid, event_type="parent.announcement"
             )
             assert line_id == "U001"

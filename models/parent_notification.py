@@ -23,13 +23,13 @@ from models.base import Base
 
 # 預先列舉前端可選的 event_type；後端不強檢以保留擴充彈性
 PARENT_NOTIFICATION_EVENT_TYPES = (
-    "message_received",  # 老師訊息
-    "announcement",  # 園所公告
-    "event_ack_required",  # 事件待簽
-    "fee_due",  # 學費到期
-    "leave_result",  # 學生請假審核結果
-    "attendance_alert",  # 出席異常
-    "contact_book_published",  # 每日聯絡簿發布（v3.1）
+    "parent.message_received",  # 老師訊息
+    "parent.announcement",  # 園所公告
+    "parent.event_ack_required",  # 事件待簽
+    "parent.fee_due",  # 學費到期
+    "parent.leave_result",  # 學生請假審核結果
+    "parent.attendance_alert",  # 出席異常
+    "parent.contact_book_published",  # 每日聯絡簿發布（v3.1）
 )
 
 PARENT_NOTIFICATION_CHANNELS = ("line",)  # v1 只支援 LINE
