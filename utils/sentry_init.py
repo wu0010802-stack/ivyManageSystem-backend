@@ -70,6 +70,9 @@ _PII_KEY_SUBSTRINGS: frozenset[str] = frozenset(
         "refresh_token",
         "access_token",
         "api_key",
+        "resign_reason",
+        "leave_balance_snapshot",
+        "certificate_pdf_path",
     }
 )
 

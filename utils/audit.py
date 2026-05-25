@@ -110,6 +110,7 @@ ENTITY_PATTERNS = [
     (r"/api/auth/change-password", "user"),
     (r"/api/attendance", "attendance"),
     (r"/api/employees", "employee"),
+    (r"/api/offboarding", "offboarding"),
     # 學生 portfolio 子模組（必須排在 /api/students 之前，first-match wins）。
     # 寫操作走細粒度 entity_type 後，audit-logs 可單獨篩 "成長報告刪除" 等場景，
     # 不會混進真正改 student 主檔的 row。timeline / attachments 兩支 GET 由
@@ -238,6 +239,7 @@ SKIP_PATHS = {_LOGIN_PATH}
 # 與前端下拉選項同步。新增 entity_type 請只在此處增補一次。
 ENTITY_LABELS = {
     "employee": "員工",
+    "offboarding": "員工離職",
     "student": "學生",
     "attendance": "考勤",
     "leave": "請假",
