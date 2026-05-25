@@ -6,14 +6,18 @@ import csv
 import io
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Literal, Optional
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import desc
-from typing import Optional
+from pydantic import BaseModel
+from sqlalchemy import desc, update
+from sqlalchemy.orm import Session
 
 from models.database import get_session, AuditLog
+from services.audit_high_risk import classify_risk_kind, filter_high_risk
 from utils.audit import ACTION_LABELS, ENTITY_LABELS, write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -248,5 +252,172 @@ def export_audit_logs(
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+    finally:
+        session.close()
+
+
+# ── 高風險 audit 事件 Pydantic schemas ─────────────────────────────────────────
+
+
+class AuditLogHighRiskItem(BaseModel):
+    id: int
+    action: str
+    entity_type: str
+    entity_id: Optional[str] = None
+    summary: str
+    username: str
+    created_at: datetime
+    acknowledged_at: Optional[datetime] = None
+    acknowledged_by: Optional[int] = None
+    risk_kind: Literal["hard_delete", "blocked", "permission_change"]
+
+    class Config:
+        from_attributes = True
+
+
+class HighRiskListResponse(BaseModel):
+    items: list[AuditLogHighRiskItem]
+    unack_count: int
+    total: int
+
+
+class AckAllResponse(BaseModel):
+    acknowledged_count: int
+
+
+# ── 高風險 audit 事件 endpoints ────────────────────────────────────────────────
+# 注意：ack-all 靜態路徑必須在 {audit_id}/ack 動態路徑之前，否則 FastAPI 會把
+# "ack-all" 當成 audit_id 嘗試匹配。
+
+
+@router.post(
+    "/audit-logs/ack-all",
+    response_model=AckAllResponse,
+    summary="標記所有高風險未 ack 為已 ack",
+)
+def ack_all_audits(
+    request: Request,
+    days: int = 7,
+    current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
+):
+    """批次將時間窗內所有未 ack 高風險事件標為已讀。"""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    user_id = current_user.get("user_id")
+
+    session = get_session()
+    try:
+        target_ids_q = filter_high_risk(
+            sa.select(AuditLog.id), since=since, only_unack=True
+        )
+        target_ids = [row[0] for row in session.execute(target_ids_q).all()]
+
+        if target_ids:
+            session.execute(
+                update(AuditLog)
+                .where(AuditLog.id.in_(target_ids))
+                .values(
+                    acknowledged_at=datetime.now(timezone.utc),
+                    acknowledged_by=user_id,
+                )
+            )
+            session.commit()
+
+        # ack 動作本身不寫 audit log（避免無限遞迴）
+        request.state.audit_skip = True
+        return AckAllResponse(acknowledged_count=len(target_ids))
+    finally:
+        session.close()
+
+
+@router.post(
+    "/audit-logs/{audit_id}/ack",
+    summary="標記單筆 audit 為已 ack",
+)
+def ack_audit(
+    audit_id: int,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
+):
+    """將單筆高風險事件標為已讀（idempotent：重複呼叫不覆寫首次 timestamp）。"""
+    user_id = current_user.get("user_id")
+
+    session = get_session()
+    try:
+        row = session.get(AuditLog, audit_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="audit log not found")
+
+        if row.acknowledged_at is None:  # idempotent
+            row.acknowledged_at = datetime.now(timezone.utc)
+            row.acknowledged_by = user_id
+            session.commit()
+
+        # ack 動作本身不寫 audit log（避免無限遞迴）
+        request.state.audit_skip = True
+        return {"ok": True, "id": audit_id, "acknowledged_at": row.acknowledged_at}
+    finally:
+        session.close()
+
+
+@router.get(
+    "/audit-logs/high-risk",
+    response_model=HighRiskListResponse,
+    summary="高風險 audit 事件列表（紅點用）",
+)
+def get_high_risk_audits(
+    days: int = 7,
+    unack_only: bool = True,
+    limit: int = 50,
+    current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
+):
+    """列出時間窗內高風險 audit 事件，含 unack_count 供前端紅點顯示。"""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    session = get_session()
+    try:
+        rows_q = filter_high_risk(
+            sa.select(AuditLog), since=since, only_unack=unack_only
+        ).limit(limit)
+        rows = session.execute(rows_q).scalars().all()
+
+        items = [
+            AuditLogHighRiskItem(
+                id=row.id,
+                action=row.action,
+                entity_type=row.entity_type,
+                entity_id=row.entity_id,
+                summary=row.summary or "",
+                username=row.username or "",
+                created_at=row.created_at,
+                acknowledged_at=row.acknowledged_at,
+                acknowledged_by=row.acknowledged_by,
+                risk_kind=classify_risk_kind(row),
+            )
+            for row in rows
+        ]
+
+        unack_count = (
+            session.execute(
+                sa.select(sa.func.count()).select_from(
+                    filter_high_risk(
+                        sa.select(AuditLog), since=since, only_unack=True
+                    ).subquery()
+                )
+            ).scalar()
+            or 0
+        )
+
+        total = (
+            session.execute(
+                sa.select(sa.func.count()).select_from(
+                    filter_high_risk(
+                        sa.select(AuditLog), since=since, only_unack=False
+                    ).subquery()
+                )
+            ).scalar()
+            or 0
+        )
+
+        return HighRiskListResponse(items=items, unack_count=unack_count, total=total)
     finally:
         session.close()
