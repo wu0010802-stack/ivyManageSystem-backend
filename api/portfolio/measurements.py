@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from models.database import StudentMeasurement, User, session_scope
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -127,6 +128,7 @@ def _measurement_to_dict(m: StudentMeasurement) -> dict:
 @router.get("/{student_id}/measurements")
 async def list_measurements(
     student_id: int,
+    request: Request,
     from_date: Optional[date] = Query(None, alias="from"),
     to_date: Optional[date] = Query(None, alias="to"),
     skip: int = Query(0, ge=0),
@@ -152,6 +154,20 @@ async def list_measurements(
                 .offset(skip)
                 .limit(limit)
                 .all()
+            )
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student_measurement",
+                entity_id=str(student_id),
+                summary=f"查詢學生量測列表：student_id={student_id} total={total}",
+                changes={
+                    "from": from_date.isoformat() if from_date else None,
+                    "to": to_date.isoformat() if to_date else None,
+                    "total": total,
+                    "returned": len(rows),
+                },
+                dedup=True,
             )
             return {
                 "total": total,
@@ -282,6 +298,7 @@ async def delete_measurement(
 @router.get("/{student_id}/measurements/chart-data")
 async def chart_data(
     student_id: int,
+    request: Request,
     months: int = Query(24, ge=1, le=120),
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
 ) -> dict:
@@ -310,6 +327,15 @@ async def chart_data(
                 )
                 .order_by(StudentMeasurement.measured_on.asc())
                 .all()
+            )
+            write_explicit_audit(
+                request,
+                action="READ",
+                entity_type="student_measurement",
+                entity_id=str(student_id),
+                summary=f"查詢量測圖表：student_id={student_id} months={months}",
+                changes={"months": months, "points": len(rows)},
+                dedup=True,
             )
             series: dict[str, list[dict]] = {
                 "height": [],

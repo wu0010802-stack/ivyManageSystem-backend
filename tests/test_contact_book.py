@@ -614,8 +614,10 @@ class TestContactBookListQueryCount:
 
         # 目前 _load_photos 在迴圈每個 entry 各發一次 query → baseline ~17-20
         # Task 3B.3 批次修補後應降至 ≤ 9（photos 改 IN clause；auth+emp+classroom+roster+entries+photos+completion×2 共 9）
-        assert counter.count <= 9, (
-            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 9). "
+        # audit 2026-05-25 加 write_explicit_audit READ：背景 thread INSERT audit_logs +1 query
+        # 已 dedup（同 classroom_id+log_date 60s 內只 1 筆），不是 N+1，僅 +1 overhead。
+        assert counter.count <= 10, (
+            f"query count regressed: {counter.count} (baseline ~17-20 with 15 entries, target ≤ 10). "
             f"Last 5 statements: {counter.statements[-5:]}"
         )
 

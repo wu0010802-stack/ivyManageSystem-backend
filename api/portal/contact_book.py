@@ -43,6 +43,7 @@ from services.contact_book_service import (
     copy_yesterday_to_today,
     publish_entry,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.exceptions import BusinessError
 from utils.file_upload import (
@@ -190,6 +191,7 @@ def _parse_if_match(if_match: Optional[str]) -> Optional[int]:
 
 @router.get("")
 def list_classroom_day(
+    request: Request,
     classroom_id: int = Query(..., gt=0),
     log_date: date = Query(...),
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
@@ -254,6 +256,24 @@ def list_classroom_day(
             )
         completion = compute_class_completion(
             session, classroom_id=classroom_id, log_date=log_date
+        )
+        # contact_book dedup key 用 (classroom_id, log_date) 不用 student_id：
+        # 教師同分鐘來回切日期/班級可各記一筆。
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="contact_book_entry",
+            entity_id=f"{classroom_id}:{log_date.isoformat()}",
+            summary=(
+                f"教師查詢聯絡簿：classroom_id={classroom_id} "
+                f"log_date={log_date.isoformat()} entries={len(items)}"
+            ),
+            changes={
+                "classroom_id": classroom_id,
+                "log_date": log_date.isoformat(),
+                "student_count": len(items),
+            },
+            dedup=True,
         )
         return {
             "classroom_id": classroom_id,
@@ -521,6 +541,7 @@ async def upload_photo(
 
 @router.get("/unpublished")
 def list_unpublished(
+    request: Request,
     classroom_id: int = Query(..., gt=0),
     log_date: date = Query(...),
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
@@ -541,6 +562,22 @@ def list_unpublished(
                 StudentContactBookEntry.published_at.is_(None),
             )
             .all()
+        )
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="contact_book_entry",
+            entity_id=f"unpublished:{classroom_id}:{log_date.isoformat()}",
+            summary=(
+                f"教師查詢聯絡簿草稿：classroom_id={classroom_id} "
+                f"log_date={log_date.isoformat()} drafts={len(entries)}"
+            ),
+            changes={
+                "classroom_id": classroom_id,
+                "log_date": log_date.isoformat(),
+                "draft_count": len(entries),
+            },
+            dedup=True,
         )
         if not entries:
             return {
