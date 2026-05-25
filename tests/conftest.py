@@ -150,6 +150,15 @@ def test_db_session(tmp_path):
     )
     test_session_factory = sessionmaker(bind=test_engine)
 
+    # 把 dispatch 的 after_commit / after_rollback 重綁到 test factory
+    # 不重綁的話 hook 會綁在 production factory，test commit 不觸發
+    try:
+        from services.notification import dispatch as _dispatch
+
+        _dispatch.install_session_hooks(test_session_factory)
+    except ImportError:
+        pass  # dispatch 模組未建（Task 6 之前；現在已不可能但保留 graceful fallback）
+
     old_engine = base_module._engine
     old_session_factory = base_module._SessionFactory
     base_module._engine = test_engine
@@ -163,6 +172,12 @@ def test_db_session(tmp_path):
 
     base_module._engine = old_engine
     base_module._SessionFactory = old_session_factory
+    try:
+        from services.notification import dispatch as _dispatch
+
+        _dispatch._HOOKS_INSTALLED.discard(test_session_factory)
+    except ImportError:
+        pass
     test_engine.dispose()
 
 

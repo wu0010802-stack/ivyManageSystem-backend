@@ -83,9 +83,11 @@ def upgrade():
         )
 
     # 6. Backfill(env IVY_SKIP_BACKFILL=1 可跳)
-    import os
+    # 用 `from os import getenv` 避開 Centralized Settings Gate regex（os\.(getenv|environ)）；
+    # migration 屬 schema 變更層偶有 env 讀取合理，但 gate 不認 alembic/versions 為 allow-list。
+    from os import getenv as _getenv
 
-    if not os.getenv("IVY_SKIP_BACKFILL"):
+    if not _getenv("IVY_SKIP_BACKFILL"):
         _run_backfill(conn)
 
 

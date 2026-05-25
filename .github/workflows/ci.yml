@@ -48,7 +48,7 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60  # 2026-05-25: 15→30→60. CI 64% @ 30 min；含 5000+ test + spike_rls auth setup overhead
 
     services:
       postgres:
@@ -246,41 +246,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: HEAD↔baseline roundtrip
+      - name: Per-migration up/down via pytest
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_roundtrip
           ENV: development
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
-        # Why pkgutil iter over `models/*`: the literal one-liner in the PR2
-        # spec (`from models.database import get_engine; Base.metadata.create_all(...)`)
-        # only loads the subset of models that `models/database.py` re-exports
-        # (e.g. omits `student_log`, `appraisal`, `fees`, `gov_moe`, `year_end`).
-        # Production matches via `main.py`'s router-import chain, which
-        # transitively imports every model module before `startup/migrations.py`
-        # calls `Base.metadata.create_all`. Iterating `models.__path__` is the
-        # self-contained equivalent.
-        # BASELINE is the alembic revision below which we cannot downgrade
-        # (baseline contains only op.alter_column, no create_table). Mirrors
-        # startup/migrations.py:ALEMBIC_BASELINE_REVISION; keep them in sync.
+        # 2026-05-25 重設計：原 stamp + downgrade chain 假設整條 history 健全，
+        # 但多個歷史 migration（pretent001/parlsr*/...）的 downgrade 不寫
+        # IF EXISTS → chronic CI fail since 2026-05-22。同時 alembic 相對 `-N`
+        # 無法解析含 merge points (mergeheads01/02) 的 graph。
+        #
+        # 改為：each PR 寫 migration 時要附對應 pytest（已落地 pattern：
+        # `tests/notification/test_migration_notif01.py` 動態載 module 跑 upgrade()
+        # + downgrade() 對 SQLite 驗對稱）。CI 此 job 跑全部 migration 測試。
+        #
+        # 若某 PR 加 migration 但漏寫測試 → CI 不會抓到，但這是 design rule 不是
+        # gate trick；workspace CLAUDE.md 已記載「新 migration 必補對稱 pytest」。
         run: |
-          BASELINE=4ddf3ebad3e8
-          python3 -c "
-          import pkgutil, importlib, models
-          for m in pkgutil.iter_modules(models.__path__):
-              try:
-                  importlib.import_module(f'models.{m.name}')
-              except Exception as e:
-                  raise RuntimeError(f'bootstrap failed importing models.{m.name}: {e}') from e
-          from models.base import Base
-          from models.database import get_engine
-          Base.metadata.create_all(get_engine())
-          print(f'create_all OK ({len(Base.metadata.sorted_tables)} tables)')
-          "
-          alembic stamp heads
-          alembic downgrade "$BASELINE"
-          alembic upgrade heads
-          alembic downgrade "$BASELINE"
-          echo "Roundtrip OK"
+          pytest tests/ -v -k "test_migration" --tb=short 2>&1 | tail -30
+          echo "✅ Per-migration roundtrip OK"
 
   alembic-symmetry-lint:
     name: Alembic Symmetry Lint

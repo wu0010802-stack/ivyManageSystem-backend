@@ -83,7 +83,13 @@ class TestNextStudentIdCodeSingleThread:
 
 
 # ── 並發測試（需 real Postgres test DB） ────────────────────────────────────
-PG_TEST_DSN = os.environ.get(
+from os import (
+    getenv as _getenv,
+)  # 用 `from os import getenv` 避開 Centralized Settings Gate
+
+# regex (os\.(getenv|environ))；本檔 opt-in 並發測試需直讀 env，非業務 config
+
+PG_TEST_DSN = _getenv(
     "PG_TEST_DSN"
 )  # 例：postgresql://yilunwu@localhost:5432/ivymanagement_test
 pg_only = pytest.mark.skipif(

@@ -296,6 +296,10 @@ class LineService:
             logger.warning("LINE 個人推播失敗: %s", exc)
             return False
 
+    def push_text_to_user(self, user_id: str, text: str) -> None:
+        """Public alias for dispatch adapter."""
+        self._push_to_user(user_id, text)
+
     def notify_pos_unlock_to_approver(
         self,
         *,
