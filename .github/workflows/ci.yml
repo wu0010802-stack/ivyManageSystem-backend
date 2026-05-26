@@ -323,3 +323,53 @@ jobs:
 
       - name: Run symmetry lint
         run: python3 scripts/lint_alembic_symmetry.py alembic/versions/
+
+  notification-dispatch-gate:
+    name: Notification Dispatch Gate (forbid line_service.notify_*)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Block direct line_service.notify_* in api/ services/
+        # 2026-05-26 Phase 2 PR-D 落地：所有通知 caller 必須走
+        # services.notification.dispatch.enqueue；line_service.{,_}notify_*
+        # 與 _push_to_user 改為 dispatch._channels.line / hybrid caller 私有 API。
+        #
+        # 已知 hybrid exception（Phase 4 line_service 重構時收尾）：
+        #   api/dismissal_calls.py      — LINE 群組推送無 cleanly defined perm pool
+        #   api/portfolio/reports.py    — sent_count + Phase 3 rollback 需從
+        #                                 push_to_user 拿真實 ACK
+        #
+        # 允許 path（line_service 內部與 dispatch 內部互呼）：
+        #   services/line_service.py    — method 自己定義在此
+        #   services/notification/_channels/  — dispatch LINE adapter
+        run: |
+          # 1. 禁直接 line_service.{,_}notify_* / line_svc.{,_}notify_*
+          PAT='_?line_(service|svc)\._?notify_'
+          MATCH=$(git grep -nE "$PAT" -- 'api/**.py' 'services/**.py' \
+            ':!services/line_service.py' \
+            ':!services/notification/_channels/' \
+            ':!api/dismissal_calls.py' \
+            ':!api/portfolio/reports.py' \
+            || true)
+          if [ -n "$MATCH" ]; then
+            echo "::error::禁直接 line_service.notify_* / _notify_* / push_to_user（請改用 dispatch.enqueue）："
+            echo "$MATCH"
+            exit 1
+          fi
+          echo "✅ 無 disallowed line_service.{,_}notify_* caller"
+
+          # 2. 禁 push_to_user 直接 caller（reports.py hybrid 除外）
+          PAT2='_?line_service\.push_to_user|_?line_svc\.push_to_user'
+          MATCH2=$(git grep -nE "$PAT2" -- 'api/**.py' 'services/**.py' \
+            ':!services/line_service.py' \
+            ':!api/portfolio/reports.py' \
+            || true)
+          if [ -n "$MATCH2" ]; then
+            echo "::error::禁直接 line_service.push_to_user（請改用 dispatch.enqueue）："
+            echo "$MATCH2"
+            exit 1
+          fi
+          echo "✅ 無 disallowed push_to_user caller"
