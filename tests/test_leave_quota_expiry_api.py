@@ -259,3 +259,28 @@ def test_run_now_triggers_scheduler_returns_summaries(app_client):
     data = resp.json()
     assert "comp_summary" in data
     assert "cutover_summary" in data
+
+
+def test_run_now_returns_409_on_concurrent_lock_holder(app_client):
+    """POST /leave-quota-expiry/run-now 當另一 worker 已持有 lock 時回傳 409 Conflict。
+
+    模擬：第一個 session 取得 today 的 advisory lock → 第二個 request 來時
+    try_scheduler_lock yield False → endpoint 回 409。
+    """
+    from unittest.mock import patch, MagicMock
+
+    client, sf = app_client
+    _seed_user(sf, "sal3", "Passw0rd!", ["SALARY_WRITE"])
+    _login(client, "sal3", "Passw0rd!")
+
+    # Mock try_scheduler_lock 回 acquired=False（模擬 lock 被佔）
+    with patch("api.leave_quota_expiry.try_scheduler_lock") as mock_lock:
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=False)  # acquired=False
+        mock_context.__exit__ = MagicMock(return_value=None)
+        mock_lock.return_value = mock_context
+
+        resp = client.post("/api/leave-quota-expiry/run-now")
+        assert resp.status_code == 409
+        data = resp.json()
+        assert "already running" in data["detail"].lower()

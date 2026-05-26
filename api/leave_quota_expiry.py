@@ -5,12 +5,13 @@
 
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.base import get_session
 from models.employee import Employee
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from models.unused_leave_payout_log import UnusedLeavePayoutLog
+from utils.advisory_lock import try_scheduler_lock
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -138,6 +139,7 @@ def run_scheduler_now(
     """手動 trigger 補休到期 + 特休週年 cutover scheduler（idempotent 重跑安全）。
 
     與 asyncio scheduler 呼叫相同的 service 函式，savepoint 隔離單員工失敗。
+    加 try_scheduler_lock 防並發 double-pay：同日多 worker POST 只有一個會成功。
     """
     from services.leave_quota_expiry.annual_cutover import (
         cutover_annual_leave_anniversaries,
@@ -147,10 +149,22 @@ def run_scheduler_now(
     today = date.today()
     session = get_session()
     try:
-        comp_summary = expire_comp_leave_grants(today, session)
-        cutover_summary = cutover_annual_leave_anniversaries(today, session)
-        session.commit()
-        return {"comp_summary": comp_summary, "cutover_summary": cutover_summary}
+        with try_scheduler_lock(
+            session,
+            scheduler_name="leave_quota_expiry",
+            run_key=today.isoformat(),
+        ) as acquired:
+            if not acquired:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Scheduler already running for today, retry later",
+                )
+            comp_summary = expire_comp_leave_grants(today, session)
+            cutover_summary = cutover_annual_leave_anniversaries(today, session)
+            session.commit()
+            return {"comp_summary": comp_summary, "cutover_summary": cutover_summary}
+    except HTTPException:
+        raise
     except Exception:
         session.rollback()
         raise
