@@ -6,6 +6,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -65,9 +66,9 @@ class Guardian(Base):
         comment="Guardian PII 被 retention GC 抹除的時間戳；NOT NULL 即已抹過避免重複 GC",
     )
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (

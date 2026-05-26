@@ -6,6 +6,7 @@ models/vendor_payment.py — 廠商付款簽收
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -58,9 +59,9 @@ class VendorPayment(Base):
     signature_key = Column(String(255))
 
     created_by_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"))
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
     updated_at = Column(
-        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+        DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive
     )
 
     signer = relationship("Employee", foreign_keys=[signer_id], lazy="joined")

@@ -6,6 +6,7 @@ consumed_hours 由補休假單核准/駁回 FIFO 維護。
 """
 
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     BigInteger,
@@ -55,8 +56,8 @@ class OvertimeCompLeaveGrant(Base):
         ForeignKey("unused_leave_payout_log.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     overtime_record = relationship("OvertimeRecord", backref="comp_leave_grant")
 

@@ -3,6 +3,7 @@ models/salary.py — 薪資相關模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -49,7 +50,7 @@ class InsuranceTable(Base):
     health_employer = Column(Float, default=0)
     pension_employer_amount = Column(Float, default=0)
 
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
 
 class DeductionRule(Base):
@@ -68,8 +69,8 @@ class DeductionRule(Base):
     is_active = Column(Boolean, default=True)
     description = Column(Text)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class BonusSetting(Base):
@@ -92,8 +93,8 @@ class BonusSetting(Base):
     calculated_festival_bonus = Column(Float, default=0)
     calculated_overtime_bonus = Column(Float, default=0)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class ClassBonusSetting(Base):
@@ -109,7 +110,7 @@ class ClassBonusSetting(Base):
     target_enrollment = Column(Integer, default=0)
     current_enrollment = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
 
 class DeductionType(Base):
@@ -125,8 +126,8 @@ class DeductionType(Base):
     is_employer_paid = Column(Boolean, default=False)
     sort_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class BonusType(Base):
@@ -141,8 +142,8 @@ class BonusType(Base):
     is_separate_transfer = Column(Boolean, default=False)
     sort_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class SalaryItem(Base):
@@ -163,7 +164,7 @@ class SalaryItem(Base):
     unit_amount = Column(Money)
     is_employer_paid = Column(Boolean, default=False)
     remark = Column(Text)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
 
 class SalaryRecord(Base):
@@ -289,8 +290,8 @@ class SalaryRecord(Base):
         Integer, nullable=False, default=1, server_default="1", comment="樂觀鎖版本號"
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -405,7 +406,7 @@ class SalarySnapshot(Base):
         comment="month_end / finalize / manual",
     )
     captured_at = Column(
-        DateTime, default=datetime.now, nullable=False, comment="快照捕捉時間"
+        DateTime, default=now_taipei_naive, nullable=False, comment="快照捕捉時間"
     )
     captured_by = Column(String(50), comment="觸發者 username；系統自動觸發為 system")
     source_version = Column(Integer, comment="拍攝當下 SalaryRecord.version，便於追溯")
@@ -466,7 +467,7 @@ class SalaryCalcJobRecord(Base):
     results_json = Column(Text, nullable=True, comment="完成時 serialize 的結果列表")
     errors_json = Column(Text, nullable=True, comment="完成時 serialize 的錯誤列表")
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
 

@@ -10,6 +10,7 @@ Phase 2 新增：用於月度損益表的「變動支出」與「人事支出（
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -49,9 +50,9 @@ class MonthlyFixedCost(Base):
     amount = Column(Money, nullable=False, default=0)
     notes = Column(Text)
 
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
     updated_at = Column(
-        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+        DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive
     )
     created_by_id = Column(
         Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True

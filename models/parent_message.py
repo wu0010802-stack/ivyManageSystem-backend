@@ -13,6 +13,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Boolean,
@@ -73,9 +74,9 @@ class ParentMessageThread(Base):
     teacher_last_read_at = Column(DateTime, nullable=True)
 
     deleted_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
 
@@ -124,7 +125,7 @@ class ParentMessage(Base):
     deleted_at = Column(
         DateTime, nullable=True, comment="sender 30 分內撤回；UI 顯示「此訊息已撤回」"
     )
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
 
 class LineReplyContext(Base):
@@ -148,9 +149,9 @@ class LineReplyContext(Base):
         nullable=False,
     )
     expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
 
@@ -177,4 +178,4 @@ class LineWebhookEvent(Base):
     )
     line_user_id = Column(String(100), nullable=True)
     processed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)

@@ -4,6 +4,7 @@ models/attendance.py — 考勤記錄模型
 
 import enum
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -81,8 +82,8 @@ class Attendance(Base):
         comment="半天/部分假時數（null = 全天或無假）",
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_attendance_emp_date", "employee_id", "attendance_date"),
