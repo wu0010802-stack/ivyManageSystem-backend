@@ -545,7 +545,7 @@ async def unlock_daily_close(
                     source_entity_type="activity_pos_daily",
                     source_entity_id=None,
                 )
-                # 預檢查 LINE 可達性：對齊原 notify_pos_unlock_to_approver
+                # 預檢查 LINE 可達性：對齊原本走 line_service 的 method
                 # 的 True/False 語義（綁定+follow 才回 True）
                 notification_delivered = (
                     dispatch._resolve_line_user_id(session, approver_user.id)
