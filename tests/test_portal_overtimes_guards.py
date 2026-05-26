@@ -76,6 +76,7 @@ class TestPortalCreateOvertimeGuards:
             patch(
                 "services.overtime_conflict_service.check_monthly_overtime_cap"
             ) as mock_monthly,
+            patch("services.overtime_conflict_service.check_quarterly_overtime_cap"),
             patch("services.overtime_conflict_service.check_overtime_type_calendar"),
         ):
             portal_ot.create_my_overtime(
@@ -111,6 +112,7 @@ class TestPortalCreateOvertimeGuards:
                 return_value=400.0,
             ),
             patch("services.overtime_conflict_service.check_monthly_overtime_cap"),
+            patch("services.overtime_conflict_service.check_quarterly_overtime_cap"),
             patch(
                 "services.overtime_conflict_service.check_overtime_type_calendar"
             ) as mock_cal,
@@ -145,6 +147,7 @@ class TestPortalCreateOvertimeGuards:
                 "services.overtime_conflict_service.check_monthly_overtime_cap",
                 side_effect=HTTPException(status_code=400, detail="超過 46h 月上限"),
             ),
+            patch("services.overtime_conflict_service.check_quarterly_overtime_cap"),
             patch("services.overtime_conflict_service.check_overtime_type_calendar"),
         ):
             with pytest.raises(HTTPException) as exc:
@@ -153,6 +156,78 @@ class TestPortalCreateOvertimeGuards:
                 )
         assert exc.value.status_code == 400
         assert "46" in exc.value.detail
+
+    def test_quarterly_cap_is_invoked(self):
+        """portal create_my_overtime 必須呼叫 _check_quarterly_overtime_cap"""
+        from api.portal import overtimes as portal_ot
+
+        session = _patched_session_ctx()
+        emp = _patched_emp()
+        data = _build_payload()
+        current_user = {"username": "teacher1", "employee_id": 1}
+
+        with (
+            patch.object(portal_ot, "get_session", return_value=session),
+            patch.object(portal_ot, "_get_employee", return_value=emp),
+            patch(
+                "services.overtime_conflict_service.check_overtime_overlap",
+                return_value=None,
+            ),
+            patch(
+                "services.overtime_pay_calculator.calculate_overtime_pay",
+                return_value=400.0,
+            ),
+            patch("services.overtime_conflict_service.check_monthly_overtime_cap"),
+            patch(
+                "services.overtime_conflict_service.check_quarterly_overtime_cap"
+            ) as mock_quarterly,
+            patch("services.overtime_conflict_service.check_overtime_type_calendar"),
+        ):
+            portal_ot.create_my_overtime(
+                data=data, request=MagicMock(), current_user=current_user
+            )
+
+        assert mock_quarterly.called, "季上限檢查未被呼叫"
+        # 參數應為 (session, emp.id, overtime_date, hours)
+        args, kwargs = mock_quarterly.call_args
+        passed = list(args) + list(kwargs.values())
+        assert emp.id in passed
+        assert data.overtime_date in passed
+        assert data.hours in passed
+
+    def test_quarterly_cap_violation_propagates_400(self):
+        """季上限超出時,portal 必須將 400 透傳給呼叫者"""
+        from api.portal import overtimes as portal_ot
+
+        session = _patched_session_ctx()
+        emp = _patched_emp()
+        data = _build_payload()
+        current_user = {"username": "teacher1", "employee_id": 1}
+
+        with (
+            patch.object(portal_ot, "get_session", return_value=session),
+            patch.object(portal_ot, "_get_employee", return_value=emp),
+            patch(
+                "services.overtime_conflict_service.check_overtime_overlap",
+                return_value=None,
+            ),
+            patch(
+                "services.overtime_pay_calculator.calculate_overtime_pay",
+                return_value=400.0,
+            ),
+            patch("services.overtime_conflict_service.check_monthly_overtime_cap"),
+            patch(
+                "services.overtime_conflict_service.check_quarterly_overtime_cap",
+                side_effect=HTTPException(status_code=400, detail="超過 138h 季上限"),
+            ),
+            patch("services.overtime_conflict_service.check_overtime_type_calendar"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                portal_ot.create_my_overtime(
+                    data=data, request=MagicMock(), current_user=current_user
+                )
+        assert exc.value.status_code == 400
+        assert "138" in exc.value.detail
 
     def test_holiday_type_mismatch_propagates_400(self):
         """國定假日誤用 weekday 時應拋出 400"""
@@ -175,6 +250,7 @@ class TestPortalCreateOvertimeGuards:
                 return_value=400.0,
             ),
             patch("services.overtime_conflict_service.check_monthly_overtime_cap"),
+            patch("services.overtime_conflict_service.check_quarterly_overtime_cap"),
             patch(
                 "services.overtime_conflict_service.check_overtime_type_calendar",
                 side_effect=HTTPException(
