@@ -301,6 +301,12 @@ async def app_lifespan(app_instance: FastAPI):
             logger.warning("PDF orphan recovery 啟動失敗: %s", e)
             capture_exception(e, level="warning")
 
+    # WS 廣播 backend（memory / redis 由 CACHE_BACKEND 切換）
+    from utils.broadcast import get_broadcast as _get_broadcast
+
+    _broadcast = _get_broadcast()
+    await _broadcast.start()
+
     # 只有 env 啟用時才跑 sweeper（避免多 worker 重複發送通知）
     sweeper_task = None
     if settings.scheduler.activity_waitlist_sweeper_enabled:
@@ -469,6 +475,11 @@ async def app_lifespan(app_instance: FastAPI):
     try:
         yield
     finally:
+        # 停 broadcast backend（先於 scheduler shutdown，避免 stop 期間還收到 publish）
+        try:
+            await _broadcast.stop()
+        except Exception as exc:
+            logger.warning("broadcast backend stop failed: %s", exc)
         if sweeper_task is not None:
             sweeper_task.cancel()
             try:
