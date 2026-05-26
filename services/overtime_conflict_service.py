@@ -20,7 +20,11 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
 
 from models.database import Holiday, LeaveRecord, OvertimeRecord
-from utils.constants import MAX_MONTHLY_OVERTIME_HOURS, MAX_QUARTERLY_OVERTIME_HOURS
+from utils.constants import (
+    MAX_MONTHLY_OVERTIME_HOURS,
+    MAX_QUARTERLY_OVERTIME_HOURS,
+    OVERTIME_QUARTERLY_WINDOW_MONTHS,
+)
 
 # -- 純函式（無 session 依賴）：抽出便於 unit test ----------------------
 
@@ -53,18 +57,20 @@ def _shift_month(year: int, month: int, offset: int) -> tuple[int, int]:
 
 
 def _assert_within_quarterly_cap(
-    worst_existing_hours: float,
+    existing_hours: float,
     new_hours: float,
     window_label: str,
     employee_id: int,
 ) -> None:
-    """純函式：驗證最壞窗口既存 + 新加班時數不超過勞基法第 32 條第 2 項
+    """純函式：驗證單一窗口既存 + 新加班時數不超過勞基法第 32 條第 2 項
     每連續三個月 138h 上限。
 
-    worst_existing_hours 由 caller 取 3 個 rolling 3-month 窗口的 max。
+    Caller (`check_quarterly_overtime_cap`) 對 W1/W2/W3 三個 rolling 3-month 窗口
+    依序呼叫此函式 — 第一個違反的窗口即 raise，訊息中的 window_label 標明該窗口。
+
     訊息含 6 要素：員工 ID、窗口、累計、新筆、合計、上限 + 法源。
     """
-    existing = float(worst_existing_hours or 0)
+    existing = float(existing_hours or 0)
     new = float(new_hours or 0)
     total = existing + new
     if total > MAX_QUARTERLY_OVERTIME_HOURS + 1e-9:
@@ -270,12 +276,13 @@ def check_quarterly_overtime_cap(
     多窗口同時超標時回報「最先超過」（W1→W2→W3 順序），讓 HR 從早到晚排查。
     """
     windows: list[tuple[date, date, str]] = []
-    for offset in (-2, -1, 0):
+    n = OVERTIME_QUARTERLY_WINDOW_MONTHS  # = 3
+    for offset in range(-(n - 1), 1):  # (-2, -1, 0)
         start_year, start_month = _shift_month(
             target_date.year, target_date.month, offset
         )
         end_year, end_month = _shift_month(
-            target_date.year, target_date.month, offset + 2
+            target_date.year, target_date.month, offset + n - 1  # offset + 2
         )
         start = date(start_year, start_month, 1)
         _, last_day = cal_module.monthrange(end_year, end_month)

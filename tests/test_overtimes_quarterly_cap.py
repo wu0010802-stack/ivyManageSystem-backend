@@ -122,3 +122,17 @@ class TestCheckQuarterlyOvertimeCap:
         _add_ot(session, 1, date(2026, 5, 5), 45.0, is_approved=None)
         with pytest.raises(HTTPException):
             check_quarterly_overtime_cap(session, 1, date(2026, 5, 20), 5.0)
+
+    def test_first_window_wins_when_multiple_exceed(self, session):
+        """文件契約：多窗口同時超過時按 W1→W2→W3 順序回報第一個（W1）"""
+        # target=2026-05-15。
+        # 每 3、4、5、6 月各 50h → W1 (3~5)=150 超、W2 (4~6)=150 超、W3 (5~7)=50 過
+        _add_ot(session, 42, date(2026, 3, 1), 50.0, is_approved=True)
+        _add_ot(session, 42, date(2026, 4, 1), 50.0, is_approved=True)
+        _add_ot(session, 42, date(2026, 5, 1), 50.0, is_approved=True)
+        _add_ot(session, 42, date(2026, 6, 1), 50.0, is_approved=True)
+        with pytest.raises(HTTPException) as exc:
+            check_quarterly_overtime_cap(session, 42, date(2026, 5, 15), 0.1)
+        # 第一個違反的是 W1，訊息應提 2026/03~2026/05 而非 2026/04~2026/06
+        assert "2026/03~2026/05" in exc.value.detail
+        assert "2026/04~2026/06" not in exc.value.detail
