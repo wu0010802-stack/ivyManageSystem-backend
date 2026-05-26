@@ -824,6 +824,10 @@ from api.permissions_admin import router as permissions_admin_router
 app.include_router(permissions_admin_router)
 app.include_router(offboarding_router, prefix="/api")
 
+from api import leave_quota_expiry as _lqe_api
+
+app.include_router(_lqe_api.router, prefix="/api")
+
 # ---------------------------------------------------------------------------
 # Middleware（順序重要：最後加入的最先執行）
 # ---------------------------------------------------------------------------
