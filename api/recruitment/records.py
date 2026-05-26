@@ -162,7 +162,7 @@ def _auto_sync_periods_for_months(session, months: set) -> None:
         p.effective_deposit_count = max(
             (row.deposit_count or 0) - (row.transfer_term_count or 0), 0
         )
-        p.updated_at = datetime.now()
+        p.updated_at = datetime.now()  # noqa: DTZ005
         logger.info("自動同步期間 [%s] 完成", p.period_name)
 
 
@@ -198,7 +198,7 @@ def update_recruitment_record(
         record.expected_start_label = _extract_expected_label_from_text(
             record.notes, record.parent_response, record.grade
         )
-        record.updated_at = datetime.now()
+        record.updated_at = datetime.now()  # noqa: DTZ005
         session.flush()
         _auto_sync_periods_for_months(session, {old_month, record.month})
         return _to_dict(record)

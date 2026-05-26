@@ -483,7 +483,7 @@ def login(data: LoginRequest, request: Request):
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
 
-        user.last_login = datetime.now()
+        user.last_login = datetime.now()  # noqa: DTZ005
         session.commit()
 
         # permission_names: ["*"] 表示全部權限；None 時套用角色預設

@@ -576,7 +576,7 @@ def export_personal_slip_pdf(
         PersonalBonusSlipData(
             employee_name=emp.name,
             academic_year=cycle.academic_year,
-            print_date=datetime.now().strftime("%Y.%m.%d"),
+            print_date=datetime.now().strftime("%Y.%m.%d"),  # noqa: DTZ005
             year_end_amount=settlement.payable_amount,
             bonus_by_type=bonuses,
         )

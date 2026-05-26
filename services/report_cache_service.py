@@ -26,7 +26,7 @@ class ReportCacheService:
         params: dict | None = None,
         force_refresh: bool = False,
     ):
-        now = datetime.now()
+        now = datetime.now()  # noqa: DTZ005
         cache_key = self.build_cache_key(category, params)
         snapshot = session.query(ReportSnapshot).filter(ReportSnapshot.cache_key == cache_key).first()
 

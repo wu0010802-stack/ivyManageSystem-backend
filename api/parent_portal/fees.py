@@ -49,7 +49,7 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
         .all()
     )
 
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     soon = today + timedelta(days=_DUE_SOON_DAYS)
     by_student: dict[int, dict] = defaultdict(_empty_totals)
 

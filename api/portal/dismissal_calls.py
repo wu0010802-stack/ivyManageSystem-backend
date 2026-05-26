@@ -73,7 +73,7 @@ def portal_list_dismissal_calls(
         if not classroom_ids:
             return []
 
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 
@@ -106,7 +106,7 @@ def portal_pending_count(
         if not classroom_ids:
             return {"count": 0}
 
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 

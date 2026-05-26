@@ -169,7 +169,7 @@ def mark_read(
             AnnouncementParentRead(
                 announcement_id=announcement_id,
                 user_id=user_id,
-                read_at=datetime.now(),
+                read_at=datetime.now()  # noqa: DTZ005,
             )
         )
         session.flush()

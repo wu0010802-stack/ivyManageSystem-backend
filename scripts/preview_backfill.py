@@ -35,7 +35,7 @@ def _has_leave_record_id_col(session) -> bool:
 def main():
     session = get_session()
     try:
-        cutoff = date.today() - timedelta(days=365)
+        cutoff = date.today() - timedelta(days=365)  # noqa: DTZ011
 
         leaves = (
             session.query(LeaveRecord)

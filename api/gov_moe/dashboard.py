@@ -41,7 +41,7 @@ def disability_expiry_widget(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_staff_permission(Permission.GOV_REPORTS_VIEW)),
 ):
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     end = today + timedelta(days=days)
     q = (
         db.query(Student)

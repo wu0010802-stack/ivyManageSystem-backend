@@ -22,7 +22,7 @@ from models.database import LeaveRecord, get_session  # noqa: F401
 
 
 def find_bad_partial(session):
-    cutoff = date.today() - timedelta(days=365)
+    cutoff = date.today() - timedelta(days=365)  # noqa: DTZ011
     return (
         session.query(LeaveRecord)
         .filter(

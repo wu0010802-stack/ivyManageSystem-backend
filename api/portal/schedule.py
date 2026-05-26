@@ -379,7 +379,7 @@ def create_swap_request(
 
         if data.target_id == emp.id:
             raise HTTPException(status_code=400, detail="不可與自己換班")
-        if data.swap_date < date.today():
+        if data.swap_date < date.today():  # noqa: DTZ011
             raise HTTPException(status_code=400, detail="不可換過去的日期")
 
         target = (
@@ -498,7 +498,7 @@ def respond_swap_request(
         if swap.status != "pending":
             raise HTTPException(status_code=400, detail="此申請已不是待處理狀態")
 
-        swap.target_responded_at = datetime.now()
+        swap.target_responded_at = datetime.now()  # noqa: DTZ005
         swap.target_remark = data.remark
 
         if data.action == "accept":
@@ -521,7 +521,7 @@ def respond_swap_request(
                 raise
 
             swap.status = "accepted"
-            swap.executed_at = datetime.now()
+            swap.executed_at = datetime.now()  # noqa: DTZ005
 
             for emp_id, new_shift_type_id in [
                 (swap.requester_id, swap.target_shift_type_id),

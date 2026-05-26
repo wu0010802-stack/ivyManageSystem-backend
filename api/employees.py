@@ -287,7 +287,7 @@ async def get_probation_alerts(
     """取得試用期即將到期的員工（預設 60 天內）"""
     session = get_session()
     try:
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
         deadline = today + timedelta(days=days)
         next_month_end = today + timedelta(days=30)
 
@@ -722,7 +722,7 @@ async def delete_employee(
             changed = True
             mark_soft_delete(request, "employee", employee.name or f"#{employee.id}")
         if not employee.resign_date:
-            employee.resign_date = date.today()
+            employee.resign_date = date.today()  # noqa: DTZ011
             changed = True
         if changed:
             stale_marked = _mark_employee_salary_stale(session, employee_id)

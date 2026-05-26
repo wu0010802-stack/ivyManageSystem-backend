@@ -403,7 +403,7 @@ def export_change_logs(
                 )
                 filename = (
                     f"student_change_logs_"
-                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"  # noqa: DTZ005
                 )
                 return StreamingResponse(
                     iter([buf.getvalue()]),
@@ -499,7 +499,7 @@ def export_change_logs(
                 ]
             )
 
-        filename = f"student_change_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = f"student_change_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"  # noqa: DTZ005
         return StreamingResponse(
             iter([buf.getvalue()]),
             media_type="text/csv; charset=utf-8",
@@ -525,7 +525,7 @@ async def create_change_log(
         student = assert_student_access(session, current_user, item.student_id)
 
         event_date = datetime.strptime(item.event_date, "%Y-%m-%d").date()
-        if event_date > date.today():
+        if event_date > date.today():  # noqa: DTZ011
             raise HTTPException(
                 status_code=400,
                 detail="補登只能寫歷史事件；未來狀態變更請用「變更狀態」功能",

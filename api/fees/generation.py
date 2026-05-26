@@ -108,7 +108,7 @@ def generate_from_templates(
             existing_keys = {(s, tid, m) for s, tid, m in existing}
 
         period_str = f"{payload.school_year}-{payload.semester}"
-        now = datetime.now()
+        now = datetime.now()  # noqa: DTZ005
         new_records: list = []
         created = 0
         skipped = 0
@@ -133,7 +133,7 @@ def generate_from_templates(
                         skipped += 1
                         continue
                     record_name = f"{tpl.name}{f' ({tm})' if tm else ''}"
-                    due_date_val = date.today() + timedelta(
+                    due_date_val = date.today() + timedelta(  # noqa: DTZ011
                         days=tpl.due_date_offset_days
                     )
                     new_records.append(

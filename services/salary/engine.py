@@ -72,6 +72,57 @@ from .bulk_preload import (  # noqa: F401
 from utils.rounding import round_half_up
 
 
+def _pull_pending_payout_logs(session, salary_record) -> None:
+    """Layer 2：撈 salary_period_year/month 符合且尚未綁定的 UnusedLeavePayoutLog。
+
+    scheduler（T9 expire_comp_leave_grants）在薪資月結前可能已寫入 log 但未建立
+    SalaryRecord（Layer 1 找不到 record）；月結 calculate 時補撈這些 pending log，
+    將 amount 加總寫入 SalaryRecord.unused_leave_payout，並反向綁定 salary_record_id。
+
+    呼叫前提：
+    - salary_record 已在 session 內（已 add + flush 或既有 record），
+      `salary_record.id` 必須非 None（用於反向綁定）。
+    - 若 salary_record.id 尚為 None（新建 record 尚未 flush），此函式會先 flush 以取得 id。
+
+    幂等性：filter `salary_record_id IS NULL` 確保重複呼叫不會雙重計入。
+
+    覆蓋路徑：
+    - `_fill_salary_record(session=session)` → 單筆 process_salary_calculation
+    - `_fill_salary_record(session=session)` → 批次 _compute_and_persist_single_employee
+      （bulk path 在 SAVEPOINT 內；本函式只 flush，不 commit）
+    """
+    from decimal import Decimal
+
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+    # 新建 record 尚未 flush → 先取得 id 才能反向綁定
+    if salary_record.id is None:
+        session.flush()
+
+    pending_logs = (
+        session.query(UnusedLeavePayoutLog)
+        .filter(
+            UnusedLeavePayoutLog.employee_id == salary_record.employee_id,
+            UnusedLeavePayoutLog.salary_period_year == salary_record.salary_year,
+            UnusedLeavePayoutLog.salary_period_month == salary_record.salary_month,
+            UnusedLeavePayoutLog.salary_record_id.is_(None),
+        )
+        .all()
+    )
+
+    if not pending_logs:
+        return
+
+    additional = sum(log.amount for log in pending_logs)
+    # 防 float+Decimal TypeError：Money column DB roundtrip 後可能為 float
+    salary_record.unused_leave_payout = (
+        Decimal(str(salary_record.unused_leave_payout or 0))
+    ) + additional
+
+    for log in pending_logs:
+        log.salary_record_id = salary_record.id
+
+
 def _fill_salary_record(salary_record, breakdown, engine, session=None):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
 
@@ -147,6 +198,8 @@ def _fill_salary_record(salary_record, breakdown, engine, session=None):
             salary_record.salary_year,
             salary_record.salary_month,
         )
+        # Layer 2：撈 scheduler 已寫入但尚未綁定到本 SalaryRecord 的 pending log
+        _pull_pending_payout_logs(session, salary_record)
 
     # 成功重算 → 清除 stale 旗標(若為預載的舊 record 之前可能被標 True)
     salary_record.needs_recalc = False

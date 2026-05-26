@@ -128,6 +128,7 @@ class StudentContactBookReply(Base):
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     body = Column(Text, nullable=False)
+    client_request_id = Column(String(64), nullable=True)
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 

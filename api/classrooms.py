@@ -637,7 +637,7 @@ async def get_classroom_enrollment_composition(
         total = len(students)
         return {
             "classroom_id": classroom_id,
-            "snapshot_date": date.today().isoformat(),
+            "snapshot_date": date.today().isoformat(),  # noqa: DTZ011
             "total": total,
             "counts": counts,
             "ratios": {

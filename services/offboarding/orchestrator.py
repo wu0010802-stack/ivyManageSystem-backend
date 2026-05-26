@@ -85,7 +85,7 @@ def process_offboarding(
             code="RESIGN_DATE_BEFORE_HIRE",
         )
 
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     if (resign_date - today).days > 90:
         raise OffboardingError(
             f"resign_date {resign_date} 超過 today + 90 天",
@@ -96,7 +96,7 @@ def process_offboarding(
         employee_id=employee_id,
         resign_date=resign_date,
         resign_reason=resign_reason,
-        opened_at=datetime.now(),
+        opened_at=datetime.now(),  # noqa: DTZ005
         opened_by_user_id=operator_user_id,
     )
     session.add(record)

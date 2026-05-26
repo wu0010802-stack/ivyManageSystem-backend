@@ -38,7 +38,7 @@ async def get_today_attendance_summary(
     """取得今日出勤即時狀態"""
     session = get_session()
     try:
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
 
         total_employees = (
             session.query(Employee).filter(Employee.is_active == True).count()
@@ -169,7 +169,7 @@ async def get_today_anomalies(
     """今日打卡異常員工清單"""
     session = get_session()
     try:
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
 
         employees = session.query(Employee).filter(Employee.is_active == True).all()
 

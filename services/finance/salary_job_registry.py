@@ -200,7 +200,7 @@ class _SalaryJobRegistry:
             )
             if r:
                 r.status = "running"
-                r.started_at = datetime.now()
+                r.started_at = datetime.now()  # noqa: DTZ005
 
     def update_progress(self, job_id: str, done: int, total: int, current: str) -> None:
         with session_scope() as s:
@@ -225,7 +225,7 @@ class _SalaryJobRegistry:
                 r.results_json = json.dumps(results, default=str, ensure_ascii=False)
                 r.errors_json = json.dumps(errors, default=str, ensure_ascii=False)
                 r.status = "completed"
-                r.finished_at = datetime.now()
+                r.finished_at = datetime.now()  # noqa: DTZ005
                 r.done = r.total or r.done
 
     def fail(self, job_id: str, message: str) -> None:
@@ -238,10 +238,10 @@ class _SalaryJobRegistry:
             if r:
                 r.error_message = message
                 r.status = "failed"
-                r.finished_at = datetime.now()
+                r.finished_at = datetime.now()  # noqa: DTZ005
 
     def _evict_expired(self, session) -> None:
-        cutoff = datetime.now() - timedelta(seconds=_JOB_TTL_SEC)
+        cutoff = datetime.now() - timedelta(seconds=_JOB_TTL_SEC)  # noqa: DTZ005
         session.query(SalaryCalcJobRecord).filter(
             SalaryCalcJobRecord.finished_at.isnot(None),
             SalaryCalcJobRecord.finished_at < cutoff,

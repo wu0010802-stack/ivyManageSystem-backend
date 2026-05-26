@@ -131,8 +131,8 @@ def create_adjustment(
             reason=payload.reason,
             notes=payload.notes or "",
             created_by=current_user.get("username"),
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
+            created_at=datetime.now(),  # noqa: DTZ005
+            updated_at=datetime.now(),  # noqa: DTZ005
         )
         session.add(adj)
         session.flush()
@@ -164,7 +164,7 @@ def update_adjustment(
             adj.reason = payload.reason
         if payload.notes is not None:
             adj.notes = payload.notes
-        adj.updated_at = datetime.now()
+        adj.updated_at = datetime.now()  # noqa: DTZ005
         session.flush()
         return _serialize(adj)
 

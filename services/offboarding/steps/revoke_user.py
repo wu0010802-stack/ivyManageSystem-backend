@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
-    today = date.today()
-    now = datetime.now()
+    today = date.today()  # noqa: DTZ011
+    now = datetime.now()  # noqa: DTZ005
 
     if record.resign_date > today:
         return {

@@ -147,7 +147,7 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
                         .first()
                     )
                     if user is not None:
-                        user.line_follow_confirmed_at = _dt.now()
+                        user.line_follow_confirmed_at = _dt.now()  # noqa: DTZ005
                         session.commit()
                 except Exception:
                     logger.warning(

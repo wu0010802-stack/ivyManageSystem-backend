@@ -112,9 +112,9 @@ def _collect_timeline_items(
     - leave_review：近 7 天家長提交且已 reviewed 的請假
     """
     fetch_n = max(limit * 3, 30)
-    now = datetime.now()
+    now = datetime.now()  # noqa: DTZ005
     cutoff_30d = now - timedelta(days=30)
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     items: list[dict[str, Any]] = []
 
     # 1. attendance（最近 N 筆，依 date desc）

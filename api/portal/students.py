@@ -163,7 +163,7 @@ def _aggregate_health_alerts(
             result[sid]["health_alert_count"] += 1
             result[sid]["has_health_alert"] = True
 
-        today = date_cls.today()
+        today = date_cls.today()  # noqa: DTZ011
         meds = (
             session.query(StudentMedicationOrder.student_id)
             .filter(
@@ -243,7 +243,7 @@ def get_my_students(
         for s in all_students:
             students_by_classroom[s.classroom_id].append(s)
 
-        today = date_cls.today()
+        today = date_cls.today()  # noqa: DTZ011
         attendance_map = _aggregate_attendance_this_month(session, student_ids, today)
         health_map = _aggregate_health_alerts(session, student_ids, current_user)
 
@@ -555,7 +555,7 @@ def get_student_detail(
             .all()
         )
 
-        today = date_cls.today()
+        today = date_cls.today()  # noqa: DTZ011
         active_med_orders = (
             session.query(StudentMedicationOrder)
             .filter(

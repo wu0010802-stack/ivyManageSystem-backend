@@ -40,7 +40,7 @@ def _assert_attendance_within_retention(
     attendance_date: date, today: Optional[date] = None
 ) -> None:
     """5 年保存期內的出勤紀錄不得刪除（勞基法第 30 條第 5 項）。"""
-    today = today or date.today()
+    today = today or date.today()  # noqa: DTZ011
     cutoff = _retention_cutoff(today)
     if attendance_date >= cutoff:
         raise HTTPException(

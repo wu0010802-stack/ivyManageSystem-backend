@@ -39,3 +39,8 @@ from .year_end import (
 # bootstrap 跑 `StudentFeeRecord.__table__.create()` 時 PG 若沒先建 fee_templates 即
 # FK 解析炸；CI Tests step `Base.metadata.create_all` 也需要這條 import 才會建 fee_templates。
 from .fees import FeeTemplate, StudentFeeRecord  # noqa: F401
+
+# 2026-05-26 Phase D：UnusedLeavePayoutLog 是 overtime_comp_leave_grants.payout_log_id 的
+# FK target；CI Tests step `Base.metadata.create_all` 需要該表先建立。
+from .unused_leave_payout_log import UnusedLeavePayoutLog  # noqa: F401
+from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401

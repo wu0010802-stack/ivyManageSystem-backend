@@ -354,7 +354,7 @@ def refund_fee_record(
             record.status = "partial"
         else:
             record.status = "paid"
-        record.updated_at = datetime.now()
+        record.updated_at = datetime.now()  # noqa: DTZ005
 
         new_paid = record.amount_paid
         new_status = record.status

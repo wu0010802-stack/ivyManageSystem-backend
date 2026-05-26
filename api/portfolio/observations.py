@@ -334,7 +334,7 @@ async def update_observation(
             ):
                 if field in data:
                     setattr(obs, field, data[field])
-            obs.updated_at = datetime.now()
+            obs.updated_at = datetime.now()  # noqa: DTZ005
             session.flush()
             session.refresh(obs)
 
@@ -379,7 +379,7 @@ async def delete_observation(
             if not obs:
                 raise HTTPException(status_code=404, detail="觀察紀錄不存在")
 
-            now = datetime.now()
+            now = datetime.now()  # noqa: DTZ005
             obs.deleted_at = now
             # Cascade：未刪除的附件一併軟刪
             session.query(Attachment).filter(

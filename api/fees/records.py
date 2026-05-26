@@ -285,7 +285,7 @@ def pay_fee_record(
         record.payment_method = payload.payment_method
         record.notes = payload.notes or ""
         record.status = "paid" if amount_paid >= record.amount_due else "partial"
-        record.updated_at = datetime.now()
+        record.updated_at = datetime.now()  # noqa: DTZ005
 
         student_name = record.student_name
 

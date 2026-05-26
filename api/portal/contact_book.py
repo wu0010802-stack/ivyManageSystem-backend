@@ -813,7 +813,7 @@ def delete_photo(
             raise HTTPException(status_code=404, detail="附件不存在")
         if att.deleted_at:
             return {"message": "附件已刪除"}
-        att.deleted_at = datetime.now()
+        att.deleted_at = datetime.now()  # noqa: DTZ005
         mark_soft_delete(request, "contact_book_entry", str(attachment_id))
         session.commit()
 

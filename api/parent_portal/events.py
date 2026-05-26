@@ -61,7 +61,7 @@ def count_pending_acks_for_user(session, user_id: int, student_ids: list[int]) -
     """
     if not student_ids:
         return 0
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     df = today - timedelta(days=_PAST_DAYS)
     dt = today + timedelta(days=_FUTURE_DAYS)
     events = (
@@ -103,7 +103,7 @@ def list_events(
     session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     df = today - timedelta(days=_PAST_DAYS)
     dt = today + timedelta(days=_FUTURE_DAYS)
     _, student_ids = _get_parent_student_ids(session, user_id)
@@ -185,7 +185,9 @@ def acknowledge_event(
     if not event.requires_acknowledgment:
         raise HTTPException(status_code=400, detail="此事件未要求簽閱")
     # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽閱（與 signature 上傳對齊）
-    if event.ack_deadline is not None and date.today() > event.ack_deadline:
+    if (
+        event.ack_deadline is not None and date.today() > event.ack_deadline  # noqa: DTZ011
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -214,7 +216,7 @@ def acknowledge_event(
         event_id=event_id,
         user_id=user_id,
         student_id=payload.student_id,
-        acknowledged_at=datetime.now(),
+        acknowledged_at=datetime.now(),  # noqa: DTZ005
         signature_name=(payload.signature_name or "").strip() or None,
     )
     session.add(ack)
@@ -269,7 +271,9 @@ async def upload_ack_signature(
     )
     if event is None:
         raise HTTPException(status_code=404, detail="找不到事件")
-    if event.ack_deadline is not None and date.today() > event.ack_deadline:
+    if (
+        event.ack_deadline is not None and date.today() > event.ack_deadline  # noqa: DTZ011
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -301,7 +305,7 @@ async def upload_ack_signature(
             .first()
         )
         if old and not old.deleted_at:
-            old.deleted_at = datetime.now()
+            old.deleted_at = datetime.now()  # noqa: DTZ005
 
     storage = get_portfolio_storage()
     stored = storage.put_attachment(content, ext)
@@ -324,7 +328,7 @@ async def upload_ack_signature(
     session.refresh(att)
     ack.signature_attachment_id = att.id
     # 資安掃描 2026-05-07 P2：紀錄簽名上傳時間（重簽會更新此欄位）
-    ack.signature_uploaded_at = datetime.now()
+    ack.signature_uploaded_at = datetime.now()  # noqa: DTZ005
     session.flush()
 
     request.state.audit_entity_id = str(ack.id)

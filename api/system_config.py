@@ -138,7 +138,7 @@ def upsert_config(
             obj.config_value = payload.config_value
             if payload.description is not None:
                 obj.description = payload.description
-            obj.updated_at = datetime.now()
+            obj.updated_at = datetime.now()  # noqa: DTZ005
         session.flush()
         result = _to_out(obj, config_key).model_dump()
         session.commit()

@@ -184,7 +184,7 @@ def build_snapshot_rows(
     )
 
     wd = working_days_in_month(session, year, month)
-    now = datetime.now()
+    now = datetime.now()  # noqa: DTZ005
 
     groups: dict[tuple[int | None, str], _StudentAggregate] = defaultdict(
         _StudentAggregate

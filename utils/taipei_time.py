@@ -63,3 +63,13 @@ def validate_payment_date(value: date, *, back_limit_days: int = None) -> date:
     if value < earliest:
         raise ValueError(f"繳費日期超出範圍，最多回補 {back_limit_days} 天")
     return value
+
+
+def now_taipei_aware() -> datetime:
+    """帶 ZoneInfo 的當下時間，給 timezone-aware column 用。
+
+    Why: 既有 45 個 DateTime(timezone=True) column (audit/security/appraisal/year_end)
+    存的是 UTC absolute time，寫入用 datetime.now(TAIPEI_TZ) 才能正確 round-trip。
+    與 now_taipei_naive() 並列為兩個明確契約入口。
+    """
+    return datetime.now(TAIPEI_TZ)

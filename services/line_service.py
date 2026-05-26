@@ -327,6 +327,46 @@ class LineService:
         """Public alias for dispatch adapter."""
         self._push_to_user(user_id, text)
 
+    def push_flex_to_user(
+        self, line_user_id: str, flex_content: dict, alt_text: str
+    ) -> bool:
+        """推 LINE Flex message 給單一 user。
+
+        Args:
+            line_user_id: 接收者的 LINE user ID。
+            flex_content: LINE Flex bubble/carousel dict（content 部分，不含 wrapper）。
+            alt_text: 推播通知列顯示的純文字版（裝置不支援 flex 時 fallback）。
+
+        Returns:
+            True 表示推播成功，False 表示停用、設定缺失或 API 呼叫失敗。
+        """
+        if not self._enabled or not self._token or not line_user_id:
+            return False
+        try:
+            resp = requests.post(
+                _LINE_PUSH_URL,
+                headers={"Authorization": f"Bearer {self._token}"},
+                json={
+                    "to": line_user_id,
+                    "messages": [
+                        {
+                            "type": "flex",
+                            "altText": alt_text,
+                            "contents": flex_content,
+                        }
+                    ],
+                },
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "LINE Flex 個人推播失敗: %s %s", resp.status_code, resp.text
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.warning("LINE Flex 個人推播失敗: %s", exc)
+            return False
 
     def _push_to_user_with_quick_reply(
         self, line_user_id: str, text: str, quick_reply: dict
@@ -422,9 +462,7 @@ class LineService:
 
     # ── 公開通知方法 ──────────────────────────────────────────────────────────
 
-
     # ── 家長端通知方法（個人推播；非 enable 或無 line_user_id 時靜默） ──
-
 
     def handle_webhook_message(
         self,
@@ -498,7 +536,7 @@ class LineService:
             from datetime import date as _date
             import calendar
 
-            today = _date.today()
+            today = _date.today()  # noqa: DTZ011
             records = (
                 session.query(Attendance)
                 .filter(

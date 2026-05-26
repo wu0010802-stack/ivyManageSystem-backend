@@ -106,7 +106,7 @@ def convert_recruitment_to_student(
     if dup is not None:
         raise RecruitmentConversionError(f"學號已存在：{code}")
 
-    enroll_date = enrollment_date or date.today()
+    enroll_date = enrollment_date or date.today()  # noqa: DTZ011
 
     student = Student(
         student_id=code,
@@ -175,7 +175,7 @@ def convert_recruitment_to_student(
         student_id=student.id,
         actor_user_id=recorded_by,
         metadata_json={"student_id_code": code, "classroom_id": classroom_id},
-        created_at=datetime.now(),
+        created_at=datetime.now()  # noqa: DTZ005,
     )
     session.add(funnel_log)
     session.flush()

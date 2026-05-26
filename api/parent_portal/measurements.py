@@ -61,7 +61,7 @@ async def parent_list_measurements(
     try:
         user_id = current_user["user_id"]
         _assert_student_owned(session, user_id, student_id)
-        since = date.today() - timedelta(days=30 * months)
+        since = date.today() - timedelta(days=30 * months)  # noqa: DTZ011
         rows = (
             session.query(StudentMeasurement)
             .filter(
@@ -100,7 +100,7 @@ async def parent_measurement_chart(
     try:
         user_id = current_user["user_id"]
         _assert_student_owned(session, user_id, student_id)
-        since = date.today() - timedelta(days=30 * months)
+        since = date.today() - timedelta(days=30 * months)  # noqa: DTZ011
         rows = (
             session.query(StudentMeasurement)
             .filter(

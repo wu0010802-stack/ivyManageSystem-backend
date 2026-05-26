@@ -301,7 +301,7 @@ async def update_assessment(
                 if value is not None:
                     setattr(assessment, field, value)
 
-            assessment.updated_at = datetime.now()
+            assessment.updated_at = datetime.now()  # noqa: DTZ005
             session.flush()
             session.refresh(assessment)
 
