@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, field_validator, model_validator
 
+from models.approval import ApprovalStatus
 from models.database import get_session, PunchCorrectionRequest
 from utils.auth import get_current_user
 from ._shared import _get_employee
@@ -114,10 +115,10 @@ def create_my_punch_correction(
         existing = session.query(PunchCorrectionRequest).filter(
             PunchCorrectionRequest.employee_id == emp.id,
             PunchCorrectionRequest.attendance_date == data.attendance_date,
-            PunchCorrectionRequest.is_approved.isnot(False),  # None 或 True
+            PunchCorrectionRequest.status != ApprovalStatus.REJECTED.value,  # pending 或 approved
         ).first()
         if existing:
-            status_label = "待審核" if existing.is_approved is None else "已核准"
+            status_label = "待審核" if existing.status == ApprovalStatus.PENDING.value else "已核准"
             raise HTTPException(
                 status_code=400,
                 detail=f"您在 {data.attendance_date} 已有{status_label}的補打卡申請（ID: {existing.id}），請勿重複送出",
@@ -130,7 +131,7 @@ def create_my_punch_correction(
             requested_punch_in=data.requested_punch_in,
             requested_punch_out=data.requested_punch_out,
             reason=data.reason,
-            is_approved=None,
+            status=ApprovalStatus.PENDING.value,
         )
         session.add(correction)
         session.commit()

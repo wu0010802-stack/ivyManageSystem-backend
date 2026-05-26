@@ -7,6 +7,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 
+from models.approval import ApprovalStatus
 from models.database import get_session, Attendance, LeaveRecord, SalaryRecord
 from utils.auth import get_current_user
 from api.salary_fields import calculate_display_bonus_total
@@ -52,7 +53,7 @@ def get_salary_preview(
                 LeaveRecord.employee_id == emp.id,
                 LeaveRecord.start_date <= end,
                 LeaveRecord.end_date >= start,
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
             )
             .all()
         )

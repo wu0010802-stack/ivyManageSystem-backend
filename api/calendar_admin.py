@@ -18,6 +18,7 @@ from models.appraisal import AppraisalCycle
 from models.base import get_session_dep
 from models.employee import Employee
 from models.event import Holiday, MeetingRecord, SchoolEvent, WorkdayOverride
+from models.approval import ApprovalStatus
 from models.leave import LeaveRecord
 from schemas.calendar_admin import CalendarFeedItem, CalendarFeedResponse
 from utils.auth import get_current_user
@@ -185,7 +186,7 @@ def _fetch_leave(
             LeaveRecord.start_date,
             LeaveRecord.end_date,
             LeaveRecord.leave_type,
-            LeaveRecord.is_approved,
+            LeaveRecord.status,
             Employee.name.label("employee_name"),
         )
         .join(Employee, Employee.id == LeaveRecord.employee_id)
@@ -193,14 +194,14 @@ def _fetch_leave(
         .where(LeaveRecord.end_date >= from_)
         .where(
             or_(
-                LeaveRecord.is_approved.is_(None),
-                LeaveRecord.is_approved.is_(True),
+                LeaveRecord.status == ApprovalStatus.PENDING.value,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
             )
         )
     )
     out: list[CalendarFeedItem] = []
     for r in session.execute(stmt).all():
-        is_pending = r.is_approved is None
+        is_pending = r.status == ApprovalStatus.PENDING.value
         color = LAYER_COLORS["leave"]["pending" if is_pending else "default"]
         out.append(
             CalendarFeedItem(

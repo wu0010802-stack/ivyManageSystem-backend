@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from sqlalchemy import func, case, or_
 
+from models.approval import ApprovalStatus
 from models.database import (
     get_session,
     Attendance,
@@ -155,7 +156,7 @@ def get_attendance_sheet(
         for lv in all_leaves:
             d = max(lv.start_date, start)
             while d <= min(lv.end_date, end):
-                if lv.is_approved:
+                if lv.status == ApprovalStatus.APPROVED.value:
                     leave_dates[d] = lv.leave_type
                 if d not in leave_request_map:
                     leave_request_map[d] = []
@@ -167,6 +168,7 @@ def get_attendance_sheet(
                         ),
                         "leave_hours": lv.leave_hours,
                         "is_approved": lv.is_approved,
+                        "status": lv.status,
                         "reason": lv.reason,
                     }
                 )
@@ -195,6 +197,7 @@ def get_attendance_sheet(
                     ),
                     "hours": ot.hours,
                     "is_approved": ot.is_approved,
+                    "status": ot.status,
                     "reason": ot.reason,
                 }
             )

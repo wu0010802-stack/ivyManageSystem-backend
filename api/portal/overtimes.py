@@ -9,6 +9,7 @@ from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.errors import raise_safe_500
 
+from models.approval import ApprovalStatus
 from models.database import get_session, OvertimeRecord, User
 from utils.auth import get_current_user
 from utils.approval_helpers import _get_finalized_salary_record
@@ -89,6 +90,7 @@ def get_my_overtimes(
                 "comp_leave_granted": ot.comp_leave_granted,
                 "reason": ot.reason,
                 "is_approved": ot.is_approved,
+                "status": ot.status,
                 "approved_by": ot.approved_by,
                 "created_at": ot.created_at.isoformat() if ot.created_at else None,
             }
@@ -181,7 +183,7 @@ def create_my_overtime(
             overtime_pay=pay,
             use_comp_leave=data.use_comp_leave,
             reason=data.reason,
-            is_approved=None,
+            status=ApprovalStatus.PENDING.value,
         )
         session.add(ot)
         session.flush()
@@ -278,9 +280,9 @@ def delete_my_overtime(
         )
         if not ot:
             raise HTTPException(status_code=404, detail="找不到加班記錄")
-        if ot.is_approved is not None:
-            status = "已核准" if ot.is_approved else "已駁回"
-            raise HTTPException(status_code=400, detail=f"此申請已{status}，無法撤回")
+        if ot.status != ApprovalStatus.PENDING.value:
+            _status_msg = "已核准" if ot.status == ApprovalStatus.APPROVED.value else "已駁回"
+            raise HTTPException(status_code=400, detail=f"此申請已{_status_msg}，無法撤回")
         # NV5：薪資已封存時不可撤回（避免薪資記錄與加班記錄不一致）
         year = ot.overtime_date.year
         month = ot.overtime_date.month

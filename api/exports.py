@@ -21,6 +21,7 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 
+from models.approval import ApprovalStatus
 from models.database import (
     get_session,
     Employee,
@@ -372,7 +373,7 @@ def export_attendance(
             .filter(
                 LeaveRecord.start_date <= end,
                 LeaveRecord.end_date >= start,
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
             )
             .all()
         )
@@ -586,6 +587,14 @@ def _approval_label(is_approved):
     return "待審核"
 
 
+def _approval_label_from_status(status: str) -> str:
+    if status == ApprovalStatus.APPROVED.value:
+        return "已核准"
+    if status == ApprovalStatus.REJECTED.value:
+        return "已駁回"
+    return "待審核"
+
+
 @router.get("/leaves")
 def export_leaves(
     request: Request,
@@ -649,7 +658,7 @@ def export_leaves(
                     lv.leave_hours or 8,
                     lv.deduction_ratio,
                     lv.reason or "",
-                    _approval_label(lv.is_approved),
+                    _approval_label_from_status(lv.status),
                 ],
             )
 
@@ -749,7 +758,7 @@ def export_overtimes(
                     ot.hours or 0,
                     round_half_up(ot.overtime_pay or 0) if can_see_pay else "—",
                     ot.reason or "",
-                    _approval_label(ot.is_approved),
+                    _approval_label_from_status(ot.status),
                 ],
             )
 
