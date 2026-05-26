@@ -18,6 +18,7 @@ from sqlalchemy import func
 from models.database import ActivityPaymentRecord
 from utils.activity_constants import (
     ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD,
+    ACTIVITY_REFUND_DIFF_THRESHOLD,
     MIN_REFUND_REASON_LENGTH,
     REFUND_APPROVAL_THRESHOLD,
 )
@@ -115,3 +116,37 @@ def require_approve_for_cumulative_refund(
     ) or 0
     cumulative = int(prior) + int(this_refund_amount)
     require_approve_for_large_refund(cumulative, current_user, label=label)
+
+
+def require_approve_for_refund_diff(
+    *,
+    diff: int,
+    current_user: dict,
+    suggested_total: int,
+    actual_total: int,
+) -> None:
+    """實退 vs calculator 建議值差距超 ACTIVITY_REFUND_DIFF_THRESHOLD 時要求簽核。
+
+    Why: 員工算錯/故意多退無事前制衡；diff 大表示偏離教育局規則或建議值，
+    需要管理者批准。與 require_approve_for_large_refund（擋總額）獨立共存，
+    任一觸發都要簽核。
+
+    Args:
+        diff: |actual_total - suggested_total| 累積值（多 reg 同收據時請以
+              sum(abs(per_reg_diff)) 計算，避免方向抵消漏網）。
+        current_user: 已認證的 user dict（含 permission_names）。
+        suggested_total: server-side build_refund_suggestion 算出的總建議值。
+        actual_total: 員工 body 送出的實退總額。
+    """
+    if diff <= ACTIVITY_REFUND_DIFF_THRESHOLD:
+        return
+    if has_payment_approve(current_user):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"實退 NT${actual_total} 與系統建議 NT${suggested_total} "
+            f"差 NT${diff}，超過 NT${ACTIVITY_REFUND_DIFF_THRESHOLD} 偏離門檻，"
+            f"需具備『才藝課收款簽核』（ACTIVITY_PAYMENT_APPROVE）權限"
+        ),
+    )
