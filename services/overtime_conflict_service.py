@@ -249,3 +249,51 @@ def check_monthly_overtime_cap(
         q = q.filter(OvertimeRecord.id != exclude_id)
     existing = float(q.scalar() or 0)
     _assert_within_monthly_cap(existing, new_hours, year, month)
+
+
+def check_quarterly_overtime_cap(
+    session,
+    employee_id: int,
+    target_date: date,
+    new_hours: float,
+    exclude_id: Optional[int] = None,
+) -> None:
+    """查詢員工 3 個包含 target_date 月份的 rolling 3-month 窗口已申請 OT，
+    加上新時數後驗證任一窗口不超過 138h（勞基法第 32 條第 2 項）。
+
+    窗口定義（M = target_date.month）：
+    - W1: [M-2, M]
+    - W2: [M-1, M+1]
+    - W3: [M, M+2]
+
+    已駁回的申請不計入；exclude_id 用於 update 路徑排除自身舊紀錄。
+    多窗口同時超標時回報「最先超過」（W1→W2→W3 順序），讓 HR 從早到晚排查。
+    """
+    windows: list[tuple[date, date, str]] = []
+    for offset in (-2, -1, 0):
+        start_year, start_month = _shift_month(
+            target_date.year, target_date.month, offset
+        )
+        end_year, end_month = _shift_month(
+            target_date.year, target_date.month, offset + 2
+        )
+        start = date(start_year, start_month, 1)
+        _, last_day = cal_module.monthrange(end_year, end_month)
+        end = date(end_year, end_month, last_day)
+        label = f"{start_year}/{start_month:02d}~{end_year}/{end_month:02d}"
+        windows.append((start, end, label))
+
+    for start, end, label in windows:
+        q = session.query(func.coalesce(func.sum(OvertimeRecord.hours), 0)).filter(
+            OvertimeRecord.employee_id == employee_id,
+            OvertimeRecord.overtime_date >= start,
+            OvertimeRecord.overtime_date <= end,
+            or_(
+                OvertimeRecord.is_approved.is_(None),
+                OvertimeRecord.is_approved == True,
+            ),
+        )
+        if exclude_id is not None:
+            q = q.filter(OvertimeRecord.id != exclude_id)
+        existing = float(q.scalar() or 0)
+        _assert_within_quarterly_cap(existing, new_hours, label, employee_id)
