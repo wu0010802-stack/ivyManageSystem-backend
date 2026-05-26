@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from io import BytesIO
 from typing import Literal
 from urllib.parse import quote as _quote
@@ -49,7 +50,7 @@ class GenerateResponse(BaseModel):
 
 
 def _validate_year(year: int) -> None:
-    current_year = datetime.now().year  # noqa: DTZ005
+    current_year = now_taipei_naive().year
     if year < _MIN_YEAR or year > current_year + _MAX_YEAR_OFFSET:
         raise HTTPException(
             status_code=400,
@@ -170,7 +171,7 @@ def generate_monthly_report(
         month=payload.month,
         rows_generated=len(rows),
         snapshot_date=snapshot_date,
-        generated_at=datetime.now(),  # noqa: DTZ005
+        generated_at=now_taipei_naive(),
         generated_by=identity,
     )
 
@@ -373,7 +374,7 @@ def export_monthly_report(
     }
 
     xlsx_bytes = build_monthly_xlsx_bytes(rows_payload, student_details, overview)
-    today_str = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
+    today_str = now_taipei_naive().strftime("%Y-%m-%d")
     filename = f"義華幼兒園_月報_{year}-{month:02d}_產生於{today_str}.xlsx"
 
     # RFC 5987: encode non-ASCII filename as UTF-8 percent-encoded

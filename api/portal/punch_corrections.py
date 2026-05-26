@@ -4,6 +4,7 @@ Portal - punch correction request endpoints（員工補打卡申請）
 
 import calendar as cal_module
 from datetime import date, datetime
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,7 +41,7 @@ class PunchCorrectionCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_required_times(self):
-        if self.attendance_date and self.attendance_date > date.today():  # noqa: DTZ011
+        if self.attendance_date and self.attendance_date > today_taipei():  
             raise ValueError("補打卡日期不得為未來日期")
         if self.correction_type == "punch_in" and not self.requested_punch_in:
             raise ValueError("補正類型為「補上班打卡」時，申請上班時間為必填")

@@ -28,6 +28,7 @@ import logging
 import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from utils.taipei_time import now_taipei_naive
 from time import time as _time
 from typing import Optional
 
@@ -263,8 +264,7 @@ def _hash_code(plain: str) -> str:
 
 
 def _now() -> datetime:
-    return datetime.now()  # noqa: DTZ005
-
+    return now_taipei_naive()
 
 def _build_user_payload(user: User) -> dict:
     return {

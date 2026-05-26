@@ -16,6 +16,7 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 import json as _json
@@ -69,7 +70,7 @@ def _try_acquire_db_lock() -> bool:
                 .with_for_update()
                 .first()
             )
-            now = datetime.now()  # noqa: DTZ005
+            now = now_taipei_naive()
             if state is None:
                 # provider_name 唯一索引：兩 worker 同時 INSERT 第二筆會 IntegrityError。
                 # 接住後重查；通常重查會看到對方已取得鎖（sync_in_progress=True）。
@@ -460,12 +461,12 @@ def _update_sync_state(
                 state.last_sync_counts = json.dumps(counts, ensure_ascii=False)
             if status == "running":
                 state.sync_in_progress = True
-                state.last_started_at = datetime.now()  # noqa: DTZ005
+                state.last_started_at = now_taipei_naive()
             else:
                 state.sync_in_progress = False
                 if status == "success":
-                    state.last_synced_at = datetime.now()  # noqa: DTZ005
-            state.updated_at = datetime.now()  # noqa: DTZ005
+                    state.last_synced_at = now_taipei_naive()
+            state.updated_at = now_taipei_naive()
     except Exception as e:
         logger.error("[MOE 爬蟲] 更新同步狀態失敗：%s", e)
 
@@ -560,7 +561,7 @@ def _upsert_one_school(
     if pre_public in ("無", ""):
         pre_public = None
 
-    now = datetime.now()  # noqa: DTZ005
+    now = now_taipei_naive()
     school_id = hashlib.md5(f"{city}{school_name}".encode("utf-8")).hexdigest()[:8]
     source_key = f"moe_ece:{school_id}"
 
@@ -657,7 +658,7 @@ def _sync_kiang_supplementary(http_sess: requests.Session, db_session) -> int:
         school_by_name[key] = s
 
     updated = 0
-    now = datetime.now()  # noqa: DTZ005
+    now = now_taipei_naive()
     for props in kaohsiung_features:
         title = (props.get("title") or "").strip()
         if not title:

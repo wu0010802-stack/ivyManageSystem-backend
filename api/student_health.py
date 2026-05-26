@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -310,7 +311,7 @@ async def update_allergy(
             data = payload.model_dump(exclude_unset=True)
             for k, v in data.items():
                 setattr(a, k, v)
-            a.updated_at = datetime.now()  # noqa: DTZ005
+            a.updated_at = now_taipei_naive()
             session.flush()
             session.refresh(a)
 
@@ -511,7 +512,7 @@ async def administer_medication(
             lg, o, student_id = _get_log_with_access(session, log_id, current_user)
             _reject_if_finalized(lg)
 
-            lg.administered_at = datetime.now()  # noqa: DTZ005
+            lg.administered_at = now_taipei_naive()
             lg.administered_by = current_user.get("user_id")
             if payload.note is not None:
                 lg.note = payload.note
@@ -650,7 +651,7 @@ async def today_medication_summary(
 ) -> dict:
     """回傳呼叫者班級範圍內，今日所有用藥任務（pending + done）。"""
     try:
-        today = date.today()  # noqa: DTZ011
+        today = today_taipei()
         with session_scope() as session:
             scope = student_ids_in_scope(session, current_user)
             query = session.query(StudentMedicationOrder).filter(

@@ -5,6 +5,7 @@
 import logging
 import pandas as pd
 from datetime import datetime, time, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Dict, List, Tuple
 from dataclasses import dataclass
 
@@ -180,7 +181,7 @@ class AttendanceParser:
 
         # 加上寬限時間
         grace_time = (
-            datetime.combine(datetime.today(), work_start)  # noqa: DTZ002
+            datetime.combine(now_taipei_naive(), work_start)
             + timedelta(minutes=self.LATE_GRACE_MINUTES)
         ).time()
 
@@ -194,12 +195,12 @@ class AttendanceParser:
         _min_date = (
             employee_df["punch_date"].min()
             if not employee_df.empty
-            else datetime.today().date()  # noqa: DTZ002
+            else now_taipei_naive().date()
         )
         _max_date = (
             employee_df["punch_date"].max()
             if not employee_df.empty
-            else datetime.today().date()  # noqa: DTZ002
+            else now_taipei_naive().date()
         )
 
         # 建立這段期間所有的工作日，排除被吸收的日期（跨夜班次日不獨立計算）

@@ -28,7 +28,7 @@ _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 def _now_taipei_naive() -> datetime:
     """才藝相關記錄一律以台灣時間為準（與 today_taipei / payment_date 對齊）。
 
-    Why: 若 server 部署在 UTC，預設 datetime.now()  # noqa: DTZ005 會寫入 UTC 時刻，而 payment_date /
+    Why: 若 server 部署在 UTC，預設 now_taipei_naive()會寫入 UTC 時刻，而 payment_date /
     冪等 key 視窗 / 候補 deadline 等都已改用 TAIPEI_TZ，這會讓 created_at 與其他時間
     欄位錯開 8 小時。此 helper 產生 timezone-aware 的台灣當下再 strip tzinfo，
     保持欄位型別不變（DateTime 為 naive）。

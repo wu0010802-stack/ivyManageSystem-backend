@@ -3,6 +3,7 @@
 """
 
 from datetime import date, datetime
+from utils.taipei_time import today_taipei
 from typing import Optional, Set
 
 
@@ -182,7 +183,7 @@ def _build_expected_workdays(
     import calendar as _cal
 
     if today is None:
-        today = date.today()  # noqa: DTZ011
+        today = today_taipei()
 
     # 預先解析 hire/resign 日期，避免逐日比較時重複轉型
     hire_d = _to_date(hire_date_raw)

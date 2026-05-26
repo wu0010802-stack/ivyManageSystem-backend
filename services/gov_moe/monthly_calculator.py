@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from utils.taipei_time import now_taipei_naive
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -184,8 +185,7 @@ def build_snapshot_rows(
     )
 
     wd = working_days_in_month(session, year, month)
-    now = datetime.now()  # noqa: DTZ005
-
+    now = now_taipei_naive()
     groups: dict[tuple[int | None, str], _StudentAggregate] = defaultdict(
         _StudentAggregate
     )

@@ -10,6 +10,7 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -67,7 +68,7 @@ def create_binding_code(
             raise HTTPException(status_code=404, detail="找不到監護人")
 
         # S4 per-guardian active cap：避免單一 guardian 累積過多 unused active code。
-        now = datetime.now()  # noqa: DTZ005
+        now = now_taipei_naive()
         active_count = (
             session.query(GuardianBindingCode)
             .filter(
@@ -88,7 +89,7 @@ def create_binding_code(
 
         plain_code = _generate_plain_code()
         code_hash = _hash_code(plain_code)
-        expires_at = datetime.now() + timedelta(hours=_CODE_TTL_HOURS)  # noqa: DTZ005
+        expires_at = now_taipei_naive() + timedelta(hours=_CODE_TTL_HOURS)
 
         binding = GuardianBindingCode(
             guardian_id=guardian.id,
@@ -108,7 +109,7 @@ def create_binding_code(
                 entity_id=str(guardian.id),
                 summary="簽發家長綁定碼",
                 ip_address=ip,
-                created_at=datetime.now()  # noqa: DTZ005,
+                created_at=now_taipei_naive(),
             )
         )
         session.commit()

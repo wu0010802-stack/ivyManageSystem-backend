@@ -8,6 +8,7 @@
 import logging
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -354,8 +355,7 @@ def refund_fee_record(
             record.status = "partial"
         else:
             record.status = "paid"
-        record.updated_at = datetime.now()  # noqa: DTZ005
-
+        record.updated_at = now_taipei_naive()
         new_paid = record.amount_paid
         new_status = record.status
         student_name_snapshot = record.student_name

@@ -5,6 +5,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy.orm import Session
 
@@ -47,7 +48,7 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
     balance = get_annual_leave_balance(session, emp.id, record.resign_date)
     payout_amount = round_half_up(balance["remaining_days"] * daily_wage, 2)
 
-    now = datetime.now()  # noqa: DTZ005
+    now = now_taipei_naive()
     record.leave_balance_snapshot = {
         "snapshot_date": balance["snapshot_date"].isoformat(),
         "total_hours": balance["total_hours"],
@@ -93,7 +94,7 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
         return {
             "step": "prefill_leave_payout",
             "status": "skipped",
-            "completed_at": datetime.now(),  # noqa: DTZ005
+            "completed_at": now_taipei_naive(),
             "payload": {"reason": "no_snapshot"},
             "error": None,
         }
@@ -111,7 +112,7 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
         return {
             "step": "prefill_leave_payout",
             "status": "skipped",
-            "completed_at": datetime.now(),  # noqa: DTZ005
+            "completed_at": now_taipei_naive(),
             "payload": {"reason": "salary_record_not_yet_created"},
             "error": None,
         }
@@ -154,7 +155,7 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
     return {
         "step": "prefill_leave_payout",
         "status": "completed",
-        "completed_at": datetime.now(),  # noqa: DTZ005
+        "completed_at": now_taipei_naive(),
         "payload": {
             "salary_record_id": target.id,
             "amount": snap["payout_amount"],

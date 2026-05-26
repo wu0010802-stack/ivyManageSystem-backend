@@ -27,6 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from sqlalchemy import desc
@@ -200,8 +201,7 @@ class _SalaryJobRegistry:
             )
             if r:
                 r.status = "running"
-                r.started_at = datetime.now()  # noqa: DTZ005
-
+                r.started_at = now_taipei_naive()
     def update_progress(self, job_id: str, done: int, total: int, current: str) -> None:
         with session_scope() as s:
             r = (
@@ -225,7 +225,7 @@ class _SalaryJobRegistry:
                 r.results_json = json.dumps(results, default=str, ensure_ascii=False)
                 r.errors_json = json.dumps(errors, default=str, ensure_ascii=False)
                 r.status = "completed"
-                r.finished_at = datetime.now()  # noqa: DTZ005
+                r.finished_at = now_taipei_naive()
                 r.done = r.total or r.done
 
     def fail(self, job_id: str, message: str) -> None:
@@ -238,10 +238,9 @@ class _SalaryJobRegistry:
             if r:
                 r.error_message = message
                 r.status = "failed"
-                r.finished_at = datetime.now()  # noqa: DTZ005
-
+                r.finished_at = now_taipei_naive()
     def _evict_expired(self, session) -> None:
-        cutoff = datetime.now() - timedelta(seconds=_JOB_TTL_SEC)  # noqa: DTZ005
+        cutoff = now_taipei_naive() - timedelta(seconds=_JOB_TTL_SEC)
         session.query(SalaryCalcJobRecord).filter(
             SalaryCalcJobRecord.finished_at.isnot(None),
             SalaryCalcJobRecord.finished_at < cutoff,

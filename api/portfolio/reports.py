@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import today_taipei
 from pathlib import Path
 from typing import Optional
 
@@ -263,7 +265,7 @@ def _collect_report_data(
             "period_end": report.period_end,
             "report_id": report.id,
             "teacher_narrative": report.teacher_narrative,
-            "generated_on": date.today(),  # noqa: DTZ011
+            "generated_on": today_taipei(),  
         },
         "attendance_summary": summarize_attendance(att_records),
         "highlight_observations": pick_highlight_observations(obs_rows, max_count=5),
@@ -353,7 +355,7 @@ def _generate_pdf_job(report_id: int) -> None:
 
             report.status = REPORT_STATUS_READY
             report.file_size = len(pdf_bytes)
-            report.generated_at = datetime.utcnow()  # noqa: DTZ003
+            report.generated_at = now_taipei_naive()
     except Exception as e:
         logger.exception("PDF generation failed for report %d", report_id)
         try:
@@ -669,7 +671,7 @@ async def send_growth_report_to_line(
                 raise HTTPException(status_code=409, detail="報告尚未準備好")
             # 5 分鐘冪等：防前端重複提交或 admin 連點造成家長收重複 LINE
             if r.line_sent_at and (
-                datetime.utcnow() - r.line_sent_at < timedelta(minutes=5)  # noqa: DTZ003
+                now_taipei_naive() - r.line_sent_at < timedelta(minutes=5)
             ):
                 raise HTTPException(
                     status_code=409,
@@ -698,7 +700,7 @@ async def send_growth_report_to_line(
 
             # Pre-claim：搶占 5 分鐘窗口；推送失敗會在 Phase 3 回滾
             previous_sent_at = r.line_sent_at
-            r.line_sent_at = datetime.utcnow()  # noqa: DTZ003
+            r.line_sent_at = now_taipei_naive()
             claimed_sent_at = r.line_sent_at
             period_label = r.period_label
             report_pk = r.id

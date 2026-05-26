@@ -136,8 +136,8 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
             # 1. 若該 LINE userId 已綁定 User，寫入 line_follow_confirmed_at
             # 2. 仍回覆 User ID 給沒綁的使用者（向下相容既有教師流程）
             if _line_service and source_user_id:
-                from datetime import datetime as _dt
                 from models.database import User as _User
+                from utils.taipei_time import now_taipei_naive as _now_taipei_naive
 
                 session = get_session()
                 try:
@@ -147,7 +147,7 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
                         .first()
                     )
                     if user is not None:
-                        user.line_follow_confirmed_at = _dt.now()  # noqa: DTZ005
+                        user.line_follow_confirmed_at = _now_taipei_naive()
                         session.commit()
                 except Exception:
                     logger.warning(

@@ -16,7 +16,7 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 def _now_taipei_naive() -> datetime:
     """候補狀態機與 confirm_deadline 用的「當下」。
 
-    Why: 原本多處 datetime.now()  # noqa: DTZ005 在 UTC 部署下會與家長端顯示的台灣時間差 8h，
+    Why: 原本多處 now_taipei_naive()在 UTC 部署下會與家長端顯示的台灣時間差 8h，
     造成 LINE 通知 deadline 錯亂、逾期判定也差一個 timezone。RegistrationCourse
     相關欄位都是 naive DateTime，統一用台灣時間的 naive 表示。
     """

@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, date as date_cls
+from utils.taipei_time import now_taipei_naive
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends
@@ -95,7 +96,7 @@ def get_class_hub_today(
     若教師沒有指派班級，回傳 classroom_id=0 的空殼結構（前端顯示空狀態）。
     """
     today = date_cls.today()  # noqa: DTZ011
-    now = datetime.now()  # noqa: DTZ005
+    now = now_taipei_naive()
     employee_id = current_user.get("employee_id")
 
     # 權限名稱集合；["*"] 表示管理員擁有全部權限

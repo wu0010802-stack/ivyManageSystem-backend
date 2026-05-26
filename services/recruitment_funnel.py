@@ -114,6 +114,7 @@ _REVERT_BLOCKERS: list[tuple[str, str, str, str]] = [
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 
 @dataclass
@@ -167,7 +168,7 @@ def _write_event_log(
         actor_user_id=actor_user_id,
         reason=reason,
         metadata_json=metadata,
-        created_at=datetime.now()  # noqa: DTZ005,
+        created_at=now_taipei_naive(),
     )
     session.add(log)
     session.flush()

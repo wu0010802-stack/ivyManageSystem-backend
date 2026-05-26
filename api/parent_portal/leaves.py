@@ -16,6 +16,7 @@
 import logging
 import os
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -83,7 +84,7 @@ class CreateLeaveRequest(BaseModel):
 
 
 def _validate_date_range(req: CreateLeaveRequest) -> None:
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     if req.end_date < req.start_date:
         raise HTTPException(status_code=400, detail="end_date 不可早於 start_date")
     if req.start_date < today - timedelta(days=_PAST_LIMIT_DAYS):
@@ -209,7 +210,7 @@ def create_leave(
         end_date=payload.end_date,
         reason=(payload.reason or "").strip() or None,
         status="approved",
-        reviewed_at=datetime.now(),  # noqa: DTZ005
+        reviewed_at=now_taipei_naive(),
         reviewed_by=None,
         client_request_id=payload.client_request_id,
     )
@@ -332,7 +333,7 @@ async def upload_leave_attachment(
     )
     if item is None or item.student_id not in owned_student_ids:
         raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     if not (item.status == "approved" and item.start_date > today):
         raise HTTPException(
             status_code=400,
@@ -392,7 +393,7 @@ def delete_leave_attachment(
     )
     if item is None or item.student_id not in owned_student_ids:
         raise HTTPException(status_code=403, detail="查無此資料或無權存取")
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     if not (item.status == "approved" and item.start_date > today):
         raise HTTPException(
             status_code=400,
@@ -411,7 +412,7 @@ def delete_leave_attachment(
     )
     if not att:
         raise HTTPException(status_code=404, detail="附件不存在")
-    att.deleted_at = datetime.now()  # noqa: DTZ005
+    att.deleted_at = now_taipei_naive()
     session.flush()
 
     request.state.audit_entity_id = str(item.id)
@@ -430,7 +431,7 @@ def cancel_leave(
 ):
     """僅 status='approved' 且 start_date > today 可取消，並反向清除 attendance。"""
     user_id = current_user["user_id"]
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     # F-004：「申請不存在」與「不屬於本家庭」collapse 為單一 403。
     _, owned_student_ids = _get_parent_student_ids(session, user_id)
     item = (
@@ -446,7 +447,7 @@ def cancel_leave(
         raise HTTPException(status_code=400, detail="請假期間已開始，無法取消")
     affected = revert_attendance_for_leave(session, item)
     item.status = "cancelled"
-    item.updated_at = datetime.now()  # noqa: DTZ005
+    item.updated_at = now_taipei_naive()
     session.flush()
     request.state.audit_entity_id = str(item.id)
     request.state.audit_summary = (

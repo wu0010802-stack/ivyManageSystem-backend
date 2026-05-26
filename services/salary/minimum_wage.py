@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import Tuple
 
 from fastapi import HTTPException
@@ -27,7 +28,7 @@ def validate_minimum_wage(
 
     底薪/時薪為 0 視為尚未設定，不檢查；非 0 且低於法定值時拋 400。
     """
-    monthly, hourly = get_minimum_wage(date.today())  # noqa: DTZ011
+    monthly, hourly = get_minimum_wage(today_taipei())  
     if employee_type == "regular":
         if base_salary and base_salary < monthly:
             raise HTTPException(

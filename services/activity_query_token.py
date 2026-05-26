@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import secrets
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from utils.auth import JWT_SECRET_KEY
 
@@ -52,7 +53,7 @@ def is_query_token_expired(issued_at) -> bool:
     if issued_at is None:
         return True
     ttl = timedelta(days=_query_token_ttl_days())
-    return datetime.now() - issued_at > ttl  # noqa: DTZ005
+    return now_taipei_naive() - issued_at > ttl
 
 
 def _generate_query_token() -> str:

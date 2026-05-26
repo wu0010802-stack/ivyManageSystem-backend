@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Any
 
 from sqlalchemy import func
@@ -150,7 +151,7 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
 
     return {
         "registration_id": reg_id,
-        "computed_at": datetime.utcnow().isoformat(),  # noqa: DTZ003
+        "computed_at": now_taipei_naive().isoformat(),
         "total_suggested_amount": total_suggested,
         "total_amount_due": total_amount_due,
         "items": items,

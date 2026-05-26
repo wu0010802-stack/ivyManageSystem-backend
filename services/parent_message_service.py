@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_
@@ -161,7 +162,7 @@ def append_message(
         raise
 
     # 更新 thread.last_message_at
-    thread.last_message_at = msg.created_at or datetime.now()  # noqa: DTZ005
+    thread.last_message_at = msg.created_at or now_taipei_naive()
     return msg, False
 
 
@@ -171,15 +172,15 @@ def can_recall(msg: ParentMessage, *, user_id: int) -> bool:
         return False
     if msg.deleted_at is not None:
         return False
-    created = msg.created_at or datetime.now()  # noqa: DTZ005
-    return datetime.now() - created <= RECALL_WINDOW  # noqa: DTZ005
+    created = msg.created_at or now_taipei_naive()
+    return now_taipei_naive() - created <= RECALL_WINDOW
 
 
 def mark_read(
     session, *, thread: ParentMessageThread, role: str, when: datetime | None = None
 ) -> None:
     """更新 thread.parent_last_read_at / teacher_last_read_at。"""
-    when = when or datetime.now()  # noqa: DTZ005
+    when = when or now_taipei_naive()
     if role == "parent":
         thread.parent_last_read_at = when
     elif role == "teacher":
