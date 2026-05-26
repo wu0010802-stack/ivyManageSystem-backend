@@ -30,6 +30,12 @@ class OvertimeRecord(Base):
     comp_leave_granted = Column(Boolean, default=False, nullable=False, comment="補休配額是否已發放（防止重複發放）")
 
     is_approved = Column(Boolean, nullable=True, default=None, comment="是否核准 (None=待審核, True=核准, False=駁回)")
+    status = Column(
+        String(20),
+        nullable=False,
+        server_default="pending",
+        comment="審核狀態：pending / approved / rejected（P1 dual-write SoT）",
+    )
     approved_by = Column(String(50), comment="核准人")
     reason = Column(Text, comment="加班原因")
 
@@ -38,18 +44,17 @@ class OvertimeRecord(Base):
 
     @property
     def approval_status(self) -> str:
-        """語意化審核狀態，取代直接比較 nullable boolean 的反模式。
+        """語意化審核狀態。P1 起內部走新 status column；既有 caller 不必改動。
         回傳值：'pending' | 'approved' | 'rejected'"""
-        if self.is_approved is True:
-            return 'approved'
-        if self.is_approved is False:
-            return 'rejected'
-        return 'pending'
+        return self.status
 
     __table_args__ = (
         Index('ix_overtime_emp_date', 'employee_id', 'overtime_date'),
         Index('ix_overtime_emp_approved', 'employee_id', 'is_approved'),
         Index('ix_overtime_approved_date', 'is_approved', 'overtime_date'),
+        # P1: new status-prefixed indexes (mirror the is_approved ones).
+        Index('ix_overtime_emp_status', 'employee_id', 'status'),
+        Index('ix_overtime_status_date', 'status', 'overtime_date'),
     )
 
     employee = relationship("Employee", backref="overtimes")
