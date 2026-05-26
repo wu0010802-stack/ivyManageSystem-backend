@@ -78,11 +78,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Alembic upgrade (for module-level engine tests)
+        # 部分 test 在 module top 直接 `_engine = get_engine()` 連 CI 的 PG service
+        # 並 inspect 真實 schema（例 test_alembic_audrsk01）。CI 的 PG service container
+        # 起來時是空 DB，需先 upgrade 到 head 才有表可查。
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
+          ENV: development
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+        run: alembic upgrade heads
+
       - name: Run tests with coverage
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
           ENV: development
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+          # spike_rls conftest 預設用 `yilunwu@localhost`（本機 dev 慣例），CI 沒此 superuser
+          # → 改指向 service container 的 test:test。fixture 會用此連線 CREATE ROLE
+          # rls_spike_parent_login / rls_spike_admin_login（spike 自己的隔離角色，不是 ivy_parent_login）。
+          RLS_SPIKE_ADMIN_URL: postgresql://test:test@localhost:5432/ivymanagement_test
         # T9: 加 coverage gate（pyproject.toml [tool.coverage.run] 已設定 source）。
         # 起步門檻 60%：給既有覆蓋率不至於立即 fail，未來逐步提升。
         # --cov-fail-under 用 ratchet 風格：每次提升只能升不能降。
