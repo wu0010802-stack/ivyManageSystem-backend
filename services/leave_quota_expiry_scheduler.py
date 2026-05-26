@@ -37,6 +37,9 @@ async def run_leave_quota_expiry_scheduler(stop_event: asyncio.Event) -> None:
     from services.leave_quota_expiry.annual_cutover import (
         cutover_annual_leave_anniversaries,
     )
+    from services.leave_quota_expiry.comp_grant_reminder import (
+        remind_upcoming_comp_grants,
+    )
 
     check_interval = get_settings().scheduler.leave_quota_expiry_check_interval
     logger.info("leave quota expiry scheduler 啟動 (interval=%ss)", check_interval)
@@ -58,10 +61,14 @@ async def run_leave_quota_expiry_scheduler(stop_event: asyncio.Event) -> None:
                             cutover_summary = cutover_annual_leave_anniversaries(
                                 today, session
                             )
+                            reminder_summary = remind_upcoming_comp_grants(
+                                today, session
+                            )
                             logger.info(
-                                "leave quota expiry tick: %s | %s",
+                                "leave quota expiry tick: %s | %s | %s",
                                 comp_summary,
                                 cutover_summary,
+                                reminder_summary,
                             )
                             last_run_date = today
         except Exception:

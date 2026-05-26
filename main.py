@@ -105,6 +105,9 @@ from api.appraisal import appraisal_router
 from api.year_end import year_end_router
 from api.calendar_admin import router as calendar_admin_router
 from api.offboarding import router as offboarding_router
+from services.leave_quota_expiry.comp_grant_reminder import (
+    init_comp_grant_reminder_line_service,
+)
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -729,6 +732,7 @@ init_dismissal_line_service(line_service)
 init_portal_notify_services(line_service)
 init_growth_reports_line_service(line_service)
 init_webhook_service(line_service)
+init_comp_grant_reminder_line_service(line_service)
 init_gov_report_services(insurance_service)
 init_bonus_preview_services(salary_engine)
 init_parent_line_service(line_login_service)
