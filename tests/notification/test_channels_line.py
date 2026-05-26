@@ -20,13 +20,18 @@ def _evt(event_type, **kwargs):
     )
 
 
+UNREGISTERED_EVENT = "dismissal.created"
+# dismissal.created Section 2 (group_id mode) 才接管；本 Phase 4 Section 1 後
+# 仍走 fallback push_text。用此 event 驗 LineAdapter fallback path。
+
+
 def test_line_adapter_fallback_push_text_for_unmapped_event_type():
-    """Phase 1：LINE_HANDLERS 為空（全部走 fallback push_text_to_user）。"""
+    """Phase 4 Section 1 後 LINE_HANDLERS 覆蓋 22 個 event；剩 dismissal.created
+    仍未註冊（hybrid path），其發送會走 fallback push_text_to_user。"""
     fake_ls = MagicMock()
     adapter = LineAdapter(fake_ls)
-    # 用 str recipient 模擬 Phase 2 resolve 後的狀態
     adapter.send(
-        _evt("leave.approved", recipient_user_id="Uxxxxxxxxxx"),
+        _evt(UNREGISTERED_EVENT, recipient_user_id="Uxxxxxxxxxx"),
         Rendered(title="標題", body="內文", deep_link="/x"),
         log_id=1,
     )
@@ -38,14 +43,16 @@ def test_line_adapter_fallback_push_text_for_unmapped_event_type():
 
 
 def test_line_adapter_raises_when_recipient_is_int():
-    """LineAdapter 收到非 str recipient_user_id 應 raise ValueError。
-    Phase 2: _fan_out 已 pre-resolve User.id → line_user_id 後才呼叫；任何傳 int 進來
-    都是調用方錯誤，應 fail-fast 而非 silently skip。"""
+    """LineAdapter 收到非 str recipient_user_id 應 raise ValueError（走 fallback path）。
+
+    用未註冊 event_type（dismissal.created）觸發 fallback 才會撞到 isinstance 檢查；
+    註冊 event 走 handler 不會 reach 該 check。
+    """
     fake_ls = MagicMock()
     adapter = LineAdapter(fake_ls)
     with pytest.raises(ValueError, match="_resolve_line_user_id"):
         adapter.send(
-            _evt("leave.approved", recipient_user_id=42),
+            _evt(UNREGISTERED_EVENT, recipient_user_id=42),
             Rendered(title="t", body="b", deep_link=None),
             log_id=1,
         )
@@ -53,9 +60,13 @@ def test_line_adapter_raises_when_recipient_is_int():
 
 
 def test_line_adapter_calls_handler_when_registered():
-    """若 LINE_HANDLERS 有對映，應 dispatch 給 handler。"""
+    """若 LINE_HANDLERS 有對映，應 dispatch 給 handler。
+
+    用真 leave.approved（Section 1 已註冊）驗證；mock 蓋過真 handler 觀察 call。
+    """
     fake_ls = MagicMock()
     handler_called = []
+    orig = LINE_HANDLERS["leave.approved"]
 
     def my_handler(ls, evt, rendered):
         handler_called.append((ls, evt.event_type, rendered.title))
@@ -72,9 +83,57 @@ def test_line_adapter_calls_handler_when_registered():
         assert handler_called[0] == (fake_ls, "leave.approved", "t")
         fake_ls.push_text_to_user.assert_not_called()
     finally:
-        del LINE_HANDLERS["leave.approved"]
+        LINE_HANDLERS["leave.approved"] = orig
 
 
-def test_line_handlers_is_empty_at_phase_1():
-    """Phase 1 不註冊任何 handler，全部走 fallback。Phase 2 PR-A 開始填入。"""
-    assert LINE_HANDLERS == {}
+def test_line_handlers_covers_22_events():
+    """Phase 4 Section 1 後 LINE_HANDLERS 覆蓋 22 個 event_type（23 個減 dismissal.created）。
+    dismissal.created 留給 Section 2 group_id mode 處理；其他 event 全部走專屬
+    handler 取代 fallback push_text，恢復 Flex/quick-reply 互動 UI。"""
+    assert UNREGISTERED_EVENT not in LINE_HANDLERS
+    # 員工域 11 + 家長域 7 + 才藝家長 3 + Growth Report 1 = 22
+    assert len(LINE_HANDLERS) == 22
+
+
+def test_parent_message_handler_uses_quick_reply_when_thread_id_present():
+    """parent.message_received 帶 thread_id → 推送含 quick-reply postback。"""
+    fake_ls = MagicMock()
+    adapter = LineAdapter(fake_ls)
+    adapter.send(
+        _evt(
+            "parent.message_received",
+            recipient_user_id="Uxxxxx",
+            context={
+                "teacher_name": "王老師",
+                "student_name": "小明",
+                "body_preview": "今天有點不舒服",
+                "thread_id": 42,
+            },
+        ),
+        Rendered(title="t", body="b", deep_link=None),
+        log_id=1,
+    )
+    fake_ls._push_to_user_with_quick_reply.assert_called_once()
+    args = fake_ls._push_to_user_with_quick_reply.call_args[0]
+    assert args[0] == "Uxxxxx"
+    assert "王老師" in args[1]
+    quick_reply = args[2]
+    assert quick_reply["items"][0]["action"]["data"] == "thread_id=42"
+    fake_ls._push_to_user.assert_not_called()
+
+
+def test_parent_message_handler_no_quick_reply_when_thread_id_absent():
+    """parent.message_received 無 thread_id → 走純 push_to_user 無 quick-reply。"""
+    fake_ls = MagicMock()
+    adapter = LineAdapter(fake_ls)
+    adapter.send(
+        _evt(
+            "parent.message_received",
+            recipient_user_id="Uxxxxx",
+            context={"teacher_name": "王老師", "body_preview": "hello"},
+        ),
+        Rendered(title="t", body="b", deep_link=None),
+        log_id=1,
+    )
+    fake_ls._push_to_user.assert_called_once()
+    fake_ls._push_to_user_with_quick_reply.assert_not_called()
