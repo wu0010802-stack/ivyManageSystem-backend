@@ -909,10 +909,15 @@ async def delete_student(
 
     # WS 廣播在 session 關閉後執行，避免長時間佔用連線
     if dismissal_broadcasts:
-        from api.dismissal_ws import manager as dismissal_manager
+        from utils.broadcast import get_broadcast
+        from api.dismissal_ws import _classroom_channel, _ADMIN_CHANNEL
 
+        backend = get_broadcast()
         for item in dismissal_broadcasts:
-            await dismissal_manager.broadcast(item["classroom_id"], item["event"])
+            await backend.publish_many(
+                [_classroom_channel(item["classroom_id"]), _ADMIN_CHANNEL],
+                item["event"],
+            )
 
     return {"message": "學生已刪除", "id": student_id}
 
@@ -996,11 +1001,14 @@ async def graduate_student(
         session.close()
 
     if dismissal_broadcasts:
-        from api.dismissal_ws import manager as dismissal_manager
+        from utils.broadcast import get_broadcast
+        from api.dismissal_ws import _classroom_channel, _ADMIN_CHANNEL
 
+        backend = get_broadcast()
         for broadcast_item in dismissal_broadcasts:
-            await dismissal_manager.broadcast(
-                broadcast_item["classroom_id"], broadcast_item["event"]
+            await backend.publish_many(
+                [_classroom_channel(broadcast_item["classroom_id"]), _ADMIN_CHANNEL],
+                broadcast_item["event"],
             )
 
     return {"message": f"已設定為「{item.status}」", "id": student_id}
@@ -1259,11 +1267,14 @@ async def transition_student_lifecycle(
         session.close()
 
     if dismissal_broadcasts:
-        from api.dismissal_ws import manager as dismissal_manager
+        from utils.broadcast import get_broadcast
+        from api.dismissal_ws import _classroom_channel, _ADMIN_CHANNEL
 
+        backend = get_broadcast()
         for broadcast_item in dismissal_broadcasts:
-            await dismissal_manager.broadcast(
-                broadcast_item["classroom_id"], broadcast_item["event"]
+            await backend.publish_many(
+                [_classroom_channel(broadcast_item["classroom_id"]), _ADMIN_CHANNEL],
+                broadcast_item["event"],
             )
 
     return response
