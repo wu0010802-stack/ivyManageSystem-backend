@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -498,12 +499,12 @@ def _query_stats(
     rolling_30d = _aggregate_snapshot(
         session,
         *base_filters,
-        RecruitmentVisit.created_at >= datetime.now() - timedelta(days=30),  # noqa: DTZ005
+        RecruitmentVisit.created_at >= now_taipei_naive() - timedelta(days=30),
     )
     rolling_90d = _aggregate_snapshot(
         session,
         *base_filters,
-        RecruitmentVisit.created_at >= datetime.now() - timedelta(days=90),  # noqa: DTZ005
+        RecruitmentVisit.created_at >= now_taipei_naive() - timedelta(days=90),
     )
     current_month_snapshot = (
         _metric_snapshot(
@@ -527,7 +528,7 @@ def _query_stats(
         resolved_reference_month, previous_month, monthly_map
     )
 
-    overdue_cutoff = datetime.now() - timedelta(days=DEFAULT_OVERDUE_DAYS)  # noqa: DTZ005
+    overdue_cutoff = now_taipei_naive() - timedelta(days=DEFAULT_OVERDUE_DAYS)
     high_potential_backlog_count = (
         session.query(func.count(RecruitmentVisit.id))
         .filter(
@@ -542,7 +543,7 @@ def _query_stats(
         or 0
     )
     source_imbalance = _find_source_imbalance(
-        session, datetime.now() - timedelta(days=90), *base_filters  # noqa: DTZ005
+        session, now_taipei_naive() - timedelta(days=90), *base_filters
     )
 
     dominant_district_row = (
@@ -938,8 +939,8 @@ def get_no_deposit_analysis(
             q = q.filter(RecruitmentVisit.grade == grade)
         base_query = q
         effective_overdue_days = overdue_days or DEFAULT_OVERDUE_DAYS
-        overdue_cutoff = datetime.now() - timedelta(days=effective_overdue_days)  # noqa: DTZ005
-        cold_cutoff = datetime.now() - timedelta(days=COLD_LEAD_DAYS)  # noqa: DTZ005
+        overdue_cutoff = now_taipei_naive() - timedelta(days=effective_overdue_days)
+        cold_cutoff = now_taipei_naive() - timedelta(days=COLD_LEAD_DAYS)
         summary = {
             "high_potential_count": (
                 base_query.filter(

@@ -5,6 +5,7 @@ Portal - schedule and shift swap endpoints
 import calendar as cal_module
 import logging
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
@@ -498,7 +499,7 @@ def respond_swap_request(
         if swap.status != "pending":
             raise HTTPException(status_code=400, detail="此申請已不是待處理狀態")
 
-        swap.target_responded_at = datetime.now()  # noqa: DTZ005
+        swap.target_responded_at = now_taipei_naive()
         swap.target_remark = data.remark
 
         if data.action == "accept":
@@ -521,8 +522,7 @@ def respond_swap_request(
                 raise
 
             swap.status = "accepted"
-            swap.executed_at = datetime.now()  # noqa: DTZ005
-
+            swap.executed_at = now_taipei_naive()
             for emp_id, new_shift_type_id in [
                 (swap.requester_id, swap.target_shift_type_id),
                 (swap.target_id, swap.requester_shift_type_id),

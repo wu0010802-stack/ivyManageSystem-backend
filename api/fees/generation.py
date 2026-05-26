@@ -9,6 +9,7 @@ c2 後僅保留 POST /generate（原 /generate-from-templates 改名）：
 
 import logging
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
@@ -108,7 +109,7 @@ def generate_from_templates(
             existing_keys = {(s, tid, m) for s, tid, m in existing}
 
         period_str = f"{payload.school_year}-{payload.semester}"
-        now = datetime.now()  # noqa: DTZ005
+        now = now_taipei_naive()
         new_records: list = []
         created = 0
         skipped = 0

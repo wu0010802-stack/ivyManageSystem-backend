@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import bindparam, text
 
@@ -161,7 +162,7 @@ def _run_pii_retention_gc(session=None) -> None:
                         ensure_ascii=False,
                     ),
                     ip_address=None,
-                    created_at=datetime.now()  # noqa: DTZ005,
+                    created_at=now_taipei_naive(),
                 )
             )
 

@@ -21,6 +21,7 @@ import logging
 import os
 import re
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import (
@@ -423,7 +424,7 @@ def delete_medication_photo(
         raise HTTPException(status_code=404, detail="附件不存在")
     if att.deleted_at:
         return {"message": "附件已刪除"}
-    att.deleted_at = datetime.now()  # noqa: DTZ005
+    att.deleted_at = now_taipei_naive()
     session.flush()
 
     request.state.audit_entity_id = str(order_id)

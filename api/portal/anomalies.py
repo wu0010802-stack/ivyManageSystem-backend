@@ -4,6 +4,7 @@ Portal - anomaly endpoints
 
 import calendar as cal_module
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
@@ -127,8 +128,7 @@ def confirm_anomaly(
 
         att.confirmed_action = data.action
         att.confirmed_by = emp.name
-        att.confirmed_at = datetime.now()  # noqa: DTZ005
-
+        att.confirmed_at = now_taipei_naive()
         session.commit()
 
         msg = {

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -98,7 +99,7 @@ def apply_deductions(
     if not actions:
         return 0.0
 
-    now = datetime.now()  # noqa: DTZ005
+    now = now_taipei_naive()
     applied_total = 0.0
     remaining = max(0.0, available_bonus)
 

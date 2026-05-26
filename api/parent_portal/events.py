@@ -10,6 +10,7 @@
 import logging
 import os
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import (
@@ -216,7 +217,7 @@ def acknowledge_event(
         event_id=event_id,
         user_id=user_id,
         student_id=payload.student_id,
-        acknowledged_at=datetime.now(),  # noqa: DTZ005
+        acknowledged_at=now_taipei_naive(),
         signature_name=(payload.signature_name or "").strip() or None,
     )
     session.add(ack)
@@ -305,8 +306,7 @@ async def upload_ack_signature(
             .first()
         )
         if old and not old.deleted_at:
-            old.deleted_at = datetime.now()  # noqa: DTZ005
-
+            old.deleted_at = now_taipei_naive()
     storage = get_portfolio_storage()
     stored = storage.put_attachment(content, ext)
     # P1-9：sanitize 後再入庫，避免 download Content-Disposition 顯示
@@ -328,7 +328,7 @@ async def upload_ack_signature(
     session.refresh(att)
     ack.signature_attachment_id = att.id
     # 資安掃描 2026-05-07 P2：紀錄簽名上傳時間（重簽會更新此欄位）
-    ack.signature_uploaded_at = datetime.now()  # noqa: DTZ005
+    ack.signature_uploaded_at = now_taipei_naive()
     session.flush()
 
     request.state.audit_entity_id = str(ack.id)

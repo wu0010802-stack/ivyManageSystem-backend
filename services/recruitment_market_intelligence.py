@@ -6,6 +6,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Any, Iterable, Optional
 
 import requests
@@ -1021,7 +1022,7 @@ def search_nearby_kindergartens(
                     moe.google_rating = school.get("rating")
                     moe.google_rating_count = school.get("user_rating_count")
                     moe.google_maps_uri = school.get("google_maps_uri")
-                    moe.google_matched_at = datetime.now()  # noqa: DTZ005
+                    moe.google_matched_at = now_taipei_naive()
                     moe.match_confidence = score
                     session.flush()
                 except Exception:
@@ -1301,7 +1302,7 @@ def upsert_campus_setting(session, payload: dict[str, Any]) -> RecruitmentCampus
             setting.campus_lat = metadata["lat"]
             setting.campus_lng = metadata["lng"]
 
-    setting.updated_at = datetime.now()  # noqa: DTZ005
+    setting.updated_at = now_taipei_naive()
     session.flush()
     return setting
 
@@ -1556,12 +1557,11 @@ def _apply_metadata_to_geocode_cache(
     row.travel_minutes = metadata.get("travel_minutes")
     row.travel_distance_km = metadata.get("travel_distance_km")
     row.data_quality = metadata.get("data_quality") or "partial"
-    row.updated_at = datetime.now()  # noqa: DTZ005
-
+    row.updated_at = now_taipei_naive()
     if metadata.get("lat") is not None and metadata.get("lng") is not None:
         row.status = "resolved"
         row.error_message = None
-        row.resolved_at = datetime.now()  # noqa: DTZ005
+        row.resolved_at = now_taipei_naive()
     else:
         row.status = "failed"
         row.error_message = error_message
@@ -1733,9 +1733,8 @@ def sync_market_intelligence(session, *, hotspot_limit: int = 200) -> dict[str, 
             has_population_age=population_0_6 is not None,
         )
         row.source_notes = "density:ris; age:optional; travel:geocoding_cache"
-        row.synced_at = datetime.now()  # noqa: DTZ005
-        row.updated_at = datetime.now()  # noqa: DTZ005
-
+        row.synced_at = now_taipei_naive()
+        row.updated_at = now_taipei_naive()
     session.flush()
     return {
         "campus": campus,
@@ -1743,15 +1742,15 @@ def sync_market_intelligence(session, *, hotspot_limit: int = 200) -> dict[str, 
         "hotspots_synced": enriched_hotspots,
         "area_rows": session.query(RecruitmentAreaInsightCache).count(),
         "warning": sync_warning,
-        "synced_at": datetime.now().isoformat(),  # noqa: DTZ005
+        "synced_at": now_taipei_naive().isoformat(),
     }
 
 
 def _district_lead_metrics(
     session, dataset_scope: Optional[str] = None
 ) -> dict[str, dict[str, Any]]:
-    threshold_30 = datetime.now() - timedelta(days=30)  # noqa: DTZ005
-    threshold_90 = datetime.now() - timedelta(days=90)  # noqa: DTZ005
+    threshold_30 = now_taipei_naive() - timedelta(days=30)
+    threshold_90 = now_taipei_naive() - timedelta(days=90)
 
     metrics: dict[str, dict[str, Any]] = {}
     visits = _scoped_visit_query(session, dataset_scope).all()
@@ -1769,7 +1768,7 @@ def _district_lead_metrics(
                 "visit_90d": 0,
             },
         )
-        created_at = visit.created_at or datetime.now()  # noqa: DTZ005
+        created_at = visit.created_at or now_taipei_naive()
         if created_at >= threshold_30:
             bucket["lead_count_30d"] += 1
         if created_at >= threshold_90:

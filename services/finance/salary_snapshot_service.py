@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from sqlalchemy import inspect as sa_inspect
@@ -84,7 +85,7 @@ def _copy_record_to_snapshot(
         salary_year=record.salary_year,
         salary_month=record.salary_month,
         snapshot_type=snapshot_type,
-        captured_at=datetime.now(),  # noqa: DTZ005
+        captured_at=now_taipei_naive(),
         captured_by=captured_by,
         source_version=record.version or 1,
         snapshot_remark=snapshot_remark,

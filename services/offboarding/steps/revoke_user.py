@@ -6,6 +6,7 @@ resign_date > today：通知期保留 User active；當日 cron 自動轉
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy.orm import Session
 
@@ -18,8 +19,7 @@ logger = logging.getLogger(__name__)
 
 def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
     today = date.today()  # noqa: DTZ011
-    now = datetime.now()  # noqa: DTZ005
-
+    now = now_taipei_naive()
     if record.resign_date > today:
         return {
             "step": "revoke_user",

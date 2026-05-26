@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -358,7 +359,7 @@ def mark_read(
     ack = StudentContactBookAck(
         entry_id=entry.id,
         guardian_user_id=user_id,
-        read_at=datetime.now()  # noqa: DTZ005,
+        read_at=now_taipei_naive(),
     )
     session.add(ack)
     session.flush()
@@ -494,7 +495,7 @@ def delete_reply(
         raise HTTPException(status_code=403, detail="不可刪除他人回覆")
     if row.deleted_at:
         return {"message": "回覆已刪除"}
-    row.deleted_at = datetime.now()  # noqa: DTZ005
+    row.deleted_at = now_taipei_naive()
     mark_soft_delete(request, "contact_book_entry", str(reply_id))
     session.flush()
     request.state.audit_entity_id = str(entry.id)

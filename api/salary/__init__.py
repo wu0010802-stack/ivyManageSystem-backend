@@ -6,6 +6,7 @@ import io
 import logging
 import threading
 from datetime import date, datetime, time
+from utils.taipei_time import now_taipei_naive
 from zoneinfo import ZoneInfo
 
 _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
@@ -509,7 +510,7 @@ def finalize_salary_month(
                     ),
                 )
 
-        now = datetime.now()  # noqa: DTZ005
+        now = now_taipei_naive()
         operator = current_user.get("username") or current_user.get("name") or "管理員"
 
         # force 路徑：把被略過的清單與原因寫進每筆 record.remark，留稽核痕跡
@@ -654,7 +655,7 @@ def unfinalize_salary(
         )
         record.is_finalized = False
         audit_note = (
-            f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 封存解除"  # noqa: DTZ005
+            f"\n[{now_taipei_naive().strftime('%Y-%m-%d %H:%M')}] 封存解除"
             f"（操作者：{operator}）"
             f"\n原封存：{finalized_by_before} @ {finalized_at_before}"
             f"\n原因：{reason_cleaned}"

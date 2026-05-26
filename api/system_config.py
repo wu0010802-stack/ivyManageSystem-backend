@@ -8,6 +8,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -138,8 +139,8 @@ def upsert_config(
             obj.config_value = payload.config_value
             if payload.description is not None:
                 obj.description = payload.description
-            obj.updated_at = datetime.now()  # noqa: DTZ005
-        session.flush()
+            obj.updated_at = now_taipei_naive()
+            session.flush()
         result = _to_out(obj, config_key).model_dump()
         session.commit()
         return result

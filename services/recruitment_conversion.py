@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -175,7 +176,7 @@ def convert_recruitment_to_student(
         student_id=student.id,
         actor_user_id=recorded_by,
         metadata_json={"student_id_code": code, "classroom_id": classroom_id},
-        created_at=datetime.now()  # noqa: DTZ005,
+        created_at=now_taipei_naive(),
     )
     session.add(funnel_log)
     session.flush()

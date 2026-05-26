@@ -9,6 +9,7 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Any, Iterable, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -731,7 +732,7 @@ def _try_acquire_sync_lock() -> bool:
     """
     from sqlalchemy import or_
 
-    now = datetime.now()  # noqa: DTZ005
+    now = now_taipei_naive()
     stale_cutoff = now - timedelta(minutes=SYNC_LOCK_STALE_MINUTES)
     with session_scope() as lock_session:
         _get_or_create_sync_state(lock_session)  # 確保 row 存在
@@ -885,7 +886,7 @@ def _apply_record_to_synced_record(
         or _parse_month_from_value(record.visit_date)
         or _parse_month_from_value(record.created_at)
         or synced_record.month
-        or f"{datetime.now().year - 1911}.{datetime.now().month:02d}"  # noqa: DTZ005
+        or f"{now_taipei_naive().year - 1911}.{now_taipei_naive().month:02d}"
     )
     synced_record.visit_date = _merge_text(synced_record.visit_date, record.visit_date)
     synced_record.child_name = (
@@ -987,7 +988,7 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
             "last_sync_counts": status.get("last_sync_counts"),
         }
 
-    started_at = datetime.now()  # noqa: DTZ005
+    started_at = now_taipei_naive()
     try:
         state.sync_in_progress = True
         state.last_started_at = started_at
@@ -1040,7 +1041,7 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
                 existing = RecruitmentIvykidsRecord(
                     external_id=record.external_id,
                     month=record.month
-                    or f"{datetime.now().year - 1911}.{datetime.now().month:02d}",  # noqa: DTZ005
+                    or f"{now_taipei_naive().year - 1911}.{now_taipei_naive().month:02d}",
                     child_name=_normalize_text(record.child_name)
                     or f"外部資料-{record.external_id}",
                     has_deposit=False,
@@ -1059,7 +1060,7 @@ def _run_sync(session, max_pages: int, trigger: str) -> dict[str, Any]:
             if len(preview) < PREVIEW_LIMIT:
                 preview.append(_preview_item(record, action))
 
-        synced_at = datetime.now()  # noqa: DTZ005
+        synced_at = now_taipei_naive()
         counts = {
             "inserted": inserted,
             "updated": updated,

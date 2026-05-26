@@ -10,6 +10,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -169,7 +170,7 @@ def mark_read(
             AnnouncementParentRead(
                 announcement_id=announcement_id,
                 user_id=user_id,
-                read_at=datetime.now()  # noqa: DTZ005,
+                read_at=now_taipei_naive(),
             )
         )
         session.flush()

@@ -16,6 +16,7 @@
 import logging
 import os
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -209,7 +210,7 @@ def create_leave(
         end_date=payload.end_date,
         reason=(payload.reason or "").strip() or None,
         status="approved",
-        reviewed_at=datetime.now(),  # noqa: DTZ005
+        reviewed_at=now_taipei_naive(),
         reviewed_by=None,
         client_request_id=payload.client_request_id,
     )
@@ -411,7 +412,7 @@ def delete_leave_attachment(
     )
     if not att:
         raise HTTPException(status_code=404, detail="附件不存在")
-    att.deleted_at = datetime.now()  # noqa: DTZ005
+    att.deleted_at = now_taipei_naive()
     session.flush()
 
     request.state.audit_entity_id = str(item.id)
@@ -446,7 +447,7 @@ def cancel_leave(
         raise HTTPException(status_code=400, detail="請假期間已開始，無法取消")
     affected = revert_attendance_for_leave(session, item)
     item.status = "cancelled"
-    item.updated_at = datetime.now()  # noqa: DTZ005
+    item.updated_at = now_taipei_naive()
     session.flush()
     request.state.audit_entity_id = str(item.id)
     request.state.audit_summary = (

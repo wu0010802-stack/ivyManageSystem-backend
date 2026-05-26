@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Literal, TypedDict
 
 from sqlalchemy.orm import Session
@@ -96,7 +97,7 @@ def process_offboarding(
         employee_id=employee_id,
         resign_date=resign_date,
         resign_reason=resign_reason,
-        opened_at=datetime.now(),  # noqa: DTZ005
+        opened_at=now_taipei_naive(),
         opened_by_user_id=operator_user_id,
     )
     session.add(record)

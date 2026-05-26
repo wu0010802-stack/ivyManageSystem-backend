@@ -2,6 +2,7 @@
 
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import and_, case, func
 
@@ -291,7 +292,7 @@ class DashboardQueryService:
         計算 status approved/cancelled 且 created_at 在最近 N 天內的紀錄。
         班級 scope：非 admin 只看自己可存取的班級。
         """
-        since = datetime.now() - timedelta(days=days)  # noqa: DTZ005
+        since = now_taipei_naive() - timedelta(days=days)
         q = (
             session.query(StudentLeaveRequest.id)
             .join(Student, Student.id == StudentLeaveRequest.student_id)

@@ -8,6 +8,7 @@ import logging
 import re
 import uuid
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from pathlib import Path
 from typing import List, Optional
 
@@ -857,7 +858,7 @@ def substitute_respond(
 
         old_status = leave.substitute_status
         leave.substitute_status = "accepted" if data.action == "accept" else "rejected"
-        leave.substitute_responded_at = datetime.now()  # noqa: DTZ005
+        leave.substitute_responded_at = now_taipei_naive()
         leave.substitute_remark = data.remark
         session.commit()
 

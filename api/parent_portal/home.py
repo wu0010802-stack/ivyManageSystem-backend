@@ -13,6 +13,7 @@ Perf：home_summary 的 9 個內部 query 用 60s in-process TTLCache
 """
 
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends
 
@@ -78,7 +79,7 @@ def _count_recent_leave_reviews(session, user_id: int, days: int = 7) -> int:
     跨期殘留卡片（家長若 7 天前提的假今天才被批准，仍應該被提醒一次）。
     家長進入 leaves 列表後 UI 自然消化，不另設 seen 旗標。
     """
-    cutoff = datetime.now() - timedelta(days=days)  # noqa: DTZ005
+    cutoff = now_taipei_naive() - timedelta(days=days)
     return (
         session.query(StudentLeaveRequest.id)
         .filter(

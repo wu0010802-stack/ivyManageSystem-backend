@@ -4,6 +4,7 @@ Student assessments router — 學生學期評量記錄（管理端）
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -301,7 +302,7 @@ async def update_assessment(
                 if value is not None:
                     setattr(assessment, field, value)
 
-            assessment.updated_at = datetime.now()  # noqa: DTZ005
+            assessment.updated_at = now_taipei_naive()
             session.flush()
             session.refresh(assessment)
 

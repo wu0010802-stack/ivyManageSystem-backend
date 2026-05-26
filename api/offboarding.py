@@ -8,6 +8,7 @@ Phase 3 補：list
 import io
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -442,7 +443,7 @@ def patch_nhi_unenroll(
         if record is None:
             raise HTTPException(status_code=404, detail="OFFBOARDING_RECORD_NOT_FOUND")
 
-        record.nhi_unenroll_submitted_at = datetime.now() if req.submitted else None  # noqa: DTZ005
+        record.nhi_unenroll_submitted_at = now_taipei_naive() if req.submitted else None
         session.commit()
 
         # audit log（正確 key：middleware 讀 audit_entity_id / audit_summary）

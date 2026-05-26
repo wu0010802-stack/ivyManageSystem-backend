@@ -6,6 +6,7 @@ import csv
 import io
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -403,7 +404,7 @@ def export_change_logs(
                 )
                 filename = (
                     f"student_change_logs_"
-                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"  # noqa: DTZ005
+                    f"{now_taipei_naive().strftime('%Y%m%d_%H%M%S')}.csv"
                 )
                 return StreamingResponse(
                     iter([buf.getvalue()]),
@@ -499,7 +500,7 @@ def export_change_logs(
                 ]
             )
 
-        filename = f"student_change_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"  # noqa: DTZ005
+        filename = f"student_change_logs_{now_taipei_naive().strftime('%Y%m%d_%H%M%S')}.csv"
         return StreamingResponse(
             iter([buf.getvalue()]),
             media_type="text/csv; charset=utf-8",

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy.orm import Session
 
@@ -80,8 +81,8 @@ def publish_entry(
         raise ValueError(f"contact_book entry not found: {entry_id}")
 
     if entry.published_at is None:
-        entry.published_at = datetime.now()  # noqa: DTZ005
-    entry.version = (entry.version or 1) + 1
+        entry.published_at = now_taipei_naive()
+        entry.version = (entry.version or 1) + 1
     session.flush()
 
     student = session.query(Student).filter(Student.id == entry.student_id).first()

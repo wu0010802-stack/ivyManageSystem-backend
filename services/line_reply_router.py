@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
@@ -47,7 +48,7 @@ def deduplicate_event(
         webhook_event_id=webhook_event_id,
         event_type=event_type,
         line_user_id=line_user_id,
-        processed_at=datetime.now(),  # noqa: DTZ005
+        processed_at=now_taipei_naive(),
     )
     session.add(row)
     try:
@@ -66,7 +67,7 @@ def _active_context(session, line_user_id: str) -> Optional[LineReplyContext]:
     )
     if not ctx:
         return None
-    if ctx.expires_at and ctx.expires_at < datetime.now():  # noqa: DTZ005
+    if ctx.expires_at and ctx.expires_at < now_taipei_naive():
         return None
     return ctx
 
@@ -80,7 +81,7 @@ def upsert_reply_context(
         .filter(LineReplyContext.line_user_id == line_user_id)
         .first()
     )
-    expires = datetime.now() + CONTEXT_TTL  # noqa: DTZ005
+    expires = now_taipei_naive() + CONTEXT_TTL
     if ctx:
         ctx.thread_id = thread_id
         ctx.expires_at = expires
@@ -196,7 +197,7 @@ def handle_parent_text_message(
         source="line",
     )
     # 刷新 context expires_at
-    ctx.expires_at = datetime.now() + CONTEXT_TTL  # noqa: DTZ005
+    ctx.expires_at = now_taipei_naive() + CONTEXT_TTL
     session.commit()
     line_service._reply(reply_token, "✅ 已送出")
     logger.info(

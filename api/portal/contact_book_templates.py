@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -202,7 +203,7 @@ def update_template(
             tpl.classroom_id = payload.classroom_id
         if payload.fields is not None:
             tpl.fields = payload.fields.model_dump(exclude_none=False)
-        tpl.updated_at = datetime.now()  # noqa: DTZ005
+        tpl.updated_at = now_taipei_naive()
         session.commit()
         session.refresh(tpl)
 
@@ -232,7 +233,7 @@ def delete_template(
         _assert_can_modify(tpl, current_user)
 
         tpl.is_archived = True
-        tpl.updated_at = datetime.now()  # noqa: DTZ005
+        tpl.updated_at = now_taipei_naive()
         session.commit()
 
         request.state.audit_entity_id = str(tpl.id)
@@ -263,7 +264,7 @@ def promote_to_shared(
 
         tpl.scope = "shared"
         tpl.owner_user_id = None
-        tpl.updated_at = datetime.now()  # noqa: DTZ005
+        tpl.updated_at = now_taipei_naive()
         session.commit()
         session.refresh(tpl)
 

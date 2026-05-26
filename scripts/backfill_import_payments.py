@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -182,7 +183,7 @@ def main():
                 payment_method=IMPORT_METHOD,
                 notes=IMPORT_NOTES,
                 operator="system",
-                created_at=datetime.now(),  # noqa: DTZ005
+                created_at=now_taipei_naive(),
             )
             session.add(rec)
             inserted += 1
