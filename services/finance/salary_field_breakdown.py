@@ -8,6 +8,7 @@ import calendar as cal_module
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
+from models.approval import ApprovalStatus
 from models.database import (
     Attendance,
     Classroom,
@@ -625,7 +626,7 @@ def build_salary_debug_snapshot(
         session.query(LeaveRecord)
         .filter(
             LeaveRecord.employee_id == emp.id,
-            LeaveRecord.is_approved == True,
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.start_date <= end_date,
             LeaveRecord.end_date >= start_date,
         )
@@ -640,7 +641,7 @@ def build_salary_debug_snapshot(
             session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0))
             .filter(
                 LeaveRecord.employee_id == emp.id,
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
                 LeaveRecord.leave_type == "sick",
                 LeaveRecord.start_date >= year_start,
                 LeaveRecord.end_date < start_date,
@@ -656,7 +657,7 @@ def build_salary_debug_snapshot(
         session.query(OvertimeRecord)
         .filter(
             OvertimeRecord.employee_id == emp.id,
-            OvertimeRecord.is_approved == True,
+            OvertimeRecord.status == ApprovalStatus.APPROVED.value,
             OvertimeRecord.overtime_date >= start_date,
             OvertimeRecord.overtime_date <= end_date,
         )

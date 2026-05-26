@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import and_, case, func
 
+from models.approval import ApprovalStatus
 from models.database import (
     Employee,
     LeaveRecord,
@@ -125,7 +126,7 @@ class DashboardQueryService:
                     )
                 ).label("this_month"),
             )
-            .filter(LeaveRecord.is_approved.is_(None))
+            .filter(LeaveRecord.status == ApprovalStatus.PENDING.value)
             .first()
         )
         pending_leaves = leave_row.total if leave_row else 0
@@ -147,7 +148,7 @@ class DashboardQueryService:
                     )
                 ).label("this_month"),
             )
-            .filter(OvertimeRecord.is_approved.is_(None))
+            .filter(OvertimeRecord.status == ApprovalStatus.PENDING.value)
             .first()
         )
         pending_overtimes = ot_row.total if ot_row else 0
@@ -156,7 +157,7 @@ class DashboardQueryService:
         pending_corrections = (
             session.query(PunchCorrectionRequest)
             .filter(
-                PunchCorrectionRequest.is_approved.is_(None),
+                PunchCorrectionRequest.status == ApprovalStatus.PENDING.value,
             )
             .count()
         )

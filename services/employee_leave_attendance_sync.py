@@ -10,6 +10,7 @@ from typing import Iterable
 
 from sqlalchemy.orm import Session
 
+from models.approval import ApprovalStatus
 from models.attendance import Attendance, AttendanceStatus
 from models.leave import LeaveRecord
 from utils.attendance_calc import (
@@ -100,9 +101,9 @@ def apply(session: Session, leave_id: int) -> list[date]:
     leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
     if leave is None:
         raise LeaveNotApproved(f"leave_id={leave_id} 不存在")
-    if leave.is_approved is not True:
+    if leave.status != ApprovalStatus.APPROVED.value:
         raise LeaveNotApproved(
-            f"leave_id={leave_id} 不是已核可(is_approved={leave.is_approved})"
+            f"leave_id={leave_id} 不是已核可(status={leave.status})"
         )
 
     _assert_leave_time_consistent(leave)
@@ -315,7 +316,7 @@ def reapply(
     reverted = revert(session, leave_id)
 
     leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
-    if leave is None or leave.is_approved is not True:
+    if leave is None or leave.status != ApprovalStatus.APPROVED.value:
         return reverted, []
 
     applied = apply(session, leave_id)

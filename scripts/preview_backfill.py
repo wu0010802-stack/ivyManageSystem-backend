@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from sqlalchemy import text
 
 # models.database 一次性 import 確保所有 SQLAlchemy relationship 都已註冊
+from models.approval import ApprovalStatus
 from models.database import LeaveRecord, get_session  # noqa: F401
 
 
@@ -40,7 +41,7 @@ def main():
         leaves = (
             session.query(LeaveRecord)
             .filter(
-                LeaveRecord.is_approved == True,  # noqa: E712
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
                 LeaveRecord.end_date >= cutoff,
             )
             .all()

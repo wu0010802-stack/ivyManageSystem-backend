@@ -19,6 +19,7 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
 
+from models.approval import ApprovalStatus
 from models.database import Holiday, LeaveRecord, OvertimeRecord
 from utils.constants import (
     MAX_MONTHLY_OVERTIME_HOURS,
@@ -134,7 +135,10 @@ def check_employee_has_conflicting_leave(
         session.query(LeaveRecord)
         .filter(
             LeaveRecord.employee_id == employee_id,
-            LeaveRecord.is_approved.in_([None, True]),
+            LeaveRecord.status.in_([
+                ApprovalStatus.PENDING.value,
+                ApprovalStatus.APPROVED.value,
+            ]),
             LeaveRecord.start_date <= overtime_date,
             LeaveRecord.end_date >= overtime_date,
         )
@@ -190,7 +194,10 @@ def check_overtime_overlap(
     q = session.query(OvertimeRecord).filter(
         OvertimeRecord.employee_id == employee_id,
         OvertimeRecord.overtime_date == overtime_date,
-        or_(OvertimeRecord.is_approved.is_(None), OvertimeRecord.is_approved == True),
+        or_(
+            OvertimeRecord.status == ApprovalStatus.PENDING.value,
+            OvertimeRecord.status == ApprovalStatus.APPROVED.value,
+        ),
     )
     if exclude_id is not None:
         q = q.filter(OvertimeRecord.id != exclude_id)
@@ -247,8 +254,8 @@ def check_monthly_overtime_cap(
         OvertimeRecord.overtime_date >= start,
         OvertimeRecord.overtime_date <= end,
         or_(
-            OvertimeRecord.is_approved.is_(None),
-            OvertimeRecord.is_approved == True,
+            OvertimeRecord.status == ApprovalStatus.PENDING.value,
+            OvertimeRecord.status == ApprovalStatus.APPROVED.value,
         ),
     )
     if exclude_id is not None:
@@ -296,8 +303,8 @@ def check_quarterly_overtime_cap(
             OvertimeRecord.overtime_date >= start,
             OvertimeRecord.overtime_date <= end,
             or_(
-                OvertimeRecord.is_approved.is_(None),
-                OvertimeRecord.is_approved == True,
+                OvertimeRecord.status == ApprovalStatus.PENDING.value,
+                OvertimeRecord.status == ApprovalStatus.APPROVED.value,
             ),
         )
         if exclude_id is not None:

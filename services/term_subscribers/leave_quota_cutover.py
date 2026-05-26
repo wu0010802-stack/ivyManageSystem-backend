@@ -23,6 +23,7 @@ from api.leaves_quota import (
 )
 from models.academic_term import AcademicTerm
 from models.employee import Employee
+from models.approval import ApprovalStatus
 from models.leave import LeaveQuota, LeaveRecord
 from utils.term_events import on_term_changed
 
@@ -166,7 +167,7 @@ def _calc_compensatory_balance(
         .filter(
             LeaveRecord.employee_id == employee_id,
             LeaveRecord.leave_type == "compensatory",
-            LeaveRecord.is_approved.is_(True),
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.start_date >= old.start_date,
             LeaveRecord.start_date < new.start_date,
         )

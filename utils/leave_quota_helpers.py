@@ -10,6 +10,7 @@ from datetime import date
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from models.approval import ApprovalStatus
 from models.leave import LeaveQuota, LeaveRecord
 
 
@@ -69,8 +70,7 @@ def get_annual_leave_balance(
         .filter(
             LeaveRecord.employee_id == employee_id,
             LeaveRecord.leave_type == "annual",
-            LeaveRecord.is_approved
-            == True,  # noqa: E712 — SQLAlchemy requires == not `is`
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.start_date >= date(year, 1, 1),
             LeaveRecord.start_date <= snapshot_date,
         )

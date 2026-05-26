@@ -804,6 +804,7 @@ class LineService:
     ) -> None:
         """處理 Webhook 收到的文字訊息，依指令回覆"""
         from models.auth import User
+        from models.approval import ApprovalStatus
         from models.database import SalaryRecord, LeaveRecord, Attendance
 
         user = session.query(User).filter(User.line_user_id == line_user_id).first()
@@ -857,8 +858,8 @@ class LineService:
             for r in records:
                 status = (
                     "✅ 核准"
-                    if r.is_approved is True
-                    else ("❌ 駁回" if r.is_approved is False else "⏳ 待審")
+                    if r.status == ApprovalStatus.APPROVED.value
+                    else ("❌ 駁回" if r.status == ApprovalStatus.REJECTED.value else "⏳ 待審")
                 )
                 lines.append(f"• {r.leave_type} {r.start_date} {status}")
             self._reply(reply_token, "\n".join(lines))

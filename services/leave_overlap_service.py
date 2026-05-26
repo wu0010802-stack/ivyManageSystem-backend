@@ -17,6 +17,7 @@ from typing import Optional
 
 from sqlalchemy import and_, or_
 
+from models.approval import ApprovalStatus
 from models.database import LeaveRecord
 
 
@@ -48,10 +49,13 @@ def find_overlapping_leave(
     )
     if include_pending:
         q = q.filter(
-            or_(LeaveRecord.is_approved == True, LeaveRecord.is_approved.is_(None))
+            or_(
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
+            LeaveRecord.status == ApprovalStatus.PENDING.value,
+        )
         )
     else:
-        q = q.filter(LeaveRecord.is_approved == True)
+        q = q.filter(LeaveRecord.status == ApprovalStatus.APPROVED.value)
     if exclude_id is not None:
         q = q.filter(LeaveRecord.id != exclude_id)
 

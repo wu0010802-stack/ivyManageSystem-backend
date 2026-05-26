@@ -17,6 +17,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from models.approval import ApprovalStatus
 from models.database import LeaveRecord
 
 # 預設「跳過獎金」的請假類型（任一天覆蓋該月 → 該月不發節慶+超額）
@@ -59,7 +60,7 @@ def should_skip_bonuses_for_month(
         session.query(LeaveRecord)
         .filter(
             LeaveRecord.employee_id == employee_id,
-            LeaveRecord.is_approved == True,  # noqa: E712
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.leave_type.in_(list(types)),
             LeaveRecord.start_date <= month_end,
             LeaveRecord.end_date >= month_start,
