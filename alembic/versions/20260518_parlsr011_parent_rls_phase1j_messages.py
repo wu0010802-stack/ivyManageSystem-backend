@@ -265,10 +265,16 @@ def downgrade() -> None:
         op.execute(f"ALTER TABLE {tbl} DISABLE  ROW LEVEL SECURITY")
 
     # ── 1. REVOKE ─────────────────────────────────────────────────────────
+    # 用 DO block 偵測 ivy_parent_role 存在才 REVOKE，支援 Alembic Roundtrip CI
+    # 的 stamp-only DB（沒跑 parlsr001 建立 role）。
     op.execute("""
-        REVOKE USAGE ON SEQUENCE parent_messages_id_seq FROM ivy_parent_role;
-        REVOKE USAGE ON SEQUENCE parent_message_threads_id_seq FROM ivy_parent_role;
-
-        REVOKE SELECT, INSERT, UPDATE ON parent_messages FROM ivy_parent_role;
-        REVOKE SELECT, UPDATE ON parent_message_threads FROM ivy_parent_role;
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ivy_parent_role') THEN
+                REVOKE USAGE ON SEQUENCE parent_messages_id_seq FROM ivy_parent_role;
+                REVOKE USAGE ON SEQUENCE parent_message_threads_id_seq FROM ivy_parent_role;
+                REVOKE SELECT, INSERT, UPDATE ON parent_messages FROM ivy_parent_role;
+                REVOKE SELECT, UPDATE ON parent_message_threads FROM ivy_parent_role;
+            END IF;
+        END $$;
         """)

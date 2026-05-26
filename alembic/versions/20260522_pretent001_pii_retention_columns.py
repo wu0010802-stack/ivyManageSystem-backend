@@ -91,7 +91,29 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index("ix_guardians_pii_redacted_null", table_name="guardians")
-    op.drop_index("ix_student_terminal_retention", table_name="students")
-    op.drop_column("guardians", "pii_redacted_at")
-    op.drop_column("students", "terminal_entered_at")
+    # 用 IF EXISTS / try-except 包裝，支援 Alembic Roundtrip CI 的 stamp-only DB
+    # （從 Base.metadata.create_all 建表後直接 stamp 到 head 再跑 downgrade —
+    # 此時 upgrade 才會建的 index 並不存在）。
+    bind = op.get_bind()
+    is_pg = bind.dialect.name == "postgresql"
+    if is_pg:
+        op.execute("DROP INDEX IF EXISTS ix_guardians_pii_redacted_null")
+        op.execute("DROP INDEX IF EXISTS ix_student_terminal_retention")
+    else:
+        for idx, tbl in (
+            ("ix_guardians_pii_redacted_null", "guardians"),
+            ("ix_student_terminal_retention", "students"),
+        ):
+            try:
+                op.drop_index(idx, table_name=tbl)
+            except Exception:
+                pass
+    # drop_column 對缺欄位的 model 也會失敗，同樣包 try
+    for tbl, col in (
+        ("guardians", "pii_redacted_at"),
+        ("students", "terminal_entered_at"),
+    ):
+        try:
+            op.drop_column(tbl, col)
+        except Exception:
+            pass
