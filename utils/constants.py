@@ -32,6 +32,8 @@ LEAVE_TYPE_LABELS: dict[str, str] = {
 # ── 加班計算（勞基法） ──────────────────────────────────────
 MAX_OVERTIME_HOURS = 12.0  # 單筆加班上限（正常 8H + 延長最多 4H）
 MAX_MONTHLY_OVERTIME_HOURS = 46.0  # 勞基法第 32 條第 2 項：每月延長工時上限
+MAX_QUARTERLY_OVERTIME_HOURS = 138.0  # 勞基法第 32 條第 2 項：每連續三個月延長工時上限
+OVERTIME_QUARTERLY_WINDOW_MONTHS = 3  # rolling 窗口長度（月）
 DAILY_WORK_HOURS = 8  # 每日法定工時
 WEEKDAY_FIRST_2H_RATE = 1.34  # 平日前 2 小時
 WEEKDAY_AFTER_2H_RATE = 1.67  # 平日第 3-4 小時

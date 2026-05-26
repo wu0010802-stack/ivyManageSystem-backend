@@ -546,3 +546,66 @@ class TestOvertimeTypeCalendarValidation:
 
     def test_weekend_type_on_non_holiday_passes(self):
         _validate_overtime_type_matches_calendar("weekend", False)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 季 138h cap 純函式測試（勞基法 §32 II）
+# ────────────────────────────────────────────────────────────────────
+
+from services.overtime_conflict_service import (
+    _assert_within_quarterly_cap,
+    _shift_month,
+)
+from utils.constants import MAX_QUARTERLY_OVERTIME_HOURS
+
+
+class TestAssertWithinQuarterlyCap:
+    """純函式：worst_existing + new ≤ 138.0 = pass，否則 raise 400 含 6 要素"""
+
+    def test_boundary_138_exact_passes(self):
+        """138.0 剛好不算超過（與 monthly cap 同口徑 + 1e-9 tolerance）"""
+        _assert_within_quarterly_cap(132.0, 6.0, "2026/03~2026/05", 1)
+
+    def test_over_138_blocks(self):
+        """138.1 即 raise"""
+        with pytest.raises(HTTPException) as exc:
+            _assert_within_quarterly_cap(132.0, 6.2, "2026/03~2026/05", 1)
+        assert exc.value.status_code == 400
+        assert "超過勞基法第 32 條" in exc.value.detail
+
+    def test_none_safety(self):
+        """None 輸入不會 crash"""
+        _assert_within_quarterly_cap(None, 10.0, "2026/03~2026/05", 1)
+        _assert_within_quarterly_cap(10.0, None, "2026/03~2026/05", 1)
+
+    def test_message_contains_six_required_fields(self):
+        """訊息必含：員工 ID、窗口、累計、新筆、合計、上限"""
+        with pytest.raises(HTTPException) as exc:
+            _assert_within_quarterly_cap(135.0, 5.0, "2026/03~2026/05", 42)
+        msg = exc.value.detail
+        assert "#42" in msg
+        assert "2026/03~2026/05" in msg
+        assert "135.0" in msg
+        assert "5.0" in msg
+        assert "140.0" in msg
+        assert "138" in msg
+        assert "勞基法第 32 條第 2 項" in msg
+
+
+class TestShiftMonth:
+    """月份位移 helper：正/負 offset、跨年 wrap"""
+
+    def test_positive_offset_within_year(self):
+        assert _shift_month(2026, 5, 2) == (2026, 7)
+
+    def test_positive_offset_cross_year(self):
+        assert _shift_month(2026, 11, 3) == (2027, 2)
+
+    def test_negative_offset_within_year(self):
+        assert _shift_month(2026, 5, -2) == (2026, 3)
+
+    def test_negative_offset_cross_year(self):
+        assert _shift_month(2026, 2, -3) == (2025, 11)
+
+    def test_zero_offset_noop(self):
+        assert _shift_month(2026, 5, 0) == (2026, 5)

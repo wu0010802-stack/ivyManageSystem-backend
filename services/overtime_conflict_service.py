@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_
 
 from models.database import Holiday, LeaveRecord, OvertimeRecord
-from utils.constants import MAX_MONTHLY_OVERTIME_HOURS
+from utils.constants import MAX_MONTHLY_OVERTIME_HOURS, MAX_QUARTERLY_OVERTIME_HOURS
 
 # -- 純函式（無 session 依賴）：抽出便於 unit test ----------------------
 
@@ -39,6 +39,43 @@ def _assert_within_monthly_cap(
                 f"該員工 {year}/{month} 已申請加班 {existing:.1f} 小時，"
                 f"加上此筆 {new:.1f} 小時合計 {total:.1f} 小時，"
                 f"超過勞基法第 32 條每月延長工時上限 {MAX_MONTHLY_OVERTIME_HOURS:.0f} 小時。"
+            ),
+        )
+
+
+def _shift_month(year: int, month: int, offset: int) -> tuple[int, int]:
+    """月份位移 helper：(2026, 5) + 2 = (2026, 7)；(2026, 2) - 3 = (2025, 11)。
+
+    Python 的 // 與 % 對負數做 floor division wrap，正好對應曆月跨年語意。
+    """
+    total = (year * 12 + month - 1) + offset
+    return total // 12, total % 12 + 1
+
+
+def _assert_within_quarterly_cap(
+    worst_existing_hours: float,
+    new_hours: float,
+    window_label: str,
+    employee_id: int,
+) -> None:
+    """純函式：驗證最壞窗口既存 + 新加班時數不超過勞基法第 32 條第 2 項
+    每連續三個月 138h 上限。
+
+    worst_existing_hours 由 caller 取 3 個 rolling 3-month 窗口的 max。
+    訊息含 6 要素：員工 ID、窗口、累計、新筆、合計、上限 + 法源。
+    """
+    existing = float(worst_existing_hours or 0)
+    new = float(new_hours or 0)
+    total = existing + new
+    if total > MAX_QUARTERLY_OVERTIME_HOURS + 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"員工 #{employee_id} 連續三個月（{window_label}）"
+                f"已申請加班 {existing:.1f} 小時，"
+                f"加上此筆 {new:.1f} 小時合計 {total:.1f} 小時，"
+                f"超過勞基法第 32 條第 2 項每連續三個月延長工時上限 "
+                f"{MAX_QUARTERLY_OVERTIME_HOURS:.0f} 小時。"
             ),
         )
 
