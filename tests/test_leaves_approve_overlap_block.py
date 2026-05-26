@@ -42,7 +42,6 @@ def _make_leave(
     leave.is_deductible = False
     leave.is_hospitalized = False
     leave.status = ApprovalStatus.PENDING.value
-    leave.is_approved = None  # audit snapshot: api/leaves.py still reads .is_approved (removed in Step 2)
     leave.approved_by = None
     leave.rejection_reason = None
     leave.attachment_paths = None

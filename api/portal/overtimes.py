@@ -89,7 +89,6 @@ def get_my_overtimes(
                 "use_comp_leave": ot.use_comp_leave,
                 "comp_leave_granted": ot.comp_leave_granted,
                 "reason": ot.reason,
-                "is_approved": ot.is_approved,
                 "status": ot.status,
                 "approved_by": ot.approved_by,
                 "created_at": ot.created_at.isoformat() if ot.created_at else None,

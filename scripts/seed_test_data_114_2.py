@@ -680,7 +680,7 @@ def step_overtime_punch():
                     end_time=datetime(d.year, d.month, d.day, 12, 0),
                     hours=4.0,
                     overtime_pay=4 * (float(emp.base_salary or 30000) / 30 / 8) * 1.34,
-                    is_approved=True,
+                    status="approved",
                     approved_by="admin",
                     reason="校外教學佈置",
                 )
@@ -707,7 +707,7 @@ def step_overtime_punch():
                     correction_type="punch_in",
                     requested_punch_in=datetime(d.year, d.month, d.day, 8, 0),
                     reason="忘記打卡,有同事可作證",
-                    is_approved=None,
+                    status="pending",
                 )
             )
 

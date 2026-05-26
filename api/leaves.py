@@ -612,7 +612,6 @@ def get_leaves(
                     "leave_hours": leave.leave_hours,
                     "deduction_ratio": leave.deduction_ratio,
                     "reason": leave.reason,
-                    "is_approved": leave.is_approved,
                     "status": leave.status,
                     "approved_by": leave.approved_by,
                     "rejection_reason": leave.rejection_reason,
@@ -806,7 +805,6 @@ def update_leave(
                 str(leave.end_time) if getattr(leave, "end_time", None) else None
             ),
             "leave_hours": getattr(leave, "leave_hours", None),
-            "is_approved": leave.is_approved,
             "status": leave.status,
             "is_hospitalized": bool(getattr(leave, "is_hospitalized", False)),
             "deduction_ratio": getattr(leave, "deduction_ratio", None),
@@ -917,7 +915,7 @@ def update_leave(
 
         # ── 考勤同步 hook（Hook 3/4）────────────────────────────────────────────
         # Hook 3（退審路徑）：was_approved=True → _apply_leave_update_and_revoke 後
-        #   leave.is_approved=None → revert
+        #   leave.status='pending' → revert
         # Hook 4（改關鍵欄仍 approved，罕見）：reapply
         # LeaveAttendanceConflict / LeavePartialTimeMissing → 422
         from services import employee_leave_attendance_sync as sync
@@ -961,7 +959,6 @@ def update_leave(
                 str(leave.end_time) if getattr(leave, "end_time", None) else None
             ),
             "leave_hours": getattr(leave, "leave_hours", None),
-            "is_approved": leave.is_approved,
             "status": leave.status,
             "is_hospitalized": bool(getattr(leave, "is_hospitalized", False)),
             "deduction_ratio": getattr(leave, "deduction_ratio", None),
@@ -1072,7 +1069,6 @@ def delete_leave(
             "start_date": leave.start_date.isoformat(),
             "end_date": leave.end_date.isoformat(),
             "leave_hours": leave.leave_hours,
-            "is_approved": leave.is_approved,
             "status": leave.status,
             "deduction_ratio": leave.deduction_ratio,
             "reason": leave.reason,
@@ -1238,7 +1234,6 @@ def approve_leave(
         approval_changed = was_approved != data.approved
         # 整單 snapshot 用於 audit_changes 的 before/after
         leave_snapshot_before = {
-            "is_approved": leave.is_approved,
             "status": leave.status,
             "leave_type": leave.leave_type,
             "leave_hours": leave.leave_hours,
@@ -1458,7 +1453,7 @@ def approve_leave(
         # - approved=False 且本次為撤銷已核准（was_approved=True）→ revert
         # LeaveAttendanceConflict / LeavePartialTimeMissing → 422；
         # 其他例外（如 RuntimeError）不被 catch，讓 FastAPI 500 + finally 的
-        # session.close() 觸發隱式 rollback，確保 leave.is_approved 不殘留。
+        # session.close() 觸發隱式 rollback，確保 leave.status 不殘留。
         from services import employee_leave_attendance_sync as sync
 
         try:
@@ -1563,7 +1558,6 @@ def approve_leave(
             "decision": "approved" if data.approved else "rejected",
             "before": leave_snapshot_before,
             "after": {
-                "is_approved": leave.is_approved,
                 "status": leave.status,
                 "approved_by": leave.approved_by,
                 "rejection_reason": leave.rejection_reason,
@@ -1771,7 +1765,7 @@ def batch_approve_leaves(
                             include_pending=True,
                         )
                         # 重疊核准硬擋：批次無 force_overlap 旗標，一律拒絕。
-                        # 借助 SQLAlchemy autoflush，前一輪已 set is_approved=True
+                        # 借助 SQLAlchemy autoflush，前一輪已 set status='approved'
                         # 的記錄會在這個 _check_overlap 查詢時被視為已核准，
                         # 確保「同批兩張同員工同時段」的後者會被擋下。
                         conflict = _check_overlap(
@@ -2169,7 +2163,7 @@ async def import_leaves(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),
 ):
-    """批次匯入請假申請（建立草稿假單，is_approved=None，需後續人工審核）"""
+    """批次匯入請假申請（建立草稿假單，status='pending'，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, ".xlsx")
 

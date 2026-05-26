@@ -3,7 +3,7 @@
 
 用法:
     python scripts/fix_partial_leave_times.py            # dry-run
-    python scripts/fix_partial_leave_times.py --apply    # 把缺時段的 row is_approved=None(退審)
+    python scripts/fix_partial_leave_times.py --apply    # 把缺時段的 row status='pending'(退審)
 """
 
 import argparse

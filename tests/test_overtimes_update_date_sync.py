@@ -45,7 +45,6 @@ def _make_ot():
     ot.comp_leave_granted = False
     ot.reason = None
     ot.status = "rejected"  # P2 mirror: production code reads .status on this mock
-    ot.is_approved = False  # audit snapshot: api/overtimes.py still reads .is_approved (removed in Step 2)
     ot.approved_by = None
     return ot
 

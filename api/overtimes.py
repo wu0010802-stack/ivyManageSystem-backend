@@ -547,7 +547,6 @@ def get_overtimes(
                     "overtime_pay": ot.overtime_pay,
                     "use_comp_leave": ot.use_comp_leave,
                     "comp_leave_granted": ot.comp_leave_granted,
-                    "is_approved": ot.is_approved,
                     "status": ot.status,
                     "approved_by": ot.approved_by,
                     "reason": ot.reason,
@@ -698,7 +697,6 @@ def update_overtime(
             "end_time": str(ot.end_time) if getattr(ot, "end_time", None) else None,
             "use_comp_leave": getattr(ot, "use_comp_leave", None),
             "overtime_pay": getattr(ot, "overtime_pay", None),
-            "is_approved": ot.is_approved,
             "status": ot.status,
             "reason": getattr(ot, "reason", None),
         }
@@ -842,7 +840,6 @@ def update_overtime(
             "end_time": str(ot.end_time) if getattr(ot, "end_time", None) else None,
             "use_comp_leave": getattr(ot, "use_comp_leave", None),
             "overtime_pay": getattr(ot, "overtime_pay", None),
-            "is_approved": ot.is_approved,
             "status": ot.status,
             "reason": getattr(ot, "reason", None),
         }
@@ -936,7 +933,6 @@ def delete_overtime(
             "hours": getattr(ot, "hours", None),
             "use_comp_leave": getattr(ot, "use_comp_leave", None),
             "overtime_pay": getattr(ot, "overtime_pay", None),
-            "is_approved": ot.is_approved,
             "status": ot.status,
             "reason": getattr(ot, "reason", None),
         }
@@ -1196,9 +1192,8 @@ def approve_overtime(
             "overtime_id": overtime_id,
             "employee_id": ot.employee_id,
             "decision": "approved" if approved else "rejected",
-            "before": {"is_approved": (True if was_approved else None)},
+            "before": {"status": ("approved" if was_approved else "pending")},
             "after": {
-                "is_approved": ot.is_approved,
                 "status": ot.status,
                 "approved_by": ot.approved_by,
             },
@@ -1560,7 +1555,7 @@ async def import_overtimes(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
-    """批次匯入加班申請（建立草稿加班單，is_approved=None，需後續人工審核）"""
+    """批次匯入加班申請（建立草稿加班單，status='pending'，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, ".xlsx")
 

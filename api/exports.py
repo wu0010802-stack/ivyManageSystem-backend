@@ -579,14 +579,6 @@ def export_calendar(
 # ============ Leaves ============
 
 
-def _approval_label(is_approved):
-    if is_approved is True:
-        return "已核准"
-    if is_approved is False:
-        return "已駁回"
-    return "待審核"
-
-
 def _approval_label_from_status(status: str) -> str:
     if status == ApprovalStatus.APPROVED.value:
         return "已核准"

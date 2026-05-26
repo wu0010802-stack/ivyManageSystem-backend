@@ -167,7 +167,6 @@ def get_attendance_sheet(
                             lv.leave_type, lv.leave_type
                         ),
                         "leave_hours": lv.leave_hours,
-                        "is_approved": lv.is_approved,
                         "status": lv.status,
                         "reason": lv.reason,
                     }
@@ -196,7 +195,6 @@ def get_attendance_sheet(
                         ot.overtime_type, ot.overtime_type
                     ),
                     "hours": ot.hours,
-                    "is_approved": ot.is_approved,
                     "status": ot.status,
                     "reason": ot.reason,
                 }

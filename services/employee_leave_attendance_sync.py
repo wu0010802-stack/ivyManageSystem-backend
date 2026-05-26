@@ -95,7 +95,7 @@ def _get_employee_schedule(session: Session, employee_id: int) -> tuple[time, ti
 def apply(session: Session, leave_id: int) -> list[date]:
     """把 approved leave 寫入 Attendance。Idempotent。
 
-    Pre-condition: leave 必須是 is_approved=True；否則 raise LeaveNotApproved。
+    Pre-condition: leave 必須是 status='approved'；否則 raise LeaveNotApproved。
     回傳實際寫入的日期列表。
     """
     leave = session.query(LeaveRecord).filter_by(id=leave_id).first()

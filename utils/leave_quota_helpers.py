@@ -22,7 +22,7 @@ def get_annual_leave_balance(
     """回傳指定員工於 snapshot_date 當日特休餘額。
 
     school_year row 優先於 legacy（school_year=None）row。
-    只計入 is_approved=True 的記錄，排除 pending（None）與 rejected（False）。
+    只計入 status='approved' 的記錄，排除 pending 與 rejected。
 
     Args:
         session: SQLAlchemy Session

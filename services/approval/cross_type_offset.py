@@ -38,7 +38,7 @@ def resolve_cross_type_offset(session, leave: LeaveRecord) -> Optional[OvertimeR
     比對條件：
     - employee_id 相同
     - overtime_date == leave.start_date（v1 限制：跨日只看首日）
-    - is_approved == True
+    - status == 'approved'
     - use_comp_leave == False（補休 OT 不再轉加班費，自然不需 offset）
 
     注意：OvertimeRecord 目前無「已抵扣/已發放」欄位；本 helper 不過濾此狀態，

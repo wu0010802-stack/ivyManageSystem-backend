@@ -198,7 +198,6 @@ def get_my_leaves(
                 "end_time": lv.end_time,
                 "leave_hours": lv.leave_hours,
                 "reason": lv.reason,
-                "is_approved": lv.is_approved,
                 "status": lv.status,
                 "approved_by": lv.approved_by,
                 "rejection_reason": lv.rejection_reason,
@@ -931,7 +930,6 @@ def get_my_substitute_requests(
                     if lv.substitute_responded_at
                     else None
                 ),
-                "is_approved": lv.is_approved,
                 "status": lv.status,
                 "created_at": lv.created_at.isoformat() if lv.created_at else None,
             }
