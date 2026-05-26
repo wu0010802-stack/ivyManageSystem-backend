@@ -1,6 +1,11 @@
 """Pure function helpers — 不依賴 session，可獨立測試。"""
 
+from calendar import isleap
 from datetime import date
+from typing import Optional
+
+from sqlalchemy import and_, extract, func, or_
+from sqlalchemy.orm import Session
 
 
 def _next_month(today: date) -> tuple[int, int]:
@@ -51,3 +56,65 @@ def _resolve_hourly_wage(emp, ref_date: date) -> float:
         return 0.0
 
     return monthly / 30 / 8
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SQL helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _is_anniversary_today_sql(hire_date_col, today: date):
+    """SQL 表達式：員工 hire_date 月日 == today 月日。
+
+    2/29 fallback：非閏年的 2/28 同時撈 hire_date=2/29 員工。
+    """
+    base = and_(
+        extract("month", hire_date_col) == today.month,
+        extract("day", hire_date_col) == today.day,
+    )
+    if today.month == 2 and today.day == 28 and not isleap(today.year):
+        return or_(
+            base,
+            and_(
+                extract("month", hire_date_col) == 2,
+                extract("day", hire_date_col) == 29,
+            ),
+        )
+    return base
+
+
+def _approved_annual_used_in_period(
+    employee_id: int, period_start: date, period_end: date, session: Session
+) -> float:
+    """加總期間內已核准的 annual leave 時數。"""
+    from models.leave import LeaveRecord
+
+    used = (
+        session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0))
+        .filter(
+            LeaveRecord.employee_id == employee_id,
+            LeaveRecord.leave_type == "annual",
+            LeaveRecord.is_approved.is_(True),
+            LeaveRecord.start_date >= period_start,
+            LeaveRecord.start_date < period_end,
+        )
+        .scalar()
+    )
+    return float(used or 0)
+
+
+def _find_or_none_salary_record(
+    employee_id: int, year: int, month: int, session: Session
+):
+    """撈該員工該月 SalaryRecord；不存在返 None。"""
+    from models.salary import SalaryRecord
+
+    return (
+        session.query(SalaryRecord)
+        .filter(
+            SalaryRecord.employee_id == employee_id,
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month == month,
+        )
+        .first()
+    )

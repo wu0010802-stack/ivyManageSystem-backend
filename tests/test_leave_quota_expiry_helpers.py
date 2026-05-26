@@ -4,11 +4,16 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import Column, Integer, Date, create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
 
 from services.leave_quota_expiry.helpers import (
     _next_month,
     _add_one_year_with_feb29_handling,
     _resolve_hourly_wage,
+    _is_anniversary_today_sql,
+    _approved_annual_used_in_period,
+    _find_or_none_salary_record,
 )
 
 
@@ -44,3 +49,55 @@ class TestResolveHourlyWage:
         emp = MagicMock(employee_type="monthly", base_salary=48000.0)
         # 48000 / 30 / 8 = 200
         assert _resolve_hourly_wage(emp, date(2026, 4, 1)) == 200.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SQL helpers tests — require session/DB
+# ──────────────────────────────────────────────────────────────────────────────
+
+Base = declarative_base()
+
+
+class _DummyEmp(Base):
+    __tablename__ = "dummy_emp"
+    id = Column(Integer, primary_key=True)
+    hire_date = Column(Date)
+
+
+@pytest.fixture
+def session():
+    eng = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(eng)
+    Session = sessionmaker(bind=eng)
+    s = Session()
+    yield s
+    s.close()
+
+
+class TestIsAnniversaryTodaySQL:
+    """Anniversary month/day matching with 2/29 fallback"""
+
+    def test_is_anniversary_today_sql_match(self, session):
+        session.add(_DummyEmp(id=1, hire_date=date(2020, 4, 15)))
+        session.add(_DummyEmp(id=2, hire_date=date(2021, 5, 1)))
+        session.commit()
+        result = (
+            session.query(_DummyEmp)
+            .filter(_is_anniversary_today_sql(_DummyEmp.hire_date, date(2026, 4, 15)))
+            .all()
+        )
+        assert len(result) == 1
+        assert result[0].id == 1
+
+    def test_is_anniversary_today_sql_feb29_in_non_leap(self, session):
+        """2/29 員工在非閏年 2/28 也算 anniversary"""
+        session.add(_DummyEmp(id=1, hire_date=date(2020, 2, 29)))
+        session.commit()
+        # 2026 非閏年，2/28 應命中
+        result = (
+            session.query(_DummyEmp)
+            .filter(_is_anniversary_today_sql(_DummyEmp.hire_date, date(2026, 2, 28)))
+            .all()
+        )
+        assert len(result) == 1
+        assert result[0].id == 1
