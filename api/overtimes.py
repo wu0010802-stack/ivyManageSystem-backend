@@ -227,6 +227,15 @@ def _revoke_comp_leave_grant(
             ),
         )
 
+    # ── 新增：mark grant ledger row 為 revoked（不刪除留 audit） ──
+    grant = (
+        session.query(OvertimeCompLeaveGrant)
+        .filter(OvertimeCompLeaveGrant.overtime_record_id == ot.id)
+        .first()
+    )
+    if grant is not None:
+        grant.status = "revoked"
+
     quota.total_hours = max(0.0, new_total)
     ot.comp_leave_granted = False
 
