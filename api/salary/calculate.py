@@ -46,8 +46,8 @@ def _enqueue_salary_batch_completed(
     """薪資批次計算完成後，對每位 SALARY_WRITE perm holder 個人推送。
 
     自開 session（caller 的 session 通常已 close），enqueue 後 commit 觸發
-    dispatch after_commit hook。原 _line_service.notify_salary_batch_complete
-    群組廣播改為 per-recipient 個人推送（in_app + LINE）。
+    dispatch after_commit hook。原本走 line_service 的群組廣播 method 改為
+    per-recipient 個人推送（in_app + LINE）。
     """
     from services.notification import dispatch
 
