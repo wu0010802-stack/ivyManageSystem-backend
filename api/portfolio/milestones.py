@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from utils.taipei_time import today_taipei
 from typing import Optional
 
@@ -279,7 +280,7 @@ async def delete_milestone(
             )
             if not m:
                 raise HTTPException(status_code=404, detail="里程碑不存在")
-            m.deleted_at = datetime.utcnow()  # noqa: DTZ003
+            m.deleted_at = now_taipei_naive()
             session.flush()
             request.state.audit_entity_id = str(student_id)
             request.state.audit_summary = (

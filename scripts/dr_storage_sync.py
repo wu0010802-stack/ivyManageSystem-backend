@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Iterable
 
 import boto3
@@ -129,7 +130,7 @@ def _sync_bucket(
                 Body=data,
                 Metadata={
                     "x-source-updated-at": src["updated_at"]
-                    or datetime.utcnow().isoformat()  # noqa: DTZ003
+                    or now_taipei_naive().isoformat()
                 },
             )
             stats["upload"] += 1

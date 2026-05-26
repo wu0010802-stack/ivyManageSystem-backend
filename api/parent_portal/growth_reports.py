@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -107,7 +108,7 @@ async def parent_download_report(
         # 原子化 INCR + COALESCE：避免並發雙擊時 read-modify-write 的 lost
         # update（agent P2 #10，同 dismissal 2026-05-12 round 3 修補 idiom）。
         # UPDATE ... SET col = col + 1 在 row 層 exclusive lock，無 race。
-        now = datetime.utcnow()  # noqa: DTZ003
+        now = now_taipei_naive()
         session.query(StudentGrowthReport).filter_by(
             id=report_id, student_id=student_id
         ).update(

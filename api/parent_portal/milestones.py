@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -122,7 +123,7 @@ async def parent_react(
         m.parent_reaction = payload.reaction
         # 第一次 react 也算 ack（row lock 下重新判 acknowledged_at 仍 None 才寫）
         if m.parent_acknowledged_at is None:
-            m.parent_acknowledged_at = datetime.utcnow()  # noqa: DTZ003
+            m.parent_acknowledged_at = now_taipei_naive()
             g = (
                 session.query(Guardian)
                 .filter_by(user_id=user_id, student_id=student_id)
@@ -162,7 +163,7 @@ async def parent_acknowledge(
         if not m:
             raise HTTPException(status_code=404, detail="里程碑不存在")
         if m.parent_acknowledged_at is None:
-            m.parent_acknowledged_at = datetime.utcnow()  # noqa: DTZ003
+            m.parent_acknowledged_at = now_taipei_naive()
             g = (
                 session.query(Guardian)
                 .filter_by(user_id=user_id, student_id=student_id)
