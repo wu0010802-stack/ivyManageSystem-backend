@@ -339,39 +339,36 @@ jobs:
         # services.notification.dispatch.enqueue；line_service.{,_}notify_*
         # 與 _push_to_user 改為 dispatch._channels.line / hybrid caller 私有 API。
         #
-        # 已知 hybrid exception（Phase 4 Section 3 reports.py hybrid 收尾後清空）：
-        #   api/portfolio/reports.py    — sent_count + Phase 3 rollback 需從
-        #                                 push_to_user 拿真實 ACK
-        #
         # 允許 path（line_service 內部與 dispatch 內部互呼）：
         #   services/line_service.py    — method 自己定義在此
         #   services/notification/_channels/  — dispatch LINE adapter
         #
-        # 2026-05-26 Phase 4 Section 2 收尾：dismissal_calls.py 改走
-        # dispatch.enqueue(line_group_id="")，退出 exception list。
+        # Phase 4 收尾（2026-05-26）：
+        #   - Section 2: dismissal_calls.py 改走 dispatch.enqueue(line_group_id="")
+        #   - Section 3: reports.py 改走 dispatch.send_to_line_user_sync
+        # exception list 已清空；所有 LINE 推送 caller 統一走 dispatch API。
         run: |
           # 1. 禁直接 line_service.{,_}notify_* / line_svc.{,_}notify_*
           PAT='_?line_(service|svc)\._?notify_'
           MATCH=$(git grep -nE "$PAT" -- 'api/**.py' 'services/**.py' \
             ':!services/line_service.py' \
             ':!services/notification/_channels/' \
-            ':!api/portfolio/reports.py' \
             || true)
           if [ -n "$MATCH" ]; then
-            echo "::error::禁直接 line_service.notify_* / _notify_* / push_to_user（請改用 dispatch.enqueue）："
+            echo "::error::禁直接 line_service.notify_* / _notify_*（請改用 dispatch.enqueue）："
             echo "$MATCH"
             exit 1
           fi
           echo "✅ 無 disallowed line_service.{,_}notify_* caller"
 
-          # 2. 禁 push_to_user 直接 caller（reports.py hybrid 除外）
+          # 2. 禁 push_to_user 直接 caller
           PAT2='_?line_service\.push_to_user|_?line_svc\.push_to_user'
           MATCH2=$(git grep -nE "$PAT2" -- 'api/**.py' 'services/**.py' \
             ':!services/line_service.py' \
-            ':!api/portfolio/reports.py' \
+            ':!services/notification/_channels/' \
             || true)
           if [ -n "$MATCH2" ]; then
-            echo "::error::禁直接 line_service.push_to_user（請改用 dispatch.enqueue）："
+            echo "::error::禁直接 line_service.push_to_user（請改用 dispatch.send_to_line_user_sync 或 dispatch.enqueue）："
             echo "$MATCH2"
             exit 1
           fi
