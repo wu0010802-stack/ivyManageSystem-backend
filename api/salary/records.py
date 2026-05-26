@@ -114,6 +114,9 @@ def get_salary_records(
                     "supervisor_dividend": record.supervisor_dividend or 0,
                     "labor_insurance": record.labor_insurance_employee,
                     "health_insurance": record.health_insurance_employee,
+                    "supplementary_health_employee": (
+                        record.supplementary_health_employee or 0
+                    ),
                     "pension": record.pension_employee,
                     "late_deduction": record.late_deduction,
                     "early_leave_deduction": record.early_leave_deduction,
@@ -299,6 +302,9 @@ def get_salary_history(
                     "total_bonus": total_bonus,
                     "labor_insurance": r.labor_insurance_employee,
                     "health_insurance": r.health_insurance_employee,
+                    "supplementary_health_employee": (
+                        r.supplementary_health_employee or 0
+                    ),
                     "attendance_deduction": (
                         (r.late_deduction or 0)
                         + (r.early_leave_deduction or 0)

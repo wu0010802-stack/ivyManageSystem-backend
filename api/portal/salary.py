@@ -108,6 +108,9 @@ def get_salary_preview(
                 "meeting_overtime_pay": salary.meeting_overtime_pay or 0,
                 "labor_insurance": salary.labor_insurance_employee or 0,
                 "health_insurance": salary.health_insurance_employee or 0,
+                "supplementary_health_employee": (
+                    salary.supplementary_health_employee or 0
+                ),
                 "pension_employee": salary.pension_employee or 0,
                 "late_deduction": salary.late_deduction or 0,
                 "early_leave_deduction": salary.early_leave_deduction or 0,

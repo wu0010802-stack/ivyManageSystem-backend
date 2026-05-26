@@ -103,6 +103,7 @@ def _fill_salary_record(salary_record, breakdown, engine, session=None):
     _apply("birthday_bonus", breakdown.birthday_bonus)
     _apply("labor_insurance_employee", breakdown.labor_insurance)
     _apply("health_insurance_employee", breakdown.health_insurance)
+    _apply("supplementary_health_employee", breakdown.supplementary_health_employee)
     _apply("pension_employee", breakdown.pension_self)
     _apply("late_deduction", breakdown.late_deduction)
     _apply("early_leave_deduction", breakdown.early_leave_deduction)
@@ -1390,7 +1391,9 @@ class SalaryEngine:
                 )
                 school_target = self._school_wide_target or 160
                 ratio = school_enrollment / school_target if school_target > 0 else 0
-                breakdown.festival_bonus = round_half_up(supervisor_festival_base * ratio)
+                breakdown.festival_bonus = round_half_up(
+                    supervisor_festival_base * ratio
+                )
             else:
                 breakdown.festival_bonus = 0
             breakdown.overtime_bonus = 0
@@ -1922,7 +1925,9 @@ class SalaryEngine:
                     if target_enrollment > 0
                     else 0
                 )
-                festival_bonus = round_half_up(supervisor_base * ratio) if is_eligible else 0
+                festival_bonus = (
+                    round_half_up(supervisor_base * ratio) if is_eligible else 0
+                )
                 if is_eligible:
                     remark = "全校比例(主管)"
 
@@ -2870,6 +2875,21 @@ class SalaryEngine:
                 period_overtime_override=period_overtime_total,
             )
 
+            # 二代健保補充保費（獎金路徑）：年累計獎金逾 4× 投保薪資部分扣 2.11%
+            from services.salary.supplementary_premium import (
+                apply_bonus_supplementary_to_breakdown,
+            )
+
+            apply_bonus_supplementary_to_breakdown(
+                session,
+                emp_dict,
+                breakdown,
+                year,
+                month,
+                self.insurance_service,
+                emp.id,
+            )
+
             breakdown.absent_count = absent_count
             breakdown.absence_deduction = round_half_up(absence_deduction_amount)
             breakdown.total_deduction = round_half_up(
@@ -3584,6 +3604,21 @@ class SalaryEngine:
             personal_sick_leave_hours=personal_sick_leave_hours,
             period_festival_override=period_festival_total,
             period_overtime_override=period_overtime_total,
+        )
+
+        # 二代健保補充保費（獎金路徑）：與單筆計算路徑口徑一致
+        from services.salary.supplementary_premium import (
+            apply_bonus_supplementary_to_breakdown,
+        )
+
+        apply_bonus_supplementary_to_breakdown(
+            session,
+            emp_dict,
+            breakdown,
+            year,
+            month,
+            self.insurance_service,
+            emp.id,
         )
 
         breakdown.absent_count = absent_count
