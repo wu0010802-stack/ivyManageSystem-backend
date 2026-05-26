@@ -1,7 +1,7 @@
 ---
 title: 補休到期與特休週年制 — Leave Quota Lifecycle Design
 date: 2026-05-26
-status: draft
+status: draft (amended 2026-05-26 — payout path 改 Alt A)
 owner: yilunwu
 related:
   - api/leaves_quota.py
@@ -9,6 +9,16 @@ related:
   - services/salary/unused_leave_pay.py
   - models/leave.py
   - models/overtime.py
+  - services/recruitment_term_advance_scheduler.py
+amendment_log:
+  - 2026-05-26 v2：payout path 從 SpecialBonusItem 改為新建 unused_leave_payout_log 表
+    原因：SpecialBonusItem 真實 schema 是「綁定 YearEndCycle 的年度附加項」
+    （year_end_cycle_id NOT NULL FK / bonus_type PG ENUM / period_label String），
+    與本 spec 需要的「按月可寫的 generic 附加項」cadence 不符。直接寫 SalaryRecord.unused_leave_payout
+    沿用 offboarding path，per-event 帳本走獨立 log 表。
+  - 2026-05-26 v2：scheduler 改 asyncio polling pattern（沿用 recruitment_term_advance_scheduler）
+    取代 apscheduler cron，與 codebase 既有所有 scheduler 一致。
+  - 2026-05-26 v2：加入 alembic merge heads 前置步驟（current heads: audrsk01 + mergeheads03）。
 ---
 
 # 補休到期與特休週年制設計
@@ -29,11 +39,12 @@ related:
 ## 2. 前提假設
 
 1. **勞資協商已簽署**：補休 1 年到期、特休改週年制屬勞動條件變更，需勞基法 §70-1 + 工會法相關協商程序。System 上線前 HR 必完成書面協議，本系統作為合規執行工具，不取代協商程序。
-2. **`special_bonus_items` 表已存在**且支援自訂 type enum 擴充（沿用 CLAUDE.md #10 考核年終獎金模式）。
-3. **`SalaryRecord.unused_leave_payout` 欄已存在**（offb0001 migration 加，由離職 path 寫入）。本 spec 新 path 共用此欄，靠 `special_bonus_items.meta` 區分來源。
+2. **`SalaryRecord.unused_leave_payout` 欄已存在**（offb0001 migration 加，由離職 path 寫入）。本 spec 新 path 共用此欄，靠新建 `unused_leave_payout_log` 表的 `source_type` 區分來源（離職/特休週年/補休到期）。
+3. **不動 `special_bonus_items` 表**：該表綁定 `year_end_cycle_id NOT NULL FK`，是「年度 cycle 內附加項」語意，不適合本 spec「每月 scheduler 寫入」cadence。本 spec 改走新建獨立 log 表 + 直寫 SalaryRecord path。
 4. **Employee 有合理 `hire_date`**（NOT NULL，現有資料已驗證）。
-5. **Scheduler infrastructure 已就位**：apscheduler 已在 `main.py` 註冊（`recruitment_term_advance_scheduler` 已用此 pattern）。
+5. **Scheduler 採 asyncio polling pattern**：沿用 `services/recruitment_term_advance_scheduler.py` / `services/graduation_scheduler.py` 結構（`while not stop_event.is_set(): await asyncio.wait_for(stop_event.wait(), timeout=check_interval)`），由 `main.py` lifespan 啟動。
 6. **時薪計算公式採通說**：月薪 ÷ 30 ÷ 8（勞動部 §38 解釋令採此基準），非 21.75 工作日制。
+7. **Alembic 當前兩 head**（`audrsk01` + `mergeheads03`）：新 migration 前先加一條 merge migration 統一 head。
 
 ## 3. Data Model
 
@@ -52,8 +63,10 @@ CREATE TABLE overtime_comp_leave_grants (
     consumed_hours FLOAT NOT NULL DEFAULT 0, -- 已被核准補休假單扣抵
     status VARCHAR(20) NOT NULL DEFAULT 'active', -- active / expired / revoked
     expired_at TIMESTAMP NULL,              -- scheduler stamp 結算時間
-    payout_special_bonus_item_id INTEGER NULL
-        REFERENCES special_bonus_items(id) ON DELETE SET NULL,
+    payout_salary_record_id INTEGER NULL
+        REFERENCES salary_records(id) ON DELETE SET NULL,
+    payout_log_id BIGINT NULL
+        REFERENCES unused_leave_payout_log(id) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -68,7 +81,7 @@ CREATE INDEX ix_grant_status_expires_active
 
 **Invariants**：
 - `consumed_hours <= granted_hours`（CHECK constraint）
-- `status='expired'` 時 `expired_at` NOT NULL 且 `payout_special_bonus_item_id` NOT NULL
+- `status='expired'` 時 `expired_at` NOT NULL 且 `payout_log_id` NOT NULL
 - `status='revoked'` 時 `expired_at` 可 NULL（人工撤銷無 payout）
 - 每筆 OT 至多一筆 grant（UNIQUE 約束）
 
@@ -89,46 +102,92 @@ CREATE UNIQUE INDEX uq_leave_quotas_emp_period_annual
 - 特休（`leave_type='annual'`）從 cutover handler 移除，由新 scheduler 負責
 - `period_start IS NULL` = legacy 學年制 row；`period_start IS NOT NULL` = 週年制 row
 
-### 3.3 `special_bonus_items` enum 擴充
+### 3.3 新表 `unused_leave_payout_log`（per-event 帳本）
 
-新增兩個 type：
-- `UNUSED_ANNUAL_LEAVE_PAYOUT` — 特休週年 cutover 折算
-- `UNUSED_COMP_LEAVE_PAYOUT` — 補休 +1 年到期折算
+```sql
+CREATE TABLE unused_leave_payout_log (
+    id BIGSERIAL PRIMARY KEY,
+    employee_id INTEGER NOT NULL
+        REFERENCES employees(id) ON DELETE RESTRICT,
+    source_type VARCHAR(30) NOT NULL,        -- comp_grant_expiry / annual_anniversary / offboarding
+    source_ref_id INTEGER NULL,              -- comp_grant_expiry: 不填（多筆 grant 一次結算，靠 overtime_comp_leave_grants.payout_log_id 反查）
+                                             -- annual_anniversary: leave_quotas.id（cutover 的 quota row）
+                                             -- offboarding: employee_offboarding_records.id
+    hours FLOAT NOT NULL,                    -- 結算未休時數
+    hourly_wage NUMERIC(10, 2) NOT NULL,     -- 結算時點時薪（snapshot）
+    amount NUMERIC(10, 2) NOT NULL,          -- = round_half_up(hours * hourly_wage)
+    wage_basis_date DATE NOT NULL,           -- 取時薪的基準日（scheduler 跑當日）
+    salary_record_id INTEGER NULL            -- 寫入哪筆 SalaryRecord（null = 該月薪資未 calculate）
+        REFERENCES salary_records(id) ON DELETE SET NULL,
+    salary_period_year INTEGER NOT NULL,     -- 預期入帳年（idempotency 用）
+    salary_period_month INTEGER NOT NULL,    -- 預期入帳月（idempotency 用）
+    meta JSONB NOT NULL DEFAULT '{}',        -- 來源 specific detail（grant_ids / period / breakdown）
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
 
-`meta` (JSONB) 結構：
+CREATE INDEX ix_payout_log_emp_period
+    ON unused_leave_payout_log (employee_id, salary_period_year, salary_period_month);
+
+CREATE INDEX ix_payout_log_salary_record
+    ON unused_leave_payout_log (salary_record_id)
+    WHERE salary_record_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uq_payout_log_anniversary
+    ON unused_leave_payout_log (employee_id, source_type, source_ref_id)
+    WHERE source_type = 'annual_anniversary';  -- 同 cutover quota 只能結算一次
+```
+
+**`meta` JSONB 結構（per source_type）**：
 
 ```json
-// UNUSED_COMP_LEAVE_PAYOUT
+// source_type='comp_grant_expiry'
 {
   "expired_grant_ids": [123, 124, 125],
   "hours_breakdown": [
     {"grant_id": 123, "overtime_date": "2025-04-01", "unexpired_hours": 4.0}
-  ],
-  "hourly_wage_basis": 200.0,
-  "wage_basis_date": "2026-04-01",
-  "total_unexpired_hours": 4.0
+  ]
 }
 
-// UNUSED_ANNUAL_LEAVE_PAYOUT
+// source_type='annual_anniversary'
 {
-  "cutover_quota_id": 456,
   "period_start": "2025-08-15",
   "period_end": "2026-08-15",
   "entitled_hours": 80.0,
-  "used_hours": 64.0,
-  "unused_hours": 16.0,
-  "hourly_wage_basis": 220.0,
-  "wage_basis_date": "2026-08-15"
+  "used_hours": 64.0
+}
+
+// source_type='offboarding'（離職 path 寫，沿用既有 unused_leave_pay.py 計算）
+{
+  "offboarding_record_id": 456,
+  "termination_date": "2026-04-15"
 }
 ```
 
-### 3.4 Migration `compexpr01`
+**Invariants**：
+- `source_type='comp_grant_expiry'`：靠 `overtime_comp_leave_grants.payout_log_id` 反查找關聯 grants（一筆 log 對多筆 grant）
+- `source_type='annual_anniversary'`：partial unique index 擋同員工同 quota 二次結算
+- `source_type='offboarding'`：由 offboarding step 寫入，本 spec 不主動寫但定義 schema 供既有 path 共用
+
+### 3.4 Migration 順序
+
+**Step 0：merge alembic heads（前置）**
+
+Current heads: `audrsk01` + `mergeheads03`。先加一條 merge migration:
+
+```python
+# revision: mergeheads04
+# down_revision: ('audrsk01', 'mergeheads03')
+def upgrade(): pass
+def downgrade(): pass
+```
+
+**Step 1：`compexpr01` 主 migration**（down_revision='mergeheads04'）
 
 依序執行：
-1. CREATE TABLE `overtime_comp_leave_grants`
-2. ALTER TABLE `leave_quotas` 加 `period_start` / `period_end` 兩欄 + partial unique index
-3. 擴 `special_bonus_items` type enum 增兩值
-4. Backfill：既有 OT (`use_comp_leave=True AND comp_leave_granted=True`) → grant rows
+1. CREATE TABLE `unused_leave_payout_log`（含 indexes）
+2. CREATE TABLE `overtime_comp_leave_grants`（含 indexes + FK 到 `unused_leave_payout_log`）
+3. ALTER TABLE `leave_quotas` 加 `period_start` / `period_end` 兩欄 + partial unique index
+4. Backfill：既有 OT (`use_comp_leave=True AND comp_leave_granted=True AND is_approved=True`) → grant rows
    - `granted_hours = ot.hours`、`granted_at = ot.overtime_date`
    - `expires_at = upgrade_date + INTERVAL '3 months'`（一次性寬限期，覆寫原 overtime_date+1y）
    - 寬限期長度由 ENV `LEAVE_BACKFILL_GRACE_MONTHS`（default 3）控制
@@ -144,51 +203,126 @@ CREATE UNIQUE INDEX uq_leave_quotas_emp_period_annual
 
 ### 4.1 新檔 `services/leave_quota_expiry_scheduler.py`
 
+沿用 `services/recruitment_term_advance_scheduler.py` 結構（asyncio polling loop）：
+
 ```python
-# 沿用 services/recruitment_term_advance_scheduler.py pattern
+from __future__ import annotations
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+import asyncio
+import logging
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
-def register(scheduler: AsyncIOScheduler):
-    scheduler.add_job(
-        handle,
-        CronTrigger(hour=2, minute=30),  # 避開 02:00 student_lifecycle GC
-        id="leave_quota_expiry",
-        replace_existing=True,
-    )
+from config import get_settings
 
-def handle():
-    with SessionLocal() as session:
-        with session.begin():
-            today = date.today()
-            _expire_comp_leave_grants(today, session)
-            _cutover_annual_leave_anniversaries(today, session)
+logger = logging.getLogger(__name__)
+
+
+def _today_taipei() -> date:
+    return datetime.now(ZoneInfo("Asia/Taipei")).date()
+
+
+def scheduler_enabled() -> bool:
+    return bool(get_settings().scheduler.leave_quota_expiry_enabled)
+
+
+async def run_leave_quota_expiry_scheduler(stop_event: asyncio.Event) -> None:
+    """每日輪詢補休到期 + 特休週年 cutover。
+
+    照 graduation_scheduler / recruitment_term_advance_scheduler pattern：
+    - session_scope() 寫入 → log
+    - try_scheduler_lock 防多 instance 重複跑
+    - last_run_date 記憶體 guard 避免同一天多次跑（log spam）
+    """
+    from models.base import session_scope
+    from utils.advisory_lock import try_scheduler_lock
+    from services.leave_quota_expiry.comp_leave_expiry import expire_comp_leave_grants
+    from services.leave_quota_expiry.annual_cutover import cutover_annual_leave_anniversaries
+
+    check_interval = get_settings().scheduler.leave_quota_expiry_check_interval
+    logger.info("leave quota expiry scheduler 啟動 (interval=%ss)", check_interval)
+
+    last_run_date: date | None = None
+
+    while not stop_event.is_set():
+        try:
+            today = _today_taipei()
+            if last_run_date != today:
+                with session_scope() as session:
+                    with try_scheduler_lock(
+                        session,
+                        scheduler_name="leave_quota_expiry",
+                    ) as acquired:
+                        if acquired:
+                            comp_summary = expire_comp_leave_grants(today, session)
+                            cutover_summary = cutover_annual_leave_anniversaries(today, session)
+                            logger.info(
+                                "leave quota expiry tick: %s | %s",
+                                comp_summary,
+                                cutover_summary,
+                            )
+                            last_run_date = today
+        except Exception:
+            logger.exception("leave quota expiry scheduler tick failed")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
+        except asyncio.TimeoutError:
+            pass
 ```
 
-### 4.2 `_expire_comp_leave_grants(today, session)`
+`main.py` lifespan 加 register（沿用 recruitment_term_advance 模式）：
 
 ```python
-def _expire_comp_leave_grants(today: date, session: Session) -> None:
+# main.py 約 line 324 附近，recruitment_term_advance 之後
+from services import leave_quota_expiry_scheduler as _lqe_sched
+leave_quota_expiry_stop_event = asyncio.Event()
+if _lqe_sched.scheduler_enabled():
+    leave_quota_expiry_task = asyncio.create_task(
+        _lqe_sched.run_leave_quota_expiry_scheduler(leave_quota_expiry_stop_event)
+    )
+    logger.info("leave quota expiry scheduler 已啟用")
+```
+
+`config/scheduler.py` 加兩個欄位：
+
+```python
+leave_quota_expiry_enabled: bool = False  # 預設關閉，HR 簽勞資協議後手動 enable
+leave_quota_expiry_check_interval: int = 3600  # 1 小時輪詢一次（last_run_date guard 確保每日只跑一次）
+```
+
+### 4.2 `expire_comp_leave_grants(today, session)`
+
+新檔 `services/leave_quota_expiry/comp_leave_expiry.py`：
+
+```python
+def expire_comp_leave_grants(today: date, session: Session) -> dict:
+    """撈到期 grant 結算寫 SalaryRecord.unused_leave_payout + log。
+
+    跳過已離職員工（由 offboarding path 處理）。
+    """
     expired_grants = (
         session.query(OvertimeCompLeaveGrant)
         .join(Employee)
         .filter(
             OvertimeCompLeaveGrant.status == 'active',
             OvertimeCompLeaveGrant.expires_at <= today,
-            Employee.is_active.is_(True),  # 跳過已離職（由 offboarding path 處理）
+            Employee.is_active.is_(True),
         )
         .all()
     )
 
-    grants_by_emp = group_by(expired_grants, key=lambda g: g.employee_id)
+    grants_by_emp: dict[int, list[OvertimeCompLeaveGrant]] = {}
+    for g in expired_grants:
+        grants_by_emp.setdefault(g.employee_id, []).append(g)
+
+    total_paid = Decimal("0")
+    paid_emp_count = 0
 
     for emp_id, grants in grants_by_emp.items():
         try:
-            with session.begin_nested():  # savepoint per employee
+            with session.begin_nested():
                 unexpired_hours = sum(g.granted_hours - g.consumed_hours for g in grants)
                 if unexpired_hours <= 0:
-                    # 全用完仍要 mark expired 避免下次重撈
                     for g in grants:
                         g.status = 'expired'
                         g.expired_at = datetime.now()
@@ -196,16 +330,21 @@ def _expire_comp_leave_grants(today: date, session: Session) -> None:
 
                 emp = session.get(Employee, emp_id)
                 hourly_wage = _resolve_hourly_wage(emp, today)
-                payout = calculate_unused_leave_compensation(unexpired_hours, hourly_wage)
-                payout = round_half_up(payout)  # 對齊 [[project-money-rounding-half-up-rollout]]
+                amount = round_half_up(
+                    calculate_unused_leave_compensation(unexpired_hours, hourly_wage)
+                )
 
                 period_year, period_month = _next_month(today)
-                sbi = SpecialBonusItem(
+                log = UnusedLeavePayoutLog(
                     employee_id=emp_id,
-                    type='UNUSED_COMP_LEAVE_PAYOUT',
-                    amount=payout,
-                    period_year=period_year,
-                    period_month=period_month,
+                    source_type='comp_grant_expiry',
+                    source_ref_id=None,  # 反查靠 grant.payout_log_id
+                    hours=unexpired_hours,
+                    hourly_wage=Decimal(str(hourly_wage)),
+                    amount=amount,
+                    wage_basis_date=today,
+                    salary_period_year=period_year,
+                    salary_period_month=period_month,
                     meta={
                         'expired_grant_ids': [g.id for g in grants],
                         'hours_breakdown': [
@@ -216,32 +355,59 @@ def _expire_comp_leave_grants(today: date, session: Session) -> None:
                             }
                             for g in grants
                         ],
-                        'hourly_wage_basis': hourly_wage,
-                        'wage_basis_date': today.isoformat(),
-                        'total_unexpired_hours': unexpired_hours,
                     },
                 )
-                session.add(sbi)
-                session.flush()
+                session.add(log)
+                session.flush()  # 取 log.id
+
+                # 反向掛 SalaryRecord：layer 1 寫入
+                # - 該月 SalaryRecord 不存在 → log.salary_record_id=NULL 由 layer 2 在月結時拉
+                # - 該月 SalaryRecord 存在且未 finalize → 直寫 + 綁定
+                # - 該月 SalaryRecord 已 finalize → log.salary_record_id=NULL 由下個 open month layer 2 接手（或 HR 手動處理）
+                salary_record = _find_or_none_salary_record(
+                    emp_id, period_year, period_month, session
+                )
+                if salary_record is not None and not salary_record.is_finalized:
+                    salary_record.unused_leave_payout = (salary_record.unused_leave_payout or 0) + amount
+                    log.salary_record_id = salary_record.id
+
                 for g in grants:
                     g.status = 'expired'
                     g.expired_at = datetime.now()
-                    g.payout_special_bonus_item_id = sbi.id
+                    g.payout_salary_record_id = salary_record.id if salary_record else None
+                    g.payout_log_id = log.id
+
+                total_paid += amount
+                paid_emp_count += 1
         except Exception:
             logger.exception("expire_comp_leave failed for emp=%d", emp_id)
-            # savepoint 已回滾，其他員工繼續
+
+    return {
+        'paid_employees': paid_emp_count,
+        'total_amount': float(total_paid),
+        'expired_grant_count': len(expired_grants),
+    }
 ```
 
-### 4.3 `_cutover_annual_leave_anniversaries(today, session)`
+### 4.3 `cutover_annual_leave_anniversaries(today, session)`
+
+新檔 `services/leave_quota_expiry/annual_cutover.py`：
 
 ```python
-def _cutover_annual_leave_anniversaries(today: date, session: Session) -> None:
-    # 2/29 fallback：閏年到期日落非閏年自動順延至 2/28
+def cutover_annual_leave_anniversaries(today: date, session: Session) -> dict:
+    """跑「今日滿週年」員工：結算上一週年未休 + 建新一週年 row。
+
+    2/29 fallback：閏年到期日落非閏年自動順延至 2/28（_is_anniversary_today_sql 處理）。
+    """
     candidates = session.query(Employee).filter(
         Employee.is_active.is_(True),
         _is_anniversary_today_sql(Employee.hire_date, today),
         Employee.hire_date <= today - timedelta(days=180),  # 不足半年無特休
     ).all()
+
+    paid_count = 0
+    cold_start_count = 0
+    total_paid = Decimal("0")
 
     for emp in candidates:
         try:
@@ -255,34 +421,49 @@ def _cutover_annual_leave_anniversaries(today: date, session: Session) -> None:
                 ).first()
 
                 if current is not None:
-                    # 結算上一週年未休
                     used = _approved_annual_used_in_period(
                         emp.id, current.period_start, today, session
                     )
                     unused = max(0.0, current.total_hours - used)
                     if unused > 0:
                         hourly_wage = _resolve_hourly_wage(emp, today)
-                        payout = round_half_up(
+                        amount = round_half_up(
                             calculate_unused_leave_compensation(unused, hourly_wage)
                         )
                         period_year, period_month = _next_month(today)
-                        session.add(SpecialBonusItem(
+                        log = UnusedLeavePayoutLog(
                             employee_id=emp.id,
-                            type='UNUSED_ANNUAL_LEAVE_PAYOUT',
-                            amount=payout,
-                            period_year=period_year,
-                            period_month=period_month,
+                            source_type='annual_anniversary',
+                            source_ref_id=current.id,  # 同 quota 二次結算靠 partial unique idx 擋
+                            hours=unused,
+                            hourly_wage=Decimal(str(hourly_wage)),
+                            amount=amount,
+                            wage_basis_date=today,
+                            salary_period_year=period_year,
+                            salary_period_month=period_month,
                             meta={
-                                'cutover_quota_id': current.id,
                                 'period_start': current.period_start.isoformat(),
                                 'period_end': current.period_end.isoformat(),
                                 'entitled_hours': current.total_hours,
                                 'used_hours': used,
-                                'unused_hours': unused,
-                                'hourly_wage_basis': hourly_wage,
-                                'wage_basis_date': today.isoformat(),
                             },
-                        ))
+                        )
+                        session.add(log)
+                        session.flush()
+
+                        salary_record = _find_or_none_salary_record(
+                            emp.id, period_year, period_month, session
+                        )
+                        if salary_record is not None and not salary_record.is_finalized:
+                            salary_record.unused_leave_payout = (
+                                (salary_record.unused_leave_payout or 0) + amount
+                            )
+                            log.salary_record_id = salary_record.id
+
+                        paid_count += 1
+                        total_paid += amount
+                else:
+                    cold_start_count += 1
 
                 # 建新一週年 row（cold-start 直接走這裡）
                 new_period_end = _add_one_year_with_feb29_handling(today)
@@ -292,7 +473,7 @@ def _cutover_annual_leave_anniversaries(today: date, session: Session) -> None:
                 session.add(LeaveQuota(
                     employee_id=emp.id,
                     year=today.year,
-                    school_year=None,            # 週年制不用 school_year
+                    school_year=None,
                     period_start=today,
                     period_end=new_period_end,
                     leave_type='annual',
@@ -300,10 +481,16 @@ def _cutover_annual_leave_anniversaries(today: date, session: Session) -> None:
                     note=f"週年制配額（hire_date 基準 {emp.hire_date.isoformat()}）",
                 ))
         except IntegrityError:
-            # 已存在同 period_start row（scheduler 同日重跑）→ skip
-            session.rollback()
+            session.rollback()  # 同 period_start row 已存在或同 quota 已結算
         except Exception:
             logger.exception("cutover_annual failed for emp=%d", emp.id)
+
+    return {
+        'paid_employees': paid_count,
+        'cold_start_employees': cold_start_count,
+        'total_amount': float(total_paid),
+        'total_anniversaries': len(candidates),
+    }
 ```
 
 ### 4.4 Helper Functions
@@ -382,34 +569,41 @@ def _is_anniversary_today_sql(hire_date_col, today: date):
 
 ### 5.3 Salary Engine 整合
 
-`services/salary/engine.py` 月結 `calculate(year, month, emp_id)` 加 step：
+寫入 path 改為兩層：
+
+**Layer 1：Scheduler 直寫**（同月薪資已 calculate 過）
+- `expire_comp_leave_grants` / `cutover_annual_leave_anniversaries` 跑當下，若 `SalaryRecord(emp_id, period_year, period_month)` 已存在，直接 `unused_leave_payout += amount` 並把 log.salary_record_id 反向綁定
+- 此 path 不會撞 finalize_guard，因 scheduler 寫的是「**未來月**」（today.month + 1）；除非該 SalaryRecord 已 finalize（極少見），否則正常 += 累加
+
+**Layer 2：Salary Engine `calculate(year, month, emp_id)` 撈未綁定 log**
+- `services/salary/engine.py` 月結時加 step：撈該員工該月 `unused_leave_payout_log WHERE salary_record_id IS NULL AND salary_period_year=year AND salary_period_month=month` 加總後寫入 + 反向綁定 log
 
 ```python
-# 重 calculate idempotency：先抓出本月既有來自三個 path 的 unused_leave_payout
-# 1. 離職 path 直接寫 SalaryRecord.unused_leave_payout（offboarding step）
-# 2. 特休週年 path → SpecialBonusItem(type=UNUSED_ANNUAL_LEAVE_PAYOUT)
-# 3. 補休到期 path → SpecialBonusItem(type=UNUSED_COMP_LEAVE_PAYOUT)
-# 重 calc 時離職 path 部分由 offboarding snapshot 保留，scheduler path 由 query SBI 重算
-
-offboarding_amount = _get_offboarding_unused_leave_payout(emp_id, year, month, session)
-
-scheduler_payouts = session.query(SpecialBonusItem).filter(
-    SpecialBonusItem.employee_id == emp_id,
-    SpecialBonusItem.type.in_([
-        'UNUSED_ANNUAL_LEAVE_PAYOUT',
-        'UNUSED_COMP_LEAVE_PAYOUT',
-    ]),
-    SpecialBonusItem.period_year == year,
-    SpecialBonusItem.period_month == month,
+# services/salary/engine.py 月結 calculate 內加 step
+pending_logs = session.query(UnusedLeavePayoutLog).filter(
+    UnusedLeavePayoutLog.employee_id == emp_id,
+    UnusedLeavePayoutLog.salary_period_year == year,
+    UnusedLeavePayoutLog.salary_period_month == month,
+    UnusedLeavePayoutLog.salary_record_id.is_(None),
 ).all()
 
-salary_record.unused_leave_payout = (
-    offboarding_amount
-    + sum(sbi.amount for sbi in scheduler_payouts)
-)
+if pending_logs:
+    additional = sum(log.amount for log in pending_logs)
+    salary_record.unused_leave_payout = (salary_record.unused_leave_payout or 0) + additional
+    session.flush()
+    for log in pending_logs:
+        log.salary_record_id = salary_record.id
 ```
 
-`unused_leave_payout` 欄三來源共存：離職 path / 特休週年 path / 補休到期 path。**寫入策略為「全量覆蓋」非累加**，避免重 calculate 時重複加。離職 path 與 scheduler path 互斥（離職員工 `is_active=False` 不會被 scheduler 撈），實務上同月最多兩個 path 同時觸發（特休週年 + 補休到期）。HR 改 SpecialBonusItem amount 後須重 calculate 才同步（沿用考核年終 pattern）。
+**重 calculate idempotency 策略**：
+- 重 calc 不會重複加 — `pending_logs` 只撈 `salary_record_id IS NULL` 的 log，已綁定的 log 不在範圍
+- 若 HR 手動清掉 SalaryRecord 重 calc：log.salary_record_id 因 `ON DELETE SET NULL` 自動歸 null → 重 calc 時會被重撈 → 正確還原金額
+- 若 HR 手動修 SalaryRecord.unused_leave_payout 數字：log 仍綁定，不會被覆蓋（HR 手動值優先）
+
+**三來源共存**：
+- 離職 path（offboarding step）：直接寫 SalaryRecord.unused_leave_payout（既有不動），可同時寫一筆 `source_type='offboarding'` log 留證據鏈（spec §3.3 已預留 schema，本 plan 暫不改 offboarding code，留 Phase 2）
+- 特休週年 path（scheduler）：寫 `source_type='annual_anniversary'` log + 直寫/月結拉
+- 補休到期 path（scheduler）：寫 `source_type='comp_grant_expiry'` log + 直寫/月結拉
 
 ### 5.4 前端整合
 
@@ -463,33 +657,34 @@ T+90 天：寬限期結束
 
 | Risk | Mitigation |
 |---|---|
-| 勞資協商未簽署前 system 已上線 → 違法變更勞動條件 | T-14 天前置 ops + spec §2 前提依賴明寫；migration 不會偷渡執行，需 HR 確認後手動跑 |
+| 勞資協商未簽署前 system 已上線 → 違法變更勞動條件 | T-14 天前置 ops + spec §2 前提依賴明寫；scheduler 預設 `leave_quota_expiry_enabled=False`，HR 確認後手動 set True |
 | 大批員工同月滿週年（系統建立時集中入職）→ 薪資突增 | T-7 模擬報表給 HR 預警；可選 phased rollout（先試一個月再開全部） |
 | Scheduler 連續多日失敗 → grants 過期但未結算 | savepoint per employee + 重啟自動 catch up（撈 `expires_at <= today` 不限定當日） |
 | 補休 FIFO 扣抵與既有 LeaveQuota 聚合 row 不一致 | grant ledger 為 source of truth，`_compensatory_balance` 統一 helper；既有 LeaveQuota.compensatory.total_hours 降級為派生快取 |
 | 2/29 員工 cutover 跨閏年 → 一年 13 / 11 個月 | 統一 fallback 落 2/28（spec §4.4 明寫），員工合計每 4 年仍精確 |
 | 既有 carry-over 過的補休（多年累積）寬限 3 個月過短 → 員工反彈 | 寬限期 3 個月為 spec 默認，migration script 接 ENV `LEAVE_BACKFILL_GRACE_MONTHS`（default 3）讓 HR 可調 |
 | Scheduler 跑當下員工剛離職 → 重複折算（離職 path 也算一遍） | 兩 path 都加 `WHERE Employee.is_active=True` filter；離職 path 先 set `is_active=False` 後 trigger 結算 |
-| Salary record 已 finalize 後 scheduler 寫 special_bonus_items → finalize_guard 衝突 | scheduler 寫的 period_year/month 為「未來月份」（today 月+1），未來月薪資尚未 calculate 自然未 finalize |
+| Salary record 已 finalize 後 scheduler 直寫 → finalize_guard 衝突 | scheduler 寫的 salary_period_year/month 為「未來月份」（today 月+1），未來月薪資尚未 calculate 自然未 finalize；若極端撞牆則 fallback 走 layer 2（log 留 salary_record_id=NULL，下個月 calculate 自動拉） |
 | LeaveQuota 既有查詢 path（22+ caller）依賴聚合 row → 改 grant ledger 後型別/語意變化 | 既有 row 不刪、`total_hours` 保留語意為「historical aggregate snapshot」；新查詢入口 `_compensatory_balance(emp_id)` 統一走 grant ledger，22+ caller 漸進切換 |
+| 多 instance 部署 scheduler 重複跑 → 同 grant 多次結算 | `try_scheduler_lock(scheduler_name='leave_quota_expiry')` advisory lock（沿用 activity_waitlist_sweep pattern） |
 
 ## 8. Testing Strategy
 
 | 層 | 測試 |
 |---|---|
 | Unit | `_resolve_hourly_wage` 月/時薪兩 path / FIFO 扣抵正確性 / 2/29 fallback / 跨年 `_next_month` wrap / `_add_one_year_with_feb29_handling` |
-| Service | scheduler `_expire_comp_leave_grants` 多員工多 grant 場景 / `_cutover_annual_leave_anniversaries` cold-start + 第二輪 / savepoint 單筆失敗其他繼續 / IntegrityError skip 路徑 |
+| Service | scheduler `expire_comp_leave_grants` 多員工多 grant 場景 / `cutover_annual_leave_anniversaries` cold-start + 第二輪 / savepoint 單筆失敗其他繼續 / IntegrityError skip 路徑 / `last_run_date` 同日 guard |
 | Integration | grant ledger 與 `_compensatory_balance` 聚合一致性 / 補休假單核准→扣抵 grant→駁回→退回 round trip / scheduler idempotent 同日重跑無副作用 / OT revoke → grant 'revoked' / OT delete CASCADE grant |
-| Migration | `compexpr01` upgrade/downgrade 對稱 / 既有 OT backfill 為 grant rows 行數一致 / 既有 annual quota period_start/end 正確 / ENV `LEAVE_BACKFILL_GRACE_MONTHS` 覆蓋驗證 |
-| Salary Engine | special_bonus_items `UNUSED_*_PAYOUT` 加總正確進 `SalaryRecord.unused_leave_payout` / 三來源共存（離職 + 週年 + 補休到期）總和正確 / 重 calculate 同步 |
-| E2E (Playwright) | HR 在 LeaveQuotaExpiryTab 看到即將到期 → 月結時 SpecialBonusItem 出現 → SalaryRecord.unused_leave_payout 含該金額 |
+| Migration | `mergeheads04` upgrade/downgrade / `compexpr01` upgrade/downgrade 對稱 / 既有 OT backfill 為 grant rows 行數一致 / 既有 annual quota period_start/end 正確 / ENV `LEAVE_BACKFILL_GRACE_MONTHS` 覆蓋驗證 |
+| Payout Log | scheduler 寫入 layer 1（SalaryRecord 已存在 → 直寫 + 綁定）/ scheduler 寫入 layer 2（SalaryRecord 不存在 → log.salary_record_id NULL）/ salary engine `calculate` 撈 pending logs 加總正確 / 重 calc 時不重複加（已綁定 log 跳過） / `ON DELETE SET NULL` 解除綁定後重 calc 還原金額 / annual_anniversary partial unique idx 擋二次結算 |
+| E2E (Playwright) | HR 在 LeaveQuotaExpiryTab 看到即將到期 → scheduler 跑 → SalaryRecord.unused_leave_payout 含該金額 |
 
 ## 9. Open Questions
 
 不阻擋 spec 通過，留 implementation 時釐清：
 
 1. LeavesView 補休結餘顯示「最早到期日」是否需推播提醒（LINE Bot）— Phase 2 範圍
-2. HR 是否要能手動 extend 單筆 grant 的 expires_at（特殊情況 e.g. 員工長期請病假無法消化）— defer，目前用 SpecialBonusItem 手動調金額代替
-3. SpecialBonusItem 的 `period_year` / `period_month` 欄位實際 schema 確認（spec 假設獨立兩欄，實作時需驗證）
-4. 既有 `LeaveQuota.compensatory` 聚合 row 是否最終可刪除（待 22+ caller 全切換到 `_compensatory_balance` 後再評估） — defer
-5. 跨月薪資（finalize 已關 + 已 close）的 SpecialBonusItem 寫入流程：scheduler 確實只寫未來月份，但極端情況（員工到職日 = 月底）`_next_month` 可能撞 close — 加 guard 寫不進去時 log warn 並延到下個 open month
+2. HR 是否要能手動 extend 單筆 grant 的 expires_at（特殊情況 e.g. 員工長期請病假無法消化）— defer，目前用 HR 手動改 SalaryRecord.unused_leave_payout 數字 + 撤銷對應 log 代替
+3. 既有 `LeaveQuota.compensatory` 聚合 row 是否最終可刪除（待 22+ caller 全切換到 `_compensatory_balance` 後再評估） — defer
+4. 跨月薪資（finalize 已關 + 已 close）的 scheduler 寫入流程：scheduler 確實只寫未來月份，但極端情況（員工到職日 = 月底）`_next_month` 可能撞 close — 加 guard 寫不進去時 log warn 並依賴 layer 2 自動接手
+5. 離職 path 是否也補一筆 `source_type='offboarding'` log 留證據鏈 — defer Phase 2，本 spec 不動 offboarding code
