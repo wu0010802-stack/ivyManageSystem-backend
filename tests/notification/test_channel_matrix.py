@@ -17,17 +17,40 @@ def test_channel_matrix_no_extra_keys():
 
 
 def test_employee_events_default_in_app_and_line():
-    """員工域（不含 dismissal）預設 (in_app, line)。"""
+    """員工域（不含 dismissal、不含家長推播的 activity.waitlist_*/growth_report.*）
+    預設 (in_app, line)。"""
+    parent_targeted_non_parent_prefix = {
+        "activity.waitlist_reminder",
+        "activity.waitlist_final_reminder",
+        "activity.waitlist_expired",
+        "growth_report.published",
+    }
     employee_events = [
         e
         for e in NOTIFICATION_EVENT_TYPES
-        if not e.startswith("parent.") and e != "dismissal.created"
+        if not e.startswith("parent.")
+        and e != "dismissal.created"
+        and e not in parent_targeted_non_parent_prefix
     ]
     for ev in employee_events:
         assert CHANNEL_MATRIX[ev] == (
             "in_app",
             "line",
         ), f"{ev} 應 ('in_app', 'line') 實 {CHANNEL_MATRIX[ev]}"
+
+
+def test_parent_targeted_non_parent_prefix_events_are_line_only():
+    """推家長但沒 parent. 前綴的 event（PR-C 新增）只走 LINE。"""
+    line_only = [
+        "activity.waitlist_reminder",
+        "activity.waitlist_final_reminder",
+        "activity.waitlist_expired",
+        "growth_report.published",
+    ]
+    for ev in line_only:
+        assert CHANNEL_MATRIX[ev] == (
+            "line",
+        ), f"{ev} 應 ('line',) 實 {CHANNEL_MATRIX[ev]}"
 
 
 def test_dismissal_created_is_line_and_ws_no_in_app():

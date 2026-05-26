@@ -25,7 +25,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from models.base import session_scope
-from models.database import Employee, SalaryRecord, get_session
+from models.database import Employee, SalaryRecord, User, get_session
 from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
 from services.salary_job_registry import (
     ActiveJobExistsError,
@@ -38,6 +38,62 @@ from utils.rate_limit import SlidingWindowLimiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _enqueue_salary_batch_completed(
+    *, year: int, month: int, count: int, total_net: int
+) -> None:
+    """薪資批次計算完成後，對每位 SALARY_WRITE perm holder 個人推送。
+
+    自開 session（caller 的 session 通常已 close），enqueue 後 commit 觸發
+    dispatch after_commit hook。原本走 line_service 的群組廣播 method 改為
+    per-recipient 個人推送（in_app + LINE）。
+    """
+    from services.notification import dispatch
+
+    session = get_session()
+    try:
+        is_sqlite = session.bind.dialect.name == "sqlite"
+        perm = Permission.SALARY_WRITE.value
+        if is_sqlite:
+            users = session.query(User).filter(User.is_active.is_(True)).all()
+            recipient_ids = [
+                u.id for u in users if u.permission_names and perm in u.permission_names
+            ]
+        else:
+            rows = (
+                session.query(User.id)
+                .filter(
+                    User.is_active.is_(True),
+                    User.permission_names.contains([perm]),
+                )
+                .all()
+            )
+            recipient_ids = [r[0] for r in rows]
+
+        for rid in recipient_ids:
+            dispatch.enqueue(
+                session=session,
+                event_type="salary.batch_completed",
+                recipient_user_id=rid,
+                context={
+                    "year": year,
+                    "month": month,
+                    "count": count,
+                    "total_net": total_net,
+                },
+                source_entity_type="salary_batch",
+                source_entity_id=None,
+            )
+        session.commit()
+    except Exception as exc:
+        logger.warning("salary.batch_completed enqueue 失敗（已吞）：%s", exc)
+        try:
+            session.rollback()
+        except Exception:
+            pass
+    finally:
+        session.close()
 
 
 # 薪資計算為高 CPU 操作，每 IP 每小時最多 20 次（批次計算）
@@ -82,11 +138,10 @@ def _breakdown_to_result_dict(emp, breakdown) -> dict:
 
 def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
     """背景執行薪資批次計算，同步更新 job registry 狀態。"""
-    # Lazy import：取 __init__ 上的 service-state / cross-group helpers。
+    # Lazy import：取 __init__ 上的 cross-group helpers。
     from . import (
         _active_employees_in_month_filter,
         _invalidate_finance_summary_cache,
-        _line_service,
     )
 
     _salary_job_registry.mark_running(job_id)
@@ -128,14 +183,14 @@ def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
         _salary_job_registry.complete(job_id, results_dicts, errors)
         _invalidate_finance_summary_cache()
 
-        if _line_service is not None and results_dicts:
-            try:
-                total_net = sum(r["net_pay"] for r in results_dicts)
-                _line_service.notify_salary_batch_complete(
-                    year, month, len(results_dicts), int(total_net)
-                )
-            except Exception as _le:
-                logger.warning("薪資批次計算 LINE 推播失敗: %s", _le)
+        if results_dicts:
+            total_net = sum(r["net_pay"] for r in results_dicts)
+            _enqueue_salary_batch_completed(
+                year=year,
+                month=month,
+                count=len(results_dicts),
+                total_net=int(total_net),
+            )
     except Exception as e:
         logger.exception("async 薪資批次計算失敗 job_id=%s", job_id)
         _salary_job_registry.fail(job_id, str(e))
@@ -156,7 +211,6 @@ def calculate_salaries_alt(
     from . import (
         _active_employees_in_month_filter,
         _invalidate_finance_summary_cache,
-        _line_service,
         _trigger_past_month_snapshot_if_missing,
     )
 
@@ -259,15 +313,15 @@ def calculate_salaries_alt(
             }
         )
 
-    # LINE 群組推播（薪資批次計算完成）
-    if _line_service is not None and results:
-        try:
-            total_net = sum(r["net_pay"] for r in results)
-            _line_service.notify_salary_batch_complete(
-                year, month, len(results), int(total_net)
-            )
-        except Exception as _le:
-            logger.warning("薪資批次計算 LINE 推播失敗: %s", _le)
+    # 通知：對每位 SALARY_WRITE perm holder 個人推送（in_app + LINE）
+    if results:
+        total_net = sum(r["net_pay"] for r in results)
+        _enqueue_salary_batch_completed(
+            year=year,
+            month=month,
+            count=len(results),
+            total_net=int(total_net),
+        )
 
     _invalidate_finance_summary_cache()
     return {"results": results, "errors": errors}

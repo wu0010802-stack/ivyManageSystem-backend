@@ -38,7 +38,9 @@ from models.database import (
     AttendancePolicy,
     Employee,
     OvertimeRecord,
+    User,
 )
+from utils.permissions import Permission
 from utils.auth import get_current_user
 from utils.error_messages import LEAVE_RECORD_NOT_FOUND
 from ._shared import (
@@ -71,6 +73,30 @@ from api.leaves_quota import (
 from services.leave_policy import validate_portal_leave_rules
 
 router = APIRouter()
+
+
+def _list_active_users_with_permission(session, perm: str) -> list[int]:
+    """SQLite/PG 通用：列出 permission_names 含 perm 的 active user_id。
+
+    SQLite 不支援 ARRAY contains operator，走 app-layer filter；PG 走原生
+    operator。對齊 api/permissions_admin.py:136-145 慣例。
+    """
+    is_sqlite = session.bind.dialect.name == "sqlite"
+    if is_sqlite:
+        users = session.query(User).filter(User.is_active.is_(True)).all()
+        return [
+            u.id for u in users if u.permission_names and perm in u.permission_names
+        ]
+    rows = (
+        session.query(User.id)
+        .filter(
+            User.is_active.is_(True),
+            User.permission_names.contains([perm]),
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
+
 
 logger = logging.getLogger(__name__)
 
@@ -357,9 +383,40 @@ def create_my_leave(
             ),
         )
         session.add(leave)
-        session.commit()
+        session.flush()  # 取 leave.id 給 dispatch source_entity_id
 
         leave_type_label = LEAVE_TYPE_LABELS.get(data.leave_type, data.leave_type)
+
+        # 通知：commit 前 enqueue；dispatch after_commit hook 對每位 LEAVES_WRITE
+        # reviewer 個人推送（in_app + LINE）。原 _push 群組廣播改為 per-reviewer，
+        # 行為變更見 commit message。
+        try:
+            from services.notification import dispatch
+
+            reviewer_user_ids = _list_active_users_with_permission(
+                session, Permission.LEAVES_WRITE.value
+            )
+            for rid in reviewer_user_ids:
+                dispatch.enqueue(
+                    session=session,
+                    event_type="leave.submitted",
+                    recipient_user_id=rid,
+                    context={
+                        "submitter_name": emp.name,
+                        "leave_type": leave_type_label,
+                        "start": data.start_date.isoformat(),
+                        "end": data.end_date.isoformat(),
+                        "leave_id": leave.id,
+                    },
+                    sender_id=current_user.get("user_id"),
+                    source_entity_type="leave_request",
+                    source_entity_id=leave.id,
+                )
+        except Exception as exc:
+            logger.warning("leave.submitted enqueue 失敗（已吞）：%s", exc)
+
+        session.commit()
+
         request.state.audit_entity_id = str(leave.id)
         request.state.audit_summary = (
             f"教師送出請假申請：{emp.name} {leave_type_label} "
@@ -385,19 +442,6 @@ def create_my_leave(
                 data.source_overtime_id if data.leave_type == "compensatory" else None
             ),
         }
-
-        # LINE 通知（fire-and-forget，失敗不影響申請）
-        if _line_service:
-            try:
-                _line_service.notify_leave_submitted(
-                    emp.name,
-                    data.leave_type,
-                    data.start_date,
-                    data.end_date,
-                    data.leave_hours,
-                )
-            except Exception as e:
-                logger.warning("LINE 通知發送失敗: %s", e)
 
         msg = "請假申請已送出，待主管核准"
         if substitute_status == "pending":
