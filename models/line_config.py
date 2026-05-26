@@ -3,6 +3,7 @@ LINE 通知設定 Model
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 
@@ -17,4 +18,4 @@ class LineConfig(Base):
     target_id = Column(String(100), nullable=True)  # group ID 或 user ID
     is_enabled = Column(Boolean, default=False)
     channel_secret = Column(String(256), nullable=True)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)

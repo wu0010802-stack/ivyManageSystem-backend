@@ -20,14 +20,13 @@ def _evt(event_type, **kwargs):
     )
 
 
-UNREGISTERED_EVENT = "dismissal.created"
-# dismissal.created Section 2 (group_id mode) 才接管；本 Phase 4 Section 1 後
-# 仍走 fallback push_text。用此 event 驗 LineAdapter fallback path。
+UNREGISTERED_EVENT = "test.unknown_unregistered_event"
+# Phase 4 Section 2 後 LINE_HANDLERS 覆蓋全部 23 個 event。用一個故意不存在的
+# event_type 驗 LineAdapter fallback path（safety net for 未來新 event）。
 
 
 def test_line_adapter_fallback_push_text_for_unmapped_event_type():
-    """Phase 4 Section 1 後 LINE_HANDLERS 覆蓋 22 個 event；剩 dismissal.created
-    仍未註冊（hybrid path），其發送會走 fallback push_text_to_user。"""
+    """LINE_HANDLERS 沒對映 event_type 時走 fallback push_text_to_user（safety net）。"""
     fake_ls = MagicMock()
     adapter = LineAdapter(fake_ls)
     adapter.send(
@@ -43,11 +42,8 @@ def test_line_adapter_fallback_push_text_for_unmapped_event_type():
 
 
 def test_line_adapter_raises_when_recipient_is_int():
-    """LineAdapter 收到非 str recipient_user_id 應 raise ValueError（走 fallback path）。
-
-    用未註冊 event_type（dismissal.created）觸發 fallback 才會撞到 isinstance 檢查；
-    註冊 event 走 handler 不會 reach 該 check。
-    """
+    """LineAdapter fallback path 收到非 str recipient_user_id 且非 group_mode
+    應 raise ValueError。"""
     fake_ls = MagicMock()
     adapter = LineAdapter(fake_ls)
     with pytest.raises(ValueError, match="_resolve_line_user_id"):
@@ -86,13 +82,43 @@ def test_line_adapter_calls_handler_when_registered():
         LINE_HANDLERS["leave.approved"] = orig
 
 
-def test_line_handlers_covers_22_events():
-    """Phase 4 Section 1 後 LINE_HANDLERS 覆蓋 22 個 event_type（23 個減 dismissal.created）。
-    dismissal.created 留給 Section 2 group_id mode 處理；其他 event 全部走專屬
-    handler 取代 fallback push_text，恢復 Flex/quick-reply 互動 UI。"""
+def test_line_handlers_covers_all_23_events():
+    """Phase 4 Section 2 後 LINE_HANDLERS 覆蓋全部 23 個 event_type（含 dismissal.created
+    via group_id mode）。fallback push_text path 為 safety net 給未來新 event。"""
     assert UNREGISTERED_EVENT not in LINE_HANDLERS
-    # 員工域 11 + 家長域 7 + 才藝家長 3 + Growth Report 1 = 22
-    assert len(LINE_HANDLERS) == 22
+    # 員工 11 + 家長 7 + 才藝家長 3 + Growth Report 1 + dismissal 1 = 23
+    assert len(LINE_HANDLERS) == 23
+
+
+def test_dismissal_created_handler_uses_group_push():
+    """dismissal.created handler 走 push_text_to_group(line_service._target_id)
+    LINE 群組推送，不走個人 push_to_user。"""
+    fake_ls = MagicMock()
+    fake_ls._target_id = "C_dismissal_group"
+    adapter = LineAdapter(fake_ls)
+    # Section 2 caller (dismissal_calls.py) 傳 line_group_id="" sentinel
+    evt = PendingEvent(
+        event_type="dismissal.created",
+        recipient_user_id=None,
+        context={
+            "student_name": "小明",
+            "classroom_name": "向日葵班",
+            "note": "今日提早接送",
+        },
+        sender_id=None,
+        source_entity_type="dismissal_call",
+        source_entity_id=99,
+        channels=("line", "ws"),
+        line_group_id="",
+    )
+    adapter.send(evt, Rendered(title="t", body="b", deep_link=None), log_id=1)
+    fake_ls.push_text_to_group.assert_called_once()
+    args = fake_ls.push_text_to_group.call_args[0]
+    assert args[0] == "C_dismissal_group"  # fallback 用 ls._target_id
+    assert "小明" in args[1]
+    assert "向日葵班" in args[1]
+    assert "今日提早接送" in args[1]
+    fake_ls._push_to_user.assert_not_called()
 
 
 def test_parent_message_handler_uses_quick_reply_when_thread_id_present():

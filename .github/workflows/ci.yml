@@ -45,10 +45,43 @@ jobs:
       - name: Run pip-audit
         run: pip-audit -r requirements.txt --strict
 
+  ruff-lint:
+    name: Ruff DTZ Lint Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff DTZ check
+        run: ruff check .
+
   test:
-    name: Tests
+    name: Tests (TZ=${{ matrix.container_tz }})
     runs-on: ubuntu-latest
     timeout-minutes: 60  # 2026-05-25: 15→30→60. CI 64% @ 30 min；含 5000+ test + spike_rls auth setup overhead
+    # PR1 (2026-05-26) 引入 TZ matrix。UTC run 暫設 continue-on-error 因 pre-existing
+    # ~6 個 test 有 container TZ 隱性依賴；PR2/PR3 替換 datetime.now → now_taipei_naive
+    # 後這些 test 多半自動綠。PR3 收尾時移除此 continue-on-error。
+    continue-on-error: ${{ matrix.container_tz == 'UTC' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        container_tz: [Asia/Taipei, UTC]
+
+    env:
+      TZ: ${{ matrix.container_tz }}
 
     services:
       postgres:
@@ -78,11 +111,35 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Materialize schema for module-level engine tests
+        # 部分 test 在 module top 直接 `_engine = get_engine()` 連 CI 的 PG service
+        # 並 inspect 真實 schema（例 test_alembic_audrsk01）。CI 的 PG service container
+        # 起來時是空 DB。
+        #
+        # 不能直接跑 `alembic upgrade heads`：baseline migration `4ddf3ebad3e8`
+        # 假設 schema 已存在，從空 DB 跑會 UndefinedTable。生產時 alembic stamp head
+        # 對既有 DB 套用後續 migration 才合理。
+        #
+        # 改用 `Base.metadata.create_all` 從 ORM 模型直接建表（含 audrsk01 加的
+        # acknowledged_at / acknowledged_by 等新 column），再 `alembic stamp heads`
+        # 把 alembic_version 寫到 head。等價於「prod 升到 head 後的 schema state」。
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
+          ENV: development
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+        run: |
+          python -c "from models.database import Base; from models.base import get_engine; Base.metadata.create_all(get_engine())"
+          alembic stamp heads
+
       - name: Run tests with coverage
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
           ENV: development
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+          # spike_rls conftest 預設用 `yilunwu@localhost`（本機 dev 慣例），CI 沒此 superuser
+          # → 改指向 service container 的 test:test。fixture 會用此連線 CREATE ROLE
+          # rls_spike_parent_login / rls_spike_admin_login（spike 自己的隔離角色，不是 ivy_parent_login）。
+          RLS_SPIKE_ADMIN_URL: postgresql://test:test@localhost:5432/ivymanagement_test
         # T9: 加 coverage gate（pyproject.toml [tool.coverage.run] 已設定 source）。
         # 起步門檻 60%：給既有覆蓋率不至於立即 fail，未來逐步提升。
         # --cov-fail-under 用 ratchet 風格：每次提升只能升不能降。
@@ -163,17 +220,19 @@ jobs:
       - name: Block os.getenv / os.environ outside config/
         # Phase 1 (2026-05-21) 完成所有 env 集中到 config/ 後啟用。
         # 允許清單：
-        #   config/                       — Settings 內部
-        #   tests/conftest.py             — autoreset fixture 需要操作 env
-        #   tests/spike_rls/              — RLS test fixture 慣例自讀 env
-        #   scripts/dump_openapi.py       — CLI 工具，獨立於 FastAPI startup
-        #   alembic/env.py                — Alembic CLI，早於 Settings init
+        #   config/                            — Settings 內部
+        #   tests/conftest.py                  — autoreset fixture 需要操作 env
+        #   tests/spike_rls/                   — RLS test fixture 慣例自讀 env
+        #   scripts/dump_openapi.py            — CLI 工具，獨立於 FastAPI startup
+        #   scripts/dr_storage_sync.py         — DR CLI 工具，GH Actions 跑無 DB 依賴
+        #   alembic/env.py                     — Alembic CLI，早於 Settings init
         run: |
           if git grep -nE 'os\.(getenv|environ)' -- '*.py' \
                ':!config/' \
                ':!tests/conftest.py' \
                ':!tests/spike_rls/' \
                ':!scripts/dump_openapi.py' \
+               ':!scripts/dr_storage_sync.py' \
                ':!alembic/env.py'; then
             echo "::error::os.getenv / os.environ.get 只能在 config/ 與明確 allow-list 內使用"
             echo "::error::請改讀 settings.<domain>.<field>（見 docs/superpowers/specs/2026-05-21-config-centralization-phase1-design.md）"
@@ -339,38 +398,36 @@ jobs:
         # services.notification.dispatch.enqueue；line_service.{,_}notify_*
         # 與 _push_to_user 改為 dispatch._channels.line / hybrid caller 私有 API。
         #
-        # 已知 hybrid exception（Phase 4 line_service 重構時收尾）：
-        #   api/dismissal_calls.py      — LINE 群組推送無 cleanly defined perm pool
-        #   api/portfolio/reports.py    — sent_count + Phase 3 rollback 需從
-        #                                 push_to_user 拿真實 ACK
-        #
         # 允許 path（line_service 內部與 dispatch 內部互呼）：
         #   services/line_service.py    — method 自己定義在此
         #   services/notification/_channels/  — dispatch LINE adapter
+        #
+        # Phase 4 收尾（2026-05-26）：
+        #   - Section 2: dismissal_calls.py 改走 dispatch.enqueue(line_group_id="")
+        #   - Section 3: reports.py 改走 dispatch.send_to_line_user_sync
+        # exception list 已清空；所有 LINE 推送 caller 統一走 dispatch API。
         run: |
           # 1. 禁直接 line_service.{,_}notify_* / line_svc.{,_}notify_*
           PAT='_?line_(service|svc)\._?notify_'
           MATCH=$(git grep -nE "$PAT" -- 'api/**.py' 'services/**.py' \
             ':!services/line_service.py' \
             ':!services/notification/_channels/' \
-            ':!api/dismissal_calls.py' \
-            ':!api/portfolio/reports.py' \
             || true)
           if [ -n "$MATCH" ]; then
-            echo "::error::禁直接 line_service.notify_* / _notify_* / push_to_user（請改用 dispatch.enqueue）："
+            echo "::error::禁直接 line_service.notify_* / _notify_*（請改用 dispatch.enqueue）："
             echo "$MATCH"
             exit 1
           fi
           echo "✅ 無 disallowed line_service.{,_}notify_* caller"
 
-          # 2. 禁 push_to_user 直接 caller（reports.py hybrid 除外）
+          # 2. 禁 push_to_user 直接 caller
           PAT2='_?line_service\.push_to_user|_?line_svc\.push_to_user'
           MATCH2=$(git grep -nE "$PAT2" -- 'api/**.py' 'services/**.py' \
             ':!services/line_service.py' \
-            ':!api/portfolio/reports.py' \
+            ':!services/notification/_channels/' \
             || true)
           if [ -n "$MATCH2" ]; then
-            echo "::error::禁直接 line_service.push_to_user（請改用 dispatch.enqueue）："
+            echo "::error::禁直接 line_service.push_to_user（請改用 dispatch.send_to_line_user_sync 或 dispatch.enqueue）："
             echo "$MATCH2"
             exit 1
           fi

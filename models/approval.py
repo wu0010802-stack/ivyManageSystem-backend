@@ -11,6 +11,7 @@ PunchCorrectionRequest 的 `status` String(20) column 採用。
 
 import enum
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -57,7 +58,7 @@ class ApprovalPolicy(Base):
         comment="可審核的角色，逗號分隔：supervisor,hr,admin",
     )
     is_active = Column(Boolean, default=True, nullable=False)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class ApprovalLog(Base):
@@ -79,6 +80,6 @@ class ApprovalLog(Base):
     approver_username = Column(String(50), nullable=False, comment="審核者帳號")
     approver_role = Column(String(20), nullable=True, comment="審核者角色")
     comment = Column(Text, nullable=True, comment="駁回原因或備註")
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
     __table_args__ = (Index("ix_approval_log_doc", "doc_type", "doc_id"),)

@@ -196,7 +196,7 @@ def get_home_summary(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        today = date_cls.today()
+        today = date_cls.today()  # noqa: DTZ011
 
         user = session.query(User).filter(User.id == user_id).first()
 

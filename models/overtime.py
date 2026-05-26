@@ -3,6 +3,7 @@ models/overtime.py — 加班記錄與補打卡申請模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -59,8 +60,8 @@ class OvertimeRecord(Base):
     approved_by = Column(String(50), comment="核准人")
     reason = Column(Text, comment="加班原因")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     @property
     def approval_status(self) -> str:
@@ -102,8 +103,8 @@ class PunchCorrectionRequest(Base):
     approved_by = Column(String(50), nullable=True, comment="核准人")
     rejection_reason = Column(Text, nullable=True, comment="駁回原因")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     @property
     def approval_status(self) -> str:

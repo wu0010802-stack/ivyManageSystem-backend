@@ -30,6 +30,12 @@ def recompute_record_totals(record):
         + (record.birthday_bonus or 0)
         + (record.overtime_pay or 0)
     )
+    # ⚠ supplementary_health_employee 已併入 health_insurance_employee（hourly
+    # 路徑 engine.py:1581 與獎金路徑 supplementary_premium.apply_bonus_supplementary_
+    # to_breakdown 皆 `+=` 到 breakdown.health_insurance）；此 column 為「拆分顯示用」
+    # informational，**不可**再加進 total_deduction，否則 double-count。若未來
+    # 重構決定改為「health_insurance_employee 只記 base + supplementary 獨立列」，
+    # 屆時需同步把 supplementary 加進來。
     record.total_deduction = round_half_up(
         (record.labor_insurance_employee or 0)
         + (record.health_insurance_employee or 0)

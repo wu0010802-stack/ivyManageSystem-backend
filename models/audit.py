@@ -3,6 +3,7 @@ models/audit.py — 操作審計模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import Column, ForeignKey, Integer, String, DateTime, Text, Index
 
@@ -33,7 +34,7 @@ class AuditLog(Base):
         comment="變更內容 JSON（{before, after} 或 {created, deleted}）",
     )
     ip_address = Column(String(45), nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     acknowledged_at = Column(DateTime(timezone=True), nullable=True, comment="ack 時間")
     acknowledged_by = Column(
         Integer,

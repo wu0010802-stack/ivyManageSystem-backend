@@ -6,6 +6,7 @@ import io
 import logging
 import threading
 from datetime import date, datetime, time
+from utils.taipei_time import now_taipei_naive
 from zoneinfo import ZoneInfo
 
 _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
@@ -136,8 +137,8 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
     """
     if bg is None:
         return
-    # 用台灣日；UTC 主機在台北時間每月 1 日 00:00-08:00，date.today() 仍為上月 31 日，
-    # 會讓 _previous_month 回到上上月，補拍對象錯。
+    # 用台灣日；UTC 主機在台北時間每月 1 日 00:00-08:00，系統日仍為上月 31 日，
+    # 會讓 _previous_month 回到上上月，補拍對象錯；故改用 _today_taipei()。
     today = _today_taipei()
     year, month = _previous_month(today)
     key = f"{today.isoformat()}:{year}-{month:02d}"
@@ -509,7 +510,7 @@ def finalize_salary_month(
                     ),
                 )
 
-        now = datetime.now()
+        now = now_taipei_naive()
         operator = current_user.get("username") or current_user.get("name") or "管理員"
 
         # force 路徑：把被略過的清單與原因寫進每筆 record.remark，留稽核痕跡
@@ -654,7 +655,7 @@ def unfinalize_salary(
         )
         record.is_finalized = False
         audit_note = (
-            f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 封存解除"
+            f"\n[{now_taipei_naive().strftime('%Y-%m-%d %H:%M')}] 封存解除"
             f"（操作者：{operator}）"
             f"\n原封存：{finalized_by_before} @ {finalized_at_before}"
             f"\n原因：{reason_cleaned}"

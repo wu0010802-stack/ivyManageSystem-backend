@@ -19,6 +19,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date
+from utils.taipei_time import today_taipei
 from pathlib import Path
 from typing import Optional, Protocol
 
@@ -166,10 +167,10 @@ class LocalStorage:
         Args:
             content: 檔案原始 bytes
             extension: 副檔名含點號（如 ".jpg"），會被 lower()
-            today:    測試注入用，預設 date.today()
+            today:    測試注入用，預設 today_taipei()
         """
         ext = extension.lower()
-        today = today or date.today()
+        today = today or today_taipei()
 
         # 目錄：portfolio/YYYY/MM/
         year_str = f"{today.year:04d}"

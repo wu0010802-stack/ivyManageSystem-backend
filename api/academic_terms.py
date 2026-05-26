@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -44,7 +45,7 @@ def current_term(
     _: dict = Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ) -> Optional[AcademicTerm]:
     """回傳今日所在學期（查無回 null）。"""
-    today = date.today()
+    today = today_taipei()
     return (
         session.query(AcademicTerm)
         .filter(AcademicTerm.start_date <= today, AcademicTerm.end_date >= today)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 
 from models.database import ReportSnapshot, get_session
 
@@ -26,7 +27,7 @@ class ReportCacheService:
         params: dict | None = None,
         force_refresh: bool = False,
     ):
-        now = datetime.now()
+        now = now_taipei_naive()
         cache_key = self.build_cache_key(category, params)
         snapshot = session.query(ReportSnapshot).filter(ReportSnapshot.cache_key == cache_key).first()
 

@@ -4,6 +4,7 @@ models/leave.py — 請假記錄與配額模型
 
 import enum
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -96,8 +97,8 @@ class LeaveRecord(Base):
     substitute_responded_at = Column(DateTime, nullable=True, comment="代理人回覆時間")
     substitute_remark = Column(Text, nullable=True, comment="代理人備註")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     @property
     def approval_status(self) -> str:
@@ -187,7 +188,7 @@ class LeaveQuota(Base):
         Date, nullable=True, comment="週年制配額迄日（+1y，2/29 fallback 2/28）"
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     employee = relationship("Employee", backref="leave_quotas")

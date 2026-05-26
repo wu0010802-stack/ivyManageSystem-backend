@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models.database import (
@@ -43,6 +46,11 @@ router = APIRouter(prefix="/contact-book", tags=["parent-contact-book"])
 
 class ReplyCreate(BaseModel):
     body: str = Field(..., min_length=1, max_length=500)
+    client_request_id: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="前端產生的 UUID，partial UNIQUE 提供冪等性",
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -155,7 +163,7 @@ def get_today(
 ):
     """取得指定子女今日已發布的聯絡簿（沒有 entry / 仍為草稿時 entry 回 null）。"""
     user_id = current_user["user_id"]
-    today = date.today()
+    today = today_taipei()
     _assert_student_owned(session, user_id, student_id)
     entry = (
         session.query(StudentContactBookEntry)
@@ -208,7 +216,7 @@ def list_history(
     """歷史清單（僅 published）。預設回最近 30 筆。"""
     user_id = current_user["user_id"]
     if to_date is None:
-        to_date = date.today()
+        to_date = today_taipei()
     if from_date is None:
         from_date = to_date - timedelta(days=60)
     if from_date > to_date:
@@ -351,7 +359,7 @@ def mark_read(
     ack = StudentContactBookAck(
         entry_id=entry.id,
         guardian_user_id=user_id,
-        read_at=datetime.now(),
+        read_at=now_taipei_naive(),
     )
     session.add(ack)
     session.flush()
@@ -410,14 +418,49 @@ def reply(
 ):
     """家長簡短回覆。"""
     user_id = current_user["user_id"]
+    # IDOR 守衛必須在冪等 pre-check 之前執行，避免跨家庭洩漏 UUID 存在性
     entry = _get_entry_for_parent(session, user_id=user_id, entry_id=entry_id)
+
+    # 冪等 pre-check：同 client_request_id 已存在則回原 reply
+    if payload.client_request_id:
+        existing = session.scalar(
+            select(StudentContactBookReply).where(
+                StudentContactBookReply.client_request_id == payload.client_request_id
+            )
+        )
+        if existing is not None:
+            request.state.audit_summary = (
+                f"家長回覆聯絡簿 idempotent replay："
+                f"entry={entry.id} reply={existing.id}"
+            )
+            return _reply_to_dict(existing)
+
     row = StudentContactBookReply(
         entry_id=entry.id,
         guardian_user_id=user_id,
         body=payload.body.strip(),
+        client_request_id=payload.client_request_id,
     )
     session.add(row)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as e:
+        # PG partial UNIQUE 競爭寫入（23505）防護；SQLite 測試不觸發此路徑
+        if "ix_student_contact_book_replies_client_request_id" in str(e.orig):
+            session.rollback()
+            existing = session.scalar(
+                select(StudentContactBookReply).where(
+                    StudentContactBookReply.client_request_id
+                    == payload.client_request_id
+                )
+            )
+            if existing:
+                request.state.audit_summary = (
+                    f"家長回覆聯絡簿 idempotent 23505 replay："
+                    f"entry={entry.id} reply={existing.id}"
+                )
+                return _reply_to_dict(existing)
+        raise
     session.refresh(row)
 
     request.state.audit_entity_id = str(entry.id)
@@ -452,7 +495,7 @@ def delete_reply(
         raise HTTPException(status_code=403, detail="不可刪除他人回覆")
     if row.deleted_at:
         return {"message": "回覆已刪除"}
-    row.deleted_at = datetime.now()
+    row.deleted_at = now_taipei_naive()
     mark_soft_delete(request, "contact_book_entry", str(reply_id))
     session.flush()
     request.state.audit_entity_id = str(entry.id)

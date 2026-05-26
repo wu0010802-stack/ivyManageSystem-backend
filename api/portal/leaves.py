@@ -8,6 +8,7 @@ import logging
 import re
 import uuid
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive, today_taipei
 from pathlib import Path
 from typing import List, Optional
 
@@ -664,7 +665,7 @@ def get_my_leave_stats(
         annual_leave_quota = 0
 
         if hire_date:
-            today = date.today()
+            today = today_taipei()
             months_diff = (
                 (today.year - hire_date.year) * 12 + today.month - hire_date.month
             )
@@ -675,7 +676,7 @@ def get_my_leave_stats(
             seniority_months = months_diff % 12
             annual_leave_quota = _calculate_annual_leave_quota(hire_date)
 
-        current_year = date.today().year
+        current_year = today_taipei().year  
         start_of_year = date(current_year, 1, 1)
         end_of_year = date(current_year, 12, 31)
 
@@ -745,7 +746,7 @@ def get_my_quotas(
 ):
     """查詢本人各假別年度配額（含動態計算的已使用、待審、剩餘時數）"""
     if year is None:
-        year = date.today().year
+        year = today_taipei().year  
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
@@ -858,7 +859,7 @@ def substitute_respond(
 
         old_status = leave.substitute_status
         leave.substitute_status = "accepted" if data.action == "accept" else "rejected"
-        leave.substitute_responded_at = datetime.now()
+        leave.substitute_responded_at = now_taipei_naive()
         leave.substitute_remark = data.remark
         session.commit()
 

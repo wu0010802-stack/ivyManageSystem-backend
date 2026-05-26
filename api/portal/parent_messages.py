@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -595,7 +596,7 @@ def recall_message(
             raise HTTPException(status_code=404, detail="訊息不存在")
         if not can_recall(msg, user_id=user_id):
             raise HTTPException(status_code=403, detail="只有 sender 30 分鐘內可撤回")
-        msg.deleted_at = datetime.now()
+        msg.deleted_at = now_taipei_naive()
         session.commit()
         request.state.audit_entity_id = str(msg.id)
         request.state.audit_summary = (

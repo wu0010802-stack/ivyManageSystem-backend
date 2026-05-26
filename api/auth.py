@@ -7,6 +7,7 @@ import logging
 import time
 from collections import defaultdict
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import List, Optional
 
 from config import settings
@@ -483,7 +484,7 @@ def login(data: LoginRequest, request: Request):
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
 
-        user.last_login = datetime.now()
+        user.last_login = now_taipei_naive()
         session.commit()
 
         # permission_names: ["*"] 表示全部權限；None 時套用角色預設

@@ -4,6 +4,7 @@ models/employee.py — 員工相關模型
 
 import enum
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -193,8 +194,8 @@ class Employee(Base):
         comment="幼教師證/教保員證/助理教保員證",
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_employee_active_resign", "is_active", "resign_date"),
@@ -245,8 +246,8 @@ class EmployeeEducation(Base):
         Boolean, default=False, nullable=False, comment="是否為最高學歷"
     )
     remark = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     employee = relationship("Employee", backref="educations")
 
@@ -269,8 +270,8 @@ class EmployeeCertificate(Base):
     issued_date = Column(Date, nullable=True, comment="取得日期")
     expiry_date = Column(Date, nullable=True, comment="到期日（空值代表永久有效）")
     remark = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     employee = relationship("Employee", backref="certificates")
 
@@ -294,7 +295,7 @@ class EmployeeContract(Base):
     end_date = Column(Date, nullable=True, comment="合約結束日（可空）")
     salary_at_contract = Column(Money, nullable=True, comment="簽約時薪資")
     remark = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     employee = relationship("Employee", backref="contracts")

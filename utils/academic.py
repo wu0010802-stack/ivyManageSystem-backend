@@ -13,6 +13,7 @@
 
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import HTTPException
@@ -44,7 +45,7 @@ def resolve_current_academic_term(
     優先順序：
     1. 若顯式傳 target_date → 純日期推算（不查 DB）
     2. 否則查 AcademicTerm.is_current=true，找到就用該 row
-    3. 找不到 → fallback _resolve_by_date(date.today()) + logger.warning
+    3. 找不到 → fallback _resolve_by_date(today_taipei()) + logger.warning
 
     session: caller 已有 session 就傳進來避免 reconnect；不傳則內部開短命 session。
     """
@@ -68,7 +69,7 @@ def resolve_current_academic_term(
             "AcademicTerm.is_current 未設定，resolve_current_academic_term() "
             "fallback 到日期推算（請至 /academic-terms UI 設定當前學期）"
         )
-        return _resolve_by_date(date.today())
+        return _resolve_by_date(today_taipei())
     finally:
         if owned:
             sess.close()
@@ -80,7 +81,7 @@ def default_current_academic_term_for_column() -> tuple[int, int]:
     Classroom._default_school_year/_default_semester 在 INSERT 時呼叫，
     這時候不該觸發 DB query（會在已開 session 內套娃）。
     """
-    return _resolve_by_date(date.today())
+    return _resolve_by_date(today_taipei())
 
 
 def resolve_academic_term_filters(

@@ -3,6 +3,7 @@ models/shift.py — 排班相關模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import Column, Integer, String, Date, DateTime, Boolean, ForeignKey, Text, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
@@ -21,8 +22,8 @@ class ShiftType(Base):
     sort_order = Column(Integer, default=0, comment="排序")
     is_active = Column(Boolean, default=True, comment="是否啟用")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class ShiftAssignment(Base):
@@ -38,8 +39,8 @@ class ShiftAssignment(Base):
     week_start_date = Column(Date, nullable=False, comment="該週週一日期")
     notes = Column(Text, comment="備註")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     employee = relationship("Employee", backref="shift_assignments")
     shift_type = relationship("ShiftType", backref="assignments")
@@ -59,8 +60,8 @@ class DailyShift(Base):
     date = Column(Date, nullable=False, comment="排班日期")
     notes = Column(Text, comment="備註")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     employee = relationship("Employee", backref="daily_shifts")
     shift_type = relationship("ShiftType", backref="daily_shifts")
@@ -81,8 +82,8 @@ class ShiftSwapRequest(Base):
     target_responded_at = Column(DateTime, comment="對方回覆時間")
     target_remark = Column(Text, comment="對方備註")
     executed_at = Column(DateTime, comment="執行時間")
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_swap_requester", "requester_id", "status"),

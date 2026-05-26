@@ -65,3 +65,7 @@ class SchedulerSettings(BaseSettings):
     pii_retention_gc_disabled: BoolEnv = True
     pii_retention_gc_dry_run: BoolEnv = True
     pii_retention_terminal_days: int = 365
+
+    # Leave quota expiry（補休到期 + 特休週年 cutover）
+    leave_quota_expiry_enabled: BoolEnv = False
+    leave_quota_expiry_check_interval: int = 3600  # 1 小時輪詢一次

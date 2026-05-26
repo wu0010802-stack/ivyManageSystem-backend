@@ -9,6 +9,7 @@
 
 from collections import defaultdict
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -49,7 +50,7 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
         .all()
     )
 
-    today = date.today()
+    today = today_taipei()
     soon = today + timedelta(days=_DUE_SOON_DAYS)
     by_student: dict[int, dict] = defaultdict(_empty_totals)
 

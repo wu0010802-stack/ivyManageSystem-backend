@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -311,8 +312,8 @@ def create_period(
         if existing:
             raise HTTPException(status_code=409, detail="期間名稱已存在")
         p = RecruitmentPeriod(
-            **payload.model_dump(), created_at=datetime.now(), updated_at=datetime.now()
-        )
+            **payload.model_dump(), created_at=now_taipei_naive(), updated_at=now_taipei_naive()
+            )
         session.add(p)
         session.flush()
         return _period_to_dict(p)
@@ -330,7 +331,7 @@ def update_period(
             raise HTTPException(status_code=404, detail="期間不存在")
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(p, field, value)
-        p.updated_at = datetime.now()
+        p.updated_at = now_taipei_naive()
         session.flush()
         return _period_to_dict(p)
 
@@ -397,8 +398,7 @@ def sync_period_from_visits(
         p.enrolled_count = enrolled
         p.transfer_term_count = transfer
         p.effective_deposit_count = effective
-        p.updated_at = datetime.now()
-
+        p.updated_at = now_taipei_naive()
         logger.info(
             f"期間 [{p.period_name}] 已同步：參觀={visit} 預繳={deposit} "
             f"註冊={enrolled} 轉期={transfer} 有效預繳={effective}"

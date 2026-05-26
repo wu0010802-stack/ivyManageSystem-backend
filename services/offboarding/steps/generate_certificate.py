@@ -6,6 +6,7 @@
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -43,7 +44,7 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
         )
         pdf_path.write_bytes(pdf_bytes)
 
-        now = datetime.now()
+        now = now_taipei_naive()
         record.certificate_pdf_path = str(pdf_path)
         record.certificate_generated_at = now
 

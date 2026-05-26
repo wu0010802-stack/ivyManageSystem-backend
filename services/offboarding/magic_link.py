@@ -15,6 +15,7 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -48,7 +49,7 @@ def generate_token(session: Session, record: EmployeeOffboardingRecord) -> str:
     """
     token = secrets.token_urlsafe(32)
     record.magic_link_token_hash = hash_token(token)
-    record.magic_link_expires_at = datetime.now() + timedelta(days=TOKEN_TTL_DAYS)
+    record.magic_link_expires_at = now_taipei_naive() + timedelta(days=TOKEN_TTL_DAYS)
     record.magic_link_revoked_at = None
     record.magic_link_download_count = 0
     record.magic_link_last_used_at = None
@@ -81,8 +82,8 @@ def verify_token(session: Session, token: str) -> Optional[EmployeeOffboardingRe
         return None
     if (
         record.magic_link_expires_at is not None
-        and record.magic_link_expires_at < datetime.now()
-    ):
+        and record.magic_link_expires_at < now_taipei_naive()
+        ):
         return None
     if (record.magic_link_download_count or 0) >= MAX_DOWNLOADS:
         return None
@@ -91,7 +92,7 @@ def verify_token(session: Session, token: str) -> Optional[EmployeeOffboardingRe
 
 def revoke_token(session: Session, record: EmployeeOffboardingRecord) -> None:
     """撤銷 token（保留 hash 行 audit）。呼叫端負責 commit。"""
-    record.magic_link_revoked_at = datetime.now()
+    record.magic_link_revoked_at = now_taipei_naive()
     session.flush()
     logger.warning(
         "magic-link token 已撤：employee_id=%s",
@@ -109,8 +110,8 @@ def is_active(record: EmployeeOffboardingRecord) -> bool:
         return False
     if (
         record.magic_link_expires_at is not None
-        and record.magic_link_expires_at < datetime.now()
-    ):
+        and record.magic_link_expires_at < now_taipei_naive()
+        ):
         return False
     if (record.magic_link_download_count or 0) >= MAX_DOWNLOADS:
         return False
@@ -120,4 +121,4 @@ def is_active(record: EmployeeOffboardingRecord) -> bool:
 def record_download(session: Session, record: EmployeeOffboardingRecord) -> None:
     """記錄下載：count++ + last_used_at = now。呼叫端負責 commit。"""
     record.magic_link_download_count = (record.magic_link_download_count or 0) + 1
-    record.magic_link_last_used_at = datetime.now()
+    record.magic_link_last_used_at = now_taipei_naive()

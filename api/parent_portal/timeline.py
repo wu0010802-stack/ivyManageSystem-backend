@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -90,7 +91,7 @@ async def parent_get_timeline(
                 "stats": {"total_items": 0, "by_type": {}},
             }
         if not since:
-            since = date.today() - timedelta(days=90)
+            since = today_taipei() - timedelta(days=90)  
 
         _assert_student_owned(session, user_id, student_id)
         all_items: list[dict] = []

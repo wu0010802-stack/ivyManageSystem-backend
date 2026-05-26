@@ -6,6 +6,7 @@ student_fee_records.period 取 distinct（fee_items 表已 DROP）。
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -285,8 +286,7 @@ def pay_fee_record(
         record.payment_method = payload.payment_method
         record.notes = payload.notes or ""
         record.status = "paid" if amount_paid >= record.amount_due else "partial"
-        record.updated_at = datetime.now()
-
+        record.updated_at = now_taipei_naive()
         student_name = record.student_name
 
         # DB 層 UNIQUE 攔下並發同 key 的第二筆：轉為 replay

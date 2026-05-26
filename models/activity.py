@@ -5,6 +5,7 @@ models/activity.py — 課後才藝報名系統資料模型
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from utils.taipei_time import now_taipei_naive
 from sqlalchemy import (
     Column,
     Integer,
@@ -28,7 +29,7 @@ _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 def _now_taipei_naive() -> datetime:
     """才藝相關記錄一律以台灣時間為準（與 today_taipei / payment_date 對齊）。
 
-    Why: 若 server 部署在 UTC，預設 datetime.now() 會寫入 UTC 時刻，而 payment_date /
+    Why: 若 server 部署在 UTC，預設 now_taipei_naive()會寫入 UTC 時刻，而 payment_date /
     冪等 key 視窗 / 候補 deadline 等都已改用 TAIPEI_TZ，這會讓 created_at 與其他時間
     欄位錯開 8 小時。此 helper 產生 timezone-aware 的台灣當下再 strip tzinfo，
     保持欄位型別不變（DateTime 為 naive）。
@@ -63,8 +64,8 @@ class ActivityCourse(Base):
     meeting_start_time = Column(Time, nullable=True, comment="上課起始時刻")
     meeting_end_time = Column(Time, nullable=True, comment="上課結束時刻")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -86,8 +87,8 @@ class ActivitySupply(Base):
     school_year = Column(Integer, nullable=True, comment="民國學年度")
     semester = Column(Integer, nullable=True, comment="1=上學期, 2=下學期")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -161,8 +162,8 @@ class ActivityRegistration(Base):
         DateTime, nullable=True, comment="公開查詢碼簽發時間（過期判定用）"
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_activity_registrations_active", "is_active"),
@@ -229,7 +230,7 @@ class RegistrationCourse(Base):
         DateTime, nullable=True, comment="T-6h 最後提醒發送時間"
     )
 
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint("registration_id", "course_id", name="uq_reg_course"),
@@ -261,7 +262,7 @@ class RegistrationSupply(Base):
     )
     price_snapshot = Column(Integer, default=0, comment="報名時價格快照")
 
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint("registration_id", "supply_id", name="uq_reg_supply"),
@@ -282,7 +283,7 @@ class ParentInquiry(Base):
     reply = Column(Text, nullable=True)
     replied_at = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
     __table_args__ = (Index("ix_parent_inquiries_is_read", "is_read"),)
 
@@ -304,7 +305,7 @@ class RegistrationChange(Base):
     description = Column(Text, nullable=False, comment="描述")
     changed_by = Column(String(100), nullable=True, comment="操作者帳號")
 
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
     __table_args__ = (Index("ix_registration_changes_reg", "registration_id"),)
 
@@ -345,7 +346,7 @@ class ActivityRegistrationSettings(Base):
         comment="海報圖片 URL／路徑；為空時 fallback 至預設圖",
     )
 
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class ActivityPaymentRecord(Base):
@@ -424,7 +425,7 @@ class ActivitySession(Base):
     session_date = Column(Date, nullable=False, comment="上課日期")
     notes = Column(Text, nullable=True, comment="場次備註")
     created_by = Column(String(100), nullable=True, comment="建立者帳號")
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -463,8 +464,8 @@ class ActivityAttendance(Base):
     is_present = Column(Boolean, nullable=False, default=True, comment="是否出席")
     notes = Column(Text, nullable=True, comment="備註")
     recorded_by = Column(String(100), nullable=True, comment="點名者帳號")
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -490,7 +491,7 @@ class ActivityPosDailyClose(Base):
     approver_username = Column(
         String(50), nullable=False, index=True, comment="簽核者帳號"
     )
-    approved_at = Column(DateTime, nullable=False, default=datetime.now)
+    approved_at = Column(DateTime, nullable=False, default=now_taipei_naive)
     note = Column(Text, nullable=True, comment="簽核備註（例：現金差異說明）")
 
     # snapshot（簽核當下凍結；事後補收/改帳不影響）
@@ -514,8 +515,8 @@ class ActivityPosDailyClose(Base):
         Integer, nullable=True, comment="actual_cash_count - by_method['現金']"
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class ActivityPosDailyCloseHistory(Base):
@@ -553,7 +554,7 @@ class ActivityPosDailyCloseHistory(Base):
     actual_cash_count = Column(Integer, nullable=True)
     cash_variance = Column(Integer, nullable=True)
     # unlock 元資料
-    unlocked_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    unlocked_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
     unlocked_by = Column(String(50), nullable=False, comment="解鎖人帳號")
     unlocked_by_role = Column(String(20), nullable=True, comment="解鎖人角色")
     is_admin_override = Column(

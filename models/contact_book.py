@@ -10,6 +10,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Boolean,
@@ -80,9 +81,9 @@ class StudentContactBookEntry(Base):
     )
     deleted_at = Column(DateTime, nullable=True, comment="軟刪除")
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
 
@@ -106,7 +107,7 @@ class StudentContactBookAck(Base):
     guardian_user_id = Column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    read_at = Column(DateTime, nullable=False, default=datetime.now)
+    read_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
 
 class StudentContactBookReply(Base):
@@ -128,8 +129,9 @@ class StudentContactBookReply(Base):
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     body = Column(Text, nullable=False)
+    client_request_id = Column(String(64), nullable=True)
     deleted_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
 
 # 範本 scope 列舉
@@ -182,7 +184,7 @@ class ContactBookTemplate(Base):
     )
     fields = Column(JSON, nullable=False, comment="範本欄位 JSON 字典")
     is_archived = Column(Boolean, nullable=False, default=False, server_default="false")
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )

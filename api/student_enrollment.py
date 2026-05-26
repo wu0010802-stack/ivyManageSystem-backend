@@ -4,6 +4,7 @@ api/student_enrollment.py — 幼生在籍統計 API endpoints
 
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from io import BytesIO
 from typing import Optional
 from urllib.parse import quote
@@ -221,7 +222,7 @@ def get_enrollment_roster(
     school_year, semester = resolve_academic_term_filters(school_year, semester)
 
     # ROC 民國日期字串，例如 "1150402"
-    today = date.today()
+    today = today_taipei()
     roc_year = today.year - 1911
     generated_date = f"{roc_year}{today.month:02d}{today.day:02d}"
 

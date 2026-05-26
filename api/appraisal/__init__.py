@@ -1586,7 +1586,7 @@ def list_scoring_rules(
     session: Session = Depends(get_session_dep),
 ):
     """列出指定日期當前有效的所有規則（每個 item_code 只取最新版）。"""
-    on_date = effective_on or date.today()
+    on_date = effective_on or today_taipei()
     rows = (
         session.query(AppraisalScoringRule)
         .filter(AppraisalScoringRule.effective_from <= on_date)

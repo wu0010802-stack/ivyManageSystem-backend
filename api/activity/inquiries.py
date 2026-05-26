@@ -4,6 +4,7 @@ api/activity/inquiries.py — 家長提問端點（4 個）
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -94,7 +95,7 @@ async def reply_inquiry(
         if not inquiry:
             raise _not_found("提問")
         inquiry.reply = body.reply.strip()
-        inquiry.replied_at = datetime.now()
+        inquiry.replied_at = now_taipei_naive()
         inquiry.is_read = True  # 回覆同時自動標記已讀
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)

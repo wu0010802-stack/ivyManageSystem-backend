@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import today_taipei
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +28,7 @@ from fastapi import (
     Request,
     Response,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
@@ -61,6 +63,7 @@ from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
 from utils.portfolio_access import assert_student_access
+from utils.storage import get_backend
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +265,7 @@ def _collect_report_data(
             "period_end": report.period_end,
             "report_id": report.id,
             "teacher_narrative": report.teacher_narrative,
-            "generated_on": date.today(),
+            "generated_on": today_taipei(),  
         },
         "attendance_summary": summarize_attendance(att_records),
         "highlight_observations": pick_highlight_observations(obs_rows, max_count=5),
@@ -325,20 +328,34 @@ def _generate_pdf_job(report_id: int) -> None:
                 )
                 return
 
-            student_dir = REPORT_ROOT / str(student.id)
-            student_dir.mkdir(parents=True, exist_ok=True)
-            path = student_dir / f"{report.id}.pdf"
-            path.write_bytes(pdf_bytes)
+            storage_key = f"students/{student.id}/{report.id}.pdf"
+
+            if settings.storage.backend == "supabase":
+                get_backend().save(
+                    module="growth_reports",
+                    key=storage_key,
+                    data=pdf_bytes,
+                    content_type="application/pdf",
+                )
+                report.file_path = storage_key  # 存 key，非 local path
+                logger.info(
+                    "PDF report %d written to storage: %s", report.id, storage_key
+                )
+            else:
+                student_dir = REPORT_ROOT / str(student.id)
+                student_dir.mkdir(parents=True, exist_ok=True)
+                path = student_dir / f"{report.id}.pdf"
+                path.write_bytes(pdf_bytes)
+                # store as relative to cwd for portability
+                try:
+                    report.file_path = str(path.resolve().relative_to(Path.cwd()))
+                except ValueError:
+                    report.file_path = str(path.resolve())
+                logger.info("PDF report %d ready: %s", report.id, path)
 
             report.status = REPORT_STATUS_READY
-            # store as relative to cwd for portability
-            try:
-                report.file_path = str(path.resolve().relative_to(Path.cwd()))
-            except ValueError:
-                report.file_path = str(path.resolve())
             report.file_size = len(pdf_bytes)
-            report.generated_at = datetime.utcnow()
-            logger.info("PDF report %d ready: %s", report.id, path)
+            report.generated_at = now_taipei_naive()
     except Exception as e:
         logger.exception("PDF generation failed for report %d", report_id)
         try:
@@ -513,13 +530,13 @@ async def get_growth_report(
         raise_safe_500(e, context="查詢成長報告失敗")
 
 
-@router.get("/{student_id}/growth-reports/{report_id}/download")
+@router.get("/{student_id}/growth-reports/{report_id}/download", response_model=None)
 async def download_growth_report(
     student_id: int,
     report_id: int,
     request: Request,
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
-) -> FileResponse:
+) -> FileResponse | RedirectResponse:
     try:
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
@@ -534,17 +551,6 @@ async def download_growth_report(
                 raise HTTPException(
                     status_code=409, detail=f"報告尚未準備好（status={r.status}）"
                 )
-            try:
-                path = _resolve_pdf_path(r.file_path)
-            except ValueError:
-                logger.error(
-                    "growth report %d has illegal file_path: %r",
-                    report_id,
-                    r.file_path,
-                )
-                raise HTTPException(status_code=410, detail="報告檔案已遺失")
-            if not path.exists():
-                raise HTTPException(status_code=410, detail="報告檔案已遺失")
             # PDF 下載不 dedup：每次下載都要可溯（個資法 §10 查閱/複製權）
             write_explicit_audit(
                 request,
@@ -557,11 +563,28 @@ async def download_growth_report(
                 ),
                 changes={"student_id": student_id, "period": r.period_label},
             )
-            return FileResponse(
-                str(path),
-                media_type="application/pdf",
-                filename=f"growth_report_{r.id}.pdf",
-            )
+            if settings.storage.backend == "supabase":
+                backend = get_backend()
+                ttl = settings.storage.supabase_signed_url_ttl
+                url = backend.signed_url("growth_reports", r.file_path, ttl)
+                return RedirectResponse(url=url, status_code=302)
+            else:
+                try:
+                    path = _resolve_pdf_path(r.file_path)
+                except ValueError:
+                    logger.error(
+                        "growth report %d has illegal file_path: %r",
+                        report_id,
+                        r.file_path,
+                    )
+                    raise HTTPException(status_code=410, detail="報告檔案已遺失")
+                if not path.exists():
+                    raise HTTPException(status_code=410, detail="報告檔案已遺失")
+                return FileResponse(
+                    str(path),
+                    media_type="application/pdf",
+                    filename=f"growth_report_{r.id}.pdf",
+                )
     except HTTPException:
         raise
     except Exception as e:
@@ -648,7 +671,7 @@ async def send_growth_report_to_line(
                 raise HTTPException(status_code=409, detail="報告尚未準備好")
             # 5 分鐘冪等：防前端重複提交或 admin 連點造成家長收重複 LINE
             if r.line_sent_at and (
-                datetime.utcnow() - r.line_sent_at < timedelta(minutes=5)
+                now_taipei_naive() - r.line_sent_at < timedelta(minutes=5)
             ):
                 raise HTTPException(
                     status_code=409,
@@ -675,26 +698,38 @@ async def send_growth_report_to_line(
             if not line_user_ids:
                 raise HTTPException(status_code=409, detail="該學生家長未綁定 LINE")
 
-            if _line_service is None:
-                raise HTTPException(status_code=503, detail="LINE 服務尚未初始化")
-
             # Pre-claim：搶占 5 分鐘窗口；推送失敗會在 Phase 3 回滾
             previous_sent_at = r.line_sent_at
-            r.line_sent_at = datetime.utcnow()
+            r.line_sent_at = now_taipei_naive()
             claimed_sent_at = r.line_sent_at
             period_label = r.period_label
+            report_pk = r.id
         # session_scope 出 with 區塊，pre-claim 已 commit 並釋放 row lock
 
-        # Phase 2: 在 session 外執行 sync LINE push；用 to_thread 避免阻塞 event loop
-        base_text = (
-            payload.message
-            or f"您孩子的成長報告（{period_label}）已備好，請至家長 App 查看下載。"
-        )
+        # Phase 2 (Phase 4 Section 3): 改走 dispatch.send_to_line_user_sync 同步 API
+        # 拿真實 ACK；caller 不再直接呼叫 line_service 的個人推送 method。
+        # 走 LINE_HANDLERS["growth_report.published"] handler 構訊息（payload.message
+        # 若有給，pass via context 讓 handler 用；無則 handler 用預設模板）。
+        from services.notification import dispatch as _dispatch
+
+        push_context = {
+            "student_name": "",  # handler 內未使用，避免 KeyError
+            "period": period_label,
+            "report_id": report_pk,
+        }
+        if payload.message:
+            push_context["custom_message"] = payload.message
+
         sent_count = 0
         push_error: Optional[BaseException] = None
         try:
             for uid in line_user_ids:
-                ok = await asyncio.to_thread(_line_service.push_to_user, uid, base_text)
+                ok = await asyncio.to_thread(
+                    _dispatch.send_to_line_user_sync,
+                    uid,
+                    "growth_report.published",
+                    push_context,
+                )
                 if ok:
                     sent_count += 1
         except Exception as exc:  # noqa: BLE001

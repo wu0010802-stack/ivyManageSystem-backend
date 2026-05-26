@@ -58,6 +58,8 @@ add_indexes.py
 add_job_title_fk.py
 import_roster.py
 migrate_*.py
+# DR tooling: idempotent, tested, permanent — must NOT be excluded
+!scripts/migrate_growth_reports_to_supabase.py
 reset_employees.py
 swap_employee_columns.py
 update_*.py

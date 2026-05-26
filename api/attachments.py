@@ -45,6 +45,7 @@ from utils.file_upload import (
     validate_file_signature,
 )
 from utils.audit import mark_soft_delete
+from utils.taipei_time import now_taipei_naive
 from utils.permissions import Permission
 from utils.portfolio_access import assert_student_access
 from utils.portfolio_storage import (
@@ -226,8 +227,6 @@ async def delete_attachment(
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_WRITE)),
 ) -> dict:
     """軟刪除附件。實際檔案保留 90 天後由清理 job 處理。"""
-    from datetime import datetime
-
     try:
         with session_scope() as session:
             att = (
@@ -244,7 +243,7 @@ async def delete_attachment(
             )
             assert_student_access(session, current_user, student_id)
 
-            att.deleted_at = datetime.now()
+            att.deleted_at = now_taipei_naive()
             mark_soft_delete(request, "attachment", str(attachment_id))
             session.flush()
 

@@ -9,6 +9,7 @@ PDF 內容：公司資訊 + 員工姓名/身分證/到職日/離職日/職務 + 
 from __future__ import annotations
 
 from datetime import date
+from utils.taipei_time import today_taipei
 from io import BytesIO
 
 from reportlab.lib.pagesizes import A4
@@ -108,7 +109,7 @@ def generate_certificate_pdf(
 
     elements.append(Paragraph("特此證明。", body_style))
 
-    today = date.today()
+    today = today_taipei()
     elements.append(Paragraph("負責人簽章：______________", sign_style))
     elements.append(Paragraph(f"證明日期：{_fmt_roc(today)}", sign_style))
 

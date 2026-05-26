@@ -26,11 +26,14 @@ from models.base import Base
 from models.employee import Employee
 from models.auth import User
 from models.classroom import Classroom, Student, ClassGrade
-
+from models.academic_term import (
+    AcademicTerm,
+)  # 註冊到 Base.metadata 以建 academic_terms 表  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def session():
@@ -70,15 +73,26 @@ def source_classrooms(session, grade_data):
     session.flush()
 
     c_da = Classroom(
-        name="大班A", class_code="DA", school_year=114, semester=2,
-        grade_id=grade_data["大班"].id, head_teacher_id=teacher.id,
+        name="大班A",
+        class_code="DA",
+        school_year=114,
+        semester=2,
+        grade_id=grade_data["大班"].id,
+        head_teacher_id=teacher.id,
     )
     c_zhong = Classroom(
-        name="中班A", class_code="ZA", school_year=114, semester=2,
-        grade_id=grade_data["中班"].id, head_teacher_id=teacher.id,
+        name="中班A",
+        class_code="ZA",
+        school_year=114,
+        semester=2,
+        grade_id=grade_data["中班"].id,
+        head_teacher_id=teacher.id,
     )
     c_xiao = Classroom(
-        name="小班A", class_code="XA", school_year=114, semester=2,
+        name="小班A",
+        class_code="XA",
+        school_year=114,
+        semester=2,
         grade_id=grade_data["小班"].id,
     )
     session.add_all([c_da, c_zhong, c_xiao])
@@ -105,29 +119,35 @@ def source_classrooms(session, grade_data):
 # 純函式：_should_advance_grade
 # ---------------------------------------------------------------------------
 
+
 class TestShouldAdvanceGrade:
     from api.classrooms import _should_advance_grade
 
     def test_semester2_to_semester1_next_year_advances(self):
         from api.classrooms import _should_advance_grade
+
         assert _should_advance_grade(114, 2, 115, 1) is True
 
     def test_same_year_no_advance(self):
         from api.classrooms import _should_advance_grade
+
         assert _should_advance_grade(114, 2, 114, 1) is False
 
     def test_sem1_to_sem2_same_year_no_advance(self):
         from api.classrooms import _should_advance_grade
+
         assert _should_advance_grade(114, 1, 114, 2) is False
 
     def test_sem1_to_sem1_next_year_no_advance(self):
         from api.classrooms import _should_advance_grade
+
         assert _should_advance_grade(114, 1, 115, 1) is False
 
 
 # ---------------------------------------------------------------------------
 # 純函式：_resolve_next_grade_id
 # ---------------------------------------------------------------------------
+
 
 class TestResolveNextGradeId:
     def _grade_map(self, *grades):
@@ -136,51 +156,67 @@ class TestResolveNextGradeId:
     def test_not_advancing_keeps_same_grade(self):
         """同學期（不升年）應保留原年級。"""
         from api.classrooms import _resolve_next_grade_id
+
         da = ClassGrade(id=1, name="大班", sort_order=1)
         classroom = Classroom(grade_id=1)
         grade_map = self._grade_map(da)
         result = _resolve_next_grade_id(
-            classroom, grade_map,
-            source_school_year=114, source_semester=1,
-            target_school_year=114, target_semester=2,
+            classroom,
+            grade_map,
+            source_school_year=114,
+            source_semester=1,
+            target_school_year=114,
+            target_semester=2,
         )
         assert result == da.id
 
     def test_advancing_middle_grade_to_senior(self):
         """中班升年後應升至大班。"""
         from api.classrooms import _resolve_next_grade_id
+
         da = ClassGrade(id=1, name="大班", sort_order=1)
         zhong = ClassGrade(id=2, name="中班", sort_order=2)
         classroom = Classroom(grade_id=zhong.id)
         grade_map = self._grade_map(da, zhong)
         result = _resolve_next_grade_id(
-            classroom, grade_map,
-            source_school_year=114, source_semester=2,
-            target_school_year=115, target_semester=1,
+            classroom,
+            grade_map,
+            source_school_year=114,
+            source_semester=2,
+            target_school_year=115,
+            target_semester=1,
         )
         assert result == da.id
 
     def test_advancing_senior_grade_returns_none(self):
         """大班升年後無下一個年級 → None（畢業）。"""
         from api.classrooms import _resolve_next_grade_id
+
         da = ClassGrade(id=1, name="大班", sort_order=1)
         classroom = Classroom(grade_id=da.id)
         grade_map = self._grade_map(da)
         result = _resolve_next_grade_id(
-            classroom, grade_map,
-            source_school_year=114, source_semester=2,
-            target_school_year=115, target_semester=1,
+            classroom,
+            grade_map,
+            source_school_year=114,
+            source_semester=2,
+            target_school_year=115,
+            target_semester=1,
         )
         assert result is None
 
     def test_no_grade_id_returns_none(self):
         """classroom 無年級時直接回傳 None。"""
         from api.classrooms import _resolve_next_grade_id
+
         classroom = Classroom(grade_id=None)
         result = _resolve_next_grade_id(
-            classroom, {},
-            source_school_year=114, source_semester=2,
-            target_school_year=115, target_semester=1,
+            classroom,
+            {},
+            source_school_year=114,
+            source_semester=2,
+            target_school_year=115,
+            target_semester=1,
         )
         assert result is None
 
@@ -189,13 +225,16 @@ class TestResolveNextGradeId:
 # 純函式：_term_start_date
 # ---------------------------------------------------------------------------
 
+
 class TestTermStartDate:
     def test_semester_1_starts_august_1st(self):
         from api.classrooms import _term_start_date
+
         assert _term_start_date(114, 1) == date(2025, 8, 1)
 
     def test_semester_2_starts_february_1st_next_year(self):
         from api.classrooms import _term_start_date
+
         assert _term_start_date(114, 2) == date(2026, 2, 1)
 
 
@@ -203,63 +242,100 @@ class TestTermStartDate:
 # 整合測試：promote_classrooms_to_academic_year
 # ---------------------------------------------------------------------------
 
+
 class TestPromoteAcademicYear:
     """透過 endpoint 函式測試升班業務邏輯。"""
 
     def _run(self, session, payload: dict):
-        from api.classrooms import promote_classrooms_to_academic_year, ClassroomPromoteAcademicYear
+        from api.classrooms import (
+            promote_classrooms_to_academic_year,
+            ClassroomPromoteAcademicYear,
+        )
+
         item = ClassroomPromoteAcademicYear(**payload)
         current_user = {"username": "admin", "user_id": 1, "permission_names": ["*"]}
         session.close = MagicMock()
         with patch("api.classrooms.get_session", return_value=session):
             return asyncio.run(
-                promote_classrooms_to_academic_year(item=item, current_user=current_user)
+                promote_classrooms_to_academic_year(
+                    item=item, current_user=current_user
+                )
             )
 
-    def _base_payload(self, source_classroom_id, target_name, grade_data,
-                      target_grade_id=None, copy_teachers=True, move_students=True):
+    def _base_payload(
+        self,
+        source_classroom_id,
+        target_name,
+        grade_data,
+        target_grade_id=None,
+        copy_teachers=True,
+        move_students=True,
+    ):
         return {
             "source_school_year": 114,
             "source_semester": 2,
             "target_school_year": 115,
             "target_semester": 1,
-            "classrooms": [{
-                "source_classroom_id": source_classroom_id,
-                "target_name": target_name,
-                "target_grade_id": target_grade_id,
-                "copy_teachers": copy_teachers,
-                "move_students": move_students,
-            }],
+            "classrooms": [
+                {
+                    "source_classroom_id": source_classroom_id,
+                    "target_name": target_name,
+                    "target_grade_id": target_grade_id,
+                    "copy_teachers": copy_teachers,
+                    "move_students": move_students,
+                }
+            ],
         }
 
-    def test_same_source_target_raises_400(self, session, grade_data, source_classrooms):
+    def test_same_source_target_raises_400(
+        self, session, grade_data, source_classrooms
+    ):
         """來源與目標學期相同應回傳 400。"""
         with pytest.raises(HTTPException) as exc_info:
-            from api.classrooms import promote_classrooms_to_academic_year, ClassroomPromoteAcademicYear
+            from api.classrooms import (
+                promote_classrooms_to_academic_year,
+                ClassroomPromoteAcademicYear,
+            )
+
             item = ClassroomPromoteAcademicYear(
-                source_school_year=114, source_semester=2,
-                target_school_year=114, target_semester=2,
-                classrooms=[{"source_classroom_id": source_classrooms["中班A"].id,
-                              "target_name": "中班A新", "target_grade_id": grade_data["中班"].id}],
+                source_school_year=114,
+                source_semester=2,
+                target_school_year=114,
+                target_semester=2,
+                classrooms=[
+                    {
+                        "source_classroom_id": source_classrooms["中班A"].id,
+                        "target_name": "中班A新",
+                        "target_grade_id": grade_data["中班"].id,
+                    }
+                ],
             )
             session.close = MagicMock()
             with patch("api.classrooms.get_session", return_value=session):
-                asyncio.run(promote_classrooms_to_academic_year(
-                    item=item, current_user={"username": "admin"}
-                ))
+                asyncio.run(
+                    promote_classrooms_to_academic_year(
+                        item=item, current_user={"username": "admin"}
+                    )
+                )
         assert exc_info.value.status_code == 400
 
-    def test_missing_source_classroom_raises_404(self, session, grade_data, source_classrooms):
+    def test_missing_source_classroom_raises_404(
+        self, session, grade_data, source_classrooms
+    ):
         """找不到來源班級應回傳 404。"""
         payload = self._base_payload(
-            source_classroom_id=99999, target_name="不存在班",
-            grade_data=grade_data, target_grade_id=grade_data["中班"].id,
+            source_classroom_id=99999,
+            target_name="不存在班",
+            grade_data=grade_data,
+            target_grade_id=grade_data["中班"].id,
         )
         with pytest.raises(HTTPException) as exc_info:
             self._run(session, payload)
         assert exc_info.value.status_code == 404
 
-    def test_creates_new_classroom_and_moves_students(self, session, grade_data, source_classrooms):
+    def test_creates_new_classroom_and_moves_students(
+        self, session, grade_data, source_classrooms
+    ):
         """中班升班到大班：建立新班、搬移學生。"""
         payload = self._base_payload(
             source_classroom_id=source_classrooms["中班A"].id,
@@ -274,9 +350,11 @@ class TestPromoteAcademicYear:
         assert result["moved_student_count"] == 1
         assert result["graduated_count"] == 0
 
-        new_cls = session.query(Classroom).filter(
-            Classroom.name == "大班B", Classroom.school_year == 115
-        ).first()
+        new_cls = (
+            session.query(Classroom)
+            .filter(Classroom.name == "大班B", Classroom.school_year == 115)
+            .first()
+        )
         assert new_cls is not None
         assert new_cls.grade_id == grade_data["大班"].id
 
@@ -291,13 +369,15 @@ class TestPromoteAcademicYear:
             "source_semester": 2,
             "target_school_year": 115,
             "target_semester": 1,
-            "classrooms": [{
-                "source_classroom_id": source_classrooms["大班A"].id,
-                "target_name": None,  # 畢業班不需要新班名
-                "target_grade_id": None,
-                "copy_teachers": True,
-                "move_students": True,
-            }],
+            "classrooms": [
+                {
+                    "source_classroom_id": source_classrooms["大班A"].id,
+                    "target_name": None,  # 畢業班不需要新班名
+                    "target_grade_id": None,
+                    "copy_teachers": True,
+                    "move_students": True,
+                }
+            ],
         }
         result = self._run(session, payload)
 
@@ -308,7 +388,9 @@ class TestPromoteAcademicYear:
         assert source_classrooms["s_da"].is_active is False
         assert source_classrooms["s_da"].status == "已畢業"
 
-    def test_duplicate_target_names_in_request_raises_409(self, session, grade_data, source_classrooms):
+    def test_duplicate_target_names_in_request_raises_409(
+        self, session, grade_data, source_classrooms
+    ):
         """同一請求中目標班級名稱重複應回傳 409。"""
         payload = {
             "source_school_year": 114,
@@ -332,7 +414,9 @@ class TestPromoteAcademicYear:
             self._run(session, payload)
         assert exc_info.value.status_code == 409
 
-    def test_no_student_move_when_move_students_false(self, session, grade_data, source_classrooms):
+    def test_no_student_move_when_move_students_false(
+        self, session, grade_data, source_classrooms
+    ):
         """move_students=False 時學生不應被搬移。"""
         payload = self._base_payload(
             source_classroom_id=source_classrooms["中班A"].id,
@@ -345,9 +429,13 @@ class TestPromoteAcademicYear:
 
         assert result["moved_student_count"] == 0
         session.refresh(source_classrooms["s_zhong"])
-        assert source_classrooms["s_zhong"].classroom_id == source_classrooms["中班A"].id
+        assert (
+            source_classrooms["s_zhong"].classroom_id == source_classrooms["中班A"].id
+        )
 
-    def test_copy_teachers_false_new_classroom_has_no_teacher(self, session, grade_data, source_classrooms):
+    def test_copy_teachers_false_new_classroom_has_no_teacher(
+        self, session, grade_data, source_classrooms
+    ):
         """copy_teachers=False 時新班級不應繼承師資。"""
         payload = self._base_payload(
             source_classroom_id=source_classrooms["中班A"].id,
@@ -358,12 +446,12 @@ class TestPromoteAcademicYear:
         )
         self._run(session, payload)
 
-        new_cls = session.query(Classroom).filter(
-            Classroom.name == "大班D"
-        ).first()
+        new_cls = session.query(Classroom).filter(Classroom.name == "大班D").first()
         assert new_cls.head_teacher_id is None
 
-    def test_copy_teachers_true_new_classroom_inherits_teacher(self, session, grade_data, source_classrooms):
+    def test_copy_teachers_true_new_classroom_inherits_teacher(
+        self, session, grade_data, source_classrooms
+    ):
         """copy_teachers=True 時新班級應繼承班導師。"""
         payload = self._base_payload(
             source_classroom_id=source_classrooms["中班A"].id,
@@ -377,11 +465,17 @@ class TestPromoteAcademicYear:
         new_cls = session.query(Classroom).filter(Classroom.name == "大班E").first()
         assert new_cls.head_teacher_id == source_classrooms["teacher"].id
 
-    def test_existing_active_classroom_conflict_raises_409(self, session, grade_data, source_classrooms):
+    def test_existing_active_classroom_conflict_raises_409(
+        self, session, grade_data, source_classrooms
+    ):
         """目標學期已存在同名活躍班級應回傳 409。"""
         existing = Classroom(
-            name="大班F", class_code="DF", school_year=115, semester=1,
-            grade_id=grade_data["大班"].id, is_active=True,
+            name="大班F",
+            class_code="DF",
+            school_year=115,
+            semester=1,
+            grade_id=grade_data["大班"].id,
+            is_active=True,
         )
         session.add(existing)
         session.commit()

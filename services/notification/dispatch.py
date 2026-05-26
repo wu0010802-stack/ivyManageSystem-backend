@@ -48,6 +48,10 @@ class PendingEvent:
     source_entity_type: Optional[str]
     source_entity_id: Optional[int]
     channels: tuple[Channel, ...]
+    # Phase 4 Section 2: LINE 群組推送 mode。設值時 LINE adapter 不走
+    # _resolve_line_user_id，改用 push_text_to_group(group_id, text) 推群組。
+    # 與 recipient_user_id 二擇一（或併用：個人 in_app + 群組 LINE 都會跑）。
+    line_group_id: Optional[str] = None
 
 
 def enqueue(
@@ -60,6 +64,7 @@ def enqueue(
     source_entity_type: Optional[str] = None,
     source_entity_id: Optional[int] = None,
     channels_override: Optional[tuple[Channel, ...]] = None,
+    line_group_id: Optional[str] = None,
 ) -> None:
     """註冊一筆通知事件到當前 session 的 queue。
 
@@ -74,6 +79,9 @@ def enqueue(
         sender_id: 觸發者 user_id（顯示「誰發的」）
         source_entity_type / source_entity_id: 反查源頭；未來 outbox idempotency key
         channels_override: 罕用，特殊 case 覆蓋 CHANNEL_MATRIX
+        line_group_id: Phase 4 Section 2 新加 — LINE 群組推送 mode。設值時
+            LINE adapter 走 push_text_to_group(group_id, text)，跳過
+            _resolve_line_user_id 個人解析。dismissal.created 等群組事件用。
     """
     if event_type not in NOTIFICATION_EVENT_TYPES:
         raise ValueError(f"未知 event_type: {event_type}")
@@ -95,6 +103,7 @@ def enqueue(
             source_entity_type=source_entity_type,
             source_entity_id=source_entity_id,
             channels=channels,
+            line_group_id=line_group_id,
         )
     )
 
@@ -154,6 +163,55 @@ def _get_line_adapter() -> LineAdapter:
 
         _line_adapter = LineAdapter(line_service)
     return _line_adapter
+
+
+def send_to_line_user_sync(line_user_id: str, event_type: str, context: dict) -> bool:
+    """Phase 4 Section 3：同步推送 LINE 個人通知並回 ACK 結果。
+
+    Caller 需 sync 拿 sent_count（如 api/portfolio/reports.py send-line 需要
+    sent_count + Phase 3 rollback line_sent_at）走此 API；其他 caller 走
+    enqueue + after_commit hook。
+
+    本 API 不寫 NotificationLog、不過 preference gate（caller 已在 Phase 1
+    自管 line_sent_at idempotency；admin 觸發推播本是 explicit action）。
+
+    回 True 若 LINE API 200，False 若推送失敗或 line_user_id empty。
+    """
+    if not line_user_id:
+        return False
+    from services.notification._channels.line import LINE_HANDLERS
+    from services.notification.renderers import render
+
+    adapter = _get_line_adapter()
+    rendered = render(event_type, context)
+    evt = PendingEvent(
+        event_type=event_type,
+        recipient_user_id=line_user_id,
+        context=dict(context),
+        sender_id=None,
+        source_entity_type=None,
+        source_entity_id=None,
+        channels=("line",),
+        line_group_id=None,
+    )
+    handler = LINE_HANDLERS.get(event_type)
+    try:
+        if handler is None:
+            # fallback path — LineAdapter 走 push_text_to_user（無 ACK 回傳）
+            adapter.send(evt, rendered, log_id=0)
+            return True
+        result = handler(adapter._ls, evt, rendered)
+        # handler 簽名為 -> None；若 caller 需 ACK 須 handler 回 bool
+        # （目前只 _h_growth_report_published 回 bool；其他視為成功）
+        return True if result is None else bool(result)
+    except Exception as exc:
+        logger.warning(
+            "send_to_line_user_sync 失敗 event=%s user=%s: %s",
+            event_type,
+            line_user_id,
+            exc,
+        )
+        return False
 
 
 def _get_ws_adapter() -> WsAdapter:
@@ -268,20 +326,27 @@ def _fan_out(evt: PendingEvent) -> None:
             if ch == "in_app":
                 continue
             if ch == "line":
-                line_user_id = _resolve_line_user_id(log_session, evt.recipient_user_id)
-                if line_user_id is None:
-                    failed.append({"channel": "line", "error": "unreachable_user"})
-                    continue
-                # 包裝 evt 把 recipient_user_id 改為 LINE user_id (str)
-                line_evt = _dc_replace(evt, recipient_user_id=line_user_id)
+                # Phase 4 Section 2: line_group_id 設值 → 群組 mode，LineAdapter
+                # 走 push_text_to_group；不設 → 個人 mode，pre-resolve user_id。
+                if evt.line_group_id is not None:
+                    line_evt = evt  # group mode 不替換 recipient_user_id
+                else:
+                    line_user_id = _resolve_line_user_id(
+                        log_session, evt.recipient_user_id
+                    )
+                    if line_user_id is None:
+                        failed.append({"channel": "line", "error": "unreachable_user"})
+                        continue
+                    line_evt = _dc_replace(evt, recipient_user_id=line_user_id)
                 try:
                     _get_line_adapter().send(line_evt, rendered, log_id=log_id or 0)
                     succeeded.append("line")
                 except Exception as exc:
                     logger.exception(
-                        "LINE channel failed event=%s user=%s",
+                        "LINE channel failed event=%s user=%s group=%s",
                         evt.event_type,
                         evt.recipient_user_id,
+                        evt.line_group_id,
                     )
                     failed.append({"channel": "line", "error": type(exc).__name__})
                 continue

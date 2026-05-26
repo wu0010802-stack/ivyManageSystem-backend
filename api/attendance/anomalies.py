@@ -6,6 +6,7 @@ import io
 import calendar as cal_module
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from typing import List, Optional
 from urllib.parse import quote
 
@@ -207,7 +208,7 @@ def batch_confirm_anomalies(
     session = get_session()
     try:
         processed = 0
-        now = datetime.now()
+        now = now_taipei_naive()
         att_map = {
             a.id: a
             for a in session.query(Attendance)

@@ -35,6 +35,7 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 - **Rate Limiter**：`utils/rate_limit.py` 為 in-process 記憶體版，僅單 worker 部署有效；多實例需改 Redis-backed。
 - **`portal.py`** 是教師自助入口（查自己的考勤/請假/加班/薪資），不具管理權限。新增管理功能不要放 portal。
 - **`BonusConfig`** DB 模型在 `startup/seed.py` 以 `DBBonusConfig` 別名匯入,避免與 `api/salary.py` 同名 Pydantic schema 衝突。
+- **Datetime 寫入契約**（2026-05-26 cutover，spec `docs/superpowers/specs/2026-05-26-datetime-taipei-consistency-design.md`）：所有 naive `Column(DateTime)` 視為 Asia/Taipei naive。寫入 **必經** `utils/taipei_time.py` 三個入口：`now_taipei_naive()`（naive col）/ `now_taipei_aware()`（45 個 `DateTime(timezone=True)` col）/ `today_taipei()`（date）。**禁用** `datetime.now()` / `datetime.utcnow()` / `date.today()` / `datetime.today()` — CI Ruff DTZ005/003/011/002 擋；model `default=datetime.now` 由 `tests/test_no_naive_datetime_in_model_defaults.py` reflection check 擋（allow-list 必空）。Phase 0 已 ALTER Supabase DATABASE timezone + 設 zeabur env `TZ=Asia/Taipei`；2026-05-26 前歷史 naive column 字面值為 UTC naive（顯示「比實際發生早 8h」），**未 backfill**。詳見 `docs/sop/datetime-contract.md`。
 
 ---
 

@@ -7,6 +7,7 @@ import io
 import logging
 from calendar import monthrange
 from datetime import date
+from utils.taipei_time import today_taipei
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -39,7 +40,7 @@ async def get_today_attendance_summary(
     """取得今日出勤即時狀態"""
     session = get_session()
     try:
-        today = date.today()
+        today = today_taipei()
 
         total_employees = (
             session.query(Employee).filter(Employee.is_active == True).count()
@@ -170,7 +171,7 @@ async def get_today_anomalies(
     """今日打卡異常員工清單"""
     session = get_session()
     try:
-        today = date.today()
+        today = today_taipei()
 
         employees = session.query(Employee).filter(Employee.is_active == True).all()
 

@@ -7,6 +7,7 @@ import io
 import logging
 import ssl
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from typing import Any
 
 import requests
@@ -278,7 +279,7 @@ def _has_official_cache(session, year: int) -> bool:
 def _is_cache_fresh(sync: OfficialCalendarSync | None) -> bool:
     if not sync or not sync.last_synced_at or sync.last_error:
         return False
-    return datetime.now() - sync.last_synced_at < _FRESH_CACHE_WINDOW
+    return now_taipei_naive() - sync.last_synced_at < _FRESH_CACHE_WINDOW
 
 
 def get_cached_official_sync_status(session, year: int) -> dict[str, Any]:
@@ -389,7 +390,7 @@ def ensure_official_calendar_synced(
     if not is_stale:
         sync.last_error = None
         sync.used_cache = False
-        sync.last_synced_at = datetime.now()
+        sync.last_synced_at = now_taipei_naive()
         session.commit()
         return {
             "status": "synced",
@@ -402,7 +403,7 @@ def ensure_official_calendar_synced(
 
     try:
         holidays, makeup_days, resource_meta = _fetch_official_calendar_entries(year)
-        synced_at = datetime.now()
+        synced_at = now_taipei_naive()
         _upsert_official_holidays(session, year, holidays, synced_at)
         _upsert_official_makeup_days(session, year, makeup_days, synced_at)
         sync.is_synced = True

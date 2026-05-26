@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from decimal import Decimal
 from typing import List, Optional
 
@@ -201,7 +202,7 @@ def submit_subsidy(
     if row.status != "draft":
         raise HTTPException(409, "Only draft → submitted allowed")
     row.status = "submitted"
-    row.applied_at = datetime.now()
+    row.applied_at = now_taipei_naive()
     db.commit()
     db.refresh(row)
     return row
@@ -223,7 +224,7 @@ def approve_subsidy(
     if payload.notes:
         row.notes = (row.notes or "") + f"\n[approve] {payload.notes}"
     row.status = "approved"
-    row.approved_at = datetime.now()
+    row.approved_at = now_taipei_naive()
     db.commit()
     db.refresh(row)
     return row

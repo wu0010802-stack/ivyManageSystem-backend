@@ -1,6 +1,7 @@
 """Dashboard widget endpoints for MOE module (Phase 1)."""
 
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -41,7 +42,7 @@ def disability_expiry_widget(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_staff_permission(Permission.GOV_REPORTS_VIEW)),
 ):
-    today = date.today()
+    today = today_taipei()
     end = today + timedelta(days=days)
     q = (
         db.query(Student)

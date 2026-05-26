@@ -13,6 +13,7 @@ title/body/deep_link 由 renderer 預渲染寫入；payload_json 保留結構化
 from __future__ import annotations
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     BigInteger,
@@ -61,4 +62,4 @@ class NotificationLog(Base):
     channels_succeeded = Column(JSON, nullable=False, default=list)
     channels_failed = Column(JSON, nullable=False, default=list)
     read_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)

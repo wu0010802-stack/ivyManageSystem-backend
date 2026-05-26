@@ -10,6 +10,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -62,7 +63,7 @@ class GuardianBindingCode(Base):
         nullable=False,
         comment="簽發此碼的行政 User（稽核用）",
     )
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
     __table_args__ = (
         Index(

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -83,7 +84,7 @@ def get_data_export(
             detail="資料量超過 50MB，請聯絡園所協助匯出",
         )
 
-    filename = f"ivy_data_export_{user.id}_{datetime.now().strftime('%Y%m%d')}.json"
+    filename = f"ivy_data_export_{user.id}_{now_taipei_naive().strftime('%Y%m%d')}.json"
 
     # 顯式 audit：GET 但讀 PII，須留稽核軌跡（AuditMiddleware 只攔 POST/PATCH/PUT/DELETE）
     from utils.audit import write_explicit_audit

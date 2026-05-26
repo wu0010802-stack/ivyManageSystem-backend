@@ -3,6 +3,7 @@ models/fees.py — 學費/費用管理資料模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -70,9 +71,9 @@ class FeeTemplate(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_by = Column(String(50), nullable=True)
     updated_by = Column(String(50), nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (
@@ -151,8 +152,8 @@ class StudentFeeRecord(Base):
         comment="繳費期限；家長端可分類「即將到期」與「已逾期」",
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         # c2: uq_student_fee_item 已 DROP（fee_item_id 變 nullable 後唯一鍵失效）
@@ -212,7 +213,7 @@ class StudentFeePayment(Base):
     idempotency_key = Column(
         String(64), nullable=True, comment="繳費冪等鍵（全域唯一）"
     )
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
     __table_args__ = (
         Index("ix_fee_payments_record", "record_id"),
@@ -243,7 +244,7 @@ class StudentFeeRefund(Base):
     reason = Column(String(100), nullable=False, comment="退款原因")
     notes = Column(Text, nullable=True, default="", comment="備註")
     refunded_by = Column(String(50), nullable=False, comment="操作人員 username")
-    refunded_at = Column(DateTime, default=datetime.now, nullable=False)
+    refunded_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     calc_method = Column(
         String(30),
         nullable=True,
@@ -311,9 +312,9 @@ class StudentFeeAdjustment(Base):
     reason = Column(String(200), nullable=True, comment="折抵原因說明")
     notes = Column(Text, nullable=True, default="", comment="備註")
     created_by = Column(String(50), nullable=True, comment="建立者 username")
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (

@@ -15,6 +15,7 @@ group_id mode，hybrid 收尾後 _notify_* 可從本檔 inline 至 LINE_HANDLERS
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import today_taipei
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -252,16 +253,20 @@ class LineService:
         if channel_secret is not None:
             self._channel_secret = channel_secret
 
-    def _push(self, text: str) -> bool:
-        """推送純文字訊息到 LINE 群組，成功回傳 True，失敗回傳 False"""
-        if not self._enabled or not self._token or not self._target_id:
+    def push_text_to_group(self, group_id: str, text: str) -> bool:
+        """推送純文字到指定 LINE group/room/user_id（generalised group push）。
+
+        Phase 4 Section 2 新加 — dispatch group_id mode 用。caller 可傳任意 group_id
+        （含 self._target_id 或其他 group），由 dispatch caller 自行 resolve 來源。
+        """
+        if not self._enabled or not self._token or not group_id:
             return False
         try:
             resp = requests.post(
                 _LINE_PUSH_URL,
                 headers={"Authorization": f"Bearer {self._token}"},
                 json={
-                    "to": self._target_id,
+                    "to": group_id,
                     "messages": [{"type": "text", "text": text}],
                 },
                 timeout=5,
@@ -275,6 +280,18 @@ class LineService:
         except Exception as exc:
             logger.warning("LINE 推送失敗: %s", exc)
             return False
+
+    def _push(self, text: str) -> bool:
+        """推送純文字訊息到預設 LINE 群組（self._target_id），成功回傳 True。
+
+        Phase 4 Section 2 之後此 method 為 push_text_to_group 的 thin wrapper；
+        dispatch hybrid 路徑（dismissal_calls.py）不再使用，改走 dispatch +
+        line_group_id 參數。保留供其他可能 internal caller 用，下個 minor version
+        評估退役。
+        """
+        if not self._target_id:
+            return False
+        return self.push_text_to_group(self._target_id, text)
 
     def push_to_user(self, line_user_id: str, text: str) -> bool:
         """Public API：發送純文字訊息給單一 LINE user.
@@ -311,55 +328,46 @@ class LineService:
         """Public alias for dispatch adapter."""
         self._push_to_user(user_id, text)
 
-    def _notify_pos_unlock_to_approver(
-        self,
-        *,
-        target_date,
-        original_approver: str,
-        unlocker: str,
-        is_override: bool,
-        reason: str,
+    def push_flex_to_user(
+        self, line_user_id: str, flex_content: dict, alt_text: str
     ) -> bool:
-        """通知原簽核人：他簽過的日結被解鎖。
+        """推 LINE Flex message 給單一 user。
 
-        Returns: True 若推播成功送出；False 若無 LINE 綁定或推播失敗。
-        Best-effort：呼叫端不應因 False 中止 unlock 流程。
+        Args:
+            line_user_id: 接收者的 LINE user ID。
+            flex_content: LINE Flex bubble/carousel dict（content 部分，不含 wrapper）。
+            alt_text: 推播通知列顯示的純文字版（裝置不支援 flex 時 fallback）。
 
-        Why (spec C2): 解鎖事件需即時告知原簽核人以強化稽核獨立性；
-        員工端 LINE 綁定屬另案，未綁則 silent fail，由 dashboard 補救。
+        Returns:
+            True 表示推播成功，False 表示停用、設定缺失或 API 呼叫失敗。
         """
-        if not self._enabled or not self._token:
+        if not self._enabled or not self._token or not line_user_id:
             return False
-        from models.base import _SessionFactory
-        from models.auth import User
-
-        if _SessionFactory is None:
-            return False
-        session = _SessionFactory()
         try:
-            user = (
-                session.query(User)
-                .filter(
-                    User.username == original_approver,
-                    User.is_active.is_(True),
+            resp = requests.post(
+                _LINE_PUSH_URL,
+                headers={"Authorization": f"Bearer {self._token}"},
+                json={
+                    "to": line_user_id,
+                    "messages": [
+                        {
+                            "type": "flex",
+                            "altText": alt_text,
+                            "contents": flex_content,
+                        }
+                    ],
+                },
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "LINE Flex 個人推播失敗: %s %s", resp.status_code, resp.text
                 )
-                .first()
-            )
-            if not user or not user.line_user_id or not user.line_follow_confirmed_at:
                 return False
-
-            label = "管理員 override 解鎖" if is_override else "解鎖"
-            msg = (
-                f"📝 POS 日結{label}通知\n"
-                f"日期：{target_date.isoformat()}\n"
-                f"原簽核人：{original_approver}（您）\n"
-                f"解鎖人：{unlocker}\n"
-                f"原因：{reason}\n\n"
-                "請至後台確認異常稽核軌跡。"
-            )
-            return self._push_to_user(user.line_user_id, msg)
-        finally:
-            session.close()
+            return True
+        except Exception as exc:
+            logger.warning("LINE Flex 個人推播失敗: %s", exc)
+            return False
 
     def _push_to_user_with_quick_reply(
         self, line_user_id: str, text: str, quick_reply: dict
@@ -455,345 +463,7 @@ class LineService:
 
     # ── 公開通知方法 ──────────────────────────────────────────────────────────
 
-    def _notify_leave_submitted(
-        self,
-        name: str,
-        leave_type: str,
-        start: date,
-        end: date,
-        hours: float,
-    ) -> None:
-        """請假申請送出後通知（失敗時 log warning，不拋出）"""
-        text = build_leave_message(name, leave_type, start, end, hours)
-        self._push(text)
-
-    def _notify_overtime_submitted(
-        self,
-        name: str,
-        ot_date: date,
-        ot_type: str,
-        hours: float,
-        use_comp: bool,
-    ) -> None:
-        """加班申請送出後通知（失敗時 log warning，不拋出）"""
-        text = build_overtime_message(name, ot_date, ot_type, hours, use_comp)
-        self._push(text)
-
-    def _notify_leave_result(
-        self,
-        line_user_id: str,
-        name: str,
-        leave_type: str,
-        start: date,
-        end: date,
-        approved: bool,
-        reason: Optional[str] = None,
-    ) -> None:
-        """請假審核結果個人推播（失敗時 log warning，不拋出）"""
-        text = build_leave_result_message(
-            name, leave_type, start, end, approved, reason
-        )
-        self._push_to_user(line_user_id, text)
-
-    def _notify_overtime_result(
-        self,
-        line_user_id: str,
-        name: str,
-        ot_date: date,
-        ot_type: str,
-        approved: bool,
-    ) -> None:
-        """加班審核結果個人推播（失敗時 log warning，不拋出）"""
-        text = build_overtime_result_message(name, ot_date, ot_type, approved)
-        self._push_to_user(line_user_id, text)
-
-    def _notify_punch_correction_result(
-        self,
-        line_user_id: str,
-        name: str,
-        target_date: date,
-        approved: bool,
-        reason: Optional[str] = None,
-    ) -> None:
-        """補打卡審核結果個人推播（失敗時 log warning，不拋出）"""
-        status = "已核准" if approved else "已駁回"
-        suffix = f"\n原因：{reason}" if (not approved and reason) else ""
-        text = f"【補打卡審核結果】{name} {target_date} 的補打卡{status}{suffix}"
-        self._push_to_user(line_user_id, text)
-
-    def _notify_salary_batch_complete(
-        self,
-        year: int,
-        month: int,
-        count: int,
-        total_net: int,
-    ) -> None:
-        """薪資批次計算完成後群組推播（失敗時 log warning，不拋出）"""
-        text = build_salary_batch_message(year, month, count, total_net)
-        self._push(text)
-
-    def _notify_activity_waitlist_promoted(
-        self,
-        student_name: str,
-        course_name: str,
-        deadline: Optional[datetime] = None,
-    ) -> None:
-        """才藝候補升位後群組推播（失敗時 log warning，不拋出）。
-
-        deadline 為 None：升為正式且立即生效（管理員直升）。
-        deadline 有值：升為 promoted_pending，家長須於期限前確認。
-        """
-        text = build_activity_waitlist_promoted_message(
-            student_name, course_name, deadline
-        )
-        self._push(text)
-
-    def _notify_activity_waitlist_promotion_reminder(
-        self,
-        student_name: str,
-        course_name: str,
-        deadline: datetime,
-    ) -> bool:
-        """候補轉正剩餘時間提醒；回傳是否推送成功（True=成功，False=失敗或未啟用）。
-
-        失敗時 caller 不應寫 reminder_sent_at，下輪再重試。
-        """
-        text = build_activity_waitlist_promotion_reminder_message(
-            student_name, course_name, deadline
-        )
-        return self._push(text)
-
-    def _notify_activity_waitlist_promotion_expired(
-        self,
-        student_name: str,
-        course_name: str,
-    ) -> None:
-        """候補轉正逾期自動放棄通知（failsafe log warning）。"""
-        text = build_activity_waitlist_promotion_expired_message(
-            student_name, course_name
-        )
-        self._push(text)
-
-    def _notify_activity_waitlist_final_reminder(
-        self,
-        student_name: str,
-        course_name: str,
-        confirm_deadline: datetime,
-    ) -> bool:
-        """T-6h 最後提醒；回傳是否推送成功（True=成功，False=失敗或未啟用）。
-
-        失敗時 caller 不應寫 final_reminder_sent_at，下輪再重試。
-        """
-        try:
-            now = datetime.now(ZoneInfo("Asia/Taipei")).replace(tzinfo=None)
-            delta_seconds = (confirm_deadline - now).total_seconds()
-            hours_left = max(1, int(delta_seconds // 3600))
-            text = build_activity_waitlist_final_reminder_message(
-                student_name, course_name, hours_left
-            )
-            return self._push(text)
-        except Exception:
-            logger.exception(
-                "_notify_activity_waitlist_final_reminder 失敗：student=%s course=%s",
-                student_name,
-                course_name,
-            )
-            return False
-
-    def _notify_dismissal_created(
-        self,
-        student_name: str,
-        classroom_name: str,
-        note: Optional[str] = None,
-    ) -> None:
-        """接送通知建立後群組推播（失敗時 log warning，不拋出）"""
-        text = build_dismissal_message(student_name, classroom_name, note)
-        self._push(text)
-
     # ── 家長端通知方法（個人推播；非 enable 或無 line_user_id 時靜默） ──
-
-    def should_push_to_parent(
-        self,
-        session,
-        *,
-        user_id: int,
-        event_type: str,  # 'message_received' / 'announcement' / 'event_ack_required' / ...
-    ) -> Optional[str]:
-        """家長端 push gate：回傳 line_user_id 表可推；None 表跳過。
-
-        條件：
-        1. service enabled & token 已設
-        2. user 存在、is_active、有 line_user_id
-        3. line_follow_confirmed_at IS NOT NULL（家長已加 Bot 為好友才能推）
-        4. (Phase 6 接通) ParentNotificationPreference enabled 才推；現階段 stub 為 True
-
-        DB 異常 / 找不到 user 等情境一律 fail-closed（return None），不打 LINE API；
-        push 失敗本來就是非阻斷，靜默略過比硬推更安全。
-        """
-        if not self._enabled or not self._token:
-            return None
-        try:
-            from models.auth import User
-
-            user = session.query(User).filter(User.id == user_id).first()
-            if not user or not user.is_active:
-                return None
-            if not user.line_user_id or not user.line_follow_confirmed_at:
-                return None
-            # Phase 6：通知偏好（缺 row = enabled）
-            from api.parent_portal.notifications import is_pref_enabled
-
-            if not is_pref_enabled(
-                session, user_id=user_id, event_type=event_type, channel="line"
-            ):
-                return None
-            return user.line_user_id
-        except Exception as exc:
-            logger.warning("should_push_to_parent failed (fail-closed): %s", exc)
-            return None
-
-    def _notify_parent_message_received(
-        self,
-        session,
-        *,
-        parent_user_id: int,
-        teacher_name: str,
-        student_name: Optional[str],
-        body_preview: str,
-        thread_id: Optional[int] = None,
-    ) -> None:
-        """老師發訊／回訊後通知家長 LINE（gate 不通則靜默）。
-
-        thread_id 傳入時會附 quick-reply postback 按鈕，家長點即進入 reply 模式。
-        """
-        line_id = self.should_push_to_parent(
-            session, user_id=parent_user_id, event_type="message_received"
-        )
-        if not line_id:
-            return
-        snippet = (body_preview or "(附件)").strip()
-        if len(snippet) > 60:
-            snippet = snippet[:60] + "…"
-        prefix = f"💬 {teacher_name} 傳了新訊息"
-        if student_name:
-            prefix += f"（{student_name}）"
-        text = f"{prefix}：\n{snippet}\n\n可直接回覆此訊息或開啟家長 App。"
-        if thread_id is not None:
-            quick_reply = {
-                "items": [
-                    {
-                        "type": "action",
-                        "action": {
-                            "type": "postback",
-                            "label": "💬 回覆此訊息",
-                            "data": f"thread_id={thread_id}",
-                            "displayText": "回覆此訊息",
-                        },
-                    }
-                ]
-            }
-            self._push_to_user_with_quick_reply(line_id, text, quick_reply)
-        else:
-            self._push_to_user(line_id, text)
-
-    def _notify_parent_leave_result(
-        self,
-        line_user_id: str,
-        student_name: str,
-        leave_type: str,
-        start: date,
-        end: date,
-        approved: bool,
-        review_note: Optional[str] = None,
-    ) -> None:
-        text = _build_parent_leave_result_message(
-            student_name, leave_type, start, end, approved, review_note
-        )
-        self._push_to_user(line_user_id, text)
-
-    def _notify_parent_attendance_alert(
-        self,
-        line_user_id: str,
-        student_name: str,
-        target_date: date,
-        status: str,
-    ) -> None:
-        text = (
-            f"【出席提醒】\n"
-            f"學生：{student_name}\n"
-            f"日期：{target_date.isoformat()}\n"
-            f"狀態：{status}\n"
-            f"如有誤請聯絡老師。"
-        )
-        self._push_to_user(line_user_id, text)
-
-    def _notify_parent_announcement(
-        self,
-        line_user_id: str,
-        title: str,
-        preview: Optional[str] = None,
-    ) -> None:
-        body = f"【園所公告】\n{title}"
-        if preview:
-            snippet = preview.strip()
-            if len(snippet) > 60:
-                snippet = snippet[:60] + "…"
-            body += f"\n{snippet}"
-        body += "\n請開啟家長 App 查看詳情。"
-        self._push_to_user(line_user_id, body)
-
-    def _notify_parent_fee_due(
-        self,
-        line_user_id: str,
-        student_name: str,
-        item_name: str,
-        outstanding: int,
-        due_date: date,
-    ) -> None:
-        text = (
-            f"【繳費提醒】\n"
-            f"學生：{student_name}\n"
-            f"項目：{item_name}\n"
-            f"未繳金額：${outstanding}\n"
-            f"繳費期限：{due_date.isoformat()}"
-        )
-        self._push_to_user(line_user_id, text)
-
-    def _notify_parent_event_ack_required(
-        self,
-        line_user_id: str,
-        title: str,
-        deadline: Optional[date] = None,
-    ) -> None:
-        body = f"【需簽閱】\n事件：{title}"
-        if deadline:
-            body += f"\n簽閱截止：{deadline.isoformat()}"
-        body += "\n請開啟家長 App 完成簽閱。"
-        self._push_to_user(line_user_id, body)
-
-    def _notify_parent_contact_book_published(
-        self,
-        line_user_id: str,
-        student_name: str,
-        log_date: date,
-        teacher_note_preview: Optional[str] = None,
-        photo_count: int = 0,
-    ) -> None:
-        """每日聯絡簿發布通知（家長端個人推播）。"""
-        body = (
-            f"【今日聯絡簿】\n"
-            f"學生：{student_name}\n"
-            f"日期：{log_date.isoformat()}"
-        )
-        if teacher_note_preview:
-            snippet = teacher_note_preview.strip()
-            if len(snippet) > 60:
-                snippet = snippet[:60] + "…"
-            body += f"\n老師留言：{snippet}"
-        if photo_count > 0:
-            body += f"\n附 {photo_count} 張照片"
-        body += "\n請開啟家長 App 查看完整內容。"
-        self._push_to_user(line_user_id, body)
 
     def handle_webhook_message(
         self,
@@ -868,7 +538,7 @@ class LineService:
             from datetime import date as _date
             import calendar
 
-            today = _date.today()
+            today = today_taipei()
             records = (
                 session.query(Attendance)
                 .filter(

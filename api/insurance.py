@@ -4,6 +4,7 @@ Insurance router
 
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -194,7 +195,7 @@ async def list_brackets(
     無資料時 fallback 到 ≤year 中最新的年度（與 service load_brackets_from_db 同邏輯），
     便於行政在新年度尚未公告時還能看到目前生效級距。
     """
-    target_year = year or date.today().year
+    target_year = year or today_taipei().year  
     session = get_session()
     try:
         rows = (

@@ -4,6 +4,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -73,10 +74,10 @@ class DisciplinaryAction(Base):
         comment="實際抵扣金額（可能 < deduction_amount 因獎金不足）",
     )
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     created_by = Column(String(50), nullable=True)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
     updated_by = Column(String(50), nullable=True)
 

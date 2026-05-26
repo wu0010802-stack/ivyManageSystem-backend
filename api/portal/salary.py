@@ -124,6 +124,7 @@ def get_salary_preview(
                 "gross_salary": salary.gross_salary,
                 "total_deduction": salary.total_deduction,
                 "net_salary": salary.net_salary,
+                "unused_leave_payout": float(salary.unused_leave_payout or 0),
                 "is_finalized": salary.is_finalized,
                 "needs_recalc": bool(salary.needs_recalc),
                 "version": int(salary.version or 1),

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Any
 
 from reportlab.lib import colors
@@ -266,7 +267,7 @@ def generate_attendance_roll_pdf(
     c.drawRightString(
         margin_x + content_w,
         15 * mm,
-        f"列印時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"列印時間：{now_taipei_naive().strftime('%Y-%m-%d %H:%M')}",
     )
     c.setFillColor(colors.black)
 

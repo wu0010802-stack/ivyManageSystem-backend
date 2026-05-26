@@ -5,6 +5,7 @@ Attendance - CRUD endpoints for attendance records
 import logging
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,7 +41,7 @@ def _assert_attendance_within_retention(
     attendance_date: date, today: Optional[date] = None
 ) -> None:
     """5 年保存期內的出勤紀錄不得刪除（勞基法第 30 條第 5 項）。"""
-    today = today or date.today()
+    today = today or today_taipei()
     cutoff = _retention_cutoff(today)
     if attendance_date >= cutoff:
         raise HTTPException(

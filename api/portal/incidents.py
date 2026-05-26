@@ -4,6 +4,7 @@ Portal - 教師事件紀錄端點
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -117,7 +118,7 @@ def create_portal_incident(
                 description=payload.description,
                 action_taken=payload.action_taken,
                 parent_notified=payload.parent_notified,
-                parent_notified_at=datetime.now() if payload.parent_notified else None,
+                parent_notified_at=now_taipei_naive() if payload.parent_notified else None,
                 recorded_by=current_user.get("user_id"),
             )
             session.add(incident)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -42,7 +43,7 @@ def get_funnel(
 ):
     if start > end:
         raise HTTPException(400, "start 必須 ≤ end")
-    today = date.today()
+    today = today_taipei()
     with session_scope() as session:
         return report_cache_service.get_or_build(
             session,
@@ -72,7 +73,7 @@ def get_at_risk(
         require_staff_permission(Permission.BUSINESS_ANALYTICS)
     ),
 ):
-    today = date.today()
+    today = today_taipei()
     can_read = has_permission(
         current_user.get("permission_names"), Permission.STUDENTS_READ
     )
@@ -100,7 +101,7 @@ def get_churn_history(
         require_staff_permission(Permission.BUSINESS_ANALYTICS)
     ),
 ):
-    today = date.today()
+    today = today_taipei()
     with session_scope() as session:
         return report_cache_service.get_or_build(
             session,

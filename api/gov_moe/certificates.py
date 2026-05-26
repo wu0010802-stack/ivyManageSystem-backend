@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -99,7 +100,8 @@ def generate_certificate(
         student_name=student.name,
         student_no=student.student_id or "",
         id_number=getattr(student, "id_number", None),
-        admit_date=getattr(student, "enrollment_date", None) or date.today(),
+        admit_date=getattr(student, "enrollment_date", None)
+        or today_taipei(),  
         classroom_name=_resolve_classroom_name(db, student),
         purpose=cert.purpose,
         issue_date=cert.issue_date,

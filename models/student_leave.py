@@ -9,6 +9,7 @@
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Boolean,
@@ -23,7 +24,6 @@ from sqlalchemy import (
 )
 
 from models.base import Base
-
 
 # 與 StudentAttendance.status 共用語意（中文字串）
 LEAVE_TYPES = ("病假", "事假")
@@ -73,9 +73,11 @@ class StudentLeaveRequest(Base):
     reviewed_at = Column(DateTime, nullable=True)
     review_note = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    client_request_id = Column(String(64), nullable=True)
+
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (

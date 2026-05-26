@@ -4,7 +4,7 @@ Overtime management router
 
 import logging
 import calendar as cal_module
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timedelta
 from io import BytesIO
 from typing import Any, Optional, List
 
@@ -39,6 +39,7 @@ from models.database import (
 )
 from models.approval import ApprovalStatus
 from models.event import Holiday
+from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from utils.auth import require_staff_permission
 from utils.constants import (
     OVERTIME_TYPE_LABELS,
@@ -225,6 +226,15 @@ def _revoke_comp_leave_grant(
             ),
         )
 
+    # ── 新增：mark grant ledger row 為 revoked（不刪除留 audit） ──
+    grant = (
+        session.query(OvertimeCompLeaveGrant)
+        .filter(OvertimeCompLeaveGrant.overtime_record_id == ot.id)
+        .first()
+    )
+    if grant is not None:
+        grant.status = "revoked"
+
     quota.total_hours = max(0.0, new_total)
     ot.comp_leave_granted = False
 
@@ -269,6 +279,16 @@ def _grant_comp_leave_quota(session, ot: OvertimeRecord, result: dict) -> None:
             note="由加班補休累積",
         )
         session.add(quota)
+    # ── 新增 grant ledger row（per-OT 帳本，T9 scheduler 將從此撈到期 grant 結算）──
+    grant = OvertimeCompLeaveGrant(
+        overtime_record_id=ot.id,
+        employee_id=ot.employee_id,
+        granted_hours=ot.hours,
+        granted_at=ot.overtime_date,
+        expires_at=ot.overtime_date + timedelta(days=365),
+        status="active",
+    )
+    session.add(grant)
     ot.comp_leave_granted = True
     result["comp_leave_hours_granted"] = ot.hours
     logger.info(

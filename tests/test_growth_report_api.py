@@ -358,14 +358,14 @@ def test_send_line_all_failed_releases_idempotency_lock(app_client, monkeypatch)
         session.add(Guardian(user_id=2, student_id=1, name="家長"))
         session.commit()
 
-    # patch line service：全失敗
-    from api.portfolio import reports as reports_mod
+    # Phase 4 Section 3: mock dispatch.send_to_line_user_sync 全失敗
+    from services.notification import dispatch as dispatch_mod
 
-    class _FailLine:
-        def push_to_user(self, *_a, **_k):
-            return False
-
-    monkeypatch.setattr(reports_mod, "_line_service", _FailLine())
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_to_line_user_sync",
+        lambda *_a, **_k: False,
+    )
 
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 502, resp.text
@@ -412,13 +412,14 @@ def test_send_line_partial_success_keeps_idempotency_lock(app_client, monkeypatc
             session.add(Guardian(user_id=uid, student_id=1, name="家長"))
         session.commit()
 
-    from api.portfolio import reports as reports_mod
+    # Phase 4 Section 3：reports.py 改走 dispatch.send_to_line_user_sync，
+    # 直接 mock dispatch API 而非 reports_mod._line_service.push_to_user
+    from services.notification import dispatch as dispatch_mod
 
-    class _MixLine:
-        def push_to_user(self, line_user_id, _text):
-            return line_user_id == "U_OK"
+    def _mock_send(line_user_id, _event, _ctx):
+        return line_user_id == "U_OK"
 
-    monkeypatch.setattr(reports_mod, "_line_service", _MixLine())
+    monkeypatch.setattr(dispatch_mod, "send_to_line_user_sync", _mock_send)
 
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 200, resp.text
@@ -468,21 +469,20 @@ def test_send_line_does_not_block_under_session_scope(app_client, monkeypatch):
         session.add(Guardian(user_id=2, student_id=1, name="家長"))
         session.commit()
 
-    from api.portfolio import reports as reports_mod
+    from services.notification import dispatch as dispatch_mod
 
     pushed_during_outer_txn = []
 
-    class _ProbeLine:
-        def push_to_user(self, _uid, _text):
-            # 推送時 line_sent_at 應已 commit（claim slot 完成），可從另一 session 讀到
-            from models.database import StudentGrowthReport, session_scope
+    def _probe_send(_uid, _event, _ctx):
+        # 推送時 line_sent_at 應已 commit（claim slot 完成），可從另一 session 讀到
+        from models.database import StudentGrowthReport, session_scope
 
-            with session_scope() as s2:
-                r = s2.query(StudentGrowthReport).filter_by(id=rid).first()
-                pushed_during_outer_txn.append(r.line_sent_at is not None)
-            return True
+        with session_scope() as s2:
+            r = s2.query(StudentGrowthReport).filter_by(id=rid).first()
+            pushed_during_outer_txn.append(r.line_sent_at is not None)
+        return True
 
-    monkeypatch.setattr(reports_mod, "_line_service", _ProbeLine())
+    monkeypatch.setattr(dispatch_mod, "send_to_line_user_sync", _probe_send)
 
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 200
@@ -532,3 +532,237 @@ def test_send_line_idempotent_within_5_minutes(app_client):
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 409
     assert "5 分鐘內" in resp.json()["detail"]
+
+
+# ── Task 2: storage backend PDF write ─────────────────────────────────────────
+
+
+def test_pdf_job_writes_to_supabase_storage_when_backend_supabase(
+    monkeypatch, tmp_path
+):
+    """STORAGE_BACKEND=supabase 模式時，_generate_pdf_job 應走 storage backend
+    寫入而非 local 檔案系統。"""
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+    import models.base as base_module
+    from api.portfolio import reports as reports_mod
+    from models.database import Base, Classroom, Student, StudentGrowthReport
+    from models.auth import User
+    from datetime import date
+    from sqlalchemy import create_engine, event as sqla_event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    # 1. 建立 in-memory SQLite DB
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @sqla_event.listens_for(engine, "connect")
+    def _enforce_fk(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    TestingSession = sessionmaker(bind=engine, autoflush=False)
+    monkeypatch.setattr(base_module, "_engine", engine)
+    monkeypatch.setattr(base_module, "_SessionFactory", TestingSession)
+    Base.metadata.create_all(engine)
+
+    # 2. 插入必要 DB rows
+    with TestingSession() as session:
+        classroom = Classroom(id=10, name="測試班", is_active=True)
+        student = Student(
+            id=10,
+            student_id="T010",
+            name="測試生",
+            classroom_id=10,
+            lifecycle_status="active",
+            birthday=date(2022, 1, 1),
+            enrollment_date=date(2024, 9, 1),
+        )
+        report = StudentGrowthReport(
+            id=99,
+            student_id=10,
+            period_label="2026 春季",
+            period_start=date(2026, 2, 1),
+            period_end=date(2026, 5, 31),
+            status="pending",
+        )
+        session.add_all([classroom, student, report])
+        session.commit()
+
+    # 3. monkeypatch REPORT_ROOT（local branch 仍需有效目錄）
+    report_root = tmp_path / "growth_reports"
+    monkeypatch.setattr(reports_mod, "REPORT_ROOT", report_root)
+
+    # 4. monkeypatch settings.storage.backend = "supabase"
+    monkeypatch.setattr(reports_mod.settings.storage, "backend", "supabase")
+
+    # 5. monkeypatch get_backend 在 reports module
+    calls = []
+
+    class FakeStorage:
+        def save(self, module, key, data, content_type):
+            calls.append(
+                {"module": module, "key": key, "size": len(data), "ct": content_type}
+            )
+
+        def signed_url(self, module, key, ttl_seconds):
+            return f"https://signed.example/{module}/{key}"
+
+    monkeypatch.setattr(reports_mod, "get_backend", lambda: FakeStorage())
+
+    # 6. 執行 _generate_pdf_job
+    reports_mod._generate_pdf_job(99)
+
+    # 7. 驗 save 被呼叫一次且欄位正確
+    assert len(calls) == 1, f"expected 1 storage.save call, got {calls}"
+    c = calls[0]
+    assert c["module"] == "growth_reports"
+    assert c["key"] == f"students/10/99.pdf"
+    assert c["ct"] == "application/pdf"
+    assert c["size"] > 0
+
+    # 8. 驗 DB report.file_path == storage key（非 local path）
+    expected_key = "students/10/99.pdf"
+    with TestingSession() as session:
+        r = session.query(StudentGrowthReport).filter_by(id=99).first()
+        assert r.status == "ready"
+        assert (
+            r.file_path == expected_key
+        ), f"file_path should be storage key '{expected_key}', got '{r.file_path}'"
+        assert r.file_size is not None and r.file_size > 0
+
+    # 9. 驗 local 檔案系統沒有產生任何 PDF 檔（走 storage 而非 local）
+    local_pdf = report_root / "10" / "99.pdf"
+    assert not local_pdf.exists(), "supabase backend 不應寫 local PDF 檔"
+
+    engine.dispose()
+
+
+def test_download_endpoint_redirects_to_signed_url_when_backend_supabase(
+    monkeypatch, tmp_path
+):
+    """Supabase backend 模式下，GET /api/students/{sid}/growth-reports/{rid}/download
+    應回 302 + Location header 含 signed URL。"""
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+    import models.base as base_module
+    from api.portfolio import reports as reports_mod
+    from api.auth import router as auth_router, _account_failures, _ip_attempts
+    from models.database import Base, Classroom, Student, StudentGrowthReport
+    from models.auth import User
+    from datetime import date
+    from sqlalchemy import create_engine, event as sqla_event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    _account_failures.clear()
+    _ip_attempts.clear()
+
+    # 1. 建立 in-memory SQLite DB
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @sqla_event.listens_for(engine, "connect")
+    def _enforce_fk(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    TestingSession = sessionmaker(bind=engine, autoflush=False)
+    monkeypatch.setattr(base_module, "_engine", engine)
+    monkeypatch.setattr(base_module, "_SessionFactory", TestingSession)
+    Base.metadata.create_all(engine)
+
+    # 2. 建 fixture：student + ready report，file_path = "students/1/42.pdf"
+    with TestingSession() as session:
+        admin = User(
+            id=1,
+            username="admin",
+            password_hash="$2b$12$dummy",
+            role="admin",
+            permission_names=["*"],
+            is_active=True,
+            token_version=0,
+        )
+        classroom = Classroom(id=1, name="兔兔班", is_active=True)
+        student = Student(
+            id=1,
+            student_id="S001",
+            name="王小明",
+            classroom_id=1,
+            lifecycle_status="active",
+            birthday=date(2022, 3, 5),
+            enrollment_date=date(2024, 9, 1),
+        )
+        report = StudentGrowthReport(
+            id=42,
+            student_id=1,
+            period_label="2026 春季",
+            period_start=date(2026, 2, 1),
+            period_end=date(2026, 5, 31),
+            status="ready",
+            file_path="students/1/42.pdf",
+        )
+        session.add_all([admin, classroom, student, report])
+        session.commit()
+
+    # 3. monkeypatch REPORT_ROOT
+    report_root = tmp_path / "growth_reports"
+    monkeypatch.setattr(reports_mod, "REPORT_ROOT", report_root)
+
+    # 4. monkeypatch settings.storage.backend = "supabase"
+    monkeypatch.setattr(reports_mod.settings.storage, "backend", "supabase")
+
+    # 5. monkeypatch get_backend 回 FakeStorage with signed_url 方法
+    class FakeStorage:
+        def save(self, module, key, data, content_type):
+            pass
+
+        def signed_url(self, module, key, ttl_seconds):
+            return f"https://signed.example/{module}/{key}?token=abc"
+
+    monkeypatch.setattr(reports_mod, "get_backend", lambda: FakeStorage())
+
+    # 6. 建 TestClient（不跟隨 redirect，才能看到 302）
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from utils.auth import create_access_token
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(reports_mod.router)
+    client = TestClient(app, follow_redirects=False)
+
+    token = create_access_token(
+        data={
+            "sub": "admin",
+            "user_id": 1,
+            "role": "admin",
+            "permission_names": ["*"],
+            "token_version": 0,
+        }
+    )
+    client.headers.update({"Authorization": f"Bearer {token}"})
+
+    # 7. call endpoint，assert response.status_code == 302
+    resp = client.get("/api/students/1/growth-reports/42/download")
+    assert resp.status_code == 302, f"expected 302, got {resp.status_code}: {resp.text}"
+
+    # 8. assert "signed" in response.headers["location"]
+    location = resp.headers.get("location", "")
+    assert "signed" in location, f"expected 'signed' in location, got: {location!r}"
+
+    engine.dispose()

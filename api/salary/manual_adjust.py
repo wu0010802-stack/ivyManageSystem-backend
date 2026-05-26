@@ -16,6 +16,7 @@ _recalculate_salary_record_totals 與 _invalidate_finance_summary_cache
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import (
@@ -263,7 +264,7 @@ def manual_adjust_salary(
 
         operator = current_user.get("username") or current_user.get("name") or "管理員"
         audit_note = (
-            f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 手動編輯："
+            f"[{now_taipei_naive().strftime('%Y-%m-%d %H:%M')}] 手動編輯："
             + "；".join(changed_parts)
             + f"；操作者：{operator}；原因：{adjustment_reason}"
         )

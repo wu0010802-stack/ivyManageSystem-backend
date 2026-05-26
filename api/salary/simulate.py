@@ -68,6 +68,7 @@ _SIMULATE_COMPARE_KEYS = [
     "festival_bonus",
     "overtime_bonus",
     "overtime_pay",
+    "supplementary_health_employee",
     "late_deduction",
     "early_leave_deduction",
     "leave_deduction",

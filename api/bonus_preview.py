@@ -5,6 +5,7 @@ api/bonus_preview.py — 節慶獎金影響預覽 & 獎金達成儀表板 API
 import calendar
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -222,7 +223,7 @@ def preview_bonus_impact(
         _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
     )
 
-    today = date.today()
+    today = today_taipei()
     year, month = today.year, today.month
     is_festival = get_bonus_distribution_month(month)
 
@@ -387,7 +388,7 @@ def get_bonus_dashboard(
         _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
     )
 
-    today = date.today()
+    today = today_taipei()
     if year is None:
         year = today.year
     if month is None:

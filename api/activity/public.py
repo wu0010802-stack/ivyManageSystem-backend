@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from pathlib import Path
 
 import hashlib
@@ -639,7 +640,7 @@ async def public_register(
             pending_review=not is_matched,
             match_status="matched" if is_matched else "pending",
             query_token_hash=_hash_query_token(plaintext_token),
-            query_token_issued_at=datetime.now(),
+            query_token_issued_at=now_taipei_naive(),
         )
         session.add(reg)
         session.flush()
@@ -995,8 +996,7 @@ async def public_update_registration(
         # 顯式 bump updated_at：SQLAlchemy onupdate 只有 row 真有 dirty 欄位才觸發；
         # 家長若只改課程不改其他欄位，updated_at 不會自動推進，舊 token 還能再用一次。
         # 強制設值是樂觀鎖正確性的兜底（必須在 commit 前）。
-        reg.updated_at = datetime.now()
-
+        reg.updated_at = now_taipei_naive()
         # 組裝新舊 diff（兩層稽核 — AuditMiddleware 系統層 + RegistrationChange 業務層）
         new_course_names = sorted(
             n

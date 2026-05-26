@@ -18,6 +18,7 @@ import re
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from utils.taipei_time import now_taipei_naive
 from io import BytesIO
 from typing import List, Literal, Optional
 from urllib.parse import quote
@@ -430,7 +431,7 @@ async def outstanding_by_student(
         if classroom:
             query = query.filter(ActivityRegistration.class_name == classroom)
         if overdue_only and filter == "outstanding":
-            cutoff = datetime.now() - timedelta(days=OVERDUE_DAYS_THRESHOLD)
+            cutoff = now_taipei_naive() - timedelta(days=OVERDUE_DAYS_THRESHOLD)
             query = query.filter(ActivityRegistration.created_at < cutoff)
         regs = (
             query.order_by(

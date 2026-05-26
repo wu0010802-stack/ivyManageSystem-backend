@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import date
+from utils.taipei_time import now_taipei_naive
 from decimal import Decimal
 from tempfile import NamedTemporaryFile
 
@@ -576,7 +577,7 @@ def export_personal_slip_pdf(
         PersonalBonusSlipData(
             employee_name=emp.name,
             academic_year=cycle.academic_year,
-            print_date=datetime.now().strftime("%Y.%m.%d"),
+            print_date=now_taipei_naive().strftime("%Y.%m.%d"),
             year_end_amount=settlement.payable_amount,
             bonus_by_type=bonuses,
         )

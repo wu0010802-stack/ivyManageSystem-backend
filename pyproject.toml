@@ -30,3 +30,20 @@ exclude_lines = [
     "if __name__ == .__main__.",
     "if TYPE_CHECKING:",
 ]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["DTZ"]  # flake8-datetimez: 防止 timezone-naive datetime 操作
+ignore = [
+    # 暫排於 PR1-3 scope 之外，留 follow-up PR 解
+    "DTZ001",  # call-datetime-without-tzinfo（4 處 constructor，多為業務 date 構造）
+    "DTZ007",  # call-datetime-strptime-without-zone（67 處 parse，多為使用者輸入解析）
+    "DTZ901",  # datetime-min-max（2 處邊界值）
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["DTZ"]              # freezegun 等 test fixture 用，例外
+"alembic/versions/**/*.py" = ["DTZ"]   # historical migration artifact，不執行
+"utils/taipei_time.py" = ["DTZ"]       # 唯一合法 datetime.now(tz) 入口

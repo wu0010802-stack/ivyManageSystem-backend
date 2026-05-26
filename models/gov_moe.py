@@ -1,6 +1,7 @@
 """MOE reporting module models (Phase 1: 4 tables)."""
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from sqlalchemy import (
     Column,
     Integer,
@@ -44,9 +45,9 @@ class StudentDisabilityDocument(Base):
     issued_date = Column(Date, nullable=True, comment="開立/取得日期")
     expiry_date = Column(Date, nullable=True, comment="到期日（無則永久）")
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (
@@ -88,9 +89,9 @@ class StudentIEPRecord(Base):
     approved_by_employee_id = Column(
         Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
     )
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
     deleted_at = Column(DateTime, nullable=True)
 
@@ -136,9 +137,9 @@ class SpecialEducationSubsidy(Base):
     paid_at = Column(DateTime, nullable=True)
     approval_doc_path = Column(String(500), nullable=True)
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
 
@@ -210,7 +211,7 @@ class EnrollmentCertificate(Base):
     issue_date = Column(Date, nullable=False)
     issued_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     pdf_path = Column(String(500), nullable=True, comment="若已存檔則記錄路徑")
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("year", "seq", name="uq_enrollment_cert_year_seq"),

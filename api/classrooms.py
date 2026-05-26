@@ -5,6 +5,7 @@ Classroom management router
 import logging
 from typing import Optional
 from datetime import date
+from utils.taipei_time import today_taipei
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
@@ -637,7 +638,7 @@ async def get_classroom_enrollment_composition(
         total = len(students)
         return {
             "classroom_id": classroom_id,
-            "snapshot_date": date.today().isoformat(),
+            "snapshot_date": today_taipei().isoformat(),  
             "total": total,
             "counts": counts,
             "ratios": {

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -104,7 +105,7 @@ def update_preferences(
         )
         if existing:
             existing.enabled = bool(enabled)
-            existing.updated_at = datetime.now()
+            existing.updated_at = now_taipei_naive()
         else:
             session.add(
                 ParentNotificationPreference(

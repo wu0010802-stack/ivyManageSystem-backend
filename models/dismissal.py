@@ -3,6 +3,7 @@ models/dismissal.py — 接送通知資料模型
 """
 
 from datetime import datetime
+from utils.taipei_time import today_taipei
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
@@ -23,8 +24,8 @@ _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 def _now_taipei_naive() -> datetime:
     """以台灣時間取當下並去 tzinfo（DateTime 欄位 naive）。
 
-    Why: 若主機部署在 UTC，default=datetime.now 會寫入 UTC 時刻；list_dismissal_calls
-    用 date.today() 篩 TAIPEI 日，會造成台北時間 07:30-08:00 接送從「今日列表」消失。
+    Why: 若主機部署在 UTC，default=now_taipei_naive 會寫入 UTC 時刻；list_dismissal_calls
+    用 today_taipei()  # noqa: DTZ011 篩 TAIPEI 日，會造成台北時間 07:30-08:00 接送從「今日列表」消失。
     """
     return datetime.now(_TAIPEI_TZ).replace(tzinfo=None)
 

@@ -4,6 +4,7 @@ Student incidents router — 學生事件紀錄（管理端）
 
 import logging
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -177,7 +178,7 @@ async def create_incident(
                 description=payload.description,
                 action_taken=payload.action_taken,
                 parent_notified=payload.parent_notified,
-                parent_notified_at=datetime.now() if payload.parent_notified else None,
+                parent_notified_at=now_taipei_naive() if payload.parent_notified else None,
                 recorded_by=current_user.get("user_id"),
             )
             session.add(incident)
@@ -233,15 +234,15 @@ async def update_incident(
                 incident.parent_notified = payload.parent_notified
                 if payload.parent_notified and not prev_notified:
                     incident.parent_notified_at = (
-                        payload.parent_notified_at or datetime.now()
-                    )
+                        payload.parent_notified_at or now_taipei_naive()
+                        )
                 elif not payload.parent_notified:
                     incident.parent_notified_at = None
 
             if payload.parent_notified_at is not None:
                 incident.parent_notified_at = payload.parent_notified_at
 
-            incident.updated_at = datetime.now()
+            incident.updated_at = now_taipei_naive()
             session.flush()
             session.refresh(incident)
 

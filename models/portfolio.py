@@ -11,6 +11,7 @@ models/portfolio.py — 幼兒成長歷程 Portfolio 模組
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     JSON,
@@ -98,7 +99,7 @@ class Attachment(Base):
     deleted_at = Column(
         DateTime, nullable=True, comment="軟刪除；實際檔案保留 90 天後再清"
     )
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
     __table_args__ = (
         Index("ix_attachments_owner", "owner_type", "owner_id"),
@@ -139,9 +140,9 @@ class StudentObservation(Base):
     recorded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     deleted_at = Column(DateTime, nullable=True, comment="軟刪除")
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (
@@ -174,9 +175,9 @@ class StudentAllergy(Base):
     active = Column(Boolean, nullable=False, default=True, server_default="true")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (
@@ -213,9 +214,9 @@ class StudentMedicationOrder(Base):
         comment="teacher / parent（未來 portal 家長填）",
     )
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (
@@ -255,7 +256,7 @@ class StudentMedicationLog(Base):
         comment="若為修正紀錄，指向被修正的原 log",
     )
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
     __table_args__ = (
         # 每張 order 的每個時段只能預建「一筆原始 log」（correction_of IS NULL）

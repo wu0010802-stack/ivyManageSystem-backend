@@ -4,6 +4,7 @@ School Events (Calendar) router - CRUD for school calendar events
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive
 from io import BytesIO
 from typing import Optional
 
@@ -472,8 +473,8 @@ async def import_holidays(
                     existing.is_active = True
                     existing.source = "manual"
                     existing.source_year = holiday_date.year
-                    existing.synced_at = datetime.now()
-                    existing.updated_at = datetime.now()
+                    existing.synced_at = now_taipei_naive()
+                    existing.updated_at = now_taipei_naive()
                 else:
                     session.add(
                         Holiday(
@@ -483,7 +484,7 @@ async def import_holidays(
                             is_active=True,
                             source="manual",
                             source_year=holiday_date.year,
-                            synced_at=datetime.now(),
+                            synced_at=now_taipei_naive(),
                         )
                     )
 

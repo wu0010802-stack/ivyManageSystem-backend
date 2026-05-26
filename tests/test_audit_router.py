@@ -86,7 +86,10 @@ def _insert_log(session, **overrides):
         summary="修改員工",
         changes=None,
         ip_address="127.0.0.1",
-        created_at=datetime(2026, 4, 18, 10, 0, 0),
+        # 預設用 now 而非寫死日期：api/audit.py 預設窗口只看最近 30 天，
+        # 寫死日期會隨時間逐漸滑出視窗導致 test 在不同時點漸進失效
+        # （audit H.P0.1 引入後遺症）。需要特定時點的 test 自行 override。
+        created_at=datetime.now(),
     )
     row.update(overrides)
     log = AuditLog(**row)
@@ -204,14 +207,21 @@ class TestAuditListFilters:
 class TestAuditExport:
     def test_export_returns_csv(self, client_with_db):
         client, session_factory = client_with_db
+        # 用固定日期插入，便於 export 範圍篩選排除當日登入 audit
+        fixed_dt = datetime(2026, 4, 18, 10, 0, 0)
         with session_factory() as s:
             _create_audit_admin(s)
-            _insert_log(s, summary="輸出測試一")
-            _insert_log(s, summary="輸出測試二", entity_type="student", action="CREATE")
+            _insert_log(s, summary="輸出測試一", created_at=fixed_dt)
+            _insert_log(
+                s,
+                summary="輸出測試二",
+                entity_type="student",
+                action="CREATE",
+                created_at=fixed_dt,
+            )
             s.commit()
         assert _login(client).status_code == 200
 
-        # 以日期篩選測試資料（_insert_log 預設 created_at=2026-04-18），排除當日登入 audit
         res = client.get(
             "/api/audit-logs/export",
             params={

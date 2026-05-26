@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 from datetime import date, datetime
+from utils.taipei_time import now_taipei_naive, today_taipei
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -135,7 +136,7 @@ def main():
         pd = date.fromisoformat(args.payment_date)
     except ValueError:
         raise SystemExit("--payment-date 格式錯誤，應為 YYYY-MM-DD")
-    if pd > date.today():
+    if pd > today_taipei():  
         raise SystemExit("--payment-date 不可為未來日期")
 
     with session_scope() as session:
@@ -182,7 +183,7 @@ def main():
                 payment_method=IMPORT_METHOD,
                 notes=IMPORT_NOTES,
                 operator="system",
-                created_at=datetime.now(),
+                created_at=now_taipei_naive(),
             )
             session.add(rec)
             inserted += 1

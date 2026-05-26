@@ -4,6 +4,7 @@ Portal shared constants, Pydantic models, and helper functions.
 
 import logging
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 from types import SimpleNamespace
 from typing import Optional
 
@@ -332,7 +333,7 @@ def _calculate_annual_leave_quota(hire_date: date) -> int:
     if not hire_date:
         return 0
 
-    today = date.today()
+    today = today_taipei()
     months_diff = (today.year - hire_date.year) * 12 + today.month - hire_date.month
     if today.day < hire_date.day:
         months_diff -= 1
