@@ -3,7 +3,7 @@
 from services.notification.event_types import NOTIFICATION_EVENT_TYPES
 
 
-def test_event_types_contains_all_19_v1_events():
+def test_event_types_contains_all_23_v1_events():
     expected = {
         # 員工域 (12)
         "leave.submitted",
@@ -26,6 +26,12 @@ def test_event_types_contains_all_19_v1_events():
         "parent.leave_result",
         "parent.attendance_alert",
         "parent.contact_book_published",
+        # 才藝家長域 (3) — PR-C 新增
+        "activity.waitlist_reminder",
+        "activity.waitlist_final_reminder",
+        "activity.waitlist_expired",
+        # 家長 Growth Report (1) — PR-C 新增
+        "growth_report.published",
     }
     assert NOTIFICATION_EVENT_TYPES == expected
 
@@ -34,6 +40,6 @@ def test_event_types_is_frozenset():
     assert isinstance(NOTIFICATION_EVENT_TYPES, frozenset)
 
 
-def test_event_types_count_is_19():
-    # 員工 12 + 家長 7 = 19
-    assert len(NOTIFICATION_EVENT_TYPES) == 19
+def test_event_types_count_is_23():
+    # 員工 12 + 家長 7 + 才藝家長 3 + Growth Report 1 = 23
+    assert len(NOTIFICATION_EVENT_TYPES) == 23

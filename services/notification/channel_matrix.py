@@ -37,4 +37,10 @@ CHANNEL_MATRIX: dict[str, tuple[Channel, ...]] = {
     "parent.leave_result": ("line",),
     "parent.attendance_alert": ("line",),
     "parent.contact_book_published": ("line", "ws"),
+    # 才藝候補家長提醒（PR-C 新增；推給家長 LINE。家長域慣例不寫 in_app）
+    "activity.waitlist_reminder": ("line",),
+    "activity.waitlist_final_reminder": ("line",),
+    "activity.waitlist_expired": ("line",),
+    # 家長 Growth Report（PR-C 新增）
+    "growth_report.published": ("line",),
 }
