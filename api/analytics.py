@@ -42,7 +42,7 @@ def get_funnel(
 ):
     if start > end:
         raise HTTPException(400, "start 必須 ≤ end")
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     with session_scope() as session:
         return report_cache_service.get_or_build(
             session,
@@ -72,7 +72,7 @@ def get_at_risk(
         require_staff_permission(Permission.BUSINESS_ANALYTICS)
     ),
 ):
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     can_read = has_permission(
         current_user.get("permission_names"), Permission.STUDENTS_READ
     )
@@ -100,7 +100,7 @@ def get_churn_history(
         require_staff_permission(Permission.BUSINESS_ANALYTICS)
     ),
 ):
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     with session_scope() as session:
         return report_cache_service.get_or_build(
             session,

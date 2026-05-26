@@ -47,7 +47,7 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
     balance = get_annual_leave_balance(session, emp.id, record.resign_date)
     payout_amount = round_half_up(balance["remaining_days"] * daily_wage, 2)
 
-    now = datetime.now()
+    now = datetime.now()  # noqa: DTZ005
     record.leave_balance_snapshot = {
         "snapshot_date": balance["snapshot_date"].isoformat(),
         "total_hours": balance["total_hours"],
@@ -93,7 +93,7 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
         return {
             "step": "prefill_leave_payout",
             "status": "skipped",
-            "completed_at": datetime.now(),
+            "completed_at": datetime.now(),  # noqa: DTZ005
             "payload": {"reason": "no_snapshot"},
             "error": None,
         }
@@ -111,7 +111,7 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
         return {
             "step": "prefill_leave_payout",
             "status": "skipped",
-            "completed_at": datetime.now(),
+            "completed_at": datetime.now(),  # noqa: DTZ005
             "payload": {"reason": "salary_record_not_yet_created"},
             "error": None,
         }
@@ -154,7 +154,7 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
     return {
         "step": "prefill_leave_payout",
         "status": "completed",
-        "completed_at": datetime.now(),
+        "completed_at": datetime.now(),  # noqa: DTZ005
         "payload": {
             "salary_record_id": target.id,
             "amount": snap["payout_amount"],

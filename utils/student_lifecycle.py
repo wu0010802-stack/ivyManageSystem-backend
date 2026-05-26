@@ -84,6 +84,6 @@ def set_lifecycle_status(
                     ensure_ascii=False,
                 ),
                 ip_address=None,
-                created_at=datetime.now(),
+                created_at=datetime.now(),  # noqa: DTZ005
             )
         )

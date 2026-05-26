@@ -59,7 +59,7 @@ class MeasurementBase(BaseModel):
     @field_validator("measured_on")
     @classmethod
     def _no_future(cls, v: date) -> date:
-        if v > date.today():
+        if v > date.today():  # noqa: DTZ011
             raise ValueError("measured_on 不可為未來日期")
         return v
 
@@ -99,7 +99,7 @@ class MeasurementUpdate(BaseModel):
     @field_validator("measured_on")
     @classmethod
     def _no_future(cls, v: Optional[date]) -> Optional[date]:
-        if v is not None and v > date.today():
+        if v is not None and v > date.today():  # noqa: DTZ011
             raise ValueError("measured_on 不可為未來日期")
         return v
 
@@ -318,7 +318,7 @@ async def chart_data(
     try:
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
-            since = date.today() - timedelta(days=30 * months)
+            since = date.today() - timedelta(days=30 * months)  # noqa: DTZ011
             rows = (
                 session.query(StudentMeasurement)
                 .filter(

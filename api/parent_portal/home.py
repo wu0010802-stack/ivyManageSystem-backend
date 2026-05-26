@@ -78,7 +78,7 @@ def _count_recent_leave_reviews(session, user_id: int, days: int = 7) -> int:
     跨期殘留卡片（家長若 7 天前提的假今天才被批准，仍應該被提醒一次）。
     家長進入 leaves 列表後 UI 自然消化，不另設 seen 旗標。
     """
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = datetime.now() - timedelta(days=days)  # noqa: DTZ005
     return (
         session.query(StudentLeaveRequest.id)
         .filter(
@@ -203,7 +203,7 @@ def today_status(
     ```
     """
     user_id = current_user["user_id"]
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     # 子女清單（沿用 home_summary 的 join，輕量重複比共用 helper 簡單）
     rows = (
         session.query(Guardian, Student, Classroom)

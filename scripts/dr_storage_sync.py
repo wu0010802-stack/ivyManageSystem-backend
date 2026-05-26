@@ -129,7 +129,7 @@ def _sync_bucket(
                 Body=data,
                 Metadata={
                     "x-source-updated-at": src["updated_at"]
-                    or datetime.utcnow().isoformat()
+                    or datetime.utcnow().isoformat()  # noqa: DTZ003
                 },
             )
             stats["upload"] += 1

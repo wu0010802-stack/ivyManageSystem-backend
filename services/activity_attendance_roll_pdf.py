@@ -266,7 +266,7 @@ def generate_attendance_roll_pdf(
     c.drawRightString(
         margin_x + content_w,
         15 * mm,
-        f"列印時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"列印時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}",  # noqa: DTZ005
     )
     c.setFillColor(colors.black)
 

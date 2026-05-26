@@ -162,7 +162,7 @@ def get_today(
 ):
     """取得指定子女今日已發布的聯絡簿（沒有 entry / 仍為草稿時 entry 回 null）。"""
     user_id = current_user["user_id"]
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     _assert_student_owned(session, user_id, student_id)
     entry = (
         session.query(StudentContactBookEntry)
@@ -215,7 +215,7 @@ def list_history(
     """歷史清單（僅 published）。預設回最近 30 筆。"""
     user_id = current_user["user_id"]
     if to_date is None:
-        to_date = date.today()
+        to_date = date.today()  # noqa: DTZ011
     if from_date is None:
         from_date = to_date - timedelta(days=60)
     if from_date > to_date:
@@ -358,7 +358,7 @@ def mark_read(
     ack = StudentContactBookAck(
         entry_id=entry.id,
         guardian_user_id=user_id,
-        read_at=datetime.now(),
+        read_at=datetime.now()  # noqa: DTZ005,
     )
     session.add(ack)
     session.flush()
@@ -494,7 +494,7 @@ def delete_reply(
         raise HTTPException(status_code=403, detail="不可刪除他人回覆")
     if row.deleted_at:
         return {"message": "回覆已刪除"}
-    row.deleted_at = datetime.now()
+    row.deleted_at = datetime.now()  # noqa: DTZ005
     mark_soft_delete(request, "contact_book_entry", str(reply_id))
     session.flush()
     request.state.audit_entity_id = str(entry.id)

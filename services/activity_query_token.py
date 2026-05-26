@@ -52,7 +52,7 @@ def is_query_token_expired(issued_at) -> bool:
     if issued_at is None:
         return True
     ttl = timedelta(days=_query_token_ttl_days())
-    return datetime.now() - issued_at > ttl
+    return datetime.now() - issued_at > ttl  # noqa: DTZ005
 
 
 def _generate_query_token() -> str:

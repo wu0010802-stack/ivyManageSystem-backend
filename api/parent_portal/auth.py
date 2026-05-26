@@ -263,7 +263,7 @@ def _hash_code(plain: str) -> str:
 
 
 def _now() -> datetime:
-    return datetime.now()
+    return datetime.now()  # noqa: DTZ005
 
 
 def _build_user_payload(user: User) -> dict:

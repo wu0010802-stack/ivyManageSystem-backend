@@ -406,7 +406,7 @@ def aggregate_cycle_status(
         else {}
     )
     start = cycle.start_date
-    end = min(cycle.end_date, date.today())
+    end = min(cycle.end_date, date.today())  # noqa: DTZ011
     att_map = _aggregate_attendance(session, employee_ids_list, start, end)
     ret_map = _aggregate_class_retention(
         session, employee_to_classroom, classroom_name_by_id, start, end
@@ -512,7 +512,7 @@ def aggregate_all_active_employees_status(
     )
 
     start = cycle.start_date
-    end = min(cycle.end_date, date.today())
+    end = min(cycle.end_date, date.today())  # noqa: DTZ011
     att_map = _aggregate_attendance(session, employee_ids, start, end)
     ret_map = _aggregate_class_retention(
         session, employee_to_classroom, classroom_name_by_id, start, end

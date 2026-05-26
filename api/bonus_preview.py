@@ -222,7 +222,7 @@ def preview_bonus_impact(
         _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
     )
 
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     year, month = today.year, today.month
     is_festival = get_bonus_distribution_month(month)
 
@@ -387,7 +387,7 @@ def get_bonus_dashboard(
         _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
     )
 
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     if year is None:
         year = today.year
     if month is None:

@@ -430,7 +430,7 @@ async def outstanding_by_student(
         if classroom:
             query = query.filter(ActivityRegistration.class_name == classroom)
         if overdue_only and filter == "outstanding":
-            cutoff = datetime.now() - timedelta(days=OVERDUE_DAYS_THRESHOLD)
+            cutoff = datetime.now() - timedelta(days=OVERDUE_DAYS_THRESHOLD)  # noqa: DTZ005
             query = query.filter(ActivityRegistration.created_at < cutoff)
         regs = (
             query.order_by(

@@ -58,7 +58,7 @@ class MilestoneCreate(BaseModel):
     @field_validator("achieved_on")
     @classmethod
     def _no_future(cls, v: date) -> date:
-        if v > date.today():
+        if v > date.today():  # noqa: DTZ011
             raise ValueError("achieved_on 不可為未來日期")
         return v
 
@@ -82,7 +82,7 @@ class MilestoneUpdate(BaseModel):
     @field_validator("achieved_on")
     @classmethod
     def _no_future(cls, v: Optional[date]) -> Optional[date]:
-        if v is not None and v > date.today():
+        if v is not None and v > date.today():  # noqa: DTZ011
             raise ValueError("achieved_on 不可為未來日期")
         return v
 
@@ -278,7 +278,7 @@ async def delete_milestone(
             )
             if not m:
                 raise HTTPException(status_code=404, detail="里程碑不存在")
-            m.deleted_at = datetime.utcnow()
+            m.deleted_at = datetime.utcnow()  # noqa: DTZ003
             session.flush()
             request.state.audit_entity_id = str(student_id)
             request.state.audit_summary = (

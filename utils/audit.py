@@ -522,7 +522,7 @@ def write_audit_in_session(
         summary=summary,
         changes=changes_json,
         ip_address=ip,
-        created_at=datetime.now(),
+        created_at=datetime.now(),  # noqa: DTZ005
     )
     session.add(log)
     # 防止 AuditMiddleware 在 response 階段重複寫入同一筆稽核
@@ -577,7 +577,7 @@ def write_explicit_audit(
             summary=summary,
             changes=changes_json,
             ip_address=ip,
-            created_at=datetime.now(),
+            created_at=datetime.now(),  # noqa: DTZ005
         )
         _schedule_audit_write(payload)
     except Exception as e:
@@ -641,7 +641,7 @@ def write_login_audit(
             summary=_build_login_summary(action, username),
             changes=changes_json,
             ip_address=ip,
-            created_at=datetime.now(),
+            created_at=datetime.now(),  # noqa: DTZ005
         )
         _schedule_audit_write(payload)
     except Exception as e:
@@ -736,7 +736,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 summary=summary,
                 changes=changes_json,
                 ip_address=ip,
-                created_at=datetime.now(),
+                created_at=datetime.now(),  # noqa: DTZ005
             )
             _schedule_audit_write(payload)
         except Exception as e:

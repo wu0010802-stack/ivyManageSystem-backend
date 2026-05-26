@@ -99,7 +99,8 @@ def generate_certificate(
         student_name=student.name,
         student_no=student.student_id or "",
         id_number=getattr(student, "id_number", None),
-        admit_date=getattr(student, "enrollment_date", None) or date.today(),
+        admit_date=getattr(student, "enrollment_date", None)
+        or date.today(),  # noqa: DTZ011
         classroom_name=_resolve_classroom_name(db, student),
         purpose=cert.purpose,
         issue_date=cert.issue_date,

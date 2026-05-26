@@ -244,7 +244,7 @@ async def delete_attachment(
             )
             assert_student_access(session, current_user, student_id)
 
-            att.deleted_at = datetime.now()
+            att.deleted_at = datetime.now()  # noqa: DTZ005
             mark_soft_delete(request, "attachment", str(attachment_id))
             session.flush()
 

@@ -108,7 +108,7 @@ def generate_certificate_pdf(
 
     elements.append(Paragraph("特此證明。", body_style))
 
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     elements.append(Paragraph("負責人簽章：______________", sign_style))
     elements.append(Paragraph(f"證明日期：{_fmt_roc(today)}", sign_style))
 

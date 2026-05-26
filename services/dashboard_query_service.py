@@ -56,7 +56,7 @@ class DashboardQueryService:
     def build_upcoming_events(
         self, session, *, days: int = 7, today: date | None = None
     ) -> list[dict]:
-        today = today or date.today()
+        today = today or date.today()  # noqa: DTZ011
         cache_key = f"{today.isoformat()}:{days}"
         cached = get_cache().get(_CACHE_NS_DASHBOARD_EVENTS, cache_key)
         if cached is not None:
@@ -98,7 +98,7 @@ class DashboardQueryService:
         return result
 
     def build_approval_summary(self, session, *, today: date | None = None) -> dict:
-        today = today or date.today()
+        today = today or date.today()  # noqa: DTZ011
         cache_key = today.isoformat()
         cached = get_cache().get(_CACHE_NS_DASHBOARD_APPROVAL, cache_key)
         if cached is not None:
@@ -180,7 +180,7 @@ class DashboardQueryService:
     def build_student_attendance_summary(
         self, session, *, today: date | None = None
     ) -> dict:
-        today = today or date.today()
+        today = today or date.today()  # noqa: DTZ011
 
         return report_cache_service.get_or_build(
             session,
@@ -234,7 +234,7 @@ class DashboardQueryService:
         if not candidates:
             return None
 
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
         target = graduation_date_for_year(today.year)
         days_left = (target - today).days
         count = len(candidates)
@@ -291,7 +291,7 @@ class DashboardQueryService:
         計算 status approved/cancelled 且 created_at 在最近 N 天內的紀錄。
         班級 scope：非 admin 只看自己可存取的班級。
         """
-        since = datetime.now() - timedelta(days=days)
+        since = datetime.now() - timedelta(days=days)  # noqa: DTZ005
         q = (
             session.query(StudentLeaveRequest.id)
             .join(Student, Student.id == StudentLeaveRequest.student_id)
@@ -322,7 +322,7 @@ class DashboardQueryService:
         from models.portfolio import StudentMedicationLog, StudentMedicationOrder
         from utils.portfolio_access import student_ids_in_scope
 
-        today = today or date.today()
+        today = today or date.today()  # noqa: DTZ011
 
         order_q = session.query(StudentMedicationOrder.id).filter(
             StudentMedicationOrder.order_date == today

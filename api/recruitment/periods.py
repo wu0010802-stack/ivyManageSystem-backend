@@ -311,7 +311,7 @@ def create_period(
         if existing:
             raise HTTPException(status_code=409, detail="期間名稱已存在")
         p = RecruitmentPeriod(
-            **payload.model_dump(), created_at=datetime.now(), updated_at=datetime.now()
+            **payload.model_dump(), created_at=datetime.now()  # noqa: DTZ005, updated_at=datetime.now()  # noqa: DTZ005
         )
         session.add(p)
         session.flush()
@@ -330,7 +330,7 @@ def update_period(
             raise HTTPException(status_code=404, detail="期間不存在")
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(p, field, value)
-        p.updated_at = datetime.now()
+        p.updated_at = datetime.now()  # noqa: DTZ005
         session.flush()
         return _period_to_dict(p)
 
@@ -397,7 +397,7 @@ def sync_period_from_visits(
         p.enrolled_count = enrolled
         p.transfer_term_count = transfer
         p.effective_deposit_count = effective
-        p.updated_at = datetime.now()
+        p.updated_at = datetime.now()  # noqa: DTZ005
 
         logger.info(
             f"期間 [{p.period_name}] 已同步：參觀={visit} 預繳={deposit} "

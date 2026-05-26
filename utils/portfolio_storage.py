@@ -169,7 +169,7 @@ class LocalStorage:
             today:    測試注入用，預設 date.today()
         """
         ext = extension.lower()
-        today = today or date.today()
+        today = today or date.today()  # noqa: DTZ011
 
         # 目錄：portfolio/YYYY/MM/
         year_str = f"{today.year:04d}"

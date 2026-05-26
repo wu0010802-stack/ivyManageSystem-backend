@@ -126,7 +126,7 @@ def transition(
         raise LifecycleTransitionError(f"不允許的狀態轉移：{current} → {to_status}")
 
     event_type = get_event_type_for_transition(current, to_status)
-    event_date = effective_date or date.today()
+    event_date = effective_date or date.today()  # noqa: DTZ011
 
     # 更新 student 欄位（連動舊 is_active/status/graduation/withdrawal_date）
     # set_lifecycle_status 維護 terminal_entered_at；audit=False 因呼叫端已寫

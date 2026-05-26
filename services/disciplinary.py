@@ -98,7 +98,7 @@ def apply_deductions(
     if not actions:
         return 0.0
 
-    now = datetime.now()
+    now = datetime.now()  # noqa: DTZ005
     applied_total = 0.0
     remaining = max(0.0, available_bonus)
 

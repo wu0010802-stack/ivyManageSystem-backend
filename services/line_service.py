@@ -536,7 +536,7 @@ class LineService:
             from datetime import date as _date
             import calendar
 
-            today = _date.today()
+            today = _date.today()  # noqa: DTZ011
             records = (
                 session.query(Attendance)
                 .filter(

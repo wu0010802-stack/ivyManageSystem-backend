@@ -127,7 +127,7 @@ def confirm_anomaly(
 
         att.confirmed_action = data.action
         att.confirmed_by = emp.name
-        att.confirmed_at = datetime.now()
+        att.confirmed_at = datetime.now()  # noqa: DTZ005
 
         session.commit()
 

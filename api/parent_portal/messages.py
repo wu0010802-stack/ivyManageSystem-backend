@@ -540,7 +540,7 @@ def recall_message(
     assert_thread_participant(thread, user_id=user_id, role="parent")
     if not can_recall(msg, user_id=user_id):
         raise HTTPException(status_code=403, detail="只有 sender 30 分鐘內可撤回")
-    msg.deleted_at = datetime.now()
+    msg.deleted_at = datetime.now()  # noqa: DTZ005
     session.flush()
     request.state.audit_entity_id = str(msg.id)
     request.state.audit_summary = (

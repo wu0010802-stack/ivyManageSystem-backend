@@ -46,7 +46,7 @@ def get_daily_attendance(
 ):
     user_id = current_user["user_id"]
     _assert_student_owned(session, user_id, student_id)
-    d = _parse_date(target_date) if target_date else date.today()
+    d = _parse_date(target_date) if target_date else date.today()  # noqa: DTZ011
     record = (
         session.query(StudentAttendance)
         .filter(

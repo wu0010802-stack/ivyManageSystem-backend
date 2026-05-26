@@ -4,11 +4,35 @@
 
 **Goal:** 解決 prod 後端 + Supabase PG 雙在 UTC 但 codebase 假設 Asia/Taipei naive 的 silent corruption。完成後 codebase 所有 datetime 寫入必經 `utils.taipei_time` 入口，CI 雙 TZ matrix 保證 TZ-agnostic。
 
-**Architecture:** Phase 0（USER manual ops）雙管止血：zeabur env `TZ=Asia/Taipei` + Supabase `ALTER DATABASE postgres SET timezone TO 'Asia/Taipei'`。後續 3 PR 序列：PR1 加 Ruff DTZ lint gate + helper + pytest reflection check + CI TZ matrix；PR2 替換 153 處 runtime `datetime.now()/.utcnow()`；PR3 替換 184 處 model `default=datetime.now`。
+**Architecture:** Phase 0（USER manual ops）雙管止血：zeabur env `TZ=Asia/Taipei` + Supabase `ALTER DATABASE postgres SET timezone TO 'Asia/Taipei'`。後續 3 PR 序列：PR1 加 Ruff DTZ lint gate + helper + pytest reflection check + CI TZ matrix；PR2 替換 250 處 runtime `datetime.now()/.utcnow()/.today()/date.today()`；PR3 替換 184 處 model `default=datetime.now`。
 
 **Tech Stack:** Python 3.12 / SQLAlchemy / FastAPI / Ruff (flake8-datetimez DTZ rule set) / pytest / GitHub Actions matrix
 
 **Spec:** `docs/superpowers/specs/2026-05-26-datetime-taipei-consistency-design.md`
+
+---
+
+## Scope Amendment（2026-05-26 commit fb97c22 後實測校正）
+
+PR1 Task 4 實裝 ruff config 後 `ruff check --statistics` 揭露原 plan grep 漏抓 2 個同性質 DTZ rule：
+
+| Rule | Count | 原 plan | 校正後 |
+|------|-------|---------|--------|
+| DTZ005 `datetime.now()` | 148 | ✅ 145（差 3） | ✅ 148 |
+| DTZ003 `datetime.utcnow()` | 8 | ✅ 8 | ✅ 8 |
+| **DTZ011** `date.today()` | 91 | ❌ 漏抓 | ✅ **納入**（→ `today_taipei()`） |
+| **DTZ002** `datetime.today()` | 3 | ❌ 漏抓 | ✅ **納入**（→ `now_taipei_naive()`） |
+| DTZ001 / DTZ007 / DTZ901 | 73 | — | ⚠️ ruff config `ignore` 排除，留 follow-up PR |
+
+**新 scope 數字**：
+- PR1 Task 5 noqa scope：153 → **250** 處（148 DTZ005 + 8 DTZ003 + 91 DTZ011 + 3 DTZ002）
+- PR2 Task 12-14 替換 scope：同上 250 處
+  - `datetime.now()` / `datetime.today()` → `now_taipei_naive()`
+  - `datetime.utcnow()` → `now_taipei_naive()`
+  - `date.today()` → `today_taipei()`（已存在於 `utils/taipei_time.py`，無需新增 helper）
+- PR3 Task 18 model default 184 處不變
+
+**Implementer 指引**：後續 task 內若見 「153 處」「145 處」「8 處」等舊數字，**以實際 `ruff check --statistics` 為準**。perl pattern 同樣擴及 4 rule type。
 
 ---
 

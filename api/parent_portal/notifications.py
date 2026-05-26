@@ -104,7 +104,7 @@ def update_preferences(
         )
         if existing:
             existing.enabled = bool(enabled)
-            existing.updated_at = datetime.now()
+            existing.updated_at = datetime.now()  # noqa: DTZ005
         else:
             session.add(
                 ParentNotificationPreference(

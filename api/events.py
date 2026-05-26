@@ -472,8 +472,8 @@ async def import_holidays(
                     existing.is_active = True
                     existing.source = "manual"
                     existing.source_year = holiday_date.year
-                    existing.synced_at = datetime.now()
-                    existing.updated_at = datetime.now()
+                    existing.synced_at = datetime.now()  # noqa: DTZ005
+                    existing.updated_at = datetime.now()  # noqa: DTZ005
                 else:
                     session.add(
                         Holiday(
@@ -483,7 +483,7 @@ async def import_holidays(
                             is_active=True,
                             source="manual",
                             source_year=holiday_date.year,
-                            synced_at=datetime.now(),
+                            synced_at=datetime.now()  # noqa: DTZ005,
                         )
                     )
 

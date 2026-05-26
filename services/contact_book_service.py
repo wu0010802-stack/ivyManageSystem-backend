@@ -80,7 +80,7 @@ def publish_entry(
         raise ValueError(f"contact_book entry not found: {entry_id}")
 
     if entry.published_at is None:
-        entry.published_at = datetime.now()
+        entry.published_at = datetime.now()  # noqa: DTZ005
     entry.version = (entry.version or 1) + 1
     session.flush()
 

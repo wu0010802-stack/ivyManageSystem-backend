@@ -12,9 +12,11 @@
 
 | 指標 | 數量 | 風險 |
 |------|------|------|
-| `services/+api/` 內 `datetime.now()` | **145 處** | 受 container tz 影響 |
-| `services/+api/` 內 `datetime.utcnow()` | **8 處** | Python 3.12+ deprecated + tz contract 混亂 |
-| `models/` 內 `default=datetime.now`（Python callable） | **185 處** | ORM 層 Python 進程執行，受 container tz 影響 |
+| `services/+api/models/` 內 `datetime.now()` (DTZ005) | **148 處** | 受 container tz 影響 |
+| `services/+api/models/` 內 `datetime.utcnow()` (DTZ003) | **8 處** | Python 3.12+ deprecated + tz contract 混亂 |
+| `services/+api/models/` 內 `date.today()` (DTZ011) | **91 處** | 跨日邊界錯，同性質納入 scope（Phase 1 實測時補入） |
+| `services/+api/models/` 內 `datetime.today()` (DTZ002) | **3 處** | 等同 datetime.now，同性質納入 scope |
+| `models/` 內 `default=datetime.now`（Python callable） | **184 處** | ORM 層 Python 進程執行，受 container tz 影響 |
 | `models/+alembic/` 內 `server_default=func.now()/CURRENT_TIMESTAMP` | **135 處** | DB 層執行，受 PG `timezone` setting 影響 |
 | `models/` 內 naive `Column(DateTime)` | **~200 處** | 儲存「字面值無 tz info」，semantics 完全依賴契約 |
 | `models/` 內 `DateTime(timezone=True)` | **45 處** | 儲存 UTC absolute，相對安全 |
@@ -53,20 +55,22 @@
   - Zeabur ivy-backend env 加 `TZ=Asia/Taipei` 並重啟容器
   - Supabase prod DB `ALTER DATABASE postgres SET timezone TO 'Asia/Taipei'`
 - **Phase 1（PR1：lint gate + helper + CI matrix + 開發手冊）**：
-  - `utils/taipei_time.py` 補 `now_taipei_aware()` 函式
-  - `pyproject.toml`（或 `ruff.toml`）加 `select = ["DTZ"]` + per-file-ignores
-  - 存量 153 處（145 `datetime.now()` + 8 `datetime.utcnow()`）用 `# noqa: DTZ005` / `# noqa: DTZ003` inline 暫留
+  - `utils/taipei_time.py` 補 `now_taipei_aware()` 函式（`today_taipei()` 已存在沿用）
+  - `pyproject.toml`（或 `ruff.toml`）加 `select = ["DTZ"]` + `ignore = ["DTZ001", "DTZ007", "DTZ901"]`（73 處構造/parse/邊界 留 follow-up）+ per-file-ignores
+  - 存量 250 處（148 `datetime.now()` DTZ005 + 8 `datetime.utcnow()` DTZ003 + 91 `date.today()` DTZ011 + 3 `datetime.today()` DTZ002）用 `# noqa: <rule>` inline 暫留
   - **Model default reflection check**：新增 `tests/test_no_naive_datetime_in_model_defaults.py` 反射檢查所有 model column 的 `default` callable identity，禁用 `datetime.now` / `datetime.utcnow`。建立 `MODEL_DEFAULT_ALLOWLIST = {...}` 含當下 185 處 `(ModelName, column_name)` 名單，PR3 完工時 allow-list 應為空。**Why this**：Ruff DTZ 只分析 call expression（`datetime.now()`），抓不到 `default=datetime.now` 這種 callable reference，需 pytest reflection 補足
   - `.github/workflows/ci.yml` pytest job 改 matrix `[Asia/Taipei, UTC]`
   - `docs/sop/datetime-contract.md` 寫死契約
   - `tests/test_datetime_contract.py` 4 條 regression test
-- **Phase 2（PR2：runtime 替換 145+8 處）**：
-  - services/ + api/ 內 145 處 `datetime.now()` → `now_taipei_naive()`
+- **Phase 2（PR2：runtime 替換 250 處）**：
+  - services/ + api/ + models/ 內 148 處 `datetime.now()` → `now_taipei_naive()`
+  - 3 處 `datetime.today()` → `now_taipei_naive()`
   - 8 處 `datetime.utcnow()` → `now_taipei_naive()`
-  - 移除對應 `noqa: DTZ005` / `noqa: DTZ003` 標記
+  - 91 處 `date.today()` → `today_taipei()`
+  - 移除對應 `noqa: DTZ002 / DTZ003 / DTZ005 / DTZ011` 標記
   - `tests/test_runtime_datetime_replacement.py` 5 條核心 caller TZ=UTC 行為斷言
-- **Phase 3（PR3：model default 替換 185 處）**：
-  - models/ 內 185 處 `default=datetime.now` → `default=now_taipei_naive`
+- **Phase 3（PR3：model default 替換 184 處）**：
+  - models/ 內 184 處 `default=datetime.now` → `default=now_taipei_naive`
   - 同步清空 `MODEL_DEFAULT_ALLOWLIST`（PR3 結束時應為空 set）
   - `tests/test_model_default_datetime.py` ~15 條代表性 model 測試
   - **無 alembic schema migration**（default 是 ORM 層 Python 行為）

@@ -27,7 +27,7 @@ def validate_minimum_wage(
 
     底薪/時薪為 0 視為尚未設定，不檢查；非 0 且低於法定值時拋 400。
     """
-    monthly, hourly = get_minimum_wage(date.today())
+    monthly, hourly = get_minimum_wage(date.today())  # noqa: DTZ011
     if employee_type == "regular":
         if base_salary and base_salary < monthly:
             raise HTTPException(
