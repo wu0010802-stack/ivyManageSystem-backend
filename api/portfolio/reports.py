@@ -528,13 +528,13 @@ async def get_growth_report(
         raise_safe_500(e, context="查詢成長報告失敗")
 
 
-@router.get("/{student_id}/growth-reports/{report_id}/download")
+@router.get("/{student_id}/growth-reports/{report_id}/download", response_model=None)
 async def download_growth_report(
     student_id: int,
     report_id: int,
     request: Request,
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
-) -> FileResponse:
+) -> FileResponse | RedirectResponse:
     try:
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
