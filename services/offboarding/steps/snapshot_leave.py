@@ -76,10 +76,17 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
     """step 3 (prefill_leave_payout)：把 snapshot 結果寫入離職當月 SalaryRecord.unused_leave_payout。
 
     若離職當月 SalaryRecord 不存在則 SKIP（不新建；薪資 calculate 時會新建）；
-    存在則覆寫 unused_leave_payout 並標 stale。
+    存在則：
+    1. 覆寫 unused_leave_payout 並標 stale
+    2. 寫一筆 UnusedLeavePayoutLog source_type='offboarding' 留證據鏈
+    3. Revoke 該員工 active OvertimeCompLeaveGrant，避免 scheduler 再撈
     """
-    from models.salary import SalaryRecord
+    from decimal import Decimal
+
     from api.employees import _mark_employee_salary_stale
+    from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+    from models.salary import SalaryRecord
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
 
     snap = record.leave_balance_snapshot
     if not snap:
@@ -111,6 +118,38 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
 
     target.unused_leave_payout = snap["payout_amount"]
     _mark_employee_salary_stale(session, record.employee_id)
+
+    # ── 寫 UnusedLeavePayoutLog 留證據鏈 ──
+    daily_wage = float(snap.get("daily_wage", 0))
+    hourly_wage = Decimal(str(round(daily_wage / 8, 2)))
+    log = UnusedLeavePayoutLog(
+        employee_id=record.employee_id,
+        source_type="offboarding",
+        source_ref_id=record.employee_id,
+        hours=float(snap.get("remaining_hours", 0)),
+        hourly_wage=hourly_wage,
+        amount=Decimal(str(snap.get("payout_amount", 0))),
+        wage_basis_date=record.resign_date,
+        salary_record_id=target.id,
+        salary_period_year=target.salary_year,
+        salary_period_month=target.salary_month,
+        meta={
+            "offboarding_record_id": record.employee_id,
+            "termination_date": record.resign_date.isoformat(),
+            "snapshot_remaining_days": snap.get("remaining_days"),
+        },
+    )
+    session.add(log)
+
+    # ── Revoke active grants 防 scheduler 重複結算 ──
+    active_grants = (
+        session.query(OvertimeCompLeaveGrant)
+        .filter_by(employee_id=record.employee_id, status="active")
+        .all()
+    )
+    for g in active_grants:
+        g.status = "revoked"
+    session.flush()
 
     return {
         "step": "prefill_leave_payout",

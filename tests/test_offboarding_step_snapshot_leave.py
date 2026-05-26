@@ -11,6 +11,8 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
+import models.overtime_comp_leave_grant  # noqa: F401 — 確保 Base.metadata 含 overtime_comp_leave_grants 表
+import models.unused_leave_payout_log  # noqa: F401 — 確保 Base.metadata 含 unused_leave_payout_log 表
 from models.database import Base, Employee, User, LeaveQuota
 from models.offboarding import EmployeeOffboardingRecord
 from models.salary import SalaryRecord
