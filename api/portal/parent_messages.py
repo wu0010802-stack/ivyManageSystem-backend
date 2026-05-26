@@ -52,7 +52,7 @@ from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
-# LINE 推播服務（main.py 啟動時注入；未注入時 push 變 no-op）
+# LINE 推播服務（沿用 PR-A pattern；dispatch 不依賴此 global，PR-D 統一清理）
 _line_service = None
 
 
@@ -61,35 +61,43 @@ def init_parent_messages_line_service(svc) -> None:
     _line_service = svc
 
 
-def _push_parent_message_received(
+def _enqueue_parent_message_received(
+    session,
     *,
     parent_user_id: int,
     teacher_name: str,
     student_name: Optional[str],
     body_preview: str,
     thread_id: Optional[int] = None,
+    sender_user_id: Optional[int] = None,
 ) -> None:
-    """非阻塞地推播；自管 session（與 endpoint 的 session 解耦）。
+    """登錄家長新訊息通知到 dispatch queue。
 
-    thread_id 傳入時 LINE 推播會附 quick-reply postback，家長可直接回覆。
+    必須在 session.commit() 前呼叫；dispatch after_commit hook 會 fan-out 到
+    LINE + 家長 inbox WS（channel_matrix: parent.message_received → ("line","ws")）。
+
+    既有 LINE quick-reply postback（「💬 回覆此訊息」按鈕）暫時失去，待
+    LINE_HANDLERS 註冊對映 line_service 的對應 method 後恢復（PR-C 或 Phase 4）。
     """
-    if _line_service is None:
-        return
     try:
-        s = get_session()
-        try:
-            _line_service.notify_parent_message_received(
-                s,
-                parent_user_id=parent_user_id,
-                teacher_name=teacher_name,
-                student_name=student_name,
-                body_preview=body_preview,
-                thread_id=thread_id,
-            )
-        finally:
-            s.close()
+        from services.notification import dispatch
+
+        dispatch.enqueue(
+            session=session,
+            event_type="parent.message_received",
+            recipient_user_id=parent_user_id,
+            context={
+                "teacher_name": teacher_name,
+                "student_name": student_name,
+                "body_preview": body_preview,
+                "thread_id": thread_id,
+            },
+            sender_id=sender_user_id,
+            source_entity_type="parent_message_thread",
+            source_entity_id=thread_id,
+        )
     except Exception as exc:
-        logger.warning("notify_parent_message_received 失敗（已吞）：%s", exc)
+        logger.warning("parent.message_received enqueue 失敗（已吞）：%s", exc)
 
 
 router = APIRouter(prefix="/parent-messages", tags=["portal-parent-messages"])
@@ -401,9 +409,28 @@ def create_thread(
             client_request_id=payload.client_request_id,
             source="app",
         )
-        session.commit()
+        session.flush()
         session.refresh(thread)
         session.refresh(msg)
+
+        # 通知：commit 前 enqueue；dispatch after_commit hook 自動 fan-out；
+        # replay 不重推（家長已收過）
+        if not replayed:
+            student_obj = (
+                session.query(Student).filter(Student.id == thread.student_id).first()
+            )
+            teacher_obj = session.query(User).filter(User.id == user_id).first()
+            _enqueue_parent_message_received(
+                session,
+                parent_user_id=thread.parent_user_id,
+                teacher_name=(teacher_obj.username if teacher_obj else "老師"),
+                student_name=(student_obj.name if student_obj else None),
+                body_preview=payload.body,
+                thread_id=thread.id,
+                sender_user_id=user_id,
+            )
+
+        session.commit()
 
         request.state.audit_entity_id = str(thread.id)
         request.state.audit_summary = (
@@ -411,19 +438,6 @@ def create_thread(
             f"parent_user={payload.parent_user_id} thread_id={thread.id} "
             f"message_id={msg.id} replay={replayed}"
         )
-        # 推播：commit 完才推；replay 不重推（家長已收過）
-        if not replayed:
-            student_obj = (
-                session.query(Student).filter(Student.id == thread.student_id).first()
-            )
-            teacher_obj = session.query(User).filter(User.id == user_id).first()
-            _push_parent_message_received(
-                parent_user_id=thread.parent_user_id,
-                teacher_name=(teacher_obj.username if teacher_obj else "老師"),
-                student_name=(student_obj.name if student_obj else None),
-                body_preview=payload.body,
-                thread_id=thread.id,
-            )
         return {
             "thread": _thread_summary(session, t=thread),
             "message": _message_to_dict(msg, _attachments_for_message(session, msg.id)),
@@ -453,26 +467,32 @@ def post_reply(
             client_request_id=payload.client_request_id,
             source="app",
         )
-        session.commit()
+        session.flush()
         session.refresh(msg)
+
+        # 通知：commit 前 enqueue；replay 不重推
+        if not replayed:
+            student_obj = (
+                session.query(Student).filter(Student.id == t.student_id).first()
+            )
+            teacher_obj = session.query(User).filter(User.id == user_id).first()
+            _enqueue_parent_message_received(
+                session,
+                parent_user_id=t.parent_user_id,
+                teacher_name=(teacher_obj.username if teacher_obj else "老師"),
+                student_name=(student_obj.name if student_obj else None),
+                body_preview=payload.body,
+                thread_id=t.id,
+                sender_user_id=user_id,
+            )
+
+        session.commit()
 
         request.state.audit_entity_id = str(msg.id)
         request.state.audit_summary = (
             f"教師回覆家長訊息：thread_id={thread_id} message_id={msg.id} "
             f"replay={replayed}"
         )
-        if not replayed:
-            student_obj = (
-                session.query(Student).filter(Student.id == t.student_id).first()
-            )
-            teacher_obj = session.query(User).filter(User.id == user_id).first()
-            _push_parent_message_received(
-                parent_user_id=t.parent_user_id,
-                teacher_name=(teacher_obj.username if teacher_obj else "老師"),
-                student_name=(student_obj.name if student_obj else None),
-                body_preview=payload.body,
-                thread_id=t.id,
-            )
         return {
             **_message_to_dict(msg, _attachments_for_message(session, msg.id)),
             "idempotent_replay": replayed,

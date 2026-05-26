@@ -592,27 +592,36 @@ def _fire_announcement_push(
     session,
     announcement: Announcement,
     recipients: list[AnnouncementParentRecipient],
+    *,
+    sender_user_id: Optional[int] = None,
 ) -> None:
-    """推播給所有應收到此公告的家長。每位家長走 should_push_to_parent gate。"""
-    if _line_service is None:
-        return
+    """對所有應收到此公告的家長 enqueue parent.announcement 通知。
+
+    必須在 session.commit() 之前呼叫；dispatch 在 after_commit hook 內 fan-out。
+    LINE 可達性（active + line_user_id + line_follow_confirmed_at）與通知偏好
+    gate 由 dispatch 內部統一處理，caller 不再篩 user_ids。
+    """
+    from services.notification import dispatch
+
     user_ids = _resolve_parent_user_ids(session, recipients)
-    sent = 0
     for uid in user_ids:
-        line_id = _line_service.should_push_to_parent(
-            session, user_id=uid, event_type="announcement"
+        dispatch.enqueue(
+            session=session,
+            event_type="parent.announcement",
+            recipient_user_id=uid,
+            context={
+                "title": announcement.title,
+                "preview": announcement.content,
+                "announcement_id": announcement.id,
+            },
+            sender_id=sender_user_id,
+            source_entity_type="announcement",
+            source_entity_id=announcement.id,
         )
-        if not line_id:
-            continue
-        # 直接呼叫既有 notify_parent_announcement（不會再做 gate；line_id 已驗）
-        _line_service.notify_parent_announcement(
-            line_id, announcement.title, announcement.content
-        )
-        sent += 1
     logger.info(
-        "公告 LINE 推播：announcement_id=%s 對 %d 名家長推播",
+        "公告通知 enqueue：announcement_id=%s 對 %d 名家長",
         announcement.id,
-        sent,
+        len(user_ids),
     )
 
 
@@ -669,7 +678,8 @@ def _replace_recipients_impl(
                     guardian_id=item.guardian_id,
                 )
             )
-        session.commit()
+        # flush 取得 AnnouncementParentRecipient.id（_resolve_parent_user_ids 用得到）
+        session.flush()
 
         rows = (
             session.query(AnnouncementParentRecipient)
@@ -683,16 +693,23 @@ def _replace_recipients_impl(
             len(rows),
         )
 
-        # Phase 4：推播 LINE 通知（fire-and-forget；commit 後執行；空 recipient 不推）
+        # 通知 enqueue（commit 前；dispatch after_commit hook 自動 fan-out）
         if rows:
             try:
-                _fire_announcement_push(session, ann, rows)
+                _fire_announcement_push(
+                    session,
+                    ann,
+                    rows,
+                    sender_user_id=current_user.get("user_id"),
+                )
             except Exception as exc:
                 logger.warning(
-                    "announcement push 失敗（已吞）：announcement_id=%s err=%s",
+                    "announcement enqueue 失敗（已吞）：announcement_id=%s err=%s",
                     announcement_id,
                     exc,
                 )
+
+        session.commit()
         return {
             "announcement_id": announcement_id,
             "items": [_serialize_parent_recipient(r) for r in rows],

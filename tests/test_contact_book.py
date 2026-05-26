@@ -309,8 +309,10 @@ class TestOptimisticLock:
 
 
 class TestPublishLineNotification:
-    def test_publish_triggers_line_push(self, app_clients):
-        client, sf, line_service = app_clients
+    def test_publish_enqueues_contact_book_published(self, app_clients):
+        from unittest.mock import patch
+
+        client, sf, _line_service = app_clients
         with sf() as s:
             classroom = _make_classroom(s)
             emp, user = _make_teacher(s, classroom.id)
@@ -328,21 +330,31 @@ class TestPublishLineNotification:
             s.add(entry)
             s.commit()
             entry_id = entry.id
+            child_id = child.id
+            parent_user_id = parent.id
             token = _teacher_token(user, emp)
 
-        resp = client.post(
-            f"/api/portal/contact-book/{entry_id}/publish",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        with patch("services.notification.dispatch.enqueue") as mock_enqueue:
+            resp = client.post(
+                f"/api/portal/contact-book/{entry_id}/publish",
+                headers={"Authorization": f"Bearer {token}"},
+            )
         assert resp.status_code == 200
         body = resp.json()
         assert body["published_at"] is not None
         # publish_entry 內 version+1
         assert body["version"] >= 2
 
-        # LINE service should_push_to_parent + notify 都被呼叫
-        line_service.should_push_to_parent.assert_called()
-        line_service.notify_parent_contact_book_published.assert_called()
+        # dispatch.enqueue 對該 guardian 被呼叫一次
+        mock_enqueue.assert_called_once()
+        kwargs = mock_enqueue.call_args.kwargs
+        assert kwargs["event_type"] == "parent.contact_book_published"
+        assert kwargs["recipient_user_id"] == parent_user_id
+        assert kwargs["source_entity_type"] == "contact_book_entry"
+        assert kwargs["source_entity_id"] == entry_id
+        assert kwargs["context"]["student_name"] == "小明"
+        assert kwargs["context"]["date"] == "2026-05-02"
+        assert child_id == child_id  # 防 unused 警示
 
 
 # ─────────────────────────────────────────────────────────────────────────
