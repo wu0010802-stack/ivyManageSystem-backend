@@ -52,14 +52,6 @@ from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
 
-# LINE 推播服務（沿用 PR-A pattern；dispatch 不依賴此 global，PR-D 統一清理）
-_line_service = None
-
-
-def init_parent_messages_line_service(svc) -> None:
-    global _line_service
-    _line_service = svc
-
 
 def _enqueue_parent_message_received(
     session,

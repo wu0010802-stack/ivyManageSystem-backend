@@ -349,7 +349,7 @@ class TestHLinePushAndShiftHours:
         # 假 LINE service 記錄推播
         notify_calls = []
         fake_line = _MM()
-        fake_line.notify_leave_result = lambda *a, **kw: notify_calls.append(a)
+        fake_line._notify_leave_result = lambda *a, **kw: notify_calls.append(a)
         # 假薪資 engine 拋例外
         fake_engine = _MM()
         fake_engine.process_salary_calculation = _MM(

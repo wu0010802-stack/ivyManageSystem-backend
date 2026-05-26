@@ -19,13 +19,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_line_service = None
-
-
-def init_overtime_notify(line_service):
-    global _line_service
-    _line_service = line_service
-
 
 def _list_active_users_with_permission(session, perm: str) -> list[int]:
     """SQLite/PG 通用：列出 permission_names 含 perm 的 active user_id。

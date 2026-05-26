@@ -579,7 +579,8 @@ def test_final_reminder_sent_at_field_exists(session):
 
 
 def test_line_service_has_final_reminder_method():
-    """LineService 應有 notify_activity_waitlist_final_reminder 方法。"""
+    """LineService 應有 _notify_activity_waitlist_final_reminder 方法（PR-D
+    rename 後私有 method；caller 走 dispatch.enqueue 不再直接呼叫）。"""
     from services.line_service import LineService
 
-    assert hasattr(LineService, "notify_activity_waitlist_final_reminder")
+    assert hasattr(LineService, "_notify_activity_waitlist_final_reminder")

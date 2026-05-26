@@ -527,7 +527,7 @@ class TestPushWithQuickReply:
         svc._push_to_user_with_quick_reply = MagicMock(return_value=True)
 
         with sf() as session:
-            svc.notify_parent_message_received(
+            svc._notify_parent_message_received(
                 session,
                 parent_user_id=uid,
                 teacher_name="陳老師",
@@ -579,7 +579,7 @@ class TestPushWithQuickReply:
         svc._push_to_user_with_quick_reply = MagicMock()
 
         with sf() as session:
-            svc.notify_parent_message_received(
+            svc._notify_parent_message_received(
                 session,
                 parent_user_id=uid,
                 teacher_name="王老師",

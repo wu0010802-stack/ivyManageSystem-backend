@@ -508,15 +508,7 @@ def _validate_recipient_audience_scope(
                 )
 
 
-# ── LINE 推播（Phase 4） ──────────────────────────────────────────────────
-
-# 由 main.py 注入的 LineService singleton；未注入時 push 變 no-op
-_line_service = None
-
-
-def init_announcement_line_service(svc) -> None:
-    global _line_service
-    _line_service = svc
+# ── 家長公告推播：caller 走 services.notification.dispatch.enqueue（PR-B）──
 
 
 def _resolve_parent_user_ids(

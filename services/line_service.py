@@ -1,5 +1,16 @@
 """
 LINE Messaging API 通知服務
+
+Phase 2 完成（PR-D）：所有 notify_* method 已 rename 為 _notify_*，
+視為 dispatch._channels.line 內部 helper / hybrid caller 私有 API。
+新 caller 一律走 services.notification.dispatch.enqueue；直接呼叫
+_notify_* 僅以下 2 個 hybrid path 為例外：
+- api/dismissal_calls.py — LINE 群組推送無 cleanly defined perm pool
+- api/portfolio/reports.py — sent_count + Phase 3 rollback 需從 push_to_user
+  拿真實 ACK
+兩處皆有對應 CI grep gate exception；下個 minor version Phase 4 line_service
+重構時可進一步把 LINE 群組推送與 push_to_user 收進 dispatch LINE_HANDLERS
+group_id mode，hybrid 收尾後 _notify_* 可從本檔 inline 至 LINE_HANDLERS。
 """
 
 import logging
@@ -300,7 +311,7 @@ class LineService:
         """Public alias for dispatch adapter."""
         self._push_to_user(user_id, text)
 
-    def notify_pos_unlock_to_approver(
+    def _notify_pos_unlock_to_approver(
         self,
         *,
         target_date,
@@ -444,7 +455,7 @@ class LineService:
 
     # ── 公開通知方法 ──────────────────────────────────────────────────────────
 
-    def notify_leave_submitted(
+    def _notify_leave_submitted(
         self,
         name: str,
         leave_type: str,
@@ -456,7 +467,7 @@ class LineService:
         text = build_leave_message(name, leave_type, start, end, hours)
         self._push(text)
 
-    def notify_overtime_submitted(
+    def _notify_overtime_submitted(
         self,
         name: str,
         ot_date: date,
@@ -468,7 +479,7 @@ class LineService:
         text = build_overtime_message(name, ot_date, ot_type, hours, use_comp)
         self._push(text)
 
-    def notify_leave_result(
+    def _notify_leave_result(
         self,
         line_user_id: str,
         name: str,
@@ -484,7 +495,7 @@ class LineService:
         )
         self._push_to_user(line_user_id, text)
 
-    def notify_overtime_result(
+    def _notify_overtime_result(
         self,
         line_user_id: str,
         name: str,
@@ -496,7 +507,7 @@ class LineService:
         text = build_overtime_result_message(name, ot_date, ot_type, approved)
         self._push_to_user(line_user_id, text)
 
-    def notify_punch_correction_result(
+    def _notify_punch_correction_result(
         self,
         line_user_id: str,
         name: str,
@@ -510,7 +521,7 @@ class LineService:
         text = f"【補打卡審核結果】{name} {target_date} 的補打卡{status}{suffix}"
         self._push_to_user(line_user_id, text)
 
-    def notify_salary_batch_complete(
+    def _notify_salary_batch_complete(
         self,
         year: int,
         month: int,
@@ -521,7 +532,7 @@ class LineService:
         text = build_salary_batch_message(year, month, count, total_net)
         self._push(text)
 
-    def notify_activity_waitlist_promoted(
+    def _notify_activity_waitlist_promoted(
         self,
         student_name: str,
         course_name: str,
@@ -537,7 +548,7 @@ class LineService:
         )
         self._push(text)
 
-    def notify_activity_waitlist_promotion_reminder(
+    def _notify_activity_waitlist_promotion_reminder(
         self,
         student_name: str,
         course_name: str,
@@ -552,7 +563,7 @@ class LineService:
         )
         return self._push(text)
 
-    def notify_activity_waitlist_promotion_expired(
+    def _notify_activity_waitlist_promotion_expired(
         self,
         student_name: str,
         course_name: str,
@@ -563,7 +574,7 @@ class LineService:
         )
         self._push(text)
 
-    def notify_activity_waitlist_final_reminder(
+    def _notify_activity_waitlist_final_reminder(
         self,
         student_name: str,
         course_name: str,
@@ -583,13 +594,13 @@ class LineService:
             return self._push(text)
         except Exception:
             logger.exception(
-                "notify_activity_waitlist_final_reminder 失敗：student=%s course=%s",
+                "_notify_activity_waitlist_final_reminder 失敗：student=%s course=%s",
                 student_name,
                 course_name,
             )
             return False
 
-    def notify_dismissal_created(
+    def _notify_dismissal_created(
         self,
         student_name: str,
         classroom_name: str,
@@ -641,7 +652,7 @@ class LineService:
             logger.warning("should_push_to_parent failed (fail-closed): %s", exc)
             return None
 
-    def notify_parent_message_received(
+    def _notify_parent_message_received(
         self,
         session,
         *,
@@ -685,7 +696,7 @@ class LineService:
         else:
             self._push_to_user(line_id, text)
 
-    def notify_parent_leave_result(
+    def _notify_parent_leave_result(
         self,
         line_user_id: str,
         student_name: str,
@@ -700,7 +711,7 @@ class LineService:
         )
         self._push_to_user(line_user_id, text)
 
-    def notify_parent_attendance_alert(
+    def _notify_parent_attendance_alert(
         self,
         line_user_id: str,
         student_name: str,
@@ -716,7 +727,7 @@ class LineService:
         )
         self._push_to_user(line_user_id, text)
 
-    def notify_parent_announcement(
+    def _notify_parent_announcement(
         self,
         line_user_id: str,
         title: str,
@@ -731,7 +742,7 @@ class LineService:
         body += "\n請開啟家長 App 查看詳情。"
         self._push_to_user(line_user_id, body)
 
-    def notify_parent_fee_due(
+    def _notify_parent_fee_due(
         self,
         line_user_id: str,
         student_name: str,
@@ -748,7 +759,7 @@ class LineService:
         )
         self._push_to_user(line_user_id, text)
 
-    def notify_parent_event_ack_required(
+    def _notify_parent_event_ack_required(
         self,
         line_user_id: str,
         title: str,
@@ -760,7 +771,7 @@ class LineService:
         body += "\n請開啟家長 App 完成簽閱。"
         self._push_to_user(line_user_id, body)
 
-    def notify_parent_contact_book_published(
+    def _notify_parent_contact_book_published(
         self,
         line_user_id: str,
         student_name: str,

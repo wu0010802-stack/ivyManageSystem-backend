@@ -83,17 +83,11 @@ router = APIRouter(prefix="/api", tags=["overtimes"])
 # ============ Service Injection ============
 
 _salary_engine = None
-_line_service = None
 
 
 def init_overtimes_services(salary_engine_instance):
     global _salary_engine
     _salary_engine = salary_engine_instance
-
-
-def init_overtimes_line_service(line_service):
-    global _line_service
-    _line_service = line_service
 
 
 MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
