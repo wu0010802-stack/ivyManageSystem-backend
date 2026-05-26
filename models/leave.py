@@ -159,6 +159,15 @@ class LeaveQuota(Base):
             postgresql_where=text("school_year IS NOT NULL"),
             sqlite_where=text("school_year IS NOT NULL"),
         ),
+        Index(
+            "uq_leave_quotas_emp_period_annual",
+            "employee_id",
+            "period_start",
+            "leave_type",
+            unique=True,
+            postgresql_where=text("period_start IS NOT NULL AND leave_type = 'annual'"),
+            sqlite_where=text("period_start IS NOT NULL AND leave_type = 'annual'"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -174,6 +183,12 @@ class LeaveQuota(Base):
     leave_type = Column(String(20), nullable=False, comment="假別")
     total_hours = Column(Float, nullable=False, comment="年度配額時數")
     note = Column(String(200), nullable=True, comment="備註（如年資計算依據）")
+    period_start = Column(
+        Date, nullable=True, comment="週年制配額起日（hire_date 基準）"
+    )
+    period_end = Column(
+        Date, nullable=True, comment="週年制配額迄日（+1y，2/29 fallback 2/28）"
+    )
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
