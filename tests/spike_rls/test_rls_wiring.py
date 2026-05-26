@@ -80,20 +80,25 @@ def _rls_isolation_works() -> bool:
                 text(f"ALTER TABLE {probe_schema}.t ENABLE ROW LEVEL SECURITY")
             )
             conn.execute(text(f"ALTER TABLE {probe_schema}.t FORCE ROW LEVEL SECURITY"))
+            # 與 spike_pg fixture 真實 policy 同 pattern（USING + current_setting 子查詢），
+            # 不能用簡單 `USING (owner_id = 0)` — 那種 CI 上會 enforce、但真實 spike policy
+            # 不會 → probe 誤判 True 害 wiring tests 在 CI 跑且 fail。
             conn.execute(
                 text(
                     f"CREATE POLICY probe_isolate ON {probe_schema}.t FOR ALL "
-                    f"TO {probe_role} USING (owner_id = 0)"
+                    f"TO {probe_role} USING ("
+                    f"owner_id = NULLIF(current_setting('app.current_user_id', true), '')::int"
+                    f")"
                 )
             )
             conn.execute(
                 text(
-                    f"INSERT INTO {probe_schema}.t (id, owner_id) VALUES (1, 99), (2, 0)"
+                    f"INSERT INTO {probe_schema}.t (id, owner_id) VALUES (1, 99), (2, 42)"
                 )
             )
         admin.dispose()
 
-        # Connect as the non-superuser member; should see only owner_id=0
+        # Connect as the non-superuser member; should see only owner_id=42 after SET LOCAL
         login_url = admin_url.split("@", 1)
         if len(login_url) != 2:
             return False
@@ -110,10 +115,13 @@ def _rls_isolation_works() -> bool:
         member_engine = create_engine(member_url)
         try:
             with member_engine.connect() as conn:
-                rows = conn.execute(
-                    text(f"SELECT id FROM {probe_schema}.t ORDER BY id")
-                ).all()
-            return [r[0] for r in rows] == [2]  # 預期只看到 owner_id=0 那筆
+                # 在同一個 tx 內 SET LOCAL + SELECT（同 build_parent_session_for_user pattern）
+                with conn.begin():
+                    conn.execute(text("SET LOCAL app.current_user_id = '42'"))
+                    rows = conn.execute(
+                        text(f"SELECT id FROM {probe_schema}.t ORDER BY id")
+                    ).all()
+            return [r[0] for r in rows] == [2]  # 預期只看到 owner_id=42 那筆
         finally:
             member_engine.dispose()
     except Exception:

@@ -28,7 +28,7 @@ from utils.auth import hash_password
 
 
 @pytest.fixture
-def salary_client(tmp_path):
+def salary_client(tmp_path, monkeypatch):
     db_path = tmp_path / "salary-manual-adjust.sqlite"
     engine = create_engine(
         f"sqlite:///{db_path}",
@@ -48,6 +48,17 @@ def salary_client(tmp_path):
     fake_salary_engine = MagicMock()
     fake_insurance_service = MagicMock()
     salary_module.init_salary_services(fake_salary_engine, fake_insurance_service)
+
+    # AuditMiddleware 預設用 asyncio.to_thread + background task 推 audit 寫入，
+    # TestClient 同步呼叫立即 query DB 會 race（task 還沒 run）。
+    # 改 _schedule_audit_write 直接同步寫入，讓 audit 在 response 返回前完成。
+    import utils.audit as audit_module
+
+    monkeypatch.setattr(
+        audit_module,
+        "_schedule_audit_write",
+        audit_module._write_audit_sync,
+    )
 
     app = FastAPI()
     # T7: 掛 AuditMiddleware 才能驗證 manual_adjust 是否真的寫 AuditLog
