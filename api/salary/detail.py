@@ -260,6 +260,56 @@ def get_salary_field_breakdown(
         return result
 
 
+@router.get("/salaries/{record_id}/unused-leave-payout-detail")
+def get_unused_leave_payout_detail(
+    record_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
+):
+    """查詢單筆薪資的未休假折算工資明細。
+
+    權限：HR（SALARY_READ + admin/hr role）或員工本人（自己的薪資記錄）。
+
+    回傳欄位：
+    - salary_record_id：薪資記錄 id
+    - employee_id：員工 id
+    - total_amount：未休假折算總額（= SalaryRecord.unused_leave_payout）
+    - logs：各 source_type 明細列表
+    """
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+    with session_scope() as session:
+        sr = session.query(SalaryRecord).filter(SalaryRecord.id == record_id).first()
+        if sr is None:
+            raise HTTPException(status_code=404, detail=SALARY_RECORD_NOT_FOUND)
+
+        _enforce_self_or_full_salary(current_user, sr.employee_id)
+
+        logs = (
+            session.query(UnusedLeavePayoutLog)
+            .filter(UnusedLeavePayoutLog.salary_record_id == record_id)
+            .order_by(UnusedLeavePayoutLog.created_at)
+            .all()
+        )
+
+        return {
+            "salary_record_id": sr.id,
+            "employee_id": sr.employee_id,
+            "total_amount": float(sr.unused_leave_payout or 0),
+            "logs": [
+                {
+                    "log_id": log.id,
+                    "source_type": log.source_type,
+                    "hours": log.hours,
+                    "hourly_wage": float(log.hourly_wage),
+                    "amount": float(log.amount),
+                    "wage_basis_date": log.wage_basis_date.isoformat(),
+                    "meta": log.meta or {},
+                }
+                for log in logs
+            ],
+        }
+
+
 @router.get("/salaries/{record_id}/export")
 def export_salary_slip(
     record_id: int,
