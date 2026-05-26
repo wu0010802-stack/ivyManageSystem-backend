@@ -854,3 +854,11 @@ class TestAdminOvertimeQuarterlyCapBoundary:
         )
         detail = resp.json().get("detail", "")
         assert "138" in detail, f"detail 應含 '138'，got: {detail!r}"
+
+        # 驗證 pending 仍是 pending，approve 失敗應整個 rollback，不應被誤 partial commit
+        with session_factory() as session:
+            refreshed = session.query(_OvertimeRecord).filter_by(id=pending_id).first()
+            assert refreshed is not None, "pending record 應存在"
+            assert (
+                refreshed.is_approved is None
+            ), f"approve 失敗應 rollback，pending 仍應為 is_approved=None，但現在={refreshed.is_approved}"

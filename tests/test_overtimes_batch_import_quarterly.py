@@ -234,8 +234,8 @@ class TestBatchImportQuarterlyCapPerRow:
         ), f"expected 200 partial-success, got {resp.status_code}: {resp.text}"
         body = resp.json()
 
-        # 至少 1 筆 failed（第 3 筆超季）
-        assert body.get("failed", 0) >= 1, f"expected failed>=1, got: {body}"
+        # 只有第 3 筆超季，前 2 筆應成功；精確驗 failed == 1
+        assert body.get("failed", 0) == 1, f"expected failed==1, got: {body}"
 
         # errors 含 "138"
         errors = body.get("errors", [])
