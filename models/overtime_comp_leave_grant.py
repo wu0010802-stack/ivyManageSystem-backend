@@ -44,6 +44,9 @@ class OvertimeCompLeaveGrant(Base):
     consumed_hours = Column(Float, nullable=False, default=0)
     status = Column(String(20), nullable=False, default="active")
     expired_at = Column(DateTime, nullable=True)
+    reminder_sent_at = Column(
+        DateTime, nullable=True, comment="LINE 推播提醒已發送時間（防重複）"
+    )
     payout_salary_record_id = Column(
         Integer, ForeignKey("salary_records.id", ondelete="SET NULL"), nullable=True
     )
