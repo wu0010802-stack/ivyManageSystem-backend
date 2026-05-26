@@ -186,3 +186,34 @@ def test_key_prefix_routing(fake_redis):
         await backend.stop()
 
     asyncio.run(_go())
+
+
+def test_start_fail_loud_when_redis_unreachable(monkeypatch):
+    """start() 應在 redis ping 失敗時 raise（fail-loud 啟動契約，spec §5.1）。"""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    class _UnreachableRedis:
+        async def ping(self):
+            raise RedisConnectionError("connection refused")
+
+        def pubsub(self):
+            raise AssertionError(
+                "should not reach pubsub() — ping should have raised first"
+            )
+
+        async def aclose(self):
+            return
+
+    def _from_url(url: str, **kw):
+        return _UnreachableRedis()
+
+    monkeypatch.setattr("redis.asyncio.from_url", _from_url)
+
+    async def _go():
+        backend = RedisBackend(
+            redis_url="redis://unreachable/0", key_prefix="ivy", payload_max_bytes=8192
+        )
+        with pytest.raises(RedisConnectionError, match="connection refused"):
+            await backend.start()
+
+    asyncio.run(_go())

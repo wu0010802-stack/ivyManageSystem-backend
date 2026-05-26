@@ -58,6 +58,12 @@ class RedisBackend(BroadcastBackend):
         self._pubsub = self._redis.pubsub()
         await self._pubsub.psubscribe(f"{self._prefix}*")
         self._pump_task = asyncio.create_task(self._pump(), name="broadcast-pump")
+        try:
+            import sentry_sdk
+
+            sentry_sdk.set_tag("broadcast.backend", "redis")
+        except Exception:
+            pass
         logger.info("RedisBackend started prefix=%s", self._prefix)
 
     async def stop(self) -> None:

@@ -38,7 +38,12 @@ class LocalBackend(BroadcastBackend):
                 lst.remove(ws)
 
     async def start(self) -> None:
-        return
+        try:
+            import sentry_sdk
+
+            sentry_sdk.set_tag("broadcast.backend", "memory")
+        except Exception:
+            pass
 
     async def stop(self) -> None:
         return
