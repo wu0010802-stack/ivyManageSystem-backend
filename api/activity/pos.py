@@ -866,6 +866,32 @@ async def pos_checkout(
             "registration_ids": reg_ids,
         }
 
+        # spec §12：退費路徑擴充 audit_changes 含 calculator 建議值反差
+        if body.type == "refund" and _refund_audit_context:
+            request.state.audit_changes.update(
+                {
+                    "refund_suggested_total": _refund_audit_context["suggested_total"],
+                    "refund_actual_total": _refund_audit_context["actual_total"],
+                    "refund_diff": _refund_audit_context["diff"],
+                    "refund_suggestion_per_reg": [
+                        {
+                            "registration_id": sd["registration_id"],
+                            "total_suggested": sd["total_suggested_amount"],
+                            "items": [
+                                {
+                                    "type": it["type"],
+                                    "target_id": it["target_id"],
+                                    "suggested": it["suggested_amount"],
+                                    "calc_method": it["calc_method"],
+                                }
+                                for it in sd["items"]
+                            ],
+                        }
+                        for sd in _refund_audit_context["suggestion_details"]
+                    ],
+                }
+            )
+
         return {
             "receipt_no": receipt_no,
             "type": body.type,

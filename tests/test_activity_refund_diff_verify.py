@@ -66,6 +66,48 @@ def client(tmp_path):
     engine.dispose()
 
 
+@pytest.fixture
+def client_with_audit_capture(tmp_path):
+    """client fixture 加 audit_changes 捕捉用 middleware intercept（零 race condition）。"""
+    db_path = tmp_path / "refund_audit.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    old_engine = base_module._engine
+    old_sf = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+
+    Base.metadata.create_all(engine)
+    _ip_attempts.clear()
+    _account_failures.clear()
+
+    test_app = FastAPI()
+    test_app.include_router(auth_router)
+    test_app.include_router(activity_router)
+
+    captured: dict = {"audit_changes": None}
+
+    @test_app.middleware("http")
+    async def capture_audit(request, call_next):
+        response = await call_next(request)
+        ac = getattr(request.state, "audit_changes", None)
+        if ac is not None:
+            captured["audit_changes"] = ac
+        return response
+
+    with TestClient(test_app) as c:
+        yield c, session_factory, captured
+
+    _ip_attempts.clear()
+    _account_failures.clear()
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_sf
+    engine.dispose()
+
+
 REFUND_REASON = "家長要求退費，已確認原因符合園所政策。"
 
 
@@ -311,3 +353,35 @@ def test_single_refund_diff_below_threshold_passes(client):
     }
     resp = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
     assert resp.status_code in (200, 201), resp.json()
+
+
+def test_pos_refund_audit_changes_contains_suggestion(client_with_audit_capture):
+    """成功退費後 request.state.audit_changes 應含 refund_suggested_total / actual / diff。
+
+    使用 middleware intercept 直接斷言 request.state.audit_changes（零 race condition）。
+    wiring 在 pos.py spec §12 區塊保證。
+    """
+    c, sf, captured = client_with_audit_capture
+    with sf() as s:
+        _create_admin(
+            s,
+            permission_names=[
+                "ACTIVITY_READ",
+                "ACTIVITY_WRITE",
+                "ACTIVITY_PAYMENT_APPROVE",
+            ],
+        )
+        reg = _setup_reg(s, course_price=1500, supply_price=0, paid_amount=1500)
+        _set_course_sessions(s, "美術", 10)
+        s.commit()
+        reg_id = reg.id
+
+    _login(c)
+    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 1450))
+    assert resp.status_code in (200, 201), resp.json()
+
+    ac = captured["audit_changes"]
+    assert ac is not None, "POS checkout 退費必須設 request.state.audit_changes"
+    assert ac.get("refund_suggested_total") == 1500
+    assert ac.get("refund_actual_total") == 1450
+    assert ac.get("refund_diff") == 50
