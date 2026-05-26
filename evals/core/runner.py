@@ -19,7 +19,7 @@ def run_eval(
     n_cases: int = 20,
     run_seed_cases: bool = True,
 ) -> EvalReport:
-    started = datetime.now().isoformat(timespec="seconds")
+    started = datetime.now().isoformat(timespec="seconds")  # noqa: DTZ005
     logger.info(
         "[eval] target=%s attacker=%s n=%d", target.name, attacker.name, n_cases
     )
@@ -49,7 +49,7 @@ def run_eval(
             r.outcome["_attacker_target_invariant"] = meta.get("__target_invariant")
         attack_results.append(r)
 
-    finished = datetime.now().isoformat(timespec="seconds")
+    finished = datetime.now().isoformat(timespec="seconds")  # noqa: DTZ005
     return EvalReport(
         target_name=target.name,
         attacker_name=attacker.name,

@@ -149,7 +149,7 @@ class HeuristicAttacker(Attacker):
         if type_ == "bool":
             return [True, False]
         if type_ == "date":
-            today = date.today()
+            today = date.today()  # noqa: DTZ011
             return [
                 today,
                 today - timedelta(days=1),

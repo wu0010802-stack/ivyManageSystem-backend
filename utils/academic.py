@@ -68,7 +68,7 @@ def resolve_current_academic_term(
             "AcademicTerm.is_current 未設定，resolve_current_academic_term() "
             "fallback 到日期推算（請至 /academic-terms UI 設定當前學期）"
         )
-        return _resolve_by_date(date.today())
+        return _resolve_by_date(date.today())  # noqa: DTZ011
     finally:
         if owned:
             sess.close()
@@ -80,7 +80,7 @@ def default_current_academic_term_for_column() -> tuple[int, int]:
     Classroom._default_school_year/_default_semester 在 INSERT 時呼叫，
     這時候不該觸發 DB query（會在已開 session 內套娃）。
     """
-    return _resolve_by_date(date.today())
+    return _resolve_by_date(date.today())  # noqa: DTZ011
 
 
 def resolve_academic_term_filters(
