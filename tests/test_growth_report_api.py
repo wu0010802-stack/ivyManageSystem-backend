@@ -358,14 +358,14 @@ def test_send_line_all_failed_releases_idempotency_lock(app_client, monkeypatch)
         session.add(Guardian(user_id=2, student_id=1, name="家長"))
         session.commit()
 
-    # patch line service：全失敗
-    from api.portfolio import reports as reports_mod
+    # Phase 4 Section 3: mock dispatch.send_to_line_user_sync 全失敗
+    from services.notification import dispatch as dispatch_mod
 
-    class _FailLine:
-        def push_to_user(self, *_a, **_k):
-            return False
-
-    monkeypatch.setattr(reports_mod, "_line_service", _FailLine())
+    monkeypatch.setattr(
+        dispatch_mod,
+        "send_to_line_user_sync",
+        lambda *_a, **_k: False,
+    )
 
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 502, resp.text
@@ -412,13 +412,14 @@ def test_send_line_partial_success_keeps_idempotency_lock(app_client, monkeypatc
             session.add(Guardian(user_id=uid, student_id=1, name="家長"))
         session.commit()
 
-    from api.portfolio import reports as reports_mod
+    # Phase 4 Section 3：reports.py 改走 dispatch.send_to_line_user_sync，
+    # 直接 mock dispatch API 而非 reports_mod._line_service.push_to_user
+    from services.notification import dispatch as dispatch_mod
 
-    class _MixLine:
-        def push_to_user(self, line_user_id, _text):
-            return line_user_id == "U_OK"
+    def _mock_send(line_user_id, _event, _ctx):
+        return line_user_id == "U_OK"
 
-    monkeypatch.setattr(reports_mod, "_line_service", _MixLine())
+    monkeypatch.setattr(dispatch_mod, "send_to_line_user_sync", _mock_send)
 
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 200, resp.text
@@ -468,21 +469,20 @@ def test_send_line_does_not_block_under_session_scope(app_client, monkeypatch):
         session.add(Guardian(user_id=2, student_id=1, name="家長"))
         session.commit()
 
-    from api.portfolio import reports as reports_mod
+    from services.notification import dispatch as dispatch_mod
 
     pushed_during_outer_txn = []
 
-    class _ProbeLine:
-        def push_to_user(self, _uid, _text):
-            # 推送時 line_sent_at 應已 commit（claim slot 完成），可從另一 session 讀到
-            from models.database import StudentGrowthReport, session_scope
+    def _probe_send(_uid, _event, _ctx):
+        # 推送時 line_sent_at 應已 commit（claim slot 完成），可從另一 session 讀到
+        from models.database import StudentGrowthReport, session_scope
 
-            with session_scope() as s2:
-                r = s2.query(StudentGrowthReport).filter_by(id=rid).first()
-                pushed_during_outer_txn.append(r.line_sent_at is not None)
-            return True
+        with session_scope() as s2:
+            r = s2.query(StudentGrowthReport).filter_by(id=rid).first()
+            pushed_during_outer_txn.append(r.line_sent_at is not None)
+        return True
 
-    monkeypatch.setattr(reports_mod, "_line_service", _ProbeLine())
+    monkeypatch.setattr(dispatch_mod, "send_to_line_user_sync", _probe_send)
 
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 200

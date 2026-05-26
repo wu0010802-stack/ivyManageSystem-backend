@@ -377,14 +377,23 @@ def _h_parent_contact_book_published(ls, evt, rendered) -> None:
     ls._push_to_user(evt.recipient_user_id, body)
 
 
-def _h_growth_report_published(ls, evt, rendered) -> None:
-    """Growth Report 推家長：reports.py hybrid 預留，Section 3 整體遷移時才用上；
-    本 handler 保留以便 hybrid 期間任何不走 reports.py 路徑的 caller 也能正常推。"""
+def _h_growth_report_published(ls, evt, rendered) -> bool:
+    """Growth Report 推家長。Phase 4 Section 3 後 reports.py send-line 走
+    dispatch.send_to_line_user_sync 觸發此 handler；支援 caller 傳
+    `custom_message` 覆蓋預設模板（admin 推送時可指定）。
+
+    本 handler 回 bool（push API 結果）讓 send_to_line_user_sync 拿真實 ACK；
+    其他 handler 沿用 -> None signature（fan-out caller 不 propagate）。
+    """
     ctx = evt.context
-    period = ctx.get("period", "")
-    student_name = ctx.get("student_name", "")
-    text = f"📊 {student_name} {period} 成長報告已備好\n" f"請至家長 App 查看下載。"
-    ls._push_to_user(evt.recipient_user_id, text)
+    custom = ctx.get("custom_message")
+    if custom:
+        text = custom
+    else:
+        period = ctx.get("period", "")
+        student_name = ctx.get("student_name", "")
+        text = f"📊 {student_name} {period} 成長報告已備好\n請至家長 App 查看下載。"
+    return ls._push_to_user(evt.recipient_user_id, text)
 
 
 # ── 群組推送 handlers (Phase 4 Section 2) ───────────────────────────────────

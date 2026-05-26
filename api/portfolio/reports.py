@@ -675,26 +675,38 @@ async def send_growth_report_to_line(
             if not line_user_ids:
                 raise HTTPException(status_code=409, detail="該學生家長未綁定 LINE")
 
-            if _line_service is None:
-                raise HTTPException(status_code=503, detail="LINE 服務尚未初始化")
-
             # Pre-claim：搶占 5 分鐘窗口；推送失敗會在 Phase 3 回滾
             previous_sent_at = r.line_sent_at
             r.line_sent_at = datetime.utcnow()
             claimed_sent_at = r.line_sent_at
             period_label = r.period_label
+            report_pk = r.id
         # session_scope 出 with 區塊，pre-claim 已 commit 並釋放 row lock
 
-        # Phase 2: 在 session 外執行 sync LINE push；用 to_thread 避免阻塞 event loop
-        base_text = (
-            payload.message
-            or f"您孩子的成長報告（{period_label}）已備好，請至家長 App 查看下載。"
-        )
+        # Phase 2 (Phase 4 Section 3): 改走 dispatch.send_to_line_user_sync 同步 API
+        # 拿真實 ACK；caller 不再直接呼叫 line_service 的個人推送 method。
+        # 走 LINE_HANDLERS["growth_report.published"] handler 構訊息（payload.message
+        # 若有給，pass via context 讓 handler 用；無則 handler 用預設模板）。
+        from services.notification import dispatch as _dispatch
+
+        push_context = {
+            "student_name": "",  # handler 內未使用，避免 KeyError
+            "period": period_label,
+            "report_id": report_pk,
+        }
+        if payload.message:
+            push_context["custom_message"] = payload.message
+
         sent_count = 0
         push_error: Optional[BaseException] = None
         try:
             for uid in line_user_ids:
-                ok = await asyncio.to_thread(_line_service.push_to_user, uid, base_text)
+                ok = await asyncio.to_thread(
+                    _dispatch.send_to_line_user_sync,
+                    uid,
+                    "growth_report.published",
+                    push_context,
+                )
                 if ok:
                     sent_count += 1
         except Exception as exc:  # noqa: BLE001

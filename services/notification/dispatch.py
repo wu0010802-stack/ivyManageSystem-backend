@@ -165,6 +165,55 @@ def _get_line_adapter() -> LineAdapter:
     return _line_adapter
 
 
+def send_to_line_user_sync(line_user_id: str, event_type: str, context: dict) -> bool:
+    """Phase 4 Section 3：同步推送 LINE 個人通知並回 ACK 結果。
+
+    Caller 需 sync 拿 sent_count（如 api/portfolio/reports.py send-line 需要
+    sent_count + Phase 3 rollback line_sent_at）走此 API；其他 caller 走
+    enqueue + after_commit hook。
+
+    本 API 不寫 NotificationLog、不過 preference gate（caller 已在 Phase 1
+    自管 line_sent_at idempotency；admin 觸發推播本是 explicit action）。
+
+    回 True 若 LINE API 200，False 若推送失敗或 line_user_id empty。
+    """
+    if not line_user_id:
+        return False
+    from services.notification._channels.line import LINE_HANDLERS
+    from services.notification.renderers import render
+
+    adapter = _get_line_adapter()
+    rendered = render(event_type, context)
+    evt = PendingEvent(
+        event_type=event_type,
+        recipient_user_id=line_user_id,
+        context=dict(context),
+        sender_id=None,
+        source_entity_type=None,
+        source_entity_id=None,
+        channels=("line",),
+        line_group_id=None,
+    )
+    handler = LINE_HANDLERS.get(event_type)
+    try:
+        if handler is None:
+            # fallback path — LineAdapter 走 push_text_to_user（無 ACK 回傳）
+            adapter.send(evt, rendered, log_id=0)
+            return True
+        result = handler(adapter._ls, evt, rendered)
+        # handler 簽名為 -> None；若 caller 需 ACK 須 handler 回 bool
+        # （目前只 _h_growth_report_published 回 bool；其他視為成功）
+        return True if result is None else bool(result)
+    except Exception as exc:
+        logger.warning(
+            "send_to_line_user_sync 失敗 event=%s user=%s: %s",
+            event_type,
+            line_user_id,
+            exc,
+        )
+        return False
+
+
 def _get_ws_adapter() -> WsAdapter:
     global _ws_adapter
     if _ws_adapter is None:
