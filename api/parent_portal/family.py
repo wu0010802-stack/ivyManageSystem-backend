@@ -8,7 +8,7 @@ Perf：30s in-process TTLCache（key=(user_id, student_id, limit)）；
 """
 
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -115,7 +115,7 @@ def _collect_timeline_items(
     fetch_n = max(limit * 3, 30)
     now = now_taipei_naive()
     cutoff_30d = now - timedelta(days=30)
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     items: list[dict[str, Any]] = []
 
     # 1. attendance（最近 N 筆，依 date desc）

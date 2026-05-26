@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -163,7 +163,7 @@ def get_today(
 ):
     """取得指定子女今日已發布的聯絡簿（沒有 entry / 仍為草稿時 entry 回 null）。"""
     user_id = current_user["user_id"]
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     _assert_student_owned(session, user_id, student_id)
     entry = (
         session.query(StudentContactBookEntry)
@@ -216,7 +216,7 @@ def list_history(
     """歷史清單（僅 published）。預設回最近 30 筆。"""
     user_id = current_user["user_id"]
     if to_date is None:
-        to_date = date.today()  # noqa: DTZ011
+        to_date = today_taipei()
     if from_date is None:
         from_date = to_date - timedelta(days=60)
     if from_date > to_date:

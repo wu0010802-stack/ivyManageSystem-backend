@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 
 from sqlalchemy import text
 
@@ -22,7 +23,7 @@ from models.database import LeaveRecord, get_session  # noqa: F401
 
 
 def find_bad_partial(session):
-    cutoff = date.today() - timedelta(days=365)  # noqa: DTZ011
+    cutoff = today_taipei() - timedelta(days=365)  
     return (
         session.query(LeaveRecord)
         .filter(

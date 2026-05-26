@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Literal, TypedDict
 
 from sqlalchemy.orm import Session
@@ -86,7 +86,7 @@ def process_offboarding(
             code="RESIGN_DATE_BEFORE_HIRE",
         )
 
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     if (resign_date - today).days > 90:
         raise OffboardingError(
             f"resign_date {resign_date} 超過 today + 90 天",

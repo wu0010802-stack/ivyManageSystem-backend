@@ -2,7 +2,7 @@
 
 from calendar import monthrange
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 
 from sqlalchemy import and_, case, func
 
@@ -57,7 +57,7 @@ class DashboardQueryService:
     def build_upcoming_events(
         self, session, *, days: int = 7, today: date | None = None
     ) -> list[dict]:
-        today = today or date.today()  # noqa: DTZ011
+        today = today or today_taipei()
         cache_key = f"{today.isoformat()}:{days}"
         cached = get_cache().get(_CACHE_NS_DASHBOARD_EVENTS, cache_key)
         if cached is not None:
@@ -99,7 +99,7 @@ class DashboardQueryService:
         return result
 
     def build_approval_summary(self, session, *, today: date | None = None) -> dict:
-        today = today or date.today()  # noqa: DTZ011
+        today = today or today_taipei()
         cache_key = today.isoformat()
         cached = get_cache().get(_CACHE_NS_DASHBOARD_APPROVAL, cache_key)
         if cached is not None:
@@ -181,7 +181,7 @@ class DashboardQueryService:
     def build_student_attendance_summary(
         self, session, *, today: date | None = None
     ) -> dict:
-        today = today or date.today()  # noqa: DTZ011
+        today = today or today_taipei()
 
         return report_cache_service.get_or_build(
             session,
@@ -235,7 +235,7 @@ class DashboardQueryService:
         if not candidates:
             return None
 
-        today = date.today()  # noqa: DTZ011
+        today = today_taipei()
         target = graduation_date_for_year(today.year)
         days_left = (target - today).days
         count = len(candidates)
@@ -323,7 +323,7 @@ class DashboardQueryService:
         from models.portfolio import StudentMedicationLog, StudentMedicationOrder
         from utils.portfolio_access import student_ids_in_scope
 
-        today = today or date.today()  # noqa: DTZ011
+        today = today or today_taipei()
 
         order_q = session.query(StudentMedicationOrder.id).filter(
             StudentMedicationOrder.order_date == today

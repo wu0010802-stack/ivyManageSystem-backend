@@ -31,6 +31,7 @@
 """
 
 from datetime import date, datetime, timedelta
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -111,7 +112,7 @@ def _aggregate_period(
     限縮到該學生；事件 / 公告 / 節日仍是家庭層級。
     """
     items: list[dict] = []
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
 
     _, all_student_ids = _get_parent_student_ids(session, user_id)
     if student_id is not None:
@@ -362,7 +363,7 @@ def get_week_agenda(
 ):
     """整合本週聚合行程（events / announcements / fee_due / contact_book / leave / medication）。"""
     user_id = current_user["user_id"]
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     end = today + timedelta(days=days)
 
     items = _aggregate_period(

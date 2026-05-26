@@ -6,7 +6,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Any, Iterable, Optional
 
 import requests
@@ -1139,7 +1139,7 @@ def _resolve_population_density_url() -> list[str]:
     if RECRUITMENT_POPULATION_DENSITY_URL:
         return [RECRUITMENT_POPULATION_DENSITY_URL]
 
-    roc_year = date.today().year - 1911  # noqa: DTZ011
+    roc_year = today_taipei().year - 1911  
     return [
         f"https://www.ris.gov.tw/rs-opendata/api/v1/datastore/ODRP048/{year}"
         for year in range(roc_year - 1, max(roc_year - 4, 100), -1)

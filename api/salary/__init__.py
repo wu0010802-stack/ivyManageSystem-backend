@@ -137,8 +137,8 @@ def _trigger_past_month_snapshot_if_missing(bg: Optional[BackgroundTasks]) -> No
     """
     if bg is None:
         return
-    # 用台灣日；UTC 主機在台北時間每月 1 日 00:00-08:00，date.today()  # noqa: DTZ011 仍為上月 31 日，
-    # 會讓 _previous_month 回到上上月，補拍對象錯。
+    # 用台灣日；UTC 主機在台北時間每月 1 日 00:00-08:00，系統日仍為上月 31 日，
+    # 會讓 _previous_month 回到上上月，補拍對象錯；故改用 _today_taipei()。
     today = _today_taipei()
     year, month = _previous_month(today)
     key = f"{today.isoformat()}:{year}-{month:02d}"

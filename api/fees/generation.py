@@ -9,7 +9,7 @@ c2 後僅保留 POST /generate（原 /generate-from-templates 改名）：
 
 import logging
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
@@ -134,7 +134,7 @@ def generate_from_templates(
                         skipped += 1
                         continue
                     record_name = f"{tpl.name}{f' ({tm})' if tm else ''}"
-                    due_date_val = date.today() + timedelta(  # noqa: DTZ011
+                    due_date_val = today_taipei() + timedelta(  
                         days=tpl.due_date_offset_days
                     )
                     new_records.append(

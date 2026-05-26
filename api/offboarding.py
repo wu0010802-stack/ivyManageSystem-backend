@@ -8,7 +8,7 @@ Phase 3 補：list
 import io
 import logging
 from datetime import date, datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -96,7 +96,7 @@ def preview_offboarding(
         )
 
         # 查有無 active User 帳號
-        today = date.today()  # noqa: DTZ011
+        today = today_taipei()
         user_active = (
             session.query(User)
             .filter(

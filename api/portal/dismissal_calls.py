@@ -5,6 +5,7 @@ api/portal/dismissal_calls.py — 教師 portal 接送通知 HTTP endpoints
 import asyncio
 import logging
 from datetime import datetime, date
+from utils.taipei_time import today_taipei
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -73,7 +74,7 @@ def portal_list_dismissal_calls(
         if not classroom_ids:
             return []
 
-        today = date.today()  # noqa: DTZ011
+        today = today_taipei()
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 
@@ -106,7 +107,7 @@ def portal_pending_count(
         if not classroom_ids:
             return {"count": 0}
 
-        today = date.today()  # noqa: DTZ011
+        today = today_taipei()
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 

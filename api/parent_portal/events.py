@@ -10,7 +10,7 @@
 import logging
 import os
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Optional
 
 from fastapi import (
@@ -62,7 +62,7 @@ def count_pending_acks_for_user(session, user_id: int, student_ids: list[int]) -
     """
     if not student_ids:
         return 0
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     df = today - timedelta(days=_PAST_DAYS)
     dt = today + timedelta(days=_FUTURE_DAYS)
     events = (
@@ -104,7 +104,7 @@ def list_events(
     session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     df = today - timedelta(days=_PAST_DAYS)
     dt = today + timedelta(days=_FUTURE_DAYS)
     _, student_ids = _get_parent_student_ids(session, user_id)
@@ -187,7 +187,7 @@ def acknowledge_event(
         raise HTTPException(status_code=400, detail="此事件未要求簽閱")
     # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽閱（與 signature 上傳對齊）
     if (
-        event.ack_deadline is not None and date.today() > event.ack_deadline  # noqa: DTZ011
+        event.ack_deadline is not None and today_taipei() > event.ack_deadline  
     ):
         raise HTTPException(
             status_code=400,
@@ -273,7 +273,7 @@ async def upload_ack_signature(
     if event is None:
         raise HTTPException(status_code=404, detail="找不到事件")
     if (
-        event.ack_deadline is not None and date.today() > event.ack_deadline  # noqa: DTZ011
+        event.ack_deadline is not None and today_taipei() > event.ack_deadline  
     ):
         raise HTTPException(
             status_code=400,

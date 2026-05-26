@@ -6,7 +6,7 @@ import csv
 import io
 import logging
 from datetime import date, datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -526,7 +526,7 @@ async def create_change_log(
         student = assert_student_access(session, current_user, item.student_id)
 
         event_date = datetime.strptime(item.event_date, "%Y-%m-%d").date()
-        if event_date > date.today():  # noqa: DTZ011
+        if event_date > today_taipei():  
             raise HTTPException(
                 status_code=400,
                 detail="補登只能寫歷史事件；未來狀態變更請用「變更狀態」功能",

@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -651,7 +651,7 @@ async def today_medication_summary(
 ) -> dict:
     """回傳呼叫者班級範圍內，今日所有用藥任務（pending + done）。"""
     try:
-        today = date.today()  # noqa: DTZ011
+        today = today_taipei()
         with session_scope() as session:
             scope = student_ids_in_scope(session, current_user)
             query = session.query(StudentMedicationOrder).filter(

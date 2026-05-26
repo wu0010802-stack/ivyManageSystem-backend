@@ -5,7 +5,7 @@ Student management router
 import logging
 import re
 from datetime import date, datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -747,7 +747,7 @@ async def create_student(
         from models.student_log import StudentChangeLog
 
         school_year, semester = resolve_current_academic_term()
-        enrollment_date = student.enrollment_date or date.today()  # noqa: DTZ011
+        enrollment_date = student.enrollment_date or today_taipei()
         change_log = StudentChangeLog(
             student_id=student.id,
             school_year=school_year,

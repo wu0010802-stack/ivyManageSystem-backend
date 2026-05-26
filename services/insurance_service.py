@@ -10,6 +10,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import date
+from utils.taipei_time import today_taipei
 from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
@@ -766,7 +767,7 @@ class InsuranceService:
         # 級距表來源年度（DB 載入時會覆寫，未載入則為 hardcode 年度）
         self.brackets_year: int = CURRENT_INSURANCE_YEAR
 
-        current = date.today().year  # noqa: DTZ011
+        current = today_taipei().year  
         if current > CURRENT_INSURANCE_YEAR:
             logger.warning(
                 "勞健保級距表已過期：表年度 %d、系統年度 %d。"
@@ -793,7 +794,7 @@ class InsuranceService:
             strict=True 時失敗會 raise 而非回 False。
         """
         if year is None:
-            year = date.today().year  # noqa: DTZ011
+            year = today_taipei().year  
         try:
             # 延遲 import，避免 service 模組在 DB 尚未初始化前被引用時 ImportError
             from models.database import InsuranceBracket, get_session

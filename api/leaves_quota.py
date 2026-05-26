@@ -9,6 +9,7 @@ and the three quota CRUD endpoints.
 import calendar
 import logging
 from datetime import date
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -218,7 +219,7 @@ def _resolve_quota_row(
     )
     if row:
         return row
-    legacy_year = (target_date or date.today()).year  # noqa: DTZ011
+    legacy_year = (target_date or today_taipei()).year  
     return (
         session.query(LeaveQuota)
         .filter(
@@ -590,7 +591,7 @@ def get_leave_quotas(
 ):
     """查詢請假配額，含動態計算已使用、待審、剩餘時數"""
     if year is None:
-        year = date.today().year  # noqa: DTZ011
+        year = today_taipei().year  
     session = get_session()
     try:
         q = session.query(LeaveQuota).filter(LeaveQuota.year == year)
@@ -684,8 +685,8 @@ def init_leave_quotas(
     - 已存在的配額只更新 total_hours 與 note，不刪除手動調整記錄
     """
     if year is None:
-        year = date.today().year  # noqa: DTZ011
-    current_year = date.today().year  # noqa: DTZ011
+        year = today_taipei().year  
+    current_year = today_taipei().year  
     if year < current_year:
         raise HTTPException(
             status_code=400, detail="禁止重新初始化過去年份的配額，以維護稽核紀錄完整性"

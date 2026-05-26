@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -61,7 +62,7 @@ async def parent_list_measurements(
     try:
         user_id = current_user["user_id"]
         _assert_student_owned(session, user_id, student_id)
-        since = date.today() - timedelta(days=30 * months)  # noqa: DTZ011
+        since = today_taipei() - timedelta(days=30 * months)  
         rows = (
             session.query(StudentMeasurement)
             .filter(
@@ -100,7 +101,7 @@ async def parent_measurement_chart(
     try:
         user_id = current_user["user_id"]
         _assert_student_owned(session, user_id, student_id)
-        since = date.today() - timedelta(days=30 * months)  # noqa: DTZ011
+        since = today_taipei() - timedelta(days=30 * months)  
         rows = (
             session.query(StudentMeasurement)
             .filter(

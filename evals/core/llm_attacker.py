@@ -16,6 +16,7 @@ import logging
 import random
 from abc import ABC, abstractmethod
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 from typing import Any
 
 from config import settings
@@ -149,7 +150,7 @@ class HeuristicAttacker(Attacker):
         if type_ == "bool":
             return [True, False]
         if type_ == "date":
-            today = date.today()  # noqa: DTZ011
+            today = today_taipei()
             return [
                 today,
                 today - timedelta(days=1),

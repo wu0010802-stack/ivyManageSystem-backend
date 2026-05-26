@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -107,7 +107,7 @@ def convert_recruitment_to_student(
     if dup is not None:
         raise RecruitmentConversionError(f"學號已存在：{code}")
 
-    enroll_date = enrollment_date or date.today()  # noqa: DTZ011
+    enroll_date = enrollment_date or today_taipei()
 
     student = Student(
         student_id=code,

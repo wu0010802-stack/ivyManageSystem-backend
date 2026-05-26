@@ -12,6 +12,7 @@
 
 import calendar
 from datetime import date, datetime
+from utils.taipei_time import today_taipei
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -46,7 +47,7 @@ def get_daily_attendance(
 ):
     user_id = current_user["user_id"]
     _assert_student_owned(session, user_id, student_id)
-    d = _parse_date(target_date) if target_date else date.today()  # noqa: DTZ011
+    d = _parse_date(target_date) if target_date else today_taipei()
     record = (
         session.query(StudentAttendance)
         .filter(

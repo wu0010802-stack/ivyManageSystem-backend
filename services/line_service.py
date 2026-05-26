@@ -15,6 +15,7 @@ group_id mode，hybrid 收尾後 _notify_* 可從本檔 inline 至 LINE_HANDLERS
 
 import logging
 from datetime import date, datetime
+from utils.taipei_time import today_taipei
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -536,7 +537,7 @@ class LineService:
             from datetime import date as _date
             import calendar
 
-            today = _date.today()  # noqa: DTZ011
+            today = today_taipei()
             records = (
                 session.query(Attendance)
                 .filter(

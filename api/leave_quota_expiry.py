@@ -4,6 +4,7 @@
 """
 
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -24,7 +25,7 @@ def list_upcoming_expiring_grants(
     _: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
 ):
     """列出未來 N 天內到期的 active 補休 grant。"""
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     end = today + timedelta(days=days)
     session = get_session()
     try:
@@ -66,7 +67,7 @@ def list_upcoming_anniversaries(
     使用 Python-side 過濾：撈所有在職員工後逐一比對，員工數 ≤200 時性能 OK。
     只列入職已滿 6 個月（180 天）以上的員工，過濾掉試用期尚短者。
     """
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     session = get_session()
     try:
         emps = session.query(Employee).filter(Employee.is_active.is_(True)).all()
@@ -146,7 +147,7 @@ def run_scheduler_now(
     )
     from services.leave_quota_expiry.comp_leave_expiry import expire_comp_leave_grants
 
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     session = get_session()
     try:
         with try_scheduler_lock(

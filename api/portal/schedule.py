@@ -5,7 +5,7 @@ Portal - schedule and shift swap endpoints
 import calendar as cal_module
 import logging
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
@@ -380,7 +380,7 @@ def create_swap_request(
 
         if data.target_id == emp.id:
             raise HTTPException(status_code=400, detail="不可與自己換班")
-        if data.swap_date < date.today():  # noqa: DTZ011
+        if data.swap_date < today_taipei():  
             raise HTTPException(status_code=400, detail="不可換過去的日期")
 
         target = (

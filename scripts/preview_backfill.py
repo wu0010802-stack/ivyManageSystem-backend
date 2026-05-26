@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 
 from sqlalchemy import text
 
@@ -35,7 +36,7 @@ def _has_leave_record_id_col(session) -> bool:
 def main():
     session = get_session()
     try:
-        cutoff = date.today() - timedelta(days=365)  # noqa: DTZ011
+        cutoff = today_taipei() - timedelta(days=365)  
 
         leaves = (
             session.query(LeaveRecord)

@@ -13,7 +13,7 @@ Perf：home_summary 的 9 個內部 query 用 60s in-process TTLCache
 """
 
 from datetime import date, datetime, timedelta
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 
 from fastapi import APIRouter, Depends
 
@@ -204,7 +204,7 @@ def today_status(
     ```
     """
     user_id = current_user["user_id"]
-    today = date.today()  # noqa: DTZ011
+    today = today_taipei()
     # 子女清單（沿用 home_summary 的 join，輕量重複比共用 helper 簡單）
     rows = (
         session.query(Guardian, Student, Classroom)

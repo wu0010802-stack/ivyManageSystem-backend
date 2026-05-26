@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from utils.taipei_time import today_taipei
 from pathlib import Path
 from typing import Optional
 
@@ -263,7 +264,7 @@ def _collect_report_data(
             "period_end": report.period_end,
             "report_id": report.id,
             "teacher_narrative": report.teacher_narrative,
-            "generated_on": date.today(),  # noqa: DTZ011
+            "generated_on": today_taipei(),  
         },
         "attendance_summary": summarize_attendance(att_records),
         "highlight_observations": pick_highlight_observations(obs_rows, max_count=5),

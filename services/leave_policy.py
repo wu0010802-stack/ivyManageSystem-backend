@@ -1,6 +1,7 @@
 """請假規則純邏輯 helper。"""
 
 from datetime import date, timedelta
+from utils.taipei_time import today_taipei
 
 SUPPORTING_DOCUMENT_THRESHOLD_DAYS = 2
 PERSONAL_ADVANCE_NOTICE_DAYS = 2
@@ -29,7 +30,7 @@ def validate_portal_leave_rules(
     today: date | None = None,
 ) -> None:
     """驗證教師入口送出請假時的業務規則。"""
-    today = today or date.today()  # noqa: DTZ011
+    today = today or today_taipei()
 
     # 防禦深度:Python `-4 % 4 == 0` 與 `0 % 4 == 0` 會讓 sick 規則 silently 通過
     # 負時數 / 零時數申請。API layer 已擋 < 0.5,helper 自身仍應檢查正向性。
