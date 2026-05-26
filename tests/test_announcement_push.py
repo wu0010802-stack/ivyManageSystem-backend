@@ -1,8 +1,10 @@
 """公告 LINE 推播 scope 解析（Phase 4）。
 
 驗證 _resolve_parent_user_ids 對四種 scope（all / classroom / student / guardian）
-皆正確展開到家長 user_id 集合，並驗證 _fire_announcement_push 對每個 user 走
-should_push_to_parent gate。
+皆正確展開到家長 user_id 集合，並驗證 _fire_announcement_push 對每個 user 透過
+dispatch.enqueue 登錄 parent.announcement 事件。LINE 可達性與通知偏好 gate 由
+dispatch._fan_out 統一處理（涵蓋於 tests/notification/test_dispatch_fan_out.py），
+本檔不再重複驗證。
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -22,7 +24,6 @@ import models.base as base_module
 from api.announcements import (
     _fire_announcement_push,
     _resolve_parent_user_ids,
-    init_announcement_line_service,
 )
 from models.database import (
     Announcement,
@@ -237,7 +238,7 @@ class TestResolveParentUserIds:
 
 
 class TestFireAnnouncementPush:
-    def test_each_user_goes_through_gate(self, session_factory):
+    def test_each_user_enqueues_parent_announcement(self, session_factory):
         sf = session_factory
         with sf() as session:
             ua, sa, ca, _ = _seed_parent_with_child(
@@ -251,45 +252,51 @@ class TestFireAnnouncementPush:
             ]
             session.commit()
 
-            mock_svc = MagicMock()
-            mock_svc.should_push_to_parent.return_value = "U_OK"
-            init_announcement_line_service(mock_svc)
-            try:
-                _fire_announcement_push(session, ann, recipients)
-            finally:
-                init_announcement_line_service(None)
+            with patch("services.notification.dispatch.enqueue") as mock_enqueue:
+                _fire_announcement_push(session, ann, recipients, sender_user_id=42)
 
-            mock_svc.should_push_to_parent.assert_called_once_with(
-                session, user_id=ua.id, event_type="announcement"
-            )
-            mock_svc.notify_parent_announcement.assert_called_once()
+            mock_enqueue.assert_called_once()
+            kwargs = mock_enqueue.call_args.kwargs
+            assert kwargs["event_type"] == "parent.announcement"
+            assert kwargs["recipient_user_id"] == ua.id
+            assert kwargs["sender_id"] == 42
+            assert kwargs["source_entity_type"] == "announcement"
+            assert kwargs["source_entity_id"] == ann.id
+            assert kwargs["context"]["title"] == "重要公告"
+            assert kwargs["context"]["preview"] == "今日停課"
+            assert kwargs["context"]["announcement_id"] == ann.id
 
-    def test_blocked_gate_skips_push(self, session_factory):
+    def test_multiple_recipients_one_enqueue_each(self, session_factory):
+        """gate 已下沉到 dispatch；caller 只負責對每位 user 各 enqueue 一次。"""
         sf = session_factory
         with sf() as session:
             ua, _, ca, _ = _seed_parent_with_child(
                 session, line_id="UA", student_name="A1", classroom_name="A班"
             )
+            ub, _, cb, _ = _seed_parent_with_child(
+                session, line_id="UB", student_name="B1", classroom_name="B班"
+            )
             ann = _make_announcement(session, title="公告", content="x")
             recipients = [
                 AnnouncementParentRecipient(
                     announcement_id=ann.id, scope="classroom", classroom_id=ca.id
-                )
+                ),
+                AnnouncementParentRecipient(
+                    announcement_id=ann.id, scope="classroom", classroom_id=cb.id
+                ),
             ]
             session.commit()
 
-            mock_svc = MagicMock()
-            mock_svc.should_push_to_parent.return_value = None  # gate blocks
-            init_announcement_line_service(mock_svc)
-            try:
+            with patch("services.notification.dispatch.enqueue") as mock_enqueue:
                 _fire_announcement_push(session, ann, recipients)
-            finally:
-                init_announcement_line_service(None)
 
-            mock_svc.should_push_to_parent.assert_called_once()
-            mock_svc.notify_parent_announcement.assert_not_called()
+            assert mock_enqueue.call_count == 2
+            uids = {
+                call.kwargs["recipient_user_id"] for call in mock_enqueue.call_args_list
+            }
+            assert uids == {ua.id, ub.id}
 
-    def test_no_line_service_is_noop(self, session_factory):
+    def test_empty_recipients_is_noop(self, session_factory):
         sf = session_factory
         with sf() as session:
             _seed_parent_with_child(
@@ -297,6 +304,6 @@ class TestFireAnnouncementPush:
             )
             ann = _make_announcement(session, title="公告", content="x")
             session.commit()
-            # _line_service 為 None：應靜默
-            init_announcement_line_service(None)
-            _fire_announcement_push(session, ann, [])  # 不應拋
+            with patch("services.notification.dispatch.enqueue") as mock_enqueue:
+                _fire_announcement_push(session, ann, [])  # 不應拋
+            mock_enqueue.assert_not_called()
