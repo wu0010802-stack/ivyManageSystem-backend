@@ -35,6 +35,7 @@ STORAGE_BACKEND=local
 | `activity-posters`     | ✅ Public  | 活動海報，前台直接從 CDN 抓 |
 | `leave-attachments`    | ❌ Private | 假單附件，後端發 signed URL |
 | `attendance-imports`   | ❌ Private | 考勤匯入暫存，僅後端短暫使用 |
+| `growth-reports`       | ❌ Private | 學生成長報告 PDF，後端發 signed URL |
 
 或使用 Supabase CLI / MCP `supabase` server 自動建。
 
