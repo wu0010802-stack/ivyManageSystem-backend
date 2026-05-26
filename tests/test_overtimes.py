@@ -20,7 +20,12 @@ from api.overtimes import (
     _assert_within_monthly_cap,
     _validate_overtime_type_matches_calendar,
 )
+from services.overtime_conflict_service import (
+    _assert_within_quarterly_cap,
+    _shift_month,
+)
 from fastapi import HTTPException
+from utils.constants import MAX_QUARTERLY_OVERTIME_HOURS
 
 # ── 測試用 helpers ────────────────────────────────────────────────────────────
 
@@ -546,3 +551,314 @@ class TestOvertimeTypeCalendarValidation:
 
     def test_weekend_type_on_non_holiday_passes(self):
         _validate_overtime_type_matches_calendar("weekend", False)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 季 138h cap 純函式測試（勞基法 §32 II）
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestAssertWithinQuarterlyCap:
+    """純函式：worst_existing + new ≤ 138.0 = pass，否則 raise 400 含 6 要素"""
+
+    def test_boundary_138_exact_passes(self):
+        """138.0 剛好不算超過（與 monthly cap 同口徑 + 1e-9 tolerance）"""
+        _assert_within_quarterly_cap(132.0, 6.0, "2026/03~2026/05", 1)
+
+    def test_over_138_blocks(self):
+        """138.1 即 raise"""
+        with pytest.raises(HTTPException) as exc:
+            _assert_within_quarterly_cap(132.0, 6.2, "2026/03~2026/05", 1)
+        assert exc.value.status_code == 400
+        assert "超過勞基法第 32 條" in exc.value.detail
+
+    def test_none_safety(self):
+        """None 輸入不會 crash"""
+        _assert_within_quarterly_cap(None, 10.0, "2026/03~2026/05", 1)
+        _assert_within_quarterly_cap(10.0, None, "2026/03~2026/05", 1)
+
+    def test_message_contains_six_required_fields(self):
+        """訊息必含：員工 ID、窗口、累計、新筆、合計、上限"""
+        with pytest.raises(HTTPException) as exc:
+            _assert_within_quarterly_cap(135.0, 5.0, "2026/03~2026/05", 42)
+        msg = exc.value.detail
+        assert "#42" in msg
+        assert "2026/03~2026/05" in msg
+        assert "135.0" in msg
+        assert "5.0" in msg
+        assert "140.0" in msg
+        assert "138" in msg
+        assert "勞基法第 32 條第 2 項" in msg
+
+
+class TestShiftMonth:
+    """月份位移 helper：正/負 offset、跨年 wrap"""
+
+    def test_positive_offset_within_year(self):
+        assert _shift_month(2026, 5, 2) == (2026, 7)
+
+    def test_positive_offset_cross_year(self):
+        assert _shift_month(2026, 11, 3) == (2027, 2)
+
+    def test_negative_offset_within_year(self):
+        assert _shift_month(2026, 5, -2) == (2026, 3)
+
+    def test_negative_offset_cross_year(self):
+        assert _shift_month(2026, 2, -3) == (2025, 11)
+
+    def test_zero_offset_noop(self):
+        assert _shift_month(2026, 5, 0) == (2026, 5)
+
+    def test_december_plus_one_wraps_to_january_next_year(self):
+        """關鍵邊界：month=12, offset=1 時 total % 12 = 0，+1 後 = 1"""
+        assert _shift_month(2026, 12, 1) == (2027, 1)
+
+
+# ────────────────────────────────────────────────────────────────────
+# admin endpoint-level 整合測試（季 138h cap，mock monthly off）
+# ────────────────────────────────────────────────────────────────────
+#
+# 這兩條測試透過 TestClient 打真實 HTTP endpoint，驗證 quarterly cap
+# 在 admin create / approve 路徑均已生效（defense-in-depth）。
+#
+# mock monthly cap off 是必要的：現行 46h/月嚴卡讓單筆很難只觸季 cap，
+# mock 後可獨立驗 quarterly 的守衛行為。
+#
+# Portal 整合 mock-verifying test 見 tests/test_portal_overtimes_guards.py。
+# ────────────────────────────────────────────────────────────────────
+
+import io as _io
+import os as _os
+import sys as _sys
+
+import models.base as _base_module
+from fastapi import FastAPI as _FastAPI
+from fastapi.testclient import TestClient as _TestClient
+from openpyxl import Workbook as _Workbook
+from sqlalchemy import create_engine as _create_engine
+from sqlalchemy.orm import sessionmaker as _sessionmaker
+from unittest.mock import MagicMock as _MagicMock, patch as _patch
+
+from api.auth import router as _auth_router, _account_failures, _ip_attempts
+from api.overtimes import router as _overtimes_router
+from models.database import (
+    Base as _Base,
+    Employee as _Employee,
+    OvertimeRecord as _OvertimeRecord,
+    User as _User,
+)
+from utils.auth import hash_password as _hash_password
+import api.overtimes as _overtimes_module
+
+
+@pytest.fixture
+def _admin_app_client(tmp_path, monkeypatch):
+    """Isolated SQLite + mini FastAPI app for admin endpoint integration tests."""
+    db_path = tmp_path / "admin-quarterly.sqlite"
+    engine = _create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    session_factory = _sessionmaker(bind=engine)
+
+    old_engine = _base_module._engine
+    old_session_factory = _base_module._SessionFactory
+    _base_module._engine = engine
+    _base_module._SessionFactory = session_factory
+
+    _Base.metadata.create_all(engine)
+    _ip_attempts.clear()
+    _account_failures.clear()
+
+    fake_salary_engine = _MagicMock()
+    monkeypatch.setattr(_overtimes_module, "_salary_engine", fake_salary_engine)
+    monkeypatch.setattr(_overtimes_module, "_line_service", None)
+
+    app = _FastAPI()
+    app.include_router(_auth_router)
+    app.include_router(_overtimes_router)
+
+    with _TestClient(app) as client:
+        yield client, session_factory
+
+    _ip_attempts.clear()
+    _account_failures.clear()
+    _base_module._engine = old_engine
+    _base_module._SessionFactory = old_session_factory
+    engine.dispose()
+
+
+def _make_emp(
+    session, employee_id: str = "AQCI001", name: str = "季測員工"
+) -> "_Employee":
+    e = _Employee(
+        employee_id=employee_id,
+        name=name,
+        base_salary=36000,
+        is_active=True,
+    )
+    session.add(e)
+    session.flush()
+    return e
+
+
+def _make_admin_user(session, username: str = "hr_admin") -> "_User":
+    """純管理員（employee_id=None），不觸發自我核准守衛。"""
+    u = _User(
+        employee_id=None,
+        username=username,
+        password_hash=_hash_password("AdminPass123"),
+        role="admin",
+        permission_names=["*"],
+        is_active=True,
+        must_change_password=False,
+    )
+    session.add(u)
+    session.flush()
+    return u
+
+
+def _seed_ot(
+    session, emp_id: int, ot_date: date, hours: float, is_approved=True
+) -> "_OvertimeRecord":
+    ot = _OvertimeRecord(
+        employee_id=emp_id,
+        overtime_date=ot_date,
+        overtime_type="weekday",
+        hours=hours,
+        overtime_pay=0.0,
+        is_approved=is_approved,
+    )
+    session.add(ot)
+    session.flush()
+    return ot
+
+
+def _do_login(client: "_TestClient") -> None:
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "hr_admin", "password": "AdminPass123"},
+    )
+    assert resp.status_code == 200, f"login failed: {resp.text}"
+
+
+class TestAdminOvertimeQuarterlyCapBoundary:
+    """admin /api/overtimes endpoint-level：mock monthly off 後驗 quarterly raise。"""
+
+    def test_admin_create_blocks_when_quarterly_cap_exceeded(self, _admin_app_client):
+        """seed W1 (3~5月) = 135h approved，admin POST 3h on 5/20 → W1=138 boundary pass。
+        然後 POST 5h on 5/21 → W1=143 → 400 含 "138" 與窗口 label。
+
+        mock monthly off 讓第二筆（月累計會超 46h）可以只觸 quarterly cap。
+        """
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            emp = _make_emp(session)
+            _make_admin_user(session)
+            emp_id = emp.id
+            # W1 (2026/03~2026/05) seed = 45+45+45 = 135h
+            _seed_ot(session, emp_id, date(2026, 3, 5), 45.0)
+            _seed_ot(session, emp_id, date(2026, 4, 5), 45.0)
+            _seed_ot(session, emp_id, date(2026, 5, 5), 45.0)
+            session.commit()
+
+        _do_login(client)
+
+        # 第一筆 3h → W1=138，剛好不超，應 pass（boundary check）
+        with _patch(
+            "api.overtimes._check_monthly_overtime_cap",
+            return_value=None,
+        ):
+            resp1 = client.post(
+                "/api/overtimes",
+                json={
+                    "employee_id": emp_id,
+                    "overtime_date": "2026-05-20",
+                    "overtime_type": "weekday",
+                    "hours": 3.0,
+                    "start_time": "18:00",
+                    "end_time": "21:00",
+                },
+            )
+        assert (
+            resp1.status_code == 201
+        ), f"boundary 3h（W1=138）應 pass，但 got {resp1.status_code}: {resp1.text}"
+
+        # 第二筆 5h → W1 現在 = 138+5 = 143，超過 → 400 含 "138" + 窗口
+        with _patch(
+            "api.overtimes._check_monthly_overtime_cap",
+            return_value=None,
+        ):
+            resp2 = client.post(
+                "/api/overtimes",
+                json={
+                    "employee_id": emp_id,
+                    "overtime_date": "2026-05-21",
+                    "overtime_type": "weekday",
+                    "hours": 5.0,
+                    "start_time": "18:00",
+                    "end_time": "23:00",
+                },
+            )
+        assert (
+            resp2.status_code == 400
+        ), f"W1=143 應被 quarterly cap 擋下（400），但 got {resp2.status_code}: {resp2.text}"
+        detail = resp2.json().get("detail", "")
+        assert "138" in detail, f"detail 應含 '138'，got: {detail!r}"
+        assert (
+            "2026/03~2026/05" in detail
+        ), f"detail 應含 '2026/03~2026/05'，got: {detail!r}"
+
+    def test_admin_approve_pending_blocks_when_quarterly_cap_exceeded(
+        self, _admin_app_client
+    ):
+        """seed approved 130h + 1 pending 10h，approve 時 W1=140 > 138 → 400 含 "138"。
+
+        approve endpoint 在 `approved and not was_approved` 路徑重新跑 quarterly cap 檢查，
+        確保核准時仍守門（舊資料/direct DB 改寫漏洞防護）。
+
+        mock monthly off：5/5 已 40h，再 +10h = 50h > 46h，月上限會先擋；
+        mock 後讓 quarterly cap 獨立生效。
+        """
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            emp = _make_emp(session, employee_id="AQCI002", name="季測員工B")
+            _make_admin_user(session)
+            emp_id = emp.id
+            # W1 (2026/03~2026/05) approved = 45+45+40 = 130h
+            _seed_ot(session, emp_id, date(2026, 3, 5), 45.0)
+            _seed_ot(session, emp_id, date(2026, 4, 5), 45.0)
+            _seed_ot(session, emp_id, date(2026, 5, 5), 40.0)
+            # 1 pending 10h → 若 approve，W1 = 130+10 = 140 > 138
+            pending = _seed_ot(
+                session, emp_id, date(2026, 5, 20), 10.0, is_approved=None
+            )
+            pending_id = pending.id
+            session.commit()
+
+        _do_login(client)
+
+        # PUT /api/overtimes/{id}/approve，approved=True → quarterly cap 應擋
+        with _patch(
+            "api.overtimes._check_monthly_overtime_cap",
+            return_value=None,
+        ):
+            resp = client.put(
+                f"/api/overtimes/{pending_id}/approve",
+                json={"approved": True},
+            )
+
+        assert resp.status_code == 400, (
+            f"approve 時 W1=140 應被 quarterly cap 擋下（400），"
+            f"but got {resp.status_code}: {resp.text}"
+        )
+        detail = resp.json().get("detail", "")
+        assert "138" in detail, f"detail 應含 '138'，got: {detail!r}"
+
+        # 驗證 pending 仍是 pending，approve 失敗應整個 rollback，不應被誤 partial commit
+        with session_factory() as session:
+            refreshed = session.query(_OvertimeRecord).filter_by(id=pending_id).first()
+            assert refreshed is not None, "pending record 應存在"
+            assert (
+                refreshed.is_approved is None
+            ), f"approve 失敗應 rollback，pending 仍應為 is_approved=None，但現在={refreshed.is_approved}"
