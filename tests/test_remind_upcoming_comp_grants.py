@@ -155,7 +155,7 @@ def grant_factory(db_session):
 
 def _make_mock_line_service(push_return: bool = True) -> MagicMock:
     svc = MagicMock()
-    svc.push_to_user.return_value = push_return
+    svc.push_flex_to_user.return_value = push_return
     return svc
 
 
@@ -172,7 +172,7 @@ def test_no_upcoming_grants_no_op(db_session):
 
     summary = remind_upcoming_comp_grants(date(2026, 4, 1), db_session)
     assert summary == {"reminded_employees": 0, "skipped_no_line": 0}
-    mock_svc.push_to_user.assert_not_called()
+    mock_svc.push_flex_to_user.assert_not_called()
 
 
 def test_reminds_employee_with_line_user_id(
@@ -208,13 +208,18 @@ def test_reminds_employee_with_line_user_id(
     # 不呼叫 refresh()，refresh 會強制 DB re-read 丟失未 commit 的 in-memory 變更）
     assert grant.reminder_sent_at is not None
 
-    # push_to_user 被呼叫 with line_user_id + text 含 hours + expires_at
-    mock_svc.push_to_user.assert_called_once()
-    call_args = mock_svc.push_to_user.call_args
-    assert call_args[0][0] == "Uxxx_abc123"
-    text_sent = call_args[0][1]
-    assert "3.0" in text_sent or "3" in text_sent  # 4.0 - 1.0 = 3.0 小時
-    assert expires_at.isoformat() in text_sent
+    # push_flex_to_user 被呼叫：驗 line_user_id、alt_text 含時數與到期日、flex bubble 結構
+    mock_svc.push_flex_to_user.assert_called_once()
+    call_args = mock_svc.push_flex_to_user.call_args
+    assert call_args[0][0] == "Uxxx_abc123"  # line_user_id
+    flex_content = call_args[0][1]
+    alt_text = call_args[0][2]
+    assert "3.0" in alt_text or "3" in alt_text  # 4.0 - 1.0 = 3.0 小時
+    assert expires_at.isoformat() in alt_text
+    # flex bubble 基本結構驗證
+    assert flex_content["type"] == "bubble"
+    assert "header" in flex_content
+    assert "body" in flex_content
 
 
 def test_skipped_when_no_line_user_id(
@@ -246,7 +251,7 @@ def test_skipped_when_no_line_user_id(
 
     # reminder_sent_at 不 set（同 session identity map 直接檢查，不 refresh）
     assert grant.reminder_sent_at is None
-    mock_svc.push_to_user.assert_not_called()
+    mock_svc.push_flex_to_user.assert_not_called()
 
 
 def test_skipped_when_no_user_at_all(db_session, employee_factory, grant_factory):
@@ -303,7 +308,7 @@ def test_does_not_reremind_when_already_sent(
 
     assert summary["reminded_employees"] == 0
     assert summary["skipped_no_line"] == 0
-    mock_svc.push_to_user.assert_not_called()
+    mock_svc.push_flex_to_user.assert_not_called()
 
 
 def test_expired_grant_not_reminded(
@@ -332,7 +337,7 @@ def test_expired_grant_not_reminded(
     summary = remind_upcoming_comp_grants(today, db_session)
 
     assert summary["reminded_employees"] == 0
-    mock_svc.push_to_user.assert_not_called()
+    mock_svc.push_flex_to_user.assert_not_called()
 
 
 def test_grant_past_deadline_not_reminded(
@@ -388,7 +393,7 @@ def test_multiple_grants_same_employee_single_push(
     summary = remind_upcoming_comp_grants(today, db_session)
 
     assert summary["reminded_employees"] == 1
-    mock_svc.push_to_user.assert_called_once()
+    mock_svc.push_flex_to_user.assert_called_once()
 
     # 兩筆 grant 皆 stamp（同 session identity map 直接檢查，不 refresh）
     assert grant1.reminder_sent_at is not None

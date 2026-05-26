@@ -37,6 +37,7 @@ from .parent_messages import router as parent_messages_router
 from .search import router as search_router
 from .appraisal import router as appraisal_router
 from .leaves_quota_expiry import router as leaves_quota_expiry_router
+from .comp_leave_history import router as comp_leave_history_router
 
 router = APIRouter(
     prefix="/api/portal",
@@ -71,6 +72,7 @@ router.include_router(class_hub_router, tags=["portal-class-hub"])
 router.include_router(search_router)
 router.include_router(appraisal_router, tags=["portal-appraisal"])
 router.include_router(leaves_quota_expiry_router, tags=["portal-leave-quota-expiry"])
+router.include_router(comp_leave_history_router, tags=["portal-comp-leave-history"])
 
 
 def init_portal_notify_services(line_service):

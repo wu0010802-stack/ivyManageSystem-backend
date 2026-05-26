@@ -41,6 +41,70 @@ _REMINDER_TEMPLATE = (
 )
 
 
+def _build_reminder_flex(hours: float, earliest_expires_at: date) -> dict:
+    """建補休到期提醒 Flex bubble。
+
+    結構：紅色標題 + 時數 + 到期日 + 提示文字。
+    Phase E 可再加 LIFF button；此版本刻意不加，避免 URL 依賴。
+
+    Args:
+        hours: 員工尚未消耗的補休總時數。
+        earliest_expires_at: 最早到期日（取所有 grant 中最小值）。
+
+    Returns:
+        符合 LINE Flex Message bubble 格式的 dict。
+    """
+    return {
+        "type": "bubble",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "📅 補休到期提醒",
+                    "weight": "bold",
+                    "size": "lg",
+                    "color": "#FFFFFF",
+                },
+            ],
+            "backgroundColor": "#FF6B6B",
+            "paddingAll": "12px",
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "md",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": f"您有 {hours:.1f} 小時補休",
+                    "size": "md",
+                    "wrap": True,
+                },
+                {
+                    "type": "text",
+                    "text": f"將於 {earliest_expires_at.isoformat()} 到期",
+                    "size": "md",
+                    "color": "#FF6B6B",
+                    "weight": "bold",
+                    "wrap": True,
+                },
+                {"type": "separator", "margin": "md"},
+                {
+                    "type": "text",
+                    "text": "逾期未休將自動折算工資。建議盡早申請補休假單。",
+                    "size": "sm",
+                    "color": "#666666",
+                    "wrap": True,
+                    "margin": "md",
+                },
+            ],
+            "paddingAll": "16px",
+        },
+    }
+
+
 def init_comp_grant_reminder_line_service(svc: "LineService") -> None:
     """由 main.py 在啟動時注入 LineService singleton。"""
     global _line_service
@@ -116,11 +180,14 @@ def remind_upcoming_comp_grants(
         earliest: date = min(g.expires_at for g in emp_grants)
 
         if total_hours > 0:
-            text = _REMINDER_TEMPLATE.format(
-                hours=total_hours, expires_at=earliest.isoformat()
-            )
+            flex = _build_reminder_flex(total_hours, earliest)
+            alt_text = f"補休 {total_hours:.1f}h 將於 {earliest.isoformat()} 到期"
             try:
-                ok = _line_service.push_to_user(line_user_id, text) if _line_service else False  # type: ignore[union-attr]
+                ok = (
+                    _line_service.push_flex_to_user(line_user_id, flex, alt_text)
+                    if _line_service
+                    else False
+                )  # type: ignore[union-attr]
                 if ok:
                     now_taipei = datetime.now(_TAIPEI_TZ)
                     for g in emp_grants:
