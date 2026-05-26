@@ -3,6 +3,7 @@ models/classroom.py — 班級、年級、學生模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -71,8 +72,8 @@ class ClassGrade(Base):
         comment="是否為畢業班年級（自動畢業排程依此判斷）",
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class Classroom(Base):
@@ -113,8 +114,8 @@ class Classroom(Base):
 
     grade = relationship("ClassGrade")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -219,8 +220,8 @@ class Student(Base):
         Index("ix_student_lifecycle_status", "lifecycle_status"),
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class StudentIncident(Base):
@@ -241,8 +242,8 @@ class StudentIncident(Base):
     parent_notified_at = Column(DateTime, nullable=True)
     recorded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_student_incidents_student", "student_id"),
@@ -263,8 +264,8 @@ class StudentAttendance(Base):
     remark = Column(String(200), nullable=True)
     recorded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint("student_id", "date", name="uq_student_attendance_date"),
@@ -296,8 +297,8 @@ class StudentAssessment(Base):
         nullable=True,
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_student_assessments_student", "student_id"),

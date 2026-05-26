@@ -3,6 +3,7 @@ models/auth.py — 用戶認證模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -74,8 +75,8 @@ class User(Base):
         comment="顯示名（家長端 hero / 問候語）；LIFF 登入時以 LINE displayName 寫入",
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (Index("ix_user_emp_active", "employee_id", "is_active"),)
 

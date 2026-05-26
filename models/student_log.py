@@ -6,6 +6,7 @@ models/student_log.py — 學生異動紀錄表
 """
 
 from datetime import datetime, date
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -41,9 +42,9 @@ class ParentCommunicationLog(Base):
     content = Column(Text, nullable=False, comment="溝通內容")
     follow_up = Column(Text, nullable=True, comment="後續追蹤事項")
     recorded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
     updated_at = Column(
-        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+        DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive
     )
 
     __table_args__ = (
@@ -76,7 +77,7 @@ class StudentChangeLog(Base):
         server_default="manual",
         comment="來源：manual=手動補登；lifecycle=狀態機自動寫入（禁止編輯/刪除）",
     )
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_student_change_logs_student", "student_id"),

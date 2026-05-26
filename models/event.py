@@ -3,6 +3,7 @@ models/event.py — 假日、會議、活動、公告模型
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -37,8 +38,8 @@ class Holiday(Base):
     source_year = Column(Integer, nullable=True, comment="同步來源年份")
     synced_at = Column(DateTime, nullable=True, comment="最後同步時間")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (Index("ix_holidays_source_year", "source", "source_year"),)
 
@@ -57,8 +58,8 @@ class WorkdayOverride(Base):
     source_year = Column(Integer, nullable=True, comment="同步來源年份")
     synced_at = Column(DateTime, nullable=True, comment="最後同步時間")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_workday_overrides_source_year", "source", "source_year"),
@@ -79,8 +80,8 @@ class OfficialCalendarSync(Base):
     source = Column(String(20), nullable=False, default="dgpa")
     source_modified_at = Column(String(50), nullable=True, comment="來源端資源更新時間")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class MeetingRecord(Base):
@@ -101,8 +102,8 @@ class MeetingRecord(Base):
 
     remark = Column(Text, comment="備註")
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_meeting_emp_date", "employee_id", "meeting_date"),
@@ -145,8 +146,8 @@ class SchoolEvent(Base):
         comment="重複規則 JSONB；null 表單次事件",
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class Announcement(Base):
@@ -169,8 +170,8 @@ class Announcement(Base):
         Integer, ForeignKey("employees.id"), nullable=False, comment="發佈者"
     )
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     author = relationship("Employee", backref="announcements")
     recipients = relationship(
@@ -196,7 +197,7 @@ class AnnouncementRead(Base):
         Integer, ForeignKey("announcements.id", ondelete="CASCADE"), nullable=False
     )
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
-    read_at = Column(DateTime, default=datetime.now, comment="閱讀時間")
+    read_at = Column(DateTime, default=now_taipei_naive, comment="閱讀時間")
 
     announcement = relationship("Announcement", backref="reads")
 
@@ -273,7 +274,7 @@ class AnnouncementParentRead(Base):
     user_id = Column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    read_at = Column(DateTime, default=datetime.now, nullable=False)
+    read_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
 
 class EventAcknowledgment(Base):
@@ -300,7 +301,7 @@ class EventAcknowledgment(Base):
     student_id = Column(
         Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False
     )
-    acknowledged_at = Column(DateTime, default=datetime.now, nullable=False)
+    acknowledged_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     signature_name = Column(
         String(50), nullable=True, comment="家長自填姓名（簽章文字）"
     )

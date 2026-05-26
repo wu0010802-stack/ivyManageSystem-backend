@@ -9,6 +9,7 @@
 
 import uuid
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     BigInteger,
@@ -51,7 +52,7 @@ class ParentRefreshToken(Base):
     used_at = Column(DateTime, nullable=True, comment="rotation 後填入；reuse 偵測欄位")
     revoked_at = Column(DateTime, nullable=True, comment="family 全撤銷時填入")
     expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     user_agent = Column(String(255), nullable=True, comment="觀測用，不參與決策")
     ip = Column(String(45), nullable=True, comment="IPv6 預留；觀測用")
 

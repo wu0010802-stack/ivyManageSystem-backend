@@ -7,6 +7,7 @@ models/student_transfer.py — 學生轉班記錄表
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import Column, Integer, DateTime, ForeignKey, Index
 
@@ -22,7 +23,7 @@ class StudentClassroomTransfer(Base):
     # NULL 表示初次分班（無前一個班級）
     from_classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=True)
     to_classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False)
-    transferred_at = Column(DateTime, nullable=False, default=datetime.now)
+    transferred_at = Column(DateTime, nullable=False, default=now_taipei_naive)
     # 操作者（User.id）
     transferred_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 

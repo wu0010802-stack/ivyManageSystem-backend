@@ -3,6 +3,7 @@ models/recruitment.py — 招生訪視記錄
 """
 
 from datetime import datetime, date
+from utils.taipei_time import now_taipei_naive
 from sqlalchemy import (
     Column,
     Integer,
@@ -52,8 +53,8 @@ class RecruitmentVisit(Base):
         String(30), nullable=True
     )  # 預計就讀月份標籤，create/update 時自動計算
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         Index("ix_recruitment_month_grade", "month", "grade"),
@@ -92,8 +93,8 @@ class RecruitmentIvykidsRecord(Base):
     has_deposit = Column(Boolean, default=False, nullable=False)
     enrolled = Column(Boolean, default=False, nullable=False)
     transfer_term = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (Index("ix_recruitment_ivykids_month_source", "month", "source"),)
 
@@ -105,7 +106,7 @@ class RecruitmentMonth(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     month = Column(String(10), nullable=False, unique=True)  # 民國月份，如 "115.04"
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
 
 
 class RecruitmentGeocodeCache(Base):
@@ -134,8 +135,8 @@ class RecruitmentGeocodeCache(Base):
     data_quality = Column(String(20), nullable=False, default="partial")
     error_message = Column(String(255), nullable=True)
     resolved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class RecruitmentCampusSetting(Base):
@@ -149,8 +150,8 @@ class RecruitmentCampusSetting(Base):
     campus_lat = Column(Float, nullable=True)
     campus_lng = Column(Float, nullable=True)
     travel_mode = Column(String(20), nullable=False, default="driving")
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class RecruitmentAreaInsightCache(Base):
@@ -167,8 +168,8 @@ class RecruitmentAreaInsightCache(Base):
     data_completeness = Column(String(20), nullable=False, default="partial")
     source_notes = Column(Text, nullable=True)
     synced_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class RecruitmentSyncState(Base):
@@ -185,8 +186,8 @@ class RecruitmentSyncState(Base):
     last_sync_status = Column(String(20), nullable=True)
     last_sync_message = Column(Text, nullable=True)
     last_sync_counts = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class RecruitmentPeriod(Base):
@@ -207,8 +208,8 @@ class RecruitmentPeriod(Base):
     enrolled_after_school = Column(Integer, default=0)  # 註冊後退學
     notes = Column(Text, nullable=True)  # 備註
     sort_order = Column(Integer, default=0)  # 排序
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class CompetitorSchool(Base):
@@ -257,9 +258,9 @@ class CompetitorSchool(Base):
     has_after_school = Column(Boolean, default=False)
     kiang_synced_at = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+        DateTime, default=now_taipei_naive, onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (Index("idx_competitor_city_district", "city", "district"),)
@@ -295,7 +296,7 @@ class RecruitmentEventLog(Base):
     )
     # PG=JSONB / SQLite=JSON（with_variant pattern，見 models/appraisal.py）
     metadata_json = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
-    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
 
     __table_args__ = (
         Index(

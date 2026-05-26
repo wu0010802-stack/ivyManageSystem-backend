@@ -3,6 +3,7 @@ models/config.py — 系統設定、考勤政策、獎金設定、保費率模�
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     Column,
@@ -47,8 +48,8 @@ class AttendancePolicy(Base):
     is_active = Column(Boolean, default=True)
     effective_date = Column(Date)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class BonusConfig(Base):
@@ -127,8 +128,8 @@ class BonusConfig(Base):
 
     is_active = Column(Boolean, default=True)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class GradeTarget(Base):
@@ -155,8 +156,8 @@ class GradeTarget(Base):
     overtime_one_teacher = Column(Integer, default=0)
     overtime_shared = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class InsuranceRate(Base):
@@ -207,8 +208,8 @@ class InsuranceRate(Base):
 
     is_active = Column(Boolean, default=True)
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
 
 class InsuranceBracket(Base):
@@ -236,7 +237,7 @@ class InsuranceBracket(Base):
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
-        DateTime, server_default=func.now(), onupdate=datetime.now, nullable=False
+        DateTime, server_default=func.now(), onupdate=now_taipei_naive, nullable=False
     )
 
     __table_args__ = (
@@ -282,5 +283,5 @@ class SystemConfig(Base):
     config_type = Column(String(50), default="general")
     description = Column(String(200))
 
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)

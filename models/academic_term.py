@@ -5,6 +5,7 @@ is_current 用於 admin 顯式翻牌、partial unique 保證 singleton。
 """
 
 from datetime import datetime
+from utils.taipei_time import now_taipei_naive
 from sqlalchemy import (
     Column,
     Integer,
@@ -34,8 +35,8 @@ class AcademicTerm(Base):
         default=False,
         comment="目前學期旗標；全表至多一筆 true",
     )
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
         UniqueConstraint(
