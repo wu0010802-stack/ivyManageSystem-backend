@@ -34,7 +34,7 @@ from models.database import (
     User,
 )
 from utils.auth import hash_password
-from utils.permissions import Permission, get_role_default_permissions, has_permission
+from utils.permissions import Permission, ROLE_TEMPLATES, has_permission
 
 
 @pytest.fixture
@@ -128,7 +128,9 @@ class TestTeacherPermissionRegression:
     def test_teacher_default_permissions_do_not_include_management_leave_or_overtime(
         self,
     ):
-        perms = get_role_default_permissions("teacher")
+        # ROLE_TEMPLATES 為 seed Role.permissions 的單一真理來源
+        # （2026-05-25 DB-driven 自訂權限後 get_role_default_permissions 改吃 session）
+        perms = ROLE_TEMPLATES["teacher"]
 
         assert not has_permission(perms, Permission.LEAVES_READ)
         assert not has_permission(perms, Permission.LEAVES_WRITE)
