@@ -74,6 +74,12 @@ class PunchCorrectionRequest(Base):
     reason = Column(Text, nullable=True, comment="說明原因")
 
     is_approved = Column(Boolean, nullable=True, default=None, comment="是否核准 (None=待審核, True=核准, False=駁回)")
+    status = Column(
+        String(20),
+        nullable=False,
+        server_default="pending",
+        comment="審核狀態：pending / approved / rejected（P1 dual-write SoT）",
+    )
     approved_by = Column(String(50), nullable=True, comment="核准人")
     rejection_reason = Column(Text, nullable=True, comment="駁回原因")
 
@@ -82,13 +88,9 @@ class PunchCorrectionRequest(Base):
 
     @property
     def approval_status(self) -> str:
-        """語意化審核狀態，取代直接比較 nullable boolean 的反模式。
+        """語意化審核狀態。P1 起內部走新 status column；既有 caller 不必改動。
         回傳值：'pending' | 'approved' | 'rejected'"""
-        if self.is_approved is True:
-            return 'approved'
-        if self.is_approved is False:
-            return 'rejected'
-        return 'pending'
+        return self.status
 
     __table_args__ = (
         Index('ix_punch_correction_emp_date', 'employee_id', 'attendance_date'),

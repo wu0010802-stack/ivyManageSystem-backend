@@ -195,14 +195,14 @@ class TestPunchCorrectionApprovalStatus:
         # 取得 property 的 fget
         fget = PunchCorrectionRequest.approval_status.fget
 
-        # 用 mock 物件測試（只需要 is_approved 屬性）
+        # 用 mock 物件測試（只需要 status 屬性，P1 起 property 直接回傳 self.status）
         class _Mock:
             def __init__(self, val):
-                self.is_approved = val
+                self.status = val
 
-        assert fget(_Mock(None)) == "pending"
-        assert fget(_Mock(True)) == "approved"
-        assert fget(_Mock(False)) == "rejected"
+        assert fget(_Mock("pending")) == "pending"
+        assert fget(_Mock("approved")) == "approved"
+        assert fget(_Mock("rejected")) == "rejected"
 
 
 # ============================================================
