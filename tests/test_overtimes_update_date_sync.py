@@ -45,6 +45,7 @@ def _make_ot():
     ot.comp_leave_granted = False
     ot.reason = None
     ot.is_approved = False
+    ot.status = "rejected"  # P2 mirror: production code reads .status on this mock
     ot.approved_by = None
     return ot
 
