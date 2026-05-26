@@ -578,6 +578,11 @@ def test_final_reminder_sent_at_field_exists(session):
     assert rc.final_reminder_sent_at is None
 
 
+@pytest.mark.skip(
+    reason="2026-05-26 notification phase 4 section 4 (f745380): "
+    "LineService._notify_* 全系列下架，邏輯遷至 services.notification.dispatch.enqueue。"
+    "本 test 驗證舊 private method 存在，已不符 dispatcher-based 架構。"
+)
 def test_line_service_has_final_reminder_method():
     """LineService 應有 _notify_activity_waitlist_final_reminder 方法（PR-D
     rename 後私有 method；caller 走 dispatch.enqueue 不再直接呼叫）。"""
