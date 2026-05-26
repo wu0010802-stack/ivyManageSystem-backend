@@ -22,6 +22,9 @@ def sqlite_session():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from models.database import Base
+    from models.academic_term import (
+        AcademicTerm,
+    )  # 註冊到 Base.metadata 以建 academic_terms 表  # noqa: F401
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -107,9 +110,9 @@ class TestPartialFailureSavepoint:
             .all()
         }
         assert statuses[reg_ids[0]] is False
-        assert statuses[failing_id] is True, (
-            "SAVEPOINT 未生效：失敗那筆的 is_active 應該維持 True"
-        )
+        assert (
+            statuses[failing_id] is True
+        ), "SAVEPOINT 未生效：失敗那筆的 is_active 應該維持 True"
         assert statuses[reg_ids[2]] is False
 
     def test_all_success_returns_full_count(self, sqlite_session):

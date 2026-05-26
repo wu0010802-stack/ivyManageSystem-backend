@@ -78,11 +78,35 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Materialize schema for module-level engine tests
+        # 部分 test 在 module top 直接 `_engine = get_engine()` 連 CI 的 PG service
+        # 並 inspect 真實 schema（例 test_alembic_audrsk01）。CI 的 PG service container
+        # 起來時是空 DB。
+        #
+        # 不能直接跑 `alembic upgrade heads`：baseline migration `4ddf3ebad3e8`
+        # 假設 schema 已存在，從空 DB 跑會 UndefinedTable。生產時 alembic stamp head
+        # 對既有 DB 套用後續 migration 才合理。
+        #
+        # 改用 `Base.metadata.create_all` 從 ORM 模型直接建表（含 audrsk01 加的
+        # acknowledged_at / acknowledged_by 等新 column），再 `alembic stamp heads`
+        # 把 alembic_version 寫到 head。等價於「prod 升到 head 後的 schema state」。
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
+          ENV: development
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+        run: |
+          python -c "from models.database import Base; from models.base import get_engine; Base.metadata.create_all(get_engine())"
+          alembic stamp heads
+
       - name: Run tests with coverage
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
           ENV: development
           JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+          # spike_rls conftest 預設用 `yilunwu@localhost`（本機 dev 慣例），CI 沒此 superuser
+          # → 改指向 service container 的 test:test。fixture 會用此連線 CREATE ROLE
+          # rls_spike_parent_login / rls_spike_admin_login（spike 自己的隔離角色，不是 ivy_parent_login）。
+          RLS_SPIKE_ADMIN_URL: postgresql://test:test@localhost:5432/ivymanagement_test
         # T9: 加 coverage gate（pyproject.toml [tool.coverage.run] 已設定 source）。
         # 起步門檻 60%：給既有覆蓋率不至於立即 fail，未來逐步提升。
         # --cov-fail-under 用 ratchet 風格：每次提升只能升不能降。
@@ -163,17 +187,19 @@ jobs:
       - name: Block os.getenv / os.environ outside config/
         # Phase 1 (2026-05-21) 完成所有 env 集中到 config/ 後啟用。
         # 允許清單：
-        #   config/                       — Settings 內部
-        #   tests/conftest.py             — autoreset fixture 需要操作 env
-        #   tests/spike_rls/              — RLS test fixture 慣例自讀 env
-        #   scripts/dump_openapi.py       — CLI 工具，獨立於 FastAPI startup
-        #   alembic/env.py                — Alembic CLI，早於 Settings init
+        #   config/                            — Settings 內部
+        #   tests/conftest.py                  — autoreset fixture 需要操作 env
+        #   tests/spike_rls/                   — RLS test fixture 慣例自讀 env
+        #   scripts/dump_openapi.py            — CLI 工具，獨立於 FastAPI startup
+        #   scripts/dr_storage_sync.py         — DR CLI 工具，GH Actions 跑無 DB 依賴
+        #   alembic/env.py                     — Alembic CLI，早於 Settings init
         run: |
           if git grep -nE 'os\.(getenv|environ)' -- '*.py' \
                ':!config/' \
                ':!tests/conftest.py' \
                ':!tests/spike_rls/' \
                ':!scripts/dump_openapi.py' \
+               ':!scripts/dr_storage_sync.py' \
                ':!alembic/env.py'; then
             echo "::error::os.getenv / os.environ.get 只能在 config/ 與明確 allow-list 內使用"
             echo "::error::請改讀 settings.<domain>.<field>（見 docs/superpowers/specs/2026-05-21-config-centralization-phase1-design.md）"

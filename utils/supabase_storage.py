@@ -5,6 +5,7 @@ Supabase Storage 實作，作為 utils.storage.StorageBackend 的雲端版本。
 - activity_posters    → bucket "activity-posters"（公開）
 - leave_attachments   → bucket "leave-attachments"（私有，需 signed URL）
 - attendance_imports  → bucket "attendance-imports"（私有，僅後端用）
+- growth_reports      → bucket "growth-reports"（私有，需 signed URL）
 
 環境變數：
 - SUPABASE_URL：Supabase project URL
@@ -25,6 +26,7 @@ _MODULE_TO_BUCKET = {
     "activity_posters": "activity-posters",
     "leave_attachments": "leave-attachments",
     "attendance_imports": "attendance-imports",
+    "growth_reports": "growth-reports",
 }
 
 
