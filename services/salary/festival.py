@@ -225,7 +225,7 @@ def is_eligible_for_festival_bonus(
             return True  # 日期格式錯誤，預設可以領
 
     if reference_date is None:
-        reference_date = date.today()
+        reference_date = date.today()  # noqa: DTZ011
     elif isinstance(reference_date, str):
         reference_date = datetime.strptime(reference_date, "%Y-%m-%d").date()
 

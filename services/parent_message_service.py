@@ -161,7 +161,7 @@ def append_message(
         raise
 
     # 更新 thread.last_message_at
-    thread.last_message_at = msg.created_at or datetime.now()
+    thread.last_message_at = msg.created_at or datetime.now()  # noqa: DTZ005
     return msg, False
 
 
@@ -171,15 +171,15 @@ def can_recall(msg: ParentMessage, *, user_id: int) -> bool:
         return False
     if msg.deleted_at is not None:
         return False
-    created = msg.created_at or datetime.now()
-    return datetime.now() - created <= RECALL_WINDOW
+    created = msg.created_at or datetime.now()  # noqa: DTZ005
+    return datetime.now() - created <= RECALL_WINDOW  # noqa: DTZ005
 
 
 def mark_read(
     session, *, thread: ParentMessageThread, role: str, when: datetime | None = None
 ) -> None:
     """更新 thread.parent_last_read_at / teacher_last_read_at。"""
-    when = when or datetime.now()
+    when = when or datetime.now()  # noqa: DTZ005
     if role == "parent":
         thread.parent_last_read_at = when
     elif role == "teacher":

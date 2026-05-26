@@ -263,7 +263,7 @@ def manual_adjust_salary(
 
         operator = current_user.get("username") or current_user.get("name") or "管理員"
         audit_note = (
-            f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 手動編輯："
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 手動編輯："  # noqa: DTZ005
             + "；".join(changed_parts)
             + f"；操作者：{operator}；原因：{adjustment_reason}"
         )

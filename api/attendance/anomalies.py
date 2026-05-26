@@ -207,7 +207,7 @@ def batch_confirm_anomalies(
     session = get_session()
     try:
         processed = 0
-        now = datetime.now()
+        now = datetime.now()  # noqa: DTZ005
         att_map = {
             a.id: a
             for a in session.query(Attendance)

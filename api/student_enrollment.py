@@ -221,7 +221,7 @@ def get_enrollment_roster(
     school_year, semester = resolve_academic_term_filters(school_year, semester)
 
     # ROC 民國日期字串，例如 "1150402"
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     roc_year = today.year - 1911
     generated_date = f"{roc_year}{today.month:02d}{today.day:02d}"
 

@@ -48,7 +48,7 @@ def list_today_medications(
     classroom_id 帶入時只回該班；否則回教師管轄全部班級。
     教師僅可看自己班級；admin/supervisor 可帶任意 classroom_id。
     """
-    today = date_cls.today()
+    today = date_cls.today()  # noqa: DTZ011
     session = get_session()
     try:
         emp = _get_employee(session, current_user)

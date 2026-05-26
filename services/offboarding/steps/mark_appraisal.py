@@ -13,7 +13,7 @@ from services.offboarding.orchestrator import StepResult
 
 
 def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
-    now = datetime.now()
+    now = datetime.now()  # noqa: DTZ005
     record.appraisal_marked_at = now
     return {
         "step": "mark_appraisal",

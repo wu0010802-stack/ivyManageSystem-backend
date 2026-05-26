@@ -390,7 +390,7 @@ async def sign_vendor_payment(
         row.signature_kind = payload.signature_kind
         row.signature_key = stored.storage_key
         row.signer_id = current_user.get("user_id")
-        row.signed_at = datetime.now()
+        row.signed_at = datetime.now()  # noqa: DTZ005
         row.status = "signed"
         session.commit()
 
@@ -474,7 +474,7 @@ async def upload_attachment(
             "filename": safe_attachment_filename(filename, ext),
             "size": len(content),
             "mime_type": stored.mime_type,
-            "uploaded_at": datetime.now().isoformat(),
+            "uploaded_at": datetime.now().isoformat(),  # noqa: DTZ005
             "uploaded_by_id": current_user.get("user_id"),
         }
         # JSONB 欄位以「新 list 替換」方式更新，否則 SQLAlchemy 不會偵測到 in-place mutation

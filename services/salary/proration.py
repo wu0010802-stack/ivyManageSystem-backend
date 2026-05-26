@@ -182,7 +182,7 @@ def _build_expected_workdays(
     import calendar as _cal
 
     if today is None:
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
 
     # 預先解析 hire/resign 日期，避免逐日比較時重複轉型
     hire_d = _to_date(hire_date_raw)

@@ -217,7 +217,7 @@ async def get_timeline(
                     "stats": {"total_items": 0, "by_type": {}},
                 }
             if not since:
-                since = date.today() - timedelta(days=90)
+                since = date.today() - timedelta(days=90)  # noqa: DTZ011
 
             all_items: list[dict] = []
 

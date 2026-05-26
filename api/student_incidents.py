@@ -177,7 +177,7 @@ async def create_incident(
                 description=payload.description,
                 action_taken=payload.action_taken,
                 parent_notified=payload.parent_notified,
-                parent_notified_at=datetime.now() if payload.parent_notified else None,
+                parent_notified_at=datetime.now() if payload.parent_notified else None,  # noqa: DTZ005
                 recorded_by=current_user.get("user_id"),
             )
             session.add(incident)
@@ -233,7 +233,7 @@ async def update_incident(
                 incident.parent_notified = payload.parent_notified
                 if payload.parent_notified and not prev_notified:
                     incident.parent_notified_at = (
-                        payload.parent_notified_at or datetime.now()
+                        payload.parent_notified_at or datetime.now()  # noqa: DTZ005
                     )
                 elif not payload.parent_notified:
                     incident.parent_notified_at = None
@@ -241,7 +241,7 @@ async def update_incident(
             if payload.parent_notified_at is not None:
                 incident.parent_notified_at = payload.parent_notified_at
 
-            incident.updated_at = datetime.now()
+            incident.updated_at = datetime.now()  # noqa: DTZ005
             session.flush()
             session.refresh(incident)
 

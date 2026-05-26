@@ -332,7 +332,7 @@ def _calculate_annual_leave_quota(hire_date: date) -> int:
     if not hire_date:
         return 0
 
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     months_diff = (today.year - hire_date.year) * 12 + today.month - hire_date.month
     if today.day < hire_date.day:
         months_diff -= 1

@@ -201,7 +201,7 @@ def submit_subsidy(
     if row.status != "draft":
         raise HTTPException(409, "Only draft → submitted allowed")
     row.status = "submitted"
-    row.applied_at = datetime.now()
+    row.applied_at = datetime.now()  # noqa: DTZ005
     db.commit()
     db.refresh(row)
     return row
@@ -223,7 +223,7 @@ def approve_subsidy(
     if payload.notes:
         row.notes = (row.notes or "") + f"\n[approve] {payload.notes}"
     row.status = "approved"
-    row.approved_at = datetime.now()
+    row.approved_at = datetime.now()  # noqa: DTZ005
     db.commit()
     db.refresh(row)
     return row

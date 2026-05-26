@@ -95,7 +95,7 @@ def preview_offboarding(
         )
 
         # 查有無 active User 帳號
-        today = date.today()
+        today = date.today()  # noqa: DTZ011
         user_active = (
             session.query(User)
             .filter(
@@ -442,7 +442,7 @@ def patch_nhi_unenroll(
         if record is None:
             raise HTTPException(status_code=404, detail="OFFBOARDING_RECORD_NOT_FOUND")
 
-        record.nhi_unenroll_submitted_at = datetime.now() if req.submitted else None
+        record.nhi_unenroll_submitted_at = datetime.now() if req.submitted else None  # noqa: DTZ005
         session.commit()
 
         # audit log（正確 key：middleware 讀 audit_entity_id / audit_summary）

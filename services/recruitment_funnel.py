@@ -167,7 +167,7 @@ def _write_event_log(
         actor_user_id=actor_user_id,
         reason=reason,
         metadata_json=metadata,
-        created_at=datetime.now(),
+        created_at=datetime.now()  # noqa: DTZ005,
     )
     session.add(log)
     session.flush()

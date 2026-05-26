@@ -43,7 +43,7 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
         )
         pdf_path.write_bytes(pdf_bytes)
 
-        now = datetime.now()
+        now = datetime.now()  # noqa: DTZ005
         record.certificate_pdf_path = str(pdf_path)
         record.certificate_generated_at = now
 

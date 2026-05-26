@@ -77,7 +77,7 @@ async def auto_detect_milestones(
     try:
         if payload is None:
             payload = AutoDetectPayload()
-        ref_date = payload.reference_date or date.today()
+        ref_date = payload.reference_date or date.today()  # noqa: DTZ011
         with session_scope() as session:
             assert_student_access(session, current_user, student_id)
             student = session.query(Student).filter(Student.id == student_id).first()

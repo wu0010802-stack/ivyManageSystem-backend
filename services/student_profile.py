@@ -325,7 +325,7 @@ def _default_attendance_window(today: Optional[date] = None) -> tuple[date, date
     - 學期 1 = 民國 YYY/08/01 ~ (YYY+1)/01/31
     - 學期 2 = (YYY+1)/02/01 ~ (YYY+1)/07/31
     """
-    today = today or date.today()
+    today = today or date.today()  # noqa: DTZ011
     school_year_roc, semester = resolve_current_academic_term()
     ad_start_year = school_year_roc + 1911
     if semester == 1:

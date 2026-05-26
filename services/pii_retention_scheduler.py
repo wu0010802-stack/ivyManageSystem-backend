@@ -161,7 +161,7 @@ def _run_pii_retention_gc(session=None) -> None:
                         ensure_ascii=False,
                     ),
                     ip_address=None,
-                    created_at=datetime.now(),
+                    created_at=datetime.now()  # noqa: DTZ005,
                 )
             )
 

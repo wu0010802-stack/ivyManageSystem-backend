@@ -93,7 +93,7 @@ def get_audit_logs(
     # 未指定時間窗時，預設只看最近 30 天，避免全表 COUNT + OFFSET 隨表成長拖慢
     # （audit H.P0.1）；使用者要更久的歷史只需主動帶 start_at 即可。
     if start_at is None and end_at is None:
-        start_at = datetime.now() - timedelta(days=LIST_DEFAULT_DAYS)
+        start_at = datetime.now() - timedelta(days=LIST_DEFAULT_DAYS)  # noqa: DTZ005
 
     session = get_session()
     try:
@@ -246,7 +246,7 @@ def export_audit_logs(
                 ]
             )
 
-        filename = f"audit_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = f"audit_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"  # noqa: DTZ005
         return StreamingResponse(
             iter([buf.getvalue()]),
             media_type="text/csv; charset=utf-8",

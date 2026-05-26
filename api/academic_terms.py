@@ -44,7 +44,7 @@ def current_term(
     _: dict = Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ) -> Optional[AcademicTerm]:
     """回傳今日所在學期（查無回 null）。"""
-    today = date.today()
+    today = date.today()  # noqa: DTZ011
     return (
         session.query(AcademicTerm)
         .filter(AcademicTerm.start_date <= today, AcademicTerm.end_date >= today)

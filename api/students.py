@@ -746,7 +746,7 @@ async def create_student(
         from models.student_log import StudentChangeLog
 
         school_year, semester = resolve_current_academic_term()
-        enrollment_date = student.enrollment_date or date.today()
+        enrollment_date = student.enrollment_date or date.today()  # noqa: DTZ011
         change_log = StudentChangeLog(
             student_id=student.id,
             school_year=school_year,
@@ -1068,7 +1068,7 @@ async def bulk_transfer_students(
             )
 
         operator_id = current_user.get("user_id")
-        now = datetime.now()
+        now = datetime.now()  # noqa: DTZ005
         moved_count = 0
         moved_student_ids: list[int] = []
         per_student_changes: list[dict] = []
@@ -1468,7 +1468,7 @@ async def delete_guardian(
         if guardian is None:
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
 
-        guardian.deleted_at = datetime.now()
+        guardian.deleted_at = datetime.now()  # noqa: DTZ005
         mark_soft_delete(request, "guardian", guardian.name or str(guardian_id))
         request.state.audit_entity_id = str(guardian.student_id)
         guardian.is_primary = False  # 軟刪後不再是主要聯絡人

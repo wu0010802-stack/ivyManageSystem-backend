@@ -84,7 +84,7 @@ def _copy_record_to_snapshot(
         salary_year=record.salary_year,
         salary_month=record.salary_month,
         snapshot_type=snapshot_type,
-        captured_at=datetime.now(),
+        captured_at=datetime.now(),  # noqa: DTZ005
         captured_by=captured_by,
         source_version=record.version or 1,
         snapshot_remark=snapshot_remark,

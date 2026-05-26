@@ -83,7 +83,7 @@ def get_data_export(
             detail="資料量超過 50MB，請聯絡園所協助匯出",
         )
 
-    filename = f"ivy_data_export_{user.id}_{datetime.now().strftime('%Y%m%d')}.json"
+    filename = f"ivy_data_export_{user.id}_{datetime.now().strftime('%Y%m%d')}.json"  # noqa: DTZ005
 
     # 顯式 audit：GET 但讀 PII，須留稽核軌跡（AuditMiddleware 只攔 POST/PATCH/PUT/DELETE）
     from utils.audit import write_explicit_audit

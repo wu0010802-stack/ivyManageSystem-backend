@@ -202,7 +202,7 @@ def update_template(
             tpl.classroom_id = payload.classroom_id
         if payload.fields is not None:
             tpl.fields = payload.fields.model_dump(exclude_none=False)
-        tpl.updated_at = datetime.now()
+        tpl.updated_at = datetime.now()  # noqa: DTZ005
         session.commit()
         session.refresh(tpl)
 
@@ -232,7 +232,7 @@ def delete_template(
         _assert_can_modify(tpl, current_user)
 
         tpl.is_archived = True
-        tpl.updated_at = datetime.now()
+        tpl.updated_at = datetime.now()  # noqa: DTZ005
         session.commit()
 
         request.state.audit_entity_id = str(tpl.id)
@@ -263,7 +263,7 @@ def promote_to_shared(
 
         tpl.scope = "shared"
         tpl.owner_user_id = None
-        tpl.updated_at = datetime.now()
+        tpl.updated_at = datetime.now()  # noqa: DTZ005
         session.commit()
         session.refresh(tpl)
 

@@ -150,7 +150,7 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
 
     return {
         "registration_id": reg_id,
-        "computed_at": datetime.utcnow().isoformat(),
+        "computed_at": datetime.utcnow().isoformat(),  # noqa: DTZ003
         "total_suggested_amount": total_suggested,
         "total_amount_due": total_amount_due,
         "items": items,
