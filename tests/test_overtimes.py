@@ -20,7 +20,12 @@ from api.overtimes import (
     _assert_within_monthly_cap,
     _validate_overtime_type_matches_calendar,
 )
+from services.overtime_conflict_service import (
+    _assert_within_quarterly_cap,
+    _shift_month,
+)
 from fastapi import HTTPException
+from utils.constants import MAX_QUARTERLY_OVERTIME_HOURS
 
 # ── 測試用 helpers ────────────────────────────────────────────────────────────
 
@@ -552,12 +557,6 @@ class TestOvertimeTypeCalendarValidation:
 # 季 138h cap 純函式測試（勞基法 §32 II）
 # ────────────────────────────────────────────────────────────────────
 
-from services.overtime_conflict_service import (
-    _assert_within_quarterly_cap,
-    _shift_month,
-)
-from utils.constants import MAX_QUARTERLY_OVERTIME_HOURS
-
 
 class TestAssertWithinQuarterlyCap:
     """純函式：worst_existing + new ≤ 138.0 = pass，否則 raise 400 含 6 要素"""
@@ -609,3 +608,7 @@ class TestShiftMonth:
 
     def test_zero_offset_noop(self):
         assert _shift_month(2026, 5, 0) == (2026, 5)
+
+    def test_december_plus_one_wraps_to_january_next_year(self):
+        """關鍵邊界：month=12, offset=1 時 total % 12 = 0，+1 後 = 1"""
+        assert _shift_month(2026, 12, 1) == (2027, 1)
