@@ -20,48 +20,64 @@ from services.line_service import (
 class TestBuildLeaveMessage:
     def test_same_day(self):
         """同日假單只顯示單一日期，不顯示範圍"""
-        msg = build_leave_message("王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), 4)
+        msg = build_leave_message(
+            "王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), 4
+        )
         assert "2026-03-01" in msg
         assert "～" not in msg
 
     def test_multi_day(self):
         """跨日假單顯示日期範圍"""
-        msg = build_leave_message("王小明", "年假", date(2026, 3, 1), date(2026, 3, 5), 32)
+        msg = build_leave_message(
+            "王小明", "年假", date(2026, 3, 1), date(2026, 3, 5), 32
+        )
         assert "2026-03-01 ～ 2026-03-05" in msg
 
     def test_contains_hours(self):
         """訊息必須包含時數資訊"""
-        msg = build_leave_message("陳大華", "病假", date(2026, 3, 1), date(2026, 3, 1), 8)
+        msg = build_leave_message(
+            "陳大華", "病假", date(2026, 3, 1), date(2026, 3, 1), 8
+        )
         assert "8h" in msg
         assert "病假" in msg
         assert "陳大華" in msg
 
     def test_contains_status(self):
         """訊息包含待審核狀態說明"""
-        msg = build_leave_message("李美麗", "事假", date(2026, 3, 1), date(2026, 3, 1), 4)
+        msg = build_leave_message(
+            "李美麗", "事假", date(2026, 3, 1), date(2026, 3, 1), 4
+        )
         assert "待主管核准" in msg
 
 
 class TestBuildOvertimeMessage:
     def test_comp_leave_tag(self):
         """use_comp=True 顯示「補休申請」"""
-        msg = build_overtime_message("王小明", date(2026, 3, 1), "平日", 2, use_comp=True)
+        msg = build_overtime_message(
+            "王小明", date(2026, 3, 1), "平日", 2, use_comp=True
+        )
         assert "補休申請" in msg
 
     def test_overtime_tag(self):
         """use_comp=False 顯示「加班申請」"""
-        msg = build_overtime_message("王小明", date(2026, 3, 1), "平日", 2, use_comp=False)
+        msg = build_overtime_message(
+            "王小明", date(2026, 3, 1), "平日", 2, use_comp=False
+        )
         assert "加班申請" in msg
 
     def test_contains_hours(self):
         """訊息包含時數資訊"""
-        msg = build_overtime_message("陳大華", date(2026, 3, 15), "假日", 4, use_comp=False)
+        msg = build_overtime_message(
+            "陳大華", date(2026, 3, 15), "假日", 4, use_comp=False
+        )
         assert "4h" in msg
         assert "陳大華" in msg
 
     def test_date_format_is_iso(self):
         """日期格式為 ISO（回歸測試：確保 ot_date/ot_type 參數順序正確）"""
-        msg = build_overtime_message("王小明", date(2026, 3, 18), "平日", 1, use_comp=False)
+        msg = build_overtime_message(
+            "王小明", date(2026, 3, 18), "平日", 1, use_comp=False
+        )
         assert "2026-03-18" in msg
         assert "平日" in msg
 
@@ -69,7 +85,9 @@ class TestBuildOvertimeMessage:
 class TestBuildMessages:
     def test_leave_result_approved(self):
         """核准的請假結果訊息包含已核准標記"""
-        msg = build_leave_result_message("王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), True)
+        msg = build_leave_result_message(
+            "王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), True
+        )
         assert "已核准" in msg
         assert "王小明" in msg
         assert "事假" in msg
@@ -77,14 +95,21 @@ class TestBuildMessages:
     def test_leave_result_rejected_with_reason(self):
         """駁回時訊息包含駁回原因"""
         msg = build_leave_result_message(
-            "王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), False, reason="資料不齊"
+            "王小明",
+            "事假",
+            date(2026, 3, 1),
+            date(2026, 3, 1),
+            False,
+            reason="資料不齊",
         )
         assert "已駁回" in msg
         assert "資料不齊" in msg
 
     def test_leave_result_rejected_no_reason(self):
         """駁回但無理由時，訊息中不出現 None"""
-        msg = build_leave_result_message("王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), False)
+        msg = build_leave_result_message(
+            "王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), False
+        )
         assert "None" not in msg
 
     def test_overtime_result_approved(self):
@@ -223,14 +248,13 @@ class TestLineServiceSafety:
         result = svc._push("測試")
         assert result is False
 
-    def test_notify_leave_does_not_raise(self, monkeypatch):
-        """notify_leave_submitted 即使推送失敗也不拋出例外"""
+    def test_notify_leave_retired_in_phase4_section4(self):
+        """Sanity check: _notify_leave_submitted 已從 LineService 移除（Phase 4
+        Section 4）；leave.submitted 推送由 LINE_HANDLERS['leave.submitted'] 取代。"""
         svc = LineService()
-        svc.configure("token", "target", True)
-
-        monkeypatch.setattr("services.line_service.requests.post", lambda *a, **k: (_ for _ in ()).throw(Exception("error")))
-        # 不應拋出
-        svc._notify_leave_submitted("王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), 4)
+        assert not hasattr(
+            svc, "_notify_leave_submitted"
+        ), "_notify_leave_submitted 應已退役；測試見 tests/notification/test_channels_line.py"
 
     def test_configure_updates_fields(self):
         """configure() 正確更新內部狀態"""
@@ -262,6 +286,8 @@ class TestLineServiceSafety:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        monkeypatch.setattr("services.line_service.requests.post", lambda *a, **k: mock_response)
+        monkeypatch.setattr(
+            "services.line_service.requests.post", lambda *a, **k: mock_response
+        )
         result = svc._push("測試訊息")
         assert result is True
