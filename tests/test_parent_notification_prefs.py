@@ -230,53 +230,19 @@ class TestIsPrefEnabled:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 連通到 should_push_to_parent gate
+# Phase 4 Section 4 (2026-05-26)：原本 TestPushGateRespectsPref 連通 LineService.
+# should_push_to_parent gate；method 退役後 gate 邏輯由 dispatch._resolve_line_user_id
+# + dispatch._pref_enabled 取代，pref 連動測試移到 tests/notification/test_dispatch_fan_out.py
+# 與 tests/notification/test_resolve_line_user_id.py。本 class 留 sanity 守衛。
 # ════════════════════════════════════════════════════════════════════════
 
 
-class TestPushGateRespectsPref:
-    def test_disabled_pref_blocks_push_gate(self, pref_client):
-        _, sf = pref_client
-        uid = _make_parent_user(sf)
-        # Disable parent.message_received
-        with sf() as session:
-            session.add(
-                ParentNotificationPreference(
-                    user_id=uid,
-                    event_type="parent.message_received",
-                    channel="line",
-                    enabled=False,
-                )
-            )
-            session.commit()
+class TestShouldPushToParentRetired:
+    def test_method_removed_from_line_service(self):
+        """LineService.should_push_to_parent 已退役；gate 由 dispatch 接管。"""
+        from services.line_service import LineService
 
-        svc = LineService()
-        svc.configure(token="t", target_id="g", enabled=True)
-        with sf() as session:
-            line_id = svc.should_push_to_parent(
-                session, user_id=uid, event_type="parent.message_received"
-            )
-            assert line_id is None  # gate 擋住
-
-    def test_enabled_other_event_passes(self, pref_client):
-        _, sf = pref_client
-        uid = _make_parent_user(sf)
-        with sf() as session:
-            session.add(
-                ParentNotificationPreference(
-                    user_id=uid,
-                    event_type="parent.message_received",
-                    channel="line",
-                    enabled=False,
-                )
-            )
-            session.commit()
-
-        svc = LineService()
-        svc.configure(token="t", target_id="g", enabled=True)
-        with sf() as session:
-            # parent.announcement 沒 row → enabled 預設 → 通過
-            line_id = svc.should_push_to_parent(
-                session, user_id=uid, event_type="parent.announcement"
-            )
-            assert line_id == "U001"
+        assert not hasattr(LineService, "should_push_to_parent"), (
+            "should_push_to_parent 應已退役 (Phase 4 Section 4)；"
+            "pref 連動測試請見 tests/notification/test_dispatch_fan_out.py。"
+        )
