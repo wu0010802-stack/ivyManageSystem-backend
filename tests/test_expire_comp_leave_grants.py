@@ -325,3 +325,37 @@ def test_expire_does_not_write_to_finalized_salary_record(
 
     log = session.query(UnusedLeavePayoutLog).first()
     assert log.salary_record_id is None
+
+
+def test_expire_accumulates_on_existing_nonzero_payout(
+    session, employee_factory, ot_grant_factory, salary_record_factory
+):
+    """SR 已有 250 未休折現 → 累加不覆蓋（防 float+Decimal 回歸）。
+
+    hourly_rate=200, granted_hours=4 → amount=800
+    existing unused_leave_payout=250 → result should be 250+800=1050
+
+    session.expire(sr) 強制 DB roundtrip，使 Money.process_result_value 回傳 float，
+    重現 float + Decimal TypeError bug。
+    """
+    emp = employee_factory(employee_type="hourly", hourly_rate=200.0)
+    ot_grant_factory(
+        emp_id=emp.id,
+        granted_hours=4.0,
+        expires_at=date(2026, 3, 31),
+        status="active",
+    )
+    sr = salary_record_factory(
+        emp_id=emp.id, year=2026, month=5, unused_leave_payout=250
+    )
+
+    # 強制讓 SQLAlchemy 從 DB 重讀屬性，觸發 Money.process_result_value → float
+    # 這重現了 production 路徑：SR 是別的 request 寫入後被此 session 查到
+    session.expire(sr)
+
+    from services.leave_quota_expiry.comp_leave_expiry import expire_comp_leave_grants
+
+    expire_comp_leave_grants(date(2026, 4, 1), session)
+
+    session.refresh(sr)
+    assert sr.unused_leave_payout == Decimal("1050")  # 250 + 800

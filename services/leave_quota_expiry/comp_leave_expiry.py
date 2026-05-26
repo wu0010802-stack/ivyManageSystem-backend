@@ -20,6 +20,9 @@
 import logging
 from datetime import date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 from sqlalchemy.orm import Session
 
@@ -81,11 +84,12 @@ def expire_comp_leave_grants(today: date, session: Session) -> dict:
                     g.granted_hours - g.consumed_hours for g in grants
                 )
 
-                if unexpired_hours <= 0:
+                if unexpired_hours < 1e-9:
                     # 全用完：mark expired，不建 log，不計入 paid
+                    # < 1e-9 防 float FIFO 多次扣抵尾數 underflow
                     for g in grants:
                         g.status = "expired"
-                        g.expired_at = datetime.now()
+                        g.expired_at = datetime.now(_TAIPEI_TZ)
                     continue
 
                 # 取得員工時薪
@@ -137,7 +141,7 @@ def expire_comp_leave_grants(today: date, session: Session) -> dict:
 
                 if sr_writeable:
                     salary_record.unused_leave_payout = (
-                        salary_record.unused_leave_payout or Decimal("0")
+                        Decimal(str(salary_record.unused_leave_payout or 0))
                     ) + amount
                     log.salary_record_id = salary_record.id
                 # else：Layer 2 — log.salary_record_id 保持 None
@@ -146,7 +150,7 @@ def expire_comp_leave_grants(today: date, session: Session) -> dict:
                 payout_sr_id = salary_record.id if sr_writeable else None
                 for g in grants:
                     g.status = "expired"
-                    g.expired_at = datetime.now()
+                    g.expired_at = datetime.now(_TAIPEI_TZ)
                     g.payout_log_id = log.id
                     g.payout_salary_record_id = payout_sr_id
 
