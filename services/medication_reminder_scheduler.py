@@ -26,6 +26,7 @@ from config import settings
 from models.database import session_scope
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +116,9 @@ def run_medication_reminder(effective_date: Optional[date] = None) -> dict:
             try:
                 order_count = _active_orders_query(session, today).count()
             except Exception:
-                logger.exception("用藥提醒查詢失敗")
-                return {
-                    "date": today.isoformat(),
-                    "order_count": -1,
-                    "error": True,
-                }
+                # Downgraded：scheduler 端 wrapper 會做 throttled Sentry 上報
+                logger.warning("用藥提醒查詢失敗", exc_info=True)
+                raise
 
     # 嘗試 invalidate notification cache（若服務尚未初始化則略過）
     try:
@@ -159,11 +157,13 @@ async def medication_reminder_loop(stop_event: asyncio.Event) -> None:
             today = now.date()
             target = _today_target_dt(today)
             if now >= target and last_run_date != today:
-                try:
-                    run_medication_reminder(effective_date=today)
+                with scheduler_iteration("medication_reminder"):
+                    result = run_medication_reminder(effective_date=today)
+                    record_rows(
+                        "medication_reminder",
+                        int(result.get("order_count", 0) or 0),
+                    )
                     last_run_date = today
-                except Exception:
-                    logger.exception("用藥提醒本次失敗，將於下次巡檢重試")
         except Exception:
             logger.exception("用藥提醒巡檢失敗（忽略本次）")
 

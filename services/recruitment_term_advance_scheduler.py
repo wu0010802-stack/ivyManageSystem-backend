@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from config import get_settings
 from models.academic_term import AcademicTerm
 from services.recruitment_lifecycle import advance_term_to_active
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,9 @@ async def run_recruitment_term_advance_scheduler(stop_event: asyncio.Event) -> N
     )
 
     while not stop_event.is_set():
-        try:
+        with scheduler_iteration("recruitment_term_advance"):
             today = _today_taipei()
+            advanced = 0
             with session_scope() as session:
                 terms = (
                     session.query(AcademicTerm)
@@ -53,14 +55,18 @@ async def run_recruitment_term_advance_scheduler(stop_event: asyncio.Event) -> N
                         term.school_year,
                         term.semester,
                     )
+                    advanced += (
+                        int(summary.get("advanced", 0) or 0)
+                        if isinstance(summary, dict)
+                        else 0
+                    )
                     logger.info(
                         "term advance year=%s sem=%s %s",
                         term.school_year,
                         term.semester,
                         summary,
                     )
-        except Exception:
-            logger.exception("term advance scheduler tick failed")
+            record_rows("recruitment_term_advance", advanced)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
         except asyncio.TimeoutError:

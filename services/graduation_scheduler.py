@@ -30,6 +30,7 @@ from services.student_lifecycle import (
     LifecycleTransitionError,
     transition as lifecycle_transition,
 )
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,9 @@ def run_auto_graduation(effective_date: Optional[date] = None) -> dict:
             session.commit()
     except Exception:
         session.rollback()
-        logger.exception("自動畢業執行失敗")
+        # Downgraded from logger.exception 避免與 wrapper 的 throttle 邏輯重複觸發
+        # Sentry LoggingIntegration（event_level=ERROR）；wrapper 達閾值才上報
+        logger.warning("自動畢業執行失敗", exc_info=True)
         raise
     finally:
         session.close()
@@ -179,11 +182,10 @@ async def run_auto_graduation_scheduler(stop_event: asyncio.Event) -> None:
             target = graduation_date_for_year(today.year)
             if today == target and last_run_year != today.year:
                 logger.warning("觸發自動畢業（date=%s）", today.isoformat())
-                try:
-                    run_auto_graduation(effective_date=today)
+                with scheduler_iteration("auto_graduation"):
+                    result = run_auto_graduation(effective_date=today)
+                    record_rows("auto_graduation", int(result.get("succeeded", 0) or 0))
                     last_run_year = today.year
-                except Exception:
-                    logger.exception("自動畢業本次失敗，將於下次巡檢重試")
         except Exception:
             logger.exception("自動畢業巡檢失敗（忽略本次）")
         try:

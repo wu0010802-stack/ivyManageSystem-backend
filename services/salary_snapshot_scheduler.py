@@ -22,6 +22,7 @@ from models.base import session_scope
 from models.salary import SalaryRecord, SalarySnapshot
 from services.salary_snapshot_service import create_month_end_snapshots
 from utils.advisory_lock import try_scheduler_lock
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +92,11 @@ async def run_salary_snapshot_scheduler(stop_event: asyncio.Event) -> None:
         interval,
     )
     while not stop_event.is_set():
-        try:
+        with scheduler_iteration("salary_snapshot"):
             created = check_and_snapshot_once()
+            record_rows("salary_snapshot", int(created or 0))
             if created:
                 logger.info("salary snapshot scheduler: created %d rows", created)
-        except Exception:
-            logger.exception("salary snapshot scheduler tick failed; continuing")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:

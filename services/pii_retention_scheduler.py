@@ -23,6 +23,7 @@ from sqlalchemy import bindparam, text
 from config import get_settings
 from models.audit import AuditLog
 from models.base import get_session
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,8 @@ async def run_pii_retention_scheduler(stop_event: asyncio.Event) -> None:
             pass
 
         while not stop_event.is_set():
-            _run_pii_retention_gc()
+            with scheduler_iteration("pii_retention"):
+                _run_pii_retention_gc()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=_GC_INTERVAL_SEC)
             except asyncio.TimeoutError:
@@ -168,8 +170,10 @@ def _run_pii_retention_gc(session=None) -> None:
         else:
             session.flush()
         logger.info("pii_retention GC: 已抹 %s 筆 Guardian PII", len(guardian_ids))
+        record_rows("pii_retention", len(guardian_ids))
     except Exception as e:
-        logger.error("pii_retention GC 失敗: %s", e, exc_info=True)
+        # Downgraded：scheduler 端 wrapper 會做 throttled Sentry 上報
+        logger.warning("pii_retention GC 失敗: %s", e, exc_info=True)
         if owns_session:
             session.rollback()
         raise

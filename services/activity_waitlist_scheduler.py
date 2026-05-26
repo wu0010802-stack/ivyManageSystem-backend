@@ -16,6 +16,7 @@ from typing import Any
 from config import get_settings, settings
 from models.base import session_scope
 from utils.advisory_lock import try_scheduler_lock
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -68,21 +69,19 @@ async def run_activity_waitlist_scheduler(stop_event: asyncio.Event) -> None:
         interval,
     )
     while not stop_event.is_set():
-        try:
+        with scheduler_iteration("activity_waitlist"):
             result = check_and_sweep_once()
-            if (
-                result.get("expired")
-                or result.get("reminded")
-                or result.get("final_reminded")
-            ):
+            expired = result.get("expired", 0)
+            reminded = result.get("reminded", 0)
+            final_reminded = result.get("final_reminded", 0)
+            record_rows("activity_waitlist", expired + reminded + final_reminded)
+            if expired or reminded or final_reminded:
                 logger.info(
                     "activity waitlist scheduler tick: expired=%s reminded=%s final_reminded=%s",
-                    result.get("expired", 0),
-                    result.get("reminded", 0),
-                    result.get("final_reminded", 0),
+                    expired,
+                    reminded,
+                    final_reminded,
                 )
-        except Exception:
-            logger.exception("activity waitlist scheduler tick failed; continuing")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:

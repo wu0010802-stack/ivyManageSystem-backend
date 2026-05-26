@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from config import get_settings, settings
 from models.database import get_session
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
@@ -136,11 +137,13 @@ async def run_finance_reconciliation_scheduler(stop_event: asyncio.Event) -> Non
                 and last_run_date != now.date()
             ):
                 logger.warning("觸發對帳排程 date=%s", now.date().isoformat())
-                try:
-                    run_finance_reconciliation()
+                with scheduler_iteration("finance_reconciliation"):
+                    result = run_finance_reconciliation()
+                    record_rows(
+                        "finance_reconciliation",
+                        int(result.get("mismatch_count", 0) or 0),
+                    )
                     last_run_date = now.date()
-                except Exception:
-                    logger.exception("對帳本次失敗，將於下次巡檢重試")
         except Exception:
             logger.exception("對帳巡檢失敗（忽略本次）")
         try:

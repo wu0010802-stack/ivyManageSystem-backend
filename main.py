@@ -57,6 +57,7 @@ from api.notifications import router as notifications_router
 from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
+from api.internal_metrics import router as internal_metrics_router
 from api.punch_corrections import (
     router as punch_corrections_router,
     init_punch_corrections_line_service,
@@ -758,6 +759,7 @@ from api.analytics import router as analytics_router
 app.include_router(analytics_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
+app.include_router(internal_metrics_router)
 if settings.core.dev_router_should_mount:
     from api.dev import router as dev_router, init_dev_services
 
