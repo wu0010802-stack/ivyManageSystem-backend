@@ -140,3 +140,51 @@ class TestP1ListenerSyncsIsApprovedToStatus:
             f"status should not be re-written by idempotency guard, "
             f"but got added={status_history.added}"
         )
+
+
+@pytest.mark.parametrize("factory", [_make_leave, _make_overtime, _make_punch])
+class TestP2ListenerSyncsStatusToIsApproved:
+    """P2 bidirectional listener — status setter mirrors to is_approved.
+
+    Coexists with P1 listener (is_approved → status). Together they form
+    bidirectional sync, kept active throughout P2/P3 to avoid forcing
+    immediate test-fixture migration. Both removed in P4.
+    """
+
+    def test_set_approved_mirrors_to_true(self, session, factory):
+        rec = factory(session)
+        rec.status = "approved"
+        assert rec.is_approved is True
+
+    def test_set_rejected_mirrors_to_false(self, session, factory):
+        rec = factory(session)
+        rec.status = "rejected"
+        assert rec.is_approved is False
+
+    def test_set_pending_mirrors_to_none(self, session, factory):
+        rec = factory(session)
+        rec.status = "pending"
+        assert rec.is_approved is None
+
+    def test_transition_chain_status_first(self, session, factory):
+        rec = factory(session)
+        rec.status = "pending"
+        assert rec.is_approved is None
+        rec.status = "approved"
+        assert rec.is_approved is True
+        rec.status = "rejected"
+        assert rec.is_approved is False
+
+    def test_no_infinite_recursion_when_both_listeners_active(self, session, factory):
+        """Setting one column triggers the other; idempotency guards prevent loop."""
+        rec = factory(session)
+        rec.is_approved = True  # P1 listener fires, sets status='approved'
+        # status='approved' setter fires P2 listener; idempotency: is_approved already True, skip.
+        assert rec.is_approved is True
+        assert rec.status == "approved"
+
+        # Now reverse: set status, P2 fires, sets is_approved.
+        rec.status = "rejected"
+        # P1 fires from is_approved set; idempotency: status already 'rejected', skip.
+        assert rec.is_approved is False
+        assert rec.status == "rejected"

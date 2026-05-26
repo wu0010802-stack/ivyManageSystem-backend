@@ -44,3 +44,5 @@ from .overtime import OvertimeRecord, PunchCorrectionRequest  # noqa: F401,E402
 from .approval import ApprovalStatus, register_p1_listeners  # noqa: F401,E402
 
 register_p1_listeners(LeaveRecord, OvertimeRecord, PunchCorrectionRequest)
+from .approval import register_p2_listeners  # noqa: F401,E402
+register_p2_listeners(LeaveRecord, OvertimeRecord, PunchCorrectionRequest)

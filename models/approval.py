@@ -47,10 +47,15 @@ def register_p1_listeners(*model_classes) -> None:
 def _register_one(cls) -> None:
     @event.listens_for(cls.is_approved, "set", propagate=False)
     def _sync_status(target, value, oldvalue, initiator):
+        # If P2 listener triggered this set (status → is_approved → here), skip.
+        if _guard_active(target, "status"):
+            return
         expected = _BOOL_TO_STATUS[value]
-        # Idempotency guard：已對齊就不再寫，避免無謂 UPDATE。
-        if target.status != expected:
+        _guard_enter(target, "is_approved")
+        try:
             target.status = expected
+        finally:
+            _guard_exit(target, "is_approved")
 
 
 class ApprovalPolicy(Base):
@@ -87,3 +92,67 @@ class ApprovalLog(Base):
     __table_args__ = (
         Index("ix_approval_log_doc", "doc_type", "doc_id"),
     )
+
+
+import threading as _threading
+
+# Re-entry guard: prevents bidirectional listener ping-pong.
+# Each "set" event fires BEFORE the value is stored, so target.attr still
+# holds the old value — naive comparisons cannot detect "already aligned".
+# We use a thread-local set of (id(target), column) keys; while a key is
+# present the matching reverse listener is suppressed.
+_sync_in_progress = _threading.local()
+
+
+def _guard_active(target, column: str) -> bool:
+    guard = getattr(_sync_in_progress, "keys", None)
+    if guard is None:
+        return False
+    return (id(target), column) in guard
+
+
+def _guard_enter(target, column: str) -> None:
+    if not hasattr(_sync_in_progress, "keys"):
+        _sync_in_progress.keys = set()
+    _sync_in_progress.keys.add((id(target), column))
+
+
+def _guard_exit(target, column: str) -> None:
+    if hasattr(_sync_in_progress, "keys"):
+        _sync_in_progress.keys.discard((id(target), column))
+
+
+# Inverse of _BOOL_TO_STATUS — used by P2 reverse listener.
+_STATUS_TO_BOOL = {
+    "approved": True,
+    "rejected": False,
+    "pending": None,
+}
+
+
+def register_p2_listeners(*model_classes) -> None:
+    """為傳入的 model class 註冊 status → is_approved 單向同步 listener。
+
+    P2+P3 期間使用，與 register_p1_listeners 並存形成 bidirectional sync。
+    Re-entry guard (_sync_in_progress) 防止無限遞迴：
+    - P1 設 is_approved 時標記 is_approved guard，P2 listener 若看到此標記即跳過
+    - P2 設 status 時標記 status guard，P1 listener 若看到此標記即跳過
+    P4 一併移除。
+    """
+
+    for cls in model_classes:
+        _register_p2_one(cls)
+
+
+def _register_p2_one(cls) -> None:
+    @event.listens_for(cls.status, "set", propagate=False)
+    def _sync_is_approved(target, value, oldvalue, initiator):
+        # If P1 listener triggered this set (is_approved → status → here), skip.
+        if _guard_active(target, "is_approved"):
+            return
+        expected = _STATUS_TO_BOOL.get(value)
+        _guard_enter(target, "status")
+        try:
+            target.is_approved = expected
+        finally:
+            _guard_exit(target, "status")
