@@ -36,6 +36,14 @@ def app_client(monkeypatch, tmp_path):
     report_root = tmp_path / "growth_reports"
     monkeypatch.setattr(reports_mod, "REPORT_ROOT", report_root)
 
+    # PDF worker：test 模式 inline 執行，避免 SQLite StaticPool 跨 thread 衝突
+    # （prod 走 bounded ThreadPoolExecutor，PG 多連線無此問題）。
+    # 重新註冊 callable（若 test_pdf_worker.py 的 reset_for_tests() 先清掉）。
+    from services import pdf_worker
+
+    pdf_worker.configure_job_callable(reports_mod._generate_pdf_job)
+    pdf_worker.set_synchronous_for_tests(True)
+
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},

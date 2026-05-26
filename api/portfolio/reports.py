@@ -1,7 +1,7 @@
 """Growth report admin API.
 
 Endpoints:
-- POST /api/students/{student_id}/growth-reports           觸發生成（async via BackgroundTasks）
+- POST /api/students/{student_id}/growth-reports           觸發生成（bounded PDF worker pool）
 - GET  /api/students/{student_id}/growth-reports           列出
 - GET  /api/students/{student_id}/growth-reports/{rid}     單筆狀態查詢
 - GET  /api/students/{student_id}/growth-reports/{rid}/download  下載 PDF
@@ -20,7 +20,6 @@ from config import settings
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
     Query,
@@ -55,6 +54,7 @@ from services.growth_report_collector import (
     pick_highlight_observations,
     summarize_attendance,
 )
+from services import pdf_worker
 from services.growth_report_pdf import generate_growth_report_pdf
 from utils.audit import write_explicit_audit
 from utils.auth import require_permission
@@ -289,7 +289,10 @@ def _collect_report_data(
 
 
 def _generate_pdf_job(report_id: int) -> None:
-    """Background job：撈資料 → 生 PDF → 寫檔 → 更新 status."""
+    """Background job：撈資料 → 生 PDF → 寫檔 → 更新 status.
+
+    透過 pdf_worker.submit_pdf_job() 提交到 bounded ThreadPoolExecutor 執行，
+    隔離於 starlette request threadpool 之外（見 services/pdf_worker.py）。"""
     try:
         with session_scope() as session:
             report = session.query(StudentGrowthReport).filter_by(id=report_id).first()
@@ -369,7 +372,6 @@ def _resolve_pdf_path(file_path: str) -> Path:
 async def create_growth_report(
     student_id: int,
     payload: GenerateReportPayload,
-    background_tasks: BackgroundTasks,
     request: Request,
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_PUBLISH)),
 ) -> dict:
@@ -434,7 +436,7 @@ async def create_growth_report(
                 f"建立成長報告：student_id={student_id} report_id={report_id} "
                 f"period={payload.period_label}"
             )
-        background_tasks.add_task(_generate_pdf_job, report_id)
+        pdf_worker.submit_pdf_job(report_id)
         logger.info("growth report queued: student=%d report=%d", student_id, report_id)
         return row_dict
     except HTTPException:
@@ -743,3 +745,6 @@ async def send_growth_report_to_line(
         raise
     except Exception as e:
         raise_safe_500(e, context="LINE 推送失敗")
+
+
+pdf_worker.configure_job_callable(_generate_pdf_job)

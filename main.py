@@ -282,6 +282,18 @@ async def app_lifespan(app_instance: FastAPI):
     set_main_loop(_main_loop)
 
     on_startup()
+
+    # PDF worker：啟動時若啟用 recovery，把上次 crash 留下的 'generating' 孤兒
+    # 報告標 failed（避免 admin 看到永久 generating）。多 worker 部署只在 leader 開。
+    if settings.scheduler.pdf_worker_recovery_enabled:
+        try:
+            from services.pdf_recovery import recover_orphan_pdf_jobs
+
+            recover_orphan_pdf_jobs()
+        except Exception as e:
+            logger.warning("PDF orphan recovery 啟動失敗: %s", e)
+            capture_exception(e, level="warning")
+
     # 只有 env 啟用時才跑 sweeper（避免多 worker 重複發送通知）
     sweeper_task = None
     if settings.scheduler.activity_waitlist_sweeper_enabled:
@@ -568,6 +580,16 @@ async def app_lifespan(app_instance: FastAPI):
                     pass
         # Graceful Shutdown：釋放資源
         logger.info("Application shutting down — releasing resources…")
+        # PDF worker：等所有 in-flight 報告生成完（最多 shutdown_timeout 秒）
+        # 必須在 DB 連線池釋放之前，否則 worker 寫 status 會炸
+        try:
+            from services import pdf_worker
+
+            pdf_worker.shutdown(wait=True)
+            logger.info("PDF worker executor 已釋放")
+        except Exception as e:
+            logger.warning("PDF worker shutdown 失敗: %s", e)
+            capture_exception(e, level="warning")
         # 關閉所有 WebSocket 連線
         try:
             from api.dismissal_ws import manager as ws_manager
