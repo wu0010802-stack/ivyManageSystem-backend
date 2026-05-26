@@ -213,6 +213,13 @@ class SalaryRecord(Base):
     labor_insurance_employer = Column(Money, default=0, comment="勞保費（雇主負擔）")
     health_insurance_employee = Column(Money, default=0, comment="健保費（員工自付）")
     health_insurance_employer = Column(Money, default=0, comment="健保費（雇主負擔）")
+    supplementary_health_employee = Column(
+        Money,
+        default=0,
+        nullable=False,
+        server_default="0",
+        comment="二代健保補充保費（員工自付；hourly 月累計 + 獎金年累計逾 4× 投保薪資）",
+    )
     pension_employee = Column(Money, default=0, comment="勞退自提")
     pension_employer = Column(Money, default=0, comment="勞退雇提")
 

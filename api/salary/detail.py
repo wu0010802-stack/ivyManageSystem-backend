@@ -182,6 +182,9 @@ def get_salary_breakdown(
                 "absence_deduction": record.absence_deduction or 0,
                 "labor_insurance": record.labor_insurance_employee or 0,
                 "health_insurance": record.health_insurance_employee or 0,
+                "supplementary_health_employee": (
+                    record.supplementary_health_employee or 0
+                ),
                 "pension": record.pension_employee or 0,
                 "total_deduction": record.total_deduction or 0,
             },

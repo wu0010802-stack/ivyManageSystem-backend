@@ -90,6 +90,7 @@ def _build_salary_display_dict(**kwargs) -> dict:
         "supervisor_dividend",
         "labor_insurance",
         "health_insurance",
+        "supplementary_health_employee",
         "pension_self",
         "late_deduction",
         "early_leave_deduction",
@@ -124,6 +125,7 @@ def _breakdown_to_simulate_dict(
         supervisor_dividend=breakdown.supervisor_dividend,
         labor_insurance=breakdown.labor_insurance,
         health_insurance=breakdown.health_insurance,
+        supplementary_health_employee=breakdown.supplementary_health_employee or 0,
         pension_self=breakdown.pension_self or 0,
         late_deduction=breakdown.late_deduction,
         early_leave_deduction=breakdown.early_leave_deduction,
@@ -151,6 +153,7 @@ def _record_to_actual_dict(record) -> dict:
         supervisor_dividend=record.supervisor_dividend or 0,
         labor_insurance=record.labor_insurance_employee or 0,
         health_insurance=record.health_insurance_employee or 0,
+        supplementary_health_employee=record.supplementary_health_employee or 0,
         pension_self=record.pension_employee or 0,
         late_deduction=record.late_deduction or 0,
         early_leave_deduction=record.early_leave_deduction or 0,
@@ -335,9 +338,27 @@ def simulate_salary(
             period_festival_override=period_festival_total,
             period_overtime_override=period_overtime_total,
         )
+
+        # 二代健保補充保費（獎金路徑）：與 _build_breakdown_for_month 口徑一致
+        from services.salary.supplementary_premium import (
+            apply_bonus_supplementary_to_breakdown,
+        )
+
+        apply_bonus_supplementary_to_breakdown(
+            session,
+            emp_dict,
+            breakdown,
+            year,
+            month,
+            engine.insurance_service,
+            emp.id,
+        )
+
         breakdown.absent_count = absent_count
         breakdown.absence_deduction = round_half_up(absence_amount)
-        breakdown.total_deduction = round_half_up(breakdown.total_deduction + absence_amount)
+        breakdown.total_deduction = round_half_up(
+            breakdown.total_deduction + absence_amount
+        )
         breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
 
         actual_record = (

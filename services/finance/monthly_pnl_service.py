@@ -90,7 +90,7 @@ _PENDING_ITEMS: tuple[str, ...] = (
     "預繳收入（fee_adjustments=prepayment 為折抵非收入；招生階段 deposit 不在 fee_payment 流水）",
     "畢業紀念冊（無對應 fee_type，建議於 vendor_payments 登錄收入或自訂 fee_type）",
     "紅利細項：年終／招生獎金／教課鼓勵金／自主成長契約獎勵金／出國尾牙獎金／註冊預繳獎金（salary 模型現只區分節慶／超額／主管分紅三類，其餘細項無欄位）",
-    "二代健保（無對應欄位，建議新增 SalaryRecord 欄位後拆出）",
+    "二代健保補充保費：員工自付項，2026-05-26 已加 SalaryRecord.supplementary_health_employee 欄位；員工自付不屬園方支出故未列 P&L 人事項；若日後業主決定列入「代付福利」再評估納入",
     "個別廠商分項列（vendor_payments.vendor_name 為自由文字，無 row-level 分類；Phase 2 可加 vendor 分類映射表）",
 )
 
