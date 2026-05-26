@@ -1,12 +1,56 @@
-"""
-models/approval.py — 多級簽核政策與稽核記錄
+"""models/approval.py — 多級簽核政策、稽核記錄與審核狀態 dual-write。
+
+ApprovalPolicy / ApprovalLog：多級簽核政策與稽核記錄。
+ApprovalStatus / register_p1_listeners：審核狀態 enum 與 P1 雙寫 listener。
+
+P1 期間：callsite 仍寫 `record.is_approved = True/False/None`，
+listener 自動同步 `record.status = 'approved'/'rejected'/'pending'`。
+P2 PR 會反轉方向（status → is_approved），P4 PR 會移除 listener。
+詳見 docs/superpowers/specs/2026-05-26-approval-status-enum-rollout-design.md §3.4。
 """
 
+import enum
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Index, event
 
 from models.base import Base
+
+
+class ApprovalStatus(str, enum.Enum):
+    """共用審核狀態，由 LeaveRecord / OvertimeRecord / PunchCorrectionRequest 三表使用。"""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+# 不要 import ApprovalStatus 到 alembic migration — 用 frozen mapping。
+_BOOL_TO_STATUS = {
+    True: ApprovalStatus.APPROVED.value,
+    False: ApprovalStatus.REJECTED.value,
+    None: ApprovalStatus.PENDING.value,
+}
+
+
+def register_p1_listeners(*model_classes) -> None:
+    """為傳入的 model class 註冊 is_approved → status 單向同步 listener。
+
+    P1+P2 期間使用。每個 class 必須有 `is_approved` 與 `status` 兩個 Column。
+    `propagate=False` 防止繼承時重複掛載。
+    """
+
+    for cls in model_classes:
+        _register_one(cls)
+
+
+def _register_one(cls) -> None:
+    @event.listens_for(cls.is_approved, "set", propagate=False)
+    def _sync_status(target, value, oldvalue, initiator):
+        expected = _BOOL_TO_STATUS[value]
+        # Idempotency guard：已對齊就不再寫，避免無謂 UPDATE。
+        if target.status != expected:
+            target.status = expected
 
 
 class ApprovalPolicy(Base):
