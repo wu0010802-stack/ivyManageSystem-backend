@@ -256,3 +256,206 @@ def test_prefill_salary_skips_when_no_record(
 
     assert result["status"] == "skipped"
     assert result["payload"]["reason"] == "salary_record_not_yet_created"
+
+
+# ── Characterization tests: mid-month / cross-year / round_half_up 守邊界 ──
+#
+# 2026-05-26 補：補足月中離職、跨年離職、approved leave 邊界，並驗證
+# round_half_up 在 .5 邊界守住 ROUND_HALF_UP（snapshot_leave.py 已從 builtin
+# round() 切到 utils.rounding.round_half_up；CI money-rounding-gate paths
+# 同步加 services/offboarding/）。
+#
+# 設計假設（user 確認 2026-05-26）：
+#     特休「年初發給制」— 全年 quota 一次性配給，**不按服務月份 prorate**。
+#     例：員工 1/1 入職、6/15 離職、全年配 120hr → snapshot 視為 120hr 可折現，
+#     不是 120 × 6.5/12 = 65hr。多數台灣中小企業採此制；若公司政策日後改按月
+#     vesting，需在 snapshot_leave.run 加 prorate 邏輯後修改此 test。
+
+
+def _make_record_at(db_session, employee_id, user_id, resign_date):
+    """允許指定 resign_date 的 record factory（_make_record 預設 6/15）。"""
+    record = EmployeeOffboardingRecord(
+        employee_id=employee_id,
+        resign_date=resign_date,
+        opened_at=datetime.now(),
+        opened_by_user_id=user_id,
+    )
+    db_session.add(record)
+    db_session.flush()
+    return record
+
+
+def test_snapshot_mid_month_resign_uses_full_year_quota(
+    db_session, employee_factory, user_factory, leave_quota_factory
+):
+    """月中離職用整年 quota（年初發給制 characterization）。
+
+    服務 5.5 月仍給整年 120hr，不按 120 × 6.5/12 ≈ 65hr prorate。
+    """
+    emp = employee_factory(hire_date=date(2026, 1, 1), daily_wage=1500)
+    user = user_factory()
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=120
+    )
+    record = _make_record_at(db_session, emp.id, user.id, date(2026, 6, 15))
+
+    from services.offboarding.steps.snapshot_leave import run
+
+    run(db_session, record)
+
+    snap = record.leave_balance_snapshot
+    assert snap["total_hours"] == 120.0  # 整年 quota，未 prorate
+    assert snap["used_hours"] == 0.0
+    assert snap["remaining_hours"] == 120.0
+    assert snap["remaining_days"] == 15.0
+    assert snap["payout_amount"] == 15 * 1500  # 22500.0
+
+
+def test_snapshot_cross_year_dec_31_uses_resign_year_quota(
+    db_session, employee_factory, user_factory, leave_quota_factory
+):
+    """12/31 離職：snapshot_date.year = resign_date.year → 查當年 quota。"""
+    emp = employee_factory(daily_wage=1500)
+    user = user_factory()
+    # 2026 與 2027 兩年 quota 並存（年度切換時可能同時有兩 row）
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=80
+    )
+    leave_quota_factory(
+        employee_id=emp.id, year=2027, leave_type="annual", total_hours=120
+    )
+    record = _make_record_at(db_session, emp.id, user.id, date(2026, 12, 31))
+
+    from services.offboarding.steps.snapshot_leave import run
+
+    run(db_session, record)
+
+    snap = record.leave_balance_snapshot
+    assert snap["total_hours"] == 80.0  # 2026 quota（非 2027）
+    assert snap["remaining_days"] == 10.0
+    assert snap["payout_amount"] == 10 * 1500
+
+
+def test_snapshot_jan_1_uses_new_year_quota_zero_if_missing(
+    db_session, employee_factory, user_factory, leave_quota_factory
+):
+    """1/1 離職：用新年 quota；若新年 quota 尚未生 → total_hours=0（不會 fallback 去年）。"""
+    emp = employee_factory(daily_wage=1500)
+    user = user_factory()
+    # 只有 2026 quota，2027 尚未生（年度切換 race condition）
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=120
+    )
+    record = _make_record_at(db_session, emp.id, user.id, date(2027, 1, 1))
+
+    from services.offboarding.steps.snapshot_leave import run
+
+    run(db_session, record)
+
+    snap = record.leave_balance_snapshot
+    assert snap["total_hours"] == 0.0  # 2027 quota 不存在，不回退 2026
+    assert snap["remaining_days"] == 0.0
+    assert snap["payout_amount"] == 0.0
+
+
+def test_snapshot_excludes_leave_starting_after_resign_date(
+    db_session, employee_factory, user_factory, leave_quota_factory
+):
+    """approved annual leave start_date > resign_date 不算入 used。"""
+    from models.leave import LeaveRecord
+
+    emp = employee_factory(daily_wage=1500)
+    user = user_factory()
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=80
+    )
+    # 6/15 離職，6/20 之後的 approved 假單不算入 used
+    db_session.add(
+        LeaveRecord(
+            employee_id=emp.id,
+            leave_type="annual",
+            start_date=date(2026, 6, 20),
+            end_date=date(2026, 6, 20),
+            leave_hours=8.0,
+            is_approved=True,
+        )
+    )
+    db_session.flush()
+    record = _make_record_at(db_session, emp.id, user.id, date(2026, 6, 15))
+
+    from services.offboarding.steps.snapshot_leave import run
+
+    run(db_session, record)
+
+    snap = record.leave_balance_snapshot
+    assert snap["used_hours"] == 0.0  # 6/20 假單 start_date > 6/15 不算
+    assert snap["remaining_hours"] == 80.0
+
+
+def test_snapshot_includes_leave_starting_on_resign_date(
+    db_session, employee_factory, user_factory, leave_quota_factory
+):
+    """start_date == resign_date 算入 used（filter 條件 <= 為 inclusive）。"""
+    from models.leave import LeaveRecord
+
+    emp = employee_factory(daily_wage=1500)
+    user = user_factory()
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=80
+    )
+    # 6/15 當天 approved annual leave → 算入 used
+    db_session.add(
+        LeaveRecord(
+            employee_id=emp.id,
+            leave_type="annual",
+            start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 15),
+            leave_hours=8.0,
+            is_approved=True,
+        )
+    )
+    db_session.flush()
+    record = _make_record_at(db_session, emp.id, user.id, date(2026, 6, 15))
+
+    from services.offboarding.steps.snapshot_leave import run
+
+    run(db_session, record)
+
+    snap = record.leave_balance_snapshot
+    assert snap["used_hours"] == 8.0  # 6/15 邊界 inclusive
+    assert snap["remaining_hours"] == 72.0
+
+
+def test_snapshot_payout_uses_round_half_up_at_half_boundary(
+    db_session, employee_factory, user_factory, leave_quota_factory
+):
+    """payout .005 邊界用 ROUND_HALF_UP（守 2026-05-25 rollout 規則）。
+
+    Boundary: remaining_days × daily_wage = 180.015
+        - HALF_EVEN (builtin round) → 180.01（.5 toward even 0）
+        - HALF_UP (round_half_up)   → 180.02
+
+    若此 test 失敗回到 180.01，表示 snapshot_leave.py 又退回 builtin round()，
+    違反 2026-05-25 round_half_up rollout（ref: utils/rounding.py docstring）。
+    """
+    emp = employee_factory(
+        daily_wage=None
+    )  # base_salary=0 → _resolve_daily_wage 走 fallback
+    # 動態加 daily_wage instance attr（model 預留欄位，see snapshot_leave.py:_resolve_daily_wage）
+    emp.daily_wage = 1500.125
+    user = user_factory()
+    # quota=1hr → leave_quota_helpers 算 remaining_days = round(1/8, 2) = 0.12
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=1
+    )
+    record = _make_record_at(db_session, emp.id, user.id, date(2026, 6, 15))
+
+    from services.offboarding.steps.snapshot_leave import run
+
+    run(db_session, record)
+
+    snap = record.leave_balance_snapshot
+    assert snap["daily_wage"] == 1500.125
+    assert snap["remaining_days"] == 0.12
+    # 0.12 × 1500.125 = 180.015 → HALF_UP=180.02（非 builtin HALF_EVEN=180.01）
+    assert snap["payout_amount"] == 180.02

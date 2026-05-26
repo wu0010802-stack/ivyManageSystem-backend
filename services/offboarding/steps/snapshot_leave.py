@@ -12,6 +12,7 @@ from models.employee import Employee
 from models.offboarding import EmployeeOffboardingRecord
 from services.offboarding.orchestrator import OffboardingError, StepResult
 from utils.leave_quota_helpers import get_annual_leave_balance
+from utils.rounding import round_half_up
 
 
 def _resolve_daily_wage(emp: Employee) -> float | None:
@@ -23,7 +24,7 @@ def _resolve_daily_wage(emp: Employee) -> float | None:
     # fallback：base_salary / 30（與 salary engine 對齊）
     monthly = getattr(emp, "monthly_salary", None) or getattr(emp, "base_salary", None)
     if monthly:
-        return round(float(monthly) / 30.0, 2)
+        return round_half_up(float(monthly) / 30.0, 2)
     return None
 
 
@@ -44,7 +45,7 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
         )
 
     balance = get_annual_leave_balance(session, emp.id, record.resign_date)
-    payout_amount = round(balance["remaining_days"] * daily_wage, 2)
+    payout_amount = round_half_up(balance["remaining_days"] * daily_wage, 2)
 
     now = datetime.now()
     record.leave_balance_snapshot = {

@@ -200,6 +200,7 @@ jobs:
         #   services/insurance_service.py        勞健保計算
         #   services/overtime_pay_calculator.py  加班費
         #   services/transfer_roster.py          銀行轉帳名冊
+        #   services/offboarding/   離職結算（unused_leave_payout 折現 daily_wage × days）
         #   api/gov_reports.py      政府申報書 ★最關鍵
         #   api/salary/             試算 / 手動調整
         #
@@ -214,6 +215,7 @@ jobs:
                'services/insurance_service.py' \
                'services/overtime_pay_calculator.py' \
                'services/transfer_roster.py' \
+               'services/offboarding/**.py' \
                'api/gov_reports.py' \
                'api/salary/**.py'; then
             echo "::error::金額路徑禁用 builtin round()（HALF_EVEN）"
