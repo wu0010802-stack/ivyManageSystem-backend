@@ -31,6 +31,7 @@ from models.database import (
     ActivitySupply,
     ActivitySession,
     ActivityAttendance,
+    User,
 )
 from services.activity_service import activity_service
 from services.activity_refund_query import build_refund_suggestion
@@ -81,6 +82,28 @@ from utils.academic import resolve_academic_term_filters
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _list_active_users_with_permission(session, perm: str) -> list[int]:
+    """SQLite/PG 通用：列 permission_names 含 perm 的 active user_id。
+
+    對齊 api/permissions_admin.py:136-145 / api/portal/leaves.py 同名 helper。
+    """
+    is_sqlite = session.bind.dialect.name == "sqlite"
+    if is_sqlite:
+        users = session.query(User).filter(User.is_active.is_(True)).all()
+        return [
+            u.id for u in users if u.permission_names and perm in u.permission_names
+        ]
+    rows = (
+        session.query(User.id)
+        .filter(
+            User.is_active.is_(True),
+            User.permission_names.contains([perm]),
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
 
 
 # ── 靜態路由（batch-payment / export / payment-report）已拆至 registrations_static.py ──
@@ -655,17 +678,34 @@ async def promote_waitlist(
             f"課程「{course_name}」由管理員手動升為正式",
             current_user.get("username", ""),
         )
+
+        # 通知：commit 前對每位 ACTIVITY_WRITE staff 個人推送（in_app + LINE）
+        # 原 background_tasks LINE 群組廣播改為 per-staff dispatch.enqueue。
+        try:
+            from services.notification import dispatch
+
+            staff_user_ids = _list_active_users_with_permission(
+                session, Permission.ACTIVITY_WRITE.value
+            )
+            for sid in staff_user_ids:
+                dispatch.enqueue(
+                    session=session,
+                    event_type="activity.waitlist_promoted",
+                    recipient_user_id=sid,
+                    context={
+                        "student_name": student_name,
+                        "course_name": course_name,
+                        "course_id": course_id,
+                    },
+                    sender_id=current_user.get("user_id"),
+                    source_entity_type="registration_course",
+                    source_entity_id=registration_id,
+                )
+        except Exception as exc:
+            logger.warning("activity.waitlist_promoted enqueue 失敗（已吞）：%s", exc)
+
         session.commit()
         _invalidate_activity_dashboard_caches(session)
-        line_svc = get_line_service()
-        if line_svc is not None:
-            # 管理員手動升正式：通知不帶 deadline（已確認）
-            background_tasks.add_task(
-                line_svc.notify_activity_waitlist_promoted,
-                student_name,
-                course_name,
-                None,
-            )
         return {"message": "成功升為正式報名"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
