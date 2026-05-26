@@ -32,15 +32,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["punch-corrections"])
 
-# ============ Service Injection ============
-
-_line_service = None
-
-
-def init_punch_corrections_line_service(line_service):
-    global _line_service
-    _line_service = line_service
-
 
 CORRECTION_TYPE_LABELS = {
     "punch_in": "補上班打卡",

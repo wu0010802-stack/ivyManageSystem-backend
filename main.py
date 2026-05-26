@@ -35,12 +35,10 @@ from api.config import router as config_router, init_config_services
 from api.leaves import (
     router as leaves_router,
     init_leaves_services,
-    init_leaves_line_service,
 )
 from api.overtimes import (
     router as overtimes_router,
     init_overtimes_services,
-    init_overtimes_line_service,
 )
 from api.insurance import router as insurance_router, init_insurance_services
 from api.auth import router as auth_router
@@ -48,22 +46,16 @@ from api.portal import router as portal_router, init_portal_notify_services
 from api.shifts import router as shifts_router
 from api.events import router as events_router
 from api.meetings import router as meetings_router
-from api.announcements import (
-    router as announcements_router,
-    init_announcement_line_service,
-)
+from api.announcements import router as announcements_router
 from api.approvals import router as approvals_router
 from api.notifications import router as notifications_router
 from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
 from api.internal_metrics import router as internal_metrics_router
-from api.punch_corrections import (
-    router as punch_corrections_router,
-    init_punch_corrections_line_service,
-)
+from api.punch_corrections import router as punch_corrections_router
 from api.approval_settings import router as approval_settings_router
-from api.activity import router as activity_router, init_activity_services
+from api.activity import router as activity_router
 from api.dismissal_calls import (
     router as dismissal_calls_router,
     init_dismissal_line_service,
@@ -699,14 +691,13 @@ init_employee_services(salary_engine)
 init_config_services(salary_engine, line_service)
 init_insurance_services(insurance_service)
 init_overtimes_services(salary_engine)
-init_overtimes_line_service(line_service)
 init_leaves_services(salary_engine)
-init_leaves_line_service(line_service)
-init_punch_corrections_line_service(line_service)
+# Phase 2 PR-D (2026-05-26): leaves / overtimes / punch_corrections / announcements
+# / activity 的 _line_service injection 已退役（caller 改走 dispatch.enqueue）。
+# 仍保留：dismissal / growth_reports / portal contact_book hybrid + 家長 LIFF /
+# webhook / config / salary engine 內部使用。
 init_dismissal_line_service(line_service)
-init_activity_services(line_service)
 init_portal_notify_services(line_service)
-init_announcement_line_service(line_service)
 init_growth_reports_line_service(line_service)
 init_webhook_service(line_service)
 init_gov_report_services(insurance_service)

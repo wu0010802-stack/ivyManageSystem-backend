@@ -672,7 +672,7 @@ def _admin_app_client(tmp_path, monkeypatch):
 
     fake_salary_engine = _MagicMock()
     monkeypatch.setattr(_overtimes_module, "_salary_engine", fake_salary_engine)
-    monkeypatch.setattr(_overtimes_module, "_line_service", None)
+    # PR-D (2026-05-26): _line_service global removed; dispatch.enqueue 接管
 
     app = _FastAPI()
     app.include_router(_auth_router)

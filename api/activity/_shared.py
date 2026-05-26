@@ -109,22 +109,11 @@ def validate_payment_date(
     return _impl(value, back_limit_days=back_limit_days)
 
 
-# ── 服務注入 ──────────────────────────────────────────────────────────────
-
-_line_service = None
-
-
-def init_activity_services(line_svc) -> None:
-    global _line_service
-    _line_service = line_svc
-    activity_service.set_line_service(line_svc)
-
-
-def get_line_service():
-    return _line_service
-
-
 # ── 共用 HTTPException helpers ─────────────────────────────────────────────
+# Activity LINE service injection removed in PR-D (2026-05-26): activity
+# 路徑改走 services.notification.dispatch.enqueue（PR-C-2）；既有 _line_service
+# global / init_activity_services / get_line_service / ActivityService.set_line_service
+# 全部 dead code 一併清除。
 
 
 def _not_found(resource: str) -> HTTPException:

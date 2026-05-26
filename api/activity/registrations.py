@@ -75,7 +75,6 @@ from ._shared import (
     require_approve_for_large_refund,
     require_approve_for_cumulative_refund,
     TAIPEI_TZ,
-    get_line_service,
     today_taipei,
 )
 from utils.academic import resolve_academic_term_filters

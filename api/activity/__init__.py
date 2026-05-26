@@ -1,16 +1,13 @@
 """
 api/activity/__init__.py — 才藝系統 package 入口
 
-彙整所有子 router，對外保持與原 api/activity.py 完全相同的 import 介面：
-    from api.activity import router as activity_router, init_activity_services
+彙整所有子 router；init_activity_services 已於 PR-D (2026-05-26) 退役（activity
+通知改走 services.notification.dispatch.enqueue）。
 """
 
 from fastapi import APIRouter
 
-from ._shared import (
-    init_activity_services,
-    RegistrationTimeSettings,
-)  # noqa: F401（測試 import）
+from ._shared import RegistrationTimeSettings  # noqa: F401（測試 import）
 
 from .stats import router as _stats_router
 from .registrations_static import router as _registrations_static_router

@@ -129,10 +129,9 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 
 class ActivityService:
     def __init__(self):
-        self._line_svc = None
-
-    def set_line_service(self, svc) -> None:
-        self._line_svc = svc
+        # PR-D (2026-05-26): self._line_svc dead code removed. Activity 通知
+        # 一律走 services.notification.dispatch.enqueue（PR-C-2）。
+        pass
 
     def get_unread_inquiries_count(self, session) -> int:
         """取得未讀家長提問數量。"""

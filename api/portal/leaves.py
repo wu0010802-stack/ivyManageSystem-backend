@@ -100,13 +100,6 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 
 logger = logging.getLogger(__name__)
 
-_line_service = None
-
-
-def init_leave_notify(line_service):
-    global _line_service
-    _line_service = line_service
-
 
 # ── 職務代理人工具函式 ──────────────────────────────────────────────────────
 

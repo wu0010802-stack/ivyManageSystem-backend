@@ -204,17 +204,11 @@ router.include_router(workday_router)
 # ============ Service Injection ============
 
 _salary_engine = None
-_line_service = None
 
 
 def init_leaves_services(salary_engine_instance):
     global _salary_engine
     _salary_engine = salary_engine_instance
-
-
-def init_leaves_line_service(line_service):
-    global _line_service
-    _line_service = line_service
 
 
 # ============ Pydantic Models ============

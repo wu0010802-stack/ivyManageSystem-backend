@@ -11,8 +11,8 @@ from utils.auth import require_non_parent_role
 
 from .attendance import router as attendance_router
 from .anomalies import router as anomalies_router
-from .leaves import router as leaves_router, init_leave_notify
-from .overtimes import router as overtimes_router, init_overtime_notify
+from .leaves import router as leaves_router
+from .overtimes import router as overtimes_router
 from .salary import router as salary_router
 from .students import router as students_router
 from .calendar import router as calendar_router
@@ -33,10 +33,7 @@ from .contact_book_templates import router as contact_book_templates_router
 from .home import router as home_router
 from .medications import router as medications_router
 from .class_hub import router as class_hub_router
-from .parent_messages import (
-    router as parent_messages_router,
-    init_parent_messages_line_service,
-)
+from .parent_messages import router as parent_messages_router
 from .search import router as search_router
 from .appraisal import router as appraisal_router
 
@@ -75,8 +72,8 @@ router.include_router(appraisal_router, tags=["portal-appraisal"])
 
 
 def init_portal_notify_services(line_service):
-    """注入 LINE 通知服務至 portal 子模組"""
-    init_leave_notify(line_service)
-    init_overtime_notify(line_service)
-    init_parent_messages_line_service(line_service)
+    """PR-D (2026-05-26) 之後僅保留 contact_book LINE service injection（
+    test fixture 仍透過 init_contact_book_line_service 設 mock 服務）；leaves /
+    overtimes / parent_messages 已改走 services.notification.dispatch.enqueue，
+    無需 service 注入。"""
     init_contact_book_line_service(line_service)
