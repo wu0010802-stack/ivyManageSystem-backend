@@ -43,6 +43,15 @@ class ChannelHub:
     """
 
     def __init__(self) -> None:
+        import warnings
+
+        warnings.warn(
+            "ChannelHub is deprecated; use utils.broadcast.get_broadcast() "
+            "(BroadcastBackend) which supports cross-instance fanout via Redis. "
+            "Removal target: PR after notification-dispatch-phase-2a merges.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._subs: dict[Any, list[WebSocket]] = defaultdict(list)
 
     def subscribe(self, channel_key: Any, ws: WebSocket) -> None:
