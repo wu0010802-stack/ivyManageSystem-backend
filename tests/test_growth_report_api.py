@@ -644,3 +644,125 @@ def test_pdf_job_writes_to_supabase_storage_when_backend_supabase(
     assert not local_pdf.exists(), "supabase backend 不應寫 local PDF 檔"
 
     engine.dispose()
+
+
+def test_download_endpoint_redirects_to_signed_url_when_backend_supabase(
+    monkeypatch, tmp_path
+):
+    """Supabase backend 模式下，GET /api/students/{sid}/growth-reports/{rid}/download
+    應回 302 + Location header 含 signed URL。"""
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+    import models.base as base_module
+    from api.portfolio import reports as reports_mod
+    from api.auth import router as auth_router, _account_failures, _ip_attempts
+    from models.database import Base, Classroom, Student, StudentGrowthReport
+    from models.auth import User
+    from datetime import date
+    from sqlalchemy import create_engine, event as sqla_event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    _account_failures.clear()
+    _ip_attempts.clear()
+
+    # 1. 建立 in-memory SQLite DB
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @sqla_event.listens_for(engine, "connect")
+    def _enforce_fk(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    TestingSession = sessionmaker(bind=engine, autoflush=False)
+    monkeypatch.setattr(base_module, "_engine", engine)
+    monkeypatch.setattr(base_module, "_SessionFactory", TestingSession)
+    Base.metadata.create_all(engine)
+
+    # 2. 建 fixture：student + ready report，file_path = "students/1/42.pdf"
+    with TestingSession() as session:
+        admin = User(
+            id=1,
+            username="admin",
+            password_hash="$2b$12$dummy",
+            role="admin",
+            permission_names=["*"],
+            is_active=True,
+            token_version=0,
+        )
+        classroom = Classroom(id=1, name="兔兔班", is_active=True)
+        student = Student(
+            id=1,
+            student_id="S001",
+            name="王小明",
+            classroom_id=1,
+            lifecycle_status="active",
+            birthday=date(2022, 3, 5),
+            enrollment_date=date(2024, 9, 1),
+        )
+        report = StudentGrowthReport(
+            id=42,
+            student_id=1,
+            period_label="2026 春季",
+            period_start=date(2026, 2, 1),
+            period_end=date(2026, 5, 31),
+            status="ready",
+            file_path="students/1/42.pdf",
+        )
+        session.add_all([admin, classroom, student, report])
+        session.commit()
+
+    # 3. monkeypatch REPORT_ROOT
+    report_root = tmp_path / "growth_reports"
+    monkeypatch.setattr(reports_mod, "REPORT_ROOT", report_root)
+
+    # 4. monkeypatch settings.storage.backend = "supabase"
+    monkeypatch.setattr(reports_mod.settings.storage, "backend", "supabase")
+
+    # 5. monkeypatch get_backend 回 FakeStorage with signed_url 方法
+    class FakeStorage:
+        def save(self, module, key, data, content_type):
+            pass
+
+        def signed_url(self, module, key, ttl_seconds):
+            return f"https://signed.example/{module}/{key}?token=abc"
+
+    monkeypatch.setattr(reports_mod, "get_backend", lambda: FakeStorage())
+
+    # 6. 建 TestClient（不跟隨 redirect，才能看到 302）
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from utils.auth import create_access_token
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(reports_mod.router)
+    client = TestClient(app, follow_redirects=False)
+
+    token = create_access_token(
+        data={
+            "sub": "admin",
+            "user_id": 1,
+            "role": "admin",
+            "permission_names": ["*"],
+            "token_version": 0,
+        }
+    )
+    client.headers.update({"Authorization": f"Bearer {token}"})
+
+    # 7. call endpoint，assert response.status_code == 302
+    resp = client.get("/api/students/1/growth-reports/42/download")
+    assert resp.status_code == 302, f"expected 302, got {resp.status_code}: {resp.text}"
+
+    # 8. assert "signed" in response.headers["location"]
+    location = resp.headers.get("location", "")
+    assert "signed" in location, f"expected 'signed' in location, got: {location!r}"
+
+    engine.dispose()

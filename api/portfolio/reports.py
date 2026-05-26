@@ -26,7 +26,7 @@ from fastapi import (
     Request,
     Response,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
@@ -549,17 +549,6 @@ async def download_growth_report(
                 raise HTTPException(
                     status_code=409, detail=f"報告尚未準備好（status={r.status}）"
                 )
-            try:
-                path = _resolve_pdf_path(r.file_path)
-            except ValueError:
-                logger.error(
-                    "growth report %d has illegal file_path: %r",
-                    report_id,
-                    r.file_path,
-                )
-                raise HTTPException(status_code=410, detail="報告檔案已遺失")
-            if not path.exists():
-                raise HTTPException(status_code=410, detail="報告檔案已遺失")
             # PDF 下載不 dedup：每次下載都要可溯（個資法 §10 查閱/複製權）
             write_explicit_audit(
                 request,
@@ -572,11 +561,28 @@ async def download_growth_report(
                 ),
                 changes={"student_id": student_id, "period": r.period_label},
             )
-            return FileResponse(
-                str(path),
-                media_type="application/pdf",
-                filename=f"growth_report_{r.id}.pdf",
-            )
+            if settings.storage.backend == "supabase":
+                backend = get_backend()
+                ttl = settings.storage.supabase_signed_url_ttl
+                url = backend.signed_url("growth_reports", r.file_path, ttl)
+                return RedirectResponse(url=url, status_code=302)
+            else:
+                try:
+                    path = _resolve_pdf_path(r.file_path)
+                except ValueError:
+                    logger.error(
+                        "growth report %d has illegal file_path: %r",
+                        report_id,
+                        r.file_path,
+                    )
+                    raise HTTPException(status_code=410, detail="報告檔案已遺失")
+                if not path.exists():
+                    raise HTTPException(status_code=410, detail="報告檔案已遺失")
+                return FileResponse(
+                    str(path),
+                    media_type="application/pdf",
+                    filename=f"growth_report_{r.id}.pdf",
+                )
     except HTTPException:
         raise
     except Exception as e:
