@@ -118,3 +118,29 @@ def _find_or_none_salary_record(
         )
         .first()
     )
+
+
+def _compensatory_balance(employee_id: int, session: Session) -> float:
+    """員工目前可用補休餘額 = SUM(granted_hours - consumed_hours) WHERE status='active'
+
+    此為新的 source of truth；既有 LeaveQuota.compensatory.total_hours 降級為快取。
+    """
+    from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+
+    balance = (
+        session.query(
+            func.coalesce(
+                func.sum(
+                    OvertimeCompLeaveGrant.granted_hours
+                    - OvertimeCompLeaveGrant.consumed_hours
+                ),
+                0,
+            )
+        )
+        .filter(
+            OvertimeCompLeaveGrant.employee_id == employee_id,
+            OvertimeCompLeaveGrant.status == "active",
+        )
+        .scalar()
+    )
+    return float(balance or 0)

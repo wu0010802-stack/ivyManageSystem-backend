@@ -4,7 +4,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import Column, Integer, Date, create_engine
+from sqlalchemy import Column, Integer, Date, create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 from services.leave_quota_expiry.helpers import (
@@ -14,6 +14,7 @@ from services.leave_quota_expiry.helpers import (
     _is_anniversary_today_sql,
     _approved_annual_used_in_period,
     _find_or_none_salary_record,
+    _compensatory_balance,
 )
 
 
@@ -101,3 +102,39 @@ class TestIsAnniversaryTodaySQL:
         )
         assert len(result) == 1
         assert result[0].id == 1
+
+
+class TestCompensatoryBalance:
+    """補休結餘 = SUM(granted_hours - consumed_hours) WHERE status='active'"""
+
+    def test_compensatory_balance_sum_active_grants(self, session):
+        """補休結餘 = SUM(granted_hours - consumed_hours) WHERE status='active'"""
+        # 建立補休 grant 表（所有 FK 參考表均虛擬，實際不插入資料）
+        session.execute(text("""CREATE TABLE overtime_comp_leave_grants (
+            id INTEGER PRIMARY KEY,
+            overtime_record_id INTEGER NOT NULL,
+            employee_id INTEGER NOT NULL,
+            granted_hours FLOAT NOT NULL,
+            granted_at DATE NOT NULL,
+            expires_at DATE NOT NULL,
+            consumed_hours FLOAT NOT NULL DEFAULT 0,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            expired_at DATETIME,
+            payout_salary_record_id INTEGER,
+            payout_log_id BIGINT,
+            created_at DATETIME,
+            updated_at DATETIME
+        )"""))
+        session.commit()
+
+        # 直接 SQL INSERT 測試資料（迴避 ORM FK 檢查）
+        session.execute(text("""INSERT INTO overtime_comp_leave_grants
+            (id, overtime_record_id, employee_id, granted_hours, granted_at,
+             expires_at, consumed_hours, status)
+            VALUES
+            (1, 10, 1, 4.0, '2025-04-01', '2026-04-01', 1.0, 'active'),
+            (2, 11, 1, 8.0, '2025-05-01', '2026-05-01', 0.0, 'active'),
+            (3, 12, 1, 2.0, '2024-01-01', '2025-01-01', 0.0, 'expired')"""))
+        session.commit()
+
+        assert _compensatory_balance(1, session) == 11.0  # (4-1) + (8-0)
