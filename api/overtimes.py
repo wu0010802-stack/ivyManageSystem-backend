@@ -4,7 +4,7 @@ Overtime management router
 
 import logging
 import calendar as cal_module
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timedelta
 from io import BytesIO
 from typing import Any, Optional, List
 
@@ -38,6 +38,7 @@ from models.database import (
     SalaryRecord,
 )
 from models.event import Holiday
+from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from utils.auth import require_staff_permission
 from utils.constants import (
     OVERTIME_TYPE_LABELS,
@@ -270,6 +271,16 @@ def _grant_comp_leave_quota(session, ot: OvertimeRecord, result: dict) -> None:
             note="由加班補休累積",
         )
         session.add(quota)
+    # ── 新增 grant ledger row（per-OT 帳本，T9 scheduler 將從此撈到期 grant 結算）──
+    grant = OvertimeCompLeaveGrant(
+        overtime_record_id=ot.id,
+        employee_id=ot.employee_id,
+        granted_hours=ot.hours,
+        granted_at=ot.overtime_date,
+        expires_at=ot.overtime_date + timedelta(days=365),
+        status="active",
+    )
+    session.add(grant)
     ot.comp_leave_granted = True
     result["comp_leave_hours_granted"] = ot.hours
     logger.info(
