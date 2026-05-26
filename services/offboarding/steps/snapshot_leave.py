@@ -121,7 +121,7 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
 
     # ── 寫 UnusedLeavePayoutLog 留證據鏈 ──
     daily_wage = float(snap.get("daily_wage", 0))
-    hourly_wage = Decimal(str(round(daily_wage / 8, 2)))
+    hourly_wage = Decimal(str(round_half_up(daily_wage / 8, 2)))
     log = UnusedLeavePayoutLog(
         employee_id=record.employee_id,
         source_type="offboarding",

@@ -226,6 +226,7 @@ jobs:
         #   scripts/dump_openapi.py            — CLI 工具，獨立於 FastAPI startup
         #   scripts/dr_storage_sync.py         — DR CLI 工具，GH Actions 跑無 DB 依賴
         #   alembic/env.py                     — Alembic CLI，早於 Settings init
+        #   alembic/versions/                  — migration scripts 跑時無 settings（同 env.py 性質）
         run: |
           if git grep -nE 'os\.(getenv|environ)' -- '*.py' \
                ':!config/' \
@@ -233,7 +234,8 @@ jobs:
                ':!tests/spike_rls/' \
                ':!scripts/dump_openapi.py' \
                ':!scripts/dr_storage_sync.py' \
-               ':!alembic/env.py'; then
+               ':!alembic/env.py' \
+               ':!alembic/versions/'; then
             echo "::error::os.getenv / os.environ.get 只能在 config/ 與明確 allow-list 內使用"
             echo "::error::請改讀 settings.<domain>.<field>（見 docs/superpowers/specs/2026-05-21-config-centralization-phase1-design.md）"
             exit 1

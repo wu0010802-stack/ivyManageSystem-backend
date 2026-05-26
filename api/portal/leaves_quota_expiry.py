@@ -17,6 +17,7 @@ from models.database import get_session
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from models.employee import Employee
 from utils.auth import get_current_user
+from utils.taipei_time import today_taipei
 from services.leave_quota_expiry.helpers import (
     _compensatory_balance,
     _next_month,
@@ -109,7 +110,7 @@ def get_my_leave_quota_expiry(
         }
 
     # 3. 下個週年日
-    today = date.today()
+    today = today_taipei()
     next_anniv = _compute_next_anniversary(emp.hire_date, today)
 
     # 4. 預計結算月：取最近的候選日（grant expires_at 或 next_anniversary）
