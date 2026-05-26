@@ -355,3 +355,28 @@ class AdminRegistrationPayload(BaseModel):
     @classmethod
     def strip_whitespace(cls, v):
         return v.strip() if isinstance(v, str) else v
+
+
+class RefundSuggestionItem(BaseModel):
+    """單一退費 item（course 或 supply）建議值。spec §7。"""
+
+    type: str = Field(..., description="course | supply")
+    target_id: int = Field(..., description="course_id 或 supply_id")
+    name: str
+    amount_due: int
+    # NULL sessions 時為 None；前端應 fallback 顯示為「無法計算，建議全退」
+    suggested_amount: Optional[int] = Field(None, description="None=無法計算")
+    calc_method: str
+    calc_payload: dict
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RefundSuggestionResponse(BaseModel):
+    """GET /registrations/{id}/refund-suggestion 回應 schema。spec §7。"""
+
+    registration_id: int
+    computed_at: str  # ISO datetime
+    # 算法見 spec §6：item.suggested 為 None 時以 amount_due fallback 加總
+    total_suggested_amount: int
+    total_amount_due: int
+    items: list[RefundSuggestionItem]

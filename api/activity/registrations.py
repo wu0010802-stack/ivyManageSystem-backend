@@ -33,6 +33,7 @@ from models.database import (
     ActivityAttendance,
 )
 from services.activity_service import activity_service
+from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -779,5 +780,32 @@ async def delete_registration(
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.get("/registrations/{registration_id}/refund-suggestion")
+def get_refund_suggestion(
+    registration_id: int,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
+    ),
+):
+    """取得 registration 的退費建議（每門 course / 每筆 supply 分開列出）。
+
+    spec §7：前端 POS UI 在退費前 GET 此 endpoint 預載建議值。
+    Server-side build_refund_suggestion 同套邏輯也用於 POS verify。
+
+    Returns: RefundSuggestionResponse
+    Raises:
+        404: reg 不存在或 is_active=False
+        403: 無 ACTIVITY_PAYMENT_WRITE 權限
+    """
+    session = get_session()
+    try:
+        result = build_refund_suggestion(session, registration_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     finally:
         session.close()
