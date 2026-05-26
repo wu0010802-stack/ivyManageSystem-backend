@@ -63,8 +63,10 @@ def app_client(tmp_path, monkeypatch):
     fake_salary_engine = MagicMock()
     monkeypatch.setattr(leaves_module, "_salary_engine", fake_salary_engine)
     monkeypatch.setattr(overtimes_module, "_salary_engine", fake_salary_engine)
-    monkeypatch.setattr(leaves_module, "_line_service", None)
-    monkeypatch.setattr(overtimes_module, "_line_service", None)
+    # 2026-05-25 notification phase 2 後 api.leaves / api.overtimes 不再有 _line_service
+    # module 變數，改走 services.notification.dispatch.enqueue。test 預設不 mock
+    # dispatch（test fixture 不執行 after_commit hook），個別 test 需驗 LINE push
+    # 行為時自己 patch services.notification.dispatch.enqueue。
 
     app = FastAPI()
     app.include_router(auth_router)
@@ -346,16 +348,19 @@ class TestHLinePushAndShiftHours:
             session.commit()
             lv_id = lv.id
 
-        # 假 LINE service 記錄推播
+        # 改 mock dispatch.enqueue 記錄通知事件（2026-05-25 後 api.leaves 改走
+        # services.notification.dispatch.enqueue，不再 import _line_service）
         notify_calls = []
-        fake_line = _MM()
-        fake_line._notify_leave_result = lambda *a, **kw: notify_calls.append(a)
+
+        def _record_enqueue(**kwargs):
+            notify_calls.append(kwargs)
+
         # 假薪資 engine 拋例外
         fake_engine = _MM()
         fake_engine.process_salary_calculation = _MM(
             side_effect=RuntimeError("simulated recalc fail")
         )
-        mp.setattr(leaves_module, "_line_service", fake_line)
+        mp.setattr("services.notification.dispatch.enqueue", _record_enqueue)
         mp.setattr(leaves_module, "_salary_engine", fake_engine)
 
         assert _login(client).status_code == 200
@@ -371,7 +376,7 @@ class TestHLinePushAndShiftHours:
         assert lv_id in failed_ids, f"薪資重算失敗應計入 failed; body={body}"
         assert (
             len(notify_calls) == 0
-        ), f"薪資重算失敗條目不應推 LINE；實際 {len(notify_calls)} 次"
+        ), f"薪資重算失敗條目不應 enqueue 通知；實際 {len(notify_calls)} 次"
 
     def test_p2_13_calc_shift_hours_consistent_with_bounded(self):
         """_calc_shift_hours 與 _calc_bounded_shift_hours(work_start, work_end, None, None)
