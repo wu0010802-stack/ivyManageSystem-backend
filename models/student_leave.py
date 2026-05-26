@@ -24,7 +24,6 @@ from sqlalchemy import (
 
 from models.base import Base
 
-
 # 與 StudentAttendance.status 共用語意（中文字串）
 LEAVE_TYPES = ("病假", "事假")
 LEAVE_STATUSES = ("pending", "approved", "rejected", "cancelled")
@@ -72,6 +71,8 @@ class StudentLeaveRequest(Base):
     )
     reviewed_at = Column(DateTime, nullable=True)
     review_note = Column(Text, nullable=True)
+
+    client_request_id = Column(String(64), nullable=True)
 
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(
