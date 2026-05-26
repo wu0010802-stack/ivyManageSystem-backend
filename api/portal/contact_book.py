@@ -451,7 +451,7 @@ def publish_endpoint(
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
         was_already_published = entry.published_at is not None
-        entry = publish_entry(session, entry_id=entry.id, line_service=_line_service)
+        entry = publish_entry(session, entry_id=entry.id)
         session.commit()
         photos = _load_photos(session, entry.id)
 
@@ -754,18 +754,9 @@ def batch_publish(
 
         results: list[dict] = []
         success_ids: list[int] = []
-        deferred_push_tasks: list[dict] = []
         for entry in entries:
             try:
-                published = publish_entry(
-                    session,
-                    entry_id=entry.id,
-                    line_service=_line_service,
-                    defer_line_push=True,
-                )
-                deferred_push_tasks.extend(
-                    getattr(published, "line_push_tasks", []) or []
-                )
+                publish_entry(session, entry_id=entry.id)
                 success_ids.append(entry.id)
                 results.append({"entry_id": entry.id, "status": "ok"})
             except Exception as exc:
@@ -773,21 +764,19 @@ def batch_publish(
                 results.append(
                     {"entry_id": entry.id, "status": "error", "message": str(exc)}
                 )
+        # commit 觸發 dispatch after_commit hook，依序對每位 guardian 跑 LINE
+        # adapter。原 fire_line_push_tasks（session.close 後執行）已廢除：
+        # dispatch._fan_out 內每筆 event 用獨立 short-lived session 寫 log，不
+        # 占用 caller session 的 DB 連線，原連線池防擠效果由架構自然滿足。
         session.commit()
 
         request.state.audit_entity_id = ",".join(map(str, success_ids))
         request.state.audit_summary = (
             f"教師批次發布聯絡簿：success={len(success_ids)}/{len(entries)}"
         )
+        return {"results": results, "success_count": len(success_ids)}
     finally:
         session.close()
-
-    # commit + close 後在 transaction / DB 連線之外推 LINE，
-    # 避免迴圈內同步 requests.post(timeout=5) × N 把 DB 連線池佔住。
-    from services.contact_book_service import fire_line_push_tasks
-
-    fire_line_push_tasks(_line_service, deferred_push_tasks)
-    return {"results": results, "success_count": len(success_ids)}
 
 
 @router.delete("/{entry_id}/photos/{attachment_id}")
