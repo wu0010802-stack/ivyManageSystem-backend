@@ -77,8 +77,7 @@ def _enqueue_parent_message_received(
     LINE + 家長 inbox WS（channel_matrix: parent.message_received → ("line","ws")）。
 
     既有 LINE quick-reply postback（「💬 回覆此訊息」按鈕）暫時失去，待
-    LINE_HANDLERS 註冊對映 line_service.notify_parent_message_received 後恢復
-    （PR-C 或 Phase 4）。
+    LINE_HANDLERS 註冊對映 line_service 的對應 method 後恢復（PR-C 或 Phase 4）。
     """
     try:
         from services.notification import dispatch
