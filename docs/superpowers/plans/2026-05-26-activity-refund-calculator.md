@@ -1077,7 +1077,7 @@ def test_get_refund_suggestion_404_not_found(client):
 
 
 def test_get_refund_suggestion_requires_permission(client):
-    """無 ACTIVITY_PAYMENT_WRITE 權限應 403。"""
+    """無 ACTIVITY_WRITE 權限應 403。"""
     c, sf = client
     with sf() as s:
         # 只給 READ，沒 WRITE
@@ -1151,7 +1151,7 @@ from services.activity_refund_query import build_refund_suggestion
 def get_refund_suggestion(
     registration_id: int,
     current_user: dict = Depends(
-        require_staff_permission(Permission.ACTIVITY_PAYMENT_WRITE)
+        require_staff_permission(Permission.ACTIVITY_WRITE)
     ),
 ):
     """取得 registration 的退費建議（每門 course / 每筆 supply 分開列出）。
@@ -1162,7 +1162,7 @@ def get_refund_suggestion(
     Returns: RefundSuggestionResponse
     Raises:
         404: reg 不存在或 is_active=False
-        403: 無 ACTIVITY_PAYMENT_WRITE 權限
+        403: 無 ACTIVITY_WRITE 權限
     """
     session = get_session()
     try:
@@ -1191,7 +1191,7 @@ git add schemas/activity_admin.py api/activity/registrations.py tests/test_activ
 git commit -m "feat(activity): GET /registrations/{id}/refund-suggestion endpoint
 
 對應 spec §7：前端 POS UI 退費前可拉伺服器算的 suggested 建議值。
-Permission: ACTIVITY_PAYMENT_WRITE（與退費路徑同層）。
+Permission: ACTIVITY_WRITE（與退費路徑同層）。
 404 for missing reg；既有 require_staff_permission 處理 403。
 3 test: 200 happy path + 404 + 403 permission gate。"
 ```

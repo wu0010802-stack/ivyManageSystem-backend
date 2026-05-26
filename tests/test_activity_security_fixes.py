@@ -85,11 +85,18 @@ def client(tmp_path):
 
 
 def _admin(session, username="sec_admin"):
+    # 補 ACTIVITY_PAYMENT_APPROVE：新 guard 3 (diff verify) 在 _make_reg sessions=NULL 時
+    # fallback 為全退建議；TestRefundExceedsPaid 用部分退費，diff > 100 會被 guard 3 先擋；
+    # 本 test 目的是測 guard 1（超額 400）與 guard 4（精確退費 200），故授予 approver 略過 guard 3。
     user = User(
         username=username,
         password_hash=hash_password("Temp123456"),
         role="admin",
-        permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
+        permission_names=[
+            "ACTIVITY_READ",
+            "ACTIVITY_WRITE",
+            "ACTIVITY_PAYMENT_APPROVE",
+        ],
         is_active=True,
     )
     session.add(user)

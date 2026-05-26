@@ -47,6 +47,9 @@ from utils.permissions import Permission
 from utils.portfolio_access import can_view_student_pii
 from utils.rate_limit import SlidingWindowLimiter
 
+from services.activity_payment_guards import require_approve_for_refund_diff
+from services.activity_refund_query import build_refund_suggestion
+
 from ._shared import (
     TAIPEI_TZ,
     MIN_REFUND_REASON_LENGTH,
@@ -647,6 +650,40 @@ async def pos_checkout(
                     label=f"報名 {item.registration_id} 累積退費總額",
                 )
 
+        # ── 第三道：實退 vs 建議值偏離簽核 (spec §8.1) ───────────────
+        # Why: 員工算錯 / 多退私吞。重算 server-side suggestion 與 body 比對；
+        # 偏離總額 > NT$100 需 ACTIVITY_PAYMENT_APPROVE 權限。
+        # 注意：多 reg 同收據用 sum(abs(per-reg-diff)) 避免方向抵消漏網。
+        _refund_audit_context: dict = {}
+        if body.type == "refund":
+            actual_by_reg = {it.registration_id: it.amount for it in body.items}
+            suggested_by_reg: dict[int, int] = {}
+            suggestion_details: list[dict] = []
+            for rid in actual_by_reg:
+                suggestion = build_refund_suggestion(session, rid)
+                suggested_by_reg[rid] = suggestion["total_suggested_amount"]
+                suggestion_details.append(suggestion)
+
+            total_actual = sum(actual_by_reg.values())
+            total_suggested = sum(suggested_by_reg.values())
+            diff = sum(
+                abs(actual_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg
+            )
+
+            require_approve_for_refund_diff(
+                diff=diff,
+                current_user=current_user,
+                suggested_total=total_suggested,
+                actual_total=total_actual,
+            )
+
+            _refund_audit_context = {
+                "suggested_total": total_suggested,
+                "actual_total": total_actual,
+                "diff": diff,
+                "suggestion_details": suggestion_details,
+            }
+
         total_map = _batch_calc_total_amounts(session, reg_ids)
         course_map = _fetch_reg_course_details(session, reg_ids)
         supply_map = _fetch_reg_supplies(session, reg_ids)
@@ -828,6 +865,32 @@ async def pos_checkout(
             "payment_date": body.payment_date.isoformat(),
             "registration_ids": reg_ids,
         }
+
+        # spec §12：退費路徑擴充 audit_changes 含 calculator 建議值反差
+        if body.type == "refund" and _refund_audit_context:
+            request.state.audit_changes.update(
+                {
+                    "refund_suggested_total": _refund_audit_context["suggested_total"],
+                    "refund_actual_total": _refund_audit_context["actual_total"],
+                    "refund_diff": _refund_audit_context["diff"],
+                    "refund_suggestion_per_reg": [
+                        {
+                            "registration_id": sd["registration_id"],
+                            "total_suggested": sd["total_suggested_amount"],
+                            "items": [
+                                {
+                                    "type": it["type"],
+                                    "target_id": it["target_id"],
+                                    "suggested": it["suggested_amount"],
+                                    "calc_method": it["calc_method"],
+                                }
+                                for it in sd["items"]
+                            ],
+                        }
+                        for sd in _refund_audit_context["suggestion_details"]
+                    ],
+                }
+            )
 
         return {
             "receipt_no": receipt_no,

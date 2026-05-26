@@ -362,7 +362,11 @@ class TestFeeRefundCumulative:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["FEES_READ", "FEES_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "FEES_READ",
+                    "FEES_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.add(
                 StudentFeeRefund(
@@ -474,11 +478,15 @@ class TestActivityRefundCumulative:
         """已 voided 的退費不計入累積（避免封過刪過的歷史誤殺合法後續操作）。"""
         client, sf = strict_client
         with sf() as s:
-            reg = _seed_activity_registration(s, paid_amount=5000)
+            reg = _seed_activity_registration(s, paid_amount=5000, course_price=400)
             _make_user(
                 s,
                 username="act_writer",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
+                # course_price=400 使 sessions=NULL fallback 建議值 = 400 = 退費金額 → diff=0 guard 3 自然通過；保留 guard 2 對 voided 排除邏輯的 active 驗證。
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                ],
             )
             from datetime import datetime as _dt
 
@@ -575,7 +583,11 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.commit()
 
@@ -594,7 +606,11 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.commit()
 
@@ -645,7 +661,11 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.commit()
 

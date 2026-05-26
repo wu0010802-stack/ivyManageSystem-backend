@@ -298,10 +298,25 @@ class TestPOSCheckoutAtomicity:
             assert reg.paid_amount == 500  # 未變動
 
     def test_refund_reduces_paid_amount(self, pos_client):
-        """POS 退費必填 notes（原因 ≥ 15 字），500 小額不需簽核權限即可執行。"""
+        """POS 退費必填 notes（原因 ≥ 15 字），500 小額不需簽核權限即可執行。
+
+        NOTE: 需要 ACTIVITY_PAYMENT_APPROVE 因為 _setup_reg 預設 sessions=NULL，
+        guard 3（diff verify）用 amount_due fallback 算出 suggested=2000，
+        實退 500 → diff=1500 > 100，正確觸發 guard 3。
+        本測試目的是驗證退費可執行 + paid_amount 遞減，不是測 guard 3，
+        故授予 approver 權限讓 guard 3 略過。
+        """
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s)
+            # NULL sessions + 部分退費合法觸發新 guard 3（diff=1500）；需 approver 略過
+            _create_admin(
+                s,
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
+            )
             reg = _setup_reg(s, student_name="王小明", paid_amount=2000, is_paid=True)
             s.commit()
             reg_id = reg.id

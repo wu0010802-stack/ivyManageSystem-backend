@@ -200,3 +200,66 @@ class TestRequireApproveForCumulativeRefund:
         require_approve_for_cumulative_refund(
             session, reg.id, 600, APPROVER, label="累積退費"
         )
+
+
+# ── require_approve_for_refund_diff: 偏離 calculator 建議值簽核 ─────────────
+
+
+from services.activity_payment_guards import require_approve_for_refund_diff
+
+
+def test_refund_diff_below_threshold_passes():
+    """diff <= NT$100 → 任何員工通過。"""
+    # 應該不 raise
+    require_approve_for_refund_diff(
+        diff=50,
+        current_user=LINE_STAFF,
+        suggested_total=500,
+        actual_total=550,
+    )
+
+
+def test_refund_diff_at_threshold_passes():
+    """diff == threshold 邊界 → 視為 ≤ pass。"""
+    require_approve_for_refund_diff(
+        diff=100,
+        current_user=LINE_STAFF,
+        suggested_total=500,
+        actual_total=600,
+    )
+
+
+def test_refund_diff_over_threshold_blocks_staff():
+    """diff > NT$100 + 一線員工 → 403。"""
+    with pytest.raises(HTTPException) as exc:
+        require_approve_for_refund_diff(
+            diff=101,
+            current_user=LINE_STAFF,
+            suggested_total=500,
+            actual_total=601,
+        )
+    assert exc.value.status_code == 403
+    assert "偏離" in exc.value.detail or "差" in exc.value.detail
+
+
+def test_refund_diff_over_threshold_passes_approver():
+    """diff > NT$100 + ACTIVITY_PAYMENT_APPROVE → pass。"""
+    require_approve_for_refund_diff(
+        diff=500,
+        current_user=APPROVER,
+        suggested_total=500,
+        actual_total=1000,
+    )
+
+
+def test_refund_diff_error_message_contains_amounts():
+    """403 detail 應含 suggested / actual / diff 三個金額方便員工 debug。"""
+    with pytest.raises(HTTPException) as exc:
+        require_approve_for_refund_diff(
+            diff=200,
+            current_user=LINE_STAFF,
+            suggested_total=800,
+            actual_total=1000,
+        )
+    msg = exc.value.detail
+    assert "800" in msg and "1000" in msg and "200" in msg

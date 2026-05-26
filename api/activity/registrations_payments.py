@@ -25,6 +25,8 @@ from models.database import (
     ActivityPaymentRecord,
 )
 from services.activity_service import activity_service
+from services.activity_payment_guards import require_approve_for_refund_diff
+from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -388,6 +390,26 @@ async def add_registration_payment(
                 cumulative_refund, current_user, label="活動累積退費總額"
             )
 
+        # ── 第三道：實退 vs 建議值偏離簽核 (spec §8.2) ───────────────
+        if body.type == "refund":
+            suggestion = build_refund_suggestion(session, registration_id)
+            suggested_total = suggestion["total_suggested_amount"]
+            diff = abs(int(body.amount) - suggested_total)
+            require_approve_for_refund_diff(
+                diff=diff,
+                current_user=current_user,
+                suggested_total=suggested_total,
+                actual_total=int(body.amount),
+            )
+            _refund_audit_context = {
+                "suggested_total": suggested_total,
+                "actual_total": int(body.amount),
+                "diff": diff,
+                "suggestion_details": [suggestion],
+            }
+        else:
+            _refund_audit_context = {}
+
         operator = current_user.get("username", "")
 
         if body.type == "refund" and body.amount > (reg.paid_amount or 0):
@@ -500,6 +522,31 @@ async def add_registration_payment(
             "payment_date": body.payment_date.isoformat(),
             "paid_amount_after": reg.paid_amount,
         }
+        # spec §12：退費路徑擴充 audit_changes 含 calculator 建議值反差
+        if body.type == "refund" and _refund_audit_context:
+            request.state.audit_changes.update(
+                {
+                    "refund_suggested_total": _refund_audit_context["suggested_total"],
+                    "refund_actual_total": _refund_audit_context["actual_total"],
+                    "refund_diff": _refund_audit_context["diff"],
+                    "refund_suggestion_per_reg": [
+                        {
+                            "registration_id": sd["registration_id"],
+                            "total_suggested": sd["total_suggested_amount"],
+                            "items": [
+                                {
+                                    "type": it["type"],
+                                    "target_id": it["target_id"],
+                                    "suggested": it["suggested_amount"],
+                                    "calc_method": it["calc_method"],
+                                }
+                                for it in sd["items"]
+                            ],
+                        }
+                        for sd in _refund_audit_context["suggestion_details"]
+                    ],
+                }
+            )
         return {
             "message": f"{type_label}記錄新增成功",
             "paid_amount": reg.paid_amount,

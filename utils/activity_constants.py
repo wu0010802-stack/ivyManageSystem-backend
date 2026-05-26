@@ -30,3 +30,8 @@ REFUND_APPROVAL_THRESHOLD = 1000
 # Why: 課程價格會被寫入 price_snapshot 進入應繳總額，搭配「補齊收入」路徑可建立異常高額
 # 應收。一般幼稚園單品價格遠低於 30,000，超過視為設定錯誤或舞弊嘗試。
 ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD = 30_000
+
+# 實退 vs calculator 建議值差距閾值（NT$）；超過此差距需 ACTIVITY_PAYMENT_APPROVE 權限。
+# Why: 員工算錯/故意多退之事前制衡；與 REFUND_APPROVAL_THRESHOLD（總額）獨立，
+# 兩道閘共存，任一觸發都要簽核。
+ACTIVITY_REFUND_DIFF_THRESHOLD = 100
