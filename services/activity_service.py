@@ -73,6 +73,60 @@ ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS = 600
 ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS = 1800
 
 
+def _resolve_parent_user_ids_for_registration(
+    session, registration_id: int
+) -> list[int]:
+    """ActivityRegistration → student_id → active guardian.user_id list。
+
+    沒匹配 student（public 報名）或 student 無 active guardian 時回 []，由 caller
+    視為 fail-soft（不 enqueue 通知，不寫 reminder_sent_at 戳記但 caller 仍照
+    success/failure 判斷處理）。對齊 api/announcements.py:_resolve_parent_user_ids。
+    """
+    from models.database import Guardian
+
+    reg = (
+        session.query(ActivityRegistration)
+        .filter(ActivityRegistration.id == registration_id)
+        .first()
+    )
+    if not reg or reg.student_id is None:
+        return []
+    rows = (
+        session.query(Guardian.user_id)
+        .filter(
+            Guardian.student_id == reg.student_id,
+            Guardian.user_id.isnot(None),
+            Guardian.deleted_at.is_(None),
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+def _list_active_users_with_permission(session, perm: str) -> list[int]:
+    """SQLite/PG 通用：列 permission_names 含 perm 的 active user_id。
+
+    對齊 api/permissions_admin.py:136-145 / api/portal/leaves.py 等同名 helper。
+    """
+    from models.database import User
+
+    is_sqlite = session.bind.dialect.name == "sqlite"
+    if is_sqlite:
+        users = session.query(User).filter(User.is_active.is_(True)).all()
+        return [
+            u.id for u in users if u.permission_names and perm in u.permission_names
+        ]
+    rows = (
+        session.query(User.id)
+        .filter(
+            User.is_active.is_(True),
+            User.permission_names.contains([perm]),
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
 class ActivityService:
     def __init__(self):
         self._line_svc = None
@@ -824,13 +878,29 @@ class ActivityService:
             )
             session.flush()
             expired_per_course[course_id] = expired_per_course.get(course_id, 0) + 1
-            if self._line_svc is not None:
-                try:
-                    self._line_svc.notify_activity_waitlist_promotion_expired(
-                        student_name or str(reg_id), course_name
+
+            # 通知家長：候補轉正逾期。fail-soft（無 guardian 時跳過 enqueue）
+            try:
+                from services.notification import dispatch
+
+                parent_uids = _resolve_parent_user_ids_for_registration(session, reg_id)
+                for puid in parent_uids:
+                    dispatch.enqueue(
+                        session=session,
+                        event_type="activity.waitlist_expired",
+                        recipient_user_id=puid,
+                        context={
+                            "student_name": student_name or str(reg_id),
+                            "course_name": course_name,
+                            "course_id": course_id,
+                        },
+                        source_entity_type="registration_course",
+                        source_entity_id=reg_id,
                     )
-                except Exception:
-                    logger.exception("發送候補轉正逾期通知失敗 reg=%s", reg_id)
+            except Exception:
+                logger.exception(
+                    "activity.waitlist_expired enqueue 失敗 reg=%s", reg_id
+                )
             expired_count += 1
 
         # 釋出 N 個位子 → 嘗試遞補 N 次（超過候補數時內層容量閘讓多餘呼叫變 no-op）
@@ -866,24 +936,41 @@ class ActivityService:
                 .first()
             )
             course_name = course.name if course else f"course_{rc.course_id}"
+            # 通知家長：T-6h 最後提醒。dispatch.enqueue 成功註冊即寫戳記
+            # （fire-and-forget；LINE 實際送達由 dispatch._fan_out 內部處理，
+            # caller 拿不到 ACK；推送失敗下輪不重推，trade-off 見 PR description）
             success = False
-            if self._line_svc is not None:
-                try:
-                    result = self._line_svc.notify_activity_waitlist_final_reminder(
-                        student_name or str(rc.registration_id),
-                        course_name,
-                        rc.confirm_deadline,
+            try:
+                from services.notification import dispatch
+
+                parent_uids = _resolve_parent_user_ids_for_registration(
+                    session, rc.registration_id
+                )
+                for puid in parent_uids:
+                    dispatch.enqueue(
+                        session=session,
+                        event_type="activity.waitlist_final_reminder",
+                        recipient_user_id=puid,
+                        context={
+                            "student_name": student_name or str(rc.registration_id),
+                            "course_name": course_name,
+                            "course_id": rc.course_id,
+                            "deadline": (
+                                rc.confirm_deadline.isoformat()
+                                if rc.confirm_deadline
+                                else None
+                            ),
+                        },
+                        source_entity_type="registration_course",
+                        source_entity_id=rc.registration_id,
                     )
-                    success = bool(result)
-                except Exception:
-                    logger.exception(
-                        "發送候補轉正最後提醒失敗 reg=%s course=%s",
-                        rc.registration_id,
-                        rc.course_id,
-                    )
-            else:
-                # 無 LINE 服務時視為不需發送，寫戳記避免重複查詢
                 success = True
+            except Exception:
+                logger.exception(
+                    "activity.waitlist_final_reminder enqueue 失敗 reg=%s course=%s",
+                    rc.registration_id,
+                    rc.course_id,
+                )
             if success:
                 rc.final_reminder_sent_at = now
                 final_reminded_count += 1
@@ -920,26 +1007,39 @@ class ActivityService:
                 .first()
             )
             course_name = course.name if course else f"course_{rc.course_id}"
+            # 通知家長：T-24h 一般提醒（同 final_reminder 邏輯）
             success = False
-            if self._line_svc is not None:
-                try:
-                    result = self._line_svc.notify_activity_waitlist_promotion_reminder(
-                        student_name or str(rc.registration_id),
-                        course_name,
-                        rc.confirm_deadline,
+            try:
+                from services.notification import dispatch
+
+                parent_uids = _resolve_parent_user_ids_for_registration(
+                    session, rc.registration_id
+                )
+                for puid in parent_uids:
+                    dispatch.enqueue(
+                        session=session,
+                        event_type="activity.waitlist_reminder",
+                        recipient_user_id=puid,
+                        context={
+                            "student_name": student_name or str(rc.registration_id),
+                            "course_name": course_name,
+                            "course_id": rc.course_id,
+                            "deadline": (
+                                rc.confirm_deadline.isoformat()
+                                if rc.confirm_deadline
+                                else None
+                            ),
+                        },
+                        source_entity_type="registration_course",
+                        source_entity_id=rc.registration_id,
                     )
-                    # notify_activity_waitlist_promotion_reminder 回傳 bool
-                    # True=成功；False=失敗（不寫戳記，下輪重試）
-                    success = bool(result)
-                except Exception:
-                    logger.exception(
-                        "發送候補轉正提醒失敗 reg=%s course=%s",
-                        rc.registration_id,
-                        rc.course_id,
-                    )
-            else:
-                # 無 LINE 服務時視為不需發送，寫戳記避免重複查詢
                 success = True
+            except Exception:
+                logger.exception(
+                    "activity.waitlist_reminder enqueue 失敗 reg=%s course=%s",
+                    rc.registration_id,
+                    rc.course_id,
+                )
             if success:
                 rc.reminder_sent_at = now
                 reminded_count += 1
@@ -1121,19 +1221,35 @@ class ActivityService:
             course.name,
             deadline.isoformat(),
         )
-        if self._line_svc is not None:
-            try:
-                self._line_svc.notify_activity_waitlist_promoted(
-                    student_name or str(rc.registration_id),
-                    course.name,
-                    deadline,
+        # 通知 ACTIVITY_WRITE staff：候補自動升正式（待家長確認）。
+        # admin-side awareness 用，per-staff in_app + LINE（對齊 C6 manual promote）。
+        try:
+            from services.notification import dispatch
+            from utils.permissions import Permission
+
+            staff_user_ids = _list_active_users_with_permission(
+                session, Permission.ACTIVITY_WRITE.value
+            )
+            for sid in staff_user_ids:
+                dispatch.enqueue(
+                    session=session,
+                    event_type="activity.waitlist_promoted",
+                    recipient_user_id=sid,
+                    context={
+                        "student_name": student_name or str(rc.registration_id),
+                        "course_name": course.name,
+                        "course_id": course_id,
+                        "deadline": deadline.isoformat() if deadline else None,
+                    },
+                    source_entity_type="registration_course",
+                    source_entity_id=rc.registration_id,
                 )
-            except Exception:
-                logger.exception(
-                    "發送候補升正式通知失敗 reg=%s course=%s",
-                    rc.registration_id,
-                    course_id,
-                )
+        except Exception:
+            logger.exception(
+                "activity.waitlist_promoted enqueue 失敗 reg=%s course=%s",
+                rc.registration_id,
+                course_id,
+            )
 
     # ------------------------------------------------------------------ #
     # 記錄修改紀錄

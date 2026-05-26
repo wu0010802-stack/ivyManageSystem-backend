@@ -25,6 +25,7 @@ from models.database import (
     ActivityPosDailyClose,
     ActivityPosDailyCloseHistory,
     ApprovalLog,
+    User,
     get_session,
 )
 from utils.auth import require_staff_permission
@@ -507,6 +508,52 @@ async def unlock_daily_close(
                 comment=comment,
             )
         )
+
+        # ── 通知原簽核人（commit 前 enqueue；dispatch._fan_out 在 after_commit
+        # hook 推 in_app + LINE）─────────
+        # Why: 原簽核人需即時知悉自己簽過的日子被解鎖。
+        # notification_delivered 保留原語義：True 當 approver 有有效 LINE 綁定
+        # （active + line_user_id + line_follow_confirmed_at），客戶端據此決定
+        # 是否要私下告知對方。in_app 通知不論 LINE 綁定都會寫，但 client API
+        # 不需此細節區分。
+        notification_delivered = False
+        try:
+            approver_user = (
+                session.query(User)
+                .filter(
+                    User.username == original_approver,
+                    User.is_active.is_(True),
+                )
+                .first()
+            )
+            if approver_user is not None:
+                from services.notification import dispatch
+
+                dispatch.enqueue(
+                    session=session,
+                    event_type="pos.unlock_requested",
+                    recipient_user_id=approver_user.id,
+                    context={
+                        "requester_name": current_user.get("username", ""),
+                        "reason": body.reason,
+                        "request_id": target.isoformat(),
+                        "target_date": target.isoformat(),
+                        "original_approver": original_approver,
+                        "is_override": body.is_admin_override,
+                    },
+                    sender_id=current_user.get("user_id"),
+                    source_entity_type="activity_pos_daily",
+                    source_entity_id=None,
+                )
+                # 預檢查 LINE 可達性：對齊原本走 line_service 的 method
+                # 的 True/False 語義（綁定+follow 才回 True）
+                notification_delivered = (
+                    dispatch._resolve_line_user_id(session, approver_user.id)
+                    is not None
+                )
+        except Exception:
+            logger.warning("pos.unlock_requested enqueue 失敗", exc_info=True)
+
         session.commit()
         logger.warning(
             "POS 日結解鎖：date=%s unlocker=%s original=%s@%s reason=%s "
@@ -536,24 +583,6 @@ async def unlock_daily_close(
             "reason": body.reason,
             "is_admin_override": body.is_admin_override,
         }
-        # ── LINE 通知（best-effort；失敗不擋已 commit 的解鎖）─────────
-        # Why: 原簽核人需即時知悉自己簽過的日子被解鎖；無綁定則 silent，
-        # response.notification_delivered=false 提示解鎖人私下告知對方。
-        notification_delivered = False
-        try:
-            from api.activity._shared import get_line_service
-
-            _line_svc = get_line_service()
-            if _line_svc is not None:
-                notification_delivered = _line_svc.notify_pos_unlock_to_approver(
-                    target_date=target,
-                    original_approver=original_approver,
-                    unlocker=current_user.get("username", ""),
-                    is_override=body.is_admin_override,
-                    reason=body.reason,
-                )
-        except Exception:
-            logger.warning("LINE notify on POS unlock failed", exc_info=True)
 
         # ── live_diff 計算（spec H2）─────────────────────────────
         # Why: 解鎖後實況（含補登/voided 變動後的最新 records）vs 原 snapshot

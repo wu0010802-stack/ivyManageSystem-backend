@@ -386,98 +386,72 @@ class TestSweepExpired:
         result = svc.sweep_expired_pending_promotions(session)
         assert result["final_reminded"] == 0
 
-    def test_reminder_stamp_not_written_on_line_failure(
-        self, session, svc, monkeypatch
-    ):
-        """LINE 推送失敗時不應寫 final_reminder_sent_at（下輪重試）。"""
+    def test_final_reminder_enqueues_dispatch_event(self, session, svc, monkeypatch):
+        """T-6h: 進入 final_reminder 區間 → dispatch.enqueue 註冊事件 + 戳記寫入。
+
+        PR-C-2 behavior change: dispatch 模型下 LINE 推送是 fire-and-forget，
+        caller 無法探測送達結果。戳記改為「成功 enqueue 即寫」（dispatch._fan_out
+        失敗只 log，不重推）。原「LINE ack-based 戳記」invariant 已 deprecated。
+        """
+        from unittest.mock import patch
+
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
         rc.confirm_deadline = datetime.now() + timedelta(hours=4)
         rc.reminder_sent_at = datetime.now()
+        rc_id = rc.id
         session.flush()
 
-        class StubLineService:
-            def notify_activity_waitlist_final_reminder(self, *a, **kw):
-                return False  # 模擬推送失敗
+        with patch("services.notification.dispatch.enqueue") as mock_enqueue:
+            result = svc.sweep_expired_pending_promotions(session)
 
-            def notify_activity_waitlist_promotion_reminder(self, *a, **kw):
-                return False
+        session.flush()
+        rc_after = (
+            session.query(RegistrationCourse)
+            .filter(RegistrationCourse.id == rc_id)
+            .first()
+        )
+        # PR-C-2 behavior: 成功 enqueue 即寫戳記
+        assert (
+            rc_after.final_reminder_sent_at is not None
+        ), f"final_reminder_sent_at 未寫；result={result}"
+        assert result["final_reminded"] == 1
+        # reg 未設 student_id → 無 guardian → enqueue 不被呼叫但 success 仍標
+        assert mock_enqueue.call_count == 0
 
-            def notify_activity_waitlist_promotion_expired(self, *a, **kw):
-                return False
+    def test_t24_reminder_enqueues_dispatch_event(self, session, svc, monkeypatch):
+        """T-24h: 進入 reminder 區間 → dispatch.enqueue 註冊事件 + 戳記寫入。
 
-        svc._line_svc = StubLineService()
-
-        result = svc.sweep_expired_pending_promotions(session)
-        session.refresh(rc)
-        assert rc.final_reminder_sent_at is None  # 失敗則不寫戳記
-        assert result["final_reminded"] == 0
-
-    def test_t24_reminder_stamp_not_written_on_line_failure(
-        self, session, svc, monkeypatch
-    ):
-        """T-24h 推送失敗時不應寫 reminder_sent_at（下輪重試）。
         deadline 剩 20h：進入 T-24h 區間（≤24h），但不在 T-6h 區間（>6h），
-        修完 I-1 後 T-24h 與 T-6h 完全互斥，此筆只走 T-24h 分支。
+        T-24h 與 T-6h 完全互斥（I-1 修正），此筆只走 T-24h 分支。
         """
+        from unittest.mock import patch
+
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
         rc.confirm_deadline = datetime.now() + timedelta(hours=20)
-        # reminder_sent_at=None：讓 T-24h 分支有機會觸發
-        # final_reminder_sent_at=None：T-6h 不會觸發（deadline > 6h）
+        rc_id = rc.id
         session.flush()
 
-        class StubLineService:
-            def notify_activity_waitlist_promotion_reminder(self, *a, **kw):
-                return False  # 模擬 T-24h 推送失敗
+        with patch("services.notification.dispatch.enqueue") as mock_enqueue:
+            result = svc.sweep_expired_pending_promotions(session)
 
-            def notify_activity_waitlist_final_reminder(self, *a, **kw):
-                return False
-
-            def notify_activity_waitlist_promotion_expired(self, *a, **kw):
-                return False
-
-        svc._line_svc = StubLineService()
-
-        result = svc.sweep_expired_pending_promotions(session)
-        session.refresh(rc)
-        assert rc.reminder_sent_at is None  # T-24h 失敗不寫戳記
-        assert result["reminded"] == 0
+        session.flush()
+        rc_after = (
+            session.query(RegistrationCourse)
+            .filter(RegistrationCourse.id == rc_id)
+            .first()
+        )
+        assert (
+            rc_after.reminder_sent_at is not None
+        ), f"reminder_sent_at 未寫；result={result}"
+        assert result["reminded"] == 1
         # T-6h 分支不應觸發（deadline 距現在 20h > 6h）
-        assert rc.final_reminder_sent_at is None
+        assert rc_after.final_reminder_sent_at is None
         assert result["final_reminded"] == 0
-
-    def test_t24_real_path_no_stamp_on_line_failure(self, session, svc, monkeypatch):
-        """C-1 回歸測試：使用真實 LineService（而非 stub）驗證 T-24h 路徑。
-
-        修復前：notify_activity_waitlist_promotion_reminder 回傳 None，
-        caller 用 `result is None or bool(result)` → success 永遠 True，
-        即使 _push 回 False 也會寫 reminder_sent_at（此測試在修復前會失敗）。
-        修復後：方法改回 bool；caller 改用 `bool(result)`；
-        _push 回 False → success=False → 不寫戳記。
-        """
-        from services.line_service import LineService
-
-        course = _add_course(session, capacity=1)
-        reg = _add_reg(session)
-        rc = _enroll(session, reg.id, course.id, status="promoted_pending")
-        rc.confirm_deadline = datetime.now() + timedelta(hours=20)
-        # reminder_sent_at=None：讓 T-24h 分支觸發
-        # final_reminder_sent_at=None：T-6h 不觸發（deadline > 6h）
-        session.flush()
-
-        real_line_svc = LineService()
-        # 不呼叫 configure，故 _enabled=False、_push 直接回 False（未啟用）
-        # 但為確保路徑是真實 _push 失敗（而非 enable 短路），mock _push 回 False
-        monkeypatch.setattr(real_line_svc, "_push", lambda *a, **kw: False)
-        svc._line_svc = real_line_svc
-
-        result = svc.sweep_expired_pending_promotions(session)
-        session.refresh(rc)
-        assert rc.reminder_sent_at is None, "T-24h LINE 失敗不應寫 reminder_sent_at"
-        assert result["reminded"] == 0
+        assert mock_enqueue.call_count == 0
 
 
 # ------------------------------------------------------------------ #
