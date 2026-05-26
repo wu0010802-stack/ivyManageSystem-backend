@@ -150,6 +150,62 @@ def _guard_leave_quota(
         )
 
 
+def _consume_compensatory_grants_fifo(session, employee_id: int, hours: float) -> None:
+    """FIFO 從最早 expires_at 的 active grant 扣 consumed_hours。
+
+    若 active grant 總額不足，raise ValueError（不允許超扣，前端應已驗 quota）。
+    """
+    from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+
+    remaining = float(hours)
+    grants = (
+        session.query(OvertimeCompLeaveGrant)
+        .filter(
+            OvertimeCompLeaveGrant.employee_id == employee_id,
+            OvertimeCompLeaveGrant.status == "active",
+        )
+        .order_by(OvertimeCompLeaveGrant.expires_at.asc())
+        .all()
+    )
+    for g in grants:
+        if remaining <= 0:
+            break
+        available = g.granted_hours - g.consumed_hours
+        if available <= 0:
+            continue
+        take = min(available, remaining)
+        g.consumed_hours += take
+        remaining -= take
+    if remaining > 0:
+        raise ValueError(f"補休 grant 不足扣抵：尚缺 {remaining} 小時")
+
+
+def _release_compensatory_grants_fifo(session, employee_id: int, hours: float) -> None:
+    """退回 consumed_hours：FIFO 從最早 expires_at 的 grant 開始退。
+
+    保守版：按最早 expires_at 順序退，維持總結餘正確。
+    """
+    from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+
+    remaining = float(hours)
+    grants = (
+        session.query(OvertimeCompLeaveGrant)
+        .filter(
+            OvertimeCompLeaveGrant.employee_id == employee_id,
+            OvertimeCompLeaveGrant.status == "active",
+            OvertimeCompLeaveGrant.consumed_hours > 0,
+        )
+        .order_by(OvertimeCompLeaveGrant.expires_at.asc())
+        .all()
+    )
+    for g in grants:
+        if remaining <= 0:
+            break
+        take = min(g.consumed_hours, remaining)
+        g.consumed_hours -= take
+        remaining -= take
+
+
 def _apply_leave_update_and_revoke(leave, data, current_user, leave_id: int) -> None:
     """將 update 欄位套用到 leave，並在已核准時執行退審邏輯。
 
@@ -1097,6 +1153,13 @@ def delete_leave(
                     raise HTTPException(status_code=422, detail=str(e))
                 raise
 
+        # ── 補休 grant 退回（已核准補休假單被刪除）───────────────────────────
+        if was_approved and leave.leave_type == "compensatory":
+            _release_compensatory_grants_fifo(
+                session, leave.employee_id, leave.leave_hours
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         session.delete(leave)
         session.commit()
 
@@ -1462,6 +1525,26 @@ def approve_leave(
                 sync.revert(session, leave_id)
         except (sync.LeaveAttendanceConflict, sync.LeavePartialTimeMissing) as e:
             raise HTTPException(status_code=422, detail=str(e))
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── 補休假單 grant ledger FIFO 扣抵 / 退回 ──────────────────────────
+        # 僅在狀態真實變動時觸發，防止重複 approve 或重複 reject 雙重扣抵。
+        # - pending/rejected → approved：消耗 grant consumed_hours（FIFO 最早 expires_at 優先）
+        # - approved → rejected：退回 consumed_hours（對稱退回）
+        # ValueError（grant 不足）理論上已被前端 _check_compensatory_quota 擋住；
+        # 此處作為 defense-in-depth 讓 FastAPI 以 422 回應。
+        if leave.leave_type == "compensatory":
+            if data.approved is True and approval_changed:
+                try:
+                    _consume_compensatory_grants_fifo(
+                        session, leave.employee_id, leave.leave_hours
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc))
+            elif data.approved is False and was_approved:
+                _release_compensatory_grants_fifo(
+                    session, leave.employee_id, leave.leave_hours
+                )
         # ─────────────────────────────────────────────────────────────────────
 
         # ── leave↔OT 跨類抵扣（feature flag gated, v1 metadata-only）─────────
@@ -1877,6 +1960,22 @@ def batch_approve_leaves(
                         )
                         leave.deduction_ratio = standard_ratio
                     leave.is_deductible = (leave.deduction_ratio or 0) > 0
+
+                # ── 補休假單 grant ledger FIFO 扣抵 / 退回（批次版）──────────
+                if leave.leave_type == "compensatory" and approval_changed:
+                    if data.approved is True:
+                        try:
+                            _consume_compensatory_grants_fifo(
+                                session, leave.employee_id, leave.leave_hours
+                            )
+                        except ValueError as exc:
+                            failed.append({"id": leave_id, "reason": str(exc)})
+                            continue
+                    elif data.approved is False and is_reject_of_approved:
+                        _release_compensatory_grants_fifo(
+                            session, leave.employee_id, leave.leave_hours
+                        )
+                # ─────────────────────────────────────────────────────────────
 
                 leave.is_approved = data.approved
                 leave.approved_by = (

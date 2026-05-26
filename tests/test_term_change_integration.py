@@ -29,6 +29,13 @@ from models.database import (
     User,
 )
 from models.academic_term import AcademicTerm
+from models.overtime import OvertimeRecord  # noqa: F401 — FK dependency
+from models.overtime_comp_leave_grant import (
+    OvertimeCompLeaveGrant,
+)  # noqa: F401 — FK dep; used in test_b
+from models.unused_leave_payout_log import (
+    UnusedLeavePayoutLog,
+)  # noqa: F401 — FK target table for OvertimeCompLeaveGrant
 from utils.auth import hash_password
 from utils.permissions import Permission
 
@@ -277,14 +284,14 @@ class TestTermChangeIntegration:
             )
             .all()
         )
-        assert len(rows) == 6  # 5 QUOTA_LEAVE_TYPES + compensatory
+        assert (
+            len(rows) == 5
+        )  # 4 QUOTA_LEAVE_TYPES (annual 改由 anniversary scheduler) + compensatory
 
     def test_cross_year_quota_compensatory_balance_carry_over(
         self, client, db_session, admin_headers
     ):
         """補休結餘 carry-over：舊 row 8h、used 2h → 新 row 6h。"""
-        from models.leave import LeaveRecord
-
         old_t = _seed_term(
             db_session,
             school_year=114,
@@ -301,25 +308,28 @@ class TestTermChangeIntegration:
             end_date=date(2027, 1, 31),
         )
         emp = _seed_emp(db_session)
-        # 舊學年 compensatory quota 8h
-        db_session.add(
-            LeaveQuota(
-                employee_id=emp.id,
-                year=2026,
-                school_year=114,
-                leave_type="compensatory",
-                total_hours=8.0,
-            )
+        # 建 OT + grant（granted 8h、consumed 2h → balance 6h）
+        # carry-over source of truth 是 grant ledger（T15 後 LeaveQuota cache 路徑廢棄）
+        ot = OvertimeRecord(
+            employee_id=emp.id,
+            overtime_date=date(2026, 3, 1),
+            overtime_type="weekday",
+            hours=8.0,
+            use_comp_leave=True,
+            comp_leave_granted=True,
+            is_approved=True,
         )
-        # 已用 2h
+        db_session.add(ot)
+        db_session.flush()
         db_session.add(
-            LeaveRecord(
+            OvertimeCompLeaveGrant(
+                overtime_record_id=ot.id,
                 employee_id=emp.id,
-                leave_type="compensatory",
-                start_date=date(2026, 3, 10),
-                end_date=date(2026, 3, 10),
-                leave_hours=2.0,
-                is_approved=True,
+                granted_hours=8.0,
+                granted_at=date(2026, 3, 1),
+                expires_at=date(2027, 3, 1),
+                consumed_hours=2.0,
+                status="active",
             )
         )
         db_session.commit()
@@ -341,10 +351,10 @@ class TestTermChangeIntegration:
         )
         assert new_comp.total_hours == pytest.approx(6.0)
 
-    def test_cross_year_annual_uses_new_term_start_date_as_ref(
+    def test_cross_year_does_not_create_annual_quota(
         self, client, db_session, admin_headers
     ):
-        """特休年資 reference = new.start_date。"""
+        """特休改週年制後，term cutover 不再建 annual row（由 anniversary scheduler 負責）。"""
         old_t = _seed_term(
             db_session,
             school_year=114,
@@ -377,9 +387,9 @@ class TestTermChangeIntegration:
             )
             .first()
         )
-        # 2020/9/1 → 2026/8/1 = 5 完整年 → 120 小時
-        assert annual.total_hours == 120.0
-        assert "2026-08-01" in (annual.note or "")
+        assert (
+            annual is None
+        )  # 特休不再由 cutover 建（services/leave_quota_expiry/annual_cutover.py 負責）
 
     def test_set_current_to_same_term_returns_409(
         self, client, db_session, admin_headers
@@ -530,7 +540,9 @@ class TestTermChangeIntegration:
         second_count = (
             db_session.query(LeaveQuota).filter(LeaveQuota.school_year == 115).count()
         )
-        assert first_count == second_count == 6
+        assert (
+            first_count == second_count == 5
+        )  # 4 QUOTA_LEAVE_TYPES (annual 移出) + compensatory
 
     def test_atypical_jump_113_2_to_115_1_logs_warning_no_op(
         self, client, db_session, admin_headers, caplog
