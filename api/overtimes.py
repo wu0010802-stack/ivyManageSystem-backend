@@ -346,6 +346,7 @@ from services.overtime_conflict_service import (  # noqa: E402,F401
     check_monthly_overtime_cap as _check_monthly_overtime_cap,
     check_overtime_overlap as _check_overtime_overlap,
     check_overtime_type_calendar as _check_overtime_type_calendar,
+    check_quarterly_overtime_cap as _check_quarterly_overtime_cap,
 )
 
 # ============ Pydantic Models ============
@@ -614,6 +615,9 @@ def create_overtime(
         _check_monthly_overtime_cap(
             session, data.employee_id, data.overtime_date, data.hours
         )
+        _check_quarterly_overtime_cap(
+            session, data.employee_id, data.overtime_date, data.hours
+        )
 
         _check_overtime_type_calendar(session, data.overtime_date, data.overtime_type)
 
@@ -760,6 +764,13 @@ def update_overtime(
         # 修改後的時數驗證月上限（排除自己）
         new_hours_val = data.hours if data.hours is not None else ot.hours
         _check_monthly_overtime_cap(
+            session,
+            ot.employee_id,
+            check_date,
+            new_hours_val,
+            exclude_id=overtime_id,
+        )
+        _check_quarterly_overtime_cap(
             session,
             ot.employee_id,
             check_date,
@@ -1099,6 +1110,13 @@ def approve_overtime(
                 ot.hours,
                 exclude_id=overtime_id,
             )
+            _check_quarterly_overtime_cap(
+                session,
+                ot.employee_id,
+                ot.overtime_date,
+                ot.hours,
+                exclude_id=overtime_id,
+            )
             _check_overtime_type_calendar(session, ot.overtime_date, ot.overtime_type)
 
         ot.is_approved = approved
@@ -1304,6 +1322,13 @@ def batch_approve_overtimes(
                             ),
                         )
                     _check_monthly_overtime_cap(
+                        session,
+                        ot.employee_id,
+                        ot.overtime_date,
+                        ot.hours,
+                        exclude_id=ot_id,
+                    )
+                    _check_quarterly_overtime_cap(
                         session,
                         ot.employee_id,
                         ot.overtime_date,
@@ -1666,6 +1691,7 @@ async def import_overtimes(
                     )
 
                 _check_monthly_overtime_cap(session, emp.id, overtime_date, hours)
+                _check_quarterly_overtime_cap(session, emp.id, overtime_date, hours)
                 _check_overtime_type_calendar(session, overtime_date, ot_type_raw)
 
                 reason_raw = row.reason

@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from config import get_settings
 from models.base import session_scope
 from utils.advisory_lock import try_scheduler_lock
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def _run_rate_limit_gc() -> None:
     # 多 worker 部署時以 advisory lock（5 分鐘窗口 bucket）避免兩 worker 同時 DELETE
     # 相同列；cleanup_rate_limit_buckets 內部用自己的 connection，advisory lock 是
     # namespace mutex 不會干擾。
-    try:
+    with scheduler_iteration("security_rate_limit_gc"):
         from utils.rate_limit import cleanup_rate_limit_buckets
 
         with session_scope() as lock_session:
@@ -75,15 +76,14 @@ def _run_rate_limit_gc() -> None:
                 if not acquired:
                     return
                 deleted = cleanup_rate_limit_buckets(retention_minutes=60)
+                record_rows("security_rate_limit_gc", int(deleted or 0))
                 logger.info("rate_limit_buckets GC: 已刪除 %s 列", deleted)
-    except Exception as e:
-        logger.warning("rate_limit GC 發生例外: %s", e)
 
 
 def _run_jwt_blocklist_gc() -> None:
     # 多 worker 部署時以 advisory lock（6 小時窗口 bucket）互斥；cleanup_jwt_blocklist
     # 內部用自己的 connection，advisory lock 不阻擋實際 DELETE。
-    try:
+    with scheduler_iteration("security_jwt_blocklist_gc"):
         from utils.auth import cleanup_jwt_blocklist
 
         with session_scope() as lock_session:
@@ -95,10 +95,9 @@ def _run_jwt_blocklist_gc() -> None:
                 if not acquired:
                     return
                 deleted = cleanup_jwt_blocklist()
+                record_rows("security_jwt_blocklist_gc", int(deleted or 0))
                 logger.info(
                     "jwt_blocklist GC at %s: 已刪除 %s 列",
                     datetime.now(timezone.utc).isoformat(),
                     deleted,
                 )
-    except Exception as e:
-        logger.warning("jwt_blocklist GC 發生例外: %s", e)

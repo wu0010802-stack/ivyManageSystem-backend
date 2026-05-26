@@ -1,6 +1,6 @@
 """通知 event_type 命名空間：兩級 {domain}.{action}。
 
-v1 共 19 個 event（員工 12 + 家長 7）。新增 event 時：
+v1 共 23 個 event（員工 13 + 家長 7 + 才藝家長 3）。新增 event 時：
 1. 加進此 frozenset
 2. 在 channel_matrix.py 加對應 channel tuple
 3. 在 renderers.py 加 @renderer 裝飾的函式
@@ -32,6 +32,14 @@ PARENT_LEAVE_RESULT = "parent.leave_result"
 PARENT_ATTENDANCE_ALERT = "parent.attendance_alert"
 PARENT_CONTACT_BOOK_PUBLISHED = "parent.contact_book_published"
 
+# 才藝家長域（PR-C 新增；推給家長 LINE）
+ACTIVITY_WAITLIST_REMINDER = "activity.waitlist_reminder"
+ACTIVITY_WAITLIST_FINAL_REMINDER = "activity.waitlist_final_reminder"
+ACTIVITY_WAITLIST_EXPIRED = "activity.waitlist_expired"
+
+# 家長 Growth Report（PR-C 新增）
+GROWTH_REPORT_PUBLISHED = "growth_report.published"
+
 NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
     {
         LEAVE_SUBMITTED,
@@ -53,5 +61,9 @@ NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
         PARENT_LEAVE_RESULT,
         PARENT_ATTENDANCE_ALERT,
         PARENT_CONTACT_BOOK_PUBLISHED,
+        ACTIVITY_WAITLIST_REMINDER,
+        ACTIVITY_WAITLIST_FINAL_REMINDER,
+        ACTIVITY_WAITLIST_EXPIRED,
+        GROWTH_REPORT_PUBLISHED,
     }
 )

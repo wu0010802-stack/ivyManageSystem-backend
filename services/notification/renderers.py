@@ -244,3 +244,45 @@ def _r_parent_contact_book(ctx: dict) -> Rendered:
         body=f"日期：{ctx['date']}",
         deep_link=f"/parent/contact-book/{ctx['date']}",
     )
+
+
+# ────────────────────── 才藝家長域（PR-C） ──────────────────────
+
+
+@renderer("activity.waitlist_reminder")
+def _r_activity_waitlist_reminder(ctx: dict) -> Rendered:
+    return Rendered(
+        title=f"⏰ 候補提醒：{ctx['course_name']}",
+        body=f"學生 {ctx['student_name']}，請於 {ctx.get('deadline', '近日')} 前確認",
+        deep_link=f"/activity/courses/{ctx['course_id']}",
+    )
+
+
+@renderer("activity.waitlist_final_reminder")
+def _r_activity_waitlist_final(ctx: dict) -> Rendered:
+    return Rendered(
+        title=f"🚨 候補最後提醒：{ctx['course_name']}",
+        body=f"學生 {ctx['student_name']}，候補名額即將釋出",
+        deep_link=f"/activity/courses/{ctx['course_id']}",
+    )
+
+
+@renderer("activity.waitlist_expired")
+def _r_activity_waitlist_expired(ctx: dict) -> Rendered:
+    return Rendered(
+        title=f"❌ 候補名額已過期：{ctx['course_name']}",
+        body=f"學生 {ctx['student_name']}",
+        deep_link=f"/activity/courses/{ctx['course_id']}",
+    )
+
+
+# ────────────────────── 家長 Growth Report（PR-C） ──────────────────────
+
+
+@renderer("growth_report.published")
+def _r_growth_report(ctx: dict) -> Rendered:
+    return Rendered(
+        title=f"📊 {ctx['student_name']} {ctx.get('period', '')} 成長報告已發布",
+        body=ctx.get("summary", ""),
+        deep_link=f"/parent/growth-reports/{ctx['report_id']}",
+    )

@@ -50,6 +50,7 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 - **`total_deduction`** = 勞保 + 健保 + 勞退 + 遲到/早退/請假扣款（**無** `meeting_absence_deduction`）。
 - **時薪基準**：`base_salary / 30 / 8`，`MONTHLY_BASE_DAYS = 30` 定義在 `services/salary/constants.py`（依勞基法）。
 - **加班費時薪基準**：`emp.base_salary` 僅底薪，**不含** 任何加給或獎金。
+- **加班雙重上限**（勞基法 §32 II）：`services/overtime_conflict_service` 同步檢查月度 46h（`check_monthly_overtime_cap`）+ 季度 138h（`check_quarterly_overtime_cap`，曆月對齊 rolling 3 月）。兩者並排呼叫，admin/portal create/update/approve/batch/import 6 個 call site 同步 enforce；越界拒 400。設計規格見 `docs/superpowers/specs/2026-05-26-overtime-quarterly-cap-138h-design.md`
 - **稽核追蹤**：`SalaryRecord` 必須記錄當下使用的 `bonus_config_id` 與 `attendance_policy_id`，確保可回溯。
 - **年終考核獎金（2026-05-22 落地）**：每年 2 月 calculate 時自動拉 `special_bonus_items` 兩筆 `APPRAISAL_HALF_BONUS_FIRST`（前一年下半）+ `APPRAISAL_HALF_BONUS_SECOND`（當年上半）SUM 寫入 `SalaryRecord.appraisal_year_end_bonus`（獨立 column，不進 `gross_salary`）。由 `engine.py` 的 `_fill_salary_record()` 呼叫 `services/salary/appraisal_year_end.query_appraisal_year_end_bonus()`。HR trigger 點：`POST /api/year_end/appraisal-payout/generate`。**關鍵**：改 payout 後須重 calculate 2 月薪資同步；改 `appraisal_summary.bonus_amount` 須重 generate payout。設計規格見 `docs/superpowers/specs/2026-05-22-salary-appraisal-year-end-payout-design.md`
 

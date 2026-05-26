@@ -9,9 +9,10 @@ from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.errors import raise_safe_500
 
-from models.database import get_session, OvertimeRecord
+from models.database import get_session, OvertimeRecord, User
 from utils.auth import get_current_user
 from utils.approval_helpers import _get_finalized_salary_record
+from utils.permissions import Permission
 from ._shared import _get_employee, OvertimeCreatePortal, OVERTIME_TYPE_LABELS
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,28 @@ _line_service = None
 def init_overtime_notify(line_service):
     global _line_service
     _line_service = line_service
+
+
+def _list_active_users_with_permission(session, perm: str) -> list[int]:
+    """SQLite/PG 通用：列出 permission_names 含 perm 的 active user_id。
+
+    對齊 api/permissions_admin.py:136-145 與 api/portal/leaves.py 同名 helper。
+    """
+    is_sqlite = session.bind.dialect.name == "sqlite"
+    if is_sqlite:
+        users = session.query(User).filter(User.is_active.is_(True)).all()
+        return [
+            u.id for u in users if u.permission_names and perm in u.permission_names
+        ]
+    rows = (
+        session.query(User.id)
+        .filter(
+            User.is_active.is_(True),
+            User.permission_names.contains([perm]),
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
 
 
 @router.get("/my-overtimes")
@@ -105,6 +128,7 @@ def create_my_overtime(
             check_employee_has_conflicting_leave as _check_employee_has_conflicting_leave,
             check_overtime_overlap as _check_overtime_overlap,
             check_monthly_overtime_cap as _check_monthly_overtime_cap,
+            check_quarterly_overtime_cap as _check_quarterly_overtime_cap,
             check_overtime_type_calendar as _check_overtime_type_calendar,
         )
 
@@ -148,9 +172,10 @@ def create_my_overtime(
             session, emp.id, data.overtime_date, start_dt, end_dt
         )
 
-        # 與管理端 create_overtime 一致：46h/月上限 + 國定假日類型驗證。
+        # 與管理端 create_overtime 一致：46h/月上限 + 138h/季上限 + 國定假日類型驗證。
         # 否則教師可從 portal 繞過上限,或在國定假日用 weekday/weekend 短付加班費。
         _check_monthly_overtime_cap(session, emp.id, data.overtime_date, data.hours)
+        _check_quarterly_overtime_cap(session, emp.id, data.overtime_date, data.hours)
         _check_overtime_type_calendar(session, data.overtime_date, data.overtime_type)
 
         ot = OvertimeRecord(
@@ -166,9 +191,39 @@ def create_my_overtime(
             is_approved=None,
         )
         session.add(ot)
-        session.commit()
+        session.flush()
 
         ot_type_label = OVERTIME_TYPE_LABELS.get(data.overtime_type, data.overtime_type)
+
+        # 通知：commit 前 enqueue；dispatch after_commit hook 對每位 OVERTIME_WRITE
+        # reviewer 個人推送（in_app + LINE）。原 _push 群組廣播改為 per-reviewer，
+        # 行為變更與 portal/leaves.py 對齊。
+        try:
+            from services.notification import dispatch
+
+            reviewer_user_ids = _list_active_users_with_permission(
+                session, Permission.OVERTIME_WRITE.value
+            )
+            for rid in reviewer_user_ids:
+                dispatch.enqueue(
+                    session=session,
+                    event_type="overtime.submitted",
+                    recipient_user_id=rid,
+                    context={
+                        "submitter_name": emp.name,
+                        "ot_date": data.overtime_date.isoformat(),
+                        "ot_type": ot_type_label,
+                        "overtime_id": ot.id,
+                    },
+                    sender_id=current_user.get("user_id"),
+                    source_entity_type="overtime_record",
+                    source_entity_id=ot.id,
+                )
+        except Exception as exc:
+            logger.warning("overtime.submitted enqueue 失敗（已吞）：%s", exc)
+
+        session.commit()
+
         request.state.audit_entity_id = str(ot.id)
         request.state.audit_summary = (
             f"教師送出加班申請：{emp.name} {ot_type_label} "
@@ -189,19 +244,6 @@ def create_my_overtime(
             "use_comp_leave": data.use_comp_leave,
             "overtime_pay": pay,
         }
-
-        # LINE 通知（fire-and-forget，失敗不影響申請）
-        if _line_service:
-            try:
-                _line_service.notify_overtime_submitted(
-                    emp.name,
-                    data.overtime_date,
-                    data.overtime_type,
-                    data.hours,
-                    data.use_comp_leave,
-                )
-            except Exception as e:
-                logger.warning("LINE 通知發送失敗: %s", e)
 
         msg = "加班申請已送出，待主管核准"
         if data.use_comp_leave:

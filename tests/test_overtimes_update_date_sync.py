@@ -75,6 +75,7 @@ def _common_patches(ot, emp):
         patch("api.overtimes.get_session", return_value=session),
         patch("api.overtimes._check_overtime_overlap", return_value=None),
         patch("api.overtimes._check_monthly_overtime_cap"),
+        patch("api.overtimes._check_quarterly_overtime_cap"),
         patch("api.overtimes._check_overtime_type_calendar"),
         patch("api.overtimes.assert_months_not_finalized"),
         patch("api.overtimes._revoke_comp_leave_grant"),

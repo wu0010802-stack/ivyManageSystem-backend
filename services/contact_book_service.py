@@ -2,8 +2,10 @@
 
 publish_entry：唯一發布路徑
 - 標 published_at + 累加 version
-- WS 廣播給該班級教師端 + 每位 guardian 的家長端
-- LINE push（透過 should_push_to_parent gate）給每位有綁 LINE 的 guardian
+- WS 廣播給該班級教師端 + 每位 guardian 的家長端（contact_book_ws，entity refresh
+  payload）
+- 對每位 guardian dispatch.enqueue("parent.contact_book_published", ...)；caller
+  在 session.commit() 觸發 dispatch after_commit hook → LINE + 家長 inbox WS。
 
 compute_class_completion：教師後台用「今日 X/Y 已發布」進度條
 """
@@ -13,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -26,7 +27,6 @@ from models.database import (
     User,
 )
 from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK
-from services.line_service import LineService
 
 logger = logging.getLogger(__name__)
 
@@ -56,22 +56,15 @@ def publish_entry(
     session: Session,
     *,
     entry_id: int,
-    line_service: Optional[LineService] = None,
-    defer_line_push: bool = False,
 ) -> StudentContactBookEntry:
-    """發布聯絡簿。
-
-    defer_line_push=True 時，LINE push 任務累積到 entry.line_push_tasks 屬性
-    （`list[dict]`）由 caller 在 commit / close session 之後在 loop 外執行，
-    避免迴圈內同 session 同步 LINE push 卡住 DB 連線池（batch_publish 場景）。
-    預設 False 維持單筆發布的同步行為。
-    """
     """發布一筆聯絡簿 entry。
 
-    呼叫前 caller 已完成權限檢查；本函式只負責：
+    呼叫前 caller 已完成權限檢查；本函式：
     1. 標 published_at + 累加 version
-    2. 推送 WS（教師班級 + 家長個人）
-    3. 推送 LINE（透過 should_push_to_parent gate）
+    2. 推送既有 contact_book_ws WS（教師班級 + 家長個人，entity refresh payload）
+    3. 對每位 guardian dispatch.enqueue("parent.contact_book_published", ...)
+       — dispatch 在 caller 的 session.commit() 觸發 after_commit hook 完成
+       LINE + 家長 inbox WS fan-out
 
     回傳更新後的 entry（caller 仍持 session 控制 commit）。
     """
@@ -92,15 +85,13 @@ def publish_entry(
     session.flush()
 
     student = session.query(Student).filter(Student.id == entry.student_id).first()
-    classroom = (
-        session.query(Classroom).filter(Classroom.id == entry.classroom_id).first()
-    )
     student_name = student.name if student else f"student#{entry.student_id}"
-    photo_count = _count_photos(session, entry.id)
 
     guardian_user_ids = _gather_guardian_user_ids(session, entry.student_id)
 
-    # 廣播 payload — 同 event 內含足夠 metadata 讓前端決定刷新範圍
+    # 廣播 payload — 同 event 內含足夠 metadata 讓前端決定刷新範圍。
+    # 與 dispatch ws channel 共存：本 payload 用 'type' key（entity refresh），
+    # dispatch 用 'event_type' key（inbox 通知），前端依 key 分流。
     event_payload = {
         "type": "contact_book_published",
         "entry_id": entry.id,
@@ -138,69 +129,25 @@ def publish_entry(
     except Exception as exc:
         logger.warning("contact_book WS 廣播失敗（不阻斷）：%s", exc)
 
-    # LINE push：依個別家長偏好決定
-    push_tasks: list[dict] = []
-    if line_service is not None:
-        teacher_note_preview = (entry.teacher_note or "").strip()
-        for uid in guardian_user_ids:
-            line_id = line_service.should_push_to_parent(
-                session, user_id=uid, event_type="contact_book_published"
-            )
-            if not line_id:
-                continue
-            push_tasks.append(
-                {
-                    "user_id": uid,
-                    "line_id": line_id,
-                    "student_name": student_name,
-                    "log_date": entry.log_date,
-                    "teacher_note_preview": teacher_note_preview,
-                    "photo_count": photo_count,
-                }
-            )
+    # 通知 enqueue：commit 前；dispatch._fan_out 對每位 guardian 做 LINE
+    # 可達性 + 偏好 gate；caller 的 session.commit() 觸發 fan-out。
+    from services.notification import dispatch
 
-    if defer_line_push:
-        entry.line_push_tasks = (
-            push_tasks  # noqa: SLF001（attach 到 ORM 物件，caller 用）
+    log_date_iso = entry.log_date.isoformat() if entry.log_date else None
+    for uid in guardian_user_ids:
+        dispatch.enqueue(
+            session=session,
+            event_type="parent.contact_book_published",
+            recipient_user_id=uid,
+            context={
+                "student_name": student_name,
+                "date": log_date_iso,
+            },
+            source_entity_type="contact_book_entry",
+            source_entity_id=entry.id,
         )
-    elif line_service is not None:
-        # 同步路徑：保持原行為，立即 push
-        for t in push_tasks:
-            try:
-                line_service.notify_parent_contact_book_published(
-                    t["line_id"],
-                    student_name=t["student_name"],
-                    log_date=t["log_date"],
-                    teacher_note_preview=t["teacher_note_preview"],
-                    photo_count=t["photo_count"],
-                )
-            except Exception as exc:
-                logger.warning(
-                    "contact_book LINE push 失敗 user_id=%d: %s", t["user_id"], exc
-                )
 
     return entry
-
-
-def fire_line_push_tasks(
-    line_service: Optional[LineService], tasks: list[dict]
-) -> None:
-    """在 DB session/transaction 之外執行 LINE push 任務（單筆失敗不影響其餘）。"""
-    if line_service is None:
-        return
-    for t in tasks:
-        try:
-            line_service.notify_parent_contact_book_published(
-                t["line_id"],
-                student_name=t["student_name"],
-                log_date=t["log_date"],
-                teacher_note_preview=t["teacher_note_preview"],
-                photo_count=t["photo_count"],
-            )
-        except Exception as exc:
-            logger.warning(
-                "contact_book LINE push 失敗 user_id=%d: %s", t["user_id"], exc
-            )
 
 
 # 範本可套用欄位清單（與 ContactBookTemplate.fields 對應）

@@ -20,6 +20,7 @@ from config import get_settings, settings
 from models.base import session_scope
 from services.official_calendar import ensure_official_calendar_synced
 from utils.advisory_lock import try_scheduler_lock
+from utils.scheduler_observability import record_rows, scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,9 @@ def sync_official_calendar_once(today: date | None = None) -> dict[int, str]:
                         )
                         results[year] = info.get("status", "unknown")
                 except Exception:
-                    logger.exception("官方日曆排程同步失敗：year=%s", year)
+                    # Downgraded：每年同步失敗不直觸 Sentry；scheduler iteration
+                    # 整體失敗才由 wrapper 達閾值上報，避免上游 outage 期間每分鐘噴一筆
+                    logger.warning("官方日曆排程同步失敗：year=%s", year, exc_info=True)
                     results[year] = "error"
     return results
 
@@ -76,12 +79,17 @@ async def run_official_calendar_scheduler(stop_event: asyncio.Event) -> None:
         interval,
     )
     while not stop_event.is_set():
-        try:
+        with scheduler_iteration("official_calendar"):
             results = sync_official_calendar_once()
+            # 任一年 status=error 視為本次 iteration 失敗；wrapper 用 raise 觸發 throttle
+            errored_years = [y for y, st in results.items() if st == "error"]
+            record_rows("official_calendar", len(results) - len(errored_years))
+            if errored_years:
+                raise RuntimeError(
+                    f"official calendar sync error years={errored_years}"
+                )
             if results:
                 logger.info("official calendar scheduler tick: %s", results)
-        except Exception:
-            logger.exception("official calendar scheduler tick crashed; continuing")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
