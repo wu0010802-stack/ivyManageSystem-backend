@@ -185,15 +185,10 @@ def approve_punch_correction(
                 approver=current_user,
                 comment=body.rejection_reason,
             )
-            session.commit()
-            logger.warning(
-                "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 駁回",
-                correction_id,
-                correction.employee_id,
-                correction.attendance_date,
-                current_user.get("username"),
-            )
-            # 個人推播（審核結果）
+
+            # 個人推播（審核結果）— commit 前 enqueue 才會在 after_commit hook
+            # 被 fan-out；PR-A 原版誤放 commit 後，session.close 時 _clear_on_rollback
+            # 把 queue 抹掉，推播永遠不會送出（PR-D bug fix）。
             from services.notification import dispatch
 
             _owner_user = (
@@ -221,6 +216,14 @@ def approve_punch_correction(
                     source_entity_type="punch_correction",
                     source_entity_id=correction.id,
                 )
+            session.commit()
+            logger.warning(
+                "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 駁回",
+                correction_id,
+                correction.employee_id,
+                correction.attendance_date,
+                current_user.get("username"),
+            )
             return {"message": "補打卡申請已駁回"}
 
         # 提早取得薪資鎖,讓「封存守衛 → 改 attendance → mark_stale → commit」
@@ -304,16 +307,8 @@ def approve_punch_correction(
             correction.attendance_date.year,
             correction.attendance_date.month,
         )
-        session.commit()
 
-        logger.warning(
-            "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 核准",
-            correction_id,
-            correction.employee_id,
-            correction.attendance_date,
-            current_user.get("username"),
-        )
-        # 個人推播（審核結果）
+        # 個人推播（審核結果）— commit 前 enqueue（PR-D bug fix；同 reject path）
         from services.notification import dispatch
 
         _owner_user = (
@@ -340,6 +335,15 @@ def approve_punch_correction(
                 source_entity_type="punch_correction",
                 source_entity_id=correction.id,
             )
+        session.commit()
+
+        logger.warning(
+            "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 核准",
+            correction_id,
+            correction.employee_id,
+            correction.attendance_date,
+            current_user.get("username"),
+        )
         return {"message": "補打卡申請已核准，考勤記錄已更新"}
     except HTTPException:
         raise
