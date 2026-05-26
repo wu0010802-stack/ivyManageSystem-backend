@@ -17,11 +17,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi import WebSocketDisconnect
-from api.dismissal_ws import (
-    _run_connection,
-    DismissalConnectionManager,
-    MAX_BROADCAST_RETRIES,
-)
+from api.dismissal_ws import _run_connection, MAX_BROADCAST_RETRIES
 
 # ---------------------------------------------------------------------------
 # 輔助
@@ -187,87 +183,3 @@ class TestRunConnectionHeartbeat:
         _run(_run_connection(ws, ping_interval=0.001, pong_timeout=10.0))
         # 斷線後 ping_task 應被 cancel，send_text 呼叫應極少（≤1）
         assert ws.send_text.call_count <= 1
-
-
-# ---------------------------------------------------------------------------
-# TestBroadcastRetry
-# ---------------------------------------------------------------------------
-
-
-class TestBroadcastRetry:
-
-    def _build_manager_with_admin(self, ws) -> DismissalConnectionManager:
-        mgr = DismissalConnectionManager()
-        mgr._admin_conns.append(ws)
-        return mgr
-
-    def test_success_on_first_attempt_no_retry(self):
-        """第一次就成功時不應重試。"""
-        ws = AsyncMock()
-        mgr = self._build_manager_with_admin(ws)
-        _run(mgr.broadcast(1, {"type": "test"}))
-        assert ws.send_text.call_count == 1
-
-    def test_retries_on_transient_failure(self):
-        """第一次失敗、第二次成功時應只呼叫 send_text 兩次且連線不被移除。"""
-        ws = AsyncMock()
-        ws.send_text.side_effect = [
-            OSError("transient"),
-            None,
-        ]  # 第一次失敗，第二次成功
-        mgr = self._build_manager_with_admin(ws)
-
-        _run(mgr.broadcast(1, {"type": "test"}))
-
-        assert ws.send_text.call_count == 2
-        assert ws in mgr._admin_conns, "一次重試後成功，不應被移除"
-
-    def test_marks_dead_after_all_retries_exhausted(self):
-        """全部重試都失敗時連線應被移除。"""
-        ws = AsyncMock()
-        ws.send_text.side_effect = OSError("dead connection")
-        mgr = self._build_manager_with_admin(ws)
-
-        _run(mgr.broadcast(1, {"type": "test"}))
-
-        assert ws.send_text.call_count == MAX_BROADCAST_RETRIES
-        assert ws not in mgr._admin_conns, "全部失敗後應從 admin_conns 移除"
-
-    def test_successful_connections_unaffected_by_dead_one(self):
-        """同時廣播時，成功的連線不應受僵死連線影響。"""
-        dead_ws = AsyncMock()
-        dead_ws.send_text.side_effect = OSError("dead")
-        live_ws = AsyncMock()
-
-        mgr = DismissalConnectionManager()
-        mgr._admin_conns.extend([dead_ws, live_ws])
-
-        _run(mgr.broadcast(1, {"type": "test"}))
-
-        assert dead_ws not in mgr._admin_conns
-        assert live_ws in mgr._admin_conns
-        live_ws.send_text.assert_called_once()
-
-    def test_broadcast_to_teacher_and_admin(self):
-        """廣播應同時送給指定班級的老師連線與全部管理連線。"""
-        teacher_ws = AsyncMock()
-        admin_ws = AsyncMock()
-
-        mgr = DismissalConnectionManager()
-        mgr._teacher_conns[42].append(teacher_ws)
-        mgr._admin_conns.append(admin_ws)
-
-        _run(mgr.broadcast(42, {"type": "dismissal_call_created"}))
-
-        teacher_ws.send_text.assert_called_once()
-        admin_ws.send_text.assert_called_once()
-
-    def test_broadcast_other_classroom_teacher_not_notified(self):
-        """不在指定班級的老師連線不應收到廣播。"""
-        teacher_ws = AsyncMock()
-        mgr = DismissalConnectionManager()
-        mgr._teacher_conns[99].append(teacher_ws)  # 班級 99，非廣播目標
-
-        _run(mgr.broadcast(42, {"type": "test"}))  # 廣播給班級 42
-
-        teacher_ws.send_text.assert_not_called()

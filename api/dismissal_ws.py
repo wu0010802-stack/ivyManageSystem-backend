@@ -23,6 +23,7 @@ from api.portal._shared import (
 from utils.broadcast import get_broadcast
 from utils.permissions import Permission, has_permission
 from utils.ws_hub import (
+    MAX_BROADCAST_RETRIES,
     WS_CLOSE_FORBIDDEN,
     WS_CLOSE_INVALID_TOKEN,
     WS_CLOSE_MISSING_TOKEN,
