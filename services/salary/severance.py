@@ -4,6 +4,20 @@
 - 平均工資：勞基法第 2 條第 4 款
 - 舊制資遣費：勞基法第 17 條
 - 新制資遣費：勞工退休金條例第 12 條
+
+⚠️ 狀態：預留 API，目前無生產 caller（2026-05-26 確認）
+    本 module 是純函式法律邏輯庫，主 repo 唯一呼叫者是 tests/test_severance.py。
+    無 endpoint / service / api 直接呼叫——18 個 test 等於法律邏輯的可執行文件。
+
+    若日後要接到實際離職結算 flow（建議與 services/offboarding/ 整合）：
+    1. 補 spec：產品決策資遣費觸發條件、舊新制適用、平均工資來源
+    2. 呼叫方需自己用 utils.rounding.round_half_up 守 .5 邊界
+       （本 module 純 float 算法不 round，配合政府/勞健保標準）
+    3. 將 services/salary/severance.py 加入 money-rounding-gate paths
+    4. 移除 tests/test_severance_dead_code_guard.py guard test
+
+    Guard：tests/test_severance_dead_code_guard.py 會在 production caller
+    出現時 fail，提醒落實上述整合步驟（避免悄悄接生產但跳過 spec/rounding/CI gate）。
 """
 
 from datetime import date
