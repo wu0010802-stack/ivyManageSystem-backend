@@ -63,7 +63,7 @@ def app_client(tmp_path, monkeypatch):
     # salary_engine/line_service 不需要真實實作
     fake_salary_engine = MagicMock()
     monkeypatch.setattr(overtimes_module, "_salary_engine", fake_salary_engine)
-    monkeypatch.setattr(overtimes_module, "_line_service", None)
+    # 2026-05-25 後 api.overtimes 不再有 _line_service module 變數（改走 dispatch.enqueue）
 
     app = FastAPI()
     app.include_router(auth_router)
