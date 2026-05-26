@@ -49,6 +49,17 @@ class SchedulerSettings(BaseSettings):
     finance_reconciliation_enabled: BoolEnv = False
     security_gc_disabled: BoolEnv = False
 
+    # PDF worker (growth report background generation)
+    # max_concurrency=4：避免單機群體生成壓垮 starlette threadpool（預設 40 slot）
+    # recovery_enabled：啟動時把孤兒 'generating' row 標 failed。本 repo prod 走
+    #   單 uvicorn worker，預設 True；若改 multi-worker 部署必須改 False，否則
+    #   worker B 啟動會把 worker A 正在跑的 job 誤標 failed（leader 選舉 Phase 2）
+    # job_timeout：單張 PDF 生成上限，超過視為 hang（log + 標 failed）
+    pdf_worker_max_concurrency: int = 4
+    pdf_worker_recovery_enabled: BoolEnv = True
+    pdf_worker_job_timeout_seconds: int = 300
+    pdf_worker_shutdown_timeout_seconds: int = 30
+
     # PII Retention GC（spec 2026-05-22-parent-pii-retention-data-export-design.md）
     # 預設全 OFF + dry-run：上線後 user 手動 review log 才開正式抹
     pii_retention_gc_disabled: BoolEnv = True
