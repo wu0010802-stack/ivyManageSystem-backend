@@ -49,6 +49,8 @@ def parse_sanity(text: str) -> dict:
 def judge_pass(parsed: dict, dump_date: str) -> tuple[str, list[str]]:
     """回 (judgment, reasons)。"""
     warns: list[str] = []
+    if not parsed["row_counts"]:
+        warns.append("row_counts is empty — sanity SQL may have produced no results")
     for tbl, n in parsed["row_counts"].items():
         if n == 0:
             warns.append(f"{tbl} row count = 0")

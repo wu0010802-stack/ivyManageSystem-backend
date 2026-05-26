@@ -21,7 +21,7 @@ def test_decide_action_new_file():
     from scripts.dr_storage_sync import _decide_action
 
     src = {"name": "a.pdf", "updated_at": "2026-05-20T10:00:00Z", "size": 100}
-    assert _decide_action(src, None) == "upload"
+    assert _decide_action(src, None, mode="incremental") == "upload"
 
 
 def test_decide_action_target_up_to_date():
@@ -33,7 +33,7 @@ def test_decide_action_target_up_to_date():
         "user_metadata": {"x-source-updated-at": "2026-05-20T10:00:00Z"},
         "size": 100,
     }
-    assert _decide_action(src, dst) == "skip"
+    assert _decide_action(src, dst, mode="incremental") == "skip"
 
 
 def test_decide_action_source_newer():
@@ -45,7 +45,7 @@ def test_decide_action_source_newer():
         "user_metadata": {"x-source-updated-at": "2026-05-20T10:00:00Z"},
         "size": 100,
     }
-    assert _decide_action(src, dst) == "upload"
+    assert _decide_action(src, dst, mode="incremental") == "upload"
 
 
 def test_decide_action_target_newer_still_skip():
@@ -57,7 +57,19 @@ def test_decide_action_target_newer_still_skip():
         "user_metadata": {"x-source-updated-at": "2026-05-20T10:00:00Z"},
         "size": 100,
     }
-    assert _decide_action(src, dst) == "skip"
+    assert _decide_action(src, dst, mode="incremental") == "skip"
+
+
+def test_decide_action_full_mode_always_upload():
+    """Full mode should always upload regardless of timestamp."""
+    from scripts.dr_storage_sync import _decide_action
+
+    src = {"name": "a.pdf", "updated_at": "2026-05-20T10:00:00Z", "size": 100}
+    dst = {
+        "user_metadata": {"x-source-updated-at": "2026-05-20T10:00:00Z"},
+        "size": 100,
+    }
+    assert _decide_action(src, dst, mode="full") == "upload"
 
 
 def test_r2_key_layout():

@@ -79,8 +79,10 @@ def _r2_key(target_prefix: str, src_bucket: str, src_name: str) -> str:
     return f"{target_prefix.rstrip('/')}/{src_bucket}/{src_name}"
 
 
-def _decide_action(src: dict, dst: dict | None) -> str:
+def _decide_action(src: dict, dst: dict | None, mode: str = "incremental") -> str:
     if dst is None:
+        return "upload"
+    if mode == "full":
         return "upload"
     src_ts = src["updated_at"]
     dst_ts = (dst["user_metadata"] or {}).get("x-source-updated-at", "")
@@ -90,7 +92,12 @@ def _decide_action(src: dict, dst: dict | None) -> str:
 
 
 def _sync_bucket(
-    sb_client, s3, src_bucket: str, target_uri: str, dry_run: bool
+    sb_client,
+    s3,
+    src_bucket: str,
+    target_uri: str,
+    dry_run: bool,
+    mode: str = "incremental",
 ) -> dict[str, int]:
     # target_uri 例：s3://ivy-dr/storage/
     assert target_uri.startswith("s3://")
@@ -104,7 +111,7 @@ def _sync_bucket(
     for src in src_items:
         key = _r2_key(dst_prefix, src_bucket, src["name"])
         dst = dst_items.get(key)
-        action = _decide_action(src, dst)
+        action = _decide_action(src, dst, mode)
         if action == "skip":
             stats["skip"] += 1
             continue
@@ -158,7 +165,7 @@ def main():
 
     overall = {"upload": 0, "skip": 0, "error": 0}
     for bucket in args.buckets:
-        stats = _sync_bucket(sb, s3, bucket, args.target, args.dry_run)
+        stats = _sync_bucket(sb, s3, bucket, args.target, args.dry_run, args.mode)
         logger.info("bucket=%s stats=%s", bucket, stats)
         for k in overall:
             overall[k] += stats[k]
