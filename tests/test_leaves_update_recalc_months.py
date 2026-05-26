@@ -41,9 +41,8 @@ def _make_leave(
     leave.deduction_ratio = 0.0
     leave.is_deductible = False
     leave.is_hospitalized = False
-    leave.is_approved = True
-    # P2 mirror: production code reads .status on this mock
     leave.status = ApprovalStatus.APPROVED.value
+    leave.is_approved = True  # audit snapshot: api/leaves.py still reads .is_approved (removed in Step 2)
     leave.approved_by = "admin"
     leave.rejection_reason = None
     leave.attachment_paths = None

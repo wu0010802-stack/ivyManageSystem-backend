@@ -377,7 +377,7 @@ def test_snapshot_excludes_leave_starting_after_resign_date(
             start_date=date(2026, 6, 20),
             end_date=date(2026, 6, 20),
             leave_hours=8.0,
-            is_approved=True,
+            status="approved",
         )
     )
     db_session.flush()
@@ -411,7 +411,7 @@ def test_snapshot_includes_leave_starting_on_resign_date(
             start_date=date(2026, 6, 15),
             end_date=date(2026, 6, 15),
             leave_hours=8.0,
-            is_approved=True,
+            status="approved",
         )
     )
     db_session.flush()

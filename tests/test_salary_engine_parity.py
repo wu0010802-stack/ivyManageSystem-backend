@@ -125,7 +125,7 @@ def build_leave_with_attendance(
         start_time=start_time,
         end_time=end_time,
         leave_hours=hours,
-        is_approved=True,
+        status="approved",
         deduction_ratio=deduction_ratio,
     )
     session.add(lv)

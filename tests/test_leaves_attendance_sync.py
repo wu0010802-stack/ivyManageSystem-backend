@@ -242,8 +242,8 @@ class TestApproveHookIntegration:
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
         assert (
-            leave.is_approved is None
-        ), f"rollback 後 is_approved 應仍為 None，實際 {leave.is_approved}"
+            leave.status == "pending"
+        ), f"rollback 後 status 應仍為 pending，實際 {leave.status}"
 
     def test_i9_approve_idempotent(self, app_client):
         """I-9: approve 連點兩次 → 只寫一次 Attendance。"""
@@ -313,8 +313,8 @@ class TestApproveHookIntegration:
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
         assert (
-            leave.is_approved is None
-        ), f"rollback 後 is_approved 應仍為 None，實際 {leave.is_approved}"
+            leave.status == "pending"
+        ), f"rollback 後 status 應仍為 pending，實際 {leave.status}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ class TestUpdateHookIntegration:
             leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
             rows = session.query(Attendance).filter_by(leave_record_id=leave_id).all()
 
-        if leave.is_approved is True:
+        if leave.status == "approved":
             # reapply 路徑（若 update 未退審）
             assert len(rows) >= 1
         else:
@@ -387,7 +387,7 @@ class TestUpdateHookIntegration:
             leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
             rows = session.query(Attendance).filter_by(leave_record_id=leave_id).all()
 
-        if leave.is_approved is True:
+        if leave.status == "approved":
             # reapply 路徑（若 update 未退審）：部分請假，partial_leave_hours=3
             assert len(rows) == 1
             assert rows[0].partial_leave_hours is not None
@@ -428,8 +428,8 @@ class TestUpdateHookIntegration:
             leave = session.query(LeaveRecord).filter_by(id=leave_id).first()
             rows = session.query(Attendance).filter_by(leave_record_id=leave_id).all()
 
-        # 退審路徑 → is_approved=None → revert → Attendance 全刪
-        if leave.is_approved is None:
+        # 退審路徑 → status="pending" → revert → Attendance 全刪
+        if leave.status == "pending":
             assert len(rows) == 0, f"revert 後 Attendance 應全刪，實際 {len(rows)} 筆"
 
 

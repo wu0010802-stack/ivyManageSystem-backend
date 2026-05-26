@@ -18,7 +18,7 @@ class FakeLeave:
         self.id = 99
         self.leave_type = leave_type
         self.deduction_ratio = deduction_ratio
-        self.is_approved = False
+        self.status = "rejected"
         self.is_deductible = False
         self.approved_by = None
         self.rejection_reason = None

@@ -1045,7 +1045,7 @@ class TestF011_PortalLeavesCompensatory:
             hours=2.0,
             use_comp_leave=True,
             comp_leave_granted=True,
-            is_approved=True,
+            status="approved",
         )
         session.add(ot_b)
         session.flush()
@@ -1121,7 +1121,7 @@ class TestF011_PortalLeavesCompensatory:
                 hours=2.0,
                 use_comp_leave=True,
                 comp_leave_granted=True,
-                is_approved=True,
+                status="approved",
             )
             s.add(ot)
             s.flush()

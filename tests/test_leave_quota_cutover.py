@@ -196,7 +196,7 @@ class TestLeaveQuotaCutover:
             start_date=date(2026, 3, 1),
             end_date=date(2026, 3, 1),
             leave_hours=6.0,
-            is_approved=True,
+            status="approved",
         )
         db_session.add(used)
         db_session.flush()

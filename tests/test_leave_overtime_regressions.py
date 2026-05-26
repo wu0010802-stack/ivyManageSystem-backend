@@ -162,7 +162,7 @@ class TestPortalLeaveDeductionRatio:
                 start_date=date(2026, 3, 12),
                 end_date=date(2026, 3, 14),
                 leave_hours=24,
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             _create_user(
@@ -233,7 +233,7 @@ class TestPortalLeaveDeductionRatio:
                     start_date=date(2026, 3, 20),
                     end_date=date(2026, 3, 20),
                     leave_hours=8,
-                    is_approved=None,
+                    status="pending",
                 )
             )
             _create_user(
@@ -279,7 +279,7 @@ class TestPortalLeaveDeductionRatio:
                 start_date=date(2026, 3, 20),
                 end_date=date(2026, 3, 20),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
                 substitute_employee_id=substitute.id,
                 substitute_status="accepted",
             )
@@ -289,7 +289,7 @@ class TestPortalLeaveDeductionRatio:
                 start_date=date(2026, 3, 20),
                 end_date=date(2026, 3, 20),
                 leave_hours=8,
-                is_approved=True,
+                status="approved",
             )
             session.add_all([leave, substitute_leave])
             _create_user(
@@ -326,7 +326,7 @@ class TestPortalLeaveDeductionRatio:
                 start_date=date(2026, 3, 26),
                 end_date=date(2026, 3, 26),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
                 substitute_employee_id=substitute.id,
                 substitute_status="pending",
             )
@@ -352,7 +352,7 @@ class TestPortalLeaveDeductionRatio:
         assert approve_res.status_code == 200
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).one()
-            assert leave.is_approved is True
+            assert leave.status == "approved"
             assert leave.substitute_status == "waived"
 
 
@@ -391,7 +391,7 @@ class TestPortalSubstitutePendingCount:
                         leave_hours=8,
                         substitute_employee_id=substitute.id,
                         substitute_status="pending",
-                        is_approved=None,
+                        status="pending",
                     ),
                     LeaveRecord(
                         employee_id=requester.id,
@@ -401,7 +401,7 @@ class TestPortalSubstitutePendingCount:
                         leave_hours=8,
                         substitute_employee_id=substitute.id,
                         substitute_status="pending",
-                        is_approved=None,
+                        status="pending",
                     ),
                     LeaveRecord(
                         employee_id=requester.id,
@@ -411,7 +411,7 @@ class TestPortalSubstitutePendingCount:
                         leave_hours=8,
                         substitute_employee_id=substitute.id,
                         substitute_status="accepted",
-                        is_approved=None,
+                        status="pending",
                     ),
                     LeaveRecord(
                         employee_id=requester.id,
@@ -421,7 +421,7 @@ class TestPortalSubstitutePendingCount:
                         leave_hours=8,
                         substitute_employee_id=substitute.id,
                         substitute_status="rejected",
-                        is_approved=None,
+                        status="pending",
                     ),
                     LeaveRecord(
                         employee_id=requester.id,
@@ -431,7 +431,7 @@ class TestPortalSubstitutePendingCount:
                         leave_hours=8,
                         substitute_employee_id=other_substitute.id,
                         substitute_status="pending",
-                        is_approved=None,
+                        status="pending",
                     ),
                 ]
             )
@@ -472,7 +472,7 @@ class TestLeaveScheduleGuard:
                 start_date=date(2026, 3, 13),
                 end_date=date(2026, 3, 13),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add_all(
                 [
@@ -521,7 +521,7 @@ class TestApprovedOvertimeRollback:
                 overtime_pay=0,
                 use_comp_leave=True,
                 comp_leave_granted=True,
-                is_approved=True,
+                status="approved",
                 approved_by="admin",
             )
             quota = LeaveQuota(
@@ -572,7 +572,7 @@ class TestApprovedOvertimeRollback:
                 )
                 .one()
             )
-            assert overtime.is_approved is None
+            assert overtime.status == "pending"
             assert overtime.comp_leave_granted is False
             assert overtime.hours == 1.5
             assert quota.total_hours == 0.0
@@ -589,7 +589,7 @@ class TestApprovedOvertimeRollback:
                 overtime_pay=500,
                 use_comp_leave=False,
                 comp_leave_granted=False,
-                is_approved=True,
+                status="approved",
                 approved_by="admin",
             )
             session.add(overtime)
@@ -637,7 +637,7 @@ class TestApprovedOvertimeRollback:
                 overtime_pay=0,
                 use_comp_leave=True,
                 comp_leave_granted=True,
-                is_approved=True,
+                status="approved",
                 approved_by="admin",
             )
             quota = LeaveQuota(
@@ -688,7 +688,7 @@ class TestApprovedOvertimeRollback:
                 )
                 .one()
             )
-            assert overtime.is_approved is False
+            assert overtime.status == "rejected"
             assert overtime.approved_by is None
             assert overtime.comp_leave_granted is False
             assert quota.total_hours == 0.0
@@ -710,7 +710,7 @@ class TestSelfApprovalGuard:
                 start_date=date(2026, 4, 1),
                 end_date=date(2026, 4, 1),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             _create_user(
@@ -747,7 +747,7 @@ class TestSelfApprovalGuard:
                 start_date=date(2026, 4, 2),
                 end_date=date(2026, 4, 2),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             _create_user(
@@ -790,7 +790,7 @@ class TestBatchSelfApprovalGuard:
                 start_date=date(2026, 5, 1),
                 end_date=date(2026, 5, 1),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             # 使用 5/4（週一）避開週末；schedule guard 會擋掉週末 0 工時的請假
             other_leave = LeaveRecord(
@@ -799,7 +799,7 @@ class TestBatchSelfApprovalGuard:
                 start_date=date(2026, 5, 4),
                 end_date=date(2026, 5, 4),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add_all([self_leave, other_leave])
             # 使用 admin 角色：無 ApprovalPolicy 時 admin 可核准任何人
@@ -846,14 +846,14 @@ class TestBatchSelfApprovalGuard:
                 overtime_date=date(2026, 5, 3),
                 overtime_type="weekday",
                 hours=2.0,
-                is_approved=None,
+                status="pending",
             )
             other_ot = OvertimeRecord(
                 employee_id=other_employee.id,
                 overtime_date=date(2026, 5, 4),
                 overtime_type="weekday",
                 hours=2.0,
-                is_approved=None,
+                status="pending",
             )
             session.add_all([self_ot, other_ot])
             # 使用 admin 角色：無 ApprovalPolicy 時 admin 可核准任何人
@@ -918,7 +918,7 @@ class TestConcurrentApprovalQuotaGuard:
                 start_date=date(2026, 4, 1),
                 end_date=date(2026, 4, 1),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             leave2 = LeaveRecord(
                 employee_id=emp.id,
@@ -926,7 +926,7 @@ class TestConcurrentApprovalQuotaGuard:
                 start_date=date(2026, 4, 2),
                 end_date=date(2026, 4, 2),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add_all([leave1, leave2])
             session.commit()
@@ -971,7 +971,7 @@ class TestConcurrentApprovalQuotaGuard:
                 start_date=date(2026, 5, 1),
                 end_date=date(2026, 5, 1),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add(leave_a)
             session.commit()
@@ -992,7 +992,7 @@ class TestConcurrentApprovalQuotaGuard:
                 start_date=date(2026, 5, 2),
                 end_date=date(2026, 5, 2),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add(leave_b)
             session.commit()

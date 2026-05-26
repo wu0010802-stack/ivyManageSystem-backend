@@ -136,7 +136,7 @@ def _pending_leave(
         leave_hours=leave_hours,
         start_time=start_time,
         end_time=end_time,
-        is_approved=None,
+        status="pending",
         is_deductible=True,
         deduction_ratio=1.0,
     )
@@ -159,7 +159,7 @@ def _approved_overtime(
     end_time: str = "20:00",
     hours: float = 2.0,
     use_comp_leave: bool = False,
-    is_approved: bool | None = True,
+    status: str = "approved",
 ) -> OvertimeRecord:
     ot = OvertimeRecord(
         employee_id=employee_id,
@@ -168,9 +168,9 @@ def _approved_overtime(
         end_time=_ot_dt(overtime_date, end_time),
         hours=hours,
         overtime_type="weekday",
-        is_approved=is_approved,
+        status=status,
         use_comp_leave=use_comp_leave,
-        comp_leave_granted=use_comp_leave and is_approved is True,
+        comp_leave_granted=use_comp_leave and status == "approved",
     )
     session.add(ot)
     session.flush()
@@ -187,7 +187,7 @@ class TestP0_1BatchApproveTwoPass:
 
     修補前的行為：
       第二筆驗證階段拋出非 HTTPException → session.rollback() + expire_all()
-      → 第一筆已 setattr 的 is_approved=True 被 rollback；Phase 2 commit 變 no-op
+      → 第一筆已 setattr 的 status="approved" 被 rollback；Phase 2 commit 變 no-op
       → 但 succeeded 仍含第一筆，回傳體與 DB 脫鉤（silent data loss）
 
     修補後（two-pass）：
@@ -247,14 +247,14 @@ class TestP0_1BatchApproveTwoPass:
         # 核心斷言：lv1 若在 succeeded，DB 必須真的核准；不允許 succeeded 與 DB 脫鉤
         if lv1_id in succeeded:
             assert (
-                lv1_db.is_approved is True
-            ), f"silent data loss: lv1 在 succeeded 但 DB is_approved={lv1_db.is_approved}"
+                lv1_db.status == "approved"
+            ), f"silent data loss: lv1 在 succeeded 但 DB status={lv1_db.status}"
         # lv2 必定 failed
         assert lv2_id in failed_ids, f"lv2 應被視為失敗；body={body}"
         # lv2 不應被部分套用
         assert (
-            lv2_db.is_approved is None
-        ), f"lv2 失敗但 is_approved={lv2_db.is_approved}（部分套用）"
+            lv2_db.status == "pending"
+        ), f"lv2 失敗但 status={lv2_db.status}（部分套用）"
 
     def test_overtime_batch_partial_failure_consistent(self, app_client):
         """overtimes 同 pattern 的 batch_approve 也須一致行為。"""
@@ -264,10 +264,10 @@ class TestP0_1BatchApproveTwoPass:
             emp2 = _emp(session, "B012", "OT 員工二")
             _admin(session)
             ot1 = _approved_overtime(
-                session, emp1.id, overtime_date=date(2026, 6, 1), is_approved=None
+                session, emp1.id, overtime_date=date(2026, 6, 1), status="pending"
             )
             ot2 = _approved_overtime(
-                session, emp2.id, overtime_date=date(2026, 6, 2), is_approved=None
+                session, emp2.id, overtime_date=date(2026, 6, 2), status="pending"
             )
             session.commit()
             ot1_id, ot2_id = ot1.id, ot2.id
@@ -307,10 +307,10 @@ class TestP0_1BatchApproveTwoPass:
 
         if ot1_id in succeeded:
             assert (
-                ot1_db.is_approved is True
-            ), f"silent data loss: ot1 succeeded 但 DB is_approved={ot1_db.is_approved}"
+                ot1_db.status == "approved"
+            ), f"silent data loss: ot1 succeeded 但 DB status={ot1_db.status}"
         assert ot2_id in failed_ids
-        assert ot2_db.is_approved is None
+        assert ot2_db.status == "pending"
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -431,7 +431,7 @@ class TestGSubstituteConflictRefinement:
                 start_time="08:00",
                 end_time="12:00",
                 leave_hours=4.0,
-                is_approved=None,
+                status="pending",
                 is_deductible=True,
                 deduction_ratio=1.0,
                 substitute_employee_id=substitute.id,
@@ -460,7 +460,7 @@ class TestGSubstituteConflictRefinement:
                 start_date=date(2026, 9, 16),
                 end_date=date(2026, 9, 16),
                 leave_hours=8.0,
-                is_approved=None,
+                status="pending",
                 is_deductible=True,
                 deduction_ratio=1.0,
                 substitute_employee_id=inactive_sub.id,
@@ -503,7 +503,7 @@ class TestFUpdatePathHardening:
                 start_time="09:00",
                 end_time="12:00",
                 leave_hours=3.0,
-                is_approved=None,
+                status="pending",
                 is_deductible=True,
                 deduction_ratio=1.0,
             )
@@ -561,7 +561,7 @@ class TestFUpdatePathHardening:
                 start_date=date(2026, 9, 10),
                 end_date=date(2026, 9, 10),
                 leave_hours=2.0,
-                is_approved=None,
+                status="pending",
                 is_deductible=False,
                 deduction_ratio=0.0,
                 source_overtime_id=ot.id,
@@ -578,7 +578,7 @@ class TestFUpdatePathHardening:
 
         with session_factory() as session:
             lv_db = session.get(LeaveRecord, leave_id)
-            assert lv_db.is_approved is False, "linked_pending 應被自動駁回"
+            assert lv_db.status == "rejected", "linked_pending 應被自動駁回"
             log = (
                 session.query(ApprovalLog)
                 .filter(
@@ -620,7 +620,7 @@ class TestFUpdatePathHardening:
                 start_date=date(2026, 9, 12),
                 end_date=date(2026, 9, 12),
                 leave_hours=3.0,
-                is_approved=True,
+                status="approved",
                 is_deductible=False,
                 deduction_ratio=0.0,
                 source_overtime_id=ot.id,
@@ -690,7 +690,7 @@ class TestP1_6ApproveOvertimeBodySchema:
             ot = _approved_overtime(
                 session,
                 emp.id,
-                is_approved=None,
+                status="pending",
                 overtime_date=date(2026, 8, 1),
             )
             session.commit()
@@ -707,8 +707,8 @@ class TestP1_6ApproveOvertimeBodySchema:
         with session_factory() as session:
             ot_db = session.get(OvertimeRecord, ot_id)
             assert (
-                ot_db.is_approved is False
-            ), f"body 內 approved=False 應被讀取；實際 is_approved={ot_db.is_approved}"
+                ot_db.status == "rejected"
+            ), f"body 內 approved=False 應被讀取；實際 status={ot_db.status}"
             log = (
                 session.query(ApprovalLog)
                 .filter(
@@ -731,7 +731,7 @@ class TestP1_6ApproveOvertimeBodySchema:
             ot = _approved_overtime(
                 session,
                 emp.id,
-                is_approved=None,
+                status="pending",
                 overtime_date=date(2026, 8, 2),
             )
             session.commit()
@@ -753,7 +753,7 @@ class TestP1_6ApproveOvertimeBodySchema:
             ot = _approved_overtime(
                 session,
                 emp.id,
-                is_approved=None,
+                status="pending",
                 overtime_date=date(2026, 8, 3),
             )
             session.commit()
@@ -798,7 +798,7 @@ class TestP1_4_5LeaveOvertimeCrossOverlap:
                 start_date=date(2026, 7, 1),
                 end_date=date(2026, 7, 1),
                 leave_hours=8.0,
-                is_approved=True,
+                status="approved",
                 is_deductible=True,
                 deduction_ratio=1.0,
             )
@@ -875,7 +875,7 @@ class TestP1_4_5LeaveOvertimeCrossOverlap:
                 start_date=date(2026, 7, 3),
                 end_date=date(2026, 7, 3),
                 leave_hours=8.0,
-                is_approved=None,
+                status="pending",
                 is_deductible=True,
                 deduction_ratio=1.0,
             )

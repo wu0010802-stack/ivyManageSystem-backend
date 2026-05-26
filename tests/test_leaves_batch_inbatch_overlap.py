@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 P2-5 補丁驗證:
     我在 batch_approve_leaves 的 phase 1 迴圈內加了 _check_overlap。
     對於兩張 pending 的同員工同時段假單,若同時送入批次核准,
-    autoflush 應讓後一張的 _check_overlap 看到前一張已被 set is_approved=True
+    autoflush 應讓後一張的 _check_overlap 看到前一張已被 set status="approved"
     而把後一張擋下,只成功核准其中一張。
 
     這次測試用真 SQLite session 而非 mock,以驗證 autoflush 確實生效;
@@ -82,7 +82,7 @@ def _seed_two_overlapping_pending(session_factory):
             leave_hours=8.0,
             is_deductible=False,
             deduction_ratio=0.0,
-            is_approved=None,
+            status="pending",
         )
         leave_b = LeaveRecord(
             employee_id=emp.id,
@@ -92,7 +92,7 @@ def _seed_two_overlapping_pending(session_factory):
             leave_hours=8.0,
             is_deductible=False,
             deduction_ratio=0.0,
-            is_approved=None,
+            status="pending",
         )
         s.add(leave_a)
         s.add(leave_b)
@@ -160,7 +160,7 @@ def test_in_batch_same_employee_same_period_blocks_second(
     try:
         a = s.query(LeaveRecord).filter(LeaveRecord.id == id_a).first()
         b = s.query(LeaveRecord).filter(LeaveRecord.id == id_b).first()
-        assert a.is_approved is True
-        assert b.is_approved is None  # 仍 pending(被擋下,batch 不會改它)
+        assert a.status == "approved"
+        assert b.status == "pending"  # 仍 pending(被擋下,batch 不會改它)
     finally:
         s.close()

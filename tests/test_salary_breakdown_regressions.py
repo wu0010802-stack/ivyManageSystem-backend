@@ -587,7 +587,7 @@ class TestDailySalaryBaseConsistency:
                 leave_hours=8,
                 start_date=date(2026, 3, 5),
                 end_date=date(2026, 3, 5),
-                is_approved=True,
+                status="approved",
                 deduction_ratio=1.0,
             )
             session.add(leave)

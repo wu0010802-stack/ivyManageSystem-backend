@@ -131,7 +131,7 @@ def _make_crossmonth_leave(
     start: date,
     end: date,
     *,
-    is_approved=None,
+    status="pending",
     leave_hours: float = 4.0,
 ):
     """繞過 Pydantic 驗證，直接以 ORM 建立跨月假單（模擬歷史資料/未來路徑漏洞）。
@@ -144,7 +144,7 @@ def _make_crossmonth_leave(
         start_date=start,
         end_date=end,
         leave_hours=leave_hours,
-        is_approved=is_approved,
+        status=status,
         is_deductible=True,
         deduction_ratio=1.0,
         attachment_paths='["fake-evidence.png"]',
@@ -229,7 +229,7 @@ class TestUpdateLeaveCrossMonthFinalizedGuard:
                 emp.id,
                 date(2026, 1, 31),
                 date(2026, 3, 1),
-                is_approved=True,
+                status="approved",
             )
             # 封存原 end_date 月（3 月）
             _make_finalized_salary(session, emp.id, 2026, 3)
@@ -265,7 +265,7 @@ class TestDeleteLeaveCrossMonthFinalizedGuard:
                 emp.id,
                 date(2026, 1, 31),
                 date(2026, 3, 1),
-                is_approved=True,
+                status="approved",
             )
             _make_finalized_salary(session, emp.id, 2026, 3)
             session.commit()

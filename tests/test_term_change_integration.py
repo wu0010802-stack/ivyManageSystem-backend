@@ -319,7 +319,7 @@ class TestTermChangeIntegration:
                 start_date=date(2026, 3, 10),
                 end_date=date(2026, 3, 10),
                 leave_hours=2.0,
-                is_approved=True,
+                status="approved",
             )
         )
         db_session.commit()

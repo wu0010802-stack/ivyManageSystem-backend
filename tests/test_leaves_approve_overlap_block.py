@@ -41,9 +41,8 @@ def _make_leave(
     leave.deduction_ratio = 0.0
     leave.is_deductible = False
     leave.is_hospitalized = False
-    leave.is_approved = None
-    # P2 mirror: production code reads .status on this mock
     leave.status = ApprovalStatus.PENDING.value
+    leave.is_approved = None  # audit snapshot: api/leaves.py still reads .is_approved (removed in Step 2)
     leave.approved_by = None
     leave.rejection_reason = None
     leave.attachment_paths = None
@@ -87,7 +86,6 @@ class TestSingleApproveOverlapBlock:
         conflict = _make_leave(
             leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15)
         )
-        conflict.is_approved = True
         conflict.status = ApprovalStatus.APPROVED.value
 
         session, patches = _patches_for_approve(leave, conflict=conflict)
@@ -116,7 +114,6 @@ class TestSingleApproveOverlapBlock:
         conflict = _make_leave(
             leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15)
         )
-        conflict.is_approved = True
         conflict.status = ApprovalStatus.APPROVED.value
 
         session, patches = _patches_for_approve(leave, conflict=conflict)
@@ -214,7 +211,6 @@ class TestBatchApproveOverlapBlock:
 
         # leave 2 有重疊
         conflict = _make_leave(leave_id=88)
-        conflict.is_approved = True
         conflict.status = ApprovalStatus.APPROVED.value
         conflict_map = {2: conflict, 1: None}
 

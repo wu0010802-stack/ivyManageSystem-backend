@@ -117,7 +117,7 @@ def _seed_approved_ot(
         overtime_type="weekday",
         hours=hours,
         overtime_pay=0.0,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()

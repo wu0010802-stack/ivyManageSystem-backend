@@ -102,7 +102,7 @@ def _setup_leave(session_factory, employee_id: int) -> int:
             leave_hours=8.0,
             start_time=None,
             end_time=None,
-            is_approved=None,
+            status="pending",
         )
         session.add(lv)
         session.commit()

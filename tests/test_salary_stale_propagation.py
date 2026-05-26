@@ -175,7 +175,7 @@ def _seed_approved_leave(sf, emp_id: int) -> int:
             end_date=datetime(2026, 3, 10),
             leave_hours=8,
             reason="test",
-            is_approved=True,
+            status="approved",
             approved_by="admin",
         )
         session.add(leave)
@@ -246,7 +246,7 @@ class TestBatchApproveLeaveRecalcFailureMarksStale:
                 end_date=datetime(2026, 3, 10),
                 leave_hours=8,
                 reason="test",
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             session.commit()
@@ -287,7 +287,7 @@ class TestBatchApproveLeaveRecalcFailureMarksStale:
                 end_date=datetime(2026, 3, 10),
                 leave_hours=8,
                 reason="test",
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             session.commit()
@@ -328,7 +328,7 @@ class TestBatchApproveLeaveRecalcFailureMarksStale:
                 end_date=datetime(2026, 3, 10),
                 leave_hours=8,
                 reason="test",
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             session.commit()
