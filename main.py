@@ -339,6 +339,24 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("招生漏斗升學期排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # Leave quota expiry scheduler（補休到期 + 特休週年 cutover）
+    leave_quota_expiry_task = None
+    leave_quota_expiry_stop_event: asyncio.Event | None = None
+    try:
+        from services import leave_quota_expiry_scheduler as _lqe_sched
+
+        if _lqe_sched.scheduler_enabled():
+            leave_quota_expiry_stop_event = asyncio.Event()
+            leave_quota_expiry_task = asyncio.create_task(
+                _lqe_sched.run_leave_quota_expiry_scheduler(
+                    leave_quota_expiry_stop_event
+                )
+            )
+            logger.info("leave quota expiry scheduler 已啟用")
+    except Exception as e:
+        logger.warning("補休到期排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
     ivykids_sync_task = None
     ivykids_sync_stop_event: asyncio.Event | None = None
@@ -583,6 +601,17 @@ async def app_lifespan(app_instance: FastAPI):
                 recruitment_term_advance_task.cancel()
                 try:
                     await recruitment_term_advance_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if leave_quota_expiry_task is not None:
+            if leave_quota_expiry_stop_event is not None:
+                leave_quota_expiry_stop_event.set()
+            try:
+                await asyncio.wait_for(leave_quota_expiry_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                leave_quota_expiry_task.cancel()
+                try:
+                    await leave_quota_expiry_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源
