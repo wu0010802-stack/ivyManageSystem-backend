@@ -230,7 +230,7 @@ class TestLineServiceSafety:
 
         monkeypatch.setattr("services.line_service.requests.post", lambda *a, **k: (_ for _ in ()).throw(Exception("error")))
         # 不應拋出
-        svc.notify_leave_submitted("王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), 4)
+        svc._notify_leave_submitted("王小明", "事假", date(2026, 3, 1), date(2026, 3, 1), 4)
 
     def test_configure_updates_fields(self):
         """configure() 正確更新內部狀態"""

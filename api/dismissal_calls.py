@@ -287,7 +287,7 @@ async def create_dismissal_call(
     # LINE 群組推播
     if _line_service is not None:
         try:
-            _line_service.notify_dismissal_created(
+            _line_service._notify_dismissal_created(
                 out["student_name"], out["classroom_name"], body.note
             )
         except Exception as _le:

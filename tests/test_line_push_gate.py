@@ -156,7 +156,7 @@ class TestNotifyParentMessageReceived:
         svc = _enabled_svc()
         with sf() as session:
             with patch.object(svc, "_push_to_user") as p:
-                svc.notify_parent_message_received(
+                svc._notify_parent_message_received(
                     session,
                     parent_user_id=uid,
                     teacher_name="王老師",
@@ -171,7 +171,7 @@ class TestNotifyParentMessageReceived:
         svc = _enabled_svc()
         with sf() as session:
             with patch.object(svc, "_push_to_user", return_value=True) as p:
-                svc.notify_parent_message_received(
+                svc._notify_parent_message_received(
                     session,
                     parent_user_id=uid,
                     teacher_name="王老師",
@@ -194,7 +194,7 @@ class TestNotifyParentMessageReceived:
         long = "a" * 200
         with sf() as session:
             with patch.object(svc, "_push_to_user", return_value=True) as p:
-                svc.notify_parent_message_received(
+                svc._notify_parent_message_received(
                     session,
                     parent_user_id=uid,
                     teacher_name="老師",
