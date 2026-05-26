@@ -20,7 +20,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_
+from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models.database import (
@@ -67,6 +68,11 @@ class CreateLeaveRequest(BaseModel):
     start_date: date
     end_date: date
     reason: Optional[str] = Field(None, max_length=500)
+    client_request_id: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="前端產生的 UUID，partial UNIQUE 提供冪等性",
+    )
 
     @field_validator("leave_type")
     @classmethod
@@ -164,8 +170,25 @@ def create_leave(
     session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
-    _validate_date_range(payload)
+
+    # IDOR 守衛必須在冪等 pre-check 之前執行，避免跨家庭洩漏 UUID 存在性
     _assert_student_owned(session, user_id, payload.student_id, for_write=True)
+
+    # 冪等 pre-check：同 client_request_id 已存在則回原請假（跳過 validation + insert）
+    if payload.client_request_id:
+        existing = session.scalar(
+            select(StudentLeaveRequest).where(
+                StudentLeaveRequest.client_request_id == payload.client_request_id
+            )
+        )
+        if existing is not None:
+            request.state.audit_summary = (
+                f"家長申請請假 idempotent replay：leave={existing.id}"
+            )
+            return _serialize(existing, _load_leave_attachments(session, existing.id))
+
+    # 既有 validation（replay 路徑跳過）
+    _validate_date_range(payload)
     _check_overlap(session, payload.student_id, payload.start_date, payload.end_date)
 
     guardian = (
@@ -188,9 +211,28 @@ def create_leave(
         status="approved",
         reviewed_at=datetime.now(),
         reviewed_by=None,
+        client_request_id=payload.client_request_id,
     )
     session.add(item)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as e:
+        # PG partial UNIQUE 競爭寫入（23505）防護；SQLite 測試不觸發此路徑
+        if "ix_student_leave_requests_client_request_id" in str(e.orig):
+            session.rollback()
+            existing = session.scalar(
+                select(StudentLeaveRequest).where(
+                    StudentLeaveRequest.client_request_id == payload.client_request_id
+                )
+            )
+            if existing:
+                request.state.audit_summary = (
+                    f"家長申請請假 idempotent 23505 replay：leave={existing.id}"
+                )
+                return _serialize(
+                    existing, _load_leave_attachments(session, existing.id)
+                )
+        raise
     apply_attendance_for_leave(session, item, recorded_by=None)
     # NOTE: dep owns the commit — handler must NOT call session.commit() or
     # SET LOCAL app.current_user_id is lost and subsequent queries get 0 rows.
