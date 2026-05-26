@@ -478,16 +478,14 @@ class TestActivityRefundCumulative:
         """已 voided 的退費不計入累積（避免封過刪過的歷史誤殺合法後續操作）。"""
         client, sf = strict_client
         with sf() as s:
-            reg = _seed_activity_registration(s, paid_amount=5000)
+            reg = _seed_activity_registration(s, paid_amount=5000, course_price=400)
             _make_user(
                 s,
                 username="act_writer",
-                # 補 APPROVE 權限：guard 3 (diff verify) 在 sessions=NULL 時建議值=2000，
-                # 退 NT$400 diff=1600 > 100 被擋；本 test 目的是測 voided 排除累積邏輯，故略過 guard 3。
+                # course_price=400 使 sessions=NULL fallback 建議值 = 400 = 退費金額 → diff=0 guard 3 自然通過；保留 guard 2 對 voided 排除邏輯的 active 驗證。
                 permission_names=[
                     "ACTIVITY_READ",
                     "ACTIVITY_WRITE",
-                    "ACTIVITY_PAYMENT_APPROVE",
                 ],
             )
             from datetime import datetime as _dt

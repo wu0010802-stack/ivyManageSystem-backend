@@ -280,15 +280,13 @@ class TestPOSRefundCumulative:
             _create_user(
                 s,
                 username="cashier2",
-                # 補 APPROVE 權限：guard 3 (diff verify) 在 sessions=NULL 時建議值=5000，
-                # 退 NT$500 diff=4500 > 100 被擋；本 test 目的是測 voided 排除累積邏輯，故略過 guard 3。
+                # course_price=500 supply=0 使 sessions=NULL fallback 建議值 = 500 = 退費金額 → diff=0 ≤ 100 guard 3 自然通過；本 test 目的是驗 guard 2 voided 排除累積邏輯，保留 guard 2 active。
                 permission_names=[
                     "ACTIVITY_READ",
                     "ACTIVITY_WRITE",
-                    "ACTIVITY_PAYMENT_APPROVE",
                 ],
             )
-            reg = _setup_reg(s, paid_amount=5000, is_paid=True)
+            reg = _setup_reg(s, paid_amount=5000, is_paid=True, course_price=500)
             # 已 voided 的歷史退費 NT$5000，不應計入累積
             from datetime import datetime
 
