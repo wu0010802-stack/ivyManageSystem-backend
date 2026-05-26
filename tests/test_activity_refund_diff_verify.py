@@ -260,3 +260,54 @@ def test_refund_multi_reg_diff_accumulates(client):
     resp = c.post("/api/activity/pos/checkout", json=body)
     assert resp.status_code == 403
     assert "120" in resp.json()["detail"]
+
+
+# ── 單筆退費 endpoint /registrations/{id}/payments 退費路徑 ────────────────
+
+
+def test_single_refund_diff_blocks_staff(client):
+    """POST /registrations/{id}/payments (type=refund) diff > 100 → 403。
+    用 course_price=800（<= REFUND_APPROVAL_THRESHOLD=1000）確保守衛一不介入；
+    diff=300（800-500=300 > 100）→ 守衛三觸發。"""
+    c, sf = client
+    with sf() as s:
+        _create_admin(s, permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"])
+        reg = _setup_reg(s, course_price=800, supply_price=0, paid_amount=800)
+        _set_course_sessions(s, "美術", 10)
+        s.commit()
+        reg_id = reg.id
+
+    _login(c)
+    body = {
+        "amount": 500,  # suggested=800（全退）；diff=300 > 100；amount=500 < guard1 1000
+        "payment_method": "現金",
+        "payment_date": "2026-05-26",
+        "type": "refund",
+        "notes": REFUND_REASON,
+    }
+    resp = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
+    assert resp.status_code == 403
+
+
+def test_single_refund_diff_below_threshold_passes(client):
+    """單筆退費 diff <= 100 → 一線通過。
+    用 course_price=800（<= REFUND_APPROVAL_THRESHOLD=1000）確保守衛一不介入；
+    diff=50（800-750=50 < 100）→ 守衛三亦不介入。"""
+    c, sf = client
+    with sf() as s:
+        _create_admin(s, permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"])
+        reg = _setup_reg(s, course_price=800, supply_price=0, paid_amount=800)
+        _set_course_sessions(s, "美術", 10)
+        s.commit()
+        reg_id = reg.id
+
+    _login(c)
+    body = {
+        "amount": 750,  # suggested=800（全退）；diff=50 < 100；amount=750 < guard1 1000
+        "payment_method": "現金",
+        "payment_date": "2026-05-26",
+        "type": "refund",
+        "notes": REFUND_REASON,
+    }
+    resp = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
+    assert resp.status_code in (200, 201), resp.json()

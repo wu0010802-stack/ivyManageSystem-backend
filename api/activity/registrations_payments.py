@@ -25,6 +25,8 @@ from models.database import (
     ActivityPaymentRecord,
 )
 from services.activity_service import activity_service
+from services.activity_payment_guards import require_approve_for_refund_diff
+from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -387,6 +389,26 @@ async def add_registration_payment(
             require_approve_for_large_refund(
                 cumulative_refund, current_user, label="活動累積退費總額"
             )
+
+        # ── 第三道：實退 vs 建議值偏離簽核 (spec §8.2) ───────────────
+        if body.type == "refund":
+            suggestion = build_refund_suggestion(session, registration_id)
+            suggested_total = suggestion["total_suggested_amount"]
+            diff = abs(int(body.amount) - suggested_total)
+            require_approve_for_refund_diff(
+                diff=diff,
+                current_user=current_user,
+                suggested_total=suggested_total,
+                actual_total=int(body.amount),
+            )
+            _refund_audit_context = {
+                "suggested_total": suggested_total,
+                "actual_total": int(body.amount),
+                "diff": diff,
+                "suggestion_details": [suggestion],
+            }
+        else:
+            _refund_audit_context = {}
 
         operator = current_user.get("username", "")
 
