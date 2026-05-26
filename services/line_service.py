@@ -252,16 +252,20 @@ class LineService:
         if channel_secret is not None:
             self._channel_secret = channel_secret
 
-    def _push(self, text: str) -> bool:
-        """推送純文字訊息到 LINE 群組，成功回傳 True，失敗回傳 False"""
-        if not self._enabled or not self._token or not self._target_id:
+    def push_text_to_group(self, group_id: str, text: str) -> bool:
+        """推送純文字到指定 LINE group/room/user_id（generalised group push）。
+
+        Phase 4 Section 2 新加 — dispatch group_id mode 用。caller 可傳任意 group_id
+        （含 self._target_id 或其他 group），由 dispatch caller 自行 resolve 來源。
+        """
+        if not self._enabled or not self._token or not group_id:
             return False
         try:
             resp = requests.post(
                 _LINE_PUSH_URL,
                 headers={"Authorization": f"Bearer {self._token}"},
                 json={
-                    "to": self._target_id,
+                    "to": group_id,
                     "messages": [{"type": "text", "text": text}],
                 },
                 timeout=5,
@@ -275,6 +279,18 @@ class LineService:
         except Exception as exc:
             logger.warning("LINE 推送失敗: %s", exc)
             return False
+
+    def _push(self, text: str) -> bool:
+        """推送純文字訊息到預設 LINE 群組（self._target_id），成功回傳 True。
+
+        Phase 4 Section 2 之後此 method 為 push_text_to_group 的 thin wrapper；
+        dispatch hybrid 路徑（dismissal_calls.py）不再使用，改走 dispatch +
+        line_group_id 參數。保留供其他可能 internal caller 用，下個 minor version
+        評估退役。
+        """
+        if not self._target_id:
+            return False
+        return self.push_text_to_group(self._target_id, text)
 
     def push_to_user(self, line_user_id: str, text: str) -> bool:
         """Public API：發送純文字訊息給單一 LINE user.

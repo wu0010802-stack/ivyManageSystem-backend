@@ -29,10 +29,15 @@ router = APIRouter(prefix="/api/dismissal-calls", tags=["dismissal-calls"])
 _DAY_START = time(0, 0, 0)
 _DAY_END = time(23, 59, 59)
 
+# Phase 4 Section 2 (2026-05-26): line_service hybrid 收尾 — dismissal.created
+# 改走 dispatch.enqueue(line_group_id="") 由 LINE adapter 用 line_service._target_id
+# 自動 fallback 推 default group；caller 不再直接呼叫對應 method。
+# init_dismissal_line_service 保留為 backward-compat noop（main.py / test 仍 call）。
 _line_service = None
 
 
 def init_dismissal_line_service(line_service) -> None:
+    """No-op since Phase 4 Section 2; kept for backward-compat with main.py wiring."""
     global _line_service
     _line_service = line_service
 
@@ -220,11 +225,11 @@ def _db_create_dismissal_call(
 
         out = _build_call_out(call, session)
 
-        # Hybrid 通知（PR-C-3）：dispatch ws-only 走 dispatch infrastructure，
-        # LINE 群組仍由 caller endpoint 直接呼叫 line_service 對應 method
-        # （見 endpoint 內保留路徑）。dispatch ws payload 帶 event_type 鍵，與
-        # 既有 _get_manager().broadcast {"type": "dismissal_call_created"} 並存
-        # 在同一 dismissal_manager；前端依 type vs event_type 分流。
+        # Phase 4 Section 2: dispatch 接管 line + ws 兩 channel。
+        # - ws: 用同一 dismissal_manager.broadcast 與既有 _get_manager().broadcast
+        #   並存（type vs event_type key 分流）
+        # - line: line_group_id="" sentinel → LINE adapter handler fallback 用
+        #   line_service._target_id 推預設群組
         try:
             from services.notification import dispatch
 
@@ -238,9 +243,9 @@ def _db_create_dismissal_call(
                     "classroom_name": out["classroom_name"],
                     "note": body.note,
                 },
-                channels_override=("ws",),
                 source_entity_type="dismissal_call",
                 source_entity_id=call.id,
+                line_group_id="",  # group mode；handler 用 ls._target_id
             )
         except Exception as exc:
             logger.warning("dismissal.created dispatch enqueue 失敗（已吞）：%s", exc)
@@ -284,14 +289,8 @@ async def create_dismissal_call(
         },
     )
 
-    # LINE 群組推播
-    if _line_service is not None:
-        try:
-            _line_service._notify_dismissal_created(
-                out["student_name"], out["classroom_name"], body.note
-            )
-        except Exception as _le:
-            logger.warning("接送通知 LINE 推播失敗: %s", _le)
+    # Phase 4 Section 2: LINE 群組推送已由 dispatch.enqueue (line_group_id="")
+    # 在 _db_create_dismissal_call 內接管；endpoint 不再直接呼叫 _line_service.
 
     return out
 

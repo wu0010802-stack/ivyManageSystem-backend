@@ -339,21 +339,22 @@ jobs:
         # services.notification.dispatch.enqueue；line_service.{,_}notify_*
         # 與 _push_to_user 改為 dispatch._channels.line / hybrid caller 私有 API。
         #
-        # 已知 hybrid exception（Phase 4 line_service 重構時收尾）：
-        #   api/dismissal_calls.py      — LINE 群組推送無 cleanly defined perm pool
+        # 已知 hybrid exception（Phase 4 Section 3 reports.py hybrid 收尾後清空）：
         #   api/portfolio/reports.py    — sent_count + Phase 3 rollback 需從
         #                                 push_to_user 拿真實 ACK
         #
         # 允許 path（line_service 內部與 dispatch 內部互呼）：
         #   services/line_service.py    — method 自己定義在此
         #   services/notification/_channels/  — dispatch LINE adapter
+        #
+        # 2026-05-26 Phase 4 Section 2 收尾：dismissal_calls.py 改走
+        # dispatch.enqueue(line_group_id="")，退出 exception list。
         run: |
           # 1. 禁直接 line_service.{,_}notify_* / line_svc.{,_}notify_*
           PAT='_?line_(service|svc)\._?notify_'
           MATCH=$(git grep -nE "$PAT" -- 'api/**.py' 'services/**.py' \
             ':!services/line_service.py' \
             ':!services/notification/_channels/' \
-            ':!api/dismissal_calls.py' \
             ':!api/portfolio/reports.py' \
             || true)
           if [ -n "$MATCH" ]; then

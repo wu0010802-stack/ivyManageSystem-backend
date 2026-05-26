@@ -387,6 +387,34 @@ def _h_growth_report_published(ls, evt, rendered) -> None:
     ls._push_to_user(evt.recipient_user_id, text)
 
 
+# ── 群組推送 handlers (Phase 4 Section 2) ───────────────────────────────────
+
+
+def _h_dismissal_created(ls, evt, rendered) -> None:
+    """接送通知建立 → LINE 群組推送。
+
+    Section 2: 走 evt.line_group_id（caller 從 settings 或 context 帶入）+
+    line_service.push_text_to_group。Caller (api/dismissal_calls.py) 從
+    dispatch.enqueue(line_group_id=...) 傳入；dispatch._fan_out 對 line_group_id
+    設值的 event 跳過 _resolve_line_user_id 直接走本 handler。
+    """
+    ctx = evt.context
+    from services.line_service import build_dismissal_message
+
+    text = build_dismissal_message(
+        student_name=ctx.get("student_name", ""),
+        classroom_name=ctx.get("classroom_name", ""),
+        note=ctx.get("note"),
+    )
+    group_id = evt.line_group_id or ls._target_id
+    if not group_id:
+        logger.warning(
+            "dismissal.created LINE push 略過：line_group_id 與 line_service._target_id 都空"
+        )
+        return
+    ls.push_text_to_group(group_id, text)
+
+
 # event_type → handler(line_service, evt, rendered)
 LINE_HANDLERS: dict[str, Callable] = {
     # 員工域 (12)
@@ -415,7 +443,8 @@ LINE_HANDLERS: dict[str, Callable] = {
     "activity.waitlist_expired": _h_activity_waitlist_expired,
     # 家長 Growth Report (1)
     "growth_report.published": _h_growth_report_published,
-    # 注意：dismissal.created 未註冊 — Section 2 hybrid 收尾時加 group_id mode
+    # 群組推送 (Section 2)
+    "dismissal.created": _h_dismissal_created,
 }
 
 
@@ -427,7 +456,9 @@ class LineAdapter:
         # log_id 留作 Section 3 push receipt 追蹤；v1 不用
         handler = LINE_HANDLERS.get(evt.event_type)
         if handler is None:
-            if not isinstance(evt.recipient_user_id, str):
+            # group mode 走專屬 handler；個人 mode 需 str recipient_user_id
+            # （_fan_out 已 pre-resolve）；其他情境是 caller 錯
+            if evt.line_group_id is None and not isinstance(evt.recipient_user_id, str):
                 raise ValueError(
                     f"LINE adapter 收到非 str recipient_user_id={evt.recipient_user_id!r}; "
                     "_fan_out 應先呼叫 _resolve_line_user_id"
