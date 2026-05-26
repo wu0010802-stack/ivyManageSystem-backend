@@ -1,23 +1,422 @@
-"""LINE channel adapter — thin dispatch 到既有 line_service.notify_* method。
+"""LINE channel adapter — dispatch._fan_out 對 LINE channel 走 LINE_HANDLERS dict
+查 event-specific handler 構訊息（含 Flex/quick-reply）。
 
-Phase 1：LINE_HANDLERS 為空 dict，所有 event 走 fallback push_text_to_user
-（純 text）。Phase 2 PR-A 開始按 router 遷移時為每個 event 註冊對映 handler
-（function(line_service, evt, rendered) -> None），讓 LINE Flex / quick reply
-等複雜推送繼續用既有 line_service method。
+Phase 4 Section 1 (2026-05-26)：19 個 event_type handler 註冊完成；dispatch 對註冊
+event 走專屬 handler 取代 PR-A/B/C 的 fallback push_text，恢復家長 quick-reply
+postback 等互動 UI。未註冊 event 仍 fallback 純文字 push_to_user。
 
-Phase 4 完成時 line_service 重構為純 builder + 一個 push 入口，本檔 LINE_HANDLERS
-不再需要。
+evt.recipient_user_id 在 LINE adapter call 前已被 _fan_out._resolve_line_user_id
+解析為 LINE user_id (str)，handler 直接用此值呼叫 line_service._push_to_user。
+
+Phase 4 Section 2 將支援 group_id mode（dismissal hybrid 收尾）；本檔暫不接 group
+推送，dismissal 事件未在 LINE_HANDLERS 註冊（caller 仍走 _line_service._notify_*
+hybrid path）。
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from typing import Callable
+
+from services.line_service import (
+    build_leave_message,
+    build_overtime_message,
+    build_leave_result_message,
+    build_overtime_result_message,
+    build_salary_batch_message,
+    build_activity_waitlist_promoted_message,
+    build_activity_waitlist_promotion_reminder_message,
+    build_activity_waitlist_promotion_expired_message,
+    build_activity_waitlist_final_reminder_message,
+    _build_parent_leave_result_message,
+)
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_date(value) -> date | None:
+    """Context 內 date 欄位可能是 isoformat str 或 date object；統一回 date。"""
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.split("T", 1)[0])
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_datetime(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+# ── 員工域 handlers ─────────────────────────────────────────────────────────
+
+
+def _h_leave_submitted(ls, evt, rendered) -> None:
+    """員工送出請假 → per-reviewer LINE 個人推送。"""
+    ctx = evt.context
+    start = _parse_date(ctx.get("start"))
+    end = _parse_date(ctx.get("end"))
+    text = build_leave_message(
+        name=ctx.get("submitter_name", ""),
+        leave_type=ctx.get("leave_type", ""),
+        start=start,
+        end=end,
+        hours=ctx.get("leave_hours", 0),
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_leave_approved(ls, evt, rendered) -> None:
+    ctx = evt.context
+    start = _parse_date(ctx.get("start"))
+    end = _parse_date(ctx.get("end"))
+    text = build_leave_result_message(
+        name=ctx.get("submitter_name", ""),
+        leave_type=ctx.get("leave_type", ""),
+        start=start,
+        end=end,
+        approved=True,
+        reason=None,
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_leave_rejected(ls, evt, rendered) -> None:
+    ctx = evt.context
+    start = _parse_date(ctx.get("start"))
+    end = _parse_date(ctx.get("end"))
+    text = build_leave_result_message(
+        name=ctx.get("submitter_name", ""),
+        leave_type=ctx.get("leave_type", ""),
+        start=start,
+        end=end,
+        approved=False,
+        reason=ctx.get("rejection_reason"),
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_overtime_submitted(ls, evt, rendered) -> None:
+    ctx = evt.context
+    ot_date = _parse_date(ctx.get("ot_date"))
+    text = build_overtime_message(
+        name=ctx.get("submitter_name", ""),
+        ot_date=ot_date,
+        ot_type=ctx.get("ot_type", ""),
+        hours=ctx.get("hours", 0),
+        use_comp=ctx.get("use_comp", False),
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_overtime_approved(ls, evt, rendered) -> None:
+    ctx = evt.context
+    ot_date = _parse_date(ctx.get("ot_date"))
+    text = build_overtime_result_message(
+        name=ctx.get("submitter_name", ""),
+        ot_date=ot_date,
+        ot_type=ctx.get("ot_type", ""),
+        approved=True,
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_overtime_rejected(ls, evt, rendered) -> None:
+    ctx = evt.context
+    ot_date = _parse_date(ctx.get("ot_date"))
+    text = build_overtime_result_message(
+        name=ctx.get("submitter_name", ""),
+        ot_date=ot_date,
+        ot_type=ctx.get("ot_type", ""),
+        approved=False,
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_punch_correction_approved(ls, evt, rendered) -> None:
+    ctx = evt.context
+    target = _parse_date(ctx.get("target_date"))
+    status = "✅ 已核准"
+    name = ctx.get("submitter_name", "")
+    target_str = target.isoformat() if target else ctx.get("target_date", "")
+    text = f"【補打卡審核結果】{name} {target_str} 的補打卡{status}"
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_punch_correction_rejected(ls, evt, rendered) -> None:
+    ctx = evt.context
+    target = _parse_date(ctx.get("target_date"))
+    name = ctx.get("submitter_name", "")
+    target_str = target.isoformat() if target else ctx.get("target_date", "")
+    reason = ctx.get("rejection_reason")
+    suffix = f"\n原因：{reason}" if reason else ""
+    text = f"【補打卡審核結果】{name} {target_str} 的補打卡❌ 已駁回{suffix}"
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_salary_batch_completed(ls, evt, rendered) -> None:
+    ctx = evt.context
+    text = build_salary_batch_message(
+        year=ctx.get("year", 0),
+        month=ctx.get("month", 0),
+        count=ctx.get("count", 0),
+        total_net=ctx.get("total_net", 0),
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_activity_waitlist_promoted(ls, evt, rendered) -> None:
+    ctx = evt.context
+    deadline = _parse_datetime(ctx.get("deadline"))
+    text = build_activity_waitlist_promoted_message(
+        student_name=ctx.get("student_name", ""),
+        course_name=ctx.get("course_name", ""),
+        deadline=deadline,
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_activity_waitlist_reminder(ls, evt, rendered) -> None:
+    ctx = evt.context
+    deadline = _parse_datetime(ctx.get("deadline"))
+    if deadline is None:
+        ls._push_to_user(evt.recipient_user_id, rendered.title + "\n" + rendered.body)
+        return
+    text = build_activity_waitlist_promotion_reminder_message(
+        student_name=ctx.get("student_name", ""),
+        course_name=ctx.get("course_name", ""),
+        deadline=deadline,
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_activity_waitlist_final_reminder(ls, evt, rendered) -> None:
+    ctx = evt.context
+    deadline = _parse_datetime(ctx.get("deadline"))
+    if deadline is None:
+        ls._push_to_user(evt.recipient_user_id, rendered.title + "\n" + rendered.body)
+        return
+    from zoneinfo import ZoneInfo
+
+    try:
+        now = datetime.now(ZoneInfo("Asia/Taipei")).replace(tzinfo=None)
+        delta_seconds = (deadline - now).total_seconds()
+        hours_left = max(1, int(delta_seconds // 3600))
+    except Exception:
+        hours_left = 6
+    text = build_activity_waitlist_final_reminder_message(
+        student_name=ctx.get("student_name", ""),
+        course_name=ctx.get("course_name", ""),
+        hours_left=hours_left,
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_activity_waitlist_expired(ls, evt, rendered) -> None:
+    ctx = evt.context
+    text = build_activity_waitlist_promotion_expired_message(
+        student_name=ctx.get("student_name", ""),
+        course_name=ctx.get("course_name", ""),
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_pos_unlock_requested(ls, evt, rendered) -> None:
+    ctx = evt.context
+    target = _parse_date(ctx.get("target_date"))
+    target_str = target.isoformat() if target else ctx.get("target_date", "")
+    label = "管理員 override 解鎖" if ctx.get("is_override") else "解鎖"
+    text = (
+        f"📝 POS 日結{label}通知\n"
+        f"日期：{target_str}\n"
+        f"原簽核人：{ctx.get('original_approver', '')}（您）\n"
+        f"解鎖人：{ctx.get('requester_name', '')}\n"
+        f"原因：{ctx.get('reason', '')}\n\n"
+        "請至後台確認異常稽核軌跡。"
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+# ── 家長域 handlers ─────────────────────────────────────────────────────────
+
+
+def _h_parent_message_received(ls, evt, rendered) -> None:
+    """家長端：老師訊息推送，帶 quick-reply postback（thread_id 給定時）。"""
+    ctx = evt.context
+    snippet = (ctx.get("body_preview") or "").strip() or "(附件)"
+    if len(snippet) > 60:
+        snippet = snippet[:60] + "…"
+    teacher_name = ctx.get("teacher_name", "老師")
+    student_name = ctx.get("student_name")
+    prefix = f"💬 {teacher_name} 傳了新訊息"
+    if student_name:
+        prefix += f"（{student_name}）"
+    text = f"{prefix}：\n{snippet}\n\n可直接回覆此訊息或開啟家長 App。"
+
+    thread_id = ctx.get("thread_id")
+    if thread_id is not None:
+        quick_reply = {
+            "items": [
+                {
+                    "type": "action",
+                    "action": {
+                        "type": "postback",
+                        "label": "💬 回覆此訊息",
+                        "data": f"thread_id={thread_id}",
+                        "displayText": "回覆此訊息",
+                    },
+                }
+            ]
+        }
+        ls._push_to_user_with_quick_reply(evt.recipient_user_id, text, quick_reply)
+    else:
+        ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_parent_announcement(ls, evt, rendered) -> None:
+    ctx = evt.context
+    title = ctx.get("title", "")
+    preview = ctx.get("preview")
+    body = f"【園所公告】\n{title}"
+    if preview:
+        snippet = preview.strip()
+        if len(snippet) > 60:
+            snippet = snippet[:60] + "…"
+        body += f"\n{snippet}"
+    body += "\n請開啟家長 App 查看詳情。"
+    ls._push_to_user(evt.recipient_user_id, body)
+
+
+def _h_parent_event_ack_required(ls, evt, rendered) -> None:
+    ctx = evt.context
+    title = ctx.get("event_title", "")
+    deadline = _parse_date(ctx.get("deadline"))
+    body = f"【需簽閱】\n事件：{title}"
+    if deadline:
+        body += f"\n簽閱截止：{deadline.isoformat()}"
+    body += "\n請開啟家長 App 完成簽閱。"
+    ls._push_to_user(evt.recipient_user_id, body)
+
+
+def _h_parent_fee_due(ls, evt, rendered) -> None:
+    ctx = evt.context
+    due = _parse_date(ctx.get("due_date"))
+    due_str = due.isoformat() if due else ctx.get("due_date", "")
+    text = (
+        f"【繳費提醒】\n"
+        f"學生：{ctx.get('student_name', '')}\n"
+        f"項目：{ctx.get('item_name', '')}\n"
+        f"未繳金額：${ctx.get('amount', 0)}\n"
+        f"繳費期限：{due_str}"
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_parent_leave_result(ls, evt, rendered) -> None:
+    ctx = evt.context
+    start = _parse_date(ctx.get("start"))
+    end = _parse_date(ctx.get("end"))
+    text = _build_parent_leave_result_message(
+        student_name=ctx.get("student_name", ""),
+        leave_type=ctx.get("leave_type", ""),
+        start=start,
+        end=end,
+        approved=ctx.get("approved", True),
+        review_note=ctx.get("review_note"),
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_parent_attendance_alert(ls, evt, rendered) -> None:
+    ctx = evt.context
+    target = _parse_date(ctx.get("target_date"))
+    target_str = target.isoformat() if target else ctx.get("target_date", "")
+    text = (
+        f"【出席提醒】\n"
+        f"學生：{ctx.get('student_name', '')}\n"
+        f"日期：{target_str}\n"
+        f"狀態：{ctx.get('status', ctx.get('detail', ''))}\n"
+        f"如有誤請聯絡老師。"
+    )
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
+def _h_parent_contact_book_published(ls, evt, rendered) -> None:
+    ctx = evt.context
+    log_date = _parse_date(ctx.get("date"))
+    date_str = log_date.isoformat() if log_date else ctx.get("date", "")
+    teacher_note = ctx.get("teacher_note_preview")
+    photo_count = ctx.get("photo_count", 0)
+    body = (
+        f"【今日聯絡簿】\n" f"學生：{ctx.get('student_name', '')}\n" f"日期：{date_str}"
+    )
+    if teacher_note:
+        snippet = teacher_note.strip()
+        if len(snippet) > 60:
+            snippet = snippet[:60] + "…"
+        body += f"\n老師留言：{snippet}"
+    if photo_count > 0:
+        body += f"\n附 {photo_count} 張照片"
+    body += "\n請開啟家長 App 查看完整內容。"
+    ls._push_to_user(evt.recipient_user_id, body)
+
+
+def _h_growth_report_published(ls, evt, rendered) -> None:
+    """Growth Report 推家長：reports.py hybrid 預留，Section 3 整體遷移時才用上；
+    本 handler 保留以便 hybrid 期間任何不走 reports.py 路徑的 caller 也能正常推。"""
+    ctx = evt.context
+    period = ctx.get("period", "")
+    student_name = ctx.get("student_name", "")
+    text = f"📊 {student_name} {period} 成長報告已備好\n" f"請至家長 App 查看下載。"
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
 # event_type → handler(line_service, evt, rendered)
-LINE_HANDLERS: dict[str, Callable] = {}
+LINE_HANDLERS: dict[str, Callable] = {
+    # 員工域 (12)
+    "leave.submitted": _h_leave_submitted,
+    "leave.approved": _h_leave_approved,
+    "leave.rejected": _h_leave_rejected,
+    "overtime.submitted": _h_overtime_submitted,
+    "overtime.approved": _h_overtime_approved,
+    "overtime.rejected": _h_overtime_rejected,
+    "punch_correction.approved": _h_punch_correction_approved,
+    "punch_correction.rejected": _h_punch_correction_rejected,
+    "salary.batch_completed": _h_salary_batch_completed,
+    "activity.waitlist_promoted": _h_activity_waitlist_promoted,
+    "pos.unlock_requested": _h_pos_unlock_requested,
+    # 家長域 (7)
+    "parent.message_received": _h_parent_message_received,
+    "parent.announcement": _h_parent_announcement,
+    "parent.event_ack_required": _h_parent_event_ack_required,
+    "parent.fee_due": _h_parent_fee_due,
+    "parent.leave_result": _h_parent_leave_result,
+    "parent.attendance_alert": _h_parent_attendance_alert,
+    "parent.contact_book_published": _h_parent_contact_book_published,
+    # 才藝家長域 (3)
+    "activity.waitlist_reminder": _h_activity_waitlist_reminder,
+    "activity.waitlist_final_reminder": _h_activity_waitlist_final_reminder,
+    "activity.waitlist_expired": _h_activity_waitlist_expired,
+    # 家長 Growth Report (1)
+    "growth_report.published": _h_growth_report_published,
+    # 注意：dismissal.created 未註冊 — Section 2 hybrid 收尾時加 group_id mode
+}
 
 
 class LineAdapter:
@@ -25,7 +424,7 @@ class LineAdapter:
         self._ls = line_service
 
     def send(self, evt, rendered, *, log_id: int) -> None:
-        # log_id 留作 Phase 4 push receipt 追蹤；v1 不用
+        # log_id 留作 Section 3 push receipt 追蹤；v1 不用
         handler = LINE_HANDLERS.get(evt.event_type)
         if handler is None:
             if not isinstance(evt.recipient_user_id, str):
