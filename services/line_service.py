@@ -594,7 +594,7 @@ class LineService:
             return self._push(text)
         except Exception:
             logger.exception(
-                "notify_activity_waitlist_final_reminder 失敗：student=%s course=%s",
+                "_notify_activity_waitlist_final_reminder 失敗：student=%s course=%s",
                 student_name,
                 course_name,
             )
