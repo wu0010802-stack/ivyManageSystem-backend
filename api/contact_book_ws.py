@@ -1,11 +1,11 @@
-"""
-api/contact_book_ws.py — 聯絡簿 WebSocket 端點
+"""api/contact_book_ws.py — 聯絡簿 WebSocket 端點。
 
 雙 channel：
-- 教師端：依 classroom_id 訂閱（可看到自己班級被家長 ack 的計數即時更新）
+- 教師端：依 classroom_id 訂閱（看到自己班級被家長 ack 的計數即時更新）
 - 家長端：依 parent_user_id 訂閱（聯絡簿發布即時通知）
 
-複用 utils/ws_hub.ChannelHub + run_ws_connection。
+從 ChannelHub 遷移到 utils/broadcast.BroadcastBackend；caller helper
+broadcast_classroom / broadcast_parent 簽章保留。
 """
 
 import logging
@@ -17,36 +17,35 @@ from api.portal._shared import (
 )
 from models.database import get_session
 from utils.auth import verify_ws_token
+from utils.broadcast import get_broadcast
 from utils.permissions import Permission, has_permission
 from utils.ws_hub import (
     WS_CLOSE_FORBIDDEN,
     WS_CLOSE_INVALID_TOKEN,
     WS_CLOSE_MISSING_TOKEN,
-    ChannelHub,
     get_token_from_ws,
     run_ws_connection,
 )
 
 logger = logging.getLogger(__name__)
 
-# 全域 hub singleton（供 service 層 broadcast 用）
-hub = ChannelHub()
 
-# Channel key 慣例：
-#   ("classroom", classroom_id) — 教師端 / 管理端 訂閱班級事件
-#   ("parent", parent_user_id)  — 家長端 訂閱自己子女的聯絡簿事件
-TEACHER_CLASSROOM_KEY = lambda cid: ("classroom", cid)
-PARENT_USER_KEY = lambda uid: ("parent", uid)
+def _classroom_channel(classroom_id: int) -> str:
+    return f"contact_book.classroom.{classroom_id}"
+
+
+def _parent_channel(parent_user_id: int) -> str:
+    return f"contact_book.parent.{parent_user_id}"
 
 
 async def broadcast_classroom(classroom_id: int, event: dict) -> None:
     """供 service 層呼叫：將事件推送至教師班級 channel。"""
-    await hub.broadcast([TEACHER_CLASSROOM_KEY(classroom_id)], event)
+    await get_broadcast().publish(_classroom_channel(classroom_id), event)
 
 
 async def broadcast_parent(parent_user_id: int, event: dict) -> None:
     """供 service 層呼叫：將事件推送至特定家長 channel。"""
-    await hub.broadcast([PARENT_USER_KEY(parent_user_id)], event)
+    await get_broadcast().publish(_parent_channel(parent_user_id), event)
 
 
 def _get_teacher_classroom_ids(employee_id: int) -> list[int]:
@@ -98,11 +97,12 @@ async def portal_contact_book_ws(ws: WebSocket):
     if role == "teacher" and employee_id:
         classroom_ids = _get_teacher_classroom_ids(employee_id)
 
+    backend = get_broadcast()
     await ws.accept()
     if classroom_ids:
         for cid in classroom_ids:
-            hub.subscribe(TEACHER_CLASSROOM_KEY(cid), ws)
-    await run_ws_connection(ws, cleanup=lambda: hub.unsubscribe(ws))
+            backend.subscribe(_classroom_channel(cid), ws)
+    await run_ws_connection(ws, cleanup=lambda: backend.unsubscribe(ws))
 
 
 @ws_router.websocket("/api/ws/parent/contact-book")
@@ -132,6 +132,7 @@ async def parent_contact_book_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
         return
 
+    backend = get_broadcast()
     await ws.accept()
-    hub.subscribe(PARENT_USER_KEY(user_id), ws)
-    await run_ws_connection(ws, cleanup=lambda: hub.unsubscribe(ws))
+    backend.subscribe(_parent_channel(user_id), ws)
+    await run_ws_connection(ws, cleanup=lambda: backend.unsubscribe(ws))
