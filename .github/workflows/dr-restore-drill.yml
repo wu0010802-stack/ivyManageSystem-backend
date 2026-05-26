@@ -1,0 +1,98 @@
+name: dr-restore-drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      dump_date:
+        description: "Dump 日期（YYYY-MM-DD），留空抓最新"
+        required: false
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      pg:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: drilltest
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pg client
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client-15
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws-region: auto
+
+      - name: Download dump from R2
+        run: |
+          set -euo pipefail
+          START_TS=$(date +%s)
+          DATE="${{ inputs.dump_date }}"
+          if [ -z "$DATE" ]; then
+            DATE=$(aws s3 ls s3://ivy-dr/db/daily/ --endpoint-url=${{ secrets.R2_ENDPOINT }} \
+                   | grep '\.dump$' | sort | tail -1 | awk '{print $4}' \
+                   | sed 's/ivy-//' | sed 's/\.dump$//')
+          fi
+          aws s3 cp s3://ivy-dr/db/daily/ivy-${DATE}.dump   ./drill.dump   --endpoint-url=${{ secrets.R2_ENDPOINT }}
+          aws s3 cp s3://ivy-dr/db/daily/ivy-${DATE}.sha256 ./drill.sha256 --endpoint-url=${{ secrets.R2_ENDPOINT }}
+          sed -i "s/ivy-${DATE}\.dump/drill.dump/" drill.sha256
+          sha256sum -c drill.sha256
+          echo "DRILL_DATE=$DATE"                >> "$GITHUB_ENV"
+          echo "START_TS=$START_TS"              >> "$GITHUB_ENV"
+          echo "DOWNLOAD_END_TS=$(date +%s)"     >> "$GITHUB_ENV"
+
+      - name: pg_restore
+        env:
+          PGPASSWORD: drilltest
+        run: |
+          set -euo pipefail
+          pg_restore --no-owner --no-privileges \
+            -h localhost -U postgres -d postgres \
+            --jobs=4 ./drill.dump
+          echo "RESTORE_END_TS=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Sanity SQL
+        env:
+          PGPASSWORD: drilltest
+        run: |
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -f .github/workflows/dr_restore_sanity.sql > sanity_output.txt
+          cat sanity_output.txt
+
+      - name: Generate drill report
+        run: |
+          python .github/workflows/dr_drill_report.py \
+            --dump-date $DRILL_DATE \
+            --start-ts $START_TS \
+            --download-end-ts $DOWNLOAD_END_TS \
+            --restore-end-ts $RESTORE_END_TS \
+            --sanity-output sanity_output.txt \
+            > drill-report.md
+          cat drill-report.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drill-report-${{ env.DRILL_DATE }}
+          path: drill-report.md
+          retention-days: 90
+
+      - name: LINE notify result
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          curl -X POST ${{ secrets.LINE_NOTIFY_WEBHOOK }} \
+            -d "message=[DR-Drill] ${DRILL_DATE} 結果：${STATUS} → ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

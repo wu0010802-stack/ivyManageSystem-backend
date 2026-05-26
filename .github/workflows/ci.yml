@@ -163,17 +163,19 @@ jobs:
       - name: Block os.getenv / os.environ outside config/
         # Phase 1 (2026-05-21) 完成所有 env 集中到 config/ 後啟用。
         # 允許清單：
-        #   config/                       — Settings 內部
-        #   tests/conftest.py             — autoreset fixture 需要操作 env
-        #   tests/spike_rls/              — RLS test fixture 慣例自讀 env
-        #   scripts/dump_openapi.py       — CLI 工具，獨立於 FastAPI startup
-        #   alembic/env.py                — Alembic CLI，早於 Settings init
+        #   config/                            — Settings 內部
+        #   tests/conftest.py                  — autoreset fixture 需要操作 env
+        #   tests/spike_rls/                   — RLS test fixture 慣例自讀 env
+        #   scripts/dump_openapi.py            — CLI 工具，獨立於 FastAPI startup
+        #   scripts/dr_storage_sync.py         — DR CLI 工具，GH Actions 跑無 DB 依賴
+        #   alembic/env.py                     — Alembic CLI，早於 Settings init
         run: |
           if git grep -nE 'os\.(getenv|environ)' -- '*.py' \
                ':!config/' \
                ':!tests/conftest.py' \
                ':!tests/spike_rls/' \
                ':!scripts/dump_openapi.py' \
+               ':!scripts/dr_storage_sync.py' \
                ':!alembic/env.py'; then
             echo "::error::os.getenv / os.environ.get 只能在 config/ 與明確 allow-list 內使用"
             echo "::error::請改讀 settings.<domain>.<field>（見 docs/superpowers/specs/2026-05-21-config-centralization-phase1-design.md）"

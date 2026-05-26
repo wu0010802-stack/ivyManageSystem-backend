@@ -1,0 +1,84 @@
+name: dr-backup
+
+on:
+  schedule:
+    - cron: '17 18 * * *'   # 02:17 UTC+8（台灣凌晨低峰）
+  workflow_dispatch:
+
+concurrency:
+  group: dr-backup
+  cancel-in-progress: false
+
+jobs:
+  dump-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgresql-client-15
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client-15
+
+      - name: pg_dump
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_BACKUP_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y-%m-%d)
+          pg_dump \
+            --host=${{ secrets.SUPABASE_DB_HOST }} \
+            --port=5432 \
+            --username=backup_readonly \
+            --dbname=postgres \
+            --format=custom \
+            --no-owner --no-privileges \
+            --file=ivy-${DATE}.dump
+          sha256sum ivy-${DATE}.dump > ivy-${DATE}.sha256
+          echo "DUMP_DATE=$DATE" >> "$GITHUB_ENV"
+          ls -lh ivy-${DATE}.*
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws-region: auto
+
+      - name: Upload dump to R2
+        run: |
+          set -euo pipefail
+          aws s3 cp ivy-${DUMP_DATE}.dump   s3://ivy-dr/db/daily/ --endpoint-url=${{ secrets.R2_ENDPOINT }}
+          aws s3 cp ivy-${DUMP_DATE}.sha256 s3://ivy-dr/db/daily/ --endpoint-url=${{ secrets.R2_ENDPOINT }}
+          DAY=$(date -u +%d)
+          if [ "$DAY" = "01" ]; then
+            aws s3 cp ivy-${DUMP_DATE}.dump   s3://ivy-dr/db/monthly/ --endpoint-url=${{ secrets.R2_ENDPOINT }}
+            aws s3 cp ivy-${DUMP_DATE}.sha256 s3://ivy-dr/db/monthly/ --endpoint-url=${{ secrets.R2_ENDPOINT }}
+          fi
+
+      - name: Install Python deps for storage sync
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase==2.* boto3
+
+      - name: Mirror Supabase Storage → R2
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          python scripts/dr_storage_sync.py \
+            --buckets leave-attachments growth-reports \
+            --target s3://ivy-dr/storage/ \
+            --mode incremental
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -X POST ${{ secrets.LINE_NOTIFY_WEBHOOK }} \
+            -d "message=[DR-Backup] ${{ env.DUMP_DATE }} 失敗，請查 GH Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
