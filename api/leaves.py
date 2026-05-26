@@ -1159,6 +1159,13 @@ def delete_leave(
                     raise HTTPException(status_code=422, detail=str(e))
                 raise
 
+        # ── 補休 grant 退回（已核准補休假單被刪除）───────────────────────────
+        if was_approved and leave.leave_type == "compensatory":
+            _release_compensatory_grants_fifo(
+                session, leave.employee_id, leave.leave_hours
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         session.delete(leave)
         session.commit()
 
@@ -1959,6 +1966,22 @@ def batch_approve_leaves(
                         )
                         leave.deduction_ratio = standard_ratio
                     leave.is_deductible = (leave.deduction_ratio or 0) > 0
+
+                # ── 補休假單 grant ledger FIFO 扣抵 / 退回（批次版）──────────
+                if leave.leave_type == "compensatory" and approval_changed:
+                    if data.approved is True:
+                        try:
+                            _consume_compensatory_grants_fifo(
+                                session, leave.employee_id, leave.leave_hours
+                            )
+                        except ValueError as exc:
+                            failed.append({"id": leave_id, "reason": str(exc)})
+                            continue
+                    elif data.approved is False and is_reject_of_approved:
+                        _release_compensatory_grants_fifo(
+                            session, leave.employee_id, leave.leave_hours
+                        )
+                # ─────────────────────────────────────────────────────────────
 
                 leave.is_approved = data.approved
                 leave.approved_by = (

@@ -316,3 +316,77 @@ def test_consume_skips_fully_consumed_grant(session, employee_factory):
     session.refresh(g2)
     assert g1.consumed_hours == 4.0  # 未動
     assert g2.consumed_hours == 3.0  # 從 g2 扣
+
+
+def test_delete_approved_compensatory_leave_releases_grant(session, employee_factory):
+    """刪除已核准補休假單 → _release_compensatory_grants_fifo 退回 grant consumed_hours。
+
+    此測試驗證 delete_leave 端點加的 wire（Fix 1）：
+    直接呼叫內部函式並模擬 approval state，避免起 FastAPI client。
+    """
+    from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+    from api.leaves import _release_compensatory_grants_fifo
+
+    emp = employee_factory()
+    ot1 = _make_overtime(session, emp.id, date(2025, 4, 1), hours=8.0)
+
+    # 模擬已核准補休假單已消耗 3 小時
+    g1 = OvertimeCompLeaveGrant(
+        overtime_record_id=ot1.id,
+        employee_id=emp.id,
+        granted_hours=8.0,
+        granted_at=date(2025, 4, 1),
+        expires_at=date(2026, 4, 1),
+        consumed_hours=3.0,  # 已被核准假單扣抵
+        status="active",
+    )
+    session.add(g1)
+    session.flush()
+
+    # 模擬 delete_leave 觸發：was_approved=True + leave_type="compensatory"
+    # 呼叫 _release_compensatory_grants_fifo（delete_leave 端點中的 wire）
+    leave_hours = 3.0
+    _release_compensatory_grants_fifo(session, emp.id, leave_hours)
+    session.flush()
+
+    session.refresh(g1)
+    assert (
+        g1.consumed_hours == 0.0
+    ), "刪除已核准補休假單後，grant consumed_hours 應退回為 0"
+
+
+def test_batch_approve_compensatory_consumes_grants(session, employee_factory):
+    """批次核准補休假單 → _consume_compensatory_grants_fifo FIFO 扣抵。
+
+    此測試驗證 batch_approve_leaves Pass 2 加的 wire（Fix 2）：
+    直接呼叫內部函式並模擬 approval_changed=True + data.approved=True。
+    """
+    from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+    from api.leaves import _consume_compensatory_grants_fifo
+
+    emp = employee_factory()
+    ot1 = _make_overtime(session, emp.id, date(2025, 4, 1), hours=8.0)
+
+    # grant 尚未被消耗（pending 補休假單尚未核准）
+    g1 = OvertimeCompLeaveGrant(
+        overtime_record_id=ot1.id,
+        employee_id=emp.id,
+        granted_hours=8.0,
+        granted_at=date(2025, 4, 1),
+        expires_at=date(2026, 4, 1),
+        consumed_hours=0.0,
+        status="active",
+    )
+    session.add(g1)
+    session.flush()
+
+    # 模擬 batch_approve Pass 2：approval_changed=True + data.approved=True
+    # 呼叫 _consume_compensatory_grants_fifo（Pass 2 wire）
+    leave_hours = 4.0
+    _consume_compensatory_grants_fifo(session, emp.id, leave_hours)
+    session.flush()
+
+    session.refresh(g1)
+    assert (
+        g1.consumed_hours == 4.0
+    ), "批次核准補休假單後，grant consumed_hours 應被 FIFO 扣抵 4 小時"
