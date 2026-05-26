@@ -73,6 +73,8 @@ SUPABASE_STORAGE_SIGNED_URL_TTL=3600
 若 Supabase Storage 出問題，可暫時改 `STORAGE_BACKEND=local`，container 必須掛 `/var/lib/ivy/uploads` 持久 volume。
 注意：切換後既有 DB 內 `poster_url`、`attachment_paths` 指向的物件還在 Supabase，回 local 後找不到 → 必須先把雲端檔搬下來（人工 `supabase storage download`）。**這條切換不是無縫的**。
 
+另有 R2 異地鏡像 `ivy-dr/storage/`，可用 `aws s3 cp ... --endpoint-url=$R2_ENDPOINT` 拉回後再 `supabase storage upload` 回填到新 bucket（見 dr-runbook.md §6 Path B Step 5）。
+
 ## Service Role Key 輪替
 
 建議每 90 天輪替一次：
