@@ -74,7 +74,8 @@ class _FakeLeave:
         self.end_time = kwargs.get("end_time")
         self.leave_hours = kwargs.get("leave_hours", 8.0)
         self.leave_type = kwargs.get("leave_type", "personal")
-        self.is_approved = kwargs.get("is_approved", True)
+        status_default = "approved" if kwargs.get("is_approved", True) else "rejected"
+        self.status = kwargs.get("status", status_default)
 
 
 def make_leave(**kwargs):

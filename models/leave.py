@@ -63,12 +63,6 @@ class LeaveRecord(Base):
     reason = Column(Text, comment="請假原因")
     attachment_paths = Column(Text, nullable=True, comment="附件路徑清單（JSON 陣列）")
 
-    is_approved = Column(
-        Boolean,
-        nullable=True,
-        default=None,
-        comment="是否核准 (None=待審核, True=核准, False=駁回)",
-    )
     status = Column(
         String(20),
         nullable=False,
@@ -113,11 +107,6 @@ class LeaveRecord(Base):
 
     __table_args__ = (
         Index("ix_leave_emp_dates", "employee_id", "start_date", "end_date"),
-        Index("ix_leave_emp_approved", "employee_id", "is_approved"),
-        Index("ix_leave_approved_start_date", "is_approved", "start_date"),
-        Index("ix_leave_emp_type_approved", "employee_id", "leave_type", "is_approved"),
-        # P1: new status-prefixed indexes (mirror the is_approved ones).
-        # is_approved indexes are dropped in P4.
         Index("ix_leave_emp_status", "employee_id", "status"),
         Index("ix_leave_status_start_date", "status", "start_date"),
         Index("ix_leave_emp_type_status", "employee_id", "leave_type", "status"),
