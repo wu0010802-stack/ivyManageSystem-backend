@@ -213,13 +213,44 @@ def _db_create_dismissal_call(
         )
         session.add(call)
         try:
+            session.flush()  # 取 call.id 給 dispatch source_entity_id 用
+        except Exception as e:
+            session.rollback()
+            raise e
+
+        out = _build_call_out(call, session)
+
+        # Hybrid 通知（PR-C-3）：dispatch ws-only 走 dispatch infrastructure，
+        # LINE 群組仍由 caller 直接呼叫 _line_service.notify_dismissal_created
+        # （見 endpoint 內保留路徑）。dispatch ws payload 帶 event_type 鍵，與
+        # 既有 _get_manager().broadcast {"type": "dismissal_call_created"} 並存
+        # 在同一 dismissal_manager；前端依 type vs event_type 分流。
+        try:
+            from services.notification import dispatch
+
+            dispatch.enqueue(
+                session=session,
+                event_type="dismissal.created",
+                recipient_user_id=None,
+                context={
+                    "classroom_id": body.classroom_id,
+                    "student_name": out["student_name"],
+                    "classroom_name": out["classroom_name"],
+                    "note": body.note,
+                },
+                channels_override=("ws",),
+                source_entity_type="dismissal_call",
+                source_entity_id=call.id,
+            )
+        except Exception as exc:
+            logger.warning("dismissal.created dispatch enqueue 失敗（已吞）：%s", exc)
+
+        try:
             session.commit()
         except Exception as e:
             session.rollback()
             raise e
         session.refresh(call)
-
-        out = _build_call_out(call, session)
         logger.info(
             "接送通知建立：學生 %s (ID: %d)，班級 ID: %d，通知 ID: %d",
             out["student_name"],
