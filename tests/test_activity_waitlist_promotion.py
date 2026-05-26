@@ -16,8 +16,22 @@ tests/test_activity_waitlist_promotion.py — 候補轉正智能化（24h 確認
 import os
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
+
+# 對齊 production `services/activity_service._now()`：
+# 全部走 naive Taipei time（UTC+8），讓 confirm_deadline / promoted_at 與 sweep 的
+# "now" 參考一致。原本 test 用 _now()，本機 +08 上看不出問題，但 CI 跑 UTC
+# 時 production now 比 test 預期超前 8h → deadline 80h（=72+8）、sweep filter 漏命中。
+# TODO: PR1（feat/datetime-taipei-pr1-lint-helper-2026-05-26 merge 後）改 import utils.taipei_time
+_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _now() -> datetime:
+    return datetime.now(_TAIPEI_TZ).replace(tzinfo=None)
+
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -123,10 +137,10 @@ class TestAutoPromoteToPending:
         reg_w = _add_reg(session, "候補")
         rc_w = _enroll(session, reg_w.id, course.id, status="waitlist")
 
-        before = datetime.now()
+        before = _now()
         svc.delete_registration(session, reg_e.id, "admin")
         session.flush()
-        after = datetime.now()
+        after = _now()
 
         # deadline 介於 before+72h 與 after+72h 之間
         assert rc_w.confirm_deadline >= before + timedelta(hours=71, minutes=59)
@@ -176,8 +190,8 @@ class TestConfirmPromotion:
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
-        rc.promoted_at = datetime.now() - timedelta(hours=50)
-        rc.confirm_deadline = datetime.now() - timedelta(hours=1)
+        rc.promoted_at = _now() - timedelta(hours=50)
+        rc.confirm_deadline = _now() - timedelta(hours=1)
         session.flush()
 
         with pytest.raises(ValueError, match="EXPIRED"):
@@ -274,7 +288,7 @@ class TestSweepExpired:
         session.flush()
 
         # 手動把 w1 的 deadline 推回過去
-        rc_w1.confirm_deadline = datetime.now() - timedelta(minutes=1)
+        rc_w1.confirm_deadline = _now() - timedelta(minutes=1)
         session.flush()
 
         result = svc.sweep_expired_pending_promotions(session)
@@ -298,8 +312,8 @@ class TestSweepExpired:
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
         # 離 deadline 還有 12h（落在預設 24h 提醒閾值內）
-        rc.promoted_at = datetime.now() - timedelta(hours=36)
-        rc.confirm_deadline = datetime.now() + timedelta(hours=12)
+        rc.promoted_at = _now() - timedelta(hours=36)
+        rc.confirm_deadline = _now() + timedelta(hours=12)
         session.flush()
 
         result = svc.sweep_expired_pending_promotions(session)
@@ -312,8 +326,8 @@ class TestSweepExpired:
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
-        rc.promoted_at = datetime.now() - timedelta(hours=36)
-        rc.confirm_deadline = datetime.now() + timedelta(hours=12)
+        rc.promoted_at = _now() - timedelta(hours=36)
+        rc.confirm_deadline = _now() + timedelta(hours=12)
         session.flush()
 
         r1 = svc.sweep_expired_pending_promotions(session)
@@ -335,12 +349,12 @@ class TestSweepExpired:
         # 2 筆 promoted_pending 同時過期
         reg_p1 = _add_reg(session, "P1")
         rc_p1 = _enroll(session, reg_p1.id, course.id, status="promoted_pending")
-        rc_p1.promoted_at = datetime.now() - timedelta(hours=50)
-        rc_p1.confirm_deadline = datetime.now() - timedelta(hours=2)
+        rc_p1.promoted_at = _now() - timedelta(hours=50)
+        rc_p1.confirm_deadline = _now() - timedelta(hours=2)
         reg_p2 = _add_reg(session, "P2")
         rc_p2 = _enroll(session, reg_p2.id, course.id, status="promoted_pending")
-        rc_p2.promoted_at = datetime.now() - timedelta(hours=50)
-        rc_p2.confirm_deadline = datetime.now() - timedelta(hours=1)
+        rc_p2.promoted_at = _now() - timedelta(hours=50)
+        rc_p2.confirm_deadline = _now() - timedelta(hours=1)
         # 2 筆候補排在後面
         reg_w1 = _add_reg(session, "W1")
         rc_w1 = _enroll(session, reg_w1.id, course.id, status="waitlist")
@@ -361,9 +375,9 @@ class TestSweepExpired:
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
-        rc.promoted_at = datetime.now() - timedelta(hours=42)
-        rc.confirm_deadline = datetime.now() + timedelta(hours=5)  # 剩 5h
-        rc.reminder_sent_at = datetime.now() - timedelta(hours=18)  # T-24h 已發
+        rc.promoted_at = _now() - timedelta(hours=42)
+        rc.confirm_deadline = _now() + timedelta(hours=5)  # 剩 5h
+        rc.reminder_sent_at = _now() - timedelta(hours=18)  # T-24h 已發
         rc.final_reminder_sent_at = None
         session.flush()
 
@@ -379,8 +393,8 @@ class TestSweepExpired:
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
-        rc.confirm_deadline = datetime.now() + timedelta(hours=3)
-        rc.final_reminder_sent_at = datetime.now() - timedelta(hours=1)
+        rc.confirm_deadline = _now() + timedelta(hours=3)
+        rc.final_reminder_sent_at = _now() - timedelta(hours=1)
         session.flush()
 
         result = svc.sweep_expired_pending_promotions(session)
@@ -398,8 +412,8 @@ class TestSweepExpired:
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
-        rc.confirm_deadline = datetime.now() + timedelta(hours=4)
-        rc.reminder_sent_at = datetime.now()
+        rc.confirm_deadline = _now() + timedelta(hours=4)
+        rc.reminder_sent_at = _now()
         rc_id = rc.id
         session.flush()
 
@@ -431,7 +445,7 @@ class TestSweepExpired:
         course = _add_course(session, capacity=1)
         reg = _add_reg(session)
         rc = _enroll(session, reg.id, course.id, status="promoted_pending")
-        rc.confirm_deadline = datetime.now() + timedelta(hours=20)
+        rc.confirm_deadline = _now() + timedelta(hours=20)
         rc_id = rc.id
         session.flush()
 
@@ -553,8 +567,8 @@ class TestDeletePromotedPendingCascade:
         course = _add_course(session, capacity=1)
         reg_p = _add_reg(session, "乙")
         rc_p = _enroll(session, reg_p.id, course.id, status="promoted_pending")
-        rc_p.promoted_at = datetime.now()
-        rc_p.confirm_deadline = datetime.now() + timedelta(hours=24)
+        rc_p.promoted_at = _now()
+        rc_p.confirm_deadline = _now() + timedelta(hours=24)
         reg_w = _add_reg(session, "丙")
         rc_w = _enroll(session, reg_w.id, course.id, status="waitlist")
         session.flush()
