@@ -16,26 +16,18 @@ tests/test_activity_waitlist_promotion.py — 候補轉正智能化（24h 確認
 import os
 import sys
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import pytest
-
-# 對齊 production `services/activity_service._now()`：
-# 全部走 naive Taipei time（UTC+8），讓 confirm_deadline / promoted_at 與 sweep 的
-# "now" 參考一致。原本 test 用 _now()，本機 +08 上看不出問題，但 CI 跑 UTC
-# 時 production now 比 test 預期超前 8h → deadline 80h（=72+8）、sweep filter 漏命中。
-# TODO: PR1（feat/datetime-taipei-pr1-lint-helper-2026-05-26 merge 後）改 import utils.taipei_time
-_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
-
-
-def _now() -> datetime:
-    return datetime.now(_TAIPEI_TZ).replace(tzinfo=None)
-
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# 對齊 production `services/activity_service._now()`：全部走 naive Taipei time
+# （UTC+8），讓 confirm_deadline / promoted_at 與 sweep 的 "now" 參考一致。
+# 原本 test 用 datetime.now()，本機 +08 上看不出問題，但 CI 跑 UTC 時 production
+# now 比 test 預期超前 8h → deadline 80h（=72+8）、sweep filter 漏命中。
+from utils.taipei_time import now_taipei_naive as _now  # noqa: E402
 
 from models.base import Base
 from models.activity import (
