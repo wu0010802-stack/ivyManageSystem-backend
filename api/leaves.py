@@ -40,6 +40,7 @@ from models.database import (
     SalaryRecord,
     User,
 )
+from models.approval import ApprovalStatus
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST, LEAVE_RECORD_NOT_FOUND
 from utils.permissions import Permission
@@ -180,9 +181,9 @@ def _apply_leave_update_and_revoke(leave, data, current_user, leave_id: int) -> 
         leave.is_deductible = leave.deduction_ratio > 0
 
     # ── 稽核退審：已核准的記錄被修改，自動退回待審核 ──────────────────────
-    was_approved = leave.is_approved == True
+    was_approved = leave.status == ApprovalStatus.APPROVED.value
     if was_approved:
-        leave.is_approved = None
+        leave.status = ApprovalStatus.PENDING.value
         leave.approved_by = None
         leave.rejection_reason = None
         logger.warning(
@@ -377,7 +378,7 @@ def _check_employee_has_conflicting_overtime(
         session.query(OvertimeRecord)
         .filter(
             OvertimeRecord.employee_id == employee_id,
-            OvertimeRecord.is_approved.in_([None, True]),
+            OvertimeRecord.status.in_([ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]),
             OvertimeRecord.overtime_date >= start_date,
             OvertimeRecord.overtime_date <= end_date,
         )
@@ -469,7 +470,7 @@ def _check_substitute_leave_conflict(
         session.query(OvertimeRecord)
         .filter(
             OvertimeRecord.employee_id == substitute_employee_id,
-            OvertimeRecord.is_approved.in_([None, True]),
+            OvertimeRecord.status.in_([ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]),
             OvertimeRecord.overtime_date >= start_date,
             OvertimeRecord.overtime_date <= end_date,
         )
@@ -508,11 +509,11 @@ def get_leaves(
         if employee_id:
             q = q.filter(LeaveRecord.employee_id == employee_id)
         if status == "pending":
-            q = q.filter(LeaveRecord.is_approved.is_(None))
+            q = q.filter(LeaveRecord.status == ApprovalStatus.PENDING.value)
         elif status == "approved":
-            q = q.filter(LeaveRecord.is_approved == True)
+            q = q.filter(LeaveRecord.status == ApprovalStatus.APPROVED.value)
         elif status == "rejected":
-            q = q.filter(LeaveRecord.is_approved == False)
+            q = q.filter(LeaveRecord.status == ApprovalStatus.REJECTED.value)
         if year and month:
             _, last_day = cal_module.monthrange(year, month)
             start = date(year, month, 1)
@@ -612,6 +613,7 @@ def get_leaves(
                     "deduction_ratio": leave.deduction_ratio,
                     "reason": leave.reason,
                     "is_approved": leave.is_approved,
+                    "status": leave.status,
                     "approved_by": leave.approved_by,
                     "rejection_reason": leave.rejection_reason,
                     "attachment_paths": _parse_paths(leave.attachment_paths),
@@ -790,7 +792,7 @@ def update_leave(
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
         # 在 setattr 套用新日期前，捕捉原始狀態（同時供 audit_changes 留下完整 before）
-        was_approved = leave.is_approved == True
+        was_approved = leave.status == ApprovalStatus.APPROVED.value
         orig_month = (leave.start_date.year, leave.start_date.month)
         # 用 getattr 容忍部分欄位缺失（SQLAlchemy 物件正常情況下都有；測試 fake 物件較寬鬆）
         before_snapshot = {
@@ -805,6 +807,7 @@ def update_leave(
             ),
             "leave_hours": getattr(leave, "leave_hours", None),
             "is_approved": leave.is_approved,
+            "status": leave.status,
             "is_hospitalized": bool(getattr(leave, "is_hospitalized", False)),
             "deduction_ratio": getattr(leave, "deduction_ratio", None),
             "reason": getattr(leave, "reason", None),
@@ -907,7 +910,7 @@ def update_leave(
             "end_time": leave.end_time,
             "leave_type": leave.leave_type,
             "leave_hours": leave.leave_hours,
-            "is_approved": leave.is_approved,
+            "status": leave.status,
         }
 
         _apply_leave_update_and_revoke(leave, data, current_user, leave_id)
@@ -931,12 +934,12 @@ def update_leave(
             )
         )
         try:
-            if old_sync_snapshot["is_approved"] is True and leave.is_approved is None:
+            if old_sync_snapshot["status"] == ApprovalStatus.APPROVED.value and leave.status == ApprovalStatus.PENDING.value:
                 # 退審路徑（Hook 3）
                 sync.revert(session, leave_id)
             elif (
-                old_sync_snapshot["is_approved"] is True
-                and leave.is_approved is True
+                old_sync_snapshot["status"] == ApprovalStatus.APPROVED.value
+                and leave.status == ApprovalStatus.APPROVED.value
                 and _key_fields_changed
             ):
                 # 改關鍵欄但仍 approved（Hook 4，罕見）
@@ -959,6 +962,7 @@ def update_leave(
             ),
             "leave_hours": getattr(leave, "leave_hours", None),
             "is_approved": leave.is_approved,
+            "status": leave.status,
             "is_hospitalized": bool(getattr(leave, "is_hospitalized", False)),
             "deduction_ratio": getattr(leave, "deduction_ratio", None),
             "reason": getattr(leave, "reason", None),
@@ -1056,7 +1060,7 @@ def delete_leave(
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
         # ── 封存保護：已核准假單在封存月份不得刪除 ──────────────────────────
-        was_approved = leave.is_approved is True
+        was_approved = leave.status == ApprovalStatus.APPROVED.value
         # 跨月假單需涵蓋完整月份集合，與 lock_and_premark_stale 的範圍對齊。
         leave_months = collect_months_from_range(leave.start_date, leave.end_date)
         emp_id = leave.employee_id
@@ -1069,6 +1073,7 @@ def delete_leave(
             "end_date": leave.end_date.isoformat(),
             "leave_hours": leave.leave_hours,
             "is_approved": leave.is_approved,
+            "status": leave.status,
             "deduction_ratio": leave.deduction_ratio,
             "reason": leave.reason,
         }
@@ -1083,7 +1088,7 @@ def delete_leave(
         # ── 考勤同步 hook（Hook 5: delete_leave revert）───────────────────────
         # approved leave 被刪 → 先 revert attendance，再 delete LeaveRecord。
         # FK ON DELETE SET NULL 是雙保險，但主路徑是 revert 主動清。
-        if leave.is_approved is True:
+        if leave.status == ApprovalStatus.APPROVED.value:
             try:
                 from services import employee_leave_attendance_sync as sync
 
@@ -1227,13 +1232,14 @@ def approve_leave(
 
         # 核准/駁回狀態是否實質變動；True→False、False→True、None→True 都屬於
         # 會影響 SalaryRecord 扣款的轉換，必須觸發封存守衛與薪資重算。
-        was_approved = leave.is_approved is True
-        was_pending = leave.is_approved is None
-        was_rejected = leave.is_approved is False
+        was_approved = leave.status == ApprovalStatus.APPROVED.value
+        was_pending = leave.status == ApprovalStatus.PENDING.value
+        was_rejected = leave.status == ApprovalStatus.REJECTED.value
         approval_changed = was_approved != data.approved
         # 整單 snapshot 用於 audit_changes 的 before/after
         leave_snapshot_before = {
             "is_approved": leave.is_approved,
+            "status": leave.status,
             "leave_type": leave.leave_type,
             "leave_hours": leave.leave_hours,
             "deduction_ratio": leave.deduction_ratio,
@@ -1416,7 +1422,7 @@ def approve_leave(
                 leave.deduction_ratio = standard_ratio
             leave.is_deductible = (leave.deduction_ratio or 0) > 0
 
-        leave.is_approved = data.approved
+        leave.status = ApprovalStatus.APPROVED.value if data.approved else ApprovalStatus.REJECTED.value
         leave.approved_by = (
             current_user.get("username", "管理員") if data.approved else None
         )
@@ -1558,6 +1564,7 @@ def approve_leave(
             "before": leave_snapshot_before,
             "after": {
                 "is_approved": leave.is_approved,
+                "status": leave.status,
                 "approved_by": leave.approved_by,
                 "rejection_reason": leave.rejection_reason,
                 "deduction_ratio": leave.deduction_ratio,
@@ -1709,7 +1716,7 @@ def batch_approve_leaves(
                     continue
 
                 # 核准/駁回狀態是否實質變動（影響 SalaryRecord）
-                was_approved = leave.is_approved is True
+                was_approved = leave.status == ApprovalStatus.APPROVED.value
                 approval_changed = was_approved != data.approved
                 # 高風險：對「已核准 → 駁回」批次操作要顯式標記
                 is_reject_of_approved = was_approved and not data.approved
@@ -1878,7 +1885,7 @@ def batch_approve_leaves(
                         leave.deduction_ratio = standard_ratio
                     leave.is_deductible = (leave.deduction_ratio or 0) > 0
 
-                leave.is_approved = data.approved
+                leave.status = ApprovalStatus.APPROVED.value if data.approved else ApprovalStatus.REJECTED.value
                 leave.approved_by = (
                     current_user.get("username", "管理員") if data.approved else None
                 )
@@ -2311,7 +2318,7 @@ async def import_leaves(
                     is_deductible=effective_ratio > 0,
                     deduction_ratio=effective_ratio,
                     reason=reason,
-                    is_approved=None,
+                    status=ApprovalStatus.PENDING.value,
                 )
                 session.add(leave)
                 session.flush()

@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from models.approval import ApprovalStatus
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -41,6 +42,8 @@ def _make_leave(
     leave.is_deductible = False
     leave.is_hospitalized = False
     leave.is_approved = True
+    # P2 mirror: production code reads .status on this mock
+    leave.status = ApprovalStatus.APPROVED.value
     leave.approved_by = "admin"
     leave.rejection_reason = None
     leave.attachment_paths = None

@@ -245,10 +245,19 @@ def _make_ot(ot_id, employee_id, ot_date, hours, use_comp=True, comp_granted=Tru
 
 
 def _make_leave(leave_id, hours, is_approved, source_overtime_id=None):
+    from models.approval import ApprovalStatus
+
     lv = types.SimpleNamespace()
     lv.id = leave_id
     lv.leave_hours = hours
     lv.is_approved = is_approved
+    # mirror status for P2 production code that reads lv.status
+    if is_approved is True:
+        lv.status = ApprovalStatus.APPROVED.value
+    elif is_approved is False:
+        lv.status = ApprovalStatus.REJECTED.value
+    else:
+        lv.status = ApprovalStatus.PENDING.value
     lv.source_overtime_id = source_overtime_id
     lv.rejection_reason = None
     return lv
@@ -289,8 +298,25 @@ class _MockQuery:
 
     def scalar(self):
         # 判斷是 approved 還是 pending 查詢
-        filter_strs = [str(f) for f in self._filters]
-        if any("is_approved IS NULL" in s or "IS NULL" in s for s in filter_strs):
+        # P2: filters now use status column; compile with literal_binds to see value
+        from sqlalchemy.dialects import sqlite as _sqlite
+
+        def _compiled(f):
+            try:
+                return str(
+                    f.compile(
+                        dialect=_sqlite.dialect(),
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
+            except Exception:
+                return str(f)
+
+        filter_strs = [_compiled(f) for f in self._filters]
+        if any(
+            "is_approved IS NULL" in s or "IS NULL" in s or "'pending'" in s
+            for s in filter_strs
+        ):
             return self._pending_h
         return self._approved_h
 
@@ -342,8 +368,10 @@ class TestRevokeCompLeaveGrant:
         pending_lv = _make_leave(201, 8.0, None, source_overtime_id=1)
         # 模擬 autoflush 後 pending_h=0（因為 linked 已被駁回）
         session = self._make_session([pending_lv], quota, approved_h=0.0, pending_h=0.0)
+        from models.approval import ApprovalStatus
+
         _revoke_comp_leave_grant(session, ot)
-        assert pending_lv.is_approved is False
+        assert pending_lv.status == ApprovalStatus.REJECTED.value
         assert pending_lv.rejection_reason is not None
         assert quota.total_hours == 0.0
         assert ot.comp_leave_granted is False
