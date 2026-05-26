@@ -191,7 +191,9 @@ class TestPOSRefundCumulative:
                 username="cashier",
                 permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
-            reg = _setup_reg(s, paid_amount=5000, is_paid=True)
+            # course_price=400 使 sessions=NULL fallback 建議值 = 400，diff=|400-400|=0 ≤ 100
+            # → guard 3 自然通過；本 test 目的是測 guard 2（累積 1200 > 1000 → 403）。
+            reg = _setup_reg(s, paid_amount=5000, is_paid=True, course_price=400)
             s.commit()
             reg_id = reg.id
 
@@ -245,7 +247,11 @@ class TestPOSRefundCumulative:
             _create_user(
                 s,
                 username="boss",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             reg = _setup_reg(s, paid_amount=5000, is_paid=True)
             s.commit()
@@ -274,7 +280,13 @@ class TestPOSRefundCumulative:
             _create_user(
                 s,
                 username="cashier2",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
+                # 補 APPROVE 權限：guard 3 (diff verify) 在 sessions=NULL 時建議值=5000，
+                # 退 NT$500 diff=4500 > 100 被擋；本 test 目的是測 voided 排除累積邏輯，故略過 guard 3。
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             reg = _setup_reg(s, paid_amount=5000, is_paid=True)
             # 已 voided 的歷史退費 NT$5000，不應計入累積
@@ -329,7 +341,13 @@ class TestRefundCheckOrderAfterLock:
             _create_user(
                 s,
                 username="cashier3",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
+                # 補 APPROVE 權限：guard 3 (diff verify) 在 sessions=NULL 時建議值=5000，
+                # 退 NT$500 diff=4500 > 100 被擋；本 test 目的是確認 lock 後累積邏輯正常，故略過 guard 3。
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             reg = _setup_reg(s, paid_amount=2000, is_paid=False)
             s.commit()
@@ -443,7 +461,11 @@ class TestBatchMarkPaidGuards:
             _create_user(
                 s,
                 username="boss2",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             r1 = _setup_reg(
                 s,

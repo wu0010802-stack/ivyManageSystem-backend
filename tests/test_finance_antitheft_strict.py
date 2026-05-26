@@ -362,7 +362,11 @@ class TestFeeRefundCumulative:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["FEES_READ", "FEES_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "FEES_READ",
+                    "FEES_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.add(
                 StudentFeeRefund(
@@ -478,7 +482,13 @@ class TestActivityRefundCumulative:
             _make_user(
                 s,
                 username="act_writer",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
+                # 補 APPROVE 權限：guard 3 (diff verify) 在 sessions=NULL 時建議值=2000，
+                # 退 NT$400 diff=1600 > 100 被擋；本 test 目的是測 voided 排除累積邏輯，故略過 guard 3。
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             from datetime import datetime as _dt
 
@@ -575,7 +585,11 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.commit()
 
@@ -594,7 +608,11 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.commit()
 
@@ -645,7 +663,11 @@ class TestForceFinalizeRequiresApprove:
             _make_user(
                 s,
                 username="finance_boss",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.commit()
 

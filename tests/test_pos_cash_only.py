@@ -257,7 +257,16 @@ def test_pos_refund_accepts_15_char_reason(pos_cash_client):
     """退費備註恰 15 字應通過。"""
     client, sf = pos_cash_client
     with sf() as s:
-        _create_admin(s)
+        # 補 APPROVE 權限：guard 3 (diff verify) 在 sessions=NULL 時建議值=1500，
+        # 退 NT$100 diff=1400 > 100 被擋；本 test 目的是測 15 字 reason 被接受，故略過 guard 3。
+        _create_admin(
+            s,
+            permission_names=[
+                "ACTIVITY_READ",
+                "ACTIVITY_WRITE",
+                "ACTIVITY_PAYMENT_APPROVE",
+            ],
+        )
         reg = _setup_reg(s, student_name="測試生壬", paid_amount=2000, is_paid=True)
         s.commit()
         reg_id = reg.id
@@ -282,7 +291,11 @@ def _approve_admin(session):
     """建立具 ACTIVITY_PAYMENT_APPROVE 權限的管理員（簽核日結需要）。"""
     return _create_admin(
         session,
-        permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+        permission_names=[
+            "ACTIVITY_READ",
+            "ACTIVITY_WRITE",
+            "ACTIVITY_PAYMENT_APPROVE",
+        ],
     )
 
 
