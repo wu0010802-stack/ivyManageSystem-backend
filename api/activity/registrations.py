@@ -787,9 +787,7 @@ async def delete_registration(
 @router.get("/registrations/{registration_id}/refund-suggestion")
 def get_refund_suggestion(
     registration_id: int,
-    current_user: dict = Depends(
-        require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
-    ),
+    current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """取得 registration 的退費建議（每門 course / 每筆 supply 分開列出）。
 
@@ -799,7 +797,7 @@ def get_refund_suggestion(
     Returns: RefundSuggestionResponse
     Raises:
         404: reg 不存在或 is_active=False
-        403: 無 ACTIVITY_PAYMENT_WRITE 權限
+        403: 無 ACTIVITY_WRITE 權限
     """
     session = get_session()
     try:
