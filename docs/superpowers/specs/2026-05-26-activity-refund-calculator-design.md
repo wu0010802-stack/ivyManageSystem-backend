@@ -217,7 +217,7 @@ def build_refund_suggestion(session, reg_id: int) -> dict:
 
 ```
 GET /api/activity/registrations/{reg_id}/refund-suggestion
-Permission: ACTIVITY_PAYMENT_WRITE  (= 既有退費路徑同層)
+Permission: ACTIVITY_WRITE  (= 既有退費路徑同層；POSCheckoutRequest 與 add_registration_payment 兩者皆用 ACTIVITY_WRITE)
 ```
 
 **Response schema**（`schemas/activity_admin.py` 新增 `RefundSuggestionResponse`）：
