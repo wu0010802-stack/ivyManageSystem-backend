@@ -61,6 +61,7 @@ from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
 from utils.portfolio_access import assert_student_access
+from utils.storage import get_backend
 
 logger = logging.getLogger(__name__)
 
@@ -325,20 +326,34 @@ def _generate_pdf_job(report_id: int) -> None:
                 )
                 return
 
-            student_dir = REPORT_ROOT / str(student.id)
-            student_dir.mkdir(parents=True, exist_ok=True)
-            path = student_dir / f"{report.id}.pdf"
-            path.write_bytes(pdf_bytes)
+            storage_key = f"students/{student.id}/{report.id}.pdf"
+
+            if settings.storage.backend == "supabase":
+                get_backend().save(
+                    module="growth_reports",
+                    key=storage_key,
+                    data=pdf_bytes,
+                    content_type="application/pdf",
+                )
+                report.file_path = storage_key  # 存 key，非 local path
+                logger.info(
+                    "PDF report %d written to storage: %s", report.id, storage_key
+                )
+            else:
+                student_dir = REPORT_ROOT / str(student.id)
+                student_dir.mkdir(parents=True, exist_ok=True)
+                path = student_dir / f"{report.id}.pdf"
+                path.write_bytes(pdf_bytes)
+                # store as relative to cwd for portability
+                try:
+                    report.file_path = str(path.resolve().relative_to(Path.cwd()))
+                except ValueError:
+                    report.file_path = str(path.resolve())
+                logger.info("PDF report %d ready: %s", report.id, path)
 
             report.status = REPORT_STATUS_READY
-            # store as relative to cwd for portability
-            try:
-                report.file_path = str(path.resolve().relative_to(Path.cwd()))
-            except ValueError:
-                report.file_path = str(path.resolve())
             report.file_size = len(pdf_bytes)
             report.generated_at = datetime.utcnow()
-            logger.info("PDF report %d ready: %s", report.id, path)
     except Exception as e:
         logger.exception("PDF generation failed for report %d", report_id)
         try:

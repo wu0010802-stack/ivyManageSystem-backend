@@ -532,3 +532,115 @@ def test_send_line_idempotent_within_5_minutes(app_client):
     resp = client.post(f"/api/students/1/growth-reports/{rid}/send-line", json={})
     assert resp.status_code == 409
     assert "5 分鐘內" in resp.json()["detail"]
+
+
+# ── Task 2: storage backend PDF write ─────────────────────────────────────────
+
+
+def test_pdf_job_writes_to_supabase_storage_when_backend_supabase(
+    monkeypatch, tmp_path
+):
+    """STORAGE_BACKEND=supabase 模式時，_generate_pdf_job 應走 storage backend
+    寫入而非 local 檔案系統。"""
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+    import models.base as base_module
+    from api.portfolio import reports as reports_mod
+    from models.database import Base, Classroom, Student, StudentGrowthReport
+    from models.auth import User
+    from datetime import date
+    from sqlalchemy import create_engine, event as sqla_event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    # 1. 建立 in-memory SQLite DB
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @sqla_event.listens_for(engine, "connect")
+    def _enforce_fk(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    TestingSession = sessionmaker(bind=engine, autoflush=False)
+    monkeypatch.setattr(base_module, "_engine", engine)
+    monkeypatch.setattr(base_module, "_SessionFactory", TestingSession)
+    Base.metadata.create_all(engine)
+
+    # 2. 插入必要 DB rows
+    with TestingSession() as session:
+        classroom = Classroom(id=10, name="測試班", is_active=True)
+        student = Student(
+            id=10,
+            student_id="T010",
+            name="測試生",
+            classroom_id=10,
+            lifecycle_status="active",
+            birthday=date(2022, 1, 1),
+            enrollment_date=date(2024, 9, 1),
+        )
+        report = StudentGrowthReport(
+            id=99,
+            student_id=10,
+            period_label="2026 春季",
+            period_start=date(2026, 2, 1),
+            period_end=date(2026, 5, 31),
+            status="pending",
+        )
+        session.add_all([classroom, student, report])
+        session.commit()
+
+    # 3. monkeypatch REPORT_ROOT（local branch 仍需有效目錄）
+    report_root = tmp_path / "growth_reports"
+    monkeypatch.setattr(reports_mod, "REPORT_ROOT", report_root)
+
+    # 4. monkeypatch settings.storage.backend = "supabase"
+    monkeypatch.setattr(reports_mod.settings.storage, "backend", "supabase")
+
+    # 5. monkeypatch get_backend 在 reports module
+    calls = []
+
+    class FakeStorage:
+        def save(self, module, key, data, content_type):
+            calls.append(
+                {"module": module, "key": key, "size": len(data), "ct": content_type}
+            )
+
+        def signed_url(self, module, key, ttl_seconds):
+            return f"https://signed.example/{module}/{key}"
+
+    monkeypatch.setattr(reports_mod, "get_backend", lambda: FakeStorage())
+
+    # 6. 執行 _generate_pdf_job
+    reports_mod._generate_pdf_job(99)
+
+    # 7. 驗 save 被呼叫一次且欄位正確
+    assert len(calls) == 1, f"expected 1 storage.save call, got {calls}"
+    c = calls[0]
+    assert c["module"] == "growth_reports"
+    assert c["key"] == f"students/10/99.pdf"
+    assert c["ct"] == "application/pdf"
+    assert c["size"] > 0
+
+    # 8. 驗 DB report.file_path == storage key（非 local path）
+    expected_key = "students/10/99.pdf"
+    with TestingSession() as session:
+        r = session.query(StudentGrowthReport).filter_by(id=99).first()
+        assert r.status == "ready"
+        assert (
+            r.file_path == expected_key
+        ), f"file_path should be storage key '{expected_key}', got '{r.file_path}'"
+        assert r.file_size is not None and r.file_size > 0
+
+    # 9. 驗 local 檔案系統沒有產生任何 PDF 檔（走 storage 而非 local）
+    local_pdf = report_root / "10" / "99.pdf"
+    assert not local_pdf.exists(), "supabase backend 不應寫 local PDF 檔"
+
+    engine.dispose()
