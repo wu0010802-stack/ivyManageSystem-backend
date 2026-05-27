@@ -116,6 +116,7 @@ from utils.academic import resolve_current_academic_term, semester_int_to_enum
 from utils.approval_helpers import assert_not_self_approval
 from utils.auth import require_permission
 from utils.permissions import Permission
+from utils.taipei_time import today_taipei
 
 logger = logging.getLogger(__name__)
 
@@ -1637,8 +1638,6 @@ def create_scoring_rule(
     bug sweep 2026-05-18 P2：用 today_taipei() 取台灣時區「今日」，避免 server
     部署在 UTC 時午夜前後的 ±8h 偏差讓 admin 在凌晨無法建明天生效的規則。
     """
-    from utils.taipei_time import today_taipei
-
     if payload.effective_from < today_taipei():
         raise HTTPException(422, "effective_from 不可早於今天")
     validated_config = _validate_rule_config(payload.rule_type, payload.rule_config)
