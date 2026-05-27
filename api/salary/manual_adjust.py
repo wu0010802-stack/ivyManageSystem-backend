@@ -286,8 +286,19 @@ def manual_adjust_salary(
         response.headers["ETag"] = f'"{new_version}"'
         response.headers["X-Record-Version"] = str(new_version)
 
+        audit_summary = (
+            f"手動調整薪資 #{record.id} (員工 {record.employee_id}, "
+            f"{record.salary_year}/{record.salary_month:02d}) "
+            f"v{current_version}→v{new_version}：" + "；".join(changed_parts)
+        )
+
+        # 結構化 audit state（供 downstream middleware / 觀測層消費）。
+        request.state.audit_entity_id = str(record.id)
+        request.state.audit_summary = audit_summary
+
         # 同交易內寫 AuditLog（金流路徑：主資料 + 稽核共生死，避免 middleware
-        # fire-and-forget 在 CI / threadpool 故障時丟稽核）。
+        # fire-and-forget 在 CI / threadpool 故障時丟稽核）。write_audit_in_session
+        # 內部會設 request.state.audit_skip=True 防 middleware 二次寫入。
         from utils.audit import write_audit_in_session
 
         write_audit_in_session(
@@ -296,11 +307,7 @@ def manual_adjust_salary(
             action="UPDATE",
             entity_type="salary",
             entity_id=str(record.id),
-            summary=(
-                f"手動調整薪資 #{record.id} (員工 {record.employee_id}, "
-                f"{record.salary_year}/{record.salary_month:02d}) "
-                f"v{current_version}→v{new_version}：" + "；".join(changed_parts)
-            ),
+            summary=audit_summary,
             changes={"fields": modified_fields, "reason": adjustment_reason},
         )
 
