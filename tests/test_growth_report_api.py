@@ -493,7 +493,9 @@ def test_send_line_does_not_block_under_session_scope(app_client, monkeypatch):
 
 def test_send_line_idempotent_within_5_minutes(app_client):
     """Why: 5 分鐘內重複推送 (admin 連點 / 前端 bug) 應回 409 防 LINE quota 浪費."""
-    from datetime import datetime, timedelta
+    from datetime import timedelta
+
+    from utils.taipei_time import now_taipei_naive
 
     client, session_factory, _ = app_client
     create = client.post(
@@ -513,7 +515,7 @@ def test_send_line_idempotent_within_5_minutes(app_client):
         from models.database import Guardian, StudentGrowthReport
 
         r = session.query(StudentGrowthReport).filter_by(id=rid).first()
-        r.line_sent_at = datetime.utcnow() - timedelta(minutes=2)
+        r.line_sent_at = now_taipei_naive() - timedelta(minutes=2)
         # 給家長綁 LINE，否則先撞 "未綁定 LINE" 409 看不出冪等
         parent = User(
             id=2,
