@@ -134,7 +134,7 @@ class TestNotificationSummary:
                     start_date=today,
                     end_date=today,
                     leave_hours=8,
-                    is_approved=None,
+                    status="pending",
                 )
             )
             session.add(
@@ -146,7 +146,7 @@ class TestNotificationSummary:
                     end_time=datetime.combine(today, datetime.min.time())
                     + timedelta(hours=2),
                     hours=2,
-                    is_approved=None,
+                    status="pending",
                 )
             )
             session.add(
@@ -155,7 +155,7 @@ class TestNotificationSummary:
                     attendance_date=today,
                     correction_type="punch_in",
                     requested_punch_in=datetime.combine(today, datetime.min.time()),
-                    is_approved=None,
+                    status="pending",
                 )
             )
             session.add(

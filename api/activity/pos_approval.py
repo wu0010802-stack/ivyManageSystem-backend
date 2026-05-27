@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import case, func
 
+from models.approval import ApprovalStatus
 from models.database import (
     ActivityPaymentRecord,
     ActivityPosDailyClose,
@@ -122,6 +123,7 @@ def _serialize_close(row: ActivityPosDailyClose) -> dict:
     return {
         "date": row.close_date.isoformat(),
         "is_approved": True,
+        "status": ApprovalStatus.APPROVED.value,
         "approver_username": row.approver_username,
         "approved_at": (
             row.approved_at.isoformat(timespec="seconds") if row.approved_at else None
@@ -143,6 +145,7 @@ def _live_preview(session, target_date: date) -> dict:
     return {
         "date": target_date.isoformat(),
         "is_approved": False,
+        "status": ApprovalStatus.REJECTED.value,
         "approver_username": None,
         "approved_at": None,
         "note": None,
@@ -704,6 +707,7 @@ async def pos_reconciliation(
                 {
                     "date": d.isoformat(),
                     "is_approved": data["is_approved"],
+                    "status": data.get("status", ApprovalStatus.REJECTED.value if data.get("is_approved") is False else (ApprovalStatus.APPROVED.value if data.get("is_approved") else ApprovalStatus.PENDING.value)),
                     "payment_total": data["payment_total"],
                     "refund_total": data["refund_total"],
                     "net_total": data["net_total"],

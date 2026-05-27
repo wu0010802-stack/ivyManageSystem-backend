@@ -58,12 +58,19 @@ def _add_emp(session, name="郭玟秀"):
 
 
 def _add_leave(session, emp_id, leave_type, start, end, approved=True):
+    # Accept bool/None for backwards-compat
+    if approved is True:
+        _status = "approved"
+    elif approved is False:
+        _status = "rejected"
+    else:
+        _status = "pending"
     lv = LeaveRecord(
         employee_id=emp_id,
         leave_type=leave_type,
         start_date=start,
         end_date=end,
-        is_approved=approved,
+        status=_status,
     )
     session.add(lv)
     session.flush()
@@ -139,8 +146,8 @@ class TestSkipDetection:
             date(2026, 4, 30),
             approved=False,
         )
-        # is_approved=False 不會被 add_leave 改，但 query 過濾 True；測試 None / False 都應被排除
-        session.query(LeaveRecord).update({LeaveRecord.is_approved: None})
+        # status="rejected" 不會被 add_leave 改，但 query 過濾 True；測試 None / False 都應被排除
+        session.query(LeaveRecord).update({LeaveRecord.status: "pending"})
         session.commit()
         skip, _ = should_skip_bonuses_for_month(session, emp.id, 2026, 4)
         assert skip is False

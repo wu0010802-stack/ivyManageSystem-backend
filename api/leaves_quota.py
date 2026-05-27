@@ -17,6 +17,7 @@ from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 
+from models.approval import ApprovalStatus
 from models.database import get_session, Employee, LeaveRecord, LeaveQuota
 from utils.auth import require_staff_permission
 from utils.constants import LEAVE_TYPE_LABELS
@@ -89,7 +90,7 @@ def _get_sick_committed_hours(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == "sick",
         LeaveRecord.is_hospitalized == is_hospitalized,
-        or_(LeaveRecord.is_approved == True, LeaveRecord.is_approved.is_(None)),
+        or_(LeaveRecord.status == ApprovalStatus.APPROVED.value, LeaveRecord.status == ApprovalStatus.PENDING.value),
         LeaveRecord.start_date >= date(year, 1, 1),
         LeaveRecord.start_date < date(year + 1, 1, 1),
     )
@@ -239,7 +240,7 @@ def _get_used_hours(session, employee_id: int, year: int, leave_type: str) -> fl
         .filter(
             LeaveRecord.employee_id == employee_id,
             LeaveRecord.leave_type == leave_type,
-            LeaveRecord.is_approved == True,
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.start_date >= date(year, 1, 1),
             LeaveRecord.start_date < date(year + 1, 1, 1),
         )
@@ -255,7 +256,7 @@ def _get_pending_hours(session, employee_id: int, year: int, leave_type: str) ->
         .filter(
             LeaveRecord.employee_id == employee_id,
             LeaveRecord.leave_type == leave_type,
-            LeaveRecord.is_approved.is_(None),
+            LeaveRecord.status == ApprovalStatus.PENDING.value,
             LeaveRecord.start_date >= date(year, 1, 1),
             LeaveRecord.start_date < date(year + 1, 1, 1),
         )
@@ -271,7 +272,7 @@ def _get_approved_hours_in_year(
     q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
-        LeaveRecord.is_approved == True,
+        LeaveRecord.status == ApprovalStatus.APPROVED.value,
         LeaveRecord.start_date >= date(year, 1, 1),
         LeaveRecord.start_date < date(year + 1, 1, 1),
     )
@@ -287,7 +288,7 @@ def _get_pending_hours_in_year(
     q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
-        LeaveRecord.is_approved.is_(None),
+        LeaveRecord.status == ApprovalStatus.PENDING.value,
         LeaveRecord.start_date >= date(year, 1, 1),
         LeaveRecord.start_date < date(year + 1, 1, 1),
     )
@@ -309,7 +310,7 @@ def _get_approved_hours_in_month(
     q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
-        LeaveRecord.is_approved == True,
+        LeaveRecord.status == ApprovalStatus.APPROVED.value,
         LeaveRecord.start_date >= date(year, month, 1),
         LeaveRecord.start_date <= date(year, month, last_day),
     )
@@ -331,7 +332,7 @@ def _get_pending_hours_in_month(
     q = session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0)).filter(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == leave_type,
-        LeaveRecord.is_approved.is_(None),
+        LeaveRecord.status == ApprovalStatus.PENDING.value,
         LeaveRecord.start_date >= date(year, month, 1),
         LeaveRecord.start_date <= date(year, month, last_day),
     )
@@ -617,7 +618,7 @@ def get_leave_quotas(
             )
             .filter(
                 LeaveRecord.employee_id.in_(emp_ids),
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
                 LeaveRecord.start_date >= year_start,
                 LeaveRecord.start_date < year_end,
             )
@@ -635,7 +636,7 @@ def get_leave_quotas(
             )
             .filter(
                 LeaveRecord.employee_id.in_(emp_ids),
-                LeaveRecord.is_approved.is_(None),
+                LeaveRecord.status == ApprovalStatus.PENDING.value,
                 LeaveRecord.start_date >= year_start,
                 LeaveRecord.start_date < year_end,
             )
@@ -770,7 +771,7 @@ def init_leave_quotas(
             )
             .filter(
                 LeaveRecord.employee_id == employee_id,
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
                 LeaveRecord.start_date >= year_start,
                 LeaveRecord.start_date < year_end,
             )
@@ -785,7 +786,7 @@ def init_leave_quotas(
             )
             .filter(
                 LeaveRecord.employee_id == employee_id,
-                LeaveRecord.is_approved.is_(None),
+                LeaveRecord.status == ApprovalStatus.PENDING.value,
                 LeaveRecord.start_date >= year_start,
                 LeaveRecord.start_date < year_end,
             )

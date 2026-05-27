@@ -154,7 +154,7 @@ class TestOvertimeUpdateReverseTimeRejected:
                 end_time=datetime(2026, 3, 20, 20, 0),
                 hours=2,
                 overtime_pay=500,
-                is_approved=None,
+                status="pending",
             )
             session.add(ot)
             _user(
@@ -191,7 +191,7 @@ class TestApprovedLeaveRejectsNewAttachment:
                 start_date=date(2026, 3, 20),
                 end_date=date(2026, 3, 20),
                 leave_hours=8,
-                is_approved=True,
+                status="approved",
                 approved_by="admin",
             )
             session.add(leave)
@@ -277,7 +277,7 @@ class TestPortalCompLeaveSourceOvertimeValidation:
                 overtime_pay=0,
                 use_comp_leave=True,
                 comp_leave_granted=True,
-                is_approved=True,
+                status="approved",
                 approved_by="admin",
             )
             session.add(other_ot)
@@ -310,7 +310,7 @@ class TestPortalCompLeaveSourceOvertimeValidation:
                 overtime_pay=0,
                 use_comp_leave=True,
                 comp_leave_granted=False,
-                is_approved=None,
+                status="pending",
             )
             session.add(ot)
             session.commit()
@@ -400,7 +400,7 @@ class TestApproveLeaveHoursGuardDefenseInDepth:
             start_date=date(2026, 3, 20),
             end_date=date(2026, 3, 20),
             leave_hours=100,  # 遠超單日排班工時
-            is_approved=None,
+            status="pending",
         )
         session.add(leave)
         _user(
@@ -426,7 +426,7 @@ class TestApproveLeaveHoursGuardDefenseInDepth:
 
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).one()
-            assert leave.is_approved is None, "核准失敗時不得翻面"
+            assert leave.status == "pending", "核准失敗時不得翻面"
 
     def test_batch_approve_rejects_excess_hours(self, app_client):
         client, session_factory = app_client
@@ -465,7 +465,7 @@ class TestApproveOvertimeRejectsInvalidPendingRecord:
                 end_time=datetime(2026, 3, 20, 18, 0),
                 hours=2,
                 overtime_pay=500,
-                is_approved=None,
+                status="pending",
             )
             session.add(ot)
             _user(

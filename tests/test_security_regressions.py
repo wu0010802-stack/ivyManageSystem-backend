@@ -314,7 +314,7 @@ class TestSelfApprovalPrevention:
                 start_date=_date(2026, 3, 10),
                 end_date=_date(2026, 3, 10),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             session.commit()
@@ -339,7 +339,7 @@ class TestSelfApprovalPrevention:
                 overtime_date=_date(2026, 3, 10),
                 overtime_type="weekday",
                 hours=2,
-                is_approved=None,
+                status="pending",
             )
             session.add(ot)
             session.commit()
@@ -382,7 +382,7 @@ class TestSelfApprovalPrevention:
                 start_date=_date(2026, 3, 10),
                 end_date=_date(2026, 3, 10),
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             session.commit()

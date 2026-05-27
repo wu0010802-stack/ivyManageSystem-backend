@@ -16,6 +16,7 @@ from models.database import (
     PunchCorrectionRequest,
     User,
 )
+from models.approval import ApprovalStatus
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import (
@@ -85,11 +86,11 @@ def list_punch_corrections(
         )
 
         if status == "pending":
-            query = query.filter(PunchCorrectionRequest.is_approved.is_(None))
+            query = query.filter(PunchCorrectionRequest.status == ApprovalStatus.PENDING.value)
         elif status == "approved":
-            query = query.filter(PunchCorrectionRequest.is_approved.is_(True))
+            query = query.filter(PunchCorrectionRequest.status == ApprovalStatus.APPROVED.value)
         elif status == "rejected":
-            query = query.filter(PunchCorrectionRequest.is_approved.is_(False))
+            query = query.filter(PunchCorrectionRequest.status == ApprovalStatus.REJECTED.value)
 
         if year and month:
             import calendar as cal_module
@@ -136,8 +137,8 @@ def approve_punch_correction(
         if not correction:
             raise HTTPException(status_code=404, detail="找不到此補打卡申請")
 
-        if correction.is_approved is not None:
-            status_label = "已核准" if correction.is_approved else "已駁回"
+        if correction.status != ApprovalStatus.PENDING.value:
+            status_label = "已核准" if correction.status == ApprovalStatus.APPROVED.value else "已駁回"
             raise HTTPException(
                 status_code=400, detail=f"此申請已{status_label}，無法再次審核"
             )
@@ -165,7 +166,7 @@ def approve_punch_correction(
             # 駁回
             if not body.rejection_reason or not body.rejection_reason.strip():
                 raise HTTPException(status_code=422, detail="駁回時必須填寫駁回原因")
-            correction.is_approved = False
+            correction.status = ApprovalStatus.REJECTED.value
             correction.rejection_reason = body.rejection_reason.strip()
             correction.approved_by = current_user.get("username", "")
             _write_approval_log(
@@ -276,7 +277,7 @@ def approve_punch_correction(
         )
 
         # 更新申請狀態
-        correction.is_approved = True
+        correction.status = ApprovalStatus.APPROVED.value
         correction.approved_by = current_user.get("username", "")
         _write_approval_log(
             session=session,

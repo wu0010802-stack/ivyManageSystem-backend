@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from models.attendance import Attendance, AttendanceStatus
 from models.leave import LeaveRecord
+from models.approval import ApprovalStatus
 from utils.attendance_calc import (
     compute_early_leave_minutes_with_leave,
     compute_late_minutes_with_leave,
@@ -42,7 +43,7 @@ def merge_attendance_with_leave(att: Attendance, session: Session) -> None:
             LeaveRecord.employee_id == att.employee_id,
             LeaveRecord.start_date <= att.attendance_date,
             LeaveRecord.end_date >= att.attendance_date,
-            LeaveRecord.is_approved == True,  # noqa: E712
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
         )
         .order_by(LeaveRecord.id)
         .all()

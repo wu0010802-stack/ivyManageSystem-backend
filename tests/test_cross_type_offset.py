@@ -4,7 +4,7 @@
 1. flag on + 同日已核准 OT → 回傳該 OT
 2. flag off → 回傳 None（即使有匹配 OT）
 3. 補休假單（source_overtime_id 非空）→ 回傳 None（避免雙重抵扣）
-4. OT 未核准（is_approved=None / False）→ 不匹配
+4. OT 未核准（status="pending" / False）→ 不匹配
 5. OT 用補休（use_comp_leave=True）→ 不匹配
 6. 同員工同日無匹配 OT → 回傳 None
 7. 多筆匹配時依 id 升序回最舊那筆（決定性）
@@ -91,7 +91,7 @@ def _make_overtime(
     *,
     employee_id: int,
     ot_date: date = date(2026, 3, 10),
-    is_approved=True,
+    status="approved",
     use_comp_leave: bool = False,
     overtime_pay: float = 500,
 ) -> OvertimeRecord:
@@ -101,7 +101,7 @@ def _make_overtime(
         overtime_type="weekday",
         hours=2,
         overtime_pay=overtime_pay,
-        is_approved=is_approved,
+        status=status,
         use_comp_leave=use_comp_leave,
     )
     session.add(ot)
@@ -150,8 +150,8 @@ def test_offset_skips_compensatory_leave(db_session, monkeypatch):
 def test_offset_skips_unapproved_ot(db_session, monkeypatch):
     monkeypatch.setenv("ENABLE_LEAVE_OT_OFFSET", "true")
     emp = _make_employee(db_session)
-    _make_overtime(db_session, employee_id=emp.id, is_approved=None)
-    _make_overtime(db_session, employee_id=emp.id, is_approved=False)
+    _make_overtime(db_session, employee_id=emp.id, status="pending")
+    _make_overtime(db_session, employee_id=emp.id, status="rejected")
     leave = _make_leave(db_session, employee_id=emp.id)
 
     assert resolve_cross_type_offset(db_session, leave) is None

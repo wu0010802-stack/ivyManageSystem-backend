@@ -123,9 +123,9 @@ def grant_factory(db_session):
         db_session.execute(
             _text(
                 "INSERT INTO overtime_records"
-                " (employee_id, overtime_date, overtime_type, hours, is_approved,"
+                " (employee_id, overtime_date, overtime_type, hours, status,"
                 "  use_comp_leave, comp_leave_granted)"
-                " VALUES (:emp, :dt, 'weekday', :h, 1, 1, 1)"
+                " VALUES (:emp, :dt, 'weekday', :h, 'approved', 1, 1)"
             ),
             {"emp": employee_id, "dt": f"2025-01-{day:02d}", "h": granted_hours},
         )

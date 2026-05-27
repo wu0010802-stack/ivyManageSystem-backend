@@ -9,6 +9,7 @@ from utils.taipei_time import now_taipei_naive
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 
+from models.approval import ApprovalStatus
 from models.database import get_session, Attendance, LeaveRecord
 from utils.auth import get_current_user
 from ._shared import _get_employee, AnomalyConfirm, WEEKDAY_NAMES
@@ -115,7 +116,7 @@ def confirm_anomaly(
                 end_date=att.attendance_date,
                 leave_hours=8,
                 reason=f"以特休抵銷異常 ({data.remark or ''})",
-                is_approved=False,
+                status=ApprovalStatus.REJECTED.value,
             )
             session.add(leave)
             att.remark = (att.remark or "") + " [已申請特休抵銷]"

@@ -104,7 +104,7 @@ def _seed_policy(session, *, doc_type, submitter_role, approver_roles):
     return p
 
 
-def _seed_overtime(session, *, employee_id, is_approved=None):
+def _seed_overtime(session, *, employee_id, status="pending"):
     today = date.today()
     ot = OvertimeRecord(
         employee_id=employee_id,
@@ -113,7 +113,7 @@ def _seed_overtime(session, *, employee_id, is_approved=None):
         hours=2.0,
         start_time=datetime(2026, 5, 5, 18, 0),
         end_time=datetime(2026, 5, 5, 20, 0),
-        is_approved=is_approved,
+        status=status,
     )
     session.add(ot)
     session.flush()
@@ -155,7 +155,7 @@ class TestOvertimeRejectionReasonRequired:
                 submitter_role="teacher",
                 approver_roles="supervisor,admin",
             )
-            ot = _seed_overtime(s, employee_id=sub_emp.id, is_approved=None)
+            ot = _seed_overtime(s, employee_id=sub_emp.id, status="pending")
             s.commit()
             return ot.id
 
@@ -206,7 +206,7 @@ class TestOvertimeRejectionReasonRequired:
 
         with sf() as s:
             ot = s.get(OvertimeRecord, ot_id)
-            assert ot.is_approved is False
+            assert ot.status == "rejected"
             log = (
                 s.query(ApprovalLog)
                 .filter(
@@ -257,7 +257,7 @@ class TestOvertimeRejectionReasonRequired:
                 submitter_role="teacher",
                 approver_roles="supervisor,admin",
             )
-            ot = _seed_overtime(s, employee_id=sub_emp.id, is_approved=True)
+            ot = _seed_overtime(s, employee_id=sub_emp.id, status="approved")
             s.commit()
             ot_id = ot.id
 
@@ -270,4 +270,4 @@ class TestOvertimeRejectionReasonRequired:
 
         with sf() as s:
             ot = s.get(OvertimeRecord, ot_id)
-            assert ot.is_approved is False
+            assert ot.status == "rejected"

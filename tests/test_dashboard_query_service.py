@@ -75,7 +75,7 @@ class TestDashboardQueryService:
                 start_date=today,
                 end_date=today,
                 leave_hours=8,
-                is_approved=None,
+                status="pending",
             )
         )
         db_session.add(
@@ -86,7 +86,7 @@ class TestDashboardQueryService:
                 start_time=datetime.combine(today, datetime.min.time()),
                 end_time=datetime.combine(today, datetime.min.time()) + timedelta(hours=2),
                 hours=2,
-                is_approved=None,
+                status="pending",
             )
         )
         db_session.add(
@@ -95,7 +95,7 @@ class TestDashboardQueryService:
                 attendance_date=today,
                 correction_type="punch_in",
                 requested_punch_in=datetime.combine(today, datetime.min.time()),
-                is_approved=None,
+                status="pending",
             )
         )
         db_session.add(ParentInquiry(name="家長甲", phone="0912", question="想詢問上課時間", is_read=False))

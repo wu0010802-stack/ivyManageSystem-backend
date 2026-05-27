@@ -124,7 +124,7 @@ def _approve_full_day_leave(session, emp_id: int, leave_date: date) -> LeaveReco
         leave_hours=8.0,
         start_time=None,
         end_time=None,
-        is_approved=True,
+        status="approved",
     )
     session.add(lv)
     session.flush()
@@ -267,7 +267,7 @@ class TestExcelUploadWithLeave:
                 leave_hours=4.0,
                 start_time="09:00",
                 end_time="13:00",
-                is_approved=True,
+                status="approved",
             )
             s.add(lv)
             s.commit()
@@ -335,7 +335,7 @@ def _approve_partial_leave(
         leave_hours=leave_hours,
         start_time=start_time,
         end_time=end_time,
-        is_approved=True,
+        status="approved",
     )
     session.add(lv)
     session.flush()

@@ -54,12 +54,12 @@ def _mock_session(records):
     return _S()
 
 
-def _make_record(start, end, is_approved=None):
+def _make_record(start, end, status="pending"):
     """建立 OvertimeRecord mock（start/end 可為 str / time / datetime）。"""
     r = types.SimpleNamespace()
     r.start_time = start
     r.end_time = end
-    r.is_approved = is_approved
+    r.status = status
     return r
 
 
@@ -244,11 +244,21 @@ def _make_ot(ot_id, employee_id, ot_date, hours, use_comp=True, comp_granted=Tru
     return ot
 
 
-def _make_leave(leave_id, hours, is_approved, source_overtime_id=None):
+def _make_leave(leave_id, hours, status, source_overtime_id=None):
+    """建立 LeaveRecord mock，status 為 'approved'/'rejected'/'pending'。
+    For callers passing True/False/None (legacy), those are converted positionally.
+    """
+    # Accept bool/None for backwards-compat with existing call sites
+    if status is True:
+        status = "approved"
+    elif status is False:
+        status = "rejected"
+    elif status is None:
+        status = "pending"
     lv = types.SimpleNamespace()
     lv.id = leave_id
     lv.leave_hours = hours
-    lv.is_approved = is_approved
+    lv.status = status
     lv.source_overtime_id = source_overtime_id
     lv.rejection_reason = None
     return lv
@@ -289,8 +299,25 @@ class _MockQuery:
 
     def scalar(self):
         # 判斷是 approved 還是 pending 查詢
-        filter_strs = [str(f) for f in self._filters]
-        if any("is_approved IS NULL" in s or "IS NULL" in s for s in filter_strs):
+        # P2: filters now use status column; compile with literal_binds to see value
+        from sqlalchemy.dialects import sqlite as _sqlite
+
+        def _compiled(f):
+            try:
+                return str(
+                    f.compile(
+                        dialect=_sqlite.dialect(),
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
+            except Exception:
+                return str(f)
+
+        filter_strs = [_compiled(f) for f in self._filters]
+        if any(
+            "is_approved IS NULL" in s or "IS NULL" in s or "'pending'" in s
+            for s in filter_strs
+        ):
             return self._pending_h
         return self._approved_h
 
@@ -342,8 +369,10 @@ class TestRevokeCompLeaveGrant:
         pending_lv = _make_leave(201, 8.0, None, source_overtime_id=1)
         # 模擬 autoflush 後 pending_h=0（因為 linked 已被駁回）
         session = self._make_session([pending_lv], quota, approved_h=0.0, pending_h=0.0)
+        from models.approval import ApprovalStatus
+
         _revoke_comp_leave_grant(session, ot)
-        assert pending_lv.is_approved is False
+        assert pending_lv.status == ApprovalStatus.REJECTED.value
         assert pending_lv.rejection_reason is not None
         assert quota.total_hours == 0.0
         assert ot.comp_leave_granted is False
@@ -719,7 +748,7 @@ def _make_admin_user(session, username: str = "hr_admin") -> "_User":
 
 
 def _seed_ot(
-    session, emp_id: int, ot_date: date, hours: float, is_approved=True
+    session, emp_id: int, ot_date: date, hours: float, status="approved"
 ) -> "_OvertimeRecord":
     ot = _OvertimeRecord(
         employee_id=emp_id,
@@ -727,7 +756,7 @@ def _seed_ot(
         overtime_type="weekday",
         hours=hours,
         overtime_pay=0.0,
-        is_approved=is_approved,
+        status=status,
     )
     session.add(ot)
     session.flush()
@@ -831,7 +860,7 @@ class TestAdminOvertimeQuarterlyCapBoundary:
             _seed_ot(session, emp_id, date(2026, 5, 5), 40.0)
             # 1 pending 10h → 若 approve，W1 = 130+10 = 140 > 138
             pending = _seed_ot(
-                session, emp_id, date(2026, 5, 20), 10.0, is_approved=None
+                session, emp_id, date(2026, 5, 20), 10.0, status="pending"
             )
             pending_id = pending.id
             session.commit()
@@ -860,5 +889,5 @@ class TestAdminOvertimeQuarterlyCapBoundary:
             refreshed = session.query(_OvertimeRecord).filter_by(id=pending_id).first()
             assert refreshed is not None, "pending record 應存在"
             assert (
-                refreshed.is_approved is None
-            ), f"approve 失敗應 rollback，pending 仍應為 is_approved=None，但現在={refreshed.is_approved}"
+                refreshed.status == "pending"
+            ), f"approve 失敗應 rollback，pending 仍應為 status='pending'，但現在={refreshed.status}"

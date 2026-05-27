@@ -74,7 +74,8 @@ class _FakeLeave:
         self.end_time = kwargs.get("end_time")
         self.leave_hours = kwargs.get("leave_hours", 8.0)
         self.leave_type = kwargs.get("leave_type", "personal")
-        self.is_approved = kwargs.get("is_approved", True)
+        status_default = "approved" if kwargs.get("is_approved", True) else "rejected"
+        self.status = kwargs.get("status", status_default)
 
 
 def make_leave(**kwargs):
@@ -128,7 +129,7 @@ def approved_full_day_leave(db_session, sample_employee):
         leave_hours=8.0,
         start_time=None,
         end_time=None,
-        is_approved=True,
+        status="approved",
     )
     db_session.add(lv)
     db_session.commit()
@@ -205,7 +206,7 @@ def approved_partial_morning_leave(db_session, sample_employee):
         leave_hours=4.0,
         start_time="09:00",
         end_time="13:00",
-        is_approved=True,
+        status="approved",
     )
     db_session.add(lv)
     db_session.commit()
@@ -225,7 +226,7 @@ def approved_partial_hour_leave(db_session, sample_employee):
         leave_hours=1.5,
         start_time="09:00",
         end_time="10:30",
-        is_approved=True,
+        status="approved",
     )
     db_session.add(lv)
     db_session.commit()
@@ -332,7 +333,7 @@ class TestApplyExceptionPaths:
             start_date=date(2026, 5, 22),
             end_date=date(2026, 5, 22),
             leave_hours=8.0,
-            is_approved=None,  # pending
+            status="pending",  # pending
         )
         db_session.add(lv)
         db_session.commit()
@@ -395,7 +396,7 @@ class TestApplyExceptionPaths:
             leave_hours=4.0,
             start_time=None,  # 故意缺
             end_time=None,
-            is_approved=True,
+            status="approved",
         )
         db_session.add(lv)
         db_session.commit()
@@ -606,7 +607,7 @@ class TestReapply:
             start_date=date(2026, 5, 22),
             end_date=date(2026, 5, 22),
             leave_hours=8.0,
-            is_approved=True,
+            status="approved",
         )
         db_session.add(lv)
         db_session.commit()

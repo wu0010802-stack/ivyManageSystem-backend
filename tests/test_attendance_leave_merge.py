@@ -52,7 +52,7 @@ def _make_leave(db_session, emp_id, **kwargs):
         start_time=kwargs.get("start_time"),
         end_time=kwargs.get("end_time"),
         leave_hours=kwargs.get("leave_hours", 8.0),
-        is_approved=kwargs.get("is_approved", True),
+        status=kwargs.get("status", "approved" if kwargs.get("is_approved", True) else "rejected"),
     )
     db_session.add(lv)
     db_session.commit()

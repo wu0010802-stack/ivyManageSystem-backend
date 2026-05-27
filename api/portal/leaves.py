@@ -27,6 +27,7 @@ _attach_upload_limiter = SlidingWindowLimiter(
 )
 from sqlalchemy import func, case
 
+from models.approval import ApprovalStatus
 
 from models.database import (
     get_session,
@@ -198,7 +199,7 @@ def get_my_leaves(
                 "end_time": lv.end_time,
                 "leave_hours": lv.leave_hours,
                 "reason": lv.reason,
-                "is_approved": lv.is_approved,
+                "status": lv.status,
                 "approved_by": lv.approved_by,
                 "rejection_reason": lv.rejection_reason,
                 "attachment_paths": _parse_paths(lv.attachment_paths),
@@ -320,7 +321,7 @@ def create_my_leave(
                 raise HTTPException(
                     status_code=400, detail="來源加班記錄無效或無權使用"
                 )
-            if src_ot.is_approved is not True:
+            if src_ot.status != ApprovalStatus.APPROVED.value:
                 raise HTTPException(
                     status_code=400, detail="來源加班記錄尚未核准，無法用於補休申請"
                 )
@@ -369,7 +370,7 @@ def create_my_leave(
             is_deductible=effective_ratio > 0,
             deduction_ratio=effective_ratio,
             reason=data.reason,
-            is_approved=None,
+            status=ApprovalStatus.PENDING.value,
             substitute_employee_id=data.substitute_employee_id,
             substitute_status=substitute_status,
             source_overtime_id=(
@@ -472,7 +473,7 @@ async def upload_leave_attachments(
         )
         if not leave:
             raise HTTPException(status_code=404, detail="找不到請假記錄")
-        if leave.is_approved is not None:
+        if leave.status != ApprovalStatus.PENDING.value:
             raise HTTPException(status_code=400, detail="已審核的假單不可新增附件")
 
         existing = _parse_paths(leave.attachment_paths)
@@ -564,7 +565,7 @@ def delete_leave_attachment(
         )
         if not leave:
             raise HTTPException(status_code=404, detail="找不到請假記錄")
-        if leave.is_approved is not None:
+        if leave.status != ApprovalStatus.PENDING.value:
             raise HTTPException(status_code=400, detail="已審核的假單不可刪除附件")
 
         paths = _parse_paths(leave.attachment_paths)
@@ -686,7 +687,7 @@ def get_my_leave_stats(
                 LeaveRecord.leave_type == "annual",
                 LeaveRecord.start_date >= start_of_year,
                 LeaveRecord.start_date <= end_of_year,
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
             )
             .scalar()
         )
@@ -769,7 +770,7 @@ def get_my_quotas(
                     func.sum(
                         case(
                             (
-                                LeaveRecord.is_approved.is_(True),
+                                LeaveRecord.status == ApprovalStatus.APPROVED.value,
                                 LeaveRecord.leave_hours,
                             ),
                             else_=0,
@@ -781,7 +782,7 @@ def get_my_quotas(
                     func.sum(
                         case(
                             (
-                                LeaveRecord.is_approved.is_(None),
+                                LeaveRecord.status == ApprovalStatus.PENDING.value,
                                 LeaveRecord.leave_hours,
                             ),
                             else_=0,
@@ -930,7 +931,7 @@ def get_my_substitute_requests(
                     if lv.substitute_responded_at
                     else None
                 ),
-                "is_approved": lv.is_approved,
+                "status": lv.status,
                 "created_at": lv.created_at.isoformat() if lv.created_at else None,
             }
             for lv, requester in records

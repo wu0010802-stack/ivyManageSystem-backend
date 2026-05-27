@@ -655,7 +655,7 @@ def _seed_overtime(s):
         hours=2.0,
         overtime_pay=536,
         reason="加班測試",
-        is_approved=True,
+        status="approved",
     )
     s.add(ot)
     s.flush()

@@ -37,6 +37,7 @@ from models.database import (
     LeaveRecord,
     SalaryRecord,
 )
+from models.approval import ApprovalStatus
 from models.event import Holiday
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from utils.auth import require_staff_permission
@@ -142,8 +143,12 @@ def _revoke_comp_leave_grant(
         .all()
     )
 
-    linked_approved = [lv for lv in linked_leaves if lv.is_approved is True]
-    linked_pending = [lv for lv in linked_leaves if lv.is_approved is None]
+    linked_approved = [
+        lv for lv in linked_leaves if lv.status == ApprovalStatus.APPROVED.value
+    ]
+    linked_pending = [
+        lv for lv in linked_leaves if lv.status == ApprovalStatus.PENDING.value
+    ]
 
     if linked_approved:
         approved_h = sum(lv.leave_hours for lv in linked_approved)
@@ -164,7 +169,7 @@ def _revoke_comp_leave_grant(
         "role": "system",
     }
     for lv in linked_pending:
-        lv.is_approved = False
+        lv.status = ApprovalStatus.REJECTED.value
         lv.rejection_reason = (
             f"來源加班申請（#{ot.id}，{ot.overtime_date}）已被撤銷，補休資格取消"
         )
@@ -193,7 +198,7 @@ def _revoke_comp_leave_grant(
         .filter(
             LeaveRecord.employee_id == ot.employee_id,
             LeaveRecord.leave_type == "compensatory",
-            LeaveRecord.is_approved == True,
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.start_date >= date(year, 1, 1),
             LeaveRecord.start_date < date(year + 1, 1, 1),
         )
@@ -204,7 +209,7 @@ def _revoke_comp_leave_grant(
         .filter(
             LeaveRecord.employee_id == ot.employee_id,
             LeaveRecord.leave_type == "compensatory",
-            LeaveRecord.is_approved.is_(None),
+            LeaveRecord.status == ApprovalStatus.PENDING.value,
             LeaveRecord.start_date >= date(year, 1, 1),
             LeaveRecord.start_date < date(year + 1, 1, 1),
         )
@@ -519,11 +524,11 @@ def get_overtimes(
             )
 
         if status == "pending":
-            q = q.filter(OvertimeRecord.is_approved.is_(None))
+            q = q.filter(OvertimeRecord.status == ApprovalStatus.PENDING.value)
         elif status == "approved":
-            q = q.filter(OvertimeRecord.is_approved == True)
+            q = q.filter(OvertimeRecord.status == ApprovalStatus.APPROVED.value)
         elif status == "rejected":
-            q = q.filter(OvertimeRecord.is_approved == False)
+            q = q.filter(OvertimeRecord.status == ApprovalStatus.REJECTED.value)
 
         records = q.order_by(OvertimeRecord.overtime_date.desc()).limit(5000).all()
 
@@ -562,7 +567,7 @@ def get_overtimes(
                     "overtime_pay": ot.overtime_pay,
                     "use_comp_leave": ot.use_comp_leave,
                     "comp_leave_granted": ot.comp_leave_granted,
-                    "is_approved": ot.is_approved,
+                    "status": ot.status,
                     "approved_by": ot.approved_by,
                     "reason": ot.reason,
                     "created_at": ot.created_at.isoformat() if ot.created_at else None,
@@ -645,7 +650,7 @@ def create_overtime(
             overtime_pay=pay,
             use_comp_leave=data.use_comp_leave,
             reason=data.reason,
-            is_approved=None,  # Explicitly set to Pending
+            status=ApprovalStatus.PENDING.value,  # Explicitly set to Pending
         )
         session.add(ot)
         session.commit()
@@ -700,7 +705,7 @@ def update_overtime(
             raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
 
         # 記錄修改前的核准狀態（供後續稽核退審判斷）+ before snapshot 供 audit_changes
-        was_approved = ot.is_approved == True
+        was_approved = ot.status == ApprovalStatus.APPROVED.value
         original_month = (ot.overtime_date.year, ot.overtime_date.month)
         before_snapshot = {
             "overtime_date": ot.overtime_date.isoformat(),
@@ -712,7 +717,7 @@ def update_overtime(
             "end_time": str(ot.end_time) if getattr(ot, "end_time", None) else None,
             "use_comp_leave": getattr(ot, "use_comp_leave", None),
             "overtime_pay": getattr(ot, "overtime_pay", None),
-            "is_approved": ot.is_approved,
+            "status": ot.status,
             "reason": getattr(ot, "reason", None),
         }
 
@@ -832,7 +837,7 @@ def update_overtime(
         # ── 稽核退審：已核准的記錄被修改，自動退回待審核 ──────────────────────
         # 防止管理員靜默修改已核准加班時數，導致薪資異常（財務防呆）
         if was_approved:
-            ot.is_approved = None
+            ot.status = ApprovalStatus.PENDING.value
             ot.approved_by = None
             logger.warning(
                 "稽核警告：已核准加班記錄 #%d（員工 ID=%d, %s）被管理員「%s」修改，"
@@ -855,7 +860,7 @@ def update_overtime(
             "end_time": str(ot.end_time) if getattr(ot, "end_time", None) else None,
             "use_comp_leave": getattr(ot, "use_comp_leave", None),
             "overtime_pay": getattr(ot, "overtime_pay", None),
-            "is_approved": ot.is_approved,
+            "status": ot.status,
             "reason": getattr(ot, "reason", None),
         }
         diff = {
@@ -936,7 +941,7 @@ def delete_overtime(
         )
         if not ot:
             raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
-        was_approved = ot.is_approved is True
+        was_approved = ot.status == ApprovalStatus.APPROVED.value
         overtime_month = (ot.overtime_date.year, ot.overtime_date.month)
         employee_id = ot.employee_id
         # 預先 snapshot：刪除後 ot 物件被 expunge，audit 必須在這裡備份
@@ -948,7 +953,7 @@ def delete_overtime(
             "hours": getattr(ot, "hours", None),
             "use_comp_leave": getattr(ot, "use_comp_leave", None),
             "overtime_pay": getattr(ot, "overtime_pay", None),
-            "is_approved": ot.is_approved,
+            "status": ot.status,
             "reason": getattr(ot, "reason", None),
         }
         if was_approved:
@@ -1045,7 +1050,7 @@ def approve_overtime(
         )
         if not ot:
             raise HTTPException(status_code=404, detail=OVERTIME_RECORD_NOT_FOUND)
-        was_approved = ot.is_approved is True
+        was_approved = ot.status == ApprovalStatus.APPROVED.value
 
         # 既有設計允許「已核准 → 駁回」的合法業務路徑（例如發現超時數需撤銷），
         # 由 risk_tags="reject_of_approved" 在 audit_summary 打標記。撤回 audit
@@ -1133,7 +1138,9 @@ def approve_overtime(
             )
             _check_overtime_type_calendar(session, ot.overtime_date, ot.overtime_type)
 
-        ot.is_approved = approved
+        ot.status = (
+            ApprovalStatus.APPROVED.value if approved else ApprovalStatus.REJECTED.value
+        )
         ot.approved_by = current_user.get("username", approved_by) if approved else None
         # OvertimeRecord 無 rejection_reason 欄位（LeaveRecord 才有）；
         # 駁回原因落 ApprovalLog.comment，與 _write_approval_log 同 transaction。
@@ -1205,9 +1212,9 @@ def approve_overtime(
             "overtime_id": overtime_id,
             "employee_id": ot.employee_id,
             "decision": "approved" if approved else "rejected",
-            "before": {"is_approved": (True if was_approved else None)},
+            "before": {"status": ("approved" if was_approved else "pending")},
             "after": {
-                "is_approved": ot.is_approved,
+                "status": ot.status,
                 "approved_by": ot.approved_by,
             },
             "approval_log_id": approval_log_row.id if approval_log_row else None,
@@ -1274,7 +1281,7 @@ def batch_approve_overtimes(
                 if not ot:
                     failed.append({"id": ot_id, "reason": OVERTIME_RECORD_NOT_FOUND})
                     continue
-                was_approved = ot.is_approved is True
+                was_approved = ot.status == ApprovalStatus.APPROVED.value
 
                 # 防止自我核准
                 if is_self_approval(current_user, ot.employee_id):
@@ -1385,7 +1392,11 @@ def batch_approve_overtimes(
                 if not data.approved and was_approved:
                     _revoke_comp_leave_grant(session, ot, current_user=current_user)
 
-                ot.is_approved = data.approved
+                ot.status = (
+                    ApprovalStatus.APPROVED.value
+                    if data.approved
+                    else ApprovalStatus.REJECTED.value
+                )
                 ot.approved_by = (
                     current_user.get("username", "管理員") if data.approved else None
                 )
@@ -1564,7 +1575,7 @@ async def import_overtimes(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
 ):
-    """批次匯入加班申請（建立草稿加班單，is_approved=None，需後續人工審核）"""
+    """批次匯入加班申請（建立草稿加班單，status='pending'，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, ".xlsx")
 
@@ -1721,7 +1732,7 @@ async def import_overtimes(
                     overtime_pay=pay,
                     use_comp_leave=use_comp_leave,
                     reason=reason,
-                    is_approved=None,
+                    status=ApprovalStatus.PENDING.value,
                 )
                 session.add(ot)
                 session.flush()

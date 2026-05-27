@@ -12,6 +12,8 @@ engine.py 保留 re-export 維持既有 import surface
 from dataclasses import dataclass
 from datetime import date
 
+from models.approval import ApprovalStatus
+
 
 @dataclass
 class _BulkSalaryPreload:
@@ -61,7 +63,7 @@ def _get_ytd_sick_hours_before(
         session.query(LeaveRecord)
         .filter(
             LeaveRecord.employee_id == employee_id,
-            LeaveRecord.is_approved == True,
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.leave_type == "sick",
             LeaveRecord.end_date >= year_start,
             LeaveRecord.end_date < month_start,
@@ -91,7 +93,7 @@ def _get_ytd_sick_hours_bulk(
         )
         .filter(
             LeaveRecord.employee_id.in_(employee_ids),
-            LeaveRecord.is_approved == True,
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.leave_type == "sick",
             LeaveRecord.end_date >= year_start,
             LeaveRecord.end_date < month_start,

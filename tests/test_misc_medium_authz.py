@@ -167,7 +167,7 @@ def _seed_f005(session) -> dict:
         start_date=date(2026, 4, 15),
         end_date=date(2026, 4, 15),
         leave_hours=8,
-        is_approved=True,
+        status="approved",
         deduction_ratio=0,
     )
     session.add(leave)
@@ -251,7 +251,7 @@ class TestF005_SubstituteConflictMessage:
                 overtime_date=date(2026, 4, 15),
                 overtime_type="weekday_extra",
                 hours=2,
-                is_approved=True,
+                status="approved",
             )
             s.add(ot)
             s.commit()

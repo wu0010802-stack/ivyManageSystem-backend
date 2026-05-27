@@ -89,7 +89,7 @@ def _make_leave_record(
     start_date: date,
     end_date: date,
     leave_hours: float,
-    is_approved,  # True=approved, None=pending, False=rejected
+    status: str = "approved",  # "approved"/"pending"/"rejected"
 ) -> LeaveRecord:
     record = LeaveRecord(
         employee_id=employee_id,
@@ -97,7 +97,7 @@ def _make_leave_record(
         start_date=start_date,
         end_date=end_date,
         leave_hours=leave_hours,
-        is_approved=is_approved,
+        status=status,
     )
     db_session.add(record)
     db_session.flush()
@@ -126,7 +126,7 @@ def test_calculates_remaining_from_quota_minus_approved(db_session):
         start_date=date(2026, 3, 1),
         end_date=date(2026, 3, 9),
         leave_hours=72,  # 9 天
-        is_approved=True,  # approved
+        status="approved",  # approved
     )
     result = get_annual_leave_balance(db_session, emp.id, date(2026, 6, 15))
     assert result["total_hours"] == 112.0
@@ -136,7 +136,7 @@ def test_calculates_remaining_from_quota_minus_approved(db_session):
 
 
 def test_excludes_pending_records(db_session):
-    """只算 approved；pending（is_approved=None）不扣——離職時 pending 假應由 admin 處理。"""
+    """只算 approved；pending（status="pending"）不扣——離職時 pending 假應由 admin 處理。"""
     emp = _make_employee(db_session)
     _make_quota(db_session, emp.id, 2026, "annual", total_hours=80)
     _make_leave_record(
@@ -146,7 +146,7 @@ def test_excludes_pending_records(db_session):
         start_date=date(2026, 5, 1),
         end_date=date(2026, 5, 1),
         leave_hours=8,
-        is_approved=None,  # pending
+        status="pending",  # pending
     )
     result = get_annual_leave_balance(db_session, emp.id, date(2026, 6, 15))
     assert result["used_hours"] == 0.0

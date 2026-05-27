@@ -87,6 +87,7 @@ def _approved_annual_used_in_period(
     employee_id: int, period_start: date, period_end: date, session: Session
 ) -> float:
     """加總期間內已核准的 annual leave 時數。"""
+    from models.approval import ApprovalStatus
     from models.leave import LeaveRecord
 
     used = (
@@ -94,7 +95,7 @@ def _approved_annual_used_in_period(
         .filter(
             LeaveRecord.employee_id == employee_id,
             LeaveRecord.leave_type == "annual",
-            LeaveRecord.is_approved.is_(True),
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.start_date >= period_start,
             LeaveRecord.start_date < period_end,
         )

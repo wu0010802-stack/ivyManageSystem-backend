@@ -466,21 +466,21 @@ def test_leave_layer_approved_and_pending(calendar_admin_client):
                     leave_type="sick",
                     start_date=date(2026, 5, 10),
                     end_date=date(2026, 5, 11),
-                    is_approved=True,
+                    status="approved",
                 ),
                 LeaveRecord(
                     employee_id=emp_id,
                     leave_type="annual",
                     start_date=date(2026, 5, 15),
                     end_date=date(2026, 5, 15),
-                    is_approved=None,  # pending
+                    status="pending",  # pending
                 ),
                 LeaveRecord(
                     employee_id=emp_id,
                     leave_type="personal",
                     start_date=date(2026, 5, 20),
                     end_date=date(2026, 5, 20),
-                    is_approved=False,  # rejected — 應被過濾
+                    status="rejected",  # rejected — 應被過濾
                 ),
             ]
         )
@@ -514,7 +514,7 @@ def test_leave_without_permission_excluded(calendar_admin_client):
                 leave_type="sick",
                 start_date=date(2026, 5, 10),
                 end_date=date(2026, 5, 10),
-                is_approved=True,
+                status="approved",
             )
         )
         s.commit()
@@ -767,7 +767,7 @@ def test_employee_with_only_calendar_bit_sees_event_and_holiday_only(
                     leave_type="sick",
                     start_date=date(2026, 5, 10),
                     end_date=date(2026, 5, 10),
-                    is_approved=True,
+                    status="approved",
                 ),
                 MeetingRecord(
                     employee_id=emp_id,
@@ -809,7 +809,7 @@ def test_n_plus_1_query_count_under_threshold(calendar_admin_client):
                     leave_type="sick",
                     start_date=date(2026, 5, 10),
                     end_date=date(2026, 5, 10),
-                    is_approved=True,
+                    status="approved",
                 ),
                 ActivitySession(course_id=course.id, session_date=date(2026, 5, 10)),
                 AppraisalCycle(
@@ -868,7 +868,7 @@ def test_meta_does_not_leak_pii(calendar_admin_client):
                 leave_type="sick",
                 start_date=date(2026, 5, 10),
                 end_date=date(2026, 5, 10),
-                is_approved=True,
+                status="approved",
                 reason="家裡有事",
             )
         )

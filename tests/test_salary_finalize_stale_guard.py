@@ -246,7 +246,7 @@ class TestLeaveApprovalSalaryRecalcFailureMarksStale:
                 end_date=datetime(2026, 3, 10),
                 leave_hours=8,
                 reason="測試",
-                is_approved=None,
+                status="pending",
             )
             session.add(leave)
             session.commit()

@@ -126,7 +126,7 @@ def _make_singlemonth_leave(
     *,
     start: date,
     end: date,
-    is_approved=None,
+    status="pending",
     leave_hours: float = 4.0,
 ):
     """直接以 ORM 建單月假單（start.month == end.month）。"""
@@ -139,7 +139,7 @@ def _make_singlemonth_leave(
         start_date=start,
         end_date=end,
         leave_hours=leave_hours,
-        is_approved=is_approved,
+        status=status,
         is_deductible=True,
         deduction_ratio=1.0,
     )
@@ -163,7 +163,7 @@ class TestUpdateLeaveSingleMonthFinalizedGuard:
                 emp.id,
                 start=date(2026, 3, 10),
                 end=date(2026, 3, 10),
-                is_approved=True,
+                status="approved",
                 leave_hours=4.0,
             )
             _make_finalized_salary(s, emp.id, 2026, 3)
@@ -186,7 +186,7 @@ class TestUpdateLeaveSingleMonthFinalizedGuard:
         with session_factory() as s:
             db_lv = s.query(LeaveRecord).filter_by(id=lv_id).one()
             assert db_lv.leave_hours == 4.0
-            assert db_lv.is_approved is True
+            assert db_lv.status == "approved"
 
 
 # ── DELETE /leaves/{id}：刪除封存月份的單月已核准假單 ─────────────────────
@@ -203,7 +203,7 @@ class TestDeleteLeaveSingleMonthFinalizedGuard:
                 emp.id,
                 start=date(2026, 3, 15),
                 end=date(2026, 3, 15),
-                is_approved=True,
+                status="approved",
             )
             _make_finalized_salary(s, emp.id, 2026, 3)
             s.commit()
@@ -238,7 +238,7 @@ class TestApproveLeaveSingleMonthFinalizedGuard:
                 emp.id,
                 start=date(2026, 3, 20),
                 end=date(2026, 3, 20),
-                is_approved=None,
+                status="pending",
             )
             _make_finalized_salary(s, emp.id, 2026, 3)
             s.commit()
@@ -258,5 +258,5 @@ class TestApproveLeaveSingleMonthFinalizedGuard:
         with session_factory() as s:
             db_lv = s.query(LeaveRecord).filter_by(id=lv_id).one()
             assert (
-                db_lv.is_approved is None
-            ), f"封存月份核准被擋後 is_approved 應仍為 None,實際 {db_lv.is_approved}"
+                db_lv.status == "pending"
+            ), f"封存月份核准被擋後 status 應仍為 pending,實際 {db_lv.status}"

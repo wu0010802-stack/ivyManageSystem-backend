@@ -116,7 +116,7 @@ def ot_grant_factory(session):
             hours=granted_hours,
             use_comp_leave=True,
             comp_leave_granted=True,
-            is_approved=True,
+            status="approved",
         )
         session.add(ot)
         session.flush()

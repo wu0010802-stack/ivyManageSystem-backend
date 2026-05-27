@@ -185,7 +185,7 @@ class TestApproveRecomputesAttendanceFields:
                 ),
                 requested_punch_out=None,
                 reason="忘了刷卡，實際 8:00 到",
-                is_approved=None,
+                status="pending",
             )
             s.add(corr)
             s.commit()
@@ -275,7 +275,7 @@ class TestApproveRecomputesAttendanceFields:
                     on_date.year, on_date.month, on_date.day, 17, 0
                 ),
                 reason="忘了刷卡，實際 17:00 才下班",
-                is_approved=None,
+                status="pending",
             )
             s.add(corr)
             s.commit()
@@ -364,7 +364,7 @@ class TestApproveRecomputesAttendanceFields:
                     on_date.year, on_date.month, on_date.day, 18, 0
                 ),
                 reason="一整天都忘了刷卡",
-                is_approved=None,
+                status="pending",
             )
             s.add(corr)
             s.commit()
@@ -451,7 +451,7 @@ class TestApproveRecomputesAttendanceFields:
                 ),
                 requested_punch_out=None,
                 reason="實際 8:30 到，沒有 9:30 那麼晚",
-                is_approved=None,
+                status="pending",
             )
             s.add(corr)
             s.commit()

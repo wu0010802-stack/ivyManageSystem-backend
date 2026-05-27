@@ -111,7 +111,7 @@ def test_revoke_marks_grant_revoked_not_deleted(session, employee_factory):
         hours=4.0,
         use_comp_leave=True,
         comp_leave_granted=True,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()
@@ -157,7 +157,7 @@ def test_revoke_no_grant_found(session, employee_factory):
         hours=4.0,
         use_comp_leave=True,
         comp_leave_granted=True,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()
@@ -196,7 +196,7 @@ def test_revoke_idempotent_already_revoked(session, employee_factory):
         hours=4.0,
         use_comp_leave=True,
         comp_leave_granted=False,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()

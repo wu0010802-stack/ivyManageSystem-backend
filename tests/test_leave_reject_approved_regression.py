@@ -113,7 +113,7 @@ def _create_approved_leave(session, emp_id: int, leave_date: date) -> LeaveRecor
         start_date=leave_date,
         end_date=leave_date,
         leave_hours=8,
-        is_approved=True,
+        status="approved",
         approved_by="admin",
         deduction_ratio=1.0,
         is_deductible=True,
@@ -148,7 +148,7 @@ class TestSingleRejectOfApprovedLeaveTriggersSalaryRecalc:
 
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).one()
-            assert leave.is_approved is False
+            assert leave.status == "rejected"
 
         fake_salary_engine.process_salary_calculation.assert_any_call(
             emp_id, leave_date.year, leave_date.month
@@ -191,7 +191,7 @@ class TestSingleRejectOfApprovedLeaveBlockedByFinalizedMonth:
 
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).one()
-            assert leave.is_approved is True, "封存守衛失敗時應保留原核准狀態"
+            assert leave.status == "approved", "封存守衛失敗時應保留原核准狀態"
 
         fake_salary_engine.process_salary_calculation.assert_not_called()
 
@@ -227,7 +227,7 @@ class TestBatchRejectOfApprovedLeaveTriggersSalaryRecalc:
 
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).one()
-            assert leave.is_approved is False
+            assert leave.status == "rejected"
 
         fake_salary_engine.process_salary_calculation.assert_any_call(
             emp_id, leave_date.year, leave_date.month
@@ -279,6 +279,6 @@ class TestBatchRejectOfApprovedLeaveBlockedByFinalizedMonth:
 
         with session_factory() as session:
             leave = session.query(LeaveRecord).filter(LeaveRecord.id == leave_id).one()
-            assert leave.is_approved is True, "封存守衛失敗時應保留原核准狀態"
+            assert leave.status == "approved", "封存守衛失敗時應保留原核准狀態"
 
         fake_salary_engine.process_salary_calculation.assert_not_called()

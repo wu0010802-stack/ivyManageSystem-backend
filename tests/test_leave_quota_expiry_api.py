@@ -137,7 +137,7 @@ def test_upcoming_lists_grants_within_window(app_client):
             overtime_date=date.today() - timedelta(days=355),
             overtime_type="weekday",
             hours=4.0,
-            is_approved=True,
+            status="approved",
         )
         session.add(ot)
         session.flush()
@@ -159,7 +159,7 @@ def test_upcoming_lists_grants_within_window(app_client):
             overtime_date=date.today() - timedelta(days=305),
             overtime_type="weekday",
             hours=4.0,
-            is_approved=True,
+            status="approved",
         )
         session.add(ot2)
         session.flush()

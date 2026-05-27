@@ -165,7 +165,7 @@ class TestLeaveQuotaCutover:
             hours=8.0,
             use_comp_leave=True,
             comp_leave_granted=True,
-            is_approved=True,
+            status="approved",
         )
         db_session.add(ot)
         db_session.flush()

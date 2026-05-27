@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from sqlalchemy import case, func, or_
 
+from models.approval import ApprovalStatus
 from models.database import (
     get_session,
     Employee,
@@ -349,7 +350,7 @@ def _get_attendance_calendar_legacy(
             LeaveRecord.employee_id == employee_id,
             LeaveRecord.start_date <= end_date,
             LeaveRecord.end_date >= start_date,
-            LeaveRecord.is_approved == True,
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
         )
         .all()
     )
@@ -367,7 +368,7 @@ def _get_attendance_calendar_legacy(
             OvertimeRecord.employee_id == employee_id,
             OvertimeRecord.overtime_date >= start_date,
             OvertimeRecord.overtime_date <= end_date,
-            OvertimeRecord.is_approved == True,
+            OvertimeRecord.status == ApprovalStatus.APPROVED.value,
         )
         .all()
     )
@@ -474,7 +475,7 @@ def _get_attendance_calendar_new(
             OvertimeRecord.employee_id == employee_id,
             OvertimeRecord.overtime_date >= start_date,
             OvertimeRecord.overtime_date <= end_date,
-            OvertimeRecord.is_approved == True,
+            OvertimeRecord.status == ApprovalStatus.APPROVED.value,
         )
         .all()
     )

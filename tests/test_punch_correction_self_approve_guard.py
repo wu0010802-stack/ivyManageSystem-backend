@@ -126,7 +126,7 @@ def _make_correction(
         requested_punch_in=None,
         requested_punch_out=datetime(on_date.year, on_date.month, on_date.day, 18, 0),
         reason="忘記打下班",
-        is_approved=None,
+        status="pending",
     )
     session.add(corr)
     session.flush()

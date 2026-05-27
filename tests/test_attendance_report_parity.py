@@ -79,7 +79,7 @@ def _make_leave(
     leave_hours: float = 8.0,
     start_time: str | None = None,
     end_time: str | None = None,
-    is_approved: bool = True,
+    status: str = "approved",
 ) -> LeaveRecord:
     lv = LeaveRecord(
         employee_id=emp_id,
@@ -89,7 +89,7 @@ def _make_leave(
         leave_hours=leave_hours,
         start_time=start_time,
         end_time=end_time,
-        is_approved=is_approved,
+        status=status,
     )
     db_session.add(lv)
     db_session.commit()
@@ -132,14 +132,14 @@ def _make_overtime(
     ot_date: date,
     hours: float = 2.0,
     overtime_type: str = "weekday",
-    is_approved: bool = True,
+    status: str = "approved",
 ) -> OvertimeRecord:
     ot = OvertimeRecord(
         employee_id=emp_id,
         overtime_date=ot_date,
         hours=hours,
         overtime_type=overtime_type,
-        is_approved=is_approved,
+        status=status,
     )
     db_session.add(ot)
     db_session.commit()
@@ -822,7 +822,7 @@ def test_p33_unapproved_leave_not_shown(db_session, emp):
         start_date=date(2026, 5, 25),
         end_date=date(2026, 5, 25),
         leave_hours=8.0,
-        is_approved=False,
+        status="rejected",
     )
     result = _assert_parity(db_session, emp, 2026, 5, "P-33 unapproved leave")
     day = next(d for d in result["days"] if d["date"] == "2026-05-25")
@@ -935,7 +935,7 @@ def test_p35_summary_totals_comprehensive(db_session, emp):
 @pytest.mark.xfail(
     reason=(
         "設計差異（follow-up 修項）：leave.is_approved 事後翻 False 後，"
-        "新版仍透過 FK 取到 leave，legacy 按 is_approved=True 過濾掉。"
+        "新版仍透過 FK 取到 leave，legacy 按 status==approved 過濾掉。"
         "需在 sync.undo() 實作後清除此 xfail。"
     ),
     strict=True,
@@ -948,15 +948,15 @@ def test_xfail_leave_unapproved_after_sync(db_session, emp):
         start_date=date(2026, 5, 20),
         end_date=date(2026, 5, 20),
         leave_hours=8.0,
-        is_approved=True,
+        status="approved",
     )
     sync.apply(db_session, lv.id)
     db_session.flush()
 
     # 事後撤回核准
-    lv.is_approved = False
+    lv.status = "rejected"
     db_session.commit()
 
-    # legacy 用 is_approved=True filter → 5/20 無 leave
+    # legacy 用 status="approved" filter → 5/20 無 leave
     # new 版用 FK → 仍看到 leave（設計差異）
     _assert_parity(db_session, emp, 2026, 5, "xfail unapproved after sync")

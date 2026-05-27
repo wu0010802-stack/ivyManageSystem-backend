@@ -181,7 +181,7 @@ def test_approve_overtime_writes_audit_row(app_client):
             overtime_type="weekday",
             hours=2.0,
             overtime_pay=0,
-            is_approved=None,
+            status="pending",
         )
         s.add(ot)
         s.commit()
@@ -230,7 +230,7 @@ def test_reject_approved_overtime_carries_risk_tag(app_client):
             overtime_type="weekday",
             hours=2.0,
             overtime_pay=540,
-            is_approved=True,  # 已核准
+            status="approved",  # 已核准
         )
         s.add(ot)
         s.commit()

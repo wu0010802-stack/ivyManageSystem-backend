@@ -3,7 +3,7 @@
 
 用法:
     python scripts/fix_partial_leave_times.py            # dry-run
-    python scripts/fix_partial_leave_times.py --apply    # 把缺時段的 row is_approved=None(退審)
+    python scripts/fix_partial_leave_times.py --apply    # 把缺時段的 row status='pending'(退審)
 """
 
 import argparse
@@ -19,6 +19,7 @@ from utils.taipei_time import today_taipei
 from sqlalchemy import text
 
 # models.database 一次性 import 確保所有 SQLAlchemy relationship 都已註冊
+from models.approval import ApprovalStatus
 from models.database import LeaveRecord, get_session  # noqa: F401
 
 
@@ -27,7 +28,7 @@ def find_bad_partial(session):
     return (
         session.query(LeaveRecord)
         .filter(
-            LeaveRecord.is_approved == True,  # noqa: E712
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.end_date >= cutoff,
             LeaveRecord.leave_hours.isnot(None),
             LeaveRecord.leave_hours < 8,
@@ -80,7 +81,7 @@ def main():
                     "summary": "fix_partial_leave_times: 退審至 pending 待補時段",
                 },
             )
-            lv.is_approved = None  # 退審到 pending
+            lv.status = ApprovalStatus.PENDING.value  # 退審到 pending
         session.commit()
         print(f"[fix_partial] 已退審 {len(bad)} 筆,請通知 admin 補時段後重新核可")
         return 0

@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from models.approval import ApprovalStatus
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -40,7 +41,7 @@ def _make_leave(
     leave.deduction_ratio = 0.0
     leave.is_deductible = False
     leave.is_hospitalized = False
-    leave.is_approved = None
+    leave.status = ApprovalStatus.PENDING.value
     leave.approved_by = None
     leave.rejection_reason = None
     leave.attachment_paths = None
@@ -84,7 +85,7 @@ class TestSingleApproveOverlapBlock:
         conflict = _make_leave(
             leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15)
         )
-        conflict.is_approved = True
+        conflict.status = ApprovalStatus.APPROVED.value
 
         session, patches = _patches_for_approve(leave, conflict=conflict)
         for p in patches:
@@ -112,7 +113,7 @@ class TestSingleApproveOverlapBlock:
         conflict = _make_leave(
             leave_id=99, start=date(2026, 3, 15), end=date(2026, 3, 15)
         )
-        conflict.is_approved = True
+        conflict.status = ApprovalStatus.APPROVED.value
 
         session, patches = _patches_for_approve(leave, conflict=conflict)
         for p in patches:
@@ -209,7 +210,7 @@ class TestBatchApproveOverlapBlock:
 
         # leave 2 有重疊
         conflict = _make_leave(leave_id=88)
-        conflict.is_approved = True
+        conflict.status = ApprovalStatus.APPROVED.value
         conflict_map = {2: conflict, 1: None}
 
         session, patches = self._patches_for_batch(leave_map, conflict_map)

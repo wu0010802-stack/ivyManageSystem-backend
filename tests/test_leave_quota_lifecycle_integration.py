@@ -107,7 +107,7 @@ def _make_overtime_record(session, employee_id: int, *, ot_date: date, hours: fl
         hours=hours,
         use_comp_leave=True,
         comp_leave_granted=False,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()

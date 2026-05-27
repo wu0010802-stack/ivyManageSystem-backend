@@ -97,7 +97,7 @@ def test_grant_comp_leave_creates_ledger_row(session, employee_factory):
         hours=4.0,
         use_comp_leave=True,
         comp_leave_granted=False,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()
@@ -134,7 +134,7 @@ def test_grant_comp_leave_idempotent_does_not_duplicate(session, employee_factor
         hours=4.0,
         use_comp_leave=True,
         comp_leave_granted=False,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()

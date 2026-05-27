@@ -10,6 +10,7 @@ from datetime import date
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from models.approval import ApprovalStatus
 from models.leave import LeaveQuota, LeaveRecord
 
 
@@ -21,7 +22,7 @@ def get_annual_leave_balance(
     """回傳指定員工於 snapshot_date 當日特休餘額。
 
     school_year row 優先於 legacy（school_year=None）row。
-    只計入 is_approved=True 的記錄，排除 pending（None）與 rejected（False）。
+    只計入 status='approved' 的記錄，排除 pending 與 rejected。
 
     Args:
         session: SQLAlchemy Session
@@ -69,8 +70,7 @@ def get_annual_leave_balance(
         .filter(
             LeaveRecord.employee_id == employee_id,
             LeaveRecord.leave_type == "annual",
-            LeaveRecord.is_approved
-            == True,  # noqa: E712 — SQLAlchemy requires == not `is`
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
             LeaveRecord.start_date >= date(year, 1, 1),
             LeaveRecord.start_date <= snapshot_date,
         )

@@ -91,7 +91,7 @@ def _make_overtime(session, employee_id: int, ot_date=None, hours=8.0):
         hours=hours,
         use_comp_leave=True,
         comp_leave_granted=True,
-        is_approved=True,
+        status="approved",
     )
     session.add(ot)
     session.flush()

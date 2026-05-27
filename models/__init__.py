@@ -34,6 +34,13 @@ from .year_end import (
     SpecialBonusType,
 )
 
+# Re-export ApprovalStatus enum for callers (LeaveRecord/OvertimeRecord/
+# PunchCorrectionRequest store status as a String(20) column directly;
+# the P1/P2 dual-write listeners were removed once is_approved was dropped.
+from .leave import LeaveRecord, LeaveQuota  # noqa: F401,E402
+from .overtime import OvertimeRecord, PunchCorrectionRequest  # noqa: F401,E402
+from .approval import ApprovalStatus  # noqa: F401,E402
+
 # 2026-05-26 起補登：models.fees 的 FeeTemplate 是 student_fee_records.template_id 的
 # FK target，但既有 import 路徑（models.database / models.__init__）都沒帶到。
 # bootstrap 跑 `StudentFeeRecord.__table__.create()` 時 PG 若沒先建 fee_templates 即

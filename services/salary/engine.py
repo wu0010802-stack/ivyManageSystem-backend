@@ -15,6 +15,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
+from models.approval import ApprovalStatus
 from ..insurance_service import InsuranceService, InsuranceCalculation
 from ..attendance_parser import AttendanceResult
 from .constants import (
@@ -2387,7 +2388,7 @@ class SalaryEngine:
             session.query(LeaveRecord)
             .filter(
                 LeaveRecord.employee_id == emp.id,
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
                 LeaveRecord.start_date <= end_date,
                 LeaveRecord.end_date >= start_date,
             )
@@ -2421,7 +2422,7 @@ class SalaryEngine:
             session.query(DBOvertimeRecord)
             .filter(
                 DBOvertimeRecord.employee_id == emp.id,
-                DBOvertimeRecord.is_approved == True,
+                DBOvertimeRecord.status == ApprovalStatus.APPROVED.value,
                 DBOvertimeRecord.overtime_date >= start_date,
                 DBOvertimeRecord.overtime_date <= end_date,
             )
@@ -3185,7 +3186,7 @@ class SalaryEngine:
             session.query(LeaveRecord)
             .filter(
                 LeaveRecord.employee_id.in_(employee_ids),
-                LeaveRecord.is_approved == True,
+                LeaveRecord.status == ApprovalStatus.APPROVED.value,
                 LeaveRecord.start_date <= end_date,
                 LeaveRecord.end_date >= start_date,
             )
@@ -3220,7 +3221,7 @@ class SalaryEngine:
             session.query(DBOvertimeRecord)
             .filter(
                 DBOvertimeRecord.employee_id.in_(employee_ids),
-                DBOvertimeRecord.is_approved == True,
+                DBOvertimeRecord.status == ApprovalStatus.APPROVED.value,
                 DBOvertimeRecord.overtime_date >= start_date,
                 DBOvertimeRecord.overtime_date <= end_date,
             )
