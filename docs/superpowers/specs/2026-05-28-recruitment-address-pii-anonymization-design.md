@@ -199,15 +199,21 @@ def downgrade():
 
 ### 4.5 Pydantic schemas + endpoint behaviour
 
-- `schemas/recruitment.py`：`RecruitmentVisitCreate` / `RecruitmentVisitUpdate` 加 `geocoding_consent: bool = False`（**預設不勾** — 招生人員 explicit attestation 責任）
-- `api/recruitment/visits.py` POST / PUT：
+- `api/recruitment/shared.py（`RecruitmentVisitCreate` / `RecruitmentVisitUpdate` 既有位置）`：`RecruitmentVisitCreate` / `RecruitmentVisitUpdate` 加 `geocoding_consent: bool = False`（**預設不勾** — 招生人員 explicit attestation 責任）
+- `api/recruitment/records.py（visit CRUD 在 `/api/recruitment/records` endpoint）` POST / PUT：
   - `geocoding_consent=True` → 寫 `geocoding_consent_at = now_taipei_naive()`
   - `geocoding_consent=False` → 寫 NULL，並 audit log 記錄
 - `_query_address_hotspots` 加 filter：`WHERE geocoding_consent_at IS NOT NULL`
 
-### 4.6 DSR opt-out cascade（接 P0c-2 既有 endpoint）
+### 4.6 DSR opt-out cascade（**deferred — P0c-2 opt-out endpoint 尚未 merge 至 origin/main**）
 
-**現實限制**：`RecruitmentVisit` 無 FK 到 `Guardian` / `Student`，無法 join 取出「該家長底下所有 visit」。match 路徑：
+**現況**：origin/main `ce35aea` 僅有 `api/parent_portal/data_export.py`（§10 查閱權），無 opt-out / consent-revoke 端點。P0c-2 PR 仍在 review。**本 PR 不依賴 opt-out 端點**，但**預留** cascade hook 為 follow-up：
+
+- 本 PR 完成後另開 follow-up PR 把 cascade 接上
+- 風險可控：`consent_at` 已是 truthsource；opt-out merge 前家長無法主動撤回 — 仰賴 90d cache TTL 自然 GC
+- spec 留此章節作 P0c-2 合流時的對接設計
+
+**未來實作（不在本 PR）**：`RecruitmentVisit` 無 FK 到 `Guardian` / `Student`，無法 join 取出「該家長底下所有 visit」。match 路徑：
 
 1. **Primary path（best-effort fuzzy）**：以 `(child_name, birthday)` 為自然鍵 match `RecruitmentVisit` rows（生日 + 童名同時相符視為同一兒童）
 2. **Fallback**：若 visit row 無 `birthday`，僅以 `child_name + phone` match — 標 `match_confidence="low"` 進 audit log
@@ -338,11 +344,11 @@ cd ivy-frontend && npm run gen:api
 
 | 測試 | 目的 |
 |------|------|
-| `RecruitmentAddressHeatmap.spec.ts: renders bucket markers only when count >= 3` | mock API 回 K=5/K=5 各 1 bucket，render assert |
+| `RecruitmentAddressHeatmap.spec.ts: renders bucket markers only when count >= K=5` | mock API 回 visit_count=4 / visit_count=8 兩 bucket，assert 只 render visit_count=8 |
 | `RecruitmentAddressHeatmap.spec.ts: popup hides formatted_address` | popup text assert |
 | `RecruitmentAddressHeatmap.spec.ts: maxZoom is 14` | mapInstance options assert |
-| `RecruitmentVisitForm.spec.ts: consent checkbox defaults to true` | mount + checkbox state |
-| `RecruitmentVisitForm.spec.ts: unchecking consent sends false to API` | submit form mock axios |
+| `RecruitmentRecordDialog.spec.ts: consent checkbox defaults to false` | mount + checkbox state（業主決議 explicit attestation） |
+| `RecruitmentRecordDialog.spec.ts: checking consent sends true to API` | submit form mock axios |
 
 ### 6.3 Manual smoke
 - `start.sh` 起兩端 → 招生 → 新增 visit 不勾 consent → 確認該 visit 未進 heatmap
