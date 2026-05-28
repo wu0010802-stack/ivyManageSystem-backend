@@ -378,16 +378,10 @@ api/portal/home.py:get_home_summary
 api/portal/incidents.py:get_my_class_incidents
 api/portal/incidents.py:create_portal_incident
 api/portal/leaves.py:get_my_leaves
-api/portal/leaves.py:create_my_leave
-api/portal/leaves.py:upload_leave_attachments
-api/portal/leaves.py:delete_leave_attachment
 api/portal/leaves.py:get_leave_attachment
-api/portal/leaves.py:get_my_leave_stats
 api/portal/leaves.py:get_my_workday_hours
 api/portal/leaves.py:get_my_quotas
-api/portal/leaves.py:substitute_respond
 api/portal/leaves.py:get_my_substitute_requests
-api/portal/leaves.py:get_substitute_pending_count
 api/portal/leaves_quota_expiry.py:get_my_leave_quota_expiry
 api/portal/medications.py:list_today_medications
 api/portal/overtimes.py:get_my_overtimes

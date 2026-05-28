@@ -28,6 +28,13 @@ _attach_upload_limiter = create_limiter(
 from sqlalchemy import func, case
 
 from models.approval import ApprovalStatus
+from schemas._common import DeleteResultOut, MutationResultOut
+from schemas.portal_leaves import (
+    AttachmentUploadResultOut,
+    MyLeaveStatsOut,
+    SubstitutePendingCountOut,
+    SubstituteRespondOut,
+)
 
 from models.database import (
     get_session,
@@ -219,7 +226,7 @@ def get_my_leaves(
         session.close()
 
 
-@router.post("/my-leaves", status_code=201)
+@router.post("/my-leaves", status_code=201, response_model=MutationResultOut)
 def create_my_leave(
     data: LeaveCreatePortal,
     request: Request,
@@ -451,7 +458,9 @@ def create_my_leave(
         session.close()
 
 
-@router.post("/my-leaves/{leave_id}/attachments")
+@router.post(
+    "/my-leaves/{leave_id}/attachments", response_model=AttachmentUploadResultOut
+)
 async def upload_leave_attachments(
     leave_id: int,
     request: Request,
@@ -544,7 +553,9 @@ async def upload_leave_attachments(
         session.close()
 
 
-@router.delete("/my-leaves/{leave_id}/attachments/{filename}")
+@router.delete(
+    "/my-leaves/{leave_id}/attachments/{filename}", response_model=DeleteResultOut
+)
 def delete_leave_attachment(
     leave_id: int,
     filename: str,
@@ -650,7 +661,7 @@ def get_leave_attachment(
         session.close()
 
 
-@router.get("/my-leave-stats")
+@router.get("/my-leave-stats", response_model=MyLeaveStatsOut)
 def get_my_leave_stats(
     current_user: dict = Depends(get_current_user),
 ):
@@ -831,7 +842,9 @@ def get_my_quotas(
 # ─────────────────────────────────────────────────────────────
 
 
-@router.post("/my-leaves/{leave_id}/substitute-respond")
+@router.post(
+    "/my-leaves/{leave_id}/substitute-respond", response_model=SubstituteRespondOut
+)
 def substitute_respond(
     leave_id: int,
     data: SubstituteRespond,
@@ -940,7 +953,7 @@ def get_my_substitute_requests(
         session.close()
 
 
-@router.get("/substitute-pending-count")
+@router.get("/substitute-pending-count", response_model=SubstitutePendingCountOut)
 def get_substitute_pending_count(
     current_user: dict = Depends(get_current_user),
 ):
