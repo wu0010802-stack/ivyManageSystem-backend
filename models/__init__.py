@@ -51,3 +51,7 @@ from .fees import FeeTemplate, StudentFeeRecord  # noqa: F401
 # FK target；CI Tests step `Base.metadata.create_all` 需要該表先建立。
 from .unused_leave_payout_log import UnusedLeavePayoutLog  # noqa: F401
 from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
+
+# P0c-1 2026-05-28 法規/個資 sprint: consent + policy version 表
+# CI Tests step `Base.metadata.create_all` 與 prod 啟動需中央 import 否則漏建表
+from .consent import ParentConsentLog, PolicyVersion  # noqa: F401
