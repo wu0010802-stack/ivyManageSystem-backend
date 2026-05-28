@@ -18,6 +18,8 @@ from models.database import get_session, Student, Classroom, StudentClassroomTra
 from models.dismissal import StudentDismissalCall
 from models.guardian import GUARDIAN_RELATIONS, Guardian
 from models.classroom import LIFECYCLE_STATUSES
+from schemas._common import MutationResultOut
+from schemas.students import GuardianListOut, GuardianOut
 from services.student_lifecycle import LifecycleTransitionError, transition
 from services.student_profile import assemble_profile
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
@@ -722,7 +724,7 @@ async def get_student(
         session.close()
 
 
-@router.post("/students", status_code=201)
+@router.post("/students", status_code=201, response_model=MutationResultOut)
 async def create_student(
     item: StudentCreate,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -770,7 +772,7 @@ async def create_student(
         session.close()
 
 
-@router.put("/students/{student_id}")
+@router.put("/students/{student_id}", response_model=MutationResultOut)
 async def update_student(
     student_id: int,
     item: StudentUpdate,
@@ -864,7 +866,7 @@ async def update_student(
         session.close()
 
 
-@router.delete("/students/{student_id}")
+@router.delete("/students/{student_id}", response_model=MutationResultOut)
 async def delete_student(
     student_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -923,7 +925,7 @@ async def delete_student(
     return {"message": "學生已刪除", "id": student_id}
 
 
-@router.post("/students/{student_id}/graduate")
+@router.post("/students/{student_id}/graduate", response_model=MutationResultOut)
 async def graduate_student(
     student_id: int,
     item: StudentGraduate,
@@ -1186,7 +1188,7 @@ async def get_student_profile(
 # ============ 學生生命週期端點 ============
 
 
-@router.post("/students/{student_id}/lifecycle")
+@router.post("/students/{student_id}/lifecycle", response_model=MutationResultOut)
 async def transition_student_lifecycle(
     student_id: int,
     item: LifecycleTransitionRequest,
@@ -1315,7 +1317,7 @@ def _serialize_guardian(g: Guardian) -> dict:
     }
 
 
-@router.get("/students/{student_id}/guardians")
+@router.get("/students/{student_id}/guardians", response_model=GuardianListOut)
 async def list_guardians(
     student_id: int,
     request: Request,
@@ -1355,7 +1357,9 @@ async def list_guardians(
         session.close()
 
 
-@router.post("/students/{student_id}/guardians", status_code=201)
+@router.post(
+    "/students/{student_id}/guardians", status_code=201, response_model=GuardianOut
+)
 async def create_guardian(
     student_id: int,
     item: GuardianCreate,
@@ -1398,7 +1402,7 @@ async def create_guardian(
         session.close()
 
 
-@router.patch("/students/guardians/{guardian_id}")
+@router.patch("/students/guardians/{guardian_id}", response_model=GuardianOut)
 async def update_guardian(
     guardian_id: int,
     item: GuardianUpdate,
@@ -1452,7 +1456,7 @@ async def update_guardian(
         session.close()
 
 
-@router.delete("/students/guardians/{guardian_id}")
+@router.delete("/students/guardians/{guardian_id}", response_model=MutationResultOut)
 async def delete_guardian(
     guardian_id: int,
     request: Request,

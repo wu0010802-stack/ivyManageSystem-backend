@@ -563,17 +563,8 @@ api/students.py:get_students
 api/students.py:get_student_records_timeline
 api/students.py:get_academic_summary
 api/students.py:get_student
-api/students.py:create_student
-api/students.py:update_student
-api/students.py:delete_student
-api/students.py:graduate_student
 api/students.py:bulk_transfer_students
 api/students.py:get_student_profile
-api/students.py:transition_student_lifecycle
-api/students.py:list_guardians
-api/students.py:create_guardian
-api/students.py:update_guardian
-api/students.py:delete_guardian
 api/system_config.py:list_configs
 api/system_config.py:get_config
 api/system_config.py:upsert_config
