@@ -31,6 +31,10 @@ from utils.auth import (
     require_staff_permission,
     validate_password_strength,
 )
+from utils.password_history import (
+    assert_not_recently_used,
+    record as record_password_history,
+)
 from utils.cookie import (
     set_access_token_cookie,
     clear_access_token_cookie,
@@ -1039,7 +1043,10 @@ def change_password(
             _record_pwd_change_failure(user_id)  # 記失敗 → 累積觸發 lockout
             raise HTTPException(status_code=400, detail="舊密碼錯誤")
         validate_password_strength(data.new_password)
-        user.password_hash = hash_password(data.new_password)
+        assert_not_recently_used(session, user.id, data.new_password)
+        new_hash = hash_password(data.new_password)
+        user.password_hash = new_hash
+        record_password_history(session, user.id, new_hash)
         user.must_change_password = False  # 使用者主動修改後清除強制旗標
         # 與 reset_password 對齊：密碼變更後遞增 token_version，使所有現有 session
         # 在下次 refresh 時即被拒絕；防止帳號疑似外洩後舊 token 在 grace 期內仍可用。
@@ -1152,15 +1159,18 @@ def create_user(
         # 驗證密碼強度
         validate_password_strength(data.password)
 
+        new_hash = hash_password(data.password)
         user = User(
             employee_id=data.employee_id,
             username=data.username,
-            password_hash=hash_password(data.password),
+            password_hash=new_hash,
             role=data.role,
             permission_names=final_permission_names,
             must_change_password=True,  # 新帳號強制首次登入修改密碼
         )
         session.add(user)
+        session.flush()  # 取 user.id 給 password_history FK
+        record_password_history(session, user.id, new_hash)
         session.commit()
         return {"message": "帳號建立成功", "id": user.id}
     except HTTPException:
@@ -1207,7 +1217,10 @@ def reset_password(
         _assert_can_manage_user(current_user, session=session, target_user=user)
 
         validate_password_strength(data.new_password)
-        user.password_hash = hash_password(data.new_password)
+        assert_not_recently_used(session, user.id, data.new_password)
+        new_hash = hash_password(data.new_password)
+        user.password_hash = new_hash
+        record_password_history(session, user.id, new_hash)
         user.must_change_password = True  # 管理員代為重設密碼，強制當事人下次登入修改
         user.token_version = (
             user.token_version or 0
