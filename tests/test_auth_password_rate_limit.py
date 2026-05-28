@@ -387,9 +387,40 @@ def test_pwd_change_scope_isolated_from_login(app_with_db):
         pwd_change_count == 0
     ), f"login 失敗不應計入 pwd_change_user scope, got {pwd_change_count}"
 
-    # Part B: 清 login lockout；確認 login_account scope 清完後為 0
+    # Part B: 真實反向隔離 — pwd_change_user 失敗計數不該洩漏進 login_account scope
+    # 清掉 Part A 累積的 login lockout 讓 baseline 乾淨
     clear_attempts(_ACCOUNT_SCOPE, "t_scope1")
-    login_count = count_recent_attempts(
+    baseline_login_count = count_recent_attempts(
         _ACCOUNT_SCOPE, "t_scope1", within_seconds=_FAIL_LOCKOUT
     )
-    assert login_count == 0, f"清完應為 0, got {login_count}"
+    assert baseline_login_count == 0, f"清完應為 0, got {baseline_login_count}"
+
+    # 直接灌 _FAIL_THRESHOLD 次 pwd_change failures（模擬 change-password 連敗）
+    from api.auth import _record_pwd_change_failure
+
+    for _ in range(_FAIL_THRESHOLD):
+        _record_pwd_change_failure(user_id)
+
+    # 驗 pwd_change_user scope 已累積到 threshold（自我確認 record 有效）
+    pwd_change_after = count_recent_attempts(
+        _PWD_CHANGE_USER_SCOPE, f"user:{user_id}", within_seconds=_FAIL_LOCKOUT
+    )
+    assert (
+        pwd_change_after >= _FAIL_THRESHOLD
+    ), f"_record_pwd_change_failure 應已累積到 {_FAIL_THRESHOLD}, got {pwd_change_after}"
+
+    # 反向隔離驗收 1：login_account scope 不該因 pwd_change failure 累積
+    login_count_after_pwd_fail = count_recent_attempts(
+        _ACCOUNT_SCOPE, "t_scope1", within_seconds=_FAIL_LOCKOUT
+    )
+    assert (
+        login_count_after_pwd_fail == 0
+    ), f"pwd_change 失敗不應計入 login_account scope, got {login_count_after_pwd_fail}"
+
+    # 反向隔離驗收 2：_check_account_lockout 不該因 pwd_change failure 拋 429
+    try:
+        _check_account_lockout("t_scope1")
+    except Exception as e:
+        pytest.fail(
+            f"pwd_change 失敗不應觸發 login lockout, 但 _check_account_lockout 拋 {e}"
+        )

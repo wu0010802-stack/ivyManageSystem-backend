@@ -251,7 +251,14 @@ def _clear_login_failures(username: str) -> None:
 
 
 def _check_pwd_change_ip(ip: str) -> None:
-    """change-password per-IP 滑動視窗（不分成敗都計數）。"""
+    """change-password per-IP 滑動視窗（不分成敗都計數）。
+
+    走 DB-backed counter；多 worker 一致。DB 失敗時 fail-open
+    （utils/rate_limit_db.py 各 helper 內部 log 警告）。
+
+    與 login flow `_check_ip_rate_limit` 結構幾乎一樣但獨立 scope —
+    spec §3.3 deliberate（不抽 generic helper，避免重構 login flow）。
+    """
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_PWD_CHANGE_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
@@ -262,7 +269,11 @@ def _check_pwd_change_ip(ip: str) -> None:
 
 
 def _check_pwd_change_user_lockout(user_id: int) -> None:
-    """change-password per-user_id 失敗鎖定（僅在 verify_password 失敗時遞增）。"""
+    """change-password per-user_id 失敗鎖定（僅在 verify_password 失敗時遞增）。
+
+    走 DB-backed counter；多 worker 一致。DB 失敗時 fail-open。
+    與 login flow `_check_account_lockout` 獨立 scope（spec §3.3 deliberate）。
+    """
     from utils.rate_limit_db import count_recent_attempts
 
     key = f"user:{user_id}"
@@ -296,7 +307,12 @@ def _clear_pwd_change_failures(user_id: int) -> None:
 
 
 def _check_pwd_reset_ip(ip: str) -> None:
-    """reset-password per-caller IP 滑動視窗（防 admin cookie 被竊狂刷別人）。"""
+    """reset-password per-caller IP 滑動視窗（防 admin cookie 被竊狂刷別人）。
+
+    走 DB-backed counter；多 worker 一致。DB 失敗時 fail-open。
+    與 login flow `_check_ip_rate_limit` 獨立 scope（spec §3.3 deliberate
+    + §3.4 「不對 target user 套 lockout」設計理由）。
+    """
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_PWD_RESET_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
