@@ -37,6 +37,14 @@ from ._shared import (
     now_taipei_naive,
 )
 
+from schemas.activity_admin import (
+    PendingRegistrationActionResultOut,
+    PendingRegistrationForceAcceptResultOut,
+    PendingRegistrationListOut,
+    PendingRegistrationRematchResultOut,
+    PendingRegistrationsSearchStudentsOut,
+)
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 # ── 審核工作流（pending / match / reject / rematch / students-search）─────
@@ -131,7 +139,7 @@ def _serialize_pending_item(
     }
 
 
-@router.get("/registrations/pending")
+@router.get("/registrations/pending", response_model=PendingRegistrationListOut)
 async def list_pending_registrations(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -214,7 +222,7 @@ async def list_pending_registrations(
         session.close()
 
 
-@router.get("/students/search")
+@router.get("/students/search", response_model=PendingRegistrationsSearchStudentsOut)
 async def admin_search_students(
     q: str = Query(..., min_length=1, max_length=50),
     limit: int = Query(20, ge=1, le=50),
@@ -269,7 +277,7 @@ async def admin_search_students(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/match")
+@router.post("/registrations/{registration_id}/match", response_model=PendingRegistrationActionResultOut)
 async def match_registration(
     registration_id: int,
     body: RegistrationMatchRequest,
@@ -340,7 +348,7 @@ async def match_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/reject")
+@router.post("/registrations/{registration_id}/reject", response_model=PendingRegistrationActionResultOut)
 async def reject_registration(
     registration_id: int,
     body: RegistrationRejectRequest,
@@ -410,7 +418,7 @@ async def reject_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/rematch")
+@router.post("/registrations/{registration_id}/rematch", response_model=PendingRegistrationRematchResultOut)
 async def rematch_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
@@ -534,7 +542,7 @@ async def rematch_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/force-accept")
+@router.post("/registrations/{registration_id}/force-accept", response_model=PendingRegistrationForceAcceptResultOut)
 async def force_accept_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
@@ -634,7 +642,7 @@ async def force_accept_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/restore")
+@router.post("/registrations/{registration_id}/restore", response_model=PendingRegistrationActionResultOut)
 async def restore_registration(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),

@@ -651,3 +651,119 @@ class WaitlistSweepResultOut(IvyBaseModel):
     expired: int
     reminded: int
     final_reminded: int
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Phase 3.5 — api/activity/registrations_pending.py 7 endpoint response_model
+#
+# 後台才藝報名審核工作流 7 個 endpoint：
+# - list_pending_registrations → PendingRegistrationListOut
+# - admin_search_students → PendingRegistrationsSearchStudentsOut
+# - match_registration / reject_registration / restore_registration
+#   共用 PendingRegistrationActionResultOut（{message, registration_id}）
+# - rematch_registration → PendingRegistrationRematchResultOut（多 matched/field_changed）
+# - force_accept_registration → PendingRegistrationForceAcceptResultOut
+#   （多 matched 固定 False / forced 固定 True / field_changed）
+#
+# 不重用 _common.MutationResultOut，因 mutation 回傳是 `registration_id` 非 `id`，
+# 重用會 silent rename 前端欄位。datetime 欄位由 router 端 .isoformat() →
+# Optional[str]（同 RegistrationListItemOut trap）。PII 欄（student_name /
+# birthday / parent_phone / email / classroom_id / student_id）皆加
+# # pii-allow: 註解。
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class PendingRegistrationItemOut(IvyBaseModel):
+    """GET /registrations/pending items[] 單筆。
+
+    對應 _serialize_pending_item 的輸出 dict shape：
+    - 缺 STUDENTS_READ → birthday / classroom_id 被遮成 None
+    - 缺 GUARDIANS_READ → parent_phone / email 被遮成 None
+    """
+
+    id: int
+    student_name: str  # pii-allow: 後台才藝報名審核家長/學生顯示
+    birthday: Optional[str] = None  # pii-allow: 後台才藝報名審核家長/學生顯示
+    class_name: Optional[str] = None
+    classroom_id: Optional[int] = None  # pii-allow: 後台才藝報名審核家長/學生顯示
+    parent_phone: Optional[str] = None  # pii-allow: 後台才藝報名審核家長/學生顯示
+    match_status: Optional[str] = None
+    pending_review: Optional[bool] = None
+    email: Optional[str] = None  # pii-allow: 後台才藝報名審核家長/學生顯示
+    school_year: Optional[int] = None
+    semester: Optional[int] = None
+    remark: str
+    created_at: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+
+class PendingRegistrationListOut(IvyBaseModel):
+    """GET /registrations/pending 列表 + 分頁 + 學期 + status echo。"""
+
+    items: list[PendingRegistrationItemOut]
+    total: int
+    skip: int
+    limit: int
+    school_year: int
+    semester: int
+    status: str
+
+
+class PendingRegistrationsSearchStudentItemOut(IvyBaseModel):
+    """GET /students/search items[] 單筆（搜尋後台在籍學生）。
+
+    F-027：caller 必有 STUDENTS_READ（否則 403），所有 PII 欄一律顯示。
+    student_id 為學號字串（Student.student_id），id 為 PK int。
+    """
+
+    id: int
+    student_id: Optional[str] = None  # pii-allow: 後台才藝審核需顯示學號
+    name: str  # pii-allow: 後台才藝審核需顯示學生姓名
+    birthday: Optional[str] = None  # pii-allow: 後台才藝審核需顯示生日（比對依據）
+    classroom_id: Optional[int] = None  # pii-allow: 後台才藝審核需顯示班級
+    classroom_name: Optional[str] = None
+    parent_phone: Optional[str] = None  # pii-allow: 後台才藝審核需顯示家長手機（比對依據）
+
+
+class PendingRegistrationsSearchStudentsOut(IvyBaseModel):
+    """GET /students/search 完整回應（僅 items，無分頁；router 端 limit 上限 50）。"""
+
+    items: list[PendingRegistrationsSearchStudentItemOut]
+
+
+class PendingRegistrationActionResultOut(IvyBaseModel):
+    """match / reject / restore 共用 {message, registration_id} shape。
+
+    不用 _common.MutationResultOut 因為欄位名為 `registration_id` 非 `id`
+    （重用會 silent rename 前端欄位）。
+    """
+
+    message: str
+    registration_id: int
+
+
+class PendingRegistrationRematchResultOut(IvyBaseModel):
+    """POST /registrations/{id}/rematch 回應。
+
+    matched=True 代表三欄比對成功；field_changed=True 代表 body 帶入新欄位修正。
+    """
+
+    message: str
+    matched: bool
+    field_changed: bool
+    registration_id: int
+
+
+class PendingRegistrationForceAcceptResultOut(IvyBaseModel):
+    """POST /registrations/{id}/force-accept 回應。
+
+    matched 永遠 False（強制收件跳過比對），forced 永遠 True，
+    field_changed 代表 body 是否同時修正三欄。
+    """
+
+    message: str
+    matched: bool
+    forced: bool
+    field_changed: bool
+    registration_id: int

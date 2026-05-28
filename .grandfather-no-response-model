@@ -41,13 +41,6 @@ api/activity/registrations_payments.py:update_payment
 api/activity/registrations_payments.py:get_registration_payments
 api/activity/registrations_payments.py:add_registration_payment
 api/activity/registrations_payments.py:delete_registration_payment
-api/activity/registrations_pending.py:list_pending_registrations
-api/activity/registrations_pending.py:admin_search_students
-api/activity/registrations_pending.py:match_registration
-api/activity/registrations_pending.py:reject_registration
-api/activity/registrations_pending.py:rematch_registration
-api/activity/registrations_pending.py:force_accept_registration
-api/activity/registrations_pending.py:restore_registration
 api/activity/registrations_static.py:batch_update_payment
 api/activity/registrations_static.py:export_registrations
 api/activity/registrations_static.py:export_payment_report
