@@ -1,0 +1,56 @@
+version: 2
+updates:
+  # Python pip dependencies
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Taipei"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "backend"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      pytest-suite:
+        patterns:
+          - "pytest*"
+      sqlalchemy-alembic:
+        patterns:
+          - "sqlalchemy"
+          - "alembic"
+      pillow:
+        patterns:
+          - "Pillow"
+          - "pillow-heif"
+      sentry:
+        patterns:
+          - "sentry-sdk*"
+    ignore:
+      # Python 3.9 上限保護（升 Python 3.10 後移除此 section）
+      - dependency-name: "python-multipart"
+        versions: [">=0.0.27"]
+      - dependency-name: "Pillow"
+        versions: [">=12.2.0"]
+      - dependency-name: "python-dotenv"
+        versions: [">=1.2.2"]
+      - dependency-name: "requests"
+        versions: [">=2.33.0"]
+      # 已知 supply-chain 攻擊版本（與 requirements.txt `!=0.136.3` 對齊）
+      - dependency-name: "fastapi"
+        versions: ["0.136.3"]
+
+  # GitHub Actions third-party action 監控
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "chore(ci)"
