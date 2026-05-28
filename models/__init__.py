@@ -55,3 +55,6 @@ from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
 # 2026-05-28 Phase 4 P1 resilience：Supabase fallback + LINE token health tables
 from models.pending_uploads import PendingUpload  # noqa: F401
 from models.integration_health import LineTokenHealth  # noqa: F401
+
+# 2026-05-28 BE-A: DB-backed scheduler heartbeat（解決 in-memory restart 丟失）
+from models.scheduler_heartbeat import SchedulerHeartbeat  # noqa: F401
