@@ -111,7 +111,9 @@ def test_full_lifecycle_parent_event_no_log_row_still_calls_adapters(test_db_ses
         test_db_session.commit()
 
     rows = test_db_session.query(NotificationLog).all()
-    assert rows == []  # 家長域 v1 不寫 in_app
+    # Phase 2: log row IS written now for LINE/WS events (is_inbox_visible=False for parent events)
+    assert len(rows) == 1, "Phase 2: LINE/WS 事件也寫 log row"
+    assert rows[0].is_inbox_visible is False, "家長域事件 is_inbox_visible=False"
 
     mock_la.send.assert_called_once()  # LINE
     mock_ws.send.assert_called_once()  # parent WS

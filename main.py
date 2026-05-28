@@ -359,6 +359,21 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("補休到期排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # LINE retry scheduler（Phase 2 P1 resilience）：每 5 min 重發 pending retry row
+    line_retry_task = None
+    line_retry_stop_event: asyncio.Event | None = None
+    try:
+        from services.notification.retry_scheduler import run_line_retry_scheduler
+
+        line_retry_stop_event = asyncio.Event()
+        line_retry_task = asyncio.create_task(
+            run_line_retry_scheduler(line_retry_stop_event)
+        )
+        logger.info("LINE retry scheduler 已啟用")
+    except Exception as e:
+        logger.warning("LINE retry scheduler 啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
     ivykids_sync_task = None
     ivykids_sync_stop_event: asyncio.Event | None = None
@@ -619,6 +634,17 @@ async def app_lifespan(app_instance: FastAPI):
                 leave_quota_expiry_task.cancel()
                 try:
                     await leave_quota_expiry_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if line_retry_task is not None:
+            if line_retry_stop_event is not None:
+                line_retry_stop_event.set()
+            try:
+                await asyncio.wait_for(line_retry_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                line_retry_task.cancel()
+                try:
+                    await line_retry_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源
