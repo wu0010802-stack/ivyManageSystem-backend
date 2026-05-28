@@ -21,6 +21,7 @@ from services.notification.dispatch import (
 )
 from services.notification.renderers import render
 from utils.external_calls import tagged_capture
+from utils.scheduler_observability import scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +134,13 @@ async def run_line_retry_scheduler(stop_event: asyncio.Event) -> None:
     """
     logger.info("line retry scheduler 啟動 (interval=%ss)", _TICK_INTERVAL)
     while not stop_event.is_set():
-        try:
+        with scheduler_iteration(
+            "notification_retry",
+            expected_interval_seconds=_TICK_INTERVAL,
+        ):
             metric = tick_line_retry()
             if metric["attempted"] > 0:
                 logger.info("line retry tick: %s", metric)
-        except Exception:
-            logger.exception("line retry scheduler tick failed")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=_TICK_INTERVAL)
         except asyncio.TimeoutError:
