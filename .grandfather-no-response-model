@@ -319,9 +319,6 @@ api/parent_portal/messages.py:get_thread
 api/parent_portal/messages.py:list_messages
 api/parent_portal/messages.py:post_reply
 api/parent_portal/messages.py:attach_to_message
-api/parent_portal/messages.py:mark_thread_read
-api/parent_portal/messages.py:recall_message
-api/parent_portal/messages.py:unread_count
 api/parent_portal/milestones.py:parent_list_milestones
 api/parent_portal/milestones.py:parent_react
 api/parent_portal/milestones.py:parent_acknowledge

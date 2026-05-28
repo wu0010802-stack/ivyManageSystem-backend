@@ -53,3 +53,15 @@ class ImportResultOut(IvyBaseModel):
 
     succeeded: int
     failed: list[ImportFailureItem]
+
+
+class OkStatusOut(IvyBaseModel):
+    """純 {status: "ok"} 共用 shape (家長端常用)。"""
+
+    status: str
+
+
+class UnreadCountOut(IvyBaseModel):
+    """{unread_count: int} 共用 shape (家長端通知 / 訊息常用)。"""
+
+    unread_count: int

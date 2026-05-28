@@ -35,6 +35,8 @@ from models.database import (
     User,
 )
 from models.portfolio import ATTACHMENT_OWNER_MESSAGE
+from schemas._common import OkStatusOut, UnreadCountOut
+from schemas.parent_portal_messages import MessageRecallOut
 from services.parent_message_service import (
     append_message,
     assert_thread_participant,
@@ -501,7 +503,7 @@ async def attach_to_message(
     return _attachment_to_dict(att)
 
 
-@router.post("/threads/{thread_id}/read", status_code=200)
+@router.post("/threads/{thread_id}/read", status_code=200, response_model=OkStatusOut)
 def mark_thread_read(
     thread_id: int,
     request: Request,
@@ -516,7 +518,9 @@ def mark_thread_read(
     return {"status": "ok"}
 
 
-@router.post("/messages/{message_id}/recall", status_code=200)
+@router.post(
+    "/messages/{message_id}/recall", status_code=200, response_model=MessageRecallOut
+)
 def recall_message(
     message_id: int,
     request: Request,
@@ -550,7 +554,7 @@ def recall_message(
     return {"status": "ok", "deleted_at": msg.deleted_at.isoformat()}
 
 
-@router.get("/unread-count")
+@router.get("/unread-count", response_model=UnreadCountOut)
 def unread_count(
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
