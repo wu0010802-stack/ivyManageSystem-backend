@@ -11,6 +11,7 @@ from .cache import CacheSettings
 from .core import CoreSettings
 from .geocoding import GeocodingSettings
 from .line import LineSettings
+from .medical import MedicalSettings
 from .misc import MiscSettings
 from .network import NetworkSettings
 from .ops_alert import OpsAlertSettings
@@ -72,6 +73,7 @@ class Settings(BaseSettings):
     cache: CacheSettings = Field(default_factory=CacheSettings)
     misc: MiscSettings = Field(default_factory=MiscSettings)
     ops_alert: OpsAlertSettings = Field(default_factory=OpsAlertSettings)
+    medical: MedicalSettings = Field(default_factory=MedicalSettings)
 
     def model_dump_safe(self) -> dict[str, Any]:
         """Dump settings with sensitive fields redacted to '***'."""
