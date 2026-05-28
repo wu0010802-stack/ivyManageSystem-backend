@@ -125,11 +125,14 @@ def _configure_logging():
 
     所有 handler 一律掛 RequestIdLogFilter，讓任何 logger 出來的 record
     都帶 `request_id` 欄位（middleware 之外取到預設值 "-"）。
+    同時掛 PIIRedactionFilter（Spec C），確保 stdout/file log 不含 PII。
     """
+    from utils.log_pii_filter import PIIRedactionFilter
     from utils.request_logging import RequestIdLogFilter
 
     level = logging.INFO
     rid_filter = RequestIdLogFilter()
+    pii_filter = PIIRedactionFilter()
 
     if settings.core.is_production:
         try:
@@ -143,6 +146,7 @@ def _configure_logging():
                 )
             )
             handler.addFilter(rid_filter)
+            handler.addFilter(pii_filter)
             logging.root.handlers.clear()
             logging.root.addHandler(handler)
             logging.root.setLevel(level)
@@ -154,6 +158,7 @@ def _configure_logging():
             )
             for h in logging.root.handlers:
                 h.addFilter(rid_filter)
+                h.addFilter(pii_filter)
     else:
         logging.basicConfig(
             level=level,
@@ -161,6 +166,7 @@ def _configure_logging():
         )
         for h in logging.root.handlers:
             h.addFilter(rid_filter)
+            h.addFilter(pii_filter)
 
 
 _configure_logging()
