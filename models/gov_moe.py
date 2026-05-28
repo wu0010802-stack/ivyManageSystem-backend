@@ -67,7 +67,11 @@ class StudentIEPRecord(Base):
         nullable=False,
         index=True,
     )
-    school_year = Column(Integer, nullable=False, comment="學年（如 2025）")
+    school_year = Column(
+        Integer,
+        nullable=False,
+        comment="教育部西元學年（如 2025）；注意：本欄位用西元年，與系統其他 school_year（民國 100-200）語意不同，跨表 join 須先轉換",
+    )
     semester = Column(Integer, nullable=False, comment="學期 1/2")
     status = Column(
         String(20),

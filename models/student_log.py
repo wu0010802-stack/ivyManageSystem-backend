@@ -60,7 +60,7 @@ class StudentChangeLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
-    school_year = Column(Integer, nullable=False)
+    school_year = Column(Integer, nullable=False, comment="民國學年")
     semester = Column(Integer, nullable=False)
     event_type = Column(String(20), nullable=False)  # 入學/復學/退學/轉出/轉入/畢業
     event_date = Column(Date, nullable=False)
