@@ -23,6 +23,7 @@ from models.fees import (
     StudentFeeRecord,
     StudentFeeRefund,
 )
+from services.business_errors.parent import ParentNotAuthorized
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -196,7 +197,7 @@ def list_payments(
         session.query(StudentFeeRecord).filter(StudentFeeRecord.id == record_id).first()
     )
     if record is None or record.student_id not in owned_student_ids:
-        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        raise ParentNotAuthorized("查無此資料或無權存取")
 
     payments = (
         session.query(StudentFeePayment)
