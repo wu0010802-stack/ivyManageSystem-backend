@@ -93,6 +93,7 @@ def _seed_employees(session, n: int):
             Employee(
                 employee_id=f"P{i:03d}",
                 name=f"員工{i}",
+                position="教師",
             )
         )
     session.commit()
