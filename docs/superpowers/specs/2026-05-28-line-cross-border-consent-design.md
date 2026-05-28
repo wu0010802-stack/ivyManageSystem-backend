@@ -151,29 +151,38 @@ def _check_line_push_consent(line_user_id: str) -> bool:
         return False  # fail-closed
 ```
 
-所有 push_*_to_user 在 LINE API call 前 gate：
+所有 push_*_to_user 在 LINE API call 前 gate（加 `consent_checked` kwarg 給 batch caller pre-fetch consent 避免 N+1 DB query）：
 
 ```python
-def push_text_to_user(self, user_id: str, text: str) -> None:
-    if not _check_line_push_consent(user_id):
+def push_text_to_user(self, user_id: str, text: str, consent_checked: bool = False) -> None:
+    """consent_checked=True 表 caller 已 pre-fetch consent 並過濾過，skip 再 query。"""
+    if not consent_checked and not _check_line_push_consent(user_id):
         logger.info("LINE push skip (no consent): line_user_id=%s", user_id)
         return
     # ... 既有 LINE API call ...
 
-def push_flex_to_user(self, user_id: str, ...):
-    if not _check_line_push_consent(user_id):
+def push_flex_to_user(self, user_id: str, ..., consent_checked: bool = False):
+    if not consent_checked and not _check_line_push_consent(user_id):
         logger.info("LINE push skip (no consent): line_user_id=%s", user_id)
         return
     # ... 既有 ...
 
-def push_to_user(self, line_user_id: str, text: str) -> bool:
-    if not _check_line_push_consent(line_user_id):
+def push_to_user(self, line_user_id: str, text: str, consent_checked: bool = False) -> bool:
+    if not consent_checked and not _check_line_push_consent(line_user_id):
         logger.info("LINE push skip (no consent): line_user_id=%s", line_user_id)
         return False  # 不算 fail，是 skip
     # ... 既有 ...
 ```
 
+**advisor 2026-05-28 抓**：scheduler mass push 場景（如 100 個接送通知）若每個 push 走 `_check_line_push_consent` = 100 個 DB session/query。`consent_checked` kwarg 讓 caller 一次 JOIN query 完 consent 結果 → loop push（傳 consent_checked=True）→ 零 DB query overhead。
+
+漸進 strategy：
+- **本 PR**：consent_checked default False，所有既有 caller 走 per-call check（功能正確但 N+1 query）
+- **Follow-up PR**：scheduler / batch caller 改 pre-fetch consent，loop push 傳 consent_checked=True；單個 push（如即時通知）保持 per-call 不動
+
 5 個 build_*_message 改去識別化：
+
+**advisor 2026-05-28 抓**：grep 顯示 build_*_message 有 **64 個 caller** — 改簽章爆破風險高。**改 backward-compatible** 策略：保留原簽章 + 內部 ignore student_name/classroom_name 改用「您的孩子」+ 加 optional `detail_url`。caller 不必同步改也能立刻 redact。
 
 ```python
 # Before
@@ -181,21 +190,27 @@ def build_activity_waitlist_promoted_message(student_name, course_name, deadline
     base = f"🎨 才藝候補升位通知\n學生：{student_name}\n課程：{course_name}\n"
     ...
 
-# After
+# After — 保留原簽章 + 內部 ignore student_name + 新增 detail_url
 def build_activity_waitlist_promoted_message(
+    student_name: str,   # 保留簽章避免 64 caller 同步改，但內部 ignored (用「您的孩子」)
     course_name: str,
     deadline: Optional[datetime] = None,
-    detail_url: Optional[str] = None,   # frontend deep link
+    detail_url: Optional[str] = None,   # 新增：frontend deep link，caller 可漸進補
 ) -> str:
     base = f"🎨 才藝候補升位通知\n您的孩子課程：{course_name}\n"
+    # 不再 inline student_name — 跨境合規（audit P0 #6）
     if detail_url:
         base += f"詳情：{detail_url}\n"
     ...
 ```
 
-`student_name` 參數從簽章移除（caller 不再傳）。`classroom_name` 改用「您的孩子已可接送」（dismissal message）。
+同樣對 5 個 build_*_message 套用：簽章不變（student_name / classroom_name 仍接受但內部 ignore）+ 新增 `detail_url: Optional[str]=None`。
 
-Caller 端 (api/activity/* / scheduler / etc) 需同步改 — plan stage `grep -n "build_activity_waitlist_promoted_message(" --include="*.py"` 找所有 caller 並改簽章。
+**caller 改動**（漸進）：
+- **本 PR**：build_*_message 內部停止 inline PII，caller 無需動；本 PR 立刻達成 P0 #6 合規（PII 不再上 LINE）
+- **Follow-up PR**：caller 依 deep link 需求補傳 `detail_url=f"{frontend_url}/portal/notifications/{notif.id}"`；最終 cleanup 移除 dead `student_name` argument
+- ✅ 64 caller 不必同步改 — 本 PR 規模可控
+- ❌ 短暫期間 caller 傳 student_name argument 被 ignored — log 看似 dead argument，prod 上線後 follow-up cleanup
 
 ### 3.4 Deep link 端點（PR-E-BE-C2 同 commit）
 
