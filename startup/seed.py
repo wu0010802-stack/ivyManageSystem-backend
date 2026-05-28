@@ -277,30 +277,41 @@ def seed_shift_types():
 
 
 def seed_default_admin():
-    """建立初始管理員帳號。
+    """建立初始管理員帳號（DR-safe）。
 
     優先從環境變數讀取帳密：
       ADMIN_INIT_USERNAME  （預設: admin）
       ADMIN_INIT_PASSWORD  （正式環境必須設定）
 
-    正式環境（ENV=production）若未設定 ADMIN_INIT_PASSWORD，
-    則不自動建立帳號，避免弱密碼遺留——請部署後手動透過環境變數設定。
-    開發環境退而使用預設值 admin/admin123，並強制標記 must_change_password。
+    分流（先檢查 DB 再讀 env，避免 prod 漏設 env 又無 admin 的 silent 失敗）：
+    1. DB 已有 role='admin' 帳號 → no-op（既有部署重啟不受影響）
+    2. DB 無 admin + env 齊備 → 建帳號（兼容 DR 重建 happy path）
+    3. DB 無 admin + 正式環境 + 無 env → raise RuntimeError
+       Why: DR 重建場景下若 Zeabur 漏設 ADMIN_INIT_PASSWORD，silent return
+       會讓容器健康啟動但無人能登入。fail-fast 讓 healthcheck 持續紅燈，
+       強迫操作者補 env 後重啟（見 docs/sop/dr-runbook.md §6 step 4）。
+    4. DB 無 admin + 開發環境 + 無 env → fallback admin/admin123 + must_change。
     """
     from utils.auth import hash_password
 
     init_username = (settings.core.admin_init_username or "").strip()
-    init_password = (settings.core.admin_init_password or "").strip()
 
-    if not init_password:
-        if _is_production():
-            logger.error(
-                "正式環境尚未設定 ADMIN_INIT_PASSWORD，"
-                "系統不會自動建立管理員帳號。"
-                "請設定環境變數後重新啟動：\n"
+    session = get_session()
+    try:
+        if session.query(User).filter(User.role == "admin").count() > 0:
+            return
+
+        init_password = (settings.core.admin_init_password or "").strip()
+        if init_password:
+            init_username = init_username or "admin"
+            must_change = False
+        elif _is_production():
+            raise RuntimeError(
+                "DB 無管理員帳號且正式環境未設定 ADMIN_INIT_PASSWORD。"
+                "拒絕啟動以避免系統無人可登入（DR 重建漏設 env 的常見場景）。"
+                "請在 Zeabur Environment Variables 設定後重啟：\n"
                 "  ADMIN_INIT_USERNAME=<帳號>  ADMIN_INIT_PASSWORD=<強密碼>"
             )
-            return
         else:
             init_username = init_username or "admin"
             init_password = "admin123"
@@ -309,14 +320,6 @@ def seed_default_admin():
                 "已標記 must_change_password=True。請勿在正式環境使用！"
             )
             must_change = True
-    else:
-        init_username = init_username or "admin"
-        must_change = False
-
-    session = get_session()
-    try:
-        if session.query(User).filter(User.role == "admin").count() > 0:
-            return
 
         emp = session.query(Employee).first()
         if not emp:
