@@ -1,0 +1,99 @@
+"""services/notification/pending_uploads_scheduler.py — Phase 4 P1 resilience.
+
+每 5 min 撈 pending_uploads.next_retry_at<=now() AND attempts<5 → 重 push to Supabase。
+backoff: 30s → 2min → 10min → 1hr → 6hr（5 次失敗後 mark final + Sentry alert）。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+
+from models.base import get_session_factory
+from models.pending_uploads import PendingUpload
+from utils.external_calls import tagged_capture
+
+logger = logging.getLogger(__name__)
+
+_BACKOFF_SECONDS = [30, 120, 600, 3600, 21600]
+_MAX_ATTEMPTS = 5
+_TICK_LIMIT = 50
+TICK_INTERVAL_SECONDS = 300  # 5 min
+
+
+def tick_pending_uploads(now_provider=lambda: datetime.now(timezone.utc)) -> dict:
+    """撈待補傳 row，推 Supabase；回 metric dict。"""
+    session = get_session_factory()()
+    metric = {"attempted": 0, "succeeded": 0, "failed": 0, "final_failed": 0}
+    try:
+        now = now_provider()
+        rows = (
+            session.query(PendingUpload)
+            .filter(
+                PendingUpload.succeeded_at.is_(None),
+                PendingUpload.next_retry_at <= now,
+                PendingUpload.attempts < _MAX_ATTEMPTS,
+            )
+            .limit(_TICK_LIMIT)
+            .all()
+        )
+        metric["attempted"] = len(rows)
+
+        from utils.storage import get_backend
+
+        backend = get_backend()
+        # local 模式不會走這 scheduler，但安全 check
+        if backend.__class__.__name__ != "SupabaseStorage":
+            return metric
+
+        for row in rows:
+            try:
+                with open(row.local_path, "rb") as f:
+                    data = f.read()
+                # 直接呼叫 SDK 避免無限 fallback 迴圈
+                from utils.supabase_storage import _resolve_bucket
+
+                bucket = backend._client.storage.from_(_resolve_bucket(row.module))
+                bucket.upload(
+                    path=row.key,
+                    file=data,
+                    file_options={"content-type": row.content_type, "upsert": "true"},
+                )
+                row.succeeded_at = now
+                # cleanup local file
+                try:
+                    os.remove(row.local_path)
+                except OSError:
+                    pass
+                metric["succeeded"] += 1
+            except Exception as exc:
+                logger.exception("pending_upload row=%s failed", row.id)
+                tagged_capture(exc, tag="supabase", level="warning")
+                row.attempts += 1
+                if row.attempts >= _MAX_ATTEMPTS:
+                    row.last_error = f"final: {exc!s}"[:500]
+                    metric["final_failed"] += 1
+                else:
+                    delay = _BACKOFF_SECONDS[min(row.attempts, len(_BACKOFF_SECONDS) - 1)]
+                    row.next_retry_at = now + timedelta(seconds=delay)
+                    row.last_error = str(exc)[:500]
+                    metric["failed"] += 1
+        session.commit()
+    finally:
+        session.close()
+    return metric
+
+
+async def run_pending_uploads_scheduler(stop_event: asyncio.Event) -> None:
+    """每 TICK_INTERVAL_SECONDS 秒執行一次 tick；stop_event 觸發時結束。"""
+    while not stop_event.is_set():
+        try:
+            tick_pending_uploads()
+        except Exception as exc:
+            logger.exception("pending_uploads tick failed")
+            tagged_capture(exc, tag="supabase", level="error")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=TICK_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
