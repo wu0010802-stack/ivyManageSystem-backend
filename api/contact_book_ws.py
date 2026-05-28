@@ -155,7 +155,19 @@ async def parent_contact_book_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
         return
 
+    try:
+        assert_under_limit(user_id)
+    except WSConnectionLimitExceeded:
+        await ws.close(code=1008, reason="ws_connection_limit_exceeded")
+        return
+
     backend = get_broadcast()
     await ws.accept()
+    register(user_id, ws)
     backend.subscribe(_parent_channel(user_id), ws)
-    await run_ws_connection(ws, cleanup=lambda: backend.unsubscribe(ws))
+
+    def _cleanup():
+        backend.unsubscribe(ws)
+        unregister(ws)
+
+    await run_ws_connection(ws, cleanup=_cleanup)
