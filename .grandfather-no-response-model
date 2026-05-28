@@ -457,16 +457,7 @@ api/salary/snapshots.py:get_salary_snapshot
 api/salary/snapshots.py:create_manual_salary_snapshot
 api/salary/snapshots.py:get_salary_snapshot_diff
 api/salary/transfer_roster.py:export_transfer_roster
-api/shifts.py:list_shift_types
-api/shifts.py:create_shift_type
-api/shifts.py:update_shift_type
-api/shifts.py:get_assignments
-api/shifts.py:save_assignments
-api/shifts.py:get_daily_shifts
-api/shifts.py:upsert_daily_shift
-api/shifts.py:get_swap_history
 api/shifts.py:get_shift_import_template
-api/shifts.py:import_shifts
 api/student_assessments.py:list_assessments
 api/student_assessments.py:create_assessment
 api/student_assessments.py:update_assessment

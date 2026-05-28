@@ -55,6 +55,18 @@ from utils.file_upload import (
 from utils.permissions import Permission
 from utils.portfolio_storage import heic_supported, is_heic_extension
 
+from schemas._common import DeleteResultOut
+from schemas.portal_contact_book import (
+    ContactBookApplyTemplateOut,
+    ContactBookBatchPublishOut,
+    ContactBookBatchUpsertOut,
+    ContactBookCopyYesterdayOut,
+    ContactBookEntryOut,
+    ContactBookListOut,
+    ContactBookPhotoOut,
+    ContactBookUnpublishedOut,
+)
+
 from ._shared import _get_employee, _get_teacher_classroom_ids
 
 logger = logging.getLogger(__name__)
@@ -190,7 +202,7 @@ def _parse_if_match(if_match: Optional[str]) -> Optional[int]:
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 
-@router.get("")
+@router.get("", response_model=ContactBookListOut)
 def list_classroom_day(
     request: Request,
     classroom_id: int = Query(..., gt=0),
@@ -286,7 +298,7 @@ def list_classroom_day(
         session.close()
 
 
-@router.post("/batch")
+@router.post("/batch", response_model=ContactBookBatchUpsertOut)
 def batch_upsert(
     payload: ContactBookBatchPayload,
     request: Request,
@@ -367,7 +379,7 @@ def batch_upsert(
         session.close()
 
 
-@router.put("/{entry_id}")
+@router.put("/{entry_id}", response_model=ContactBookEntryOut)
 def update_entry(
     entry_id: int,
     payload: ContactBookEntryFields,
@@ -431,7 +443,7 @@ def update_entry(
         session.close()
 
 
-@router.post("/{entry_id}/publish")
+@router.post("/{entry_id}/publish", response_model=ContactBookEntryOut)
 def publish_endpoint(
     entry_id: int,
     request: Request,
@@ -466,7 +478,7 @@ def publish_endpoint(
         session.close()
 
 
-@router.post("/{entry_id}/photos", status_code=201)
+@router.post("/{entry_id}/photos", status_code=201, response_model=ContactBookPhotoOut)
 async def upload_photo(
     entry_id: int,
     request: Request,
@@ -540,7 +552,7 @@ async def upload_photo(
         session.close()
 
 
-@router.get("/unpublished")
+@router.get("/unpublished", response_model=ContactBookUnpublishedOut)
 def list_unpublished(
     request: Request,
     classroom_id: int = Query(..., gt=0),
@@ -614,7 +626,7 @@ def list_unpublished(
         session.close()
 
 
-@router.post("/copy-from-yesterday")
+@router.post("/copy-from-yesterday", response_model=ContactBookCopyYesterdayOut)
 def copy_from_yesterday(
     payload: CopyYesterdayPayload,
     request: Request,
@@ -649,7 +661,7 @@ def copy_from_yesterday(
         session.close()
 
 
-@router.post("/apply-template")
+@router.post("/apply-template", response_model=ContactBookApplyTemplateOut)
 def apply_template(
     payload: ApplyTemplatePayload,
     request: Request,
@@ -726,7 +738,7 @@ def apply_template(
         session.close()
 
 
-@router.post("/batch-publish")
+@router.post("/batch-publish", response_model=ContactBookBatchPublishOut)
 def batch_publish(
     payload: BatchPublishPayload,
     request: Request,
@@ -780,7 +792,7 @@ def batch_publish(
         session.close()
 
 
-@router.delete("/{entry_id}/photos/{attachment_id}")
+@router.delete("/{entry_id}/photos/{attachment_id}", response_model=DeleteResultOut)
 def delete_photo(
     entry_id: int,
     attachment_id: int,

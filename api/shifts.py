@@ -30,6 +30,14 @@ from models.database import (
     SalaryRecord,
 )
 from schemas._common import DeleteResultOut
+from schemas.shifts import (
+    ShiftTypeOut,
+    ShiftAssignmentOut,
+    ShiftAssignmentSaveResultOut,
+    DailyShiftOut,
+    ShiftSwapHistoryOut,
+    ShiftImportResultOut,
+)
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -190,7 +198,7 @@ class DailyShiftCreate(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/types")
+@router.get("/types", response_model=list[ShiftTypeOut])
 def list_shift_types(
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
 ):
@@ -201,7 +209,7 @@ def list_shift_types(
         session.close()
 
 
-@router.post("/types", status_code=201)
+@router.post("/types", status_code=201, response_model=ShiftTypeOut)
 def create_shift_type(
     data: ShiftTypeCreate,
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
@@ -234,7 +242,7 @@ def create_shift_type(
         session.close()
 
 
-@router.put("/types/{type_id}")
+@router.put("/types/{type_id}", response_model=ShiftTypeOut)
 def update_shift_type(
     type_id: int,
     data: ShiftTypeUpdate,
@@ -338,7 +346,7 @@ def delete_shift_type(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/assignments")
+@router.get("/assignments", response_model=list[ShiftAssignmentOut])
 def get_assignments(
     week_start: str,
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
@@ -410,7 +418,7 @@ def _apply_employee_assignment_action(session, existing, item, week_date: str) -
     return "inserted"
 
 
-@router.post("/assignments", status_code=201)
+@router.post("/assignments", status_code=201, response_model=ShiftAssignmentSaveResultOut)
 def save_assignments(
     data: BulkAssignmentRequest,
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
@@ -494,7 +502,7 @@ def save_assignments(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/daily")
+@router.get("/daily", response_model=list[DailyShiftOut])
 def get_daily_shifts(
     start_date: str,
     end_date: str,
@@ -543,7 +551,7 @@ def get_daily_shifts(
         session.close()
 
 
-@router.post("/daily", status_code=201)
+@router.post("/daily", status_code=201, response_model=DeleteResultOut)
 def upsert_daily_shift(
     data: DailyShiftCreate,
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
@@ -641,7 +649,7 @@ def delete_daily_shift(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/swap-history")
+@router.get("/swap-history", response_model=list[ShiftSwapHistoryOut])
 def get_swap_history(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -767,7 +775,7 @@ def get_shift_import_template(
         session.close()
 
 
-@router.post("/import")
+@router.post("/import", response_model=ShiftImportResultOut)
 async def import_shifts(
     file: UploadFile = File(...),
     week_start: str = Query(..., description="週起始日 YYYY-MM-DD（週一）"),
