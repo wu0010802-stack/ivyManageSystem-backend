@@ -435,3 +435,31 @@ jobs:
             exit 1
           fi
           echo "✅ 無 disallowed push_to_user caller"
+
+  naked-rate-limiter-gate:
+    name: Forbid naked SlidingWindowLimiter() in api/ services/
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Grep naked SlidingWindowLimiter() usage
+        # 2026-05-28 Task 3（Spec A PR-A3）：所有 rate limiter 建立必走
+        # utils/rate_limit.py 的 create_limiter() factory；禁用裸 SlidingWindowLimiter()。
+        # factory 自動打發 backend dispatch（memory vs PostgreSQL）+ 初始化語義。
+        #
+        # 允許 path（factory 定義處 + 測試）：
+        #   utils/rate_limit.py     — 定義 create_limiter() factory 本身
+        #   tests/                  — pytest 對 factory 的 isinstance 檢查、roundtrip 驗證
+        # （透過 grep --include="*.py" api/ services/ 自然排除上述路徑）
+        run: |
+          set -e
+          if grep -rn --include="*.py" "SlidingWindowLimiter(" api/ services/ 2>/dev/null; then
+            echo "::error::Forbid naked SlidingWindowLimiter() in api/ or services/"
+            echo "::error::Please use create_limiter() factory from utils.rate_limit instead."
+            echo "::error::See utils/rate_limit.py:163+ for backend dispatch (memory/postgres) logic."
+            echo "::error::Spec: docs/superpowers/specs/2026-05-28-rate-limit-hardening-design.md §3.6"
+            exit 1
+          fi
+          echo "✅ OK: no naked SlidingWindowLimiter() in api/ or services/"
