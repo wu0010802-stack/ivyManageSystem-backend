@@ -151,10 +151,29 @@ def change_password(
     """修改密碼"""
     client_ip = get_client_ip(request) or "unknown"
     user_id = current_user["user_id"]
+    username = current_user.get("username", "")  # 供 audit log 使用
 
     # 雙層限流：IP 滑動視窗 + 帳號失敗鎖定
-    _check_pwd_change_ip(client_ip)
-    _check_pwd_change_user_lockout(user_id)
+    try:
+        _check_pwd_change_ip(client_ip)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="PASSWORD_CHANGE_RATE_LIMITED",
+            username=username,
+            extras={"ip": client_ip, "scope": "pwd_change_ip"},
+        )
+        raise
+    try:
+        _check_pwd_change_user_lockout(user_id)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="PASSWORD_CHANGE_LOCKED",
+            username=username,
+            extras={"user_id": user_id, "scope": "pwd_change_user"},
+        )
+        raise
 
     session = get_session()
     try:
@@ -164,15 +183,19 @@ def change_password(
         if not verify_password(data.old_password, user.password_hash):
             _record_pwd_change_failure(user_id)  # 記失敗 → 累積觸發 lockout
             raise HTTPException(400, "舊密碼錯誤")
-        # ... 其餘成功流程不變 ...
+        # ===== 既有成功流程，保留原順序：sign → commit → cookie set =====
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
         user.must_change_password = False
         user.token_version = (user.token_version or 0) + 1
-        # ... new_token 簽發、cookie set 不變 ...
+        # （此處保留 new_token 簽發、permission_names resolve 邏輯不動，
+        #   見原 api/auth.py:943-958）
+        new_token = create_access_token({...})  # 既有邏輯
         session.commit()
         _clear_pwd_change_failures(user_id)  # 成功後 clear 失敗計數
-        # ... return ...
+        response = JSONResponse(content={"message": "密碼修改成功"})
+        set_access_token_cookie(response, new_token)
+        return response
 ```
 
 **`api/auth.py:1067 reset_password`**：
@@ -187,15 +210,30 @@ def reset_password(
 ):
     """重設密碼（admin 代為操作）"""
     client_ip = get_client_ip(request) or "unknown"
-    _check_pwd_reset_ip(client_ip)   # 防 admin cookie 被竊狂刷別人
+    try:
+        _check_pwd_reset_ip(client_ip)   # 防 admin cookie 被竊狂刷別人
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="PASSWORD_RESET_RATE_LIMITED",
+            username=current_user.get("username", ""),
+            extras={
+                "ip": client_ip,
+                "scope": "pwd_reset_ip",
+                "target_user_id": user_id,
+            },
+        )
+        raise
 
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
-        # ... 其餘流程不變 ...
+        # ... 其餘流程不變（_assert_can_manage_user、validate、hash、commit）...
 ```
 
 **注意**：`reset_password` **不**對 target user 套 lockout（不 record/check `f"user:{user_id}"`）。設計理由：reset_password 是 admin 主動操作、不是 password 驗證，每次都「成功」；若按 target user 累計，等同把每個被重設的 user 連帶暫時鎖死。攻擊者若能拿到 admin cookie 反而可批次鎖死全員工帳號，造成更大 DoS。**caller IP 限流 + 既存 audit middleware 記錄 admin user_id**是更合理的防線。
+
+**audit log 對齊**：三個新 action（`PASSWORD_CHANGE_RATE_LIMITED` / `PASSWORD_CHANGE_LOCKED` / `PASSWORD_RESET_RATE_LIMITED`）鏡像既有 login flow 的 `LOGIN_RATE_LIMITED` / `LOGIN_LOCKED` pattern（`api/auth.py:414, 425`），讓 SOC / audit 報表可在同一查詢看到「限流相關」事件。`write_login_audit` 已 import 於 `api/auth.py:21`，無需新 import。stolen-cookie attack window 的 forensic trail 由此 3 個 action 撐住。
 
 ### 3.5 14 處 routers 機械替換（PR-A1）
 
@@ -261,11 +299,23 @@ naked-rate-limiter-gate:
 
 不加 `# noqa` 機制（避免雙重規則 + 嵌入原始註解可能交互全面關掉 noqa）。
 
-### 3.7 行為等價性論證
+### 3.7 行為等價性論證 + RATE_LIMIT_BACKEND env 影響範圍
 
-`create_limiter()` 在 `RATE_LIMIT_BACKEND=memory` 或未設時回傳 `SlidingWindowLimiter` 實例（`utils/rate_limit.py:184-189`），與目前 prod 行為（已設或未設 `RATE_LIMIT_BACKEND`？需 USER 確認）完全等價。差別僅在當 USER 設 `RATE_LIMIT_BACKEND=postgres` 時自動切換為 `PostgresLimiter`。
+**兩條限流路徑分開看，env 只控制其中一條**：
 
-**Roll-out 連動**：本 spec 改完後，USER 需在 Zeabur 後端 env 設 `RATE_LIMIT_BACKEND=postgres`（若未設）以啟動多 worker 安全的計數器。若不設，行為與目前一致；設了即生效（程式碼無需重 deploy）。
+| 路徑 | 控制方式 | 多 worker 行為 |
+|------|----------|---------------|
+| **14 routers 走 `create_limiter()` factory**（PR-A1） | 受 `RATE_LIMIT_BACKEND` env 控制 | env=`postgres` 才安全；未設或 `memory` 仍裸奔 |
+| **password 端點走 `_check_pwd_*` 新 helper**（PR-A2） | **始終 DB-backed**（直接 call `utils.rate_limit_db`） | 一律安全，不受 env 影響 |
+
+`create_limiter()` 在 `RATE_LIMIT_BACKEND=memory` 或未設時回傳 `SlidingWindowLimiter` 實例（`utils/rate_limit.py:184-189`），與目前 prod 行為完全等價。差別僅在當 USER 設 `RATE_LIMIT_BACKEND=postgres` 時自動切換為 `PostgresLimiter`。
+
+`_check_pwd_change_*` 與 `_check_pwd_reset_ip` 鏡像 login flow 既有 `_check_ip_rate_limit` 設計，直接走 `utils.rate_limit_db.count_recent_attempts` / `record_attempt`，**不經 factory**，因此**不受 env 影響、永遠多 worker 安全**。
+
+**Roll-out 連動**：
+- PR 合併後 password 限流（PR-A2）立刻生效，無 env 依賴。
+- 14 routers（PR-A1）的多 worker 安全性需 USER 在 Zeabur 後端 env 設 `RATE_LIMIT_BACKEND=postgres` 才生效；未設則 14 routers 仍 memory（行為與 PR 合併前一致，不退化）。
+- 兩條路徑解耦：env 未設不影響 password 端點防護；env 設了不額外保護 password（已 always-DB）。
 
 ---
 
@@ -301,16 +351,18 @@ def test_no_naked_sliding_window_limiter():
 
 ### 4.2 PR-A2 (password rate limit)
 
-新增 4 個 pytest 在 `tests/test_auth_password_rate_limit.py`：
+新增 6 個 pytest 在 `tests/test_auth_password_rate_limit.py`：
 
-1. **test_change_password_user_lockout**：mock 同 user 連續 5 次 old_password 錯誤 → 第 6 次返回 429。
+1. **test_change_password_user_lockout**：同 user 連續 5 次 old_password 錯誤 → 第 6 次返回 429「密碼修改失敗次數過多」。assert `write_login_audit` 被 call with action="PASSWORD_CHANGE_LOCKED"。
 2. **test_change_password_clear_failures_on_success**：失敗 4 次後成功一次，再次 trigger 失敗 → 第 6 次不再 429（counter 已 clear）。
-3. **test_reset_password_ip_rate_limit**：mock 同 IP 連續 20 次 reset → 第 21 次返回 429。
-4. **test_reset_password_no_target_user_lockout**：admin 對同一 target user 連續重設 10 次後，assert 兩件事：
+3. **test_change_password_ip_only_rate_limit**：**單獨驗證 IP 層**。同 IP 透過多個不同 user 帳號 (cookies) 嘗試 change-password 累積 21 次（每次都用正確 old_password 避免觸發 user lockout）→ 第 21 次返回 429「請求過於頻繁」。assert `write_login_audit` 被 call with action="PASSWORD_CHANGE_RATE_LIMITED"。確認 IP 層獨立於 user lockout 層、各自觸發。
+4. **test_reset_password_ip_rate_limit**：同 IP 連續 20 次 reset → 第 21 次返回 429。assert `write_login_audit` 被 call with action="PASSWORD_RESET_RATE_LIMITED" + extras.target_user_id。
+5. **test_reset_password_no_target_user_lockout**：admin 對同一 target user 連續重設 10 次後，assert 兩件事：
    - `count_recent_attempts(_ACCOUNT_SCOPE, target_user.username, within_seconds=_FAIL_LOCKOUT) == 0`（沒被誤記入 login_account scope）
    - `_check_account_lockout(target_user.username)` 不拋 429（target user 仍可 login）
+6. **test_pwd_change_scope_isolated_from_login**：驗證 scope 隔離。讓某 user login 失敗 5 次（觸發 login_account lockout），再對該 user 走 change-password（用已通過的 cookie）→ change-password 不被 login lockout 影響（不同 scope）。反向：change-password 失敗 5 次 → login flow 仍可正常嘗試（取另一個 IP）。
 
-mock 策略：用 `monkeypatch` patch `utils.rate_limit_db.count_recent_attempts` 與 `record_attempt`，或實際走 SQLite test fixture（推薦後者，鏡像 prod 行為）。
+策略：實際走 DB-backed counter（SQLite test fixture，鏡像 prod 行為），不 mock。理由：`utils.rate_limit_db` 既有 test 已驗 DB-backed 行為，這裡測「兩個 scope 在不同 endpoint 觸發 + 不互相干擾」整合行為，mock 會弱化 witness。
 
 ### 4.3 PR-A3 (CI gate)
 
@@ -361,6 +413,8 @@ CI workflow 整合測試（不寫 unit test，但本地驗證）：
 | `pwd_change_user` 計數 key `f"user:{id}"` 與既有 `_ACCOUNT_SCOPE="login_account"` 共用 `rate_limit_buckets` 表但 scope 不同，理論隔離但 storage 共用 | 表大小成長略增 | 既有 `cleanup_rate_limit_buckets` GC 每 5 分鐘清過期，scope 多一個對表大小影響 < 1% |
 | CI grep gate 漏網（例如 `SlidingWindowLimiter` 寫在多行 `\n` 後） | gate 失效 | `grep "SlidingWindowLimiter("` pattern 比對 `(`，必須是 call site；多行 split 不會發生（Python 慣例 constructor call 都在同一行）|
 | 14 處替換時誤改參數順序 | limiter 行為異常 | AST 替換 + diff review；C1 commit 嚴格 1:1 mechanical |
+| Implementer 重構 `change_password` 時打破原 control flow（sign new_token → commit → set cookie）| 用戶改完密碼立刻被踢（pre-existing F-PRE-1 bug 復發） | Plan stage 明確列「保留 §3.4 註解中的順序：commit 在 sign new_token 之後、set_cookie 在 commit 之後」；新加的 `_clear_pwd_change_failures` 放 commit 之後（成功才 clear） |
+| 新加 `request: Request` 在 `data` 與 `Depends` 之間，若 test 用 positional call 會破 | 既有 test 失敗 | 已 grep `tests/` 確認**無**任何 positional `change_password(...)` / `reset_password(...)` call（全走 TestClient HTTP path）。仍在 plan 加 sanity grep step 防未來新加 |
 
 ---
 
