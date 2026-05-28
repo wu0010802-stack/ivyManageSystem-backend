@@ -31,6 +31,7 @@ from utils.finance_guards import (
     require_finance_approve,
     require_not_self_edit,
 )
+from schemas.employees import EmployeeOut
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
 from utils.audit import write_explicit_audit, mark_soft_delete
@@ -330,7 +331,7 @@ async def get_probation_alerts(
         session.close()
 
 
-@router.get("/employees/{employee_id}")
+@router.get("/employees/{employee_id}", response_model=EmployeeOut)
 async def get_employee(
     employee_id: int,
     request: Request,
