@@ -190,6 +190,12 @@ _FAIL_LOCKOUT = 900  # 帳號鎖定時間：15 分鐘
 _IP_SCOPE = "login_ip"
 _ACCOUNT_SCOPE = "login_account"
 
+# Password endpoint scopes（與 login_* scope 隔離，避免互相干擾）
+_PWD_CHANGE_IP_SCOPE = "pwd_change_ip"
+_PWD_CHANGE_USER_SCOPE = "pwd_change_user"
+_PWD_RESET_IP_SCOPE = "pwd_reset_ip"
+# window/threshold 復用既有 _IP_WINDOW / _IP_MAX_ATTEMPTS / _FAIL_THRESHOLD / _FAIL_LOCKOUT
+
 # In-process dict 仍保留，作為「DB 失敗時的 fail-open 配套」與測試 fixture
 # reset target；正式擋線靠 DB-backed counter（multi-worker 安全）。
 # Refs: 邏輯漏洞 audit 2026-05-07 P0 #14（user 拍板採 DB-backed 方案）。
@@ -242,6 +248,62 @@ def _clear_login_failures(username: str) -> None:
     from utils.rate_limit_db import clear_attempts
 
     clear_attempts(_ACCOUNT_SCOPE, username)
+
+
+def _check_pwd_change_ip(ip: str) -> None:
+    """change-password per-IP 滑動視窗（不分成敗都計數）。"""
+    from utils.rate_limit_db import count_recent_attempts, record_attempt
+
+    record_attempt(_PWD_CHANGE_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
+    count = count_recent_attempts(_PWD_CHANGE_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    if count > _IP_MAX_ATTEMPTS:
+        logger.warning("change-password IP 頻率超限: %s (count=%d)", ip, count)
+        raise HTTPException(status_code=429, detail="請求過於頻繁，請稍後再試")
+
+
+def _check_pwd_change_user_lockout(user_id: int) -> None:
+    """change-password per-user_id 失敗鎖定（僅在 verify_password 失敗時遞增）。"""
+    from utils.rate_limit_db import count_recent_attempts
+
+    key = f"user:{user_id}"
+    count = count_recent_attempts(
+        _PWD_CHANGE_USER_SCOPE, key, within_seconds=_FAIL_LOCKOUT
+    )
+    if count >= _FAIL_THRESHOLD:
+        logger.warning(
+            "change-password 失敗次數超限: user_id=%d (failures=%d)", user_id, count
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="密碼修改失敗次數過多，請稍後再試",
+        )
+
+
+def _record_pwd_change_failure(user_id: int) -> None:
+    """記錄 change-password 失敗一次（DB-backed bucket）。"""
+    from utils.rate_limit_db import record_attempt
+
+    record_attempt(
+        _PWD_CHANGE_USER_SCOPE, f"user:{user_id}", window_seconds=_FAIL_LOCKOUT
+    )
+
+
+def _clear_pwd_change_failures(user_id: int) -> None:
+    """change-password 成功後清除失敗記錄。"""
+    from utils.rate_limit_db import clear_attempts
+
+    clear_attempts(_PWD_CHANGE_USER_SCOPE, f"user:{user_id}")
+
+
+def _check_pwd_reset_ip(ip: str) -> None:
+    """reset-password per-caller IP 滑動視窗（防 admin cookie 被竊狂刷別人）。"""
+    from utils.rate_limit_db import count_recent_attempts, record_attempt
+
+    record_attempt(_PWD_RESET_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
+    count = count_recent_attempts(_PWD_RESET_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    if count > _IP_MAX_ATTEMPTS:
+        logger.warning("reset-password IP 頻率超限: %s (count=%d)", ip, count)
+        raise HTTPException(status_code=429, detail="請求過於頻繁，請稍後再試")
 
 
 # ============ Pydantic Models ============
@@ -914,7 +976,9 @@ def get_me(current_user: dict = Depends(get_current_user)):
 
 @router.post("/change-password")
 def change_password(
-    data: ChangePasswordRequest, current_user: dict = Depends(get_current_user)
+    data: ChangePasswordRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
 ):
     """修改密碼
 
@@ -924,12 +988,39 @@ def change_password(
     管理員代為重設（reset_password）則維持「強制當事人下次登入」語意，不發
     新 token。
     """
+    client_ip = get_client_ip(request) or "unknown"
+    user_id = current_user["user_id"]
+    username_for_audit = current_user.get("username", "")
+
+    # 雙層限流：IP 滑動視窗 + per-user 失敗鎖定（DB-backed，與 login scope 隔離）
+    try:
+        _check_pwd_change_ip(client_ip)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="PASSWORD_CHANGE_RATE_LIMITED",
+            username=username_for_audit,
+            extras={"ip": client_ip, "scope": "pwd_change_ip"},
+        )
+        raise
+    try:
+        _check_pwd_change_user_lockout(user_id)
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="PASSWORD_CHANGE_LOCKED",
+            username=username_for_audit,
+            extras={"user_id": user_id, "scope": "pwd_change_user"},
+        )
+        raise
+
     session = get_session()
     try:
-        user = session.query(User).filter(User.id == current_user["user_id"]).first()
+        user = session.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         if not verify_password(data.old_password, user.password_hash):
+            _record_pwd_change_failure(user_id)  # 記失敗 → 累積觸發 lockout
             raise HTTPException(status_code=400, detail="舊密碼錯誤")
         validate_password_strength(data.new_password)
         user.password_hash = hash_password(data.new_password)
@@ -957,6 +1048,7 @@ def change_password(
             }
         )
         session.commit()
+        _clear_pwd_change_failures(user_id)  # 成功後清失敗計數（commit 後才 clear）
 
         response = JSONResponse(content={"message": "密碼修改成功"})
         set_access_token_cookie(response, new_token)
@@ -1068,11 +1160,28 @@ def create_user(
 def reset_password(
     user_id: int,
     data: ResetPasswordRequest,
+    request: Request,
     current_user: dict = Depends(
         require_staff_permission(Permission.USER_MANAGEMENT_WRITE)
     ),
 ):
-    """重設密碼"""
+    """重設密碼（admin 代為操作）"""
+    client_ip = get_client_ip(request) or "unknown"
+    try:
+        _check_pwd_reset_ip(client_ip)  # 防 admin cookie 被竊狂刷別人
+    except HTTPException:
+        write_login_audit(
+            request,
+            action="PASSWORD_RESET_RATE_LIMITED",
+            username=current_user.get("username", ""),
+            extras={
+                "ip": client_ip,
+                "scope": "pwd_reset_ip",
+                "target_user_id": user_id,
+            },
+        )
+        raise
+
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
