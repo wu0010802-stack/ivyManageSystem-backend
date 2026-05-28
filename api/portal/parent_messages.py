@@ -36,6 +36,14 @@ from models.database import (
 from models.portfolio import ATTACHMENT_OWNER_MESSAGE
 from schemas._common import OkStatusOut, UnreadCountOut
 from schemas.parent_portal_messages import MessageRecallOut
+from schemas.portal_parent_messages import (
+    PortalParentMessageAttachmentOut,
+    PortalParentMessageCreateThreadOut,
+    PortalParentMessageListOut,
+    PortalParentMessageReplyOut,
+    PortalParentMessageThreadListOut,
+    PortalParentMessageThreadOut,
+)
 from services.parent_message_service import (
     append_message,
     assert_teacher_is_homeroom,
@@ -264,7 +272,7 @@ def get_teacher_unread_count(
         session.close()
 
 
-@router.get("/threads")
+@router.get("/threads", response_model=PortalParentMessageThreadListOut)
 def list_threads(
     cursor: Optional[int] = Query(None, ge=0),
     limit: int = Query(20, ge=1, le=100),
@@ -297,7 +305,7 @@ def list_threads(
         session.close()
 
 
-@router.get("/threads/{thread_id}")
+@router.get("/threads/{thread_id}", response_model=PortalParentMessageThreadOut)
 def get_thread(
     thread_id: int,
     current_user: dict = Depends(require_permission(Permission.PARENT_MESSAGES_WRITE)),
@@ -311,7 +319,7 @@ def get_thread(
         session.close()
 
 
-@router.get("/threads/{thread_id}/messages")
+@router.get("/threads/{thread_id}/messages", response_model=PortalParentMessageListOut)
 def list_messages(
     thread_id: int,
     cursor: Optional[int] = Query(None, ge=0),
@@ -353,7 +361,7 @@ def list_messages(
         session.close()
 
 
-@router.post("/threads", status_code=201)
+@router.post("/threads", status_code=201, response_model=PortalParentMessageCreateThreadOut)
 def create_thread(
     payload: CreateThreadRequest,
     request: Request,
@@ -442,7 +450,7 @@ def create_thread(
         session.close()
 
 
-@router.post("/threads/{thread_id}/messages", status_code=201)
+@router.post("/threads/{thread_id}/messages", status_code=201, response_model=PortalParentMessageReplyOut)
 def post_reply(
     thread_id: int,
     payload: TeacherReplyRequest,
@@ -496,7 +504,7 @@ def post_reply(
         session.close()
 
 
-@router.post("/threads/{thread_id}/messages/{message_id}/attach", status_code=201)
+@router.post("/threads/{thread_id}/messages/{message_id}/attach", status_code=201, response_model=PortalParentMessageAttachmentOut)
 async def attach_to_message(
     thread_id: int,
     message_id: int,

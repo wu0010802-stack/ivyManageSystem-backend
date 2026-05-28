@@ -275,12 +275,6 @@ api/portal/medications.py:list_today_medications
 api/portal/overtimes.py:get_my_overtimes
 api/portal/overtimes.py:create_my_overtime
 api/portal/overtimes.py:delete_my_overtime
-api/portal/parent_messages.py:list_threads
-api/portal/parent_messages.py:get_thread
-api/portal/parent_messages.py:list_messages
-api/portal/parent_messages.py:create_thread
-api/portal/parent_messages.py:post_reply
-api/portal/parent_messages.py:attach_to_message
 api/portal/profile.py:get_profile
 api/portal/profile.py:get_line_binding
 api/portal/profile.py:update_line_binding
