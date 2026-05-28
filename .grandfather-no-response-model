@@ -182,13 +182,7 @@ api/dismissal_calls.py:create_dismissal_call
 api/dismissal_calls.py:list_dismissal_calls
 api/dismissal_calls.py:cancel_dismissal_call
 api/employees.py:get_employees
-api/employees.py:get_probation_alerts
-api/employees.py:create_employee
-api/employees.py:update_employee
-api/employees.py:delete_employee
-api/employees.py:offboard_employee
 api/employees.py:final_salary_preview
-api/employees.py:get_teachers
 api/employees_docs.py:list_educations
 api/employees_docs.py:create_education
 api/employees_docs.py:update_education

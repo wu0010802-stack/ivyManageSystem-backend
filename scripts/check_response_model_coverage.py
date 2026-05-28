@@ -85,6 +85,13 @@ def check_grandfather_only_shrinks() -> list[str]:
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []  # 沒 git 或 origin/main 取不到時 skip 該 check
+
+    # 首次建立 grandfather 檔時，origin/main 沒有 → diff header 含 `--- /dev/null`
+    # 視為 initial seed，跳過「禁止新增」判斷
+    header_lines = result.stdout.splitlines()[:5]
+    if any(ln == "--- /dev/null" for ln in header_lines):
+        return []
+
     added = []
     for line in result.stdout.splitlines():
         if line.startswith("+") and not line.startswith("+++"):

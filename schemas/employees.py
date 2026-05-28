@@ -1,5 +1,14 @@
 """Employees router 對應 Pydantic Out schemas。
 
+包含：
+- EmployeeOut — list / detail 共用 employee shape
+- MutationResultOut — POST/PUT/DELETE 共用回傳（message + id）
+- ProbationAlertItem / ProbationAlertResponseOut — 試用期警示
+- TeacherOut — GET /teachers list
+- OffboardResultOut — POST /{id}/offboard 向後相容 shape
+
+
+
 涵蓋 admin GET /employees 與 GET /employees/{id} 共用的 _format_employee_response
 dict shape；conditional masking 欄位用 Optional 接 None（router 端 per-user 決定遮罩，
 schema 只描述形狀）。
@@ -89,3 +98,52 @@ class EmployeeOut(IvyBaseModel):
     # detail-only / resign_fields=True 才出現
     resign_date: Optional[str] = None
     resign_reason: Optional[str] = None  # pii-allow: 離職原因（admin 端看）
+
+
+class MutationResultOut(IvyBaseModel):
+    """POST/PUT/DELETE 員工成功回傳的共用 shape。"""
+
+    message: str
+    id: int
+
+
+class ProbationAlertItem(IvyBaseModel):
+    """試用期警示單筆員工。"""
+
+    id: int
+    name: str
+    employee_id: str
+    probation_end_date: str
+    days_remaining: int
+
+
+class _ProbationAlertCounts(IvyBaseModel):
+    next_month: int
+
+
+class ProbationAlertResponseOut(IvyBaseModel):
+    """GET /employees/probation-alerts 回傳。"""
+
+    employees: list[ProbationAlertItem]
+    alerts: _ProbationAlertCounts
+
+
+class TeacherOut(IvyBaseModel):
+    """GET /teachers list 內單筆。"""
+
+    id: int
+    employee_id: str
+    name: str
+    title: Optional[str] = None
+
+
+class OffboardResultOut(IvyBaseModel):
+    """POST /employees/{id}/offboard 向後相容 shape（deprecated endpoint）。"""
+
+    message: str
+    id: int
+    name: str
+    resign_date: str
+    resign_reason: Optional[str] = None  # pii-allow: 離職原因（admin 端看）
+    is_active: bool
+    user_account_revoked: bool
