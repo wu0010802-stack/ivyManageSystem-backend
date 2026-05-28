@@ -22,6 +22,12 @@ from api.portal._shared import (
 )
 from utils.broadcast import get_broadcast
 from utils.permissions import Permission, has_permission
+from utils.ws_connection_limiter import (
+    WSConnectionLimitExceeded,
+    assert_under_limit,
+    register,
+    unregister,
+)
 from utils.ws_hub import (
     MAX_BROADCAST_RETRIES,
     WS_CLOSE_FORBIDDEN,
@@ -131,19 +137,37 @@ async def portal_dismissal_ws(ws: WebSocket):
         )
         return
 
+    user_id = payload.get("user_id")
+    if not user_id:
+        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
+        return
+
+    try:
+        assert_under_limit(user_id)
+    except WSConnectionLimitExceeded:
+        await ws.close(code=1008, reason="ws_connection_limit_exceeded")
+        return
+
     classroom_ids = _get_teacher_classroom_ids(employee_id)
     backend = get_broadcast()
     if not classroom_ids:
         # 若老師尚未分班，仍允許連線但不會收到任何班級事件
         await ws.accept()
-        await _run_connection(ws)
+        register(user_id, ws)
+        await _run_connection(ws, cleanup=lambda: unregister(ws))
         return
 
     await ws.accept()
+    register(user_id, ws)
     for cid in classroom_ids:
         backend.subscribe(_classroom_channel(cid), ws)
     logger.info("教師 WS 已連線，班級 IDs: %s", classroom_ids)
-    await _run_connection(ws, cleanup=lambda: backend.unsubscribe(ws))
+
+    def _cleanup():
+        backend.unsubscribe(ws)
+        unregister(ws)
+
+    await _run_connection(ws, cleanup=_cleanup)
 
 
 @ws_router.websocket("/api/ws/admin/dismissal-calls")
