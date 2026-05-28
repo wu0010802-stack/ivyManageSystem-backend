@@ -33,6 +33,7 @@ from models.database import (
 )
 from models.portfolio import ATTACHMENT_OWNER_STUDENT_LEAVE
 from models.student_leave import LEAVE_TYPES
+from schemas._common import OkStatusOut
 from services.student_leave_service import (
     apply_attendance_for_leave,
     revert_attendance_for_leave,
@@ -375,7 +376,7 @@ async def upload_leave_attachment(
     return _attachment_to_dict(att)
 
 
-@router.delete("/{leave_id}/attachments/{attachment_id}")
+@router.delete("/{leave_id}/attachments/{attachment_id}", response_model=OkStatusOut)
 def delete_leave_attachment(
     leave_id: int,
     attachment_id: int,
@@ -422,7 +423,7 @@ def delete_leave_attachment(
     return {"status": "ok"}
 
 
-@router.post("/{leave_id}/cancel")
+@router.post("/{leave_id}/cancel", response_model=OkStatusOut)
 def cancel_leave(
     leave_id: int,
     request: Request,

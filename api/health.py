@@ -11,13 +11,14 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from models.base import get_engine
+from schemas._common import OkStatusOut
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/health", tags=["health"])
 
 
-@router.get("/live")
+@router.get("/live", response_model=OkStatusOut)
 async def liveness():
     """Liveness probe — 程序存活即回 200。"""
     return {"status": "ok"}

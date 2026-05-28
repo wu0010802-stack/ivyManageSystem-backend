@@ -24,6 +24,7 @@ from models.database import (
     Classroom,
     Student,
 )
+from schemas._common import OkStatusOut, UnreadCountOut
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -126,7 +127,7 @@ def count_unread_for_user(session, user_id: int) -> int:
     )
 
 
-@router.get("/unread-count")
+@router.get("/unread-count", response_model=UnreadCountOut)
 def unread_count(
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
@@ -135,7 +136,7 @@ def unread_count(
     return {"unread_count": count_unread_for_user(session, user_id)}
 
 
-@router.post("/{announcement_id}/read", status_code=200)
+@router.post("/{announcement_id}/read", status_code=200, response_model=OkStatusOut)
 def mark_read(
     announcement_id: int,
     current_user: dict = Depends(require_parent_role()),

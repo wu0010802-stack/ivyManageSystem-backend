@@ -34,6 +34,8 @@ from models.database import (
     get_session,
 )
 from models.portfolio import ATTACHMENT_OWNER_MESSAGE
+from schemas._common import OkStatusOut, UnreadCountOut
+from schemas.parent_portal_messages import MessageRecallOut
 from services.parent_message_service import (
     append_message,
     assert_teacher_is_homeroom,
@@ -246,7 +248,7 @@ def _get_thread_for_teacher(
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
-@router.get("/unread-count")
+@router.get("/unread-count", response_model=UnreadCountOut)
 def get_teacher_unread_count(
     request: Request,
     current_user: dict = Depends(require_permission(Permission.PARENT_MESSAGES_WRITE)),
@@ -562,7 +564,7 @@ async def attach_to_message(
         session.close()
 
 
-@router.post("/threads/{thread_id}/read", status_code=200)
+@router.post("/threads/{thread_id}/read", status_code=200, response_model=OkStatusOut)
 def mark_thread_read(
     thread_id: int,
     request: Request,
@@ -580,7 +582,9 @@ def mark_thread_read(
         session.close()
 
 
-@router.post("/messages/{message_id}/recall", status_code=200)
+@router.post(
+    "/messages/{message_id}/recall", status_code=200, response_model=MessageRecallOut
+)
 def recall_message(
     message_id: int,
     request: Request,

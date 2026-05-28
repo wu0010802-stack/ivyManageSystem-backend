@@ -27,6 +27,7 @@ from models.activity import (
 )
 from models.database import Guardian, Student
 from services.activity_service import activity_service
+from schemas._common import OkStatusOut
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -268,7 +269,9 @@ class ConfirmPromotionPayload(BaseModel):
     course_id: int = Field(..., gt=0)
 
 
-@router.post("/registrations/{registration_id}/confirm-promotion")
+@router.post(
+    "/registrations/{registration_id}/confirm-promotion", response_model=OkStatusOut
+)
 def confirm_promotion(
     registration_id: int,
     payload: ConfirmPromotionPayload,

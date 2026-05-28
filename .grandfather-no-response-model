@@ -232,7 +232,6 @@ api/gov_reports.py:export_health_insurance
 api/gov_reports.py:export_withholding
 api/gov_reports.py:export_pension
 api/guardians_admin.py:create_binding_code
-api/health.py:liveness
 api/health.py:readiness
 api/insurance.py:import_insurance_table
 api/insurance.py:calculate_insurance
@@ -272,11 +271,8 @@ api/overtimes.py:get_overtime_import_template
 api/parent_portal/activity.py:list_courses
 api/parent_portal/activity.py:my_registrations
 api/parent_portal/activity.py:register_courses
-api/parent_portal/activity.py:confirm_promotion
 api/parent_portal/activity.py:registration_payments
 api/parent_portal/announcements.py:list_announcements
-api/parent_portal/announcements.py:unread_count
-api/parent_portal/announcements.py:mark_read
 api/parent_portal/attendance.py:get_daily_attendance
 api/parent_portal/attendance.py:get_monthly_attendance
 api/parent_portal/auth.py:liff_login
@@ -305,8 +301,6 @@ api/parent_portal/leaves.py:create_leave
 api/parent_portal/leaves.py:list_leaves
 api/parent_portal/leaves.py:get_leave
 api/parent_portal/leaves.py:upload_leave_attachment
-api/parent_portal/leaves.py:delete_leave_attachment
-api/parent_portal/leaves.py:cancel_leave
 api/parent_portal/measurements.py:parent_list_measurements
 api/parent_portal/measurements.py:parent_measurement_chart
 api/parent_portal/medications.py:list_medication_orders
@@ -384,15 +378,12 @@ api/portal/medications.py:list_today_medications
 api/portal/overtimes.py:get_my_overtimes
 api/portal/overtimes.py:create_my_overtime
 api/portal/overtimes.py:delete_my_overtime
-api/portal/parent_messages.py:get_teacher_unread_count
 api/portal/parent_messages.py:list_threads
 api/portal/parent_messages.py:get_thread
 api/portal/parent_messages.py:list_messages
 api/portal/parent_messages.py:create_thread
 api/portal/parent_messages.py:post_reply
 api/portal/parent_messages.py:attach_to_message
-api/portal/parent_messages.py:mark_thread_read
-api/portal/parent_messages.py:recall_message
 api/portal/profile.py:get_profile
 api/portal/profile.py:get_line_binding
 api/portal/profile.py:update_line_binding
