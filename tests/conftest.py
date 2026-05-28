@@ -194,3 +194,27 @@ def _reset_settings_cache():
     reset_for_tests()
     yield
     reset_for_tests()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _csrf_testclient_origin_allowlist():
+    """TestClient 預設 Origin http://testserver 注入 cors_origins。
+
+    TestClient 預設 Origin 是 http://testserver，dev fallback 中不含此值。
+    待 Task 2 落 CSRFOriginCheckMiddleware 檢查 Origin header 必在 cors_origins
+    白名單後，將擋下 1433 mutation test lines 跨 189 file。預先注入此 fixture
+    避免 Task 2 落地時出現大規模短暫紅燈。
+
+    此 commit 落地時 middleware 尚未存在，fixture 純預設定 cors_origins 不影響
+    既有行為（baseline 5492/0 不變）。
+
+    Spec: docs/superpowers/specs/2026-05-28-csrf-origin-middleware-design.md §4
+    Plan: docs/superpowers/plans/2026-05-28-csrf-origin-middleware.md Task 1
+    """
+    from config import settings
+
+    original = list(settings.network.cors_origins or [])
+    if "http://testserver" not in original:
+        settings.network.cors_origins = original + ["http://testserver"]
+    yield
+    settings.network.cors_origins = original
