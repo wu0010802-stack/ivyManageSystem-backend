@@ -509,3 +509,145 @@ class CourseEnrolledOut(IvyBaseModel):
     course_id: int
     course_name: str
     items: list[CourseEnrolledItemOut]
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Phase 3.5 — api/activity/registrations.py 9 endpoint response_model
+#
+# 重用 _common.MutationResultOut/DeleteResultOut 解三個 mutation；其餘四個自訂
+# shape（admin_create / list / detail / basic update / sweep）。datetime 欄位皆
+# 由 router 端 .isoformat() 後傳出 → 一律 Optional[str]（對齊 PublicCoursesItemOut
+# meeting_*_time 同 trap）。PII 欄位（student_name / birthday / parent_phone /
+# email / student_id / classroom_id）皆加 # pii-allow: 註解。
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class RegistrationCreateResultOut(IvyBaseModel):
+    """POST /registrations admin 新增報名回應（含候補資訊）。"""
+
+    message: str
+    id: int
+    waitlisted: bool
+    waitlist_courses: list[str]
+
+
+class RegistrationListItemOut(IvyBaseModel):
+    """GET /registrations items[] 單筆。
+
+    缺 STUDENTS_READ / GUARDIANS_READ 對應 PII 欄會被 router 端遮成 None
+    （student_id / birthday / classroom_id / parent_phone / email）。
+    """
+
+    id: int
+    student_name: str  # pii-allow: 後台才藝報名列表家長/學生顯示
+    student_id: Optional[int] = None  # pii-allow: 後台才藝報名列表家長/學生顯示
+    birthday: Optional[str] = None  # pii-allow: 後台才藝報名列表家長/學生顯示
+    class_name: Optional[str] = None
+    classroom_id: Optional[int] = None  # pii-allow: 後台才藝報名列表家長/學生顯示
+    parent_phone: Optional[str] = None  # pii-allow: 後台才藝報名列表家長/學生顯示
+    match_status: Optional[str] = None
+    pending_review: Optional[bool] = None
+    is_active: bool
+    email: Optional[str] = None  # pii-allow: 後台才藝報名列表家長/學生顯示
+    is_paid: bool
+    paid_amount: int
+    total_amount: int
+    payment_status: str
+    remark: str
+    school_year: Optional[int] = None
+    semester: Optional[int] = None
+    course_count: int
+    supply_count: int
+    course_names: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+
+class RegistrationListOut(IvyBaseModel):
+    """GET /registrations 列表 + 分頁 + 學期 echo。"""
+
+    items: list[RegistrationListItemOut]
+    total: int
+    skip: int
+    limit: int
+    school_year: Optional[int] = None
+    semester: Optional[int] = None
+
+
+class RegistrationDetailCourseOut(IvyBaseModel):
+    """GET /registrations/{id} courses[] 單筆。"""
+
+    id: int
+    course_id: int
+    name: str
+    price: int
+    status: str
+    confirm_deadline: Optional[str] = None
+
+
+class RegistrationDetailSupplyOut(IvyBaseModel):
+    """GET /registrations/{id} supplies[] 單筆。"""
+
+    id: int
+    supply_id: int
+    name: str
+    price: int
+
+
+class RegistrationDetailChangeOut(IvyBaseModel):
+    """GET /registrations/{id} changes[] 單筆稽核紀錄。"""
+
+    id: int
+    change_type: str
+    description: str
+    changed_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class RegistrationDetailOut(IvyBaseModel):
+    """GET /registrations/{id} 詳情（含 courses / supplies / changes 三 nested list）。"""
+
+    id: int
+    student_name: str  # pii-allow: 後台才藝報名詳情家長/學生顯示
+    student_id: Optional[int] = None  # pii-allow: 後台才藝報名詳情家長/學生顯示
+    birthday: Optional[str] = None  # pii-allow: 後台才藝報名詳情家長/學生顯示
+    class_name: Optional[str] = None
+    classroom_id: Optional[int] = None  # pii-allow: 後台才藝報名詳情家長/學生顯示
+    parent_phone: Optional[str] = None  # pii-allow: 後台才藝報名詳情家長/學生顯示
+    match_status: Optional[str] = None
+    pending_review: Optional[bool] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    email: Optional[str] = None  # pii-allow: 後台才藝報名詳情家長/學生顯示
+    is_paid: bool
+    paid_amount: int
+    payment_status: str
+    remark: str
+    courses: list[RegistrationDetailCourseOut]
+    supplies: list[RegistrationDetailSupplyOut]
+    changes: list[RegistrationDetailChangeOut]
+    total_amount: int
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class RegistrationBasicUpdateResultOut(IvyBaseModel):
+    """PUT /registrations/{id} 基本資料更新回應（含 diff 筆數）。"""
+
+    message: str
+    changed: int
+
+
+class WaitlistSweepResultOut(IvyBaseModel):
+    """POST /waitlist/sweep-expired 候補過期掃描結果。
+
+    expired / reminded / final_reminded 由 activity_service.sweep_expired_pending_promotions
+    回傳，含家長 T-24h 與 T-6h 提醒推送計數。
+    """
+
+    message: str
+    expired: int
+    reminded: int
+    final_reminded: int

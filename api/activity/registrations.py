@@ -78,6 +78,15 @@ from ._shared import (
     today_taipei,
 )
 from utils.academic import resolve_academic_term_filters
+from schemas._common import DeleteResultOut
+from schemas.activity_admin import (
+    RefundSuggestionResponse,
+    RegistrationBasicUpdateResultOut,
+    RegistrationCreateResultOut,
+    RegistrationDetailOut,
+    RegistrationListOut,
+    WaitlistSweepResultOut,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -111,7 +120,7 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 # ── 後台手動新增報名 ─────────────────────────────────────────────────────────
 
 
-@router.post("/registrations", status_code=201)
+@router.post("/registrations", status_code=201, response_model=RegistrationCreateResultOut)
 async def admin_create_registration(
     body: AdminRegistrationPayload,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -264,7 +273,7 @@ async def admin_create_registration(
 # ── 動態路由 /{registration_id}/... ─────────────────────────────────────────
 
 
-@router.get("/registrations")
+@router.get("/registrations", response_model=RegistrationListOut)
 async def get_registrations(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -423,7 +432,7 @@ async def get_registrations(
         session.close()
 
 
-@router.get("/registrations/{registration_id}")
+@router.get("/registrations/{registration_id}", response_model=RegistrationDetailOut)
 async def get_registration_detail(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -533,7 +542,7 @@ async def get_registration_detail(
         session.close()
 
 
-@router.put("/registrations/{registration_id}/remark")
+@router.put("/registrations/{registration_id}/remark", response_model=DeleteResultOut)
 async def update_remark(
     registration_id: int,
     body: RemarkUpdate,
@@ -573,7 +582,7 @@ async def update_remark(
         session.close()
 
 
-@router.put("/registrations/{registration_id}")
+@router.put("/registrations/{registration_id}", response_model=RegistrationBasicUpdateResultOut)
 async def update_registration_basic(
     registration_id: int,
     body: AdminRegistrationBasicUpdate,
@@ -655,7 +664,7 @@ async def update_registration_basic(
         session.close()
 
 
-@router.put("/registrations/{registration_id}/waitlist")
+@router.put("/registrations/{registration_id}/waitlist", response_model=DeleteResultOut)
 async def promote_waitlist(
     registration_id: int,
     background_tasks: BackgroundTasks,
@@ -717,7 +726,7 @@ async def promote_waitlist(
         session.close()
 
 
-@router.post("/waitlist/sweep-expired")
+@router.post("/waitlist/sweep-expired", response_model=WaitlistSweepResultOut)
 async def sweep_expired_waitlist_promotions(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
@@ -743,7 +752,7 @@ async def sweep_expired_waitlist_promotions(
         session.close()
 
 
-@router.delete("/registrations/{registration_id}")
+@router.delete("/registrations/{registration_id}", response_model=DeleteResultOut)
 async def delete_registration(
     registration_id: int,
     request: Request,
@@ -823,7 +832,7 @@ async def delete_registration(
         session.close()
 
 
-@router.get("/registrations/{registration_id}/refund-suggestion")
+@router.get("/registrations/{registration_id}/refund-suggestion", response_model=RefundSuggestionResponse)
 def get_refund_suggestion(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
