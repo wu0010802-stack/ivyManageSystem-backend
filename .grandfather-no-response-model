@@ -145,11 +145,7 @@ api/auth.py:end_impersonate
 api/auth.py:get_me
 api/auth.py:change_password
 api/auth.py:list_users
-api/auth.py:create_user
-api/auth.py:reset_password
 api/auth.py:get_permissions
-api/auth.py:update_user
-api/auth.py:delete_user
 api/classrooms.py:get_classrooms
 api/classrooms.py:get_classroom
 api/classrooms.py:get_classroom_enrollment_composition

@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
+from schemas._common import DeleteResultOut, MutationResultOut
 from utils.audit import write_login_audit, mark_soft_delete
 from utils.request_ip import get_client_ip
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
@@ -1113,7 +1114,7 @@ def list_users(
         session.close()
 
 
-@router.post("/users", status_code=201)
+@router.post("/users", status_code=201, response_model=MutationResultOut)
 def create_user(
     data: CreateUserRequest,
     current_user: dict = Depends(
@@ -1172,7 +1173,7 @@ def create_user(
         session.close()
 
 
-@router.put("/users/{user_id}/reset-password")
+@router.put("/users/{user_id}/reset-password", response_model=DeleteResultOut)
 def reset_password(
     user_id: int,
     data: ResetPasswordRequest,
@@ -1233,7 +1234,7 @@ def get_permissions():
         session.close()
 
 
-@router.put("/users/{user_id}")
+@router.put("/users/{user_id}", response_model=DeleteResultOut)
 def update_user(
     user_id: int,
     data: UpdateUserRequest,
@@ -1324,7 +1325,7 @@ def update_user(
         session.close()
 
 
-@router.delete("/users/{user_id}")
+@router.delete("/users/{user_id}", response_model=DeleteResultOut)
 def delete_user(
     user_id: int,
     current_user: dict = Depends(
