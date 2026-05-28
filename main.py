@@ -928,6 +928,13 @@ from utils.audit import AuditMiddleware
 
 app.add_middleware(AuditMiddleware)
 
+# KillSwitch 在 Audit 之後 add → 成為 Audit 的外層 wrapper（先執行於 Audit）。
+# 維護/唯讀模式 503 由此攔截，不會 propagate 進 AuditMiddleware → audit log
+# 不會被事故期間的 BLOCKED_* 噪音淹沒。
+from utils.kill_switch import KillSwitchMiddleware
+
+app.add_middleware(KillSwitchMiddleware)
+
 from utils.security_headers import SecurityHeadersMiddleware
 
 app.add_middleware(SecurityHeadersMiddleware)
