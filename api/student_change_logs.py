@@ -16,6 +16,7 @@ from sqlalchemy import or_
 
 from models.database import get_session, Student, Classroom
 from models.student_log import StudentChangeLog, CHANGE_LOG_REASON_OPTIONS, EVENT_TYPES
+from schemas._common import MutationResultOut
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -500,7 +501,9 @@ def export_change_logs(
                 ]
             )
 
-        filename = f"student_change_logs_{now_taipei_naive().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = (
+            f"student_change_logs_{now_taipei_naive().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
         return StreamingResponse(
             iter([buf.getvalue()]),
             media_type="text/csv; charset=utf-8",
@@ -510,7 +513,7 @@ def export_change_logs(
         session.close()
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=MutationResultOut)
 async def create_change_log(
     item: ChangeLogCreate,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -526,7 +529,7 @@ async def create_change_log(
         student = assert_student_access(session, current_user, item.student_id)
 
         event_date = datetime.strptime(item.event_date, "%Y-%m-%d").date()
-        if event_date > today_taipei():  
+        if event_date > today_taipei():
             raise HTTPException(
                 status_code=400,
                 detail="補登只能寫歷史事件；未來狀態變更請用「變更狀態」功能",
@@ -565,7 +568,7 @@ async def create_change_log(
         session.close()
 
 
-@router.put("/{log_id}")
+@router.put("/{log_id}", response_model=MutationResultOut)
 async def update_change_log(
     log_id: int,
     item: ChangeLogUpdate,
@@ -608,7 +611,7 @@ async def update_change_log(
         session.close()
 
 
-@router.delete("/{log_id}")
+@router.delete("/{log_id}", response_model=MutationResultOut)
 async def delete_change_log(
     log_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),

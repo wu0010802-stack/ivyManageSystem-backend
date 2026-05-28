@@ -252,10 +252,6 @@ api/leaves_quota.py:update_leave_quota
 api/leaves_workday.py:get_workday_hours
 api/line_webhook.py:line_webhook
 api/meetings.py:get_meetings
-api/meetings.py:create_meeting
-api/meetings.py:create_meetings_batch
-api/meetings.py:update_meeting
-api/meetings.py:delete_meeting
 api/meetings.py:get_meeting_summary
 api/monthly_fixed_costs.py:list_monthly_fixed_costs
 api/monthly_fixed_costs.py:upsert_monthly_fixed_cost
@@ -428,7 +424,6 @@ api/portfolio/reports.py:send_growth_report_to_line
 api/portfolio/student_attachments.py:list_student_attachments
 api/portfolio/timeline.py:get_timeline
 api/punch_corrections.py:list_punch_corrections
-api/punch_corrections.py:approve_punch_correction
 api/recruitment/competitors.py:get_geocode_pending_count
 api/recruitment/competitors.py:sync_kiang_data
 api/recruitment/competitors.py:get_campus_competition
@@ -513,9 +508,6 @@ api/student_change_logs.py:get_change_log_options
 api/student_change_logs.py:get_change_logs_summary
 api/student_change_logs.py:get_change_logs
 api/student_change_logs.py:export_change_logs
-api/student_change_logs.py:create_change_log
-api/student_change_logs.py:update_change_log
-api/student_change_logs.py:delete_change_log
 api/student_communications.py:get_options
 api/student_communications.py:list_communications
 api/student_communications.py:create_communication

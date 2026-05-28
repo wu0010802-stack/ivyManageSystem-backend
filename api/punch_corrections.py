@@ -17,6 +17,7 @@ from models.database import (
     User,
 )
 from models.approval import ApprovalStatus
+from schemas._common import DeleteResultOut
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import (
@@ -86,11 +87,17 @@ def list_punch_corrections(
         )
 
         if status == "pending":
-            query = query.filter(PunchCorrectionRequest.status == ApprovalStatus.PENDING.value)
+            query = query.filter(
+                PunchCorrectionRequest.status == ApprovalStatus.PENDING.value
+            )
         elif status == "approved":
-            query = query.filter(PunchCorrectionRequest.status == ApprovalStatus.APPROVED.value)
+            query = query.filter(
+                PunchCorrectionRequest.status == ApprovalStatus.APPROVED.value
+            )
         elif status == "rejected":
-            query = query.filter(PunchCorrectionRequest.status == ApprovalStatus.REJECTED.value)
+            query = query.filter(
+                PunchCorrectionRequest.status == ApprovalStatus.REJECTED.value
+            )
 
         if year and month:
             import calendar as cal_module
@@ -114,7 +121,9 @@ def list_punch_corrections(
         session.close()
 
 
-@router.put("/punch-corrections/{correction_id}/approve")
+@router.put(
+    "/punch-corrections/{correction_id}/approve", response_model=DeleteResultOut
+)
 def approve_punch_correction(
     correction_id: int,
     body: ApproveRequest,
@@ -138,7 +147,11 @@ def approve_punch_correction(
             raise HTTPException(status_code=404, detail="找不到此補打卡申請")
 
         if correction.status != ApprovalStatus.PENDING.value:
-            status_label = "已核准" if correction.status == ApprovalStatus.APPROVED.value else "已駁回"
+            status_label = (
+                "已核准"
+                if correction.status == ApprovalStatus.APPROVED.value
+                else "已駁回"
+            )
             raise HTTPException(
                 status_code=400, detail=f"此申請已{status_label}，無法再次審核"
             )

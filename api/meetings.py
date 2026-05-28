@@ -13,6 +13,8 @@ from pydantic import BaseModel
 from models.database import get_session, MeetingRecord, Employee, SalaryRecord
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from schemas._common import DeleteResultOut, MutationResultOut
+from schemas.meetings import MeetingBatchCreateOut
 from utils.approval_helpers import _get_finalized_salary_record
 from services.salary.constants import DEFAULT_MEETING_HOURS
 from services.salary.utils import lock_and_premark_stale
@@ -240,7 +242,7 @@ def get_meetings(
         session.close()
 
 
-@router.post("/meetings", status_code=201)
+@router.post("/meetings", status_code=201, response_model=MutationResultOut)
 def create_meeting(
     data: MeetingRecordCreate,
     current_user: dict = Depends(require_staff_permission(Permission.MEETINGS)),
@@ -301,7 +303,7 @@ def create_meeting(
         session.close()
 
 
-@router.post("/meetings/batch", status_code=201)
+@router.post("/meetings/batch", status_code=201, response_model=MeetingBatchCreateOut)
 def create_meetings_batch(
     data: MeetingBatchCreate,
     current_user: dict = Depends(require_staff_permission(Permission.MEETINGS)),
@@ -387,7 +389,7 @@ def create_meetings_batch(
         session.close()
 
 
-@router.put("/meetings/{record_id}")
+@router.put("/meetings/{record_id}", response_model=DeleteResultOut)
 def update_meeting(
     record_id: int,
     data: MeetingRecordUpdate,
@@ -434,7 +436,7 @@ def update_meeting(
         session.close()
 
 
-@router.delete("/meetings/{record_id}")
+@router.delete("/meetings/{record_id}", response_model=DeleteResultOut)
 def delete_meeting(
     record_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.MEETINGS)),
