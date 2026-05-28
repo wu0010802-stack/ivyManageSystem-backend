@@ -31,6 +31,13 @@ from utils.finance_guards import (
     require_finance_approve,
     require_not_self_edit,
 )
+from schemas.employees import (
+    EmployeeOut,
+    MutationResultOut,
+    OffboardResultOut,
+    ProbationAlertResponseOut,
+    TeacherOut,
+)
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
 from utils.audit import write_explicit_audit, mark_soft_delete
@@ -280,7 +287,7 @@ def get_employees(
         session.close()
 
 
-@router.get("/employees/probation-alerts")
+@router.get("/employees/probation-alerts", response_model=ProbationAlertResponseOut)
 async def get_probation_alerts(
     days: int = 60,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
@@ -330,7 +337,7 @@ async def get_probation_alerts(
         session.close()
 
 
-@router.get("/employees/{employee_id}")
+@router.get("/employees/{employee_id}", response_model=EmployeeOut)
 async def get_employee(
     employee_id: int,
     request: Request,
@@ -388,7 +395,7 @@ async def get_employee(
         session.close()
 
 
-@router.post("/employees", status_code=201)
+@router.post("/employees", status_code=201, response_model=MutationResultOut)
 async def create_employee(
     emp: EmployeeCreate,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
@@ -535,7 +542,7 @@ def _mark_employee_salary_stale(session, employee_id: int) -> int:
     )
 
 
-@router.put("/employees/{employee_id}")
+@router.put("/employees/{employee_id}", response_model=MutationResultOut)
 async def update_employee(
     employee_id: int,
     emp: EmployeeUpdate,
@@ -704,7 +711,7 @@ async def update_employee(
         session.close()
 
 
-@router.delete("/employees/{employee_id}")
+@router.delete("/employees/{employee_id}", response_model=MutationResultOut)
 async def delete_employee(
     employee_id: int,
     request: Request,
@@ -744,7 +751,7 @@ async def delete_employee(
         session.close()
 
 
-@router.post("/employees/{employee_id}/offboard")
+@router.post("/employees/{employee_id}/offboard", response_model=OffboardResultOut)
 async def offboard_employee(
     employee_id: int,
     req: OffboardRequest,
@@ -927,7 +934,7 @@ async def final_salary_preview(
     }
 
 
-@router.get("/teachers")
+@router.get("/teachers", response_model=list[TeacherOut])
 async def get_teachers(
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):

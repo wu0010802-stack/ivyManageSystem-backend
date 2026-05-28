@@ -40,6 +40,11 @@ from api.auth import (
     _check_ip_rate_limit,
     _ip_attempts as _login_ip_attempts,  # noqa: F401  (確保兩端 limiter 行為一致)
 )
+from schemas.parent_portal_auth import (
+    BindAdditionalChildOut,
+    BindFirstChildOut,
+    ParentRefreshOut,
+)
 from models.database import (
     Guardian,
     GuardianBindingCode,
@@ -265,6 +270,7 @@ def _hash_code(plain: str) -> str:
 
 def _now() -> datetime:
     return now_taipei_naive()
+
 
 def _build_user_payload(user: User) -> dict:
     return {
@@ -505,7 +511,7 @@ def liff_login(
         session.close()
 
 
-@router.post("/bind")
+@router.post("/bind", response_model=BindFirstChildOut)
 def bind_first_child(
     payload: BindRequest,
     request: Request,
@@ -611,7 +617,7 @@ def bind_first_child(
         session.close()
 
 
-@router.post("/bind-additional")
+@router.post("/bind-additional", response_model=BindAdditionalChildOut)
 def bind_additional_child(
     payload: BindRequest,
     request: Request,
@@ -706,7 +712,7 @@ def parent_logout(
     return Response(status_code=204)
 
 
-@router.post("/refresh")
+@router.post("/refresh", response_model=ParentRefreshOut)
 def parent_refresh(request: Request, response: Response):
     """以家長 refresh token 換發新 access + 新 refresh（rotation）。
 
