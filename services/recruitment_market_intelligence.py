@@ -12,6 +12,7 @@ from typing import Any, Iterable, Optional
 import requests
 from sqlalchemy import case, func
 from utils.external_calls import tagged_capture
+from utils.circuit_breaker import EXTERNAL_HTTP_BREAKER, BreakerOpenError
 
 from config import settings
 from models.recruitment import (
@@ -519,7 +520,9 @@ def _extract_xml_text(root: ET.Element, candidate_keys: Iterable[str]) -> Option
 
 def _request_json(url: str, *, params: Optional[dict[str, Any]] = None) -> Any:
     try:
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response = EXTERNAL_HTTP_BREAKER.call(
+            lambda: requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        )
     except Exception as exc:
         tagged_capture(exc, tag="external_http", level="error")
         raise
@@ -529,7 +532,9 @@ def _request_json(url: str, *, params: Optional[dict[str, Any]] = None) -> Any:
 
 def _request_text(url: str, *, params: Optional[dict[str, Any]] = None) -> str:
     try:
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response = EXTERNAL_HTTP_BREAKER.call(
+            lambda: requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        )
     except Exception as exc:
         tagged_capture(exc, tag="external_http", level="error")
         raise
@@ -541,8 +546,10 @@ def _post_json(
     url: str, *, payload: dict[str, Any], headers: Optional[dict[str, str]] = None
 ) -> Any:
     try:
-        response = requests.post(
-            url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
+        response = EXTERNAL_HTTP_BREAKER.call(
+            lambda: requests.post(
+                url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
+            )
         )
     except Exception as exc:
         tagged_capture(exc, tag="external_http", level="error")

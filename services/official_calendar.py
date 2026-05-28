@@ -13,6 +13,7 @@ from typing import Any
 import requests
 from requests import Response
 from utils.external_calls import tagged_capture
+from utils.circuit_breaker import EXTERNAL_HTTP_BREAKER, BreakerOpenError
 from requests.adapters import HTTPAdapter
 from sqlalchemy import or_
 
@@ -115,7 +116,9 @@ def _select_official_distribution(distribution: list[dict], minguo_year: int) ->
 def _get_resource_metadata(year: int) -> dict[str, str]:
     minguo_year = year - 1911
     try:
-        resp = requests.get(OFFICIAL_CALENDAR_DATASET_URL, timeout=20)
+        resp = EXTERNAL_HTTP_BREAKER.call(
+            lambda: requests.get(OFFICIAL_CALENDAR_DATASET_URL, timeout=20)
+        )
     except Exception as exc:
         tagged_capture(exc, tag="external_http", level="error")
         raise

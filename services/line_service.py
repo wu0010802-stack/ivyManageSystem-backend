@@ -24,6 +24,7 @@ import time
 import requests
 
 from utils.external_calls import tagged_capture
+from utils.circuit_breaker import LINE_BREAKER, BreakerOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -344,16 +345,20 @@ class LineService:
         if not self._enabled or not self._token or not group_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": group_id,
-                    "messages": [{"type": "text", "text": text}],
-                },
-                timeout=5,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": group_id,
+                        "messages": [{"type": "text", "text": text}],
+                    },
+                    timeout=5,
+                )
             )
             return _record_line_response(resp, context="push_text_to_group")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
             return _record_line_response(exc, context="push_text_to_group")
 
@@ -383,16 +388,20 @@ class LineService:
         if not self._enabled or not self._token or not line_user_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": line_user_id,
-                    "messages": [{"type": "text", "text": text}],
-                },
-                timeout=5,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": line_user_id,
+                        "messages": [{"type": "text", "text": text}],
+                    },
+                    timeout=5,
+                )
             )
             return _record_line_response(resp, context="_push_to_user")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
             return _record_line_response(exc, context="_push_to_user")
 
@@ -416,22 +425,26 @@ class LineService:
         if not self._enabled or not self._token or not line_user_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": line_user_id,
-                    "messages": [
-                        {
-                            "type": "flex",
-                            "altText": alt_text,
-                            "contents": flex_content,
-                        }
-                    ],
-                },
-                timeout=5,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": line_user_id,
+                        "messages": [
+                            {
+                                "type": "flex",
+                                "altText": alt_text,
+                                "contents": flex_content,
+                            }
+                        ],
+                    },
+                    timeout=5,
+                )
             )
             return _record_line_response(resp, context="push_flex_to_user")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
             return _record_line_response(exc, context="push_flex_to_user")
 
@@ -442,22 +455,26 @@ class LineService:
         if not self._enabled or not self._token or not line_user_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": line_user_id,
-                    "messages": [
-                        {
-                            "type": "text",
-                            "text": text,
-                            "quickReply": quick_reply,
-                        }
-                    ],
-                },
-                timeout=5,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": line_user_id,
+                        "messages": [
+                            {
+                                "type": "text",
+                                "text": text,
+                                "quickReply": quick_reply,
+                            }
+                        ],
+                    },
+                    timeout=5,
+                )
             )
             return _record_line_response(resp, context="_push_to_user_with_quick_reply")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
             return _record_line_response(exc, context="_push_to_user_with_quick_reply")
 
@@ -468,22 +485,26 @@ class LineService:
         if not self._token or not reply_token:
             return False
         try:
-            resp = requests.post(
-                _LINE_REPLY_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "replyToken": reply_token,
-                    "messages": [
-                        {
-                            "type": "text",
-                            "text": text,
-                            "quickReply": quick_reply,
-                        }
-                    ],
-                },
-                timeout=5,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_REPLY_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "replyToken": reply_token,
+                        "messages": [
+                            {
+                                "type": "text",
+                                "text": text,
+                                "quickReply": quick_reply,
+                            }
+                        ],
+                    },
+                    timeout=5,
+                )
             )
             return _record_line_response(resp, context="_reply_with_quick_reply")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
             return _record_line_response(exc, context="_reply_with_quick_reply")
 
@@ -492,16 +513,20 @@ class LineService:
         if not self._token or not reply_token:
             return False
         try:
-            resp = requests.post(
-                _LINE_REPLY_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "replyToken": reply_token,
-                    "messages": [{"type": "text", "text": text}],
-                },
-                timeout=5,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_REPLY_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "replyToken": reply_token,
+                        "messages": [{"type": "text", "text": text}],
+                    },
+                    timeout=5,
+                )
             )
             return _record_line_response(resp, context="_reply")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
             return _record_line_response(exc, context="_reply")
 

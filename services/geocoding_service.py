@@ -14,6 +14,7 @@ import requests
 
 from config import settings
 from utils.external_calls import tagged_capture
+from utils.circuit_breaker import EXTERNAL_HTTP_BREAKER, BreakerOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -156,15 +157,17 @@ def _geocode_with_google(address: str) -> Optional[dict]:
         return None
 
     try:
-        resp = requests.get(
-            _GOOGLE_GEOCODING_URL,
-            params={
-                "address": _normalize_query_address(address),
-                "key": _GOOGLE_MAPS_API_KEY,
-                "language": "zh-TW",
-                "region": "tw",
-            },
-            timeout=_GEOCODING_TIMEOUT,
+        resp = EXTERNAL_HTTP_BREAKER.call(
+            lambda: requests.get(
+                _GOOGLE_GEOCODING_URL,
+                params={
+                    "address": _normalize_query_address(address),
+                    "key": _GOOGLE_MAPS_API_KEY,
+                    "language": "zh-TW",
+                    "region": "tw",
+                },
+                timeout=_GEOCODING_TIMEOUT,
+            )
         )
     except Exception as exc:
         tagged_capture(exc, tag="external_http", level="error")
@@ -211,11 +214,13 @@ def _geocode_with_nominatim(address: str) -> Optional[dict]:
             params["email"] = _GEOCODING_CONTACT_EMAIL
 
         try:
-            resp = requests.get(
-                _NOMINATIM_GEOCODING_URL,
-                params=params,
-                headers={"User-Agent": _GEOCODING_USER_AGENT},
-                timeout=_GEOCODING_TIMEOUT,
+            resp = EXTERNAL_HTTP_BREAKER.call(
+                lambda: requests.get(
+                    _NOMINATIM_GEOCODING_URL,
+                    params=params,
+                    headers={"User-Agent": _GEOCODING_USER_AGENT},
+                    timeout=_GEOCODING_TIMEOUT,
+                )
             )
         except Exception as exc:
             tagged_capture(exc, tag="external_http", level="error")

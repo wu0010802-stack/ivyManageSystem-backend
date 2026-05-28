@@ -18,6 +18,7 @@ from supabase import create_client
 
 from config import settings
 from utils.external_calls import tagged_capture
+from utils.circuit_breaker import SUPABASE_BREAKER, BreakerOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,12 @@ class SupabaseStorage:
         bucket = self._client.storage.from_(_resolve_bucket(module))
         # upsert=true：若同 key 存在則覆蓋（呼叫端通常用 uuid filename 不會撞）
         try:
-            bucket.upload(
-                path=key,
-                file=data,
-                file_options={"content-type": content_type, "upsert": "true"},
+            SUPABASE_BREAKER.call(
+                lambda: bucket.upload(
+                    path=key,
+                    file=data,
+                    file_options={"content-type": content_type, "upsert": "true"},
+                )
             )
         except Exception as exc:
             tagged_capture(exc, tag="supabase", level="error")
@@ -66,7 +69,7 @@ class SupabaseStorage:
     def read(self, module: str, key: str) -> bytes:
         bucket = self._client.storage.from_(_resolve_bucket(module))
         try:
-            return bucket.download(key)
+            return SUPABASE_BREAKER.call(lambda: bucket.download(key))
         except Exception as exc:
             tagged_capture(exc, tag="supabase", level="error")
             raise
@@ -74,7 +77,7 @@ class SupabaseStorage:
     def delete(self, module: str, key: str) -> None:
         bucket = self._client.storage.from_(_resolve_bucket(module))
         try:
-            bucket.remove([key])
+            SUPABASE_BREAKER.call(lambda: bucket.remove([key]))
         except Exception as e:
             # idempotent：物件已不存在不 raise；保留既有行為
             tagged_capture(e, tag="supabase", level="warning")
@@ -90,10 +93,10 @@ class SupabaseStorage:
         try:
             parent = key.rsplit("/", 1)
             if len(parent) == 1:
-                items = bucket.list()
+                items = SUPABASE_BREAKER.call(lambda: bucket.list())
                 filename = key
             else:
-                items = bucket.list(parent[0])
+                items = SUPABASE_BREAKER.call(lambda p=parent[0]: bucket.list(p))
                 filename = parent[1]
             return any(item.get("name") == filename for item in items)
         except Exception as exc:
@@ -107,7 +110,7 @@ class SupabaseStorage:
     def signed_url(self, module: str, key: str, ttl_seconds: int) -> str:
         bucket = self._client.storage.from_(_resolve_bucket(module))
         try:
-            res = bucket.create_signed_url(key, ttl_seconds)
+            res = SUPABASE_BREAKER.call(lambda: bucket.create_signed_url(key, ttl_seconds))
         except Exception as exc:
             tagged_capture(exc, tag="supabase", level="error")
             raise
