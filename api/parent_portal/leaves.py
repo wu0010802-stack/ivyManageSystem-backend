@@ -38,6 +38,7 @@ from services.student_leave_service import (
     apply_attendance_for_leave,
     revert_attendance_for_leave,
 )
+from services.business_errors.parent import ParentNotAuthorized
 from utils.auth import require_parent_role
 from utils.file_upload import (
     read_upload_with_size_check,
@@ -289,7 +290,7 @@ def get_leave(
         .first()
     )
     if item is None or item.student_id not in owned_student_ids:
-        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        raise ParentNotAuthorized("查無此資料或無權存取")
     attachments = _load_leave_attachments(session, item.id)
     return _serialize(item, attachments)
 
@@ -333,7 +334,7 @@ async def upload_leave_attachment(
         .first()
     )
     if item is None or item.student_id not in owned_student_ids:
-        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        raise ParentNotAuthorized("查無此資料或無權存取")
     today = today_taipei()
     if not (item.status == "approved" and item.start_date > today):
         raise HTTPException(
@@ -393,7 +394,7 @@ def delete_leave_attachment(
         .first()
     )
     if item is None or item.student_id not in owned_student_ids:
-        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        raise ParentNotAuthorized("查無此資料或無權存取")
     today = today_taipei()
     if not (item.status == "approved" and item.start_date > today):
         raise HTTPException(
@@ -441,7 +442,7 @@ def cancel_leave(
         .first()
     )
     if item is None or item.student_id not in owned_student_ids:
-        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        raise ParentNotAuthorized("查無此資料或無權存取")
     if item.status != "approved":
         raise HTTPException(status_code=400, detail=f"狀態為 {item.status}，無法取消")
     if item.start_date <= today:
