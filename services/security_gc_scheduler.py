@@ -64,7 +64,7 @@ def _run_rate_limit_gc() -> None:
     # 多 worker 部署時以 advisory lock（5 分鐘窗口 bucket）避免兩 worker 同時 DELETE
     # 相同列；cleanup_rate_limit_buckets 內部用自己的 connection，advisory lock 是
     # namespace mutex 不會干擾。
-    with scheduler_iteration("security_rate_limit_gc"):
+    with scheduler_iteration("security_rate_limit_gc", expected_interval_seconds=_RATE_LIMIT_GC_INTERVAL_SEC):
         from utils.rate_limit import cleanup_rate_limit_buckets
 
         with session_scope() as lock_session:
@@ -83,7 +83,7 @@ def _run_rate_limit_gc() -> None:
 def _run_jwt_blocklist_gc() -> None:
     # 多 worker 部署時以 advisory lock（6 小時窗口 bucket）互斥；cleanup_jwt_blocklist
     # 內部用自己的 connection，advisory lock 不阻擋實際 DELETE。
-    with scheduler_iteration("security_jwt_blocklist_gc"):
+    with scheduler_iteration("security_jwt_blocklist_gc", expected_interval_seconds=_JWT_BLOCKLIST_GC_INTERVAL_SEC):
         from utils.auth import cleanup_jwt_blocklist
 
         with session_scope() as lock_session:
