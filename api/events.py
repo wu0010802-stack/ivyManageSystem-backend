@@ -17,6 +17,7 @@ from utils.excel_utils import SafeWorksheet
 from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent, Holiday, SalaryRecord
+from schemas._common import DeleteResultOut
 from services.official_calendar import build_admin_calendar_feed
 from utils.auth import require_staff_permission
 from utils.error_messages import EVENT_NOT_FOUND
@@ -283,7 +284,7 @@ def update_event(
         session.close()
 
 
-@router.delete("/events/{event_id}")
+@router.delete("/events/{event_id}", response_model=DeleteResultOut)
 def delete_event(
     event_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),

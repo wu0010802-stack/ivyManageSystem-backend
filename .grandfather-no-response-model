@@ -105,7 +105,6 @@ api/announcements.py:delete_announcement
 api/announcements.py:list_parent_recipients
 api/announcements.py:replace_parent_recipients
 api/approval_settings.py:get_approval_policies
-api/approval_settings.py:update_approval_policies
 api/approval_settings.py:get_approval_logs
 api/approvals.py:get_upcoming_events
 api/approvals.py:get_approval_summary
@@ -194,7 +193,6 @@ api/events.py:get_calendar_feed
 api/events.py:get_event
 api/events.py:create_event
 api/events.py:update_event
-api/events.py:delete_event
 api/events.py:get_holiday_import_template
 api/events.py:import_holidays
 api/exports.py:export_employees
@@ -256,7 +254,6 @@ api/meetings.py:get_meeting_summary
 api/monthly_fixed_costs.py:list_monthly_fixed_costs
 api/monthly_fixed_costs.py:upsert_monthly_fixed_cost
 api/monthly_fixed_costs.py:batch_upsert_monthly_fixed_costs
-api/monthly_fixed_costs.py:delete_monthly_fixed_cost
 api/notifications.py:get_notification_summary
 api/offboarding.py:download_offboarding_bundle
 api/offboarding.py:get_certificate_pdf

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from models.database import MonthlyFixedCost, get_session
 from models.monthly_fixed_cost import FIXED_COST_CATEGORIES
+from schemas._common import DeleteResultOut
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.finance_cache import invalidate_finance_summary_cache
@@ -279,7 +280,7 @@ async def batch_upsert_monthly_fixed_costs(
         session.close()
 
 
-@router.delete("/monthly-fixed-costs/{cost_id}")
+@router.delete("/monthly-fixed-costs/{cost_id}", response_model=DeleteResultOut)
 async def delete_monthly_fixed_cost(
     cost_id: int,
     request: Request,

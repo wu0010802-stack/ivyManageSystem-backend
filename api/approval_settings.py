@@ -10,6 +10,7 @@ from utils.errors import raise_safe_500
 from pydantic import BaseModel
 
 from models.database import get_session, ApprovalPolicy, ApprovalLog
+from schemas._common import DeleteResultOut
 from utils.auth import get_current_user, require_staff_permission
 from utils.permissions import Permission, has_permission
 
@@ -78,7 +79,7 @@ def get_approval_policies(
         session.close()
 
 
-@router.put("/approval-settings/policies")
+@router.put("/approval-settings/policies", response_model=DeleteResultOut)
 def update_approval_policies(
     body: PolicyUpdateRequest,
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
