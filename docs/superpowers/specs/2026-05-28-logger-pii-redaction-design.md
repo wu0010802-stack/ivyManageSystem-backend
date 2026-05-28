@@ -288,3 +288,9 @@ PR 合併 + 後端重啟後 USER 手動驗證：
 - 若 prod log 仍見漏網 PII pattern，補 denylist substring
 - 改 36+ logger calls 改用 entity_id only（雙保險）— 屬非 hardening 改善
 - 結構化 log schema：強制 logger.info(...,extra={"entity_id": ...}) 避開 free-form msg
+- **既有 sentry denylist `guardian` substring 連帶遮 guardian_id (FK debug 失 context)**：
+  6 處 logger call 受影響（api/guardians_admin.py:118 / api/students.py:1386 /
+  api/parent_portal/auth.py × 3 / services/pii_retention_scheduler.py:117）。屬
+  既有 sentry_init.py 設計繼承，本 PR 沒新增 collision。若 ops 反映 debug
+  困擾，補 `guardian_id` 進 `_PII_KEY_EXEMPT_SUBSTRINGS` 即可 (同 username 級
+  trade-off)。reviewer 2026-05-28 抓。
