@@ -55,3 +55,6 @@ from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
 # 2026-05-28 Phase 4 P1 resilience：Supabase fallback + LINE token health tables
 from models.pending_uploads import PendingUpload  # noqa: F401
 from models.integration_health import LineTokenHealth  # noqa: F401
+
+# 2026-05-28 Spec F：員工端 refresh token（Base.metadata.create_all 需要此 import）
+from models.staff_refresh_token import StaffRefreshToken  # noqa: F401
