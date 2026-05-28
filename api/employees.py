@@ -33,6 +33,7 @@ from utils.finance_guards import (
 )
 from schemas.employees import (
     EmployeeOut,
+    FinalSalaryPreviewOut,
     MutationResultOut,
     OffboardResultOut,
     ProbationAlertResponseOut,
@@ -824,7 +825,10 @@ async def offboard_employee(
         session.close()
 
 
-@router.get("/employees/{employee_id}/final-salary-preview")
+@router.get(
+    "/employees/{employee_id}/final-salary-preview",
+    response_model=FinalSalaryPreviewOut,
+)
 async def final_salary_preview(
     employee_id: int,
     year: int,

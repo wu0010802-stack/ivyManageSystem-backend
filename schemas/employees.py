@@ -145,3 +145,27 @@ class OffboardResultOut(IvyBaseModel):
     resign_reason: Optional[str] = None  # pii-allow: 離職原因（admin 端看）
     is_active: bool
     user_account_revoked: bool
+
+
+class FinalSalaryPreviewOut(IvyBaseModel):
+    """GET /employees/{id}/final-salary-preview 離職薪資預覽（含未休特休折算）。
+
+    口徑：薪資引擎 preview_salary_calculation（不寫 DB）+ 月中離職折算 note
+    + 勞基法 §38(4) 未休特休工資。SALARY_READ + self-or-FULL_SALARY_ROLES。
+    """
+
+    year: int
+    month: int
+    contracted_base_salary: float  # pii-allow: 員工薪資（admin/hr/self gate 在 router）
+    base_salary: float  # pii-allow: 折算後底薪
+    proration_note: Optional[str] = None
+    festival_bonus: float  # pii-allow: 節金（含在 gross_salary）
+    gross_salary: float  # pii-allow: 應發
+    total_deduction: float  # pii-allow: 扣項合計
+    labor_insurance: float  # pii-allow: 勞保自付
+    health_insurance: float  # pii-allow: 健保自付
+    pension: float  # pii-allow: 自提退休金
+    net_salary: float  # pii-allow: 實發
+    unused_annual_leave_hours: float
+    unused_annual_leave_compensation: float  # pii-allow: 未休特休折算工資
+    net_salary_with_unused_annual: float  # pii-allow: 實發 + 未休特休
