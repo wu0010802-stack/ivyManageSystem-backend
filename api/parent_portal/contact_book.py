@@ -30,6 +30,10 @@ from models.database import (
     StudentContactBookReply,
 )
 from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK
+from services.business_errors.parent import (
+    ContactBookNotPublished,
+    PortalDataUnavailable,
+)
 from utils.audit import mark_soft_delete, write_explicit_audit
 from utils.auth import require_parent_role
 
@@ -131,10 +135,10 @@ def _get_entry_for_parent(
         .first()
     )
     if not entry:
-        raise HTTPException(status_code=404, detail="聯絡簿不存在")
+        raise PortalDataUnavailable("聯絡簿不存在")
     if entry.published_at is None:
         # 草稿對家長一律 404，避免 enumeration
-        raise HTTPException(status_code=404, detail="聯絡簿不存在")
+        raise ContactBookNotPublished("聯絡簿不存在")
     _assert_student_owned(session, user_id, entry.student_id)
     return entry
 
