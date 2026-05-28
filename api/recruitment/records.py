@@ -42,13 +42,19 @@ from api.recruitment.shared import (
     _safe_normalize_roc_month,
     _to_dict,
 )
+from schemas.recruitment_records import (
+    RecruitmentRecordConvertOut,
+    RecruitmentRecordImportResultOut,
+    RecruitmentRecordListOut,
+    RecruitmentRecordOut,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recruitment", tags=["recruitment-records"])
 
 
-@router.get("/records")
+@router.get("/records", response_model=RecruitmentRecordListOut)
 def list_recruitment_records(
     month: Optional[str] = Query(None),
     grade: Optional[str] = Query(None),
@@ -167,7 +173,7 @@ def _auto_sync_periods_for_months(session, months: set) -> None:
         logger.info("自動同步期間 [%s] 完成", p.period_name)
 
 
-@router.post("/records", status_code=201)
+@router.post("/records", status_code=201, response_model=RecruitmentRecordOut)
 def create_recruitment_record(
     payload: RecruitmentVisitCreate,
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -183,7 +189,7 @@ def create_recruitment_record(
         return _to_dict(record)
 
 
-@router.put("/records/{record_id}")
+@router.put("/records/{record_id}", response_model=RecruitmentRecordOut)
 def update_recruitment_record(
     record_id: int,
     payload: RecruitmentVisitUpdate,
@@ -220,7 +226,7 @@ def delete_recruitment_record(
         _auto_sync_periods_for_months(session, {month})
 
 
-@router.post("/import", status_code=201)
+@router.post("/import", status_code=201, response_model=RecruitmentRecordImportResultOut)
 def import_recruitment_records(
     records: List[ImportRecord],
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -306,6 +312,7 @@ class ConvertRecordRequest(BaseModel):
     status_code=201,
     summary="[deprecated] 改用 POST /recruitment/funnel/visits/{visit_id}/transition",
     deprecated=True,
+    response_model=RecruitmentRecordConvertOut,
 )
 def convert_recruitment_record_to_student(
     record_id: int,
