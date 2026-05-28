@@ -21,7 +21,8 @@ class StorageSettings(BaseSettings):
         default=None, validation_alias="SUPABASE_SERVICE_ROLE_KEY", repr=False
     )
     supabase_signed_url_ttl: int = Field(
-        default=3600, validation_alias="SUPABASE_STORAGE_SIGNED_URL_TTL"
+        default=300,  # 3600→300（5 分鐘）。Prod 若 UX 有問題，env override 可暫 revert
+        validation_alias="SUPABASE_STORAGE_SIGNED_URL_TTL",
     )
     growth_report_root: Path = Field(
         default=Path("./growth_reports"), validation_alias="GROWTH_REPORT_ROOT"
