@@ -38,16 +38,8 @@ class LeaveApproveResultOut(IvyBaseModel):
     warning: Optional[str] = None
 
 
-class LeaveImportFailureItem(IvyBaseModel):
-    """import 單筆失敗紀錄（保留 any 因 caller 結構不固定）。"""
-
-    row: Optional[int] = None
-    error: str
-    data: Optional[dict[str, Any]] = None
-
-
-class LeaveImportResultOut(IvyBaseModel):
-    """POST /leaves/import Excel 批次匯入回傳。"""
-
-    succeeded: int
-    failed: list[LeaveImportFailureItem]
+# Backward-compat re-export — moved to schemas._common for cross-router reuse.
+from schemas._common import (
+    ImportFailureItem as LeaveImportFailureItem,
+)  # noqa: E402,F401
+from schemas._common import ImportResultOut as LeaveImportResultOut  # noqa: E402,F401

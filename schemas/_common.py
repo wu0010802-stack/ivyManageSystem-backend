@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from schemas._base import IvyBaseModel
 
@@ -38,3 +38,18 @@ class BulkOpResultOut(IvyBaseModel):
     results: list[BulkOpItemResult]
     success_count: int
     fail_count: int
+
+
+class ImportFailureItem(IvyBaseModel):
+    """Excel import 單筆失敗紀錄（caller 自訂 data shape）。"""
+
+    row: Optional[int] = None
+    error: str
+    data: Optional[dict[str, Any]] = None
+
+
+class ImportResultOut(IvyBaseModel):
+    """Excel 批次匯入回傳共用 shape — {succeeded, failed}。"""
+
+    succeeded: int
+    failed: list[ImportFailureItem]
