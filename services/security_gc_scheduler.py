@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_GC_INTERVAL_SEC = 5 * 60
 # 資安掃描 2026-05-07 P1：原 24h 太長，改 6h；blocklist 內容輕（只 jti+exp）多跑無壓力。
 _JWT_BLOCKLIST_GC_INTERVAL_SEC = 6 * 60 * 60
+# P0b audit_log retention GC: 每日跑一次（spec 2026-05-28-audit-pii-redact-retention）
+_AUDIT_LOG_GC_INTERVAL_SEC = 24 * 60 * 60
 
 
 def scheduler_enabled() -> bool:
@@ -36,12 +38,13 @@ def scheduler_enabled() -> bool:
 
 
 async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
-    """主迴圈：定期執行兩個 GC。
+    """主迴圈：定期執行 GC（rate_limit / jwt_blocklist / audit_log）。
 
-    迴圈以 60 秒為基本心跳，分別追蹤兩個 GC 的下次執行時間。
+    迴圈以 60 秒為基本心跳，分別追蹤各 GC 的下次執行時間。
     """
     last_rate_gc = 0.0
     last_jwt_gc = 0.0
+    last_audit_gc = 0.0
     logger.info("security_gc_scheduler started")
     try:
         while not stop_event.is_set():
@@ -52,6 +55,9 @@ async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
             if now - last_jwt_gc >= _JWT_BLOCKLIST_GC_INTERVAL_SEC:
                 _run_jwt_blocklist_gc()
                 last_jwt_gc = now
+            if now - last_audit_gc >= _AUDIT_LOG_GC_INTERVAL_SEC:
+                _run_audit_log_gc()
+                last_audit_gc = now
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
@@ -101,3 +107,23 @@ def _run_jwt_blocklist_gc() -> None:
                     datetime.now(timezone.utc).isoformat(),
                     deleted,
                 )
+
+
+def _run_audit_log_gc() -> None:
+    """P0b: audit_logs retention GC（每日跑）。
+
+    settings.scheduler.audit_gc_enabled=False 時整段跳過。
+    內部已用 advisory_lock 防多 worker 並發。
+    """
+    if not bool(get_settings().scheduler.audit_gc_enabled):
+        logger.debug("audit_gc disabled by settings, skip")
+        return
+
+    from utils.audit_log_gc import run_audit_log_gc_once
+
+    try:
+        deleted = run_audit_log_gc_once(session_factory=session_scope)
+        if deleted > 0:
+            logger.info("audit_log GC: 總刪除 %s 列", deleted)
+    except Exception as exc:
+        logger.exception("audit_log GC 失敗：%s", exc)

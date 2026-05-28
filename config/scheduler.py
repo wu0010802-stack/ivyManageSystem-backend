@@ -49,6 +49,10 @@ class SchedulerSettings(BaseSettings):
     finance_reconciliation_enabled: BoolEnv = False
     security_gc_disabled: BoolEnv = False
 
+    # P0b Audit log retention GC (spec 2026-05-28-audit-pii-redact-retention-design.md)
+    # 預設 True：與 redaction-at-write 同步上線。HR 簽合規 SOP 前可在 prod 暫設 False。
+    audit_gc_enabled: BoolEnv = True
+
     # PDF worker (growth report background generation)
     # max_concurrency=4：避免單機群體生成壓垮 starlette threadpool（預設 40 slot）
     # recovery_enabled：啟動時把孤兒 'generating' row 標 failed。本 repo prod 走
