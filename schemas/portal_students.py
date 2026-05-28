@@ -216,8 +216,8 @@ class StudentDetailOut(IvyBaseModel):
 
     student: StudentDetailStudent
     classroom: Optional[StudentDetailClassroom] = None
-    guardians: list[StudentDetailGuardian]
-    health: StudentDetailHealth
+    guardians: list[StudentDetailGuardian]  # pii-allow: nested block 名（教師端必看）
+    health: StudentDetailHealth  # pii-allow: nested block 名（健康資料子結構）
     attendance_30d: StudentDetailAttendance30d
     attendance_this_month: StudentDetailAttendanceThisMonth
     transfer_history: Any  # _build_transfer_history 結構由 helper 決定，未型別化
