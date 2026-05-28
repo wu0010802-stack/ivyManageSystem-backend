@@ -73,6 +73,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     elapsed_ms,
                     request_id,
                 )
+                # 累計 sliding window；達 threshold + 過 cooldown 即觸 LINE alert
+                from utils.slow_request_alerter import record_slow
+
+                record_slow(path, elapsed_ms, status)
             else:
                 logger.info(
                     "%s %s → %d (%.1fms) [rid=%s]",
