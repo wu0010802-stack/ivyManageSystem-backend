@@ -706,13 +706,14 @@ def refresh_token(request: Request):
                     "token_version": _user.token_version,
                 }
             )
+            _username_for_audit = _user.username
         finally:
             _session.close()
 
         write_login_audit(
             request,
             action="TOKEN_REFRESH",  # 對齊既有 audit action（test_audit_login.py 用此名）
-            username=None,
+            username=_username_for_audit,  # 對齊既存 test 期望 (帶實際 username 非 None)
             user_id=rotated_user_id,
         )
         _resp = JSONResponse(content={"message": "refreshed"})
