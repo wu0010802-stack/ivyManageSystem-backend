@@ -22,6 +22,16 @@ from models.database import (
 from services.workday_rules import classify_day, load_day_rule_maps
 from utils.auth import get_current_user
 from utils.schedule_utils import check_weekly_hours_warning
+from schemas._common import DeleteResultOut
+from schemas.portal_schedule import (
+    ScheduleMyScheduleOut,
+    ScheduleSwapCandidateOut,
+    ScheduleSwapCreateOut,
+    ScheduleSwapPendingCountOut,
+    ScheduleSwapRequestOut,
+    ScheduleSwapRespondOut,
+)
+
 from ._shared import (
     _get_employee,
     _get_employee_shift_for_date,
@@ -74,7 +84,7 @@ def _assert_swap_snapshot_fresh(session, swap) -> None:
         )
 
 
-@router.get("/my-schedule")
+@router.get("/my-schedule", response_model=ScheduleMyScheduleOut)
 def get_my_schedule(
     request: Request,
     response: Response,
@@ -194,7 +204,7 @@ def get_my_schedule(
         session.close()
 
 
-@router.get("/swap-candidates")
+@router.get("/swap-candidates", response_model=list[ScheduleSwapCandidateOut])
 def get_swap_candidates(
     swap_date: str = Query(..., alias="date"),
     current_user: dict = Depends(get_current_user),
@@ -301,7 +311,7 @@ def get_swap_candidates(
         session.close()
 
 
-@router.get("/swap-requests")
+@router.get("/swap-requests", response_model=list[ScheduleSwapRequestOut])
 def get_swap_requests(
     current_user: dict = Depends(get_current_user),
 ):
@@ -368,7 +378,7 @@ def get_swap_requests(
         session.close()
 
 
-@router.post("/swap-requests", status_code=201)
+@router.post("/swap-requests", status_code=201, response_model=ScheduleSwapCreateOut)
 def create_swap_request(
     data: SwapRequestCreate,
     current_user: dict = Depends(get_current_user),
@@ -476,7 +486,7 @@ def create_swap_request(
         session.close()
 
 
-@router.post("/swap-requests/{request_id}/respond")
+@router.post("/swap-requests/{request_id}/respond", response_model=ScheduleSwapRespondOut)
 def respond_swap_request(
     request_id: int,
     data: SwapRequestRespond,
@@ -615,7 +625,7 @@ def respond_swap_request(
         session.close()
 
 
-@router.post("/swap-requests/{request_id}/cancel")
+@router.post("/swap-requests/{request_id}/cancel", response_model=DeleteResultOut)
 def cancel_swap_request(
     request_id: int,
     current_user: dict = Depends(get_current_user),
@@ -649,7 +659,7 @@ def cancel_swap_request(
         session.close()
 
 
-@router.get("/swap-pending-count")
+@router.get("/swap-pending-count", response_model=ScheduleSwapPendingCountOut)
 def get_swap_pending_count(
     current_user: dict = Depends(get_current_user),
 ):
