@@ -19,6 +19,14 @@ from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
 from schemas._common import DeleteResultOut, MutationResultOut
+from schemas.auth import (
+    AuthAdminUserItemOut,
+    AuthLoginResultOut,
+    AuthMessageOut,
+    AuthPermissionsDefinitionOut,
+    AuthUserOut,
+    AuthUserResultOut,
+)
 from utils.audit import write_login_audit, mark_soft_delete
 from utils.request_ip import get_client_ip
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
@@ -361,7 +369,7 @@ class ImpersonateRequest(BaseModel):
 # ============ Public Routes ============
 
 
-@router.post("/impersonate")
+@router.post("/impersonate", response_model=AuthUserResultOut)
 def impersonate_user(
     data: ImpersonateRequest,
     request: Request,
@@ -482,7 +490,7 @@ def impersonate_user(
         session.close()
 
 
-@router.post("/login")
+@router.post("/login", response_model=AuthLoginResultOut)
 def login(data: LoginRequest, request: Request):
     """教師/管理員登入"""
     client_ip = get_client_ip(request) or "unknown"
@@ -621,7 +629,7 @@ def login(data: LoginRequest, request: Request):
 # ============ Token Refresh ============
 
 
-@router.post("/refresh")
+@router.post("/refresh", response_model=AuthUserResultOut)
 def refresh_token(request: Request):
     """以現有 token（可為剛過期）換發新 token。
     寬限期內的過期 token 仍可刷新，超過則需重新登入。
@@ -800,7 +808,7 @@ def refresh_token(request: Request):
 # ============ Logout ============
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=AuthMessageOut)
 def logout(request: Request):
     """登出：清除 access_token 和 admin_token Cookie，並廢止目前 token。"""
     # 廢止目前 token（遞增 token_version）
@@ -884,7 +892,7 @@ def logout(request: Request):
 # ============ End Impersonate ============
 
 
-@router.post("/end-impersonate")
+@router.post("/end-impersonate", response_model=AuthUserResultOut)
 def end_impersonate(request: Request):
     """結束冒充：將 admin_token Cookie 還原為 access_token，清除 admin_token。
 
@@ -963,7 +971,7 @@ def end_impersonate(request: Request):
 # ============ Protected Routes ============
 
 
-@router.get("/me")
+@router.get("/me", response_model=AuthUserOut)
 def get_me(current_user: dict = Depends(get_current_user)):
     """取得目前登入者資訊"""
     session = get_session()
@@ -991,7 +999,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
         session.close()
 
 
-@router.post("/change-password")
+@router.post("/change-password", response_model=AuthMessageOut)
 def change_password(
     data: ChangePasswordRequest,
     request: Request,
@@ -1082,7 +1090,7 @@ def change_password(
 # ============ Admin Routes ============
 
 
-@router.get("/users")
+@router.get("/users", response_model=list[AuthAdminUserItemOut])
 def list_users(
     current_user: dict = Depends(
         require_staff_permission(Permission.USER_MANAGEMENT_READ)
@@ -1224,7 +1232,7 @@ def reset_password(
         session.close()
 
 
-@router.get("/permissions")
+@router.get("/permissions", response_model=AuthPermissionsDefinitionOut)
 def get_permissions():
     """取得權限定義（供前端渲染 UI）— 從 DB 拉，admin runtime 改動立即生效。"""
     session = get_session()

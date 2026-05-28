@@ -107,15 +107,6 @@ api/audit.py:get_audit_logs
 api/audit.py:get_audit_logs_meta
 api/audit.py:export_audit_logs
 api/audit.py:ack_audit
-api/auth.py:impersonate_user
-api/auth.py:login
-api/auth.py:refresh_token
-api/auth.py:logout
-api/auth.py:end_impersonate
-api/auth.py:get_me
-api/auth.py:change_password
-api/auth.py:list_users
-api/auth.py:get_permissions
 api/classrooms.py:get_classrooms
 api/classrooms.py:get_classroom
 api/classrooms.py:get_classroom_enrollment_composition
