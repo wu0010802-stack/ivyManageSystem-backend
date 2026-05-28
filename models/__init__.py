@@ -55,3 +55,7 @@ from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
 # 2026-05-28 Phase 4 P1 resilience：Supabase fallback + LINE token health tables
 from models.pending_uploads import PendingUpload  # noqa: F401
 from models.integration_health import LineTokenHealth  # noqa: F401
+
+# 2026-05-28 P2 password policy：PasswordHistory 是 users.id 的 FK target；
+# CI Tests step `Base.metadata.create_all` 需要該表先建立。
+from models.auth import PasswordHistory  # noqa: F401

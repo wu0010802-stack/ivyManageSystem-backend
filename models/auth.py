@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     JSON,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
@@ -81,3 +82,28 @@ class User(Base):
     __table_args__ = (Index("ix_user_emp_active", "employee_id", "is_active"),)
 
     employee = relationship("Employee", backref="user_account")
+
+
+class PasswordHistory(Base):
+    """密碼變更歷史（防重用最近 N 個密碼）。
+
+    Per user 一行為一次密碼變更（含 hash）。assert_not_recently_used
+    對最近 PASSWORD_HISTORY_DEPTH 筆 verify_password 比對。
+    """
+
+    __tablename__ = "password_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="用戶 ID",
+    )
+    password_hash = Column(String(255), nullable=False, comment="密碼雜湊")
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="變更時間",
+    )
