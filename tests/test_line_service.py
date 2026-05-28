@@ -132,21 +132,27 @@ class TestBuildMessages:
         assert "350,000" in msg
 
     def test_dismissal_with_note(self):
-        """接送通知包含備註"""
+        """接送通知包含備註；Spec E P0 #6 去識別化：不含 student_name/classroom_name"""
         msg = build_dismissal_message("小明", "大班甲", note="家長已在門口")
-        assert "小明" in msg
-        assert "大班甲" in msg
+        # Spec E backward-compat：簽章保留但 student_name/classroom_name 內部 ignore
+        assert "小明" not in msg, "student_name 不應出現在訊息中（去識別化）"
+        assert "大班甲" not in msg, "classroom_name 不應出現在訊息中（去識別化）"
+        assert "您的孩子" in msg
         assert "家長已在門口" in msg
 
     def test_dismissal_without_note(self):
-        """接送通知無備註時不出現 None"""
+        """接送通知無備註時不出現 None；Spec E P0 #6 去識別化"""
         msg = build_dismissal_message("小明", "中班乙")
         assert "None" not in msg
+        assert "小明" not in msg, "student_name 不應出現在訊息中（去識別化）"
+        assert "您的孩子" in msg
 
 
 class TestPushToUser:
     def test_push_to_user_calls_correct_url(self, monkeypatch):
-        """_push_to_user 應呼叫 PUSH API 且 to 為 line_user_id"""
+        """_push_to_user 應呼叫 PUSH API 且 to 為 line_user_id。
+        consent_checked=True 跳過 gate，測試純 API 機制。
+        """
         svc = LineService()
         svc.configure("my-token", "group-id", True)
 
@@ -160,33 +166,33 @@ class TestPushToUser:
             return resp
 
         monkeypatch.setattr("services.line_service.requests.post", mock_post)
-        result = svc._push_to_user("Uabcd1234", "hello")
+        result = svc._push_to_user("Uabcd1234", "hello", consent_checked=True)
         assert result is True
         assert "push" in captured["url"]
         assert captured["to"] == "Uabcd1234"
 
     def test_push_disabled_returns_false(self):
-        """服務未啟用時回傳 False"""
+        """服務未啟用時回傳 False（consent gate 之前的 short-circuit）"""
         svc = LineService()
         result = svc._push_to_user("Uabcd1234", "hello")
         assert result is False
 
     def test_push_to_user_no_token(self):
-        """未設定 token 時回傳 False"""
+        """未設定 token 時回傳 False（consent gate 之前的 short-circuit）"""
         svc = LineService()
         svc._enabled = True
         result = svc._push_to_user("Uabcd1234", "hello")
         assert result is False
 
     def test_push_to_user_network_error(self, monkeypatch):
-        """網路錯誤時回傳 False，不拋出"""
+        """網路錯誤時回傳 False，不拋出。consent_checked=True 跳過 gate。"""
         svc = LineService()
         svc.configure("token", "group", True)
         monkeypatch.setattr(
             "services.line_service.requests.post",
             lambda *a, **k: (_ for _ in ()).throw(ConnectionError("fail")),
         )
-        assert svc._push_to_user("Uabcd1234", "test") is False
+        assert svc._push_to_user("Uabcd1234", "test", consent_checked=True) is False
 
 
 class TestReply:
@@ -294,17 +300,22 @@ class TestLineServiceSafety:
 
 
 class TestSentryTaggedCapture:
-    """Phase 1 P1 resilience：驗證 LINE 失敗呼叫 tagged_capture + 4xx 分流."""
+    """Phase 1 P1 resilience：驗證 LINE 失敗呼叫 tagged_capture + 4xx 分流.
+
+    所有測試用 consent_checked=True 跳過 consent gate，專注驗 HTTP 回應處理邏輯。
+    """
 
     @pytest.fixture(autouse=True)
     def _reset_401_dedup(self):
         """每個 test 前清空 401 dedup state，避免 test 間污染."""
         from services import line_service
+
         line_service._RECENT_LINE_401_403.clear()
         yield
 
     def test_network_error_calls_tagged_capture(self, monkeypatch):
         from services.line_service import LineService
+
         svc = LineService()
         svc.configure("token", "group", True)
         monkeypatch.setattr(
@@ -312,7 +323,7 @@ class TestSentryTaggedCapture:
             lambda *a, **k: (_ for _ in ()).throw(ConnectionError("boom")),
         )
         with patch("services.line_service.tagged_capture") as mock_capture:
-            assert svc._push_to_user("Uabc", "x") is False
+            assert svc._push_to_user("Uabc", "x", consent_checked=True) is False
             mock_capture.assert_called_once()
             exc_arg = mock_capture.call_args.args[0]
             assert isinstance(exc_arg, ConnectionError)
@@ -324,6 +335,7 @@ class TestSentryTaggedCapture:
 
     def test_5xx_calls_tagged_capture_level_error(self, monkeypatch):
         from services.line_service import LineService
+
         svc = LineService()
         svc.configure("token", "group", True)
 
@@ -335,12 +347,13 @@ class TestSentryTaggedCapture:
 
         monkeypatch.setattr("services.line_service.requests.post", mock_post)
         with patch("services.line_service.tagged_capture") as mock_capture:
-            assert svc._push_to_user("Uabc", "x") is False
+            assert svc._push_to_user("Uabc", "x", consent_checked=True) is False
             mock_capture.assert_called_once()
             assert mock_capture.call_args.kwargs.get("level") == "error"
 
     def test_429_calls_tagged_capture_level_warning(self, monkeypatch):
         from services.line_service import LineService
+
         svc = LineService()
         svc.configure("token", "group", True)
 
@@ -352,12 +365,13 @@ class TestSentryTaggedCapture:
 
         monkeypatch.setattr("services.line_service.requests.post", mock_post)
         with patch("services.line_service.tagged_capture") as mock_capture:
-            assert svc._push_to_user("Uabc", "x") is False
+            assert svc._push_to_user("Uabc", "x", consent_checked=True) is False
             mock_capture.assert_called_once()
             assert mock_capture.call_args.kwargs.get("level") == "warning"
 
     def test_401_dedup_only_first_call_captures(self, monkeypatch):
         from services.line_service import LineService
+
         svc = LineService()
         svc.configure("token", "group", True)
 
@@ -369,15 +383,16 @@ class TestSentryTaggedCapture:
 
         monkeypatch.setattr("services.line_service.requests.post", mock_post)
         with patch("services.line_service.tagged_capture") as mock_capture:
-            svc._push_to_user("Uabc", "x")
-            svc._push_to_user("Uabc", "y")
-            svc._push_to_user("Uabc", "z")
+            svc._push_to_user("Uabc", "x", consent_checked=True)
+            svc._push_to_user("Uabc", "y", consent_checked=True)
+            svc._push_to_user("Uabc", "z", consent_checked=True)
             # dedup：1 小時內同 status code 只發一次
             assert mock_capture.call_count == 1
 
     def test_404_no_dedup_warning_level(self, monkeypatch):
         """404 不 dedup（不同 user_id 都該發），level=warning."""
         from services.line_service import LineService
+
         svc = LineService()
         svc.configure("token", "group", True)
 
@@ -389,14 +404,15 @@ class TestSentryTaggedCapture:
 
         monkeypatch.setattr("services.line_service.requests.post", mock_post)
         with patch("services.line_service.tagged_capture") as mock_capture:
-            svc._push_to_user("Uabc", "x")
-            svc._push_to_user("Udef", "y")
+            svc._push_to_user("Uabc", "x", consent_checked=True)
+            svc._push_to_user("Udef", "y", consent_checked=True)
             assert mock_capture.call_count == 2
             for call in mock_capture.call_args_list:
                 assert call.kwargs.get("level") == "warning"
 
     def test_success_no_capture(self, monkeypatch):
         from services.line_service import LineService
+
         svc = LineService()
         svc.configure("token", "group", True)
 
@@ -407,5 +423,5 @@ class TestSentryTaggedCapture:
 
         monkeypatch.setattr("services.line_service.requests.post", mock_post)
         with patch("services.line_service.tagged_capture") as mock_capture:
-            assert svc._push_to_user("Uabc", "x") is True
+            assert svc._push_to_user("Uabc", "x", consent_checked=True) is True
             mock_capture.assert_not_called()

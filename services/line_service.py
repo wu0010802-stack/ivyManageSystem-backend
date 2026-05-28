@@ -29,6 +29,35 @@ from utils.circuit_breaker import LINE_BREAKER, BreakerOpenError
 logger = logging.getLogger(__name__)
 
 _LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
+
+
+# ── 跨境合規 consent gate（Spec E §3.3 P0 #6）─────────────────────────────────
+
+
+def _check_line_push_consent(line_user_id: str) -> bool:
+    """Query User WHERE line_user_id, return line_push_consent value。
+
+    未綁定 LINE / consent False / DB error → return False (fail-closed)。
+    跨境合規不可放行，DB 異常時保守 skip 推播。
+    """
+    from models.auth import User
+    from models.base import session_scope
+
+    try:
+        with session_scope() as session:
+            user = session.query(User).filter(User.line_user_id == line_user_id).first()
+            if not user:
+                return False
+            return bool(user.line_push_consent)
+    except Exception as e:
+        logger.warning(
+            "check_line_push_consent failed for %s...: %s",
+            line_user_id[:8] if line_user_id else "",
+            e,
+        )
+        return False
+
+
 _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 
 # Phase 1 P1 resilience: 401/403 process-local dedup（1 hr TTL）
@@ -210,78 +239,97 @@ def build_salary_batch_message(
 
 
 def build_activity_waitlist_promoted_message(
-    student_name: str,
+    student_name: str,  # 保留但 internal ignore（Spec E backward-compat；P0 #6 去識別化）
     course_name: str,
     deadline: Optional[datetime] = None,
+    detail_url: Optional[str] = None,
 ) -> str:
-    """建構才藝候補升位通知訊息文字。
+    """建構才藝候補升位通知訊息文字（P0 #6 去識別化）。
 
     deadline 不為 None 時表示「升為待確認」（家長須於期限前確認接受）。
     deadline 為 None 時表示「管理員直升」或既有舊行為（立即生效）。
+    student_name 參數保留簽章但不再 inline（改用「您的孩子」）。
     """
-    base = f"🎨 才藝候補升位通知\n" f"學生：{student_name}\n" f"課程：{course_name}\n"
+    base = f"🎨 才藝候補升位通知\n" f"課程：{course_name}\n"
     if deadline is None:
-        return base + "已自動升為正式報名！"
-    deadline_str = deadline.strftime("%Y-%m-%d %H:%M")
-    return (
-        base
-        + f"已遞補為正式名額，請於 {deadline_str} 前至報名查詢頁確認接受；\n"
-        + "逾期未確認將自動放棄，由下一位候補遞補。"
-    )
+        msg = base + "您的孩子已自動升為正式報名！"
+    else:
+        deadline_str = deadline.strftime("%Y-%m-%d %H:%M")
+        msg = (
+            base
+            + f"您的孩子已遞補為正式名額，請於 {deadline_str} 前至報名查詢頁確認接受；\n"
+            + "逾期未確認將自動放棄，由下一位候補遞補。"
+        )
+    if detail_url:
+        msg += f"\n詳情：{detail_url}"
+    return msg
 
 
 def build_activity_waitlist_promotion_reminder_message(
-    student_name: str,
+    student_name: str,  # 保留但 internal ignore（Spec E backward-compat；P0 #6 去識別化）
     course_name: str,
     deadline: datetime,
+    detail_url: Optional[str] = None,
 ) -> str:
-    """建構候補升正式「剩餘時間」提醒訊息文字。"""
+    """建構候補升正式「剩餘時間」提醒訊息文字（P0 #6 去識別化）。"""
     deadline_str = deadline.strftime("%Y-%m-%d %H:%M")
-    return (
+    msg = (
         f"⏰ 才藝候補轉正提醒\n"
-        f"學生：{student_name}\n"
         f"課程：{course_name}\n"
-        f"請於 {deadline_str} 前完成確認，以免逾期放棄名額。"
+        f"請於 {deadline_str} 前完成確認，以免您的孩子逾期放棄名額。"
     )
+    if detail_url:
+        msg += f"\n詳情：{detail_url}"
+    return msg
 
 
 def build_activity_waitlist_promotion_expired_message(
-    student_name: str, course_name: str
+    student_name: str,  # 保留但 internal ignore（Spec E backward-compat；P0 #6 去識別化）
+    course_name: str,
+    detail_url: Optional[str] = None,
 ) -> str:
-    """建構候補升正式「逾期自動放棄」訊息文字。"""
-    return (
+    """建構候補升正式「逾期自動放棄」訊息文字（P0 #6 去識別化）。"""
+    msg = (
         f"⚠️ 才藝候補名額已釋出\n"
-        f"學生：{student_name}\n"
         f"課程：{course_name}\n"
-        f"因未於期限內確認，名額已自動釋出給下一位候補。"
+        f"因未於期限內確認，您的孩子的名額已自動釋出給下一位候補。"
         f"若需重新報名，請聯繫校方或於公開頁面重新送件。"
     )
+    if detail_url:
+        msg += f"\n詳情：{detail_url}"
+    return msg
 
 
 def build_activity_waitlist_final_reminder_message(
-    student_name: str,
+    student_name: str,  # 保留但 internal ignore（Spec E backward-compat；P0 #6 去識別化）
     course_name: str,
     hours_left: int,
+    detail_url: Optional[str] = None,
 ) -> str:
-    """建構候補升位 T-6h 最後提醒訊息文字。"""
-    return (
+    """建構候補升位 T-6h 最後提醒訊息文字（P0 #6 去識別化）。"""
+    msg = (
         f"⏰ 最後提醒：才藝候補確認期限即將到期\n"
-        f"學生：{student_name}\n"
         f"課程：{course_name}\n"
         f"距離確認期限剩餘約 {hours_left} 小時，請儘速至報名查詢頁確認接受；\n"
         f"逾期未確認將自動放棄，由下一位候補遞補。"
     )
+    if detail_url:
+        msg += f"\n詳情：{detail_url}"
+    return msg
 
 
 def build_dismissal_message(
-    student_name: str,
-    classroom_name: str,
+    student_name: str,  # 保留但 internal ignore（Spec E backward-compat；P0 #6 去識別化）
+    classroom_name: str,  # 保留但 internal ignore（Spec E backward-compat；P0 #6 去識別化）
     note: Optional[str] = None,
+    detail_url: Optional[str] = None,
 ) -> str:
-    """建構接送通知訊息文字"""
-    msg = f"【接送通知】\n" f"學生：{student_name}\n" f"班級：{classroom_name}"
+    """建構接送通知訊息文字（P0 #6 去識別化）。"""
+    msg = "【接送通知】\n您的孩子已可接送"
     if note:
         msg += f"\n備註：{note}"
+    if detail_url:
+        msg += f"\n詳情：{detail_url}"
     return msg
 
 
@@ -374,18 +422,36 @@ class LineService:
             return False
         return self.push_text_to_group(self._target_id, text)
 
-    def push_to_user(self, line_user_id: str, text: str) -> bool:
+    def push_to_user(
+        self, line_user_id: str, text: str, consent_checked: bool = False
+    ) -> bool:
         """Public API：發送純文字訊息給單一 LINE user.
 
         P4 cleanup: exposes _push_to_user as the public API. Existing internal
         callers of _push_to_user remain working (no rename), but new callers
         should use this public name.
-        """
-        return self._push_to_user(line_user_id, text)
 
-    def _push_to_user(self, line_user_id: str, text: str) -> bool:
-        """推送純文字訊息給個人 LINE 用戶，成功回傳 True，失敗回傳 False"""
+        Args:
+            consent_checked: batch caller 可預先 check 並傳 True 避免 N+1 DB query。
+                             default False → per-call consent check。
+        """
+        return self._push_to_user(line_user_id, text, consent_checked=consent_checked)
+
+    def _push_to_user(
+        self, line_user_id: str, text: str, consent_checked: bool = False
+    ) -> bool:
+        """推送純文字訊息給個人 LINE 用戶，成功回傳 True，失敗回傳 False。
+
+        Spec E §3.3 P0 #6：個人推播須通過 line_push_consent gate（fail-closed）。
+        consent_checked=True 供 batch caller 預先確認以避免 N+1 DB query。
+        """
         if not self._enabled or not self._token or not line_user_id:
+            return False
+        if not consent_checked and not _check_line_push_consent(line_user_id):
+            logger.info(
+                "LINE push skip (no consent): line_user_id=%s...",
+                line_user_id[:8] if line_user_id else "",
+            )
             return False
         try:
             resp = LINE_BREAKER.call(
@@ -405,12 +471,18 @@ class LineService:
         except Exception as exc:
             return _record_line_response(exc, context="_push_to_user")
 
-    def push_text_to_user(self, user_id: str, text: str) -> None:
+    def push_text_to_user(
+        self, user_id: str, text: str, consent_checked: bool = False
+    ) -> None:
         """Public alias for dispatch adapter."""
-        self._push_to_user(user_id, text)
+        self._push_to_user(user_id, text, consent_checked=consent_checked)
 
     def push_flex_to_user(
-        self, line_user_id: str, flex_content: dict, alt_text: str
+        self,
+        line_user_id: str,
+        flex_content: dict,
+        alt_text: str,
+        consent_checked: bool = False,
     ) -> bool:
         """推 LINE Flex message 給單一 user。
 
@@ -418,11 +490,18 @@ class LineService:
             line_user_id: 接收者的 LINE user ID。
             flex_content: LINE Flex bubble/carousel dict（content 部分，不含 wrapper）。
             alt_text: 推播通知列顯示的純文字版（裝置不支援 flex 時 fallback）。
+            consent_checked: batch caller 可預先 check 並傳 True 避免 N+1 DB query。
 
         Returns:
             True 表示推播成功，False 表示停用、設定缺失或 API 呼叫失敗。
         """
         if not self._enabled or not self._token or not line_user_id:
+            return False
+        if not consent_checked and not _check_line_push_consent(line_user_id):
+            logger.info(
+                "LINE flex push skip (no consent): line_user_id=%s...",
+                line_user_id[:8] if line_user_id else "",
+            )
             return False
         try:
             resp = LINE_BREAKER.call(
@@ -449,10 +528,23 @@ class LineService:
             return _record_line_response(exc, context="push_flex_to_user")
 
     def _push_to_user_with_quick_reply(
-        self, line_user_id: str, text: str, quick_reply: dict
+        self,
+        line_user_id: str,
+        text: str,
+        quick_reply: dict,
+        consent_checked: bool = False,
     ) -> bool:
-        """推送純文字 + quickReply（postback button）給個人 LINE 用戶。"""
+        """推送純文字 + quickReply（postback button）給個人 LINE 用戶。
+
+        Spec E §3.3 P0 #6：個人推播須通過 line_push_consent gate（fail-closed）。
+        """
         if not self._enabled or not self._token or not line_user_id:
+            return False
+        if not consent_checked and not _check_line_push_consent(line_user_id):
+            logger.info(
+                "LINE quick_reply push skip (no consent): line_user_id=%s...",
+                line_user_id[:8] if line_user_id else "",
+            )
             return False
         try:
             resp = LINE_BREAKER.call(
@@ -598,7 +690,11 @@ class LineService:
                 status = (
                     "✅ 核准"
                     if r.status == ApprovalStatus.APPROVED.value
-                    else ("❌ 駁回" if r.status == ApprovalStatus.REJECTED.value else "⏳ 待審")
+                    else (
+                        "❌ 駁回"
+                        if r.status == ApprovalStatus.REJECTED.value
+                        else "⏳ 待審"
+                    )
                 )
                 lines.append(f"• {r.leave_type} {r.start_date} {status}")
             self._reply(reply_token, "\n".join(lines))
