@@ -29,7 +29,7 @@ from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 from utils.finance_guards import require_finance_approve
 
 from ._shared import (
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_export_limiter = SlidingWindowLimiter(
+_export_limiter = create_limiter(
     max_calls=5,
     window_seconds=60,
     name="activity_export",
@@ -59,7 +59,7 @@ _export_limiter = SlidingWindowLimiter(
 ).as_dependency()
 
 # 批次繳費寫入每次影響多筆 registration + 繳費紀錄，放寬但仍需限流
-_batch_payment_limiter = SlidingWindowLimiter(
+_batch_payment_limiter = create_limiter(
     max_calls=10,
     window_seconds=60,
     name="activity_batch_payment",

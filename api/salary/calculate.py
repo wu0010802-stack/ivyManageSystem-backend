@@ -34,7 +34,7 @@ from services.salary_job_registry import (
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -97,7 +97,7 @@ def _enqueue_salary_batch_completed(
 
 
 # 薪資計算為高 CPU 操作，每 IP 每小時最多 20 次（批次計算）
-_salary_calc_limiter = SlidingWindowLimiter(
+_salary_calc_limiter = create_limiter(
     max_calls=20,
     window_seconds=3600,
     name="salary_calculate",

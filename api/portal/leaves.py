@@ -16,10 +16,10 @@ from config import settings
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from utils.errors import raise_safe_500
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 
 # 附件上傳：每 IP 每 10 分鐘最多 30 次（5個檔 × 6次 = 30次）
-_attach_upload_limiter = SlidingWindowLimiter(
+_attach_upload_limiter = create_limiter(
     max_calls=30,
     window_seconds=600,
     name="leave_attachment_upload",
@@ -676,7 +676,7 @@ def get_my_leave_stats(
             seniority_months = months_diff % 12
             annual_leave_quota = _calculate_annual_leave_quota(hire_date)
 
-        current_year = today_taipei().year  
+        current_year = today_taipei().year
         start_of_year = date(current_year, 1, 1)
         end_of_year = date(current_year, 12, 31)
 
@@ -746,7 +746,7 @@ def get_my_quotas(
 ):
     """查詢本人各假別年度配額（含動態計算的已使用、待審、剩餘時數）"""
     if year is None:
-        year = today_taipei().year  
+        year = today_taipei().year
     session = get_session()
     try:
         emp = _get_employee(session, current_user)

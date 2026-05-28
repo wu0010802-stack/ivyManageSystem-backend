@@ -21,7 +21,7 @@ from models.database import Guardian, StudentMilestone
 from models.portfolio import MILESTONE_REACTIONS
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/milestones", tags=["parent-milestones"])
 
 # F-V6-07：react 端點防 spam（家長對自己 milestone 連點 emoji 也會狂寫 audit log
 # + DB UPDATE）。正常使用 1 分鐘最多按 3-5 次；10/60s/IP 留出合理緩衝。
-_react_limiter = SlidingWindowLimiter(
+_react_limiter = create_limiter(
     max_calls=10,
     window_seconds=60,
     name="parent_milestone_react",
