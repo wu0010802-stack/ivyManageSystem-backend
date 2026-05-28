@@ -173,12 +173,15 @@ def _geocode_with_google(address: str) -> Optional[dict]:
     if not _GOOGLE_MAPS_API_KEY:
         return None
 
+    # PII 降精度：巷級 truncate 後才送 Google
+    truncated = truncate_address_to_lane(address)
+
     try:
         resp = EXTERNAL_HTTP_BREAKER.call(
             lambda: requests.get(
                 _GOOGLE_GEOCODING_URL,
                 params={
-                    "address": _normalize_query_address(address),
+                    "address": _normalize_query_address(truncated),
                     "key": _GOOGLE_MAPS_API_KEY,
                     "language": "zh-TW",
                     "region": "tw",
@@ -217,7 +220,9 @@ def _geocode_with_google(address: str) -> Optional[dict]:
 
 
 def _geocode_with_nominatim(address: str) -> Optional[dict]:
-    for query in _build_nominatim_query_candidates(address):
+    # PII 降精度：巷級 truncate 後才送 Nominatim
+    truncated = truncate_address_to_lane(address)
+    for query in _build_nominatim_query_candidates(truncated):
         _throttle_nominatim()
 
         params = {
