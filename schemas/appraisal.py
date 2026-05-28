@@ -85,7 +85,7 @@ class CatalogOut(BaseModel):
     code: str
     label: str
     sign: ScoreItemSign
-    default_weight: Decimal
+    default_weight: Decimal  # pii-allow: 考核項目權重（非個人量測數據）
     data_source: Optional[str]
     description: Optional[str]
     display_order: int
@@ -127,7 +127,7 @@ class SummaryOut(BaseModel):
     event_score_sum: Decimal
     total_score: Decimal
     grade: Grade
-    bonus_amount: Decimal
+    bonus_amount: Decimal  # pii-allow: 考核獎金（admin 必看）
     leave_note: Optional[str]
     status: SummaryStatus
     version: int

@@ -85,7 +85,7 @@ class SettlementOut(BaseModel):
     year_end_cycle_id: int
     employee_id: int
     avg_performance_rate: Decimal
-    base_salary: Decimal
+    base_salary: Decimal  # pii-allow: 年終結算基底（admin/hr 必看）
     festival_total: Decimal
     gross_amount: Decimal
     org_achievement_rate: Decimal

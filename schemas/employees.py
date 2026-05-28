@@ -72,7 +72,7 @@ class EmployeeOut(IvyBaseModel):
     address: Optional[str] = None  # pii-allow: 員工居住地址
     emergency_contact_name: Optional[str] = None  # pii-allow: 緊急聯絡人
     emergency_contact_phone: Optional[str] = None  # pii-allow: 緊急聯絡人電話
-    dependents: Optional[int] = None
+    dependents: Optional[int] = None  # pii-allow: 扶養親屬數量（影響稅務/保險計算）
 
     # 特殊狀態旗標
     no_employment_insurance: bool = False
@@ -80,7 +80,7 @@ class EmployeeOut(IvyBaseModel):
     skip_payroll_bonuses: bool = False
     skip_payroll_transfer: bool = False
     unreported_for_tax: bool = False
-    extra_dependents_quarterly: int = 0
+    extra_dependents_quarterly: int = 0  # pii-allow: 季度扶養變動（保險級距計算）
     bypass_standard_base: bool = False
     insurance_salary_override_reason: Optional[str] = (
         None  # pii-allow: 投保覆寫原因（非個人 PII）
