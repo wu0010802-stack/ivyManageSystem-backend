@@ -48,6 +48,15 @@ from models.database import (
 from services.activity_service import activity_service
 from utils.rate_limit import create_limiter
 
+from schemas.activity_public import (
+    PublicRegistrationTimeOut,
+    PublicCoursesItemOut,
+    PublicSuppliesItemOut,
+    PublicRegistrationDetailOut,
+    PublicRegisterResultOut,
+)
+from schemas._common import DeleteResultOut
+
 from ._shared import (
     PublicCourseItem,
     PublicSupplyItem,
@@ -117,7 +126,7 @@ _PUBLIC_DISPLAY_FIELDS = (
 )
 
 
-@router.get("/public/registration-time")
+@router.get("/public/registration-time", response_model=PublicRegistrationTimeOut)
 async def get_public_registration_time(request: Request, response: Response):
     """公開端點：前台查詢報名開放時間 + 顯示設定（無需認證）"""
     session = get_session()
@@ -182,7 +191,7 @@ async def get_public_poster(filename: str, response: Response):
     return RedirectResponse(url, status_code=302)
 
 
-@router.get("/public/courses")
+@router.get("/public/courses", response_model=list[PublicCoursesItemOut])
 async def get_public_courses(request: Request, response: Response):
     """前台：取得課程列表"""
     session = get_session()
@@ -219,7 +228,7 @@ async def get_public_courses(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/supplies")
+@router.get("/public/supplies", response_model=list[PublicSuppliesItemOut])
 async def get_public_supplies(request: Request, response: Response):
     """前台：取得用品列表"""
     session = get_session()
@@ -236,7 +245,7 @@ async def get_public_supplies(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/classes")
+@router.get("/public/classes", response_model=list[str])
 async def get_public_classes(request: Request, response: Response):
     """前台：取得班級選項"""
     session = get_session()
@@ -253,7 +262,7 @@ async def get_public_classes(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/courses/availability")
+@router.get("/public/courses/availability", response_model=dict[str, int])
 async def get_public_courses_availability(request: Request, response: Response):
     """前台：取得課程名額狀況"""
     session = get_session()
@@ -308,7 +317,7 @@ async def get_public_courses_availability(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/course-videos")
+@router.get("/public/course-videos", response_model=dict[str, str])
 async def get_public_course_videos(request: Request, response: Response):
     """前台：取得課程介紹影片 URL"""
     session = get_session()
@@ -328,7 +337,7 @@ async def get_public_course_videos(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/query")
+@router.get("/public/query", response_model=PublicRegistrationDetailOut)
 async def public_query_registration(
     name: str,
     birthday: str,
@@ -388,7 +397,7 @@ class _PublicQueryByTokenPayload(BaseModel):
     parent_phone: str = Field(..., min_length=8, max_length=30)
 
 
-@router.post("/public/query-by-token")
+@router.post("/public/query-by-token", response_model=PublicRegistrationDetailOut)
 async def public_query_by_token(
     body: _PublicQueryByTokenPayload,
     _: None = Depends(_public_query_limiter),
@@ -436,7 +445,7 @@ async def public_query_by_token(
         session.close()
 
 
-@router.post("/public/register", status_code=201)
+@router.post("/public/register", status_code=201, response_model=PublicRegisterResultOut)
 async def public_register(
     body: PublicRegistrationPayload,
     _: None = Depends(_public_register_limiter),
@@ -702,7 +711,7 @@ async def public_register(
         session.close()
 
 
-@router.post("/public/update")
+@router.post("/public/update", response_model=PublicRegistrationDetailOut)
 async def public_update_registration(
     body: PublicUpdatePayload,
     request: Request,
@@ -1117,7 +1126,8 @@ class _PromotionActionPayload(BaseModel):
 
 
 @router.post(
-    "/public/registrations/{registration_id}/courses/{course_id}/confirm-promotion"
+    "/public/registrations/{registration_id}/courses/{course_id}/confirm-promotion",
+    response_model=DeleteResultOut,
 )
 async def public_confirm_promotion(
     registration_id: int,
@@ -1182,7 +1192,8 @@ async def public_confirm_promotion(
 
 
 @router.post(
-    "/public/registrations/{registration_id}/courses/{course_id}/decline-promotion"
+    "/public/registrations/{registration_id}/courses/{course_id}/decline-promotion",
+    response_model=DeleteResultOut,
 )
 async def public_decline_promotion(
     registration_id: int,
@@ -1227,7 +1238,7 @@ async def public_decline_promotion(
         session.close()
 
 
-@router.post("/public/inquiries", status_code=201)
+@router.post("/public/inquiries", status_code=201, response_model=DeleteResultOut)
 async def public_create_inquiry(
     body: PublicInquiryPayload,
     _: None = Depends(_public_inquiry_limiter),

@@ -20,6 +20,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from schemas._base import IvyBaseModel
 from utils.taipei_time import TAIPEI_TZ
 
 # ─── minimal items ────────────────────────────────────────────────────────
@@ -192,3 +193,104 @@ class PublicUpdatePayload(BaseModel):
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
         return _validate_tw_mobile(v)
+
+
+# ─── 公開端點 response_model（Phase 3.5） ─────────────────────────────────
+
+
+class PublicRegistrationTimeOut(IvyBaseModel):
+    """GET /public/registration-time response。
+
+    所有顯示欄位皆 Optional：settings 為 None 時整批回 None。
+    """
+
+    is_open: bool
+    open_at: Optional[datetime] = None
+    close_at: Optional[datetime] = None
+    page_title: Optional[str] = None
+    term_label: Optional[str] = None
+    event_date_label: Optional[str] = None
+    target_audience: Optional[str] = None
+    form_card_title: Optional[str] = None
+    poster_url: Optional[str] = None
+
+
+class PublicCoursesItemOut(IvyBaseModel):
+    """GET /public/courses 單筆。
+
+    router 已把 meeting_start_time/meeting_end_time 序列化成 "HH:MM"，
+    這裡用 Optional[str] 直接接（不要用 time，否則 from_attributes 會
+    對應到 ORM 的 Time 物件，產出再序列化變 ISO）。
+    """
+
+    name: str
+    price: int
+    sessions: Optional[int] = None
+    frequency: str
+    min_age_months: Optional[int] = None
+    max_age_months: Optional[int] = None
+    meeting_weekday: Optional[int] = None
+    meeting_start_time: Optional[str] = None
+    meeting_end_time: Optional[str] = None
+
+
+class PublicSuppliesItemOut(IvyBaseModel):
+    """GET /public/supplies 單筆。"""
+
+    name: str
+    price: int
+
+
+class PublicRegistrationCourseOut(IvyBaseModel):
+    """/public/query 與 /public/update 的 courses[] 單筆。"""
+
+    name: str
+    course_id: int
+    price: int
+    status: str
+    waitlist_position: Optional[int] = None
+    waitlist_total: Optional[int] = None
+    confirm_deadline: Optional[str] = None
+
+
+class PublicFieldStateOut(IvyBaseModel):
+    """前端 UI hint：班級欄位可改/不可改的衍生狀態。"""
+
+    class_source: str
+    class_editable: bool
+    review_state: str
+
+
+class PublicRegistrationDetailOut(IvyBaseModel):
+    """/public/query、/public/query-by-token、/public/update 共用 response。
+
+    /public/update 多帶一個 message 欄位（成功提示），query 系列為 None。
+    """
+
+    id: int
+    name: str  # pii-allow: 家長前台檢視自己學生報名資料
+    birthday: Optional[str] = None  # pii-allow: 家長前台檢視自己學生報名資料
+    class_name: Optional[str] = None
+    is_paid: bool
+    paid_amount: int
+    total_amount: int
+    payment_status: str
+    remark: str
+    courses: list[PublicRegistrationCourseOut]
+    supplies: list[str]
+    field_state: PublicFieldStateOut
+    updated_at: Optional[str] = None
+    message: Optional[str] = None
+
+
+class PublicRegisterResultOut(IvyBaseModel):
+    """POST /public/register response（含 honeypot silent / silent-success / 真實成功 三 path 同 shape）。
+
+    query_token 為明文 token 只在這次回給家長一次，後續走 /public/query-by-token 用。
+    """
+
+    message: str
+    id: int
+    waitlisted: bool
+    waitlist_courses: list[str]
+    query_token: str  # pii-allow: 明文查詢碼，僅此 response 回給家長一次，DB 只存 hash
