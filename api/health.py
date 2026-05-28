@@ -6,11 +6,14 @@ api/health.py — 健康檢查端點
 
 import logging
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from models.base import get_engine
+from models.base import get_engine, get_session
+from models.scheduler_heartbeat import SchedulerHeartbeat
 from schemas._common import OkStatusOut
 
 logger = logging.getLogger(__name__)
@@ -45,9 +48,49 @@ async def readiness():
         }
     except Exception as e:
         logger.error("Readiness check failed: %s", e, exc_info=True)
-        from fastapi.responses import JSONResponse
-
         return JSONResponse(
             status_code=503,
             content={"status": "unavailable", "db": "unavailable"},
         )
+
+
+@router.get("/schedulers")
+async def schedulers_health():
+    """檢查所有 scheduler heartbeat lag。
+
+    無權限端點（UptimeRobot 公開可打）。
+    200 = 全綠；503 = 至少一個 scheduler lag > 2 × expected_interval。
+    啟動後尚未跑過（last_success_at IS NULL）的視為「未滿足 lag 條件」，回 200。
+    """
+    now = datetime.now(timezone.utc)
+    schedulers: list[dict] = []
+    lagging: list[dict] = []
+    with get_session() as s:
+        rows = s.query(SchedulerHeartbeat).all()
+        for row in rows:
+            if row.last_success_at is None:
+                lag_seconds: float | None = None
+                is_lagging = False
+            else:
+                # SQLite 回 naive datetime；PG 回 tz-aware。統一補 UTC 後再相減。
+                last_success = row.last_success_at
+                if last_success.tzinfo is None:
+                    last_success = last_success.replace(tzinfo=timezone.utc)
+                lag_seconds = (now - last_success).total_seconds()
+                is_lagging = lag_seconds > 2 * row.expected_interval_seconds
+            item = {
+                "name": row.scheduler_name,
+                "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+                "lag_seconds": lag_seconds,
+                "expected_interval_seconds": row.expected_interval_seconds,
+                "consecutive_failures": row.consecutive_failures,
+            }
+            schedulers.append(item)
+            if is_lagging:
+                lagging.append(item)
+    if lagging:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "lagging": lagging, "schedulers": schedulers},
+        )
+    return {"status": "ok", "schedulers": schedulers}
