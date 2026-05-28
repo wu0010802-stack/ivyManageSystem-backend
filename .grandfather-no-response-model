@@ -296,10 +296,7 @@ api/parent_portal/announcements.py:mark_read
 api/parent_portal/attendance.py:get_daily_attendance
 api/parent_portal/attendance.py:get_monthly_attendance
 api/parent_portal/auth.py:liff_login
-api/parent_portal/auth.py:bind_first_child
-api/parent_portal/auth.py:bind_additional_child
 api/parent_portal/auth.py:parent_logout
-api/parent_portal/auth.py:parent_refresh
 api/parent_portal/calendar.py:get_week_agenda
 api/parent_portal/calendar.py:get_month_agenda
 api/parent_portal/contact_book.py:get_today
@@ -442,9 +439,7 @@ api/portal/student_attendance.py:batch_save_class_attendance
 api/portal/student_attendance.py:get_my_class_attendance_monthly
 api/portal/student_attendance.py:export_my_class_attendance
 api/portal/students.py:get_my_students
-api/portal/students.py:get_students_measurements_latest
 api/portal/students.py:get_student_detail
-api/portal/students.py:reveal_student_phone
 api/portfolio/auto_milestone.py:auto_detect_milestones
 api/portfolio/measurements.py:list_measurements
 api/portfolio/measurements.py:create_measurement

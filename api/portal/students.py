@@ -35,6 +35,10 @@ from models.portfolio import (
     StudentMedicationOrder,
     StudentObservation,
 )
+from schemas.portal_students import (
+    RevealPhoneOut,
+    StudentMeasurementSnapshotItem,
+)
 from utils.audit import write_audit_in_session, write_explicit_audit
 from utils.auth import get_current_user
 from utils.masking import mask_phone
@@ -309,7 +313,10 @@ def get_my_students(
 # ────────────────────────────────────────────────────────────────────────
 
 
-@router.get("/students/measurements-latest")
+@router.get(
+    "/students/measurements-latest",
+    response_model=list[StudentMeasurementSnapshotItem],
+)
 def get_students_measurements_latest(
     request: Request,
     current_user: dict = Depends(get_current_user),
@@ -822,7 +829,7 @@ class RevealPhoneRequest(BaseModel):
         return v
 
 
-@router.post("/students/{student_id}/reveal-phone")
+@router.post("/students/{student_id}/reveal-phone", response_model=RevealPhoneOut)
 def reveal_student_phone(
     student_id: int,
     payload: RevealPhoneRequest,
