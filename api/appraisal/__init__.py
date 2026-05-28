@@ -1414,8 +1414,11 @@ async def import_excel(
     """上傳半年考核 Excel（.xls 或 .xlsx）→ 建立/更新 cycle/participants/score_items/summaries。"""
     if not file.filename or not file.filename.lower().endswith((".xls", ".xlsx")):
         raise HTTPException(400, "僅支援 .xls / .xlsx")
-    content = await file.read()
     suffix = ".xls" if file.filename.lower().endswith(".xls") else ".xlsx"
+    # P0a 修 bypass：原本裸 file.read() 缺 size check + magic_bytes 驗證
+    from utils.file_upload import read_upload_with_size_check
+
+    content = await read_upload_with_size_check(file, extension=suffix)
     with NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
         tmp.write(content)
         tmp.flush()

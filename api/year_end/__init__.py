@@ -421,7 +421,10 @@ async def import_excel(
 ):
     if not file.filename or not file.filename.lower().endswith(".xls"):
         raise HTTPException(400, "年終經營績效目前只支援 .xls (Excel 97-2003)")
-    content = await file.read()
+    # P0a 修 bypass：原本裸 file.read() 缺 size check + magic_bytes 驗證
+    from utils.file_upload import read_upload_with_size_check
+
+    content = await read_upload_with_size_check(file, extension=".xls")
     with NamedTemporaryFile(suffix=".xls", delete=True) as tmp:
         tmp.write(content)
         tmp.flush()

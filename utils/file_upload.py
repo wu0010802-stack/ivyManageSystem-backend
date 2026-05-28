@@ -84,10 +84,16 @@ async def read_upload_with_size_check(
 ) -> bytes:
     """以 chunked 方式讀取上傳內容，累計超過 size limit 立即中止避免 OOM。
 
+    P0a 落地後行為（2026-05-28）：若 extension 在已知白名單，將同步在 helper 內
+    執行 magic_bytes validate + image EXIF strip，確保平台基線清洗。既有 caller
+    在外部仍 call validate_file_signature(content, ext) 是冗餘但無害（idempotent）。
+    Refs: docs/superpowers/specs/2026-05-28-image-exif-strip-design.md
+
     Args:
         file:      FastAPI UploadFile
         extension: 若提供，依副檔名套用對應 size limit（影片 50MB / 其他 10MB）
                    未提供時沿用 MAX_UPLOAD_SIZE (10MB)，維持舊呼叫者向後相容
+                   且不會觸發 validate / strip（行為等同 helper 落地前）
     """
     limit = max_upload_size_for(extension) if extension else MAX_UPLOAD_SIZE
     chunks: list[bytes] = []
@@ -101,7 +107,22 @@ async def read_upload_with_size_check(
             mb = limit // (1024 * 1024)
             raise HTTPException(status_code=400, detail=f"檔案超過 {mb}MB 限制")
         chunks.append(chunk)
-    return b"".join(chunks)
+    content = b"".join(chunks)
+
+    if extension:
+        # magic_bytes 驗證（從外部 caller 移進來；舊 caller 在外仍 call 一次冗餘但無害）
+        validate_file_signature(content, extension)
+
+        # image 進入點 EXIF 清洗（必在 validate 之後；strip 內部對非 image ext no-op）
+        from utils.image_sanitize import (
+            IMAGE_EXTENSIONS_TO_SANITIZE,
+            strip_image_metadata,
+        )
+
+        if extension.lower() in IMAGE_EXTENSIONS_TO_SANITIZE:
+            content = strip_image_metadata(content, extension)
+
+    return content
 
 
 # 資安掃描 2026-05-07 P1：原始 filename 可能含「雙副檔名」(payload.pdf.exe) 或路徑

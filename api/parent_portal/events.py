@@ -186,9 +186,7 @@ def acknowledge_event(
     if not event.requires_acknowledgment:
         raise HTTPException(status_code=400, detail="此事件未要求簽閱")
     # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽閱（與 signature 上傳對齊）
-    if (
-        event.ack_deadline is not None and today_taipei() > event.ack_deadline  
-    ):
+    if event.ack_deadline is not None and today_taipei() > event.ack_deadline:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -258,6 +256,11 @@ async def upload_ack_signature(
             detail=f"簽名圖過大（{len(content)} bytes，上限 {_SIGNATURE_MAX_BYTES}）",
         )
     validate_file_signature(content, ext)
+    # P0a 兒童照片 EXIF strip（簽名圖也走 strip：iPhone 截圖含 timestamp / device id）
+    from utils.image_sanitize import IMAGE_EXTENSIONS_TO_SANITIZE, strip_image_metadata
+
+    if ext in IMAGE_EXTENSIONS_TO_SANITIZE:
+        content = strip_image_metadata(content, ext)
 
     from utils.portfolio_storage import get_portfolio_storage
 
@@ -272,9 +275,7 @@ async def upload_ack_signature(
     )
     if event is None:
         raise HTTPException(status_code=404, detail="找不到事件")
-    if (
-        event.ack_deadline is not None and today_taipei() > event.ack_deadline  
-    ):
+    if event.ack_deadline is not None and today_taipei() > event.ack_deadline:
         raise HTTPException(
             status_code=400,
             detail=(

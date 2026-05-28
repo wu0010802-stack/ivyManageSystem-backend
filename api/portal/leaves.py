@@ -501,6 +501,14 @@ async def upload_leave_attachments(
                     status_code=400, detail=f"檔案 {f.filename} 超過 5 MB 限制"
                 )
             validate_file_signature(content, raw_ext)
+            # P0a 兒童照片位置個資保護：image 附件清 EXIF（GPS / 相機 id / 拍攝時間）
+            from utils.image_sanitize import (
+                IMAGE_EXTENSIONS_TO_SANITIZE,
+                strip_image_metadata,
+            )
+
+            if raw_ext in IMAGE_EXTENSIONS_TO_SANITIZE:
+                content = strip_image_metadata(content, raw_ext)
 
             safe_name = f"{uuid.uuid4().hex}{raw_ext}"
             content_type = {
@@ -676,7 +684,7 @@ def get_my_leave_stats(
             seniority_months = months_diff % 12
             annual_leave_quota = _calculate_annual_leave_quota(hire_date)
 
-        current_year = today_taipei().year  
+        current_year = today_taipei().year
         start_of_year = date(current_year, 1, 1)
         end_of_year = date(current_year, 12, 31)
 
@@ -746,7 +754,7 @@ def get_my_quotas(
 ):
     """查詢本人各假別年度配額（含動態計算的已使用、待審、剩餘時數）"""
     if year is None:
-        year = today_taipei().year  
+        year = today_taipei().year
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
