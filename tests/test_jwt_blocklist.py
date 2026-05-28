@@ -325,3 +325,29 @@ def test_old_token_without_jti_still_works_for_blocklist_check(db):
     assert "jti" not in payload
     # is_token_revoked 對 missing jti 回 False
     assert is_token_revoked(payload.get("jti", "")) is False
+
+
+def test_is_token_revoked_db_failure_calls_capture_fail_open(monkeypatch):
+    """DB raise 時應 capture_fail_open + 仍回 False（fail-open 行為保留）。"""
+    calls = []
+
+    def fake_capture(operation, error, **extra):
+        calls.append((operation, type(error).__name__, extra))
+
+    monkeypatch.setattr("utils.auth.capture_fail_open", fake_capture)
+
+    class BrokenEngine:
+        def connect(self):
+            raise RuntimeError("DB down")
+
+    # is_token_revoked 內 inline `from models.base import get_engine`，
+    # 必須 patch source module 而非 utils.auth 命名空間
+    monkeypatch.setattr("models.base.get_engine", lambda: BrokenEngine())
+
+    from utils.auth import is_token_revoked
+
+    assert is_token_revoked("any-jti") is False  # fail-open 行為
+    assert len(calls) == 1
+    assert calls[0][0] == "is_token_revoked"
+    assert calls[0][1] == "RuntimeError"
+    assert calls[0][2] == {"jti": "any-jti"}
