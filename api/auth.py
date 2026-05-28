@@ -7,8 +7,11 @@ import logging
 import time
 from collections import defaultdict
 from datetime import datetime
+from hashlib import sha256
 from utils.taipei_time import now_taipei_naive
 from typing import List, Optional
+
+from sqlalchemy import text
 
 from config import settings
 
@@ -18,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
+from models.staff_refresh_token import StaffRefreshToken
 from utils.audit import write_login_audit, mark_soft_delete
 from utils.request_ip import get_client_ip
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
@@ -357,6 +361,15 @@ class ResetPasswordRequest(BaseModel):
 
 class ImpersonateRequest(BaseModel):
     employee_id: int
+
+
+class SessionItemOut(BaseModel):
+    family_id: str
+    last_active: datetime
+    user_agent: str | None
+    ip: str | None
+    token_count: int
+    is_current: bool = False  # 標記當前裝置的 session
 
 
 # ============ Public Routes ============
@@ -968,6 +981,95 @@ def logout(request: Request):
     clear_access_token_cookie(response)
     clear_admin_token_cookie(response)
     clear_staff_refresh_cookie(response)
+    return response
+
+
+# ============ Sessions Management (Spec F) ============
+
+
+@router.get("/sessions", response_model=list[SessionItemOut])
+def list_my_sessions(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """列出目前使用者的所有 active StaffRefreshToken family，含 is_current 標記當前裝置。
+
+    Spec F §3.4 (audit P1 #11)
+    """
+    raw = request.cookies.get("staff_refresh_token")
+    current_family = None
+    if raw:
+        h = sha256(raw.encode()).hexdigest()
+        _session = get_session()
+        try:
+            rt = _session.query(StaffRefreshToken).filter_by(token_hash=h).first()
+            if rt:
+                current_family = rt.family_id
+        finally:
+            _session.close()
+
+    session = get_session()
+    try:
+        sql = text("""
+            SELECT family_id, MAX(created_at) AS last_active,
+                   MAX(user_agent) AS user_agent, MAX(ip) AS ip,
+                   COUNT(*) AS token_count
+            FROM staff_refresh_tokens
+            WHERE user_id = :uid AND revoked_at IS NULL AND expires_at > :now
+            GROUP BY family_id
+            ORDER BY last_active DESC
+            """)
+        rows = session.execute(
+            sql,
+            {"uid": current_user["user_id"], "now": now_taipei_naive()},
+        ).all()
+        return [
+            SessionItemOut(
+                family_id=r.family_id,
+                last_active=r.last_active,
+                user_agent=r.user_agent,
+                ip=r.ip,
+                token_count=r.token_count,
+                is_current=(r.family_id == current_family),
+            )
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@router.delete("/sessions/{family_id}")
+def revoke_session(
+    family_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Per-session revoke：撤銷指定 family 的所有 token（其他 family 不影響）。
+
+    Spec F §3.4 (audit P1 #11)
+    """
+    from services.staff_refresh import revoke_family
+
+    n = revoke_family(current_user["user_id"], family_id)
+    if n == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"revoked": n}
+
+
+@router.post("/sessions/logout-all")
+def logout_all_sessions(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Logout-all：revoke 所有 family + bump token_version + clear self cookies。
+
+    Spec F §3.4 (audit P1 #11)
+    """
+    from services.staff_refresh import revoke_all_for_user
+
+    revoke_all_for_user(current_user["user_id"])
+    response = JSONResponse(content={"logout_all": True})
+    clear_staff_refresh_cookie(response)
+    clear_access_token_cookie(response)
     return response
 
 
