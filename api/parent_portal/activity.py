@@ -28,6 +28,10 @@ from models.activity import (
 from models.database import Guardian, Student
 from services.activity_service import activity_service
 from schemas._common import OkStatusOut
+from services.business_errors.parent import (
+    ParentNotAuthorized,
+    StudentNotFound,
+)
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -163,7 +167,7 @@ def register_courses(
 
     student = session.query(Student).filter(Student.id == payload.student_id).first()
     if student is None:
-        raise HTTPException(status_code=404, detail="找不到學生")
+        raise StudentNotFound("找不到學生")
 
     # 防同學期重複報名
     existing = (
@@ -292,7 +296,7 @@ def confirm_promotion(
         .first()
     )
     if reg is None or reg.student_id is None or reg.student_id not in owned_student_ids:
-        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        raise ParentNotAuthorized("查無此資料或無權存取")
 
     # 改用 services.activity_service.confirm_waitlist_promotion：
     # 與公開端 api/activity/public.py 共用同一 helper（已加 with_for_update
@@ -350,7 +354,7 @@ def registration_payments(
         .first()
     )
     if reg is None or reg.student_id is None or reg.student_id not in owned_student_ids:
-        raise HTTPException(status_code=403, detail="查無此資料或無權存取")
+        raise ParentNotAuthorized("查無此資料或無權存取")
 
     rows = (
         session.query(ActivityPaymentRecord)
