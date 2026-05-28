@@ -44,8 +44,10 @@ def record_slow(path: str, elapsed_ms: float, status: int) -> None:
         while q and q[0] < window_start:
             q.popleft()
         count = len(q)
-        last = _last_alert.get(path, 0.0)
-        in_cooldown = (now - last) < cfg.slow_request_alert_cooldown_seconds
+        last = _last_alert.get(path)  # None = 從未告警過
+        in_cooldown = (
+            last is not None and (now - last) < cfg.slow_request_alert_cooldown_seconds
+        )
 
         if count >= cfg.slow_request_alert_threshold and not in_cooldown:
             _last_alert[path] = now
