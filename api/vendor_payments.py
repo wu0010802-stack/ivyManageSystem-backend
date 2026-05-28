@@ -25,6 +25,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import joinedload
 
 from models.database import Employee, VendorPayment, get_session
+from schemas._common import DeleteResultOut, MutationResultOut
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.file_upload import (
@@ -268,7 +269,7 @@ async def get_vendor_payment(
         session.close()
 
 
-@router.post("/vendor-payments", status_code=201)
+@router.post("/vendor-payments", status_code=201, response_model=MutationResultOut)
 async def create_vendor_payment(
     payload: VendorPaymentCreate,
     current_user: dict = Depends(
@@ -304,7 +305,7 @@ async def create_vendor_payment(
         session.close()
 
 
-@router.put("/vendor-payments/{payment_id}")
+@router.put("/vendor-payments/{payment_id}", response_model=DeleteResultOut)
 async def update_vendor_payment(
     payment_id: int,
     payload: VendorPaymentUpdate,
@@ -331,7 +332,7 @@ async def update_vendor_payment(
         session.close()
 
 
-@router.delete("/vendor-payments/{payment_id}")
+@router.delete("/vendor-payments/{payment_id}", response_model=DeleteResultOut)
 async def delete_vendor_payment(
     payment_id: int,
     current_user: dict = Depends(
@@ -368,7 +369,7 @@ async def delete_vendor_payment(
         session.close()
 
 
-@router.post("/vendor-payments/{payment_id}/sign")
+@router.post("/vendor-payments/{payment_id}/sign", response_model=DeleteResultOut)
 async def sign_vendor_payment(
     payment_id: int,
     payload: VendorPaymentSignRequest,
@@ -495,7 +496,9 @@ async def upload_attachment(
         session.close()
 
 
-@router.delete("/vendor-payments/{payment_id}/attachments")
+@router.delete(
+    "/vendor-payments/{payment_id}/attachments", response_model=DeleteResultOut
+)
 async def delete_attachment_endpoint(
     payment_id: int,
     request: Request,

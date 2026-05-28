@@ -527,12 +527,7 @@ api/system_config.py:get_config
 api/system_config.py:upsert_config
 api/vendor_payments.py:list_vendor_payments
 api/vendor_payments.py:get_vendor_payment
-api/vendor_payments.py:create_vendor_payment
-api/vendor_payments.py:update_vendor_payment
-api/vendor_payments.py:delete_vendor_payment
-api/vendor_payments.py:sign_vendor_payment
 api/vendor_payments.py:get_signature_image
 api/vendor_payments.py:upload_attachment
-api/vendor_payments.py:delete_attachment_endpoint
 api/vendor_payments.py:download_attachment
 api/year_end/appraisal_payout.py:delete_payouts
