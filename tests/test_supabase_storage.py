@@ -95,16 +95,30 @@ def test_unknown_module_raises(mock_supabase):
 class TestSentryTaggedCapture:
     """Phase 1 P1 resilience：Supabase Storage exception 須呼叫 tagged_capture."""
 
-    def test_save_exception_calls_tagged_capture(self, mock_supabase):
+    def test_save_exception_calls_tagged_capture(self, mock_supabase, monkeypatch):
+        # Phase 4：save() 失敗後會嘗試 local fallback；patch _enqueue 跳 DB
+        # 讓 tagged_capture 只被呼叫一次（主要失敗）
         backend, client = mock_supabase
         bucket = client.storage.from_.return_value
         bucket.upload.side_effect = RuntimeError("bucket down")
+        monkeypatch.setattr("utils.external_calls.time.sleep", lambda s: None)
+        monkeypatch.setattr(
+            "utils.supabase_storage._enqueue_pending_upload", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "utils.supabase_storage._FALLBACK_ROOT",
+            __import__("pathlib").Path("/tmp/test_fallback_root"),
+        )
+        import pathlib
+        pathlib.Path("/tmp/test_fallback_root/activity_posters").mkdir(parents=True, exist_ok=True)
         with patch("utils.supabase_storage.tagged_capture") as mock_capture:
-            with pytest.raises(RuntimeError, match="bucket down"):
-                backend.save("activity_posters", "x.png", b"X", "image/png")
-            mock_capture.assert_called_once()
-            assert mock_capture.call_args.kwargs.get("tag") == "supabase" \
-                or mock_capture.call_args.args[1] == "supabase"
+            # With fallback enabled, save() no longer raises — it silently falls back
+            backend.save("activity_posters", "x.png", b"X", "image/png")
+            mock_capture.assert_called()
+            # First call must be for supabase tag
+            first_call = mock_capture.call_args_list[0]
+            assert first_call.kwargs.get("tag") == "supabase" \
+                or first_call.args[1] == "supabase"
 
     def test_read_exception_calls_tagged_capture(self, mock_supabase):
         backend, client = mock_supabase
@@ -133,3 +147,68 @@ class TestSentryTaggedCapture:
             with pytest.raises(RuntimeError):
                 backend.signed_url("leave_attachments", "x.pdf", 60)
             mock_capture.assert_called_once()
+
+
+class TestPhase4Fallback:
+    """Phase 4 P1 resilience：retry + local fallback tests."""
+
+    def test_save_retries_then_fallback_writes_local(
+        self, mock_supabase, tmp_path, monkeypatch
+    ):
+        """upload 持續失敗 → fallback 寫本機檔，呼叫端不 raise。"""
+        backend, client = mock_supabase
+        bucket = client.storage.from_.return_value
+        bucket.upload.side_effect = ConnectionError("supabase down")
+        # 把 fallback root 指向 tmp_path 避免真寫磁碟
+        monkeypatch.setattr("utils.supabase_storage._FALLBACK_ROOT", tmp_path / "uploads_pending")
+        # 跳 sleep（retry backoff）
+        monkeypatch.setattr("utils.external_calls.time.sleep", lambda s: None)
+        # patch _enqueue_pending_upload 跳 DB（這個 test 只驗 local file）
+        enqueued = []
+        monkeypatch.setattr(
+            "utils.supabase_storage._enqueue_pending_upload",
+            lambda *a, **kw: enqueued.append(a),
+        )
+
+        # 不應 raise
+        backend.save("activity_posters", "x.png", b"PNGDATA", "image/png")
+
+        # local file 存在且內容正確
+        files = list((tmp_path / "uploads_pending" / "activity_posters").iterdir())
+        assert len(files) == 1
+        assert files[0].read_bytes() == b"PNGDATA"
+        # _enqueue 有被呼叫
+        assert len(enqueued) == 1
+
+    def test_save_fallback_disabled_raises(self, mock_supabase, monkeypatch):
+        """STORAGE_LOCAL_FALLBACK_ENABLED=false → 失敗照樣 raise。"""
+        backend, client = mock_supabase
+        bucket = client.storage.from_.return_value
+        bucket.upload.side_effect = ConnectionError("down")
+        monkeypatch.setattr("utils.external_calls.time.sleep", lambda s: None)
+
+        from config import settings
+        monkeypatch.setattr(settings.storage, "local_fallback_enabled", False, raising=False)
+
+        with pytest.raises(ConnectionError):
+            backend.save("activity_posters", "x.png", b"X", "image/png")
+
+    def test_save_retry_succeeds_on_second_attempt(self, mock_supabase, monkeypatch):
+        """第 1 次 fail 第 2 次 success → 不進 fallback。"""
+        backend, client = mock_supabase
+        bucket = client.storage.from_.return_value
+        attempts = {"n": 0}
+
+        def maybe_upload(*a, **k):
+            attempts["n"] += 1
+            if attempts["n"] < 2:
+                raise ConnectionError("transient")
+            return None
+
+        bucket.upload.side_effect = maybe_upload
+        monkeypatch.setattr("utils.external_calls.time.sleep", lambda s: None)
+
+        # 不應 raise（第 2 次成功）
+        backend.save("activity_posters", "y.png", b"Y", "image/png")
+        assert attempts["n"] == 2
+
