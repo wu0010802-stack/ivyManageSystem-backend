@@ -17,6 +17,7 @@ import logging
 from supabase import create_client
 
 from config import settings
+from utils.external_calls import tagged_capture
 
 logger = logging.getLogger(__name__)
 
@@ -52,22 +53,31 @@ class SupabaseStorage:
     def save(self, module: str, key: str, data: bytes, content_type: str) -> None:
         bucket = self._client.storage.from_(_resolve_bucket(module))
         # upsert=true：若同 key 存在則覆蓋（呼叫端通常用 uuid filename 不會撞）
-        bucket.upload(
-            path=key,
-            file=data,
-            file_options={"content-type": content_type, "upsert": "true"},
-        )
+        try:
+            bucket.upload(
+                path=key,
+                file=data,
+                file_options={"content-type": content_type, "upsert": "true"},
+            )
+        except Exception as exc:
+            tagged_capture(exc, tag="supabase", level="error")
+            raise  # Phase 1 不接 fallback；Phase 4 改寫 local + pending_uploads
 
     def read(self, module: str, key: str) -> bytes:
         bucket = self._client.storage.from_(_resolve_bucket(module))
-        return bucket.download(key)
+        try:
+            return bucket.download(key)
+        except Exception as exc:
+            tagged_capture(exc, tag="supabase", level="error")
+            raise
 
     def delete(self, module: str, key: str) -> None:
         bucket = self._client.storage.from_(_resolve_bucket(module))
         try:
             bucket.remove([key])
         except Exception as e:
-            # idempotent：物件已不存在不 raise
+            # idempotent：物件已不存在不 raise；保留既有行為
+            tagged_capture(e, tag="supabase", level="warning")
             logger.warning(
                 "Supabase Storage delete 失敗（忽略）：module=%s key=%s err=%s",
                 module,
@@ -86,8 +96,9 @@ class SupabaseStorage:
                 items = bucket.list(parent[0])
                 filename = parent[1]
             return any(item.get("name") == filename for item in items)
-        except Exception:
-            return False
+        except Exception as exc:
+            tagged_capture(exc, tag="supabase", level="warning")
+            return False  # 既有行為：例外視為「不存在」
 
     def public_url(self, module: str, key: str) -> str:
         bucket = self._client.storage.from_(_resolve_bucket(module))
@@ -95,6 +106,10 @@ class SupabaseStorage:
 
     def signed_url(self, module: str, key: str, ttl_seconds: int) -> str:
         bucket = self._client.storage.from_(_resolve_bucket(module))
-        res = bucket.create_signed_url(key, ttl_seconds)
+        try:
+            res = bucket.create_signed_url(key, ttl_seconds)
+        except Exception as exc:
+            tagged_capture(exc, tag="supabase", level="error")
+            raise
         # supabase-py 2.x 回 dict {"signedURL": "..."}
         return res.get("signedURL") or res.get("signed_url") or ""

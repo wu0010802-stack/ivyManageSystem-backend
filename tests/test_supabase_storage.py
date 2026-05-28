@@ -90,3 +90,46 @@ def test_unknown_module_raises(mock_supabase):
     backend, _ = mock_supabase
     with pytest.raises(ValueError, match="未知 module"):
         backend.save("unknown_module", "x", b"X", "application/octet-stream")
+
+
+class TestSentryTaggedCapture:
+    """Phase 1 P1 resilience：Supabase Storage exception 須呼叫 tagged_capture."""
+
+    def test_save_exception_calls_tagged_capture(self, mock_supabase):
+        backend, client = mock_supabase
+        bucket = client.storage.from_.return_value
+        bucket.upload.side_effect = RuntimeError("bucket down")
+        with patch("utils.supabase_storage.tagged_capture") as mock_capture:
+            with pytest.raises(RuntimeError, match="bucket down"):
+                backend.save("activity_posters", "x.png", b"X", "image/png")
+            mock_capture.assert_called_once()
+            assert mock_capture.call_args.kwargs.get("tag") == "supabase" \
+                or mock_capture.call_args.args[1] == "supabase"
+
+    def test_read_exception_calls_tagged_capture(self, mock_supabase):
+        backend, client = mock_supabase
+        bucket = client.storage.from_.return_value
+        bucket.download.side_effect = ConnectionError("net")
+        with patch("utils.supabase_storage.tagged_capture") as mock_capture:
+            with pytest.raises(ConnectionError):
+                backend.read("activity_posters", "x.png")
+            mock_capture.assert_called_once()
+
+    def test_delete_exception_still_idempotent(self, mock_supabase):
+        """delete 既有 idempotent 語意（不拋）保留，但仍呼叫 tagged_capture."""
+        backend, client = mock_supabase
+        bucket = client.storage.from_.return_value
+        bucket.remove.side_effect = RuntimeError("net")
+        with patch("utils.supabase_storage.tagged_capture") as mock_capture:
+            # 既有行為：不拋；Phase 1 加 tagged_capture
+            backend.delete("activity_posters", "x.png")
+            mock_capture.assert_called_once()
+
+    def test_signed_url_exception_calls_tagged_capture(self, mock_supabase):
+        backend, client = mock_supabase
+        bucket = client.storage.from_.return_value
+        bucket.create_signed_url.side_effect = RuntimeError("auth")
+        with patch("utils.supabase_storage.tagged_capture") as mock_capture:
+            with pytest.raises(RuntimeError):
+                backend.signed_url("leave_attachments", "x.pdf", 60)
+            mock_capture.assert_called_once()
