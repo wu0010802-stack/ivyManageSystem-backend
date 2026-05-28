@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .validators import BoolEnv
@@ -96,3 +96,14 @@ class RecruitmentSettings(BaseSettings):
         default="",
         validation_alias="RECRUITMENT_POPULATION_AGE_URL",
     )
+
+    # K-anonymity 抑制門檻（招生地址熱點 bucket 最小 visit 數，少於此值不 render marker）
+    k_anonymity_threshold: int = Field(
+        default=5,
+        validation_alias="RECRUITMENT_K_ANONYMITY_THRESHOLD",
+    )
+
+    @field_validator("k_anonymity_threshold")
+    @classmethod
+    def _clamp_k_threshold(cls, v: int) -> int:
+        return max(2, min(10, v))
