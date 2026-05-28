@@ -12,6 +12,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from config import get_settings
+from utils.scheduler_observability import scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,10 @@ async def run_leave_quota_expiry_scheduler(stop_event: asyncio.Event) -> None:
     last_run_date: date | None = None
 
     while not stop_event.is_set():
-        try:
+        with scheduler_iteration(
+            "leave_quota_expiry",
+            expected_interval_seconds=check_interval,
+        ):
             today = _today_taipei()
             if last_run_date != today:
                 with session_scope() as session:
@@ -71,8 +75,6 @@ async def run_leave_quota_expiry_scheduler(stop_event: asyncio.Event) -> None:
                                 reminder_summary,
                             )
                             last_run_date = today
-        except Exception:
-            logger.exception("leave quota expiry scheduler tick failed")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
         except asyncio.TimeoutError:
