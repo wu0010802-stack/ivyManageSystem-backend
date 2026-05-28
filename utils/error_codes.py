@@ -12,6 +12,9 @@ class ErrorCode(str, Enum):
     BIND_CODE_INVALID = "BIND_CODE_INVALID"
     BIND_CODE_EXPIRED = "BIND_CODE_EXPIRED"
     BIND_CODE_ALREADY_USED = "BIND_CODE_ALREADY_USED"
+    # 既有 auth.py BusinessError code（_diagnose_binding_failure 已 in-use）
+    BIND_CODE_NOT_FOUND = "BIND_CODE_NOT_FOUND"
+    BIND_CODE_USED = "BIND_CODE_USED"
 
     # LIFF 認證
     LINE_BINDING_EXPIRED = "LINE_BINDING_EXPIRED"

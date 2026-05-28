@@ -15,8 +15,14 @@ def test_error_code_no_duplicates():
 
 
 def test_error_code_count():
-    """目前註冊 13 個 family；新增需同步前端 errorCodeRegistry.ts。"""
-    assert len(list(ErrorCode)) == 13
+    """目前註冊 15 個 family；新增需同步前端 errorCodeRegistry.ts。"""
+    assert len(list(ErrorCode)) == 15
+
+
+def test_existing_bind_code_aliases_registered():
+    """既有 auth.py _diagnose_binding_failure 用的 code 必納入 registry。"""
+    assert ErrorCode.BIND_CODE_NOT_FOUND.value == "BIND_CODE_NOT_FOUND"
+    assert ErrorCode.BIND_CODE_USED.value == "BIND_CODE_USED"
 
 
 def test_error_code_is_str_enum():
