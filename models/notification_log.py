@@ -17,6 +17,7 @@ from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -61,5 +62,8 @@ class NotificationLog(Base):
     channels_attempted = Column(JSON, nullable=False, default=list)
     channels_succeeded = Column(JSON, nullable=False, default=list)
     channels_failed = Column(JSON, nullable=False, default=list)
+    line_retry_count = Column(Integer, nullable=False, default=0, server_default="0")
+    line_next_retry_at = Column(DateTime(timezone=True), nullable=True)
+    is_inbox_visible = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     read_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
