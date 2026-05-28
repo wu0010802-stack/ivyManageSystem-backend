@@ -89,6 +89,14 @@ P1 #10 claim：「`models/audit.py:12-35` 純 SQLAlchemy 表，無 DENY UPDATE/D
 
 ### 3.2 Trigger E2E test（PR-D1）
 
+**CRITICAL（advisor 2026-05-28 抓）**：`tests/conftest.py:167 Base.metadata.create_all(test_engine)` 走 ORM schema 不跑 alembic migration → test DB **沒 trigger**。E2E test 直接跑 raw SQL UPDATE/DELETE 不會 raise → test 假 pass。
+
+兩個解法：
+- (a) test fixture 顯式 `op.execute` 安裝 trigger DDL 在 test session 開始（dialect-aware）
+- (b) 用 `@pytest.mark.skip(reason="PG-only trigger")` 跳過 SQLite，跑在 integration test 階段對 real PG
+
+**選 (a)**：cleaner、test 在 unit pytest stage 就抓得到 regression、不需要新 CI job。
+
 新檔 `tests/test_audit_logs_immutable.py`：
 
 ```python
@@ -96,80 +104,127 @@ P1 #10 claim：「`models/audit.py:12-35` 純 SQLAlchemy 表，無 DENY UPDATE/D
 
 防 future alembic downgrade / drift 意外移除 trigger 但無人察覺。
 直接走 raw SQL UPDATE / DELETE assert IntegrityError / OperationalError。
+
+注意：tests/conftest.py:167 用 Base.metadata.create_all 不跑 alembic
+migration → test DB 沒 trigger。本檔自己 install trigger DDL 模擬 prod 行為。
 """
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DatabaseError
+from sqlalchemy.exc import DatabaseError, IntegrityError, OperationalError
 
-from models.database import session_scope, AuditLog
+from models.audit import AuditLog
+from models.database import session_scope, get_engine
 
 
-def test_audit_log_update_raises():
-    """UPDATE audit_logs.entity_id raise IntegrityError (PG) / OperationalError (SQLite)。"""
-    with session_scope() as session:
-        log = AuditLog(
-            action="TEST",
-            entity_type="TEST",
-            entity_id=1,
-            user_id=None,
-            extras_json="{}",
+# 對齊 alembic/versions/20260507_l7m8n9o0p1q2_audit_log_immutable_trigger.py
+_INSTALL_TRIGGER_SQLITE = [
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_immutable_update
+    BEFORE UPDATE ON audit_logs
+    FOR EACH ROW
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_logs 為不可竄改稽核軌跡，禁止 UPDATE');
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_audit_log_immutable_delete
+    BEFORE DELETE ON audit_logs
+    FOR EACH ROW
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_logs 為不可竄改稽核軌跡，禁止 DELETE');
+    END;
+    """,
+]
+
+_INSTALL_TRIGGER_PG = [
+    """
+    CREATE OR REPLACE FUNCTION audit_log_immutable_fn()
+    RETURNS trigger AS $$
+    BEGIN
+        IF (TG_OP = 'UPDATE') THEN
+            RAISE EXCEPTION 'audit_logs 為不可竄改稽核軌跡，禁止 UPDATE (id=%)', OLD.id;
+        ELSIF (TG_OP = 'DELETE') THEN
+            RAISE EXCEPTION 'audit_logs 為不可竄改稽核軌跡，禁止 DELETE (id=%)', OLD.id;
+        END IF;
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql;
+    """,
+    "CREATE TRIGGER trg_audit_log_immutable_update BEFORE UPDATE ON audit_logs FOR EACH ROW EXECUTE FUNCTION audit_log_immutable_fn();",
+    "CREATE TRIGGER trg_audit_log_immutable_delete BEFORE DELETE ON audit_logs FOR EACH ROW EXECUTE FUNCTION audit_log_immutable_fn();",
+]
+
+
+@pytest.fixture(autouse=True)
+def _install_audit_trigger(test_db_session):
+    """test_db_session fixture 跑 create_all 後，本 fixture 補裝 trigger DDL。
+
+    test_db_session 來自 conftest（建 SQLite + Base.metadata.create_all）。
+    我們在這之後手動 CREATE TRIGGER 補上 alembic migration 不跑的 trigger。
+    """
+    engine = get_engine()
+    dialect = engine.dialect.name
+    stmts = _INSTALL_TRIGGER_PG if dialect == "postgresql" else _INSTALL_TRIGGER_SQLITE
+    with engine.begin() as conn:
+        for stmt in stmts:
+            conn.execute(text(stmt))
+    yield
+    # 不主動 DROP — test_db_session 結束時 SQLite 整個 DB tmpfile 被刪
+
+
+def _create_test_audit_log(session) -> int:
+    """對齊實際 AuditLog schema：必填 action + entity_type；extras 用 changes column。"""
+    log = AuditLog(
+        action="TEST",
+        entity_type="TEST",
+        entity_id="1",   # String(50), not int
+        changes="{}",    # Text, nullable but 給空 JSON
+    )
+    session.add(log)
+    session.commit()
+    return log.id
+
+
+def test_audit_log_update_raises(test_db_session):
+    """UPDATE audit_logs raise DatabaseError（PG: IntegrityError / SQLite: OperationalError）。"""
+    log_id = _create_test_audit_log(test_db_session)
+
+    with pytest.raises((DatabaseError, IntegrityError, OperationalError)) as exc_info:
+        test_db_session.execute(
+            text("UPDATE audit_logs SET entity_id = '999' WHERE id = :id"),
+            {"id": log_id},
         )
-        session.add(log)
-        session.commit()
-        log_id = log.id
-
-    # Try UPDATE → 應被 trigger 擋
-    with session_scope() as session:
-        with pytest.raises(DatabaseError) as exc_info:
-            session.execute(
-                text("UPDATE audit_logs SET entity_id = 999 WHERE id = :id"),
-                {"id": log_id},
-            )
-            session.commit()
-        assert "audit_logs" in str(exc_info.value).lower() or "abort" in str(exc_info.value).lower()
+        test_db_session.commit()
+    msg = str(exc_info.value).lower()
+    assert "audit_logs" in msg or "abort" in msg, f"Expected trigger reject, got: {exc_info.value}"
 
 
-def test_audit_log_delete_raises():
-    """DELETE audit_logs raise IntegrityError (PG) / OperationalError (SQLite)。"""
-    with session_scope() as session:
-        log = AuditLog(
-            action="TEST",
-            entity_type="TEST",
-            entity_id=2,
-            user_id=None,
-            extras_json="{}",
+def test_audit_log_delete_raises(test_db_session):
+    """DELETE audit_logs raise DatabaseError。"""
+    log_id = _create_test_audit_log(test_db_session)
+
+    with pytest.raises((DatabaseError, IntegrityError, OperationalError)) as exc_info:
+        test_db_session.execute(
+            text("DELETE FROM audit_logs WHERE id = :id"),
+            {"id": log_id},
         )
-        session.add(log)
-        session.commit()
-        log_id = log.id
-
-    with session_scope() as session:
-        with pytest.raises(DatabaseError) as exc_info:
-            session.execute(
-                text("DELETE FROM audit_logs WHERE id = :id"),
-                {"id": log_id},
-            )
-            session.commit()
-        assert "audit_logs" in str(exc_info.value).lower() or "abort" in str(exc_info.value).lower()
+        test_db_session.commit()
+    msg = str(exc_info.value).lower()
+    assert "audit_logs" in msg or "abort" in msg, f"Expected trigger reject, got: {exc_info.value}"
 
 
-def test_audit_log_insert_succeeds():
-    """INSERT audit_logs 仍正常（INSERT 不被 trigger 擋）。"""
-    with session_scope() as session:
-        log = AuditLog(
-            action="TEST_INSERT",
-            entity_type="TEST",
-            entity_id=3,
-            user_id=None,
-            extras_json="{}",
-        )
-        session.add(log)
-        session.commit()
-        assert log.id is not None
+def test_audit_log_insert_succeeds(test_db_session):
+    """INSERT audit_logs 仍正常（trigger 只擋 UPDATE/DELETE）。"""
+    log_id = _create_test_audit_log(test_db_session)
+    assert log_id is not None and log_id > 0
 ```
 
-**注意**：實際 `AuditLog` 必填欄位需對齊 `models/audit.py` schema；plan stage `grep -n "class AuditLog" models/audit.py` 確認 columns 後調整 fixture。
+**對齊 schema（advisor 2026-05-28 抓）**：
+- `AuditLog.entity_id` 是 `String(50)` 不是 int — fixture 用 `"1"` 不是 `1`
+- AuditLog 無 `extras_json` column — 用 `changes` (Text, nullable) 寫 JSON
+- 必填只有 `action` + `entity_type`（其餘 nullable 或 default）
+- 透過 `test_db_session` fixture（conftest 提供 SQLite create_all）+ 自動 install trigger fixture 達成 dialect-aware E2E test
 
 ### 3.3 audit_writer role + REVOKE/GRANT migration（PR-D2）
 
@@ -234,6 +289,14 @@ def upgrade() -> None:
     # GRANT USAGE on sequence (audit_logs.id is SERIAL)
     op.execute(sa.text("GRANT USAGE, SELECT ON SEQUENCE audit_logs_id_seq TO ivy_audit_writer"))
     op.execute(sa.text("GRANT USAGE, SELECT ON SEQUENCE audit_logs_id_seq TO ivy_admin_role"))
+
+    # CRITICAL（advisor 2026-05-28 抓）：SET LOCAL ROLE 需要 caller 是 target role
+    # 的 member。沒這個 GRANT 則 runtime SET LOCAL ROLE ivy_audit_writer 會
+    # "permission denied to set role" → 100% audit-write 走 fail-open 路徑
+    # （log warning + 用 admin connection 寫入，破壞 audit_writer 設計意圖）。
+    # parlsr001 註解明示 BYPASSRLS 不會透過 IN ROLE 繼承；role membership 是
+    # 另一個 GRANT，必須直接寫。
+    op.execute(sa.text("GRANT ivy_audit_writer TO ivy_admin_login"))
 
 
 def downgrade() -> None:
