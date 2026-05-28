@@ -18,10 +18,10 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 
 # 批次核准為重 DB 操作；每分鐘 10 次緩衝正常工作量，封住批次濫用
-_batch_approve_limiter = SlidingWindowLimiter(
+_batch_approve_limiter = create_limiter(
     max_calls=10,
     window_seconds=60,
     name="leave_batch_approve",

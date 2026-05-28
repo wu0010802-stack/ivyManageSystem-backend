@@ -27,7 +27,7 @@ from utils.audit import write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 from utils.excel_utils import SafeWorksheet, xlsx_streaming_response
 from utils.rounding import round_half_up
 
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/gov-reports", tags=["gov-reports"])
 
-_rate_limit = SlidingWindowLimiter(
+_rate_limit = create_limiter(
     max_calls=5,
     window_seconds=60,
     name="gov_report",

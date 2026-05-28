@@ -46,7 +46,7 @@ from utils.finance_cache import invalidate_finance_summary_cache
 from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_student_pii
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 
 from services.activity_payment_guards import require_approve_for_refund_diff
 from services.activity_refund_query import build_refund_suggestion
@@ -103,7 +103,7 @@ def _resolve_cash_warning_threshold() -> int:
 
 
 # Rate limiter：同 IP 每分鐘最多 60 次 checkout（約 1 張/秒，足以應付連按）
-_pos_checkout_limiter = SlidingWindowLimiter(
+_pos_checkout_limiter = create_limiter(
     max_calls=60,
     window_seconds=60,
     name="pos_checkout",

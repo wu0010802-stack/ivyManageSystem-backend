@@ -16,7 +16,7 @@ from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.masking import mask_bank_account
 from utils.permissions import Permission, has_permission
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/exports", tags=["exports"])
 
 # 匯出端點限流：同一 IP 每分鐘最多 5 次（匯出屬於重資源操作，防 DoS 消耗）
-_export_rate_limit = SlidingWindowLimiter(
+_export_rate_limit = create_limiter(
     max_calls=5,
     window_seconds=60,
     name="export",

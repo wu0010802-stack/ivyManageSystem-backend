@@ -46,7 +46,7 @@ from models.database import (
     ActivityRegistrationSettings,
 )
 from services.activity_service import activity_service
-from utils.rate_limit import SlidingWindowLimiter
+from utils.rate_limit import create_limiter
 
 from ._shared import (
     PublicCourseItem,
@@ -81,7 +81,7 @@ from utils.academic import resolve_academic_term_filters
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_public_query_limiter_instance = SlidingWindowLimiter(
+_public_query_limiter_instance = create_limiter(
     max_calls=10,
     window_seconds=60,
     name="activity_public_query",
@@ -89,7 +89,7 @@ _public_query_limiter_instance = SlidingWindowLimiter(
 )
 _public_query_limiter = _public_query_limiter_instance.as_dependency()
 
-_public_register_limiter_instance = SlidingWindowLimiter(
+_public_register_limiter_instance = create_limiter(
     max_calls=5,
     window_seconds=60,
     name="activity_public_register",
@@ -98,7 +98,7 @@ _public_register_limiter_instance = SlidingWindowLimiter(
 _public_register_limiter = _public_register_limiter_instance.as_dependency()
 
 # 家長提問：相較報名放寬一些，避免誤擋連續補充問題
-_public_inquiry_limiter_instance = SlidingWindowLimiter(
+_public_inquiry_limiter_instance = create_limiter(
     max_calls=3,
     window_seconds=60,
     name="activity_public_inquiry",
@@ -1074,7 +1074,7 @@ async def public_update_registration(
         session.close()
 
 
-_public_confirm_limiter_instance = SlidingWindowLimiter(
+_public_confirm_limiter_instance = create_limiter(
     max_calls=10,
     window_seconds=60,
     name="activity_public_confirm",
