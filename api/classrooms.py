@@ -15,6 +15,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from models.database import get_session, Classroom, ClassGrade, Employee, Student
+from schemas._common import MutationResultOut
+from schemas.classrooms import (
+    ClassroomUpdateResultOut,
+    GradeOut,
+    TeacherOptionOut,
+)
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
 from utils.auth import require_staff_permission
 from utils.error_messages import CLASSROOM_NOT_FOUND
@@ -565,7 +571,7 @@ async def get_classrooms(
         session.close()
 
 
-@router.get("/classrooms/teacher-options")
+@router.get("/classrooms/teacher-options", response_model=list[TeacherOptionOut])
 async def get_teacher_options(
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
 ):
@@ -638,7 +644,7 @@ async def get_classroom_enrollment_composition(
         total = len(students)
         return {
             "classroom_id": classroom_id,
-            "snapshot_date": today_taipei().isoformat(),  
+            "snapshot_date": today_taipei().isoformat(),
             "total": total,
             "counts": counts,
             "ratios": {
@@ -650,7 +656,7 @@ async def get_classroom_enrollment_composition(
         session.close()
 
 
-@router.post("/classrooms", status_code=201)
+@router.post("/classrooms", status_code=201, response_model=MutationResultOut)
 async def create_classroom(
     item: ClassroomCreate,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
@@ -706,7 +712,7 @@ async def create_classroom(
         session.close()
 
 
-@router.put("/classrooms/{classroom_id}")
+@router.put("/classrooms/{classroom_id}", response_model=ClassroomUpdateResultOut)
 async def update_classroom(
     classroom_id: int,
     item: ClassroomUpdate,
@@ -1156,7 +1162,7 @@ async def promote_classrooms_to_academic_year(
         session.close()
 
 
-@router.delete("/classrooms/{classroom_id}")
+@router.delete("/classrooms/{classroom_id}", response_model=MutationResultOut)
 async def delete_classroom(
     classroom_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
@@ -1203,7 +1209,7 @@ async def delete_classroom(
         session.close()
 
 
-@router.get("/grades")
+@router.get("/grades", response_model=list[GradeOut])
 async def get_grades(
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
 ):
@@ -1234,7 +1240,7 @@ class GradeUpdate(BaseModel):
     is_graduation_grade: Optional[bool] = None
 
 
-@router.patch("/grades/{grade_id}")
+@router.patch("/grades/{grade_id}", response_model=GradeOut)
 async def update_grade(
     grade_id: int,
     item: GradeUpdate,

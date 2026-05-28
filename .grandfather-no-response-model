@@ -153,16 +153,10 @@ api/auth.py:get_permissions
 api/auth.py:update_user
 api/auth.py:delete_user
 api/classrooms.py:get_classrooms
-api/classrooms.py:get_teacher_options
 api/classrooms.py:get_classroom
 api/classrooms.py:get_classroom_enrollment_composition
-api/classrooms.py:create_classroom
-api/classrooms.py:update_classroom
 api/classrooms.py:clone_classrooms_to_term
 api/classrooms.py:promote_classrooms_to_academic_year
-api/classrooms.py:delete_classroom
-api/classrooms.py:get_grades
-api/classrooms.py:update_grade
 api/config/bonus.py:get_bonus_config
 api/config/bonus.py:update_bonus_config
 api/config/bonus.py:get_bonus_config_history
