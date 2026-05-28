@@ -374,6 +374,38 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("LINE retry scheduler 啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # Phase 4 P1 resilience：pending_uploads scheduler（每 5 min 補傳 Supabase 失敗 file）
+    pending_uploads_task = None
+    pending_uploads_stop_event: asyncio.Event | None = None
+    try:
+        from services.notification.pending_uploads_scheduler import (
+            run_pending_uploads_scheduler,
+        )
+
+        pending_uploads_stop_event = asyncio.Event()
+        pending_uploads_task = asyncio.create_task(
+            run_pending_uploads_scheduler(pending_uploads_stop_event)
+        )
+        logger.info("pending_uploads scheduler 已啟用")
+    except Exception as e:
+        logger.warning("pending_uploads scheduler 啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
+    # Phase 4 P1 resilience：LINE token health scheduler（每日 08:00 ping /v2/bot/info）
+    line_token_health_task = None
+    line_token_health_stop_event: asyncio.Event | None = None
+    try:
+        from services.line_token_health_scheduler import run_line_token_health_scheduler
+
+        line_token_health_stop_event = asyncio.Event()
+        line_token_health_task = asyncio.create_task(
+            run_line_token_health_scheduler(line_token_health_stop_event)
+        )
+        logger.info("LINE token health scheduler 已啟用")
+    except Exception as e:
+        logger.warning("LINE token health scheduler 啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
     ivykids_sync_task = None
     ivykids_sync_stop_event: asyncio.Event | None = None
@@ -645,6 +677,28 @@ async def app_lifespan(app_instance: FastAPI):
                 line_retry_task.cancel()
                 try:
                     await line_retry_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if pending_uploads_task is not None:
+            if pending_uploads_stop_event is not None:
+                pending_uploads_stop_event.set()
+            try:
+                await asyncio.wait_for(pending_uploads_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pending_uploads_task.cancel()
+                try:
+                    await pending_uploads_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if line_token_health_task is not None:
+            if line_token_health_stop_event is not None:
+                line_token_health_stop_event.set()
+            try:
+                await asyncio.wait_for(line_token_health_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                line_token_health_task.cancel()
+                try:
+                    await line_token_health_task
                 except (asyncio.CancelledError, Exception):
                     pass
         # Graceful Shutdown：釋放資源
