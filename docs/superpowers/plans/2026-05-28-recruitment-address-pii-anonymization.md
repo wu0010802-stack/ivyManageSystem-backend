@@ -765,21 +765,24 @@ from models.recruitment import RecruitmentVisit
 
 
 def test_hotspots_groups_by_truncated_address(use_test_db, admin_client) -> None:
-    """同巷不同戶 → group 同一 key"""
+    """同巷不同戶 → group 同一 key（advisor catch: 不能只測 total，需測 hotspot 數=1）"""
     with session_scope() as s:
         for n in range(5):
             s.add(RecruitmentVisit(
                 month="115.05", child_name=f"K{n}", grade="幼兒",
-                address=f"臺北市文山區興隆路四段30巷{n+1}號",
+                address=f"臺北市文山區興隆路四段30巷{n+1}號",  # 5 個不同門牌號
                 geocoding_consent_at=datetime.utcnow(),
             ))
     resp = admin_client.get("/api/recruitment/address-hotspots")
     assert resp.status_code == 200
-    # 5 戶集中 1 巷 → 1 個 hotspot
     body = resp.json()
-    # bucket 或 hotspot list — 取決於 Task 9 後實際 shape；先驗 5 → 1
-    aggregated_visits = sum(b.get("visit", 0) for b in body.get("hotspots", []))
-    assert aggregated_visits == 5
+    hotspots = body.get("hotspots", [])
+    # 關鍵 assert：5 戶不同門牌號 → truncate 後同一巷 → 應只有 1 個 hotspot 且 visit=5
+    # 如果 truncate 沒生效，會看到 5 個 hotspot 每個 visit=1 → assert 不成立
+    assert len(hotspots) == 1, f"truncate 失效：應 1 個 hotspot 實際 {len(hotspots)} 個"
+    assert hotspots[0]["visit"] == 5, f"visit count 不對：{hotspots[0]}"
+    assert hotspots[0]["address"] == "臺北市文山區興隆路四段30巷", \
+        f"truncated address 不對：{hotspots[0]['address']}"
 
 
 def test_hotspots_excludes_null_consent(use_test_db, admin_client) -> None:
@@ -849,18 +852,23 @@ def _query_address_hotspots(session, limit=None, dataset_scope=None):
         .all()
     )
 
-    # SQLite path: 在 Python 端 truncate 後重 group
+    # SQLite path: 在 Python 端 truncate 後重 group（advisor catch: SQLite 沒 regex，必須真正 truncate）
     if dialect != "postgresql":
         from collections import defaultdict
+        from types import SimpleNamespace
+
+        # rows 此時是 raw full-address group（trim only），需要 Python truncate 後重 group
         regrouped: dict[tuple[str, str], dict] = defaultdict(lambda: {"visit": 0, "deposit": 0})
         for row in rows:
-            key = (truncate_address_to_lane(row.truncated_address), row.district or "")
+            real_truncated = truncate_address_to_lane(row.truncated_address)
+            key = (real_truncated, row.district or "")
             regrouped[key]["visit"] += row.visit
             regrouped[key]["deposit"] += row.deposit
-        # 重組成同 row.proxy shape
-        from types import SimpleNamespace
         rows = [
-            SimpleNamespace(truncated_address=k[0], district=k[1], visit=v["visit"], deposit=v["deposit"])
+            SimpleNamespace(
+                truncated_address=k[0], district=k[1],
+                visit=v["visit"], deposit=v["deposit"],
+            )
             for k, v in regrouped.items()
         ]
 
@@ -935,19 +943,24 @@ from models.recruitment import RecruitmentVisit, RecruitmentGeocodeCache
 
 
 def _seed_visit_at(session, lat: float, lng: float, count: int, district: str = "文山區") -> None:
-    """同一 truncated address + lat/lng 種 N 筆 visit"""
-    addr = f"臺北市{district}測試路{int(lat * 100)}巷"
+    """種 N 筆 visit 同巷不同門牌號（驗 truncate 真實生效，advisor catch）。
+
+    visit.address: 完整含門牌號（如 X 路 30 巷 5 號）
+    cache.address: truncated（X 路 30 巷）— 因為 truncate_address_to_lane 之後才寫 cache
+    """
+    truncated_addr = f"臺北市{district}測試路{int(lat * 100)}巷"
     for i in range(count):
         session.add(RecruitmentVisit(
             month="115.05", child_name=f"K{i}-{lat}", grade="幼兒",
-            address=addr,
+            address=f"{truncated_addr}{i+1}號",  # 完整地址，5 個不同號
             district=district,
             geocoding_consent_at=datetime.utcnow(),
         ))
-    cache = session.query(RecruitmentGeocodeCache).filter_by(address=addr).one_or_none()
+    cache = session.query(RecruitmentGeocodeCache).filter_by(address=truncated_addr).one_or_none()
     if not cache:
         session.add(RecruitmentGeocodeCache(
-            address=addr, lat=lat, lng=lng, status="resolved",
+            address=truncated_addr,  # cache key = truncated
+            lat=lat, lng=lng, status="resolved",
             district=district, resolved_at=datetime.utcnow(),
         ))
 
@@ -1285,20 +1298,21 @@ def test_ivykids_records_excluded_when_consent_null(use_test_db, admin_client) -
 
 
 def test_ivykids_records_included_when_consent_set(use_test_db, admin_client) -> None:
-    """如 admin 手動補 consent → ivykids 進 heatmap"""
+    """如 admin 手動補 consent → ivykids 進 heatmap；同時驗 truncate 對 ivykids 也生效
+    (advisor catch: 用 full address 5 個不同門牌號才能驗真實 truncate)"""
     with session_scope() as s:
-        # 5 筆 ivykids + consent set
+        # 5 筆 ivykids 同巷不同號 + consent set
         for i in range(5):
             s.add(RecruitmentIvykidsRecord(
                 external_id=f"ext-{i}",
                 month="115.05",
                 child_name=f"IK{i}",
                 grade="幼兒",
-                address="臺北市內湖區成功路四段100巷",
+                address=f"臺北市內湖區成功路四段100巷{i+1}號",  # 5 個不同 full address
                 geocoding_consent_at=datetime.utcnow(),
             ))
         s.add(RecruitmentGeocodeCache(
-            address="臺北市內湖區成功路四段100巷",
+            address="臺北市內湖區成功路四段100巷",  # cache key = truncated
             lat=25.08, lng=121.59, status="resolved",
             district="內湖區", resolved_at=datetime.utcnow(),
         ))
@@ -1306,8 +1320,12 @@ def test_ivykids_records_included_when_consent_set(use_test_db, admin_client) ->
     resp = admin_client.get("/api/recruitment/address-hotspots")
     body = resp.json()
     buckets = body.get("buckets", [])
-    assert any(b.get("district") == "內湖區" and b.get("visit_count") == 5 for b in buckets), \
-        f"consent set 的 ivykids 應上 heatmap，實際 buckets={buckets}"
+    # 5 筆全 truncate 到同一巷 + cache join → 應 1 個 bucket visit_count=5
+    inhu_buckets = [b for b in buckets if b.get("district") == "內湖區"]
+    assert len(inhu_buckets) == 1, \
+        f"truncate 失效：應 1 bucket 實際 {len(inhu_buckets)}：{inhu_buckets}"
+    assert inhu_buckets[0]["visit_count"] == 5, \
+        f"visit_count 不對：{inhu_buckets[0]}"
 ```
 
 - [ ] **Step 3: 跑測試驗證 fail**
@@ -1355,31 +1373,99 @@ def _build_buckets_response(session, dataset_scope=None) -> dict:
         select(ivy_sub.c.addr, ivy_sub.c.v, ivy_sub.c.d),
     ).subquery()
 
-    # JOIN cache 取座標 + grid round
-    rows = (
-        session.query(
-            sa.func.round(RecruitmentGeocodeCache.lat * 1000) / 1000,
-            sa.func.round(RecruitmentGeocodeCache.lng * 1000) / 1000,
-            RecruitmentGeocodeCache.district.label("cache_district"),
-            sa.func.sum(union_q.c.v).label("visit_count"),
-            sa.func.sum(union_q.c.d).label("deposit_count"),
-            sa.func.avg(RecruitmentGeocodeCache.lat).label("center_lat"),
-            sa.func.avg(RecruitmentGeocodeCache.lng).label("center_lng"),
+    # JOIN cache 取座標 + grid round（SQLite 路徑需 Python 端 truncate 後重 group）
+    if dialect == "postgresql":
+        rows = (
+            session.query(
+                sa.func.round(RecruitmentGeocodeCache.lat * 1000) / 1000,
+                sa.func.round(RecruitmentGeocodeCache.lng * 1000) / 1000,
+                RecruitmentGeocodeCache.district.label("cache_district"),
+                sa.func.sum(union_q.c.v).label("visit_count"),
+                sa.func.sum(union_q.c.d).label("deposit_count"),
+                sa.func.avg(RecruitmentGeocodeCache.lat).label("center_lat"),
+                sa.func.avg(RecruitmentGeocodeCache.lng).label("center_lng"),
+            )
+            .join(RecruitmentGeocodeCache, RecruitmentGeocodeCache.address == union_q.c.addr)
+            .filter(
+                RecruitmentGeocodeCache.lat.isnot(None),
+                RecruitmentGeocodeCache.lng.isnot(None),
+            )
+            .group_by(
+                sa.func.round(RecruitmentGeocodeCache.lat * 1000),
+                sa.func.round(RecruitmentGeocodeCache.lng * 1000),
+                RecruitmentGeocodeCache.district,
+            )
+            .all()
         )
-        .join(RecruitmentGeocodeCache, RecruitmentGeocodeCache.address == union_q.c.addr)
-        .filter(
-            RecruitmentGeocodeCache.lat.isnot(None),
-            RecruitmentGeocodeCache.lng.isnot(None),
+    else:
+        # SQLite：先 union raw（含 trim only address），Python truncate 後 join cache + group
+        from collections import defaultdict
+        raw_rows = session.execute(union_q.select()).all()  # [(addr, v, d), ...]
+
+        # Python truncate
+        truncated_acc: dict[str, dict] = defaultdict(lambda: {"v": 0, "d": 0})
+        for raw_addr, v, d in raw_rows:
+            real_truncated = truncate_address_to_lane(raw_addr or "")
+            if not real_truncated:
+                continue
+            truncated_acc[real_truncated]["v"] += v or 0
+            truncated_acc[real_truncated]["d"] += d or 0
+
+        # JOIN cache by truncated key
+        cache_map = {
+            c.address: c for c in session.query(RecruitmentGeocodeCache).filter(
+                RecruitmentGeocodeCache.address.in_(list(truncated_acc.keys())),
+                RecruitmentGeocodeCache.lat.isnot(None),
+                RecruitmentGeocodeCache.lng.isnot(None),
+            ).all()
+        }
+        # Grid + aggregate
+        grid_acc: dict[tuple, dict] = defaultdict(
+            lambda: {"v": 0, "d": 0, "lat_sum": 0.0, "lng_sum": 0.0, "n": 0, "district": ""}
         )
-        .group_by(
-            sa.func.round(RecruitmentGeocodeCache.lat * 1000),
-            sa.func.round(RecruitmentGeocodeCache.lng * 1000),
-            RecruitmentGeocodeCache.district,
-        )
-        .all()
-    )
-    # K suppression 同 Task 9
-    ...
+        for truncated_addr, acc in truncated_acc.items():
+            c = cache_map.get(truncated_addr)
+            if not c:
+                continue
+            grid_key = (round(c.lat * 1000) / 1000, round(c.lng * 1000) / 1000, c.district or "")
+            g = grid_acc[grid_key]
+            g["v"] += acc["v"]
+            g["d"] += acc["d"]
+            g["lat_sum"] += c.lat
+            g["lng_sum"] += c.lng
+            g["n"] += 1
+            g["district"] = c.district or g["district"]
+        # 重組 row.proxy
+        from types import SimpleNamespace
+        rows = [
+            SimpleNamespace(
+                cache_district=g["district"],
+                visit_count=g["v"],
+                deposit_count=g["d"],
+                center_lat=g["lat_sum"] / g["n"],
+                center_lng=g["lng_sum"] / g["n"],
+            )
+            for g in grid_acc.values()
+        ]
+
+    # K=5 suppression 與 response shape
+    K = max(2, min(10, settings.recruitment.k_anonymity_threshold))
+    buckets = []
+    residual: dict[str, int] = {}
+    for row in rows:
+        visit_count = int(row.visit_count or 0)
+        district = (row.cache_district or "未填寫").strip() or "未填寫"
+        if visit_count >= K:
+            buckets.append({
+                "center_lat": float(row.center_lat),
+                "center_lng": float(row.center_lng),
+                "district": district,
+                "visit_count": visit_count,
+                "deposit_count": int(row.deposit_count or 0),
+            })
+        else:
+            residual[district] = residual.get(district, 0) + visit_count
+    return {"buckets": buckets, "district_residual_visits": residual}
 ```
 
 - [ ] **Step 5: 跑測試驗證 pass**
