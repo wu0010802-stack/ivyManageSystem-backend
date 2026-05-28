@@ -564,17 +564,6 @@ api/student_communications.py:create_communication
 api/student_communications.py:update_communication
 api/student_communications.py:delete_communication
 api/student_enrollment.py:print_enrollment_roster_pdf
-api/student_health.py:list_allergies
-api/student_health.py:create_allergy
-api/student_health.py:update_allergy
-api/student_health.py:delete_allergy
-api/student_health.py:list_medication_orders
-api/student_health.py:get_medication_order
-api/student_health.py:create_medication_order
-api/student_health.py:administer_medication
-api/student_health.py:skip_medication
-api/student_health.py:correct_medication_log
-api/student_health.py:today_medication_summary
 api/student_incidents.py:list_incidents
 api/student_incidents.py:create_incident
 api/student_incidents.py:update_incident

@@ -41,6 +41,15 @@ from models.database import (
     session_scope,
 )
 from models.portfolio import ALLERGY_SEVERITIES, MEDICATION_SOURCE_TEACHER
+from schemas.student_health import (
+    AllergyDeleteOut,
+    AllergyListOut,
+    AllergyOut,
+    MedicationLogOut,
+    MedicationOrderListOut,
+    MedicationOrderOut,
+    TodayMedicationSummaryOut,
+)
 from services.medication_service import create_order_with_logs
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
@@ -217,7 +226,7 @@ def _load_logs_for_orders(
 # ══════════════════════════════════════════════════════════════════════════
 
 
-@router.get("/students/{student_id}/allergies")
+@router.get("/students/{student_id}/allergies", response_model=AllergyListOut)
 async def list_allergies(
     student_id: int,
     include_inactive: bool = Query(False),
@@ -242,7 +251,9 @@ async def list_allergies(
         raise_safe_500(e, context="查詢過敏失敗")
 
 
-@router.post("/students/{student_id}/allergies", status_code=201)
+@router.post(
+    "/students/{student_id}/allergies", status_code=201, response_model=AllergyOut
+)
 async def create_allergy(
     student_id: int,
     payload: AllergyCreate,
@@ -286,7 +297,7 @@ async def create_allergy(
         raise_safe_500(e, context="新增過敏失敗")
 
 
-@router.patch("/students/{student_id}/allergies/{alg_id}")
+@router.patch("/students/{student_id}/allergies/{alg_id}", response_model=AllergyOut)
 async def update_allergy(
     student_id: int,
     alg_id: int,
@@ -326,7 +337,9 @@ async def update_allergy(
         raise_safe_500(e, context="編輯過敏失敗")
 
 
-@router.delete("/students/{student_id}/allergies/{alg_id}")
+@router.delete(
+    "/students/{student_id}/allergies/{alg_id}", response_model=AllergyDeleteOut
+)
 async def delete_allergy(
     student_id: int,
     alg_id: int,
@@ -362,7 +375,9 @@ async def delete_allergy(
 # ══════════════════════════════════════════════════════════════════════════
 
 
-@router.get("/students/{student_id}/medication-orders")
+@router.get(
+    "/students/{student_id}/medication-orders", response_model=MedicationOrderListOut
+)
 async def list_medication_orders(
     student_id: int,
     order_date: Optional[date] = Query(None, alias="date"),
@@ -389,7 +404,10 @@ async def list_medication_orders(
         raise_safe_500(e, context="查詢用藥單失敗")
 
 
-@router.get("/students/{student_id}/medication-orders/{order_id}")
+@router.get(
+    "/students/{student_id}/medication-orders/{order_id}",
+    response_model=MedicationOrderOut,
+)
 async def get_medication_order(
     student_id: int,
     order_id: int,
@@ -416,7 +434,11 @@ async def get_medication_order(
         raise_safe_500(e, context="查詢用藥單失敗")
 
 
-@router.post("/students/{student_id}/medication-orders", status_code=201)
+@router.post(
+    "/students/{student_id}/medication-orders",
+    status_code=201,
+    response_model=MedicationOrderOut,
+)
 async def create_medication_order(
     student_id: int,
     payload: MedicationOrderCreate,
@@ -497,7 +519,7 @@ def _reject_if_finalized(lg: StudentMedicationLog) -> None:
         )
 
 
-@router.post("/medication-logs/{log_id}/administer")
+@router.post("/medication-logs/{log_id}/administer", response_model=MedicationLogOut)
 async def administer_medication(
     log_id: int,
     payload: AdministerPayload,
@@ -537,7 +559,7 @@ async def administer_medication(
         raise_safe_500(e, context="標記餵藥失敗")
 
 
-@router.post("/medication-logs/{log_id}/skip")
+@router.post("/medication-logs/{log_id}/skip", response_model=MedicationLogOut)
 async def skip_medication(
     log_id: int,
     payload: SkipPayload,
@@ -570,7 +592,11 @@ async def skip_medication(
         raise_safe_500(e, context="跳過餵藥失敗")
 
 
-@router.post("/medication-logs/{log_id}/correct", status_code=201)
+@router.post(
+    "/medication-logs/{log_id}/correct",
+    status_code=201,
+    response_model=MedicationLogOut,
+)
 async def correct_medication_log(
     log_id: int,
     payload: CorrectPayload,
@@ -645,7 +671,7 @@ async def correct_medication_log(
 # ══════════════════════════════════════════════════════════════════════════
 
 
-@router.get("/portfolio/today-medication")
+@router.get("/portfolio/today-medication", response_model=TodayMedicationSummaryOut)
 async def today_medication_summary(
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
