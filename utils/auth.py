@@ -102,7 +102,7 @@ _LEGACY_ITERATIONS = 100_000  # 舊版雜湊，僅用於向下相容驗證
 import re
 
 # ── 密碼強度規則 ─────────────────────────────────────────────────────────
-_PASSWORD_MIN_LENGTH = 8
+_PASSWORD_MIN_LENGTH = 12
 
 
 def validate_password_strength(password: str) -> None:
@@ -127,6 +127,17 @@ def validate_password_strength(password: str) -> None:
         raise HTTPException(
             status_code=400,
             detail=f"密碼強度不足：{', '.join(errors)}",
+        )
+
+    # HIBP check（fail-open: network error 放行）
+    from utils.hibp import PasswordPwnedError, assert_not_pwned
+
+    try:
+        assert_not_pwned(password)
+    except PasswordPwnedError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"此密碼已在資料外洩名單中（出現 {e.occurrences} 次），請選用其他密碼",
         )
 
 
