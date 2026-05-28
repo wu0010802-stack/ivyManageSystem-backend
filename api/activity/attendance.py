@@ -28,6 +28,13 @@ from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
 from api.activity._shared import _build_session_detail_response
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
+from schemas.activity_admin import (
+    ActivityAttendanceBatchUpdateResultOut,
+    ActivitySessionCreateResultOut,
+    ActivitySessionDeleteResultOut,
+    ActivitySessionDetailOut,
+    ActivitySessionListOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +65,7 @@ class BatchAttendanceUpdate(BaseModel):
 
 @router.get(
     "/sessions",
+    response_model=ActivitySessionListOut,
     dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))],
 )
 def list_sessions(
@@ -142,6 +150,7 @@ def list_sessions(
 
 @router.post(
     "/sessions",
+    response_model=ActivitySessionCreateResultOut,
     dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_WRITE))],
 )
 def create_session(
@@ -194,6 +203,7 @@ def create_session(
 
 @router.delete(
     "/sessions/{session_id}",
+    response_model=ActivitySessionDeleteResultOut,
     dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_WRITE))],
 )
 def delete_session(
@@ -219,6 +229,7 @@ def delete_session(
 
 @router.get(
     "/sessions/{session_id}",
+    response_model=ActivitySessionDetailOut,
     dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))],
 )
 def get_session_detail(
@@ -333,6 +344,7 @@ def print_session_roll_pdf(
 
 @router.put(
     "/sessions/{session_id}/records",
+    response_model=ActivityAttendanceBatchUpdateResultOut,
     dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_WRITE))],
 )
 def batch_update_attendance(

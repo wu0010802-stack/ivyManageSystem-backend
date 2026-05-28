@@ -991,3 +991,135 @@ class PendingRegistrationForceAcceptResultOut(IvyBaseModel):
     forced: bool
     field_changed: bool
     registration_id: int
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Phase 3.5 — api/activity/attendance.py 5/7 endpoint response_model
+#
+# 才藝課程出席管理 7 個 endpoint，其中 2 個回 StreamingResponse 暫免：
+# - list_sessions                → ActivitySessionListOut
+# - create_session               → ActivitySessionCreateResultOut
+# - delete_session               → ActivitySessionDeleteResultOut（{ok: bool}）
+# - get_session_detail           → ActivitySessionDetailOut（含 students + 可選 groups）
+# - export_session_attendance    → defer（Excel StreamingResponse）
+# - print_session_roll_pdf       → defer（PDF StreamingResponse）
+# - batch_update_attendance      → ActivityAttendanceBatchUpdateResultOut
+#
+# datetime 欄位皆由 router 端 .isoformat() 後傳出 → Optional[str]（同 trap）。
+# 學生姓名 / 班級 / student_id / classroom_id 為才藝出席必顯欄位，加 # pii-allow:。
+# students/groups 共用 ActivitySessionStudentItemOut，避免巢狀重複定義。
+# delete_session 回 {"ok": True} 與 _common.OkStatusOut/DeleteResultOut 欄名皆不
+# 相同（後者為 status:str / message:str），自訂 ActivitySessionDeleteResultOut。
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class ActivitySessionListItemOut(IvyBaseModel):
+    """GET /attendance/sessions items[] 單筆（含出席統計）。
+
+    course_name 為 ActivityCourse.name 顯示，非 PII（課程名）。
+    created_by 為操作者 username，非家長/學生 PII。
+    """
+
+    id: int
+    course_id: int
+    course_name: str
+    session_date: Optional[str] = None
+    notes: str
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+    recorded_count: int
+    present_count: int
+
+
+class ActivitySessionListOut(IvyBaseModel):
+    """GET /attendance/sessions 分頁回應。"""
+
+    items: list[ActivitySessionListItemOut]
+    total: int
+    skip: int
+    limit: int
+
+
+class ActivitySessionCreateResultOut(IvyBaseModel):
+    """POST /attendance/sessions 201 回應（單筆 session 完整欄位）。
+
+    與 list item 同型但無統計欄（剛建立 recorded/present 皆 0，前端不依賴）。
+    """
+
+    id: int
+    course_id: int
+    course_name: str
+    session_date: str
+    notes: str
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ActivitySessionDeleteResultOut(IvyBaseModel):
+    """DELETE /attendance/sessions/{id} 回應。
+
+    沿用既有 {"ok": True} shape，未改商業邏輯。
+    不用 _common.OkStatusOut（欄位是 status:str）或 DeleteResultOut（message:str），
+    重用會 silent rename 前端欄位。
+    """
+
+    ok: bool
+
+
+class ActivitySessionStudentItemOut(IvyBaseModel):
+    """get_session_detail / groups[] 共用的學生點名行。
+
+    is_present=None 代表「未點名」（與 False=缺席 必須區分，前端依此決定顯示）。
+    class_name 由 router 端融合：優先真實 Classroom.name，否則 ActivityRegistration.class_name 快照，皆無則空字串。
+    """
+
+    registration_id: int
+    student_id: Optional[int] = None  # pii-allow: 才藝出席必顯學生 FK
+    classroom_id: Optional[int] = None  # pii-allow: 才藝出席必顯班級
+    student_name: str  # pii-allow: 才藝出席必顯學生姓名
+    class_name: str
+    is_present: Optional[bool] = None
+    attendance_notes: str
+
+
+class ActivitySessionGroupOut(IvyBaseModel):
+    """get_session_detail group_by=classroom 時 groups[] 單筆。
+
+    classroom_id=None 代表「未分班」（router 端永遠排在 groups 末尾）。
+    """
+
+    classroom_id: Optional[int] = None  # pii-allow: 才藝出席必顯班級
+    classroom_name: str
+    students: list[ActivitySessionStudentItemOut]
+
+
+class ActivitySessionDetailOut(IvyBaseModel):
+    """GET /attendance/sessions/{id} 詳情。
+
+    groups 僅當 query group_by=classroom 時 router 才回，否則為 None。
+    """
+
+    id: int
+    course_id: int
+    course_name: str
+    session_date: str
+    notes: str
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+    students: list[ActivitySessionStudentItemOut]
+    total: int
+    present_count: int
+    absent_count: int
+    groups: Optional[list[ActivitySessionGroupOut]] = None
+
+
+class ActivityAttendanceBatchUpdateResultOut(IvyBaseModel):
+    """PUT /attendance/sessions/{id}/records 批次點名 upsert 回應。
+
+    updated = 實際寫入（既有報名）筆數；skipped = 已退課 / 已駁回 / 未報該課
+    被過濾掉的筆數。前端據此顯示「成功 N 筆，跳過 M 筆」。
+    """
+
+    ok: bool
+    updated: int
+    skipped: int

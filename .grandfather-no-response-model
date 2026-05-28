@@ -7,13 +7,8 @@
 # 維護：scripts/check_response_model_coverage.py
 
 api/academic_terms.py:delete_term
-api/activity/attendance.py:list_sessions
-api/activity/attendance.py:create_session
-api/activity/attendance.py:delete_session
-api/activity/attendance.py:get_session_detail
 api/activity/attendance.py:export_session_attendance
 api/activity/attendance.py:print_session_roll_pdf
-api/activity/attendance.py:batch_update_attendance
 api/activity/inquiries.py:get_inquiries
 api/activity/inquiries.py:mark_inquiry_read
 api/activity/inquiries.py:reply_inquiry
