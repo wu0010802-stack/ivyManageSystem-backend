@@ -711,7 +711,7 @@ def refresh_token(request: Request):
 
         write_login_audit(
             request,
-            action="STAFF_REFRESH_ROTATION",
+            action="TOKEN_REFRESH",  # 對齊既有 audit action（test_audit_login.py 用此名）
             username=None,
             user_id=rotated_user_id,
         )
