@@ -436,6 +436,49 @@ jobs:
           fi
           echo "✅ 無 disallowed push_to_user caller"
 
+  response-model-gate:
+    name: Response Model Coverage Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run check_response_model_coverage.py
+        # Phase 1.5+（2026-05-28）：每個 router endpoint 須帶 response_model=（避免 prod schema 漂移 + 前端
+        # gen:api 出 unknown）。Grandfather list 在 `.grandfather-no-response-model`，
+        # script 拒絕 grandfather 變長（origin/main diff 多新 row 即 fail）。
+        run: python3 scripts/check_response_model_coverage.py
+
+  pii-schemas-gate:
+    name: PII in *Out Schemas Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install minimal deps
+        # check_pii_in_schemas.py 透過 utils.sentry_init 拿 denylist substring，
+        # 因此最少要有 pydantic + pydantic-settings 才能 import config（lazy proxy）。
+        run: pip install pydantic pydantic-settings
+
+      - name: Run check_pii_in_schemas.py
+        # 禁 schemas/ 下 *Out 類別欄位命中 PII denylist；例外用 `# pii-allow: <reason>` inline 註解。
+        run: python3 scripts/check_pii_in_schemas.py
+
   naked-rate-limiter-gate:
     name: Forbid naked SlidingWindowLimiter() in api/ services/
     runs-on: ubuntu-latest
