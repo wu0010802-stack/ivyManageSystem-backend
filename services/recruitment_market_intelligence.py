@@ -11,6 +11,7 @@ from typing import Any, Iterable, Optional
 
 import requests
 from sqlalchemy import case, func
+from utils.external_calls import tagged_capture
 
 from config import settings
 from models.recruitment import (
@@ -517,13 +518,21 @@ def _extract_xml_text(root: ET.Element, candidate_keys: Iterable[str]) -> Option
 
 
 def _request_json(url: str, *, params: Optional[dict[str, Any]] = None) -> Any:
-    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    try:
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    except Exception as exc:
+        tagged_capture(exc, tag="external_http", level="error")
+        raise
     response.raise_for_status()
     return response.json()
 
 
 def _request_text(url: str, *, params: Optional[dict[str, Any]] = None) -> str:
-    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    try:
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    except Exception as exc:
+        tagged_capture(exc, tag="external_http", level="error")
+        raise
     response.raise_for_status()
     return response.text
 
@@ -531,9 +540,13 @@ def _request_text(url: str, *, params: Optional[dict[str, Any]] = None) -> str:
 def _post_json(
     url: str, *, payload: dict[str, Any], headers: Optional[dict[str, str]] = None
 ) -> Any:
-    response = requests.post(
-        url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
-    )
+    try:
+        response = requests.post(
+            url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
+        )
+    except Exception as exc:
+        tagged_capture(exc, tag="external_http", level="error")
+        raise
     response.raise_for_status()
     return response.json()
 
