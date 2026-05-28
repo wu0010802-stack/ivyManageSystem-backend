@@ -1,16 +1,19 @@
 """家長端 LIFF 認證 (parent_portal/auth.py) 對應 Out schemas。
 
-Phase 1b 範圍（本檔）：
+範圍：
 - BindFirstChildOut / BindAdditionalChildOut / ParentRefreshOut — 三個成功路徑簡單 shape
+- LiffLoginOkOut / LiffLoginNeedBindingOut — POST /liff-login 雙分支 discriminated union
+  （ok = 既綁定家長；need_binding = 未綁定，回 line_user_id+name_hint 引導 bind 流程）
 
-Out of scope（Phase 1c）：
-- POST /liff-login（polymorphic：need_binding | ok | invalid_token 多種 status）
+Out of scope：
 - POST /logout 已是 Response(204) 無 body，不需 response_model
 """
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional, Union
+
+from pydantic import Field
 
 from schemas._base import IvyBaseModel
 
@@ -43,3 +46,25 @@ class ParentRefreshOut(IvyBaseModel):
 
     status: Literal["ok"]
     user: ParentUserInfo
+
+
+class LiffLoginOkOut(IvyBaseModel):
+    """POST /liff-login 既綁定家長分支：直接核發 access+refresh token。"""
+
+    status: Literal["ok"]
+    user: ParentUserInfo
+
+
+class LiffLoginNeedBindingOut(IvyBaseModel):
+    """POST /liff-login 未綁定分支：核發 bind 暫時 token，前端引導去 /bind。"""
+
+    status: Literal["need_binding"]
+    line_user_id: str  # pii-allow: LINE 用戶 ID，bind 流程必須
+    name_hint: Optional[str] = None  # pii-allow: LINE 顯示名 hint
+
+
+# Discriminated union by `status` 欄位（Pydantic v2 標準 polymorphic 寫法）。
+LiffLoginOut = Annotated[
+    Union[LiffLoginOkOut, LiffLoginNeedBindingOut],
+    Field(discriminator="status"),
+]

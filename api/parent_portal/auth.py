@@ -43,6 +43,7 @@ from api.auth import (
 from schemas.parent_portal_auth import (
     BindAdditionalChildOut,
     BindFirstChildOut,
+    LiffLoginOut,
     ParentRefreshOut,
 )
 from models.database import (
@@ -453,7 +454,7 @@ class BindRequest(BaseModel):
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
-@router.post("/liff-login")
+@router.post("/liff-login", response_model=LiffLoginOut)
 def liff_login(
     payload: LiffLoginRequest,
     request: Request,

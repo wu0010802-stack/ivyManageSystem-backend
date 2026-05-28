@@ -260,7 +260,6 @@ api/parent_portal/activity.py:registration_payments
 api/parent_portal/announcements.py:list_announcements
 api/parent_portal/attendance.py:get_daily_attendance
 api/parent_portal/attendance.py:get_monthly_attendance
-api/parent_portal/auth.py:liff_login
 api/parent_portal/auth.py:parent_logout
 api/parent_portal/calendar.py:get_week_agenda
 api/parent_portal/calendar.py:get_month_agenda
