@@ -137,7 +137,7 @@ async def run_finance_reconciliation_scheduler(stop_event: asyncio.Event) -> Non
                 and last_run_date != now.date()
             ):
                 logger.warning("觸發對帳排程 date=%s", now.date().isoformat())
-                with scheduler_iteration("finance_reconciliation"):
+                with scheduler_iteration("finance_reconciliation", expected_interval_seconds=CHECK_INTERVAL_SECONDS):
                     result = run_finance_reconciliation()
                     record_rows(
                         "finance_reconciliation",
