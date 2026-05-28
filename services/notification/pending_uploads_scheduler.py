@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from models.base import get_session_factory
 from models.pending_uploads import PendingUpload
 from utils.external_calls import tagged_capture
+from utils.scheduler_observability import scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +89,11 @@ def tick_pending_uploads(now_provider=lambda: datetime.now(timezone.utc)) -> dic
 async def run_pending_uploads_scheduler(stop_event: asyncio.Event) -> None:
     """每 TICK_INTERVAL_SECONDS 秒執行一次 tick；stop_event 觸發時結束。"""
     while not stop_event.is_set():
-        try:
+        with scheduler_iteration(
+            "pending_uploads",
+            expected_interval_seconds=TICK_INTERVAL_SECONDS,
+        ):
             tick_pending_uploads()
-        except Exception as exc:
-            logger.exception("pending_uploads tick failed")
-            tagged_capture(exc, tag="supabase", level="error")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=TICK_INTERVAL_SECONDS)
         except asyncio.TimeoutError:
