@@ -36,7 +36,9 @@ from models.portfolio import (
     StudentObservation,
 )
 from schemas.portal_students import (
+    MyStudentsOut,
     RevealPhoneOut,
+    StudentDetailOut,
     StudentMeasurementSnapshotItem,
 )
 from utils.audit import write_audit_in_session, write_explicit_audit
@@ -199,7 +201,7 @@ def _aggregate_health_alerts(
 # ────────────────────────────────────────────────────────────────────────
 
 
-@router.get("/my-students")
+@router.get("/my-students", response_model=MyStudentsOut)
 def get_my_students(
     classroom_id: Optional[int] = Query(None),
     current_user: dict = Depends(get_current_user),
@@ -500,7 +502,7 @@ def _build_transfer_history(
     ]
 
 
-@router.get("/students/{student_id}/detail")
+@router.get("/students/{student_id}/detail", response_model=StudentDetailOut)
 def get_student_detail(
     student_id: int,
     request: Request,

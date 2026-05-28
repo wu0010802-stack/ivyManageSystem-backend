@@ -387,8 +387,6 @@ api/portal/student_attendance.py:get_my_class_attendance
 api/portal/student_attendance.py:batch_save_class_attendance
 api/portal/student_attendance.py:get_my_class_attendance_monthly
 api/portal/student_attendance.py:export_my_class_attendance
-api/portal/students.py:get_my_students
-api/portal/students.py:get_student_detail
 api/portfolio/auto_milestone.py:auto_detect_milestones
 api/portfolio/measurements.py:list_measurements
 api/portfolio/measurements.py:create_measurement
