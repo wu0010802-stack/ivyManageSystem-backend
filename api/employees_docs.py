@@ -18,6 +18,7 @@ from models.database import (
     EmployeeContract,
 )
 from schemas._common import DeleteResultOut
+from schemas.employees_docs import CertificateOut, ContractOut, EducationOut
 from utils.audit import write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
@@ -151,7 +152,7 @@ def _ensure_employee(session, employee_id: int) -> Employee:
 # ============ Educations ============
 
 
-@router.get("/employees/{employee_id}/educations")
+@router.get("/employees/{employee_id}/educations", response_model=list[EducationOut])
 def list_educations(
     employee_id: int,
     request: Request,
@@ -182,7 +183,7 @@ def list_educations(
     return result
 
 
-@router.post("/employees/{employee_id}/educations", status_code=201)
+@router.post("/employees/{employee_id}/educations", status_code=201, response_model=EducationOut)
 def create_education(
     employee_id: int,
     payload: EducationCreate,
@@ -212,7 +213,7 @@ def create_education(
         raise_safe_500(e, context="新增學歷失敗")
 
 
-@router.put("/employees/{employee_id}/educations/{edu_id}")
+@router.put("/employees/{employee_id}/educations/{edu_id}", response_model=EducationOut)
 def update_education(
     employee_id: int,
     edu_id: int,
@@ -275,7 +276,7 @@ def delete_education(
 # ============ Certificates ============
 
 
-@router.get("/employees/{employee_id}/certificates")
+@router.get("/employees/{employee_id}/certificates", response_model=list[CertificateOut])
 def list_certificates(
     employee_id: int,
     request: Request,
@@ -303,7 +304,7 @@ def list_certificates(
     return result
 
 
-@router.post("/employees/{employee_id}/certificates", status_code=201)
+@router.post("/employees/{employee_id}/certificates", status_code=201, response_model=CertificateOut)
 def create_certificate(
     employee_id: int,
     payload: CertificateCreate,
@@ -325,7 +326,7 @@ def create_certificate(
         raise_safe_500(e, context="新增證照失敗")
 
 
-@router.put("/employees/{employee_id}/certificates/{cert_id}")
+@router.put("/employees/{employee_id}/certificates/{cert_id}", response_model=CertificateOut)
 def update_certificate(
     employee_id: int,
     cert_id: int,
@@ -380,7 +381,7 @@ def delete_certificate(
 # ============ Contracts ============
 
 
-@router.get("/employees/{employee_id}/contracts")
+@router.get("/employees/{employee_id}/contracts", response_model=list[ContractOut])
 def list_contracts(
     employee_id: int,
     request: Request,
@@ -414,7 +415,7 @@ def list_contracts(
     return result
 
 
-@router.post("/employees/{employee_id}/contracts", status_code=201)
+@router.post("/employees/{employee_id}/contracts", status_code=201, response_model=ContractOut)
 def create_contract(
     employee_id: int,
     payload: ContractCreate,
@@ -453,7 +454,7 @@ def create_contract(
         raise_safe_500(e, context="新增合約失敗")
 
 
-@router.put("/employees/{employee_id}/contracts/{contract_id}")
+@router.put("/employees/{employee_id}/contracts/{contract_id}", response_model=ContractOut)
 def update_contract(
     employee_id: int,
     contract_id: int,
