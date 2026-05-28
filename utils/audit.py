@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from utils.taipei_time import now_taipei_naive
 
+from sqlalchemy import text as sa_text
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -447,10 +448,32 @@ def _extract_user_from_header(request: Request):
 
 
 def _write_audit_sync(payload: dict) -> None:
-    """在 threadpool 中執行的同步寫入，不可拋出例外到上層。"""
+    """在 threadpool 中執行的同步寫入，不可拋出例外到上層。
+
+    PG only：INSERT 前 SET LOCAL ROLE ivy_audit_writer，讓 INSERT 以限權角色執行
+    （只能寫 audit_logs，無法 UPDATE/DELETE）。SET LOCAL 在 commit/rollback 後自動
+    reset，不污染 connection pool。
+    fail-open：SET LOCAL ROLE 失敗（role 未建/權限缺）→ log warning + 走預設 admin
+    connection 繼續寫入；trigger 仍是主防線，此處是 defense-in-depth。
+
+    write_audit_in_session 不加 SET LOCAL ROLE：該 path 在 caller 的交易中執行，
+    ivy_audit_writer 只有 audit_logs INSERT 權限，切換後 caller 的金流寫入（fee/salary）
+    會因 permission denied 而失敗。trigger 為該路徑的唯一 append-only 防線。
+    """
     try:
         session = get_session()
         try:
+            # defense-in-depth: 切換到 audit_writer role（PG only，SET LOCAL = per-transaction）
+            if session.bind.dialect.name == "postgresql":
+                try:
+                    session.execute(sa_text("SET LOCAL ROLE ivy_audit_writer"))
+                except Exception as e:
+                    logger.warning(
+                        "audit: SET LOCAL ROLE ivy_audit_writer failed, "
+                        "falling back to admin role: %s",
+                        e,
+                    )
+                    # fail-open: 繼續用 admin connection 寫入；trigger 仍主防線
             session.add(AuditLog(**payload))
             session.commit()
         finally:
