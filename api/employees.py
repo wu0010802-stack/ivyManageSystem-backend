@@ -249,7 +249,7 @@ class OffboardRequest(BaseModel):
 # ============ Routes ============
 
 
-@router.get("/employees")
+@router.get("/employees", response_model=list[EmployeeOut])
 def get_employees(
     request: Request,
     response: Response,

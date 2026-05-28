@@ -169,7 +169,6 @@ api/disciplinary.py:delete_action
 api/dismissal_calls.py:create_dismissal_call
 api/dismissal_calls.py:list_dismissal_calls
 api/dismissal_calls.py:cancel_dismissal_call
-api/employees.py:get_employees
 api/employees_docs.py:list_educations
 api/employees_docs.py:create_education
 api/employees_docs.py:update_education
