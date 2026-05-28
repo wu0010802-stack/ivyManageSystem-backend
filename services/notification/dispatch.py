@@ -286,9 +286,11 @@ def _fan_out(evt: PendingEvent) -> None:
             elif _pref_enabled(log_session, evt.recipient_user_id, evt.event_type, ch):
                 active_channels.append(ch)
 
-        # 只有 in_app 在 matrix 內才寫 log row（家長域沒 in_app 就不寫，但仍跑 line/ws）
+        # Phase 2 (P1 resilience)：matrix 含 line/ws/in_app 任一就寫 log row，
+        # is_inbox_visible 由 in_app 決定（解開 inbox UX 與 retry audit 耦合）。
         log_id: int | None = None
-        if "in_app" in evt.channels:
+        _has_durable_channel = any(ch in evt.channels for ch in ("in_app", "line", "ws"))
+        if _has_durable_channel and evt.recipient_user_id is not None:
             log_row = NotificationLog(
                 recipient_user_id=evt.recipient_user_id,
                 event_type=evt.event_type,
@@ -300,15 +302,17 @@ def _fan_out(evt: PendingEvent) -> None:
                 payload_json=dict(evt.context),
                 deep_link=rendered.deep_link,
                 channels_attempted=list(active_channels),
-                channels_succeeded=["in_app"],
+                channels_succeeded=["in_app"] if "in_app" in evt.channels else [],
                 channels_failed=[],
+                is_inbox_visible="in_app" in evt.channels,
             )
             log_session.add(log_row)
             log_session.commit()
             log_id = log_row.id
 
             # in_app 路徑後立刻推 inbox WS；失敗只 warning 不算 in_app failure
-            if evt.recipient_user_id is not None:
+            # Phase 2: 顯式 guard 'in_app' in channels（避免 LINE-only 事件也 push 員工 inbox）
+            if "in_app" in evt.channels and evt.recipient_user_id is not None:
                 try:
                     _inbox_ws_push(evt, rendered, log_id)
                 except Exception as exc:
@@ -349,6 +353,13 @@ def _fan_out(evt: PendingEvent) -> None:
                         evt.line_group_id,
                     )
                     failed.append({"channel": "line", "error": type(exc).__name__})
+                    # Phase 2 (P1 resilience)：schedule retry（用 log_session，
+                    # 業務 tx rollback 不會留 phantom retry，因 log_row 寫在獨立 log_session）
+                    if log_id is not None:
+                        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                        _retry_row = log_session.query(NotificationLog).get(log_id)
+                        if _retry_row is not None:
+                            _retry_row.line_next_retry_at = _dt.now(_tz.utc) + _td(seconds=30)
                 continue
             # ws or others
             adapter = _get_ws_adapter()
