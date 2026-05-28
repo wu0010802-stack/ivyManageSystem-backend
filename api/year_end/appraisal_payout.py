@@ -36,7 +36,13 @@ def get_preview(
     session: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
 ):
-    rows = preview_payout(session, payout_year=year)
+    try:
+        rows = preview_payout(session, payout_year=year)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     return [PayoutPreviewRow(**vars(r)) for r in rows]
 
 
