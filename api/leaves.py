@@ -41,6 +41,12 @@ from models.database import (
     User,
 )
 from models.approval import ApprovalStatus
+from schemas._common import DeleteResultOut, MutationResultOut
+from schemas.leaves import (
+    LeaveApproveResultOut,
+    LeaveImportResultOut,
+    LeaveUpdateResultOut,
+)
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST, LEAVE_RECORD_NOT_FOUND
 from utils.permissions import Permission
@@ -700,7 +706,7 @@ def get_leaves(
 # ── 請假記錄 CRUD ──────────────────────────────────────────────
 
 
-@router.post("/leaves", status_code=201)
+@router.post("/leaves", status_code=201, response_model=MutationResultOut)
 def create_leave(
     data: LeaveCreate,
     request: Request,
@@ -829,7 +835,7 @@ def create_leave(
         session.close()
 
 
-@router.put("/leaves/{leave_id}")
+@router.put("/leaves/{leave_id}", response_model=LeaveUpdateResultOut)
 def update_leave(
     leave_id: int,
     data: LeaveUpdate,
@@ -1100,7 +1106,7 @@ def update_leave(
         session.close()
 
 
-@router.delete("/leaves/{leave_id}")
+@router.delete("/leaves/{leave_id}", response_model=DeleteResultOut)
 def delete_leave(
     leave_id: int,
     request: Request,
@@ -1256,7 +1262,7 @@ class LeaveBatchApproveRequest(BaseModel):
     rejection_reason: Optional[str] = None
 
 
-@router.put("/leaves/{leave_id}/approve")
+@router.put("/leaves/{leave_id}/approve", response_model=LeaveApproveResultOut)
 def approve_leave(
     leave_id: int,
     data: ApproveRequest,
@@ -2272,7 +2278,7 @@ class LeaveImportRow(ExcelImportSchema):
     reason: Any = Field(default=None, alias="原因(可空)")
 
 
-@router.post("/leaves/import")
+@router.post("/leaves/import", response_model=LeaveImportResultOut)
 async def import_leaves(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_WRITE)),

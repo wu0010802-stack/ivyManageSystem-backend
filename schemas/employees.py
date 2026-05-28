@@ -100,11 +100,9 @@ class EmployeeOut(IvyBaseModel):
     resign_reason: Optional[str] = None  # pii-allow: 離職原因（admin 端看）
 
 
-class MutationResultOut(IvyBaseModel):
-    """POST/PUT/DELETE 員工成功回傳的共用 shape。"""
-
-    message: str
-    id: int
+from schemas._common import (
+    MutationResultOut,
+)  # noqa: E402,F401 — backward-compat re-export
 
 
 class ProbationAlertItem(IvyBaseModel):

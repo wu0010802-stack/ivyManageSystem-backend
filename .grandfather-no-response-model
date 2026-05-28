@@ -250,13 +250,8 @@ api/leave_quota_expiry.py:list_upcoming_anniversaries
 api/leave_quota_expiry.py:list_payout_history
 api/leave_quota_expiry.py:run_scheduler_now
 api/leaves.py:get_leaves
-api/leaves.py:create_leave
-api/leaves.py:update_leave
-api/leaves.py:delete_leave
-api/leaves.py:approve_leave
 api/leaves.py:batch_approve_leaves
 api/leaves.py:get_leave_import_template
-api/leaves.py:import_leaves
 api/leaves.py:get_leave_attachment
 api/leaves_quota.py:get_leave_quotas
 api/leaves_quota.py:init_leave_quotas
