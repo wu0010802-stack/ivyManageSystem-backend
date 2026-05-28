@@ -29,6 +29,7 @@ from models.database import (
     ShiftSwapRequest,
     SalaryRecord,
 )
+from schemas._common import DeleteResultOut
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -282,7 +283,7 @@ def _shift_type_in_use_message(
     return None
 
 
-@router.delete("/types/{type_id}")
+@router.delete("/types/{type_id}", response_model=DeleteResultOut)
 def delete_shift_type(
     type_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
@@ -597,7 +598,7 @@ def upsert_daily_shift(
         session.close()
 
 
-@router.delete("/daily/{shift_id}")
+@router.delete("/daily/{shift_id}", response_model=DeleteResultOut)
 def delete_daily_shift(
     shift_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),

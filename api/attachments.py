@@ -36,6 +36,7 @@ from models.database import (
     session_scope,
 )
 from models.portfolio import ATTACHMENT_OWNER_TYPES, ATTACHMENT_OWNER_OBSERVATION
+from schemas._common import DeleteResultOut
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.file_upload import (
@@ -220,7 +221,7 @@ async def upload_attachment(
         raise_safe_500(e, context="上傳附件失敗")
 
 
-@router.delete("/attachments/{attachment_id}")
+@router.delete("/attachments/{attachment_id}", response_model=DeleteResultOut)
 async def delete_attachment(
     attachment_id: int,
     request: Request,

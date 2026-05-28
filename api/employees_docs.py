@@ -17,6 +17,7 @@ from models.database import (
     EmployeeCertificate,
     EmployeeContract,
 )
+from schemas._common import DeleteResultOut
 from utils.audit import write_explicit_audit
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_NOT_FOUND
@@ -248,7 +249,9 @@ def update_education(
         return _edu_to_dict(row)
 
 
-@router.delete("/employees/{employee_id}/educations/{edu_id}")
+@router.delete(
+    "/employees/{employee_id}/educations/{edu_id}", response_model=DeleteResultOut
+)
 def delete_education(
     employee_id: int,
     edu_id: int,
@@ -351,7 +354,9 @@ def update_certificate(
         return _cert_to_dict(row)
 
 
-@router.delete("/employees/{employee_id}/certificates/{cert_id}")
+@router.delete(
+    "/employees/{employee_id}/certificates/{cert_id}", response_model=DeleteResultOut
+)
 def delete_certificate(
     employee_id: int,
     cert_id: int,
@@ -497,7 +502,9 @@ def update_contract(
         return _contract_to_dict(row, mask_salary=mask_salary)
 
 
-@router.delete("/employees/{employee_id}/contracts/{contract_id}")
+@router.delete(
+    "/employees/{employee_id}/contracts/{contract_id}", response_model=DeleteResultOut
+)
 def delete_contract(
     employee_id: int,
     contract_id: int,
