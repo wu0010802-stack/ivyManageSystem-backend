@@ -193,19 +193,30 @@ class CSRFOriginCheckMiddleware(BaseHTTPMiddleware):
 
 
 def _extract_origin_from_referer(referer: str) -> str | None:
-    """從 Referer URL 取 scheme://host[:port]。"""
+    """從 Referer URL 取 scheme://host[:port]，normalize default port。"""
     from urllib.parse import urlsplit
     try:
         parts = urlsplit(referer)
         if not parts.scheme or not parts.netloc:
             return None
-        return f"{parts.scheme}://{parts.netloc}"
+        netloc = parts.netloc
+        # Normalize default ports（advisor 2026-05-28：rare 但 defensive）
+        if parts.scheme == "https" and netloc.endswith(":443"):
+            netloc = netloc[: -len(":443")]
+        elif parts.scheme == "http" and netloc.endswith(":80"):
+            netloc = netloc[: -len(":80")]
+        return f"{parts.scheme}://{netloc}"
     except Exception:
         return None
 
 
 def _get_allowed_origins() -> list[str]:
-    """重用 main.py 的 CORS_ORIGINS 計算邏輯（含 dev fallback）。"""
+    """重用 main.py 的 CORS_ORIGINS 計算邏輯（含 dev fallback）。
+    
+    與 main.py:702-708 的 CORS_ORIGINS 變數同源（settings.network.cors_origins +
+    dev fallback）。若日後 main.py 改 fallback 名單需同步本 helper（advisor
+    2026-05-28：drift risk acceptable，純 dev fallback 改動 prod 不受影響）。
+    """
     # 直接 import main.CORS_ORIGINS 會循環，改 access settings + dev fallback
     from config import settings
     origins = list(settings.network.cors_origins or [])
@@ -247,12 +258,37 @@ CSRF reject 預期在 prod 主要場景：
 
 策略：用 `TestClient` 包 minimal FastAPI app + middleware，避免依賴整個 main.py app 初始化（test 速度快、scope 隔離）。`monkeypatch settings.network.cors_origins` 設 fixed 白名單。
 
-回歸測試：跑既有全套 pytest 確認 5492 baseline 無 fail。**特別注意**：
-- 既有 TestClient 預設 Origin 是 `http://testserver`，dev fallback 含 `http://localhost:5173` 等但**不含** `http://testserver`。
-- 需要在 conftest 或本 middleware test fixture 加 `cors_origins` mock 含 `http://testserver`，或 middleware 對 `localhost` / `testserver` 加 dev exemption。
-- **採方案 A**（mock cors_origins）：避免污染 prod 防護面。conftest 加一個 autouse fixture set `cors_origins=["http://testserver", ...] ` 給所有 TestClient test。
+回歸測試：跑既有全套 pytest 確認 5492 baseline 無 fail。
 
-實際 conftest 改動範圍待 plan stage 確認。
+**TestClient blast radius（已量化 2026-05-28）**：
+- `grep -rln "client\.(post|put|patch|delete)" tests/` → 189 files
+- 共 1433 mutation lines（POST/PUT/PATCH/DELETE）
+- 既有 TestClient 預設 Origin 是 `http://testserver`，dev fallback 含 `http://localhost:5173/3000/127.0.0.1:5173/3000` 但**不含** `http://testserver`
+- **不採方案 B**（middleware 內 hardcode test-env exemption）— 會污染 prod code
+- **採方案 A**：conftest 加 **autouse session-scoped** fixture，用 `monkeypatch.setattr` 把 `http://testserver` 注入 `settings.network.cors_origins`
+
+**關鍵 plan 順序**：
+1. **Plan Task 1 必須先做** — conftest 改動 + autouse fixture，先 commit + 跑全套 pytest 確認 5492 baseline 不變（此時還沒 middleware code，fixture 純粹預設定 cors_origins 應無影響）
+2. **Plan Task 2 才落 middleware code + 註冊** — 此時 5492 baseline + 5 新 csrf test 應全綠
+3. 順序顛倒會造成 1433 行 test 短暫紅燈期，調試困難
+
+**conftest fixture 具體方案（plan stage 落實）**：
+```python
+# tests/conftest.py 加（plan stage 確認檔案位置 + 既有 fixture 不衝突）
+import pytest
+
+@pytest.fixture(autouse=True, scope="session")
+def _csrf_testclient_origin_allowlist():
+    """TestClient 預設 Origin http://testserver 注入 cors_origins，
+    讓 CSRFOriginCheckMiddleware 不擋既有 mutation test（1433 行跨 189 file）。"""
+    from config import settings
+    original = list(settings.network.cors_origins or [])
+    if "http://testserver" not in original:
+        settings.network.cors_origins = original + ["http://testserver"]
+    yield
+    settings.network.cors_origins = original
+```
+（若 settings 為 immutable BaseSettings，改用 `settings.network.__dict__["cors_origins"]` 或 `monkeypatch.setattr` — plan stage 確認 settings 是否可 mutate）
 
 ---
 
@@ -287,9 +323,9 @@ CSRF reject 預期在 prod 主要場景：
 
 | 風險 | 影響 | 緩解 |
 |------|------|------|
-| TestClient 預設 Origin `http://testserver` 不在 cors_origins → 既有 5000+ POST test 全 403 | 大規模 test 回歸 | conftest autouse fixture mock cors_origins 含 `http://testserver`；plan 預留 task |
+| TestClient 預設 Origin `http://testserver` 不在 cors_origins → 既有 mutation test 全 403 | 大規模 test 回歸（**已量化 2026-05-28**：1433 mutation lines 跨 189 test files） | **Plan Task 1（中間件 code 落地前）**：conftest 加 autouse fixture `monkeypatch.setattr` 把 `http://testserver` 注入 `settings.network.cors_origins`，scope = session 級。**不**在 middleware 內 hardcode test-env exemption（避免污染 prod code）。確認 autouse fixture 對既有 5492 baseline 不影響後才落地 middleware code |
 | Zeabur prod env `CORS_ORIGINS` 漏設 → 所有 POST 403 | prod 短暫不可用 | spec §5.1 強調 critical pre-deploy check；roll-out checklist 第一條 |
-| 某 server-to-server caller（cron / scheduler）發內部 POST 無 Origin | 該 caller 全部 403 | grep 內部 POST caller（`scheduler/` `services/` 內 httpx 用法）；若有，加 caller 自帶 `Origin` header（無攻擊面，內部呼叫安全） |
+| 某 server-to-server caller（cron / scheduler）發內部 POST 無 Origin | 該 caller 全部 403 | **已 verify**（2026-05-28 grep `httpx.(post|put|patch|delete)` / `requests.(post|put|patch|delete)` 在 `scheduler/ services/ scripts/ utils/ api/` 對 `/api/` URL）：**zero hits**。internal callers 全走 service/DB 直接 call，無 HTTP self-API call。**無風險** |
 | 前端 deploy 換 domain 但 CORS_ORIGINS 沒同步 | prod 用戶看 403 | Sentry warning 立刻可見；同時 ops checklist 更新 domain 切換 SOP |
 | 攻擊者偽造 Origin header（curl / server-side）| 仍可 bypass middleware | Origin/Referer 防御 of 純粹是 **CSRF（瀏覽器強制要求）** 防護，不是 anti-API-abuse；瀏覽器無法偽造 Origin（XHR 被瀏覽器 forced 設真實 origin）；非瀏覽器 client（curl/server）拿到 cookie 是 cookie 已洩漏 = 別層攻擊（XSS / 中間人）已成功，CSRF 防線此時失效屬於設計限制（同 OWASP 文檔） |
 
