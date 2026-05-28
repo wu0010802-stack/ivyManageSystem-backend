@@ -22,6 +22,7 @@ from sqlalchemy.orm import relationship
 
 from models.base import Base
 from utils.academic import default_current_academic_term_for_column
+from utils.medical_field_type import EncryptedText  # P0d-2: 特種個資加密 §6
 
 # ============ 學生生命週期狀態 ============
 # 狀態機定義（合法轉移見 services/student_lifecycle.py）
@@ -171,10 +172,12 @@ class Student(Base):
     is_active = Column(Boolean, default=True)
     status_tag = Column(String(50), nullable=True, comment="狀態標籤")
 
-    # 健康資訊
-    allergy = Column(Text, nullable=True, comment="過敏原")
-    medication = Column(Text, nullable=True, comment="用藥說明")
-    special_needs = Column(Text, nullable=True, comment="特殊需求")
+    # 健康資訊（P0d-2 2026-05-28 起 application-level 加密）
+    # DB column 仍 Text；ORM 透明加解密。Raw SELECT 看到密文。
+    # Legacy plaintext fallback：未 backfill 的 row 不影響讀取。
+    allergy = Column(EncryptedText, nullable=True, comment="過敏原（加密）")
+    medication = Column(EncryptedText, nullable=True, comment="用藥說明（加密）")
+    special_needs = Column(EncryptedText, nullable=True, comment="特殊需求（加密）")
 
     # 緊急聯絡人（第二聯絡人）
     emergency_contact_name = Column(String(50), nullable=True, comment="緊急聯絡人姓名")

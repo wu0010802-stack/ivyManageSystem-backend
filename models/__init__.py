@@ -55,3 +55,6 @@ from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
 # 2026-05-28 Phase 4 P1 resilience：Supabase fallback + LINE token health tables
 from models.pending_uploads import PendingUpload  # noqa: F401
 from models.integration_health import LineTokenHealth  # noqa: F401
+
+# P0d-2 2026-05-28: medical_access_log（特種個資取用獨立稽核 §6）
+from .medical_access_log import MedicalAccessLog  # noqa: F401
