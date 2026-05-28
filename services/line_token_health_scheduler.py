@@ -16,6 +16,7 @@ from config import settings
 from models.base import get_session_factory
 from models.integration_health import LineTokenHealth
 from utils.external_calls import tagged_capture
+from utils.scheduler_observability import scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +126,8 @@ async def run_line_token_health_scheduler(stop_event: asyncio.Event) -> None:
             pass
         if stop_event.is_set():
             break
-        try:
+        with scheduler_iteration(
+            "line_token_health",
+            expected_interval_seconds=86400,
+        ):
             tick_line_token_health()
-        except Exception as exc:
-            logger.exception("line_token_health tick failed")
-            tagged_capture(exc, tag="line", level="warning")
