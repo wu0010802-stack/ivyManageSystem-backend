@@ -104,3 +104,33 @@ def clear_admin_token_cookie(response) -> None:
         secure=_COOKIE_SECURE,
         path=_COOKIE_PATH,
     )
+
+
+# ── staff refresh token cookie ────────────────────────────────────────────────
+# 與 parent_refresh_token cookie name 區隔，避免同瀏覽器 staff+parent session 衝突
+_STAFF_REFRESH_COOKIE_PATH = "/api/auth"
+_STAFF_REFRESH_COOKIE_MAX_AGE = 30 * 24 * 3600  # 30 天
+
+
+def set_staff_refresh_cookie(response, token: str) -> None:
+    """在 response 上設定 staff_refresh_token httpOnly Cookie。"""
+    response.set_cookie(
+        key="staff_refresh_token",
+        value=token,
+        httponly=True,
+        samesite=_COOKIE_SAMESITE,
+        secure=_COOKIE_SECURE,
+        path=_STAFF_REFRESH_COOKIE_PATH,
+        max_age=_STAFF_REFRESH_COOKIE_MAX_AGE,
+    )
+
+
+def clear_staff_refresh_cookie(response) -> None:
+    """清除 staff_refresh_token Cookie。"""
+    response.delete_cookie(
+        key="staff_refresh_token",
+        httponly=True,
+        samesite=_COOKIE_SAMESITE,
+        secure=_COOKIE_SECURE,
+        path=_STAFF_REFRESH_COOKIE_PATH,
+    )
