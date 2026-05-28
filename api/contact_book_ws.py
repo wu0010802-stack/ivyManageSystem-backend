@@ -19,6 +19,12 @@ from models.database import get_session
 from utils.auth import verify_ws_token
 from utils.broadcast import get_broadcast
 from utils.permissions import Permission, has_permission
+from utils.ws_connection_limiter import (
+    WSConnectionLimitExceeded,
+    assert_under_limit,
+    register,
+    unregister,
+)
 from utils.ws_hub import (
     WS_CLOSE_FORBIDDEN,
     WS_CLOSE_INVALID_TOKEN,
@@ -92,6 +98,17 @@ async def portal_contact_book_ws(ws: WebSocket):
         )
         return
 
+    user_id = payload.get("user_id")
+    if not user_id:
+        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
+        return
+
+    try:
+        assert_under_limit(user_id)
+    except WSConnectionLimitExceeded:
+        await ws.close(code=1008, reason="ws_connection_limit_exceeded")
+        return
+
     classroom_ids: list[int] = []
     employee_id = payload.get("employee_id")
     if role == "teacher" and employee_id:
@@ -99,10 +116,16 @@ async def portal_contact_book_ws(ws: WebSocket):
 
     backend = get_broadcast()
     await ws.accept()
+    register(user_id, ws)
     if classroom_ids:
         for cid in classroom_ids:
             backend.subscribe(_classroom_channel(cid), ws)
-    await run_ws_connection(ws, cleanup=lambda: backend.unsubscribe(ws))
+
+    def _cleanup():
+        backend.unsubscribe(ws)
+        unregister(ws)
+
+    await run_ws_connection(ws, cleanup=_cleanup)
 
 
 @ws_router.websocket("/api/ws/parent/contact-book")
