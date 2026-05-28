@@ -184,3 +184,98 @@ class TestEarliestAttemptAt:
             "login_account", "nobody", within_seconds=900, engine=db_engine
         )
         assert result is None
+
+
+# === fail-open Sentry observability regression（spec §5.1 #4-#7） ===
+# 4 個 function 透過顯式傳 BrokenEngine 直接觸發 except；4 處 fail-open 應
+# 呼叫 capture_fail_open 並保留原 return 行為（不拋 / 回 0 / 回 None）。
+
+
+class _BrokenEngine:
+    def begin(self):
+        raise RuntimeError("DB down")
+
+    # for record_attempt SQLite branch dialect.name check
+    class _Dialect:
+        name = "sqlite"
+
+    dialect = _Dialect()
+
+
+def test_record_attempt_db_failure_calls_capture_fail_open(monkeypatch):
+    calls = []
+
+    def fake_capture(operation, error, **extra):
+        calls.append((operation, type(error).__name__, extra))
+
+    monkeypatch.setattr("utils.rate_limit_db.capture_fail_open", fake_capture)
+
+    from utils.rate_limit_db import record_attempt
+
+    record_attempt("login_ip", "ip:1.2.3.4", window_seconds=60, engine=_BrokenEngine())
+
+    assert len(calls) == 1
+    assert calls[0][0] == "rate_limit_db.record_attempt"
+    assert calls[0][1] == "RuntimeError"
+    assert calls[0][2] == {"scope": "login_ip", "key": "ip:1.2.3.4"}
+
+
+def test_count_recent_attempts_db_failure_calls_capture_fail_open(monkeypatch):
+    calls = []
+
+    def fake_capture(operation, error, **extra):
+        calls.append((operation, type(error).__name__, extra))
+
+    monkeypatch.setattr("utils.rate_limit_db.capture_fail_open", fake_capture)
+
+    from utils.rate_limit_db import count_recent_attempts
+
+    result = count_recent_attempts(
+        "login_ip", "ip:1.2.3.4", within_seconds=300, engine=_BrokenEngine()
+    )
+    assert result == 0
+
+    assert len(calls) == 1
+    assert calls[0][0] == "rate_limit_db.count_recent_attempts"
+    assert calls[0][1] == "RuntimeError"
+    assert calls[0][2] == {"scope": "login_ip", "key": "ip:1.2.3.4"}
+
+
+def test_clear_attempts_db_failure_calls_capture_fail_open(monkeypatch):
+    calls = []
+
+    def fake_capture(operation, error, **extra):
+        calls.append((operation, type(error).__name__, extra))
+
+    monkeypatch.setattr("utils.rate_limit_db.capture_fail_open", fake_capture)
+
+    from utils.rate_limit_db import clear_attempts
+
+    result = clear_attempts("login_ip", "ip:1.2.3.4", engine=_BrokenEngine())
+    assert result == 0
+
+    assert len(calls) == 1
+    assert calls[0][0] == "rate_limit_db.clear_attempts"
+    assert calls[0][1] == "RuntimeError"
+    assert calls[0][2] == {"scope": "login_ip", "key": "ip:1.2.3.4"}
+
+
+def test_earliest_attempt_at_db_failure_calls_capture_fail_open(monkeypatch):
+    calls = []
+
+    def fake_capture(operation, error, **extra):
+        calls.append((operation, type(error).__name__, extra))
+
+    monkeypatch.setattr("utils.rate_limit_db.capture_fail_open", fake_capture)
+
+    from utils.rate_limit_db import earliest_attempt_at
+
+    result = earliest_attempt_at(
+        "login_ip", "ip:1.2.3.4", within_seconds=300, engine=_BrokenEngine()
+    )
+    assert result is None
+
+    assert len(calls) == 1
+    assert calls[0][0] == "rate_limit_db.earliest_attempt_at"
+    assert calls[0][1] == "RuntimeError"
+    assert calls[0][2] == {"scope": "login_ip", "key": "ip:1.2.3.4"}

@@ -36,6 +36,8 @@ from typing import Optional
 
 from sqlalchemy import text
 
+from utils.fail_open import capture_fail_open
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,7 +99,7 @@ def record_attempt(
                     {"bk": bk, "ws": window_start},
                 )
     except Exception as e:
-        logger.warning("record_attempt 失敗 [%s:%s]: %s", scope, key, e)
+        capture_fail_open("rate_limit_db.record_attempt", e, scope=scope, key=key)
 
 
 def count_recent_attempts(
@@ -132,7 +134,9 @@ def count_recent_attempts(
             ).fetchone()
             return int(row[0] if row and row[0] is not None else 0)
     except Exception as e:
-        logger.warning("count_recent_attempts 失敗 [%s:%s]: %s", scope, key, e)
+        capture_fail_open(
+            "rate_limit_db.count_recent_attempts", e, scope=scope, key=key
+        )
         return 0
 
 
@@ -155,7 +159,7 @@ def clear_attempts(scope: str, key: str, *, engine: Optional[object] = None) -> 
             )
             return result.rowcount or 0
     except Exception as e:
-        logger.warning("clear_attempts 失敗 [%s:%s]: %s", scope, key, e)
+        capture_fail_open("rate_limit_db.clear_attempts", e, scope=scope, key=key)
         return 0
 
 
@@ -188,5 +192,5 @@ def earliest_attempt_at(
             ).fetchone()
             return row[0] if row and row[0] is not None else None
     except Exception as e:
-        logger.warning("earliest_attempt_at 失敗 [%s:%s]: %s", scope, key, e)
+        capture_fail_open("rate_limit_db.earliest_attempt_at", e, scope=scope, key=key)
         return None
