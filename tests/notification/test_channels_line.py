@@ -115,9 +115,12 @@ def test_dismissal_created_handler_uses_group_push():
     fake_ls.push_text_to_group.assert_called_once()
     args = fake_ls.push_text_to_group.call_args[0]
     assert args[0] == "C_dismissal_group"  # fallback 用 ls._target_id
-    assert "小明" in args[1]
-    assert "向日葵班" in args[1]
-    assert "今日提早接送" in args[1]
+    # Spec E (P0 #6) build_dismissal_message 去識別化：
+    # 不再含 student_name / classroom_name；改用「您的孩子」+ note 仍保留
+    assert "小明" not in args[1]
+    assert "向日葵班" not in args[1]
+    assert "您的孩子" in args[1]
+    assert "今日提早接送" in args[1]  # note 仍保留
     fake_ls._push_to_user.assert_not_called()
 
 
