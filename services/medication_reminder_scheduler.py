@@ -157,7 +157,7 @@ async def medication_reminder_loop(stop_event: asyncio.Event) -> None:
             today = now.date()
             target = _today_target_dt(today)
             if now >= target and last_run_date != today:
-                with scheduler_iteration("medication_reminder"):
+                with scheduler_iteration("medication_reminder", expected_interval_seconds=CHECK_INTERVAL_SECONDS):
                     result = run_medication_reminder(effective_date=today)
                     record_rows(
                         "medication_reminder",
