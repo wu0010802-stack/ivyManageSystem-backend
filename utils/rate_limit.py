@@ -30,6 +30,7 @@ from collections import defaultdict
 
 from fastapi import HTTPException, Request
 
+from utils.fail_open import capture_fail_open
 from utils.request_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -143,11 +144,7 @@ class PostgresLimiter(BaseLimiter):
                 ).fetchone()
                 count = row[0] if row else 1
         except Exception as e:
-            logger.warning(
-                "PostgresLimiter [%s] DB 操作失敗，fail-open: %s",
-                self.name,
-                e,
-            )
+            capture_fail_open("rate_limit.postgres_limiter", e, name=self.name, key=key)
             return
 
         if count > self.max_calls:
@@ -210,5 +207,5 @@ def cleanup_rate_limit_buckets(retention_minutes: int = 60) -> int:
             )
             return result.rowcount or 0
     except Exception as e:
-        logger.warning("cleanup_rate_limit_buckets 失敗: %s", e)
+        capture_fail_open("rate_limit.cleanup_buckets", e)
         return 0
