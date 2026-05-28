@@ -13,6 +13,7 @@ from .geocoding import GeocodingSettings
 from .line import LineSettings
 from .misc import MiscSettings
 from .network import NetworkSettings
+from .ops import OpsSettings
 from .ops_alert import OpsAlertSettings
 from .parent_db import ParentDBSettings
 from .recruitment import RecruitmentSettings
@@ -72,6 +73,7 @@ class Settings(BaseSettings):
     cache: CacheSettings = Field(default_factory=CacheSettings)
     misc: MiscSettings = Field(default_factory=MiscSettings)
     ops_alert: OpsAlertSettings = Field(default_factory=OpsAlertSettings)
+    ops: OpsSettings = Field(default_factory=OpsSettings)
 
     def model_dump_safe(self) -> dict[str, Any]:
         """Dump settings with sensitive fields redacted to '***'."""
