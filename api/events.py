@@ -18,6 +18,12 @@ from pydantic import BaseModel
 
 from models.database import get_session, SchoolEvent, Holiday, SalaryRecord
 from schemas._common import DeleteResultOut
+from schemas.events import (
+    EventCalendarFeedOut,
+    EventMutationResultOut,
+    EventOut,
+    HolidayImportResultOut,
+)
 from services.official_calendar import build_admin_calendar_feed
 from utils.auth import require_staff_permission
 from utils.error_messages import EVENT_NOT_FOUND
@@ -89,7 +95,7 @@ def _event_to_dict(ev: SchoolEvent) -> dict:
     }
 
 
-@router.get("/events")
+@router.get("/events", response_model=list[EventOut])
 def get_events(
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None),
@@ -126,7 +132,7 @@ def get_events(
         session.close()
 
 
-@router.get("/events/calendar-feed")
+@router.get("/events/calendar-feed", response_model=EventCalendarFeedOut)
 def get_calendar_feed(
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),
@@ -140,7 +146,7 @@ def get_calendar_feed(
         session.close()
 
 
-@router.get("/events/{event_id}")
+@router.get("/events/{event_id}", response_model=EventOut)
 def get_event(
     event_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
@@ -163,7 +169,7 @@ def get_event(
         session.close()
 
 
-@router.post("/events", status_code=201)
+@router.post("/events", status_code=201, response_model=EventMutationResultOut)
 def create_event(
     data: EventCreate,
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
@@ -209,7 +215,7 @@ def create_event(
         session.close()
 
 
-@router.put("/events/{event_id}")
+@router.put("/events/{event_id}", response_model=EventMutationResultOut)
 def update_event(
     event_id: int,
     data: EventUpdate,
@@ -349,7 +355,7 @@ def get_holiday_import_template(
 _HOLIDAY_FORCE_REASON_MIN_LENGTH = 10
 
 
-@router.post("/events/holidays/import")
+@router.post("/events/holidays/import", response_model=HolidayImportResultOut)
 async def import_holidays(
     file: UploadFile = File(...),
     force: bool = Query(False),

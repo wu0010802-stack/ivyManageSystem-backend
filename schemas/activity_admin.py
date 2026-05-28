@@ -380,3 +380,132 @@ class RefundSuggestionResponse(BaseModel):
     total_suggested_amount: int
     total_amount_due: int
     items: list[RefundSuggestionItem]
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Phase 3.5 — api/activity/courses.py response_model
+#
+# 後台課程管理 8 個 endpoint 對應 Out schemas。
+# 命名 prefix `Course` 避免與 schemas/activity_public.py 的 `PublicCourses*`
+# 衝突（後者為公開報名前台用）。
+# ───────────────────────────────────────────────────────────────────────────
+
+from schemas._base import IvyBaseModel  # noqa: E402
+
+
+class CourseListItemOut(IvyBaseModel):
+    """GET /courses 單筆（含報名統計）。
+
+    router 已把 meeting_start_time / meeting_end_time 序列化成 "HH:MM" str
+    （與 PublicCoursesItemOut 同 pattern）；此處用 Optional[str] 直接接，
+    避免 from_attributes 對應到 ORM Time 又被再序列化成 ISO。
+    """
+
+    id: int
+    name: str
+    price: int
+    sessions: Optional[int] = None
+    capacity: int
+    video_url: str
+    allow_waitlist: bool
+    description: str
+    school_year: int
+    semester: int
+    min_age_months: Optional[int] = None
+    max_age_months: Optional[int] = None
+    meeting_weekday: Optional[int] = None
+    meeting_start_time: Optional[str] = None
+    meeting_end_time: Optional[str] = None
+    enrolled: int
+    promoted_pending: int
+    waitlist_count: int
+    remaining: int
+
+
+class CourseListOut(IvyBaseModel):
+    """GET /courses 分頁回應（含 total + 學期 echo）。"""
+
+    courses: list[CourseListItemOut]
+    total: int
+    skip: int
+    limit: int
+    school_year: int
+    semester: int
+
+
+class CourseDetailOut(IvyBaseModel):
+    """GET /courses/{course_id} 詳情（不含報名統計）。
+
+    router 目前未回 sessions/school_year/semester 等欄（與 list 不同）；
+    保留現狀避免 silent strip。
+    """
+
+    id: int
+    name: str
+    price: int
+    sessions: Optional[int] = None
+    capacity: Optional[int] = None
+    video_url: str
+    allow_waitlist: bool
+    description: str
+
+
+class CourseCreateResultOut(IvyBaseModel):
+    """POST /courses 201 回應。
+
+    與 MutationResultOut 差異：多 school_year / semester 兩個 echo 欄位
+    （前端建立後立即用此值切換 list 視圖）。
+    """
+
+    message: str
+    id: int
+    school_year: int
+    semester: int
+
+
+class CoursesCopyResultOut(IvyBaseModel):
+    """POST /courses/copy-from-previous 201 回應。
+
+    來源學期無課程時走 short-circuit：created=0, skipped=0, created_ids=[]。
+    """
+
+    message: str
+    created: int
+    skipped: int
+    created_ids: list[int]
+
+
+class CourseWaitlistItemOut(IvyBaseModel):
+    """GET /courses/{course_id}/waitlist 單筆候補名單條目。"""
+
+    waitlist_position: int
+    course_record_id: int
+    registration_id: int
+    student_name: str  # pii-allow: 後台 ACTIVITY_READ 必看報名學生姓名
+    class_name: Optional[str] = None
+
+
+class CourseWaitlistOut(IvyBaseModel):
+    """GET /courses/{course_id}/waitlist 完整回應。"""
+
+    course_id: int
+    course_name: str
+    items: list[CourseWaitlistItemOut]
+
+
+class CourseEnrolledItemOut(IvyBaseModel):
+    """GET /courses/{course_id}/enrolled 單筆正式報名名單條目。"""
+
+    position: int
+    course_record_id: int
+    registration_id: int
+    student_name: str  # pii-allow: 後台 ACTIVITY_READ 必看報名學生姓名
+    class_name: Optional[str] = None
+
+
+class CourseEnrolledOut(IvyBaseModel):
+    """GET /courses/{course_id}/enrolled 完整回應。"""
+
+    course_id: int
+    course_name: str
+    items: list[CourseEnrolledItemOut]

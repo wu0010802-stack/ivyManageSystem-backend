@@ -30,11 +30,21 @@ from ._shared import (
     require_approve_for_high_price,
 )
 
+from schemas.activity_admin import (
+    CourseListOut,
+    CourseDetailOut,
+    CourseCreateResultOut,
+    CoursesCopyResultOut,
+    CourseWaitlistOut,
+    CourseEnrolledOut,
+)
+from schemas._common import DeleteResultOut
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/courses")
+@router.get("/courses", response_model=CourseListOut)
 async def get_courses(
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
@@ -139,7 +149,7 @@ async def get_courses(
         session.close()
 
 
-@router.get("/courses/{course_id}")
+@router.get("/courses/{course_id}", response_model=CourseDetailOut)
 async def get_course_detail(
     course_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -171,7 +181,7 @@ async def get_course_detail(
         session.close()
 
 
-@router.post("/courses", status_code=201)
+@router.post("/courses", status_code=201, response_model=CourseCreateResultOut)
 async def create_course(
     body: CourseCreate,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -230,7 +240,7 @@ async def create_course(
         session.close()
 
 
-@router.post("/courses/copy-from-previous", status_code=201)
+@router.post("/courses/copy-from-previous", status_code=201, response_model=CoursesCopyResultOut)
 async def copy_courses_from_previous(
     body: CopyCoursesRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -321,7 +331,7 @@ async def copy_courses_from_previous(
         session.close()
 
 
-@router.put("/courses/{course_id}")
+@router.put("/courses/{course_id}", response_model=DeleteResultOut)
 async def update_course(
     course_id: int,
     body: CourseUpdate,
@@ -378,7 +388,7 @@ async def update_course(
         session.close()
 
 
-@router.get("/courses/{course_id}/waitlist")
+@router.get("/courses/{course_id}/waitlist", response_model=CourseWaitlistOut)
 async def get_course_waitlist(
     course_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -433,7 +443,7 @@ async def get_course_waitlist(
         session.close()
 
 
-@router.get("/courses/{course_id}/enrolled")
+@router.get("/courses/{course_id}/enrolled", response_model=CourseEnrolledOut)
 async def get_course_enrolled(
     course_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -488,7 +498,7 @@ async def get_course_enrolled(
         session.close()
 
 
-@router.delete("/courses/{course_id}")
+@router.delete("/courses/{course_id}", response_model=DeleteResultOut)
 async def delete_course(
     course_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
