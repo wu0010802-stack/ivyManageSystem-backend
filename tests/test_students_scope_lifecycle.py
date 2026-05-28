@@ -182,7 +182,9 @@ class TestAdminCanWriteAndSeeTerminal:
     def test_supervisor_can_put_student(self, students_client):
         client, sf = students_client
         with sf() as s:
-            _create_user(s, username="sup", role="supervisor", permission_names=WRITE_PERMS)
+            _create_user(
+                s, username="sup", role="supervisor", permission_names=WRITE_PERMS
+            )
             cls_a = _create_classroom(s)
             stu = _create_student(s, classroom_id=cls_a.id)
             s.commit()
@@ -434,6 +436,7 @@ class TestParentAssertStudentOwnedForWrite:
     def test_not_owned_blocked_regardless_of_for_write(self, isolated_db):
         """非自己小孩 → 無論讀寫一律 403（既有 IDOR 行為不變）。"""
         from api.parent_portal._shared import _assert_student_owned
+        from services.business_errors.parent import StudentNotLinkedToParent
 
         with isolated_db() as s:
             user, _ = self._setup(s, LIFECYCLE_ACTIVE)
@@ -442,12 +445,14 @@ class TestParentAssertStudentOwnedForWrite:
             uid = user.id
             other_id = other.id
         with isolated_db() as s:
-            with pytest.raises(HTTPException) as exc:
+            # Phase 3: BusinessError 升級後 not-owned 改 raise StudentNotLinkedToParent
+            # （subclass of BusinessError；http_status=403 envelope code=STUDENT_NOT_LINKED_TO_PARENT）
+            with pytest.raises(StudentNotLinkedToParent) as exc:
                 _assert_student_owned(s, uid, other_id, for_write=False)
-            assert exc.value.status_code == 403
-            with pytest.raises(HTTPException) as exc:
+            assert exc.value.http_status == 403
+            with pytest.raises(StudentNotLinkedToParent) as exc:
                 _assert_student_owned(s, uid, other_id, for_write=True)
-            assert exc.value.status_code == 403
+            assert exc.value.http_status == 403
 
 
 # ── require_unrestricted_role helper ─────────────────────────────

@@ -245,7 +245,9 @@ class TestF002_FeesRecordsPayments:
             cookies={"access_token": token_a},
         )
         assert resp.status_code == 403
-        assert resp.json()["detail"] == "查無此資料或無權存取"
+        body = resp.json()["detail"]
+        assert body["code"] == "PARENT_NOT_AUTHORIZED"
+        assert body["message"] == "查無此資料或無權存取"
 
     def test_other_family_record_id_returns_403_same_detail(self, parent_client):
         client, sf = parent_client
@@ -261,7 +263,15 @@ class TestF002_FeesRecordsPayments:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_own_family_record_id_returns_200(self, parent_client):
         client, sf = parent_client
@@ -324,7 +334,9 @@ class TestF003_ActivityRegistrationsPayments:
             cookies={"access_token": token},
         )
         assert resp.status_code == 403
-        assert resp.json()["detail"] == "查無此資料或無權存取"
+        body = resp.json()["detail"]
+        assert body["code"] == "PARENT_NOT_AUTHORIZED"
+        assert body["message"] == "查無此資料或無權存取"
 
     def test_other_family_registration_id_returns_403_same_detail(self, parent_client):
         client, sf = parent_client
@@ -340,7 +352,15 @@ class TestF003_ActivityRegistrationsPayments:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_own_family_registration_id_returns_200(self, parent_client):
         client, sf = parent_client
@@ -390,8 +410,17 @@ class TestF003_ActivityRegistrationsPayments:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
-        assert resp_other.json()["detail"] == "查無此資料或無權存取"
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
+        assert resp_other.json()["detail"]["message"] == "查無此資料或無權存取"
+        assert resp_other.json()["detail"]["code"] == "PARENT_NOT_AUTHORIZED"
 
 
 class TestF004_ParentLeaves:
@@ -425,7 +454,9 @@ class TestF004_ParentLeaves:
             cookies={"access_token": token},
         )
         assert resp.status_code == 403
-        assert resp.json()["detail"] == "查無此資料或無權存取"
+        body = resp.json()["detail"]
+        assert body["code"] == "PARENT_NOT_AUTHORIZED"
+        assert body["message"] == "查無此資料或無權存取"
 
     def test_get_other_family_leave_id_returns_403_same_detail(self, parent_client):
         client, sf = parent_client
@@ -441,7 +472,15 @@ class TestF004_ParentLeaves:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_cancel_same_pattern(self, parent_client):
         client, sf = parent_client
@@ -457,8 +496,17 @@ class TestF004_ParentLeaves:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
-        assert resp_other.json()["detail"] == "查無此資料或無權存取"
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
+        assert resp_other.json()["detail"]["message"] == "查無此資料或無權存取"
+        assert resp_other.json()["detail"]["code"] == "PARENT_NOT_AUTHORIZED"
 
     def test_own_family_get_returns_200(self, parent_client):
         client, sf = parent_client
@@ -572,7 +620,15 @@ class TestF006_DismissalCalls:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_own_class_call_id_acknowledge_returns_200(self, portal_client):
         client, sf = portal_client
@@ -666,7 +722,15 @@ class TestF007_PortalIncidentsCreate:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_post_with_own_class_student_id_returns_201(self, portal_client):
         client, sf = portal_client
@@ -753,7 +817,15 @@ class TestF008_PortalAssessmentsCreate:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_post_with_own_class_student_id_returns_201(self, portal_client):
         client, sf = portal_client
@@ -1012,7 +1084,15 @@ class TestF010_PortalActivitySession:
         )
         assert resp_other.status_code == 403
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_get_session_with_own_class_students_returns_200(self, portal_client):
         client, sf = portal_client
@@ -1101,7 +1181,15 @@ class TestF011_PortalLeavesCompensatory:
         )
         assert resp_other.status_code == 400
         assert resp_other.status_code == resp_missing.status_code
-        assert resp_other.json()["detail"] == resp_missing.json()["detail"]
+        other_d = resp_other.json()["detail"]
+        missing_d = resp_missing.json()["detail"]
+        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
+        if isinstance(other_d, dict):
+            assert isinstance(missing_d, dict)
+            assert other_d["code"] == missing_d["code"]
+            assert other_d["message"] == missing_d["message"]
+        else:
+            assert other_d == missing_d
 
     def test_compensatory_with_own_overtime_id_passes_existence_check(
         self, portal_client
