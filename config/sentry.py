@@ -18,6 +18,7 @@ class SentrySettings(BaseSettings):
     release: str | None = None
     # invalid float fallback 預設，對齊原 utils/sentry_init.py 容錯行為。
     traces_sample_rate: float = _TRACES_DEFAULT
+    tag_external_failures: bool = True  # Phase 1 P1 resilience: 外呼站點 tagged_capture 總開關
 
     @field_validator("traces_sample_rate", mode="before")
     @classmethod

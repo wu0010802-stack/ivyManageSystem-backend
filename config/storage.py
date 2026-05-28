@@ -29,3 +29,10 @@ class StorageSettings(BaseSettings):
     growth_report_max_bytes: int = Field(
         default=5_242_880, validation_alias="GROWTH_REPORT_MAX_BYTES"
     )
+    # Phase 4 P1 resilience：Supabase 失敗時本機暫存開關
+    local_fallback_enabled: bool = Field(
+        default=True, validation_alias="STORAGE_LOCAL_FALLBACK_ENABLED"
+    )
+    local_fallback_max_mb: int = Field(
+        default=5000, validation_alias="STORAGE_LOCAL_FALLBACK_MAX_MB"
+    )

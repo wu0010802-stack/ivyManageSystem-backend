@@ -291,3 +291,121 @@ class TestLineServiceSafety:
         )
         result = svc._push("測試訊息")
         assert result is True
+
+
+class TestSentryTaggedCapture:
+    """Phase 1 P1 resilience：驗證 LINE 失敗呼叫 tagged_capture + 4xx 分流."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_401_dedup(self):
+        """每個 test 前清空 401 dedup state，避免 test 間污染."""
+        from services import line_service
+        line_service._RECENT_LINE_401_403.clear()
+        yield
+
+    def test_network_error_calls_tagged_capture(self, monkeypatch):
+        from services.line_service import LineService
+        svc = LineService()
+        svc.configure("token", "group", True)
+        monkeypatch.setattr(
+            "services.line_service.requests.post",
+            lambda *a, **k: (_ for _ in ()).throw(ConnectionError("boom")),
+        )
+        with patch("services.line_service.tagged_capture") as mock_capture:
+            assert svc._push_to_user("Uabc", "x") is False
+            mock_capture.assert_called_once()
+            exc_arg = mock_capture.call_args.args[0]
+            assert isinstance(exc_arg, ConnectionError)
+            assert (
+                mock_capture.call_args.kwargs.get("tag") == "line"
+                or mock_capture.call_args.args[1] == "line"
+            )
+            assert mock_capture.call_args.kwargs.get("level") == "error"
+
+    def test_5xx_calls_tagged_capture_level_error(self, monkeypatch):
+        from services.line_service import LineService
+        svc = LineService()
+        svc.configure("token", "group", True)
+
+        def mock_post(*a, **k):
+            resp = MagicMock()
+            resp.status_code = 503
+            resp.text = "Service Unavailable"
+            return resp
+
+        monkeypatch.setattr("services.line_service.requests.post", mock_post)
+        with patch("services.line_service.tagged_capture") as mock_capture:
+            assert svc._push_to_user("Uabc", "x") is False
+            mock_capture.assert_called_once()
+            assert mock_capture.call_args.kwargs.get("level") == "error"
+
+    def test_429_calls_tagged_capture_level_warning(self, monkeypatch):
+        from services.line_service import LineService
+        svc = LineService()
+        svc.configure("token", "group", True)
+
+        def mock_post(*a, **k):
+            resp = MagicMock()
+            resp.status_code = 429
+            resp.text = "rate limited"
+            return resp
+
+        monkeypatch.setattr("services.line_service.requests.post", mock_post)
+        with patch("services.line_service.tagged_capture") as mock_capture:
+            assert svc._push_to_user("Uabc", "x") is False
+            mock_capture.assert_called_once()
+            assert mock_capture.call_args.kwargs.get("level") == "warning"
+
+    def test_401_dedup_only_first_call_captures(self, monkeypatch):
+        from services.line_service import LineService
+        svc = LineService()
+        svc.configure("token", "group", True)
+
+        def mock_post(*a, **k):
+            resp = MagicMock()
+            resp.status_code = 401
+            resp.text = "Unauthorized"
+            return resp
+
+        monkeypatch.setattr("services.line_service.requests.post", mock_post)
+        with patch("services.line_service.tagged_capture") as mock_capture:
+            svc._push_to_user("Uabc", "x")
+            svc._push_to_user("Uabc", "y")
+            svc._push_to_user("Uabc", "z")
+            # dedup：1 小時內同 status code 只發一次
+            assert mock_capture.call_count == 1
+
+    def test_404_no_dedup_warning_level(self, monkeypatch):
+        """404 不 dedup（不同 user_id 都該發），level=warning."""
+        from services.line_service import LineService
+        svc = LineService()
+        svc.configure("token", "group", True)
+
+        def mock_post(*a, **k):
+            resp = MagicMock()
+            resp.status_code = 404
+            resp.text = "Not found"
+            return resp
+
+        monkeypatch.setattr("services.line_service.requests.post", mock_post)
+        with patch("services.line_service.tagged_capture") as mock_capture:
+            svc._push_to_user("Uabc", "x")
+            svc._push_to_user("Udef", "y")
+            assert mock_capture.call_count == 2
+            for call in mock_capture.call_args_list:
+                assert call.kwargs.get("level") == "warning"
+
+    def test_success_no_capture(self, monkeypatch):
+        from services.line_service import LineService
+        svc = LineService()
+        svc.configure("token", "group", True)
+
+        def mock_post(*a, **k):
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+
+        monkeypatch.setattr("services.line_service.requests.post", mock_post)
+        with patch("services.line_service.tagged_capture") as mock_capture:
+            assert svc._push_to_user("Uabc", "x") is True
+            mock_capture.assert_not_called()

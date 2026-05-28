@@ -20,3 +20,7 @@ class LineSettings(BaseSettings):
         default=None, validation_alias="LINE_CHANNEL_ACCESS_TOKEN", repr=False
     )
     vite_liff_id: str | None = Field(default=None, validation_alias="VITE_LIFF_ID")
+    # Phase 4 P1 resilience：每日 token health ping 整點 (Asia/Taipei)
+    token_health_ping_hour_taipei: int = Field(
+        default=8, validation_alias="LINE_TOKEN_HEALTH_PING_HOUR"
+    )

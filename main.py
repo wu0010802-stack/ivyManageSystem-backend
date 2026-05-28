@@ -53,6 +53,7 @@ from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
 from api.internal_metrics import router as internal_metrics_router
+from api.integrations_health import router as integrations_health_router
 from api.punch_corrections import router as punch_corrections_router
 from api.approval_settings import router as approval_settings_router
 from api.activity import router as activity_router
@@ -360,6 +361,53 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("補休到期排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # LINE retry scheduler（Phase 2 P1 resilience）：每 5 min 重發 pending retry row
+    line_retry_task = None
+    line_retry_stop_event: asyncio.Event | None = None
+    try:
+        from services.notification.retry_scheduler import run_line_retry_scheduler
+
+        line_retry_stop_event = asyncio.Event()
+        line_retry_task = asyncio.create_task(
+            run_line_retry_scheduler(line_retry_stop_event)
+        )
+        logger.info("LINE retry scheduler 已啟用")
+    except Exception as e:
+        logger.warning("LINE retry scheduler 啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
+    # Phase 4 P1 resilience：pending_uploads scheduler（每 5 min 補傳 Supabase 失敗 file）
+    pending_uploads_task = None
+    pending_uploads_stop_event: asyncio.Event | None = None
+    try:
+        from services.notification.pending_uploads_scheduler import (
+            run_pending_uploads_scheduler,
+        )
+
+        pending_uploads_stop_event = asyncio.Event()
+        pending_uploads_task = asyncio.create_task(
+            run_pending_uploads_scheduler(pending_uploads_stop_event)
+        )
+        logger.info("pending_uploads scheduler 已啟用")
+    except Exception as e:
+        logger.warning("pending_uploads scheduler 啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
+    # Phase 4 P1 resilience：LINE token health scheduler（每日 08:00 ping /v2/bot/info）
+    line_token_health_task = None
+    line_token_health_stop_event: asyncio.Event | None = None
+    try:
+        from services.line_token_health_scheduler import run_line_token_health_scheduler
+
+        line_token_health_stop_event = asyncio.Event()
+        line_token_health_task = asyncio.create_task(
+            run_line_token_health_scheduler(line_token_health_stop_event)
+        )
+        logger.info("LINE token health scheduler 已啟用")
+    except Exception as e:
+        logger.warning("LINE token health scheduler 啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # 義華校官網自動同步：需要 IVYKIDS_SYNC_ENABLED=true + 帳密已設
     ivykids_sync_task = None
     ivykids_sync_stop_event: asyncio.Event | None = None
@@ -622,6 +670,39 @@ async def app_lifespan(app_instance: FastAPI):
                     await leave_quota_expiry_task
                 except (asyncio.CancelledError, Exception):
                     pass
+        if line_retry_task is not None:
+            if line_retry_stop_event is not None:
+                line_retry_stop_event.set()
+            try:
+                await asyncio.wait_for(line_retry_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                line_retry_task.cancel()
+                try:
+                    await line_retry_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if pending_uploads_task is not None:
+            if pending_uploads_stop_event is not None:
+                pending_uploads_stop_event.set()
+            try:
+                await asyncio.wait_for(pending_uploads_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pending_uploads_task.cancel()
+                try:
+                    await pending_uploads_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if line_token_health_task is not None:
+            if line_token_health_stop_event is not None:
+                line_token_health_stop_event.set()
+            try:
+                await asyncio.wait_for(line_token_health_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                line_token_health_task.cancel()
+                try:
+                    await line_token_health_task
+                except (asyncio.CancelledError, Exception):
+                    pass
         # Graceful Shutdown：釋放資源
         logger.info("Application shutting down — releasing resources…")
         # PDF worker：等所有 in-flight 報告生成完（最多 shutdown_timeout 秒）
@@ -786,6 +867,7 @@ app.include_router(analytics_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
 app.include_router(internal_metrics_router)
+app.include_router(integrations_health_router)
 if settings.core.dev_router_should_mount:
     from api.dev import router as dev_router, init_dev_services
 

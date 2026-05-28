@@ -19,12 +19,95 @@ from utils.taipei_time import today_taipei
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import time
+
 import requests
+
+from utils.external_calls import tagged_capture
+from utils.circuit_breaker import LINE_BREAKER, BreakerOpenError
 
 logger = logging.getLogger(__name__)
 
 _LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+
+# Phase 1 P1 resilience: 401/403 process-local dedup（1 hr TTL）
+# Phase 4 改成 line_token_health table 跨 worker / 跨 restart dedup；本 fast-path 保留。
+_LINE_401_DEDUP_TTL_SECONDS = 3600
+_RECENT_LINE_401_403: dict[int, float] = {}  # status_code → last_capture_ts
+
+
+def _record_line_response(
+    resp_or_exc: object,
+    *,
+    context: str,
+) -> bool:
+    """LINE API call 結果統一處理：log + tagged_capture + 4xx 分流；回 True 表示成功送出。
+
+    Args:
+        resp_or_exc: requests.Response（status_code/text 屬性）或 BaseException
+        context: 描述呼叫源 (e.g. "_push_to_user", "_reply"), 寫入 log 訊息
+
+    Returns:
+        True 若 HTTP 200；False 任何失敗（exception / 非 200）
+    """
+    # Exception path
+    if isinstance(resp_or_exc, BaseException):
+        logger.exception("LINE %s 失敗（network/exception）", context)
+        tagged_capture(resp_or_exc, tag="line", level="error")
+        return False
+
+    # Response path
+    resp = resp_or_exc
+    status = getattr(resp, "status_code", 0)
+    body = getattr(resp, "text", "")[:200]
+
+    if status == 200:
+        return True
+
+    # 4xx 分流
+    if status in (401, 403):
+        # process-local dedup：1 hr 內同 status 只發一次
+        now = time.time()
+        last = _RECENT_LINE_401_403.get(status)
+        if last is None or (now - last) >= _LINE_401_DEDUP_TTL_SECONDS:
+            logger.exception("LINE %s 失敗 status=%s body=%s", context, status, body)
+            tagged_capture(
+                RuntimeError(f"LINE {context} returned {status}: {body}"),
+                tag="line",
+                level="error",
+            )
+            _RECENT_LINE_401_403[status] = now
+        else:
+            logger.warning("LINE %s 失敗 status=%s（已 dedup）", context, status)
+        return False
+
+    if status in (400, 404):
+        logger.warning("LINE %s 失敗 status=%s body=%s", context, status, body)
+        tagged_capture(
+            RuntimeError(f"LINE {context} returned {status}: {body}"),
+            tag="line",
+            level="warning",
+        )
+        return False
+
+    if status == 429:
+        logger.warning("LINE %s rate limited body=%s", context, body)
+        tagged_capture(
+            RuntimeError(f"LINE {context} rate limited 429: {body}"),
+            tag="line",
+            level="warning",
+        )
+        return False
+
+    # 5xx 或其他
+    logger.exception("LINE %s 失敗 status=%s body=%s", context, status, body)
+    tagged_capture(
+        RuntimeError(f"LINE {context} returned {status}: {body}"),
+        tag="line",
+        level="error",
+    )
+    return False
 
 
 # ── 訊息建構（純函式，方便測試）──────────────────────────────────────────────
@@ -262,24 +345,22 @@ class LineService:
         if not self._enabled or not self._token or not group_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": group_id,
-                    "messages": [{"type": "text", "text": text}],
-                },
-                timeout=5,
-            )
-            if resp.status_code != 200:
-                logger.warning(
-                    "LINE API 回傳非 200: %s %s", resp.status_code, resp.text
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": group_id,
+                        "messages": [{"type": "text", "text": text}],
+                    },
+                    timeout=5,
                 )
-                return False
-            return True
+            )
+            return _record_line_response(resp, context="push_text_to_group")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
-            logger.warning("LINE 推送失敗: %s", exc)
-            return False
+            return _record_line_response(exc, context="push_text_to_group")
 
     def _push(self, text: str) -> bool:
         """推送純文字訊息到預設 LINE 群組（self._target_id），成功回傳 True。
@@ -307,22 +388,22 @@ class LineService:
         if not self._enabled or not self._token or not line_user_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": line_user_id,
-                    "messages": [{"type": "text", "text": text}],
-                },
-                timeout=5,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": line_user_id,
+                        "messages": [{"type": "text", "text": text}],
+                    },
+                    timeout=5,
+                )
             )
-            if resp.status_code != 200:
-                logger.warning("LINE 個人推播失敗: %s %s", resp.status_code, resp.text)
-                return False
-            return True
+            return _record_line_response(resp, context="_push_to_user")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
-            logger.warning("LINE 個人推播失敗: %s", exc)
-            return False
+            return _record_line_response(exc, context="_push_to_user")
 
     def push_text_to_user(self, user_id: str, text: str) -> None:
         """Public alias for dispatch adapter."""
@@ -344,30 +425,28 @@ class LineService:
         if not self._enabled or not self._token or not line_user_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": line_user_id,
-                    "messages": [
-                        {
-                            "type": "flex",
-                            "altText": alt_text,
-                            "contents": flex_content,
-                        }
-                    ],
-                },
-                timeout=5,
-            )
-            if resp.status_code != 200:
-                logger.warning(
-                    "LINE Flex 個人推播失敗: %s %s", resp.status_code, resp.text
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": line_user_id,
+                        "messages": [
+                            {
+                                "type": "flex",
+                                "altText": alt_text,
+                                "contents": flex_content,
+                            }
+                        ],
+                    },
+                    timeout=5,
                 )
-                return False
-            return True
+            )
+            return _record_line_response(resp, context="push_flex_to_user")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
-            logger.warning("LINE Flex 個人推播失敗: %s", exc)
-            return False
+            return _record_line_response(exc, context="push_flex_to_user")
 
     def _push_to_user_with_quick_reply(
         self, line_user_id: str, text: str, quick_reply: dict
@@ -376,32 +455,28 @@ class LineService:
         if not self._enabled or not self._token or not line_user_id:
             return False
         try:
-            resp = requests.post(
-                _LINE_PUSH_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "to": line_user_id,
-                    "messages": [
-                        {
-                            "type": "text",
-                            "text": text,
-                            "quickReply": quick_reply,
-                        }
-                    ],
-                },
-                timeout=5,
-            )
-            if resp.status_code != 200:
-                logger.warning(
-                    "LINE 個人推播 quickReply 失敗: %s %s",
-                    resp.status_code,
-                    resp.text,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_PUSH_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "to": line_user_id,
+                        "messages": [
+                            {
+                                "type": "text",
+                                "text": text,
+                                "quickReply": quick_reply,
+                            }
+                        ],
+                    },
+                    timeout=5,
                 )
-                return False
-            return True
+            )
+            return _record_line_response(resp, context="_push_to_user_with_quick_reply")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
-            logger.warning("LINE 個人推播 quickReply 失敗: %s", exc)
-            return False
+            return _record_line_response(exc, context="_push_to_user_with_quick_reply")
 
     def _reply_with_quick_reply(
         self, reply_token: str, text: str, quick_reply: dict
@@ -410,56 +485,50 @@ class LineService:
         if not self._token or not reply_token:
             return False
         try:
-            resp = requests.post(
-                _LINE_REPLY_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "replyToken": reply_token,
-                    "messages": [
-                        {
-                            "type": "text",
-                            "text": text,
-                            "quickReply": quick_reply,
-                        }
-                    ],
-                },
-                timeout=5,
-            )
-            if resp.status_code != 200:
-                logger.warning(
-                    "LINE Reply quickReply 失敗: %s %s",
-                    resp.status_code,
-                    resp.text,
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_REPLY_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "replyToken": reply_token,
+                        "messages": [
+                            {
+                                "type": "text",
+                                "text": text,
+                                "quickReply": quick_reply,
+                            }
+                        ],
+                    },
+                    timeout=5,
                 )
-                return False
-            return True
+            )
+            return _record_line_response(resp, context="_reply_with_quick_reply")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
-            logger.warning("LINE Reply quickReply 失敗: %s", exc)
-            return False
+            return _record_line_response(exc, context="_reply_with_quick_reply")
 
     def _reply(self, reply_token: str, text: str) -> bool:
         """使用 LINE Reply API 回覆 Webhook 訊息，成功回傳 True，失敗回傳 False"""
         if not self._token or not reply_token:
             return False
         try:
-            resp = requests.post(
-                _LINE_REPLY_URL,
-                headers={"Authorization": f"Bearer {self._token}"},
-                json={
-                    "replyToken": reply_token,
-                    "messages": [{"type": "text", "text": text}],
-                },
-                timeout=5,
-            )
-            if resp.status_code != 200:
-                logger.warning(
-                    "LINE Reply API 失敗: %s %s", resp.status_code, resp.text
+            resp = LINE_BREAKER.call(
+                lambda: requests.post(
+                    _LINE_REPLY_URL,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={
+                        "replyToken": reply_token,
+                        "messages": [{"type": "text", "text": text}],
+                    },
+                    timeout=5,
                 )
-                return False
-            return True
+            )
+            return _record_line_response(resp, context="_reply")
+        except BreakerOpenError:
+            raise
         except Exception as exc:
-            logger.warning("LINE Reply 失敗: %s", exc)
-            return False
+            return _record_line_response(exc, context="_reply")
 
     # ── 公開通知方法 ──────────────────────────────────────────────────────────
 
