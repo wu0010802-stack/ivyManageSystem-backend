@@ -38,9 +38,13 @@ def _make_payload() -> dict:
 
 
 def _make_mock_session(dialect_name: str = "postgresql") -> MagicMock:
-    """建立 mock session，dialect.name 設為指定值。"""
+    """建立 mock session，dialect.name 設為指定值。
+
+    對齊 utils/audit.py 用 session.get_bind() (SA 2.x 正規 API，session.bind
+    可能 None)。get_bind() 回傳 engine，engine.dialect.name 拿 dialect。
+    """
     session = MagicMock()
-    session.bind.dialect.name = dialect_name
+    session.get_bind.return_value.dialect.name = dialect_name
     return session
 
 

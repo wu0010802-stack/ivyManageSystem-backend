@@ -464,7 +464,13 @@ def _write_audit_sync(payload: dict) -> None:
         session = get_session()
         try:
             # defense-in-depth: 切換到 audit_writer role（PG only，SET LOCAL = per-transaction）
-            if session.bind.dialect.name == "postgresql":
+            # 用 session.get_bind() 而非 session.bind（SA 2.x session.bind 可能 None；
+            # get_bind() 是正規取 engine 方式）
+            try:
+                _dialect_name = session.get_bind().dialect.name
+            except Exception:
+                _dialect_name = ""  # 拿不到 engine 視為 unknown，skip SET LOCAL ROLE
+            if _dialect_name == "postgresql":
                 try:
                     session.execute(sa_text("SET LOCAL ROLE ivy_audit_writer"))
                 except Exception as e:
