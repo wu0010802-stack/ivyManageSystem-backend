@@ -29,6 +29,12 @@ from utils.portfolio_access import (
     is_unrestricted,
 )
 
+from schemas._common import DeleteResultOut, MutationResultOut
+from schemas.announcements import (
+    AnnouncementListOut,
+    AnnouncementParentRecipientsOut,
+)
+
 
 class _TagStripper(HTMLParser):
     """HTMLParser subclass that discards all tags and keeps only text nodes.
@@ -101,7 +107,7 @@ class AnnouncementUpdate(BaseModel):
 # ============ Endpoints ============
 
 
-@router.get("")
+@router.get("", response_model=AnnouncementListOut)
 def list_announcements(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
@@ -187,7 +193,7 @@ def list_announcements(
         session.close()
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=MutationResultOut)
 def create_announcement(
     data: AnnouncementCreate,
     current_user: dict = Depends(
@@ -225,7 +231,7 @@ def create_announcement(
         session.close()
 
 
-@router.put("/{announcement_id}")
+@router.put("/{announcement_id}", response_model=DeleteResultOut)
 def update_announcement(
     announcement_id: int,
     data: AnnouncementUpdate,
@@ -278,7 +284,7 @@ def update_announcement(
         session.close()
 
 
-@router.delete("/{announcement_id}")
+@router.delete("/{announcement_id}", response_model=DeleteResultOut)
 def delete_announcement(
     announcement_id: int,
     current_user: dict = Depends(
@@ -364,7 +370,7 @@ def _serialize_parent_recipient(r: AnnouncementParentRecipient) -> dict:
     }
 
 
-@router.get("/{announcement_id}/parent-recipients")
+@router.get("/{announcement_id}/parent-recipients", response_model=AnnouncementParentRecipientsOut)
 def list_parent_recipients(
     announcement_id: int,
     current_user: dict = Depends(
@@ -617,7 +623,7 @@ def _fire_announcement_push(
     )
 
 
-@router.put("/{announcement_id}/parent-recipients")
+@router.put("/{announcement_id}/parent-recipients", response_model=AnnouncementParentRecipientsOut)
 def replace_parent_recipients(
     announcement_id: int,
     payload: ParentRecipientsUpdate,

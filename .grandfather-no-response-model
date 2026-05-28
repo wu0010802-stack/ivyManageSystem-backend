@@ -68,12 +68,6 @@ api/activity/supplies.py:delete_supply
 api/analytics.py:get_funnel
 api/analytics.py:get_at_risk
 api/analytics.py:get_churn_history
-api/announcements.py:list_announcements
-api/announcements.py:create_announcement
-api/announcements.py:update_announcement
-api/announcements.py:delete_announcement
-api/announcements.py:list_parent_recipients
-api/announcements.py:replace_parent_recipients
 api/approval_settings.py:get_approval_policies
 api/approval_settings.py:get_approval_logs
 api/approvals.py:get_upcoming_events
