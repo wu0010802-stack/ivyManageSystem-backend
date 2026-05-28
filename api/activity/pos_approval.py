@@ -29,6 +29,16 @@ from models.database import (
     User,
     get_session,
 )
+from schemas.activity_admin import (
+    PosCloseHistoryOut,
+    PosDailyCloseApproveOut,
+    PosDailyCloseOut,
+    PosDailyCloseUnlockOut,
+    PosOperatorActivityOut,
+    PosPendingDailyClosesOut,
+    PosReconciliationOut,
+    PosUnlockEventsOut,
+)
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -162,7 +172,7 @@ def _live_preview(session, target_date: date) -> dict:
 # ── 端點 1：列出有交易但未簽核的日期（靜態路徑需優先於 /{date_str}） ─────
 
 
-@router.get("/pos/daily-close/pending")
+@router.get("/pos/daily-close/pending", response_model=PosPendingDailyClosesOut)
 async def pending_daily_closes(
     start_date: Optional[str] = Query(None, description="YYYY-MM-DD，預設 30 天前"),
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD，預設今日"),
@@ -246,7 +256,7 @@ async def pending_daily_closes(
 # ── 端點 2：查某日簽核狀態 ────────────────────────────────────────────
 
 
-@router.get("/pos/daily-close/{date_str}")
+@router.get("/pos/daily-close/{date_str}", response_model=PosDailyCloseOut)
 async def get_daily_close(
     date_str: str,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -270,7 +280,7 @@ async def get_daily_close(
 # ── 端點 3：簽核某日 ─────────────────────────────────────────────────
 
 
-@router.post("/pos/daily-close/{date_str}", status_code=status.HTTP_201_CREATED)
+@router.post("/pos/daily-close/{date_str}", status_code=status.HTTP_201_CREATED, response_model=PosDailyCloseApproveOut)
 async def approve_daily_close(
     date_str: str,
     body: DailyCloseCreate,
@@ -408,7 +418,7 @@ async def approve_daily_close(
 # ── 端點 3：解鎖重簽 ─────────────────────────────────────────────────
 
 
-@router.delete("/pos/daily-close/{date_str}", status_code=200)
+@router.delete("/pos/daily-close/{date_str}", status_code=200, response_model=PosDailyCloseUnlockOut)
 async def unlock_daily_close(
     date_str: str,
     body: DailyCloseUnlock,
@@ -634,7 +644,7 @@ async def unlock_daily_close(
 # ── 端點 5：對帳匯總（按日，snapshot 或即時） ────────────────────
 
 
-@router.get("/pos/reconciliation")
+@router.get("/pos/reconciliation", response_model=PosReconciliationOut)
 async def pos_reconciliation(
     start_date: str = Query(..., description="YYYY-MM-DD"),
     end_date: str = Query(..., description="YYYY-MM-DD"),
@@ -747,7 +757,7 @@ def _doc_id_to_date(doc_id: int):
         return None
 
 
-@router.get("/audit/pos-unlock-events")
+@router.get("/audit/pos-unlock-events", response_model=PosUnlockEventsOut)
 async def list_pos_unlock_events(
     days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
     current_user: dict = Depends(
@@ -806,7 +816,7 @@ async def list_pos_unlock_events(
 _OPERATOR_ACTIVITY_LIMIT = 100
 
 
-@router.get("/audit/operator-activity")
+@router.get("/audit/operator-activity", response_model=PosOperatorActivityOut)
 async def list_operator_activity(
     days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
     current_user: dict = Depends(
@@ -897,7 +907,7 @@ async def list_operator_activity(
 # ── 端點 8：日結歷史快照查詢（spec H3）──────────────────────────
 
 
-@router.get("/audit/pos-close-history")
+@router.get("/audit/pos-close-history", response_model=PosCloseHistoryOut)
 async def list_pos_close_history(
     close_date: str = Query(..., description="YYYY-MM-DD"),
     current_user: dict = Depends(

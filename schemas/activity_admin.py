@@ -654,6 +654,230 @@ class WaitlistSweepResultOut(IvyBaseModel):
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Phase 3.5 — api/activity/pos_approval.py 8 endpoint response_model
+#
+# 老闆每日核對 POS 流水後簽核某日 + 解鎖 + 對帳 + 稽核 dashboard。
+# 命名 prefix `Pos` 對齊既有 ActivityPosDailyClose 模型語義。
+# operator/approver username 屬 staff 操作者識別，pii-allow。
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class PosPendingDailyCloseItemOut(IvyBaseModel):
+    """GET /pos/daily-close/pending pending[] 單筆。"""
+
+    date: str
+    transaction_count: int
+    payment_total: int
+    refund_total: int
+    net_total: int
+
+
+class PosPendingDailyClosesOut(IvyBaseModel):
+    """GET /pos/daily-close/pending 完整回應。"""
+
+    start_date: str
+    end_date: str
+    pending: list[PosPendingDailyCloseItemOut]
+
+
+class PosDailyCloseOut(IvyBaseModel):
+    """GET /pos/daily-close/{date} 回應。
+
+    含已簽核（_serialize_close）與未簽核即時 preview（_live_preview）兩 path 共用 shape；
+    未簽核時 is_approved=False / approver_username=None / approved_at=None /
+    actual_cash_count=None / cash_variance=None。
+    by_method 為 method→net_amount mapping（含「現金」key）。
+    """
+
+    date: str
+    is_approved: bool
+    status: str
+    approver_username: Optional[str] = None  # pii-allow: 簽核者 username 為 staff 識別
+    approved_at: Optional[str] = None
+    note: Optional[str] = None
+    payment_total: int
+    refund_total: int
+    net_total: int
+    transaction_count: int
+    by_method: dict[str, int]
+    actual_cash_count: Optional[int] = None
+    cash_variance: Optional[int] = None
+
+
+class PosDailyCloseApproveOut(PosDailyCloseOut):
+    """POST /pos/daily-close/{date} 201 回應。
+
+    繼承 PosDailyCloseOut 並加上 warnings — 簽核者 = 當日 POS 操作者時的軟提醒。
+    """
+
+    warnings: list[str] = []
+
+
+class PosDailyCloseLiveDiffOut(IvyBaseModel):
+    """unlock_daily_close 回應內 live_diff 結構（spec H2）。
+
+    解鎖後實況 vs 原 snapshot 差異，幫解鎖人即時掌握「為什麼帳變了」。
+    compute_daily_snapshot 失敗時 router 端直接回 live_diff=None。
+    """
+
+    payment_total_diff: int
+    refund_total_diff: int
+    net_total_diff: int
+    transaction_count_diff: int
+    live_payment_total: int
+    live_refund_total: int
+    live_net_total: int
+    live_transaction_count: int
+    original_payment_total: int
+    original_refund_total: int
+    original_net_total: int
+    original_transaction_count: int
+
+
+class PosDailyCloseUnlockOut(IvyBaseModel):
+    """DELETE /pos/daily-close/{date} 解鎖回應。
+
+    notification_delivered 表示原簽核人是否有有效 LINE 綁定（active + line_user_id +
+    line_follow_confirmed_at）；client 據此決定是否私下告知對方。
+    """
+
+    close_date: str
+    unlocked_at: str
+    is_admin_override: bool
+    notification_delivered: bool
+    live_diff: Optional[PosDailyCloseLiveDiffOut] = None
+
+
+class PosReconciliationItemOut(IvyBaseModel):
+    """GET /pos/reconciliation items[] 單筆。
+
+    已簽核日用 snapshot、未簽核日即時算；expected_cash 來自 by_method[現金]，
+    actual_cash / variance 僅已簽核日才有值。
+    """
+
+    date: str
+    is_approved: bool
+    status: str
+    payment_total: int
+    refund_total: int
+    net_total: int
+    transaction_count: int
+    expected_cash: int
+    actual_cash: Optional[int] = None
+    variance: Optional[int] = None
+
+
+class PosReconciliationTotalsOut(IvyBaseModel):
+    """GET /pos/reconciliation totals 區段。
+
+    variance_total 在區間內無任何已簽核日填現金盤點時為 None（沒任何 variance 可加）。
+    """
+
+    payment_total: int
+    refund_total: int
+    net_total: int
+    variance_total: Optional[int] = None
+
+
+class PosReconciliationOut(IvyBaseModel):
+    """GET /pos/reconciliation 完整回應。"""
+
+    start_date: str
+    end_date: str
+    items: list[PosReconciliationItemOut]
+    totals: PosReconciliationTotalsOut
+
+
+class PosUnlockEventItemOut(IvyBaseModel):
+    """GET /audit/pos-unlock-events events[] 單筆。
+
+    close_date 解析自 ApprovalLog.doc_id（YYYYMMDD int）；非法 doc_id 時為 None。
+    """
+
+    id: int
+    close_date: Optional[str] = None
+    action: str
+    unlocker_username: Optional[str] = None  # pii-allow: 解鎖者 username 為 staff 識別
+    unlocker_role: Optional[str] = None
+    comment: Optional[str] = None
+    occurred_at: Optional[str] = None
+
+
+class PosUnlockEventsOut(IvyBaseModel):
+    """GET /audit/pos-unlock-events 完整回應。"""
+
+    days: int
+    count: int
+    events: list[PosUnlockEventItemOut]
+
+
+class PosOperatorUserOut(IvyBaseModel):
+    """list_operator_activity operators[].user 內嵌結構。
+
+    無對應 User row 的 operator 字串以 user=null 回傳（前端紅標提醒已停用 / 共用殘留）。
+    """
+
+    id: int
+    display_name: str  # pii-allow: 後台稽核 dashboard staff 識別
+    role: Optional[str] = None
+    employee_id: Optional[int] = None
+    is_active: bool
+
+
+class PosOperatorActivityItemOut(IvyBaseModel):
+    """GET /audit/operator-activity operators[] 單筆。"""
+
+    operator: str  # pii-allow: 後台稽核 dashboard staff 識別（POS 操作者 username）
+    payment_count: int
+    refund_count: int
+    total_count: int
+    last_activity_at: Optional[str] = None
+    user: Optional[PosOperatorUserOut] = None
+
+
+class PosOperatorActivityOut(IvyBaseModel):
+    """GET /audit/operator-activity 完整回應。"""
+
+    days: int
+    count: int
+    operators: list[PosOperatorActivityItemOut]
+
+
+class PosCloseHistorySnapshotOut(IvyBaseModel):
+    """GET /audit/pos-close-history snapshots[] 單筆（spec H3）。
+
+    每次 unlock 前的完整快照（含 by_method JSON、現金盤點等），供「當時帳長什麼樣」稽核。
+    """
+
+    id: int
+    close_date: str
+    approver_username: Optional[str] = None  # pii-allow: 原簽核者 username 為 staff 識別
+    approver_role: Optional[str] = None
+    approved_at: Optional[str] = None
+    approve_note: Optional[str] = None
+    payment_total: int
+    refund_total: int
+    net_total: int
+    transaction_count: int
+    by_method: dict[str, int]
+    actual_cash_count: Optional[int] = None
+    cash_variance: Optional[int] = None
+    unlocked_at: Optional[str] = None
+    unlocked_by: Optional[str] = None  # pii-allow: 解鎖者 username 為 staff 識別
+    unlocked_by_role: Optional[str] = None
+    is_admin_override: bool
+    unlock_reason: Optional[str] = None
+
+
+class PosCloseHistoryOut(IvyBaseModel):
+    """GET /audit/pos-close-history 完整回應。"""
+
+    close_date: str
+    count: int
+    snapshots: list[PosCloseHistorySnapshotOut]
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # Phase 3.5 — api/activity/registrations_pending.py 7 endpoint response_model
 #
 # 後台才藝報名審核工作流 7 個 endpoint：

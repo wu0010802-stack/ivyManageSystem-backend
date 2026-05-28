@@ -24,14 +24,6 @@ api/activity/pos.py:pos_checkout
 api/activity/pos.py:pos_daily_summary
 api/activity/pos.py:pos_recent_transactions
 api/activity/pos.py:pos_semester_reconciliation
-api/activity/pos_approval.py:pending_daily_closes
-api/activity/pos_approval.py:get_daily_close
-api/activity/pos_approval.py:approve_daily_close
-api/activity/pos_approval.py:unlock_daily_close
-api/activity/pos_approval.py:pos_reconciliation
-api/activity/pos_approval.py:list_pos_unlock_events
-api/activity/pos_approval.py:list_operator_activity
-api/activity/pos_approval.py:list_pos_close_history
 api/activity/public.py:get_public_poster
 api/activity/registrations_items.py:add_registration_course
 api/activity/registrations_items.py:add_registration_supply
