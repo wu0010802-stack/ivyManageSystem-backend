@@ -273,13 +273,8 @@ api/offboarding.py:download_offboarding_bundle
 api/offboarding.py:get_certificate_pdf
 api/offboarding.py:patch_nhi_unenroll
 api/overtimes.py:get_overtimes
-api/overtimes.py:create_overtime
-api/overtimes.py:update_overtime
-api/overtimes.py:delete_overtime
-api/overtimes.py:approve_overtime
 api/overtimes.py:batch_approve_overtimes
 api/overtimes.py:get_overtime_import_template
-api/overtimes.py:import_overtimes
 api/parent_portal/activity.py:list_courses
 api/parent_portal/activity.py:my_registrations
 api/parent_portal/activity.py:register_courses

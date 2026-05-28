@@ -40,6 +40,13 @@ from models.database import (
 from models.approval import ApprovalStatus
 from models.event import Holiday
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+from schemas.overtimes import (
+    OvertimeApproveResultOut,
+    OvertimeCreateResultOut,
+    OvertimeDeleteResultOut,
+    OvertimeImportResultOut,
+    OvertimeUpdateResultOut,
+)
 from utils.auth import require_staff_permission
 from utils.constants import (
     OVERTIME_TYPE_LABELS,
@@ -578,7 +585,7 @@ def get_overtimes(
         session.close()
 
 
-@router.post("/overtimes", status_code=201)
+@router.post("/overtimes", status_code=201, response_model=OvertimeCreateResultOut)
 def create_overtime(
     data: OvertimeCreate,
     request: Request,
@@ -683,7 +690,7 @@ def create_overtime(
         session.close()
 
 
-@router.put("/overtimes/{overtime_id}")
+@router.put("/overtimes/{overtime_id}", response_model=OvertimeUpdateResultOut)
 def update_overtime(
     overtime_id: int,
     data: OvertimeUpdate,
@@ -922,7 +929,7 @@ def update_overtime(
         session.close()
 
 
-@router.delete("/overtimes/{overtime_id}")
+@router.delete("/overtimes/{overtime_id}", response_model=OvertimeDeleteResultOut)
 def delete_overtime(
     overtime_id: int,
     request: Request,
@@ -1006,7 +1013,7 @@ def delete_overtime(
         session.close()
 
 
-@router.put("/overtimes/{overtime_id}/approve")
+@router.put("/overtimes/{overtime_id}/approve", response_model=OvertimeApproveResultOut)
 def approve_overtime(
     overtime_id: int,
     request: Request,
@@ -1570,7 +1577,7 @@ class OvertimeImportRow(ExcelImportSchema):
     use_comp_leave: Any = Field(default=None, alias="補休(是/否,可空)")
 
 
-@router.post("/overtimes/import")
+@router.post("/overtimes/import", response_model=OvertimeImportResultOut)
 async def import_overtimes(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
