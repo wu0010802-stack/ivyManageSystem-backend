@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.exceptions import BusinessError
 from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -76,7 +77,7 @@ async def parent_list_reports(
             .all()
         )
         return {"items": [_parent_row_to_dict(r) for r in rows]}
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端查詢報告列表失敗")
@@ -138,7 +139,7 @@ async def parent_download_report(
             media_type="application/pdf",
             filename=f"growth_report_{r.id}.pdf",
         )
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端下載報告失敗")

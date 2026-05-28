@@ -204,6 +204,9 @@ def _build_app(current_user_factory):
     from utils.auth import get_current_user
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(attendance_router, prefix="/api/parent")
     app.dependency_overrides[get_current_user] = current_user_factory
     return app

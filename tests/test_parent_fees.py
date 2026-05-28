@@ -44,6 +44,9 @@ def fees_client(tmp_path):
     base_module._SessionFactory = session_factory
     Base.metadata.create_all(db_engine)
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_portal_router)
 
     # Phase 1c+ (2026-05-18): fees.py now uses Depends(get_parent_db).

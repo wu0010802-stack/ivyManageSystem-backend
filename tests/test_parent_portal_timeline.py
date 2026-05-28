@@ -40,6 +40,9 @@ def app_client(tmp_path):
     Base.metadata.create_all(engine)
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     # Parent timeline router mounted under /api/parent prefix
     app.include_router(parent_timeline_router, prefix="/api/parent")
 

@@ -198,6 +198,9 @@ def _teacher_token(user: User) -> str:
 def parent_client(tmp_path):
     engine, sf, old_e, old_sf = _setup_in_memory_db(tmp_path, "enum-parent")
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_portal_router)
 
     from api.parent_portal._dependencies import get_parent_db

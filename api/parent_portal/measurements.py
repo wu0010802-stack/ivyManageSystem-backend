@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from utils.exceptions import BusinessError
 from utils.taipei_time import today_taipei
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -83,7 +84,7 @@ async def parent_list_measurements(
             dedup=True,
         )
         return {"items": [_to_dict(r) for r in rows]}
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端查詢量測失敗")
@@ -143,7 +144,7 @@ async def parent_measurement_chart(
             if r.vision_right is not None:
                 series["vision_right"].append({"x": d, "y": str(r.vision_right)})
         return series
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端量測曲線查詢失敗")

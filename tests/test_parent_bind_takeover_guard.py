@@ -97,6 +97,9 @@ def parent_client(tmp_path):
     init_parent_line_service(fake_line)
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(auth_router)
     app.include_router(parent_portal_router)
     app.include_router(parent_admin_router)

@@ -35,6 +35,7 @@ from models.portfolio import (
     ATTACHMENT_OWNER_REPORT,
     REPORT_STATUS_READY,
 )
+from utils.exceptions import BusinessError
 from utils.auth import require_parent_role
 from utils.errors import raise_safe_500
 from utils.portfolio_storage import PORTFOLIO_MODULE
@@ -160,7 +161,7 @@ async def parent_list_photos(
             "total": len(all_items),
             "items": all_items[skip : skip + limit],
         }
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端照片牆查詢失敗")

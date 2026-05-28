@@ -48,6 +48,9 @@ def parent_attend_client(tmp_path):
     Base.metadata.create_all(db_engine)
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_portal_router)
 
     # Phase 1+ (2026-05-18): attendance.py now uses Depends(get_parent_db) which
@@ -297,6 +300,8 @@ class TestParentIdor:
             cookies={"access_token": token_a},
         )
         assert resp.status_code == 403
+        # Phase 3: envelope shape — detail.code 對齊 ErrorCode 註冊
+        assert resp.json()["detail"]["code"] == "STUDENT_NOT_LINKED_TO_PARENT"
 
     def test_monthly_attendance_other_child_returns_403(self, parent_attend_client):
         client, session_factory = parent_attend_client
