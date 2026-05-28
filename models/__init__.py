@@ -51,3 +51,6 @@ from .fees import FeeTemplate, StudentFeeRecord  # noqa: F401
 # FK target；CI Tests step `Base.metadata.create_all` 需要該表先建立。
 from .unused_leave_payout_log import UnusedLeavePayoutLog  # noqa: F401
 from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
+
+# P0d-2 2026-05-28: medical_access_log（特種個資取用獨立稽核 §6）
+from .medical_access_log import MedicalAccessLog  # noqa: F401

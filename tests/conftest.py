@@ -7,6 +7,16 @@ from sqlalchemy.orm import sessionmaker
 # 讓 tests 可以 import backend 模組
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# P0d-2 法規/個資 sprint 2026-05-28：醫療欄位加密 key（測試專用固定值）。
+# Student.allergy/medication/special_needs 改用 EncryptedText 後，
+# ORM insert/read 必經 Fernet；test 環境必須設 key 否則所有 Student insert
+# 炸 `MEDICAL_FIELD_ENCRYPTION_KEY 未設定`。此固定值僅供 test 使用，
+# prod / staging / dev 各自由 env var 設定。
+os.environ.setdefault(
+    "MEDICAL_FIELD_ENCRYPTION_KEY",
+    "GEdGVEpP4ao9zTk1iIAWFdnEoJ_8ipzw5Y0ZgCerXh4=",
+)
+
 # ── SQLite 相容性修補（必須在所有模型 import 前執行）─────────────────────────
 # models/__init__.py 在 SalaryEngine 匯入鏈中被觸發，導致 models/appraisal.py 先被
 # 載入；因此修補必須在 conftest.py 最頂端（任何 import 前）執行。
