@@ -453,15 +453,7 @@ api/recruitment/market.py:get_nearby_kindergartens
 api/recruitment/market.py:sync_recruitment_market_intelligence
 api/recruitment/market.py:get_recruitment_market_intelligence
 api/recruitment/periods.py:get_periods_summary
-api/recruitment/periods.py:list_periods
-api/recruitment/periods.py:create_period
-api/recruitment/periods.py:update_period
 api/recruitment/periods.py:delete_period
-api/recruitment/periods.py:sync_period_from_visits
-api/recruitment/periods.py:get_recruitment_options
-api/recruitment/periods.py:list_months
-api/recruitment/periods.py:create_month
-api/recruitment/periods.py:delete_month
 api/recruitment/records.py:list_recruitment_records
 api/recruitment/records.py:create_recruitment_record
 api/recruitment/records.py:update_recruitment_record

@@ -16,6 +16,12 @@ from models.recruitment import (
     RecruitmentPeriod,
     RecruitmentVisit,
 )
+from schemas.recruitment_periods import (
+    MonthDeleteOut,
+    MonthOptionOut,
+    PeriodOut,
+    RecruitmentOptionsOut,
+)
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -285,7 +291,7 @@ def get_periods_summary(
         }
 
 
-@router.get("/periods")
+@router.get("/periods", response_model=list[PeriodOut])
 def list_periods(
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
@@ -298,7 +304,7 @@ def list_periods(
         return [_period_to_dict(p) for p in periods]
 
 
-@router.post("/periods", status_code=201)
+@router.post("/periods", status_code=201, response_model=PeriodOut)
 def create_period(
     payload: PeriodCreate,
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -312,14 +318,16 @@ def create_period(
         if existing:
             raise HTTPException(status_code=409, detail="期間名稱已存在")
         p = RecruitmentPeriod(
-            **payload.model_dump(), created_at=now_taipei_naive(), updated_at=now_taipei_naive()
-            )
+            **payload.model_dump(),
+            created_at=now_taipei_naive(),
+            updated_at=now_taipei_naive(),
+        )
         session.add(p)
         session.flush()
         return _period_to_dict(p)
 
 
-@router.put("/periods/{period_id}")
+@router.put("/periods/{period_id}", response_model=PeriodOut)
 def update_period(
     period_id: int,
     payload: PeriodUpdate,
@@ -348,7 +356,7 @@ def delete_period(
         session.delete(p)
 
 
-@router.post("/periods/{period_id}/sync")
+@router.post("/periods/{period_id}/sync", response_model=PeriodOut)
 def sync_period_from_visits(
     period_id: int,
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -406,7 +414,7 @@ def sync_period_from_visits(
         return _period_to_dict(p)
 
 
-@router.get("/options")
+@router.get("/options", response_model=RecruitmentOptionsOut)
 def get_recruitment_options(
     dataset_scope: str = Query(DATASET_SCOPE_ALL, pattern="^(all)$"),
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
@@ -461,7 +469,7 @@ def get_recruitment_options(
         }
 
 
-@router.get("/months")
+@router.get("/months", response_model=list[MonthOptionOut])
 def list_months(
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
@@ -474,7 +482,7 @@ def list_months(
         ]
 
 
-@router.post("/months", status_code=201)
+@router.post("/months", status_code=201, response_model=MonthOptionOut)
 def create_month(
     payload: MonthCreate,
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -493,7 +501,7 @@ def create_month(
         return {"id": rec.id, "month": rec.month}
 
 
-@router.delete("/months/{month}")
+@router.delete("/months/{month}", response_model=MonthDeleteOut)
 def delete_month(
     month: str,
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
