@@ -199,8 +199,25 @@ async def admin_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="權限不足，需要學生讀取權限")
         return
 
+    user_id = payload.get("user_id")
+    if not user_id:
+        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
+        return
+
+    try:
+        assert_under_limit(user_id)
+    except WSConnectionLimitExceeded:
+        await ws.close(code=1008, reason="ws_connection_limit_exceeded")
+        return
+
     backend = get_broadcast()
     await ws.accept()
+    register(user_id, ws)
     backend.subscribe(_ADMIN_CHANNEL, ws)
     logger.info("管理端 WS 已連線")
-    await _run_connection(ws, cleanup=lambda: backend.unsubscribe(ws))
+
+    def _cleanup():
+        backend.unsubscribe(ws)
+        unregister(ws)
+
+    await _run_connection(ws, cleanup=_cleanup)
