@@ -4,6 +4,7 @@ from sqlalchemy import inspect
 
 from models.data_quality import DataQualityReport
 from models.base import Base
+from utils.permissions import Permission, PERMISSION_LABELS, ROLE_TEMPLATES
 
 
 def test_data_quality_report_columns():
@@ -42,3 +43,20 @@ def test_data_quality_report_has_partial_unique_index():
     )
     assert open_idx is not None
     assert open_idx.unique is True
+
+
+def test_data_quality_permissions_defined():
+    assert Permission.DATA_QUALITY_READ.value == "DATA_QUALITY_READ"
+    assert Permission.DATA_QUALITY_WRITE.value == "DATA_QUALITY_WRITE"
+
+
+def test_data_quality_permission_labels_present():
+    assert "DATA_QUALITY_READ" in PERMISSION_LABELS
+    assert "DATA_QUALITY_WRITE" in PERMISSION_LABELS
+
+
+def test_principal_role_template_includes_data_quality():
+    """admin 用 WILDCARD 自動覆蓋；principal 需明列。"""
+    principal_perms = ROLE_TEMPLATES["principal"]
+    assert "DATA_QUALITY_READ" in principal_perms
+    assert "DATA_QUALITY_WRITE" in principal_perms
