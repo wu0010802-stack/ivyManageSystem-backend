@@ -15,6 +15,8 @@ from services.geocoding_service import truncate_address_to_lane
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
+from collections import defaultdict
+
 from api.recruitment.shared import (
     DATASET_SCOPE_ALL,
     _dataset_scope_filters,
@@ -28,6 +30,68 @@ from api.recruitment.shared import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recruitment", tags=["recruitment-hotspots"])
+
+
+def _build_buckets_response(all_hotspots: list[dict], cache_rows: dict) -> dict:
+    """100m grid bucket + K-anonymity suppression.
+
+    all_hotspots: list of {address, district, visit, deposit} -- address is already truncated
+    cache_rows: dict address -> RecruitmentGeocodeCache
+
+    Returns: {"buckets": [...], "district_residual_visits": {...}}
+    """
+    from config import get_settings
+
+    k_threshold = get_settings().recruitment.k_anonymity_threshold
+    K = max(2, min(10, k_threshold))
+
+    grid_acc: dict = defaultdict(
+        lambda: {
+            "visit": 0,
+            "deposit": 0,
+            "lat_sum": 0.0,
+            "lng_sum": 0.0,
+            "n": 0,
+            "district": "",
+        }
+    )
+    for hotspot in all_hotspots:
+        cached = cache_rows.get(hotspot["address"])
+        if not cached or cached.lat is None or cached.lng is None:
+            continue
+        if cached.status != "resolved":
+            continue
+        # Grid key: round to 3 decimals (~100m)
+        grid_lat = round(cached.lat * 1000) / 1000
+        grid_lng = round(cached.lng * 1000) / 1000
+        district = hotspot.get("district") or cached.district or "未填寫"
+        key = (grid_lat, grid_lng, district)
+        bucket = grid_acc[key]
+        bucket["visit"] += hotspot["visit"]
+        bucket["deposit"] += hotspot["deposit"]
+        # Density-weighted center: each hotspot contributes once
+        bucket["lat_sum"] += cached.lat
+        bucket["lng_sum"] += cached.lng
+        bucket["n"] += 1
+        bucket["district"] = district
+
+    buckets = []
+    residual: dict[str, int] = {}
+    for (_grid_lat, _grid_lng, district), b in grid_acc.items():
+        if b["visit"] >= K:
+            buckets.append(
+                {
+                    "center_lat": b["lat_sum"] / b["n"],
+                    "center_lng": b["lng_sum"] / b["n"],
+                    "district": b["district"],
+                    "visit_count": b["visit"],
+                    "deposit_count": b["deposit"],
+                }
+            )
+        else:
+            residual[district] = residual.get(district, 0) + b["visit"]
+
+    return {"buckets": buckets, "district_residual_visits": residual}
 
 
 def _query_address_hotspots(
@@ -156,6 +220,7 @@ def _build_address_hotspots_response(
 
     pending_hotspots = max(total_hotspots - geocoded_hotspots - failed_hotspots, 0)
     provider_name = market_service.current_market_provider()
+    bucket_payload = _build_buckets_response(all_hotspots, cache_rows)
     return {
         "records_with_address": records_with_address,
         "total_hotspots": total_hotspots,
@@ -167,6 +232,7 @@ def _build_address_hotspots_response(
         "provider_available": provider_name is not None,
         "provider_name": provider_name,
         "hotspots": enriched_hotspots,
+        **bucket_payload,
     }
 
 
