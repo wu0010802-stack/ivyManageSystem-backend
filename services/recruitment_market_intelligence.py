@@ -26,6 +26,10 @@ from services.geocoding_service import current_geocoding_provider, geocode_addre
 
 logger = logging.getLogger(__name__)
 
+# K-anonymity / statistical reliability gate for market intelligence rate metrics.
+# 業主決議：visit_90d < 10 時，deposit_rate_90d 設 None（避免「100% 轉訂率」由 1 筆樣本誤導園長決策）
+SAMPLE_SIZE_THRESHOLD = 10
+
 GOOGLE_MAPS_API_KEY = (settings.geocoding.google_maps_api_key or "").strip()
 GOOGLE_GEOCODING_URL = settings.geocoding.google_geocoding_url
 GOOGLE_ROUTES_API_URL = settings.recruitment.google_routes_api_url
@@ -1159,7 +1163,7 @@ def _resolve_population_density_url() -> list[str]:
     if RECRUITMENT_POPULATION_DENSITY_URL:
         return [RECRUITMENT_POPULATION_DENSITY_URL]
 
-    roc_year = today_taipei().year - 1911  
+    roc_year = today_taipei().year - 1911
     return [
         f"https://www.ris.gov.tw/rs-opendata/api/v1/datastore/ODRP048/{year}"
         for year in range(roc_year - 1, max(roc_year - 4, 100), -1)
@@ -1886,8 +1890,11 @@ def _build_market_district_rows(
             or (area_row.town_code if area_row else None),
             "lead_count_30d": metrics.get("lead_count_30d", 0),
             "lead_count_90d": metrics.get("lead_count_90d", 0),
+            "sample_size": visit_90d,
             "deposit_rate_90d": (
-                round((deposit_90d / visit_90d) * 100, 1) if visit_90d else 0.0
+                round((deposit_90d / visit_90d) * 100, 1)
+                if visit_90d >= SAMPLE_SIZE_THRESHOLD
+                else None
             ),
             "avg_travel_minutes": _average_travel_minutes(
                 district_travel_rows.get(district, [])
