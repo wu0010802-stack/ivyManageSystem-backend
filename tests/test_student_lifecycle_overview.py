@@ -208,3 +208,92 @@ def test_compute_inner_grades_skipped_middle_grade():
         student, GRADES_FOUR, transfers, CR_GRADE, CR_NAME
     )
     assert [s.status for s in steps] == ["done", "skipped", "current", "future"]
+
+
+from services.student_lifecycle_overview import (
+    TerminalInfo,
+    compute_terminal,
+)
+
+
+def test_compute_terminal_expected_graduation_in_future():
+    """在學中 — 預測 graduation = 當前年級到畢業年級的學年差 + 開學年。"""
+    student = _stu(lifecycle_status="active", classroom_id=21)  # 小班
+    inner = [
+        GradeStepInfo(grade_id=1, name="幼幼", sort_order=1, status="done"),
+        GradeStepInfo(
+            grade_id=2,
+            name="小班",
+            sort_order=2,
+            status="current",
+            entered_at=date(2024, 8, 1),
+        ),
+        GradeStepInfo(grade_id=3, name="中班", sort_order=3, status="future"),
+        GradeStepInfo(grade_id=4, name="大班", sort_order=4, status="future"),
+    ]
+    t = compute_terminal(
+        student,
+        inner,
+        graduation_grade_sort_order=4,
+        term_end_date_for=lambda year: None,
+    )
+    assert t.kind == "none"
+    assert t.actual_date is None
+    # 進入小班學年 = 2024（2024/8-2025/7），diff = 4-2 = 2 → 期望學年 2026
+    # 學年 2026 = 2026/8-2027/7 → 預計畢業 2027/7/31
+    assert t.expected_date == date(2027, 7, 31)
+
+
+def test_compute_terminal_at_graduation_grade():
+    """已在畢業年級 — expected = 同學年 7/31。"""
+    student = _stu(lifecycle_status="active", classroom_id=41)
+    inner = [
+        GradeStepInfo(
+            grade_id=4,
+            name="大班",
+            sort_order=4,
+            status="current",
+            entered_at=date(2026, 8, 1),
+        ),
+    ]
+    t = compute_terminal(
+        student,
+        inner,
+        graduation_grade_sort_order=4,
+        term_end_date_for=lambda year: None,
+    )
+    assert t.expected_date == date(2027, 7, 31)
+
+
+def test_compute_terminal_graduated_actual():
+    student = _stu(lifecycle_status="graduated", graduation_date=date(2027, 7, 1))
+    t = compute_terminal(
+        student,
+        [],
+        graduation_grade_sort_order=4,
+        term_end_date_for=lambda year: None,
+    )
+    assert t.kind == "graduated"
+    assert t.actual_date == date(2027, 7, 1)
+    assert t.expected_date is None
+
+
+def test_compute_terminal_uses_academic_term_end_date_when_available():
+    """若 term_end_date_for 回傳實際 end_date，優先於 7/31 預設。"""
+    student = _stu(lifecycle_status="active", classroom_id=41)
+    inner = [
+        GradeStepInfo(
+            grade_id=4,
+            name="大班",
+            sort_order=4,
+            status="current",
+            entered_at=date(2026, 8, 1),
+        ),
+    ]
+    t = compute_terminal(
+        student,
+        inner,
+        graduation_grade_sort_order=4,
+        term_end_date_for=lambda year: date(2027, 6, 30) if year == 2026 else None,
+    )
+    assert t.expected_date == date(2027, 6, 30)

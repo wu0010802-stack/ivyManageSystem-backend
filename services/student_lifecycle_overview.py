@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 StepStatus = Literal["done", "current", "future"]
 GradeStepStatus = Literal["done", "current", "future", "skipped"]
@@ -262,3 +262,49 @@ def compute_inner_grade_steps(
             )
         )
     return steps
+
+
+def compute_terminal(
+    student,
+    inner_grade_steps: list[GradeStepInfo],
+    graduation_grade_sort_order: Optional[int],
+    term_end_date_for: "Callable[[int], Optional[date]]",
+) -> TerminalInfo:
+    """推算終態。
+
+    term_end_date_for(school_year) → 該學年下學期 end_date 或 None。
+    """
+    status = student.lifecycle_status
+    if status == "graduated":
+        return TerminalInfo(kind="graduated", actual_date=student.graduation_date)
+    if status == "withdrawn":
+        return TerminalInfo(kind="withdrawn", actual_date=student.withdrawal_date)
+    if status == "transferred":
+        return TerminalInfo(kind="transferred", actual_date=student.withdrawal_date)
+
+    # 在學中（active / on_leave / enrolled / prospect）— 預測畢業日
+    if graduation_grade_sort_order is None:
+        return TerminalInfo(kind="none")
+
+    current = next((s for s in inner_grade_steps if s.status == "current"), None)
+    if current is None or current.entered_at is None:
+        return TerminalInfo(kind="none")
+
+    # 學年差 = 畢業年級 sort_order - 當前年級 sort_order
+    diff = graduation_grade_sort_order - current.sort_order
+    # 「進入當前年級的學年」= entered_at.year（若 entered_at 在 8 月之前則學年是去年的）
+    entered_year = current.entered_at.year
+    if current.entered_at.month < 8:
+        entered_year -= 1
+    expected_school_year = entered_year + diff
+
+    # 優先用 AcademicTerm 的 end_date
+    explicit = term_end_date_for(expected_school_year)
+    if explicit is not None:
+        return TerminalInfo(kind="none", expected_date=explicit)
+
+    # 預設 7/31 of (expected_school_year + 1)
+    return TerminalInfo(
+        kind="none",
+        expected_date=date(expected_school_year + 1, 7, 31),
+    )
