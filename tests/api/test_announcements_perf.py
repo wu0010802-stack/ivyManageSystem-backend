@@ -233,3 +233,59 @@ def test_readers_endpoint_returns_paged_list_desc(
 def test_readers_endpoint_404_for_unknown(admin_client):
     res = admin_client.get("/api/announcements/999999/readers")
     assert res.status_code == 404
+
+
+def test_list_query_count_baseline(admin_client, db_engine, db_session, admin_emp):
+    """100 公告 x 50 已讀 fixture 下，list endpoint 應只發 <= 4 SELECT。
+
+    防 N+1 regression：correlated COUNT subquery + batch preview query 設計確保
+    query 數固定不隨資料量退化。
+    """
+    from sqlalchemy import event
+
+    readers = []
+    for i in range(50):
+        e = Employee(
+            employee_id=f"E_BR{i}",
+            name=f"r{i}",
+            is_active=True,
+            base_salary=0,
+        )
+        db_session.add(e)
+        readers.append(e)
+    db_session.flush()
+
+    announcements = []
+    for i in range(100):
+        a = Announcement(title=f"T{i}", content="C", created_by=admin_emp.id)
+        db_session.add(a)
+        announcements.append(a)
+    db_session.flush()
+
+    for a in announcements:
+        for r in readers:
+            db_session.add(
+                AnnouncementRead(announcement_id=a.id, employee_id=r.id)
+            )
+    db_session.commit()
+
+    queries: list = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    event.listen(db_engine, "before_cursor_execute", _capture)
+    try:
+        res = admin_client.get("/api/announcements?page=1&page_size=50")
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["items"]) == 50
+    finally:
+        event.remove(db_engine, "before_cursor_execute", _capture)
+
+    selects = [q for q in queries if q.lstrip().upper().startswith("SELECT")]
+    # 5 fixed SELECTs: jwt_blocklist + users (auth) + COUNT + main + batch preview
+    assert len(selects) <= 5, (
+        f"too many SELECT queries: {len(selects)}\n"
+        + "\n---\n".join(selects)
+    )
