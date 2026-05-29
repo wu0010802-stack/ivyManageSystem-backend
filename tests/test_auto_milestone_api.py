@@ -141,3 +141,78 @@ def test_auto_detect_is_idempotent(app_client):
     # 第二次新建 0 筆
     assert r2.json()["created_count"] == 0
     assert r2.json()["skipped_existing"] == first_count
+
+
+# ── 全勤章（end-to-end，含官方工作日計算 wiring）─────────────────────────
+
+
+def _april_2026_weekdays():
+    from datetime import timedelta
+
+    out = []
+    d = date(2026, 4, 1)
+    while d <= date(2026, 4, 30):
+        if d.weekday() < 5:  # 無 seed 假日 → 平日即官方工作日
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def _seed_attendance(TestingSession, student_id, dates, status="出席"):
+    from models.database import StudentAttendance
+
+    with TestingSession() as s:
+        for d in dates:
+            s.add(StudentAttendance(student_id=student_id, date=d, status=status))
+        s.commit()
+
+
+def test_auto_detect_perfect_attendance_all_workdays_present(app_client):
+    client, TestingSession = app_client
+    _seed_attendance(TestingSession, 1, _april_2026_weekdays())
+    resp = client.post(
+        "/api/students/1/milestones/auto-detect",
+        json={"reference_date": "2026-05-01"},
+    )
+    assert resp.status_code == 200, resp.text
+    list_resp = client.get(
+        "/api/students/1/milestones?milestone_type=perfect_attendance_month"
+    )
+    items = list_resp.json()["items"]
+    assert len(items) == 1, items
+    assert items[0]["source_type"] == "auto_attendance"
+    assert str(items[0]["achieved_on"]).startswith("2026-04")
+
+
+def test_auto_detect_perfect_attendance_one_missing_workday_no_badge(app_client):
+    client, TestingSession = app_client
+    # 缺最後一個官方工作日 → 嚴格規則不發章
+    _seed_attendance(TestingSession, 1, _april_2026_weekdays()[:-1])
+    resp = client.post(
+        "/api/students/1/milestones/auto-detect",
+        json={"reference_date": "2026-05-01"},
+    )
+    assert resp.status_code == 200, resp.text
+    list_resp = client.get(
+        "/api/students/1/milestones?milestone_type=perfect_attendance_month"
+    )
+    assert list_resp.json()["items"] == [], list_resp.json()["items"]
+
+
+def test_auto_detect_perfect_attendance_partial_first_month_no_badge(app_client):
+    """月中才開始有記錄（前段工作日無記錄）→ 非「滿月」全勤，不發章。
+
+    守住 caller 的工作日區間須以整月起算（非從第一筆記錄裁剪）。
+    """
+    client, TestingSession = app_client
+    weekdays = [d for d in _april_2026_weekdays() if d >= date(2026, 4, 10)]
+    _seed_attendance(TestingSession, 1, weekdays)
+    resp = client.post(
+        "/api/students/1/milestones/auto-detect",
+        json={"reference_date": "2026-05-01"},
+    )
+    assert resp.status_code == 200, resp.text
+    list_resp = client.get(
+        "/api/students/1/milestones?milestone_type=perfect_attendance_month"
+    )
+    assert list_resp.json()["items"] == [], list_resp.json()["items"]
