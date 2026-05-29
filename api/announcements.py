@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from typing import Literal, Optional, List
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import joinedload, selectinload
@@ -103,6 +103,11 @@ def _validate_schedule(publish_at, expires_at) -> None:
 
 logger = logging.getLogger(__name__)
 
+_ANNOUNCEMENT_ALLOWED_EXT = {
+    ".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".pdf",
+}
+_ANNOUNCEMENT_ATTACHMENT_LIMIT = 5
+
 router = APIRouter(prefix="/api/announcements", tags=["announcements"])
 
 
@@ -174,7 +179,7 @@ def list_announcements(
                 read_count_subq.label("read_count"),
                 recipient_count_subq.label("recipient_count"),
             )
-            .options(joinedload(Announcement.author))
+            .options(joinedload(Announcement.author), selectinload(Announcement.attachments))
             .order_by(
                 Announcement.is_pinned.desc(),
                 Announcement.created_at.desc(),
@@ -237,6 +242,10 @@ def list_announcements(
                     "read_preview": preview,
                     "has_more_readers": int(read_count or 0) > len(preview),
                     "recipient_count": int(recipient_count or 0),
+                    "attachments": [
+                        _serialize_attachment_for_announcement(att)
+                        for att in ann.attachments
+                    ],
                 }
             )
         return {"total": int(total), "items": results}
@@ -459,6 +468,206 @@ def list_readers(
         }
     finally:
         session.close()
+
+
+@router.post("/{announcement_id}/attachments", status_code=201)
+async def upload_announcement_attachment(
+    announcement_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
+) -> dict:
+    """上傳公告附件（圖片 / PDF），單一公告最多 5 個。"""
+    import os
+
+    from models.database import Attachment, session_scope
+    from models.portfolio import ATTACHMENT_OWNER_ANNOUNCEMENT
+    from utils.file_upload import (
+        read_upload_with_size_check,
+        safe_attachment_filename,
+        validate_file_signature,
+    )
+    from utils.portfolio_storage import get_portfolio_storage
+
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in _ANNOUNCEMENT_ALLOWED_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支援的檔案格式：{ext or '未知'}；僅接受 JPG/PNG/GIF/HEIC/PDF",
+        )
+
+    with session_scope() as session:
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        existing_count = (
+            session.query(Attachment)
+            .filter(
+                Attachment.owner_type == ATTACHMENT_OWNER_ANNOUNCEMENT,
+                Attachment.owner_id == announcement_id,
+                Attachment.deleted_at.is_(None),
+            )
+            .count()
+        )
+        if existing_count >= _ANNOUNCEMENT_ATTACHMENT_LIMIT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"附件上限 {_ANNOUNCEMENT_ATTACHMENT_LIMIT} 個",
+            )
+
+    content = await read_upload_with_size_check(file, extension=ext)
+    # read_upload_with_size_check already calls validate_file_signature internally
+    # when extension is provided; calling again is idempotent and safe.
+    validate_file_signature(content, ext)
+
+    storage = get_portfolio_storage()
+    stored = storage.put_attachment(content, ext)
+
+    with session_scope() as session:
+        att = Attachment(
+            owner_type=ATTACHMENT_OWNER_ANNOUNCEMENT,
+            owner_id=announcement_id,
+            storage_key=stored.storage_key,
+            display_key=stored.display_key,
+            thumb_key=stored.thumb_key,
+            original_filename=safe_attachment_filename(filename, ext),
+            mime_type=stored.mime_type,
+            size_bytes=len(content),
+            uploaded_by=current_user.get("user_id"),
+        )
+        session.add(att)
+        session.flush()
+        return _serialize_attachment_for_announcement(att)
+
+
+def _serialize_attachment_for_announcement(att) -> dict:
+    """公告 attachment 序列化（與 list 端統一）。"""
+    from utils.portfolio_storage import PORTFOLIO_MODULE
+
+    return {
+        "id": att.id,
+        "filename": att.original_filename,
+        "mime_type": att.mime_type,
+        "size_bytes": att.size_bytes,
+        "url": f"/api/uploads/{PORTFOLIO_MODULE}/{att.storage_key}",
+        "thumb_url": (
+            f"/api/uploads/{PORTFOLIO_MODULE}/{att.thumb_key}"
+            if att.thumb_key
+            else None
+        ),
+    }
+
+
+def assert_announcement_attachment_visible(session, att, current_user) -> None:
+    """依 caller role 三分流：
+
+    - admin / hr / supervisor (is_unrestricted): 直接通過
+    - employee: 套 portal visible_filter + time predicate
+    - parent: 套 parent visible_subquery + time predicate
+
+    安全：不能用「持有 ANNOUNCEMENTS_READ」當 bypass — 員工 portal user
+    持有此權限時仍須套 targeted_to_me 守衛，避免限定 target 公告附件被未指定
+    員工讀到。
+    """
+    from sqlalchemy import and_, exists, or_
+
+    from models.database import (
+        Announcement,
+        AnnouncementParentRecipient,
+        AnnouncementRecipient,
+    )
+    from services.announcements.visibility import visibility_time_predicate
+    from utils.portfolio_access import is_unrestricted
+    from utils.taipei_time import now_taipei_naive
+
+    if is_unrestricted(current_user):
+        return
+
+    ann_id = att.owner_id
+    time_pred = visibility_time_predicate(now_taipei_naive())
+    role = current_user.get("role")
+
+    if role == "parent":
+        from api.parent_portal.announcements import _build_visibility_subquery
+
+        cond = _build_visibility_subquery(session, current_user["user_id"])
+        apr = AnnouncementParentRecipient
+        visible_subq = exists().where(
+            and_(apr.announcement_id == Announcement.id, cond)
+        )
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == ann_id, visible_subq, time_pred)
+            .first()
+        )
+        if ann is None:
+            raise HTTPException(status_code=403, detail="無權存取此附件")
+        return
+
+    # employee role
+    emp_id = current_user.get("employee_id")
+    if emp_id is None:
+        raise HTTPException(status_code=403, detail="無權存取此附件")
+    no_recipients = ~exists().where(
+        AnnouncementRecipient.announcement_id == ann_id
+    )
+    targeted_to_me = exists().where(
+        and_(
+            AnnouncementRecipient.announcement_id == ann_id,
+            AnnouncementRecipient.employee_id == emp_id,
+        )
+    )
+    ann = (
+        session.query(Announcement)
+        .filter(
+            Announcement.id == ann_id,
+            or_(no_recipients, targeted_to_me),
+            time_pred,
+        )
+        .first()
+    )
+    if ann is None:
+        raise HTTPException(status_code=403, detail="無權存取此附件")
+
+
+
+@router.delete(
+    "/{announcement_id}/attachments/{attachment_id}",
+    response_model=DeleteResultOut,
+)
+def delete_announcement_attachment(
+    announcement_id: int,
+    attachment_id: int,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
+):
+    """軟刪除公告附件。實檔保留 90 天由清理 job 接手。"""
+    from models.database import Attachment, session_scope
+    from models.portfolio import ATTACHMENT_OWNER_ANNOUNCEMENT
+    from utils.taipei_time import now_taipei_naive
+
+    with session_scope() as session:
+        att = (
+            session.query(Attachment)
+            .filter(
+                Attachment.id == attachment_id,
+                Attachment.owner_type == ATTACHMENT_OWNER_ANNOUNCEMENT,
+                Attachment.owner_id == announcement_id,
+                Attachment.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if not att:
+            raise HTTPException(status_code=404, detail="附件不存在")
+        att.deleted_at = now_taipei_naive()
+    return {"message": "附件已刪除"}
 
 
 # ============ 家長端 scope（plan A.5） ============
@@ -733,6 +942,22 @@ def _resolve_parent_user_ids(
     return user_ids
 
 
+def _build_attachments_context(announcement) -> list:
+    """從 announcement.attachments viewonly relationship 抽出 LINE renderer 需要的最小欄位。"""
+    result = []
+    for a in getattr(announcement, "attachments", None) or []:
+        thumb_key = getattr(a, "thumb_key", None)
+        result.append({
+            "mime_type": getattr(a, "mime_type", None),
+            "thumb_url": (
+                f"/api/uploads/portfolio/{thumb_key}"
+                if thumb_key
+                else None
+            ),
+        })
+    return result
+
+
 def _fire_announcement_push(
     session,
     announcement: Announcement,
@@ -758,6 +983,7 @@ def _fire_announcement_push(
                 "title": announcement.title,
                 "preview": announcement.content,
                 "announcement_id": announcement.id,
+                "attachments": _build_attachments_context(announcement),
             },
             sender_id=sender_user_id,
             source_entity_type="announcement",

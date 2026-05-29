@@ -66,6 +66,9 @@ _VIDEO_MIME_MAP = {
     ".mov": "video/quicktime",
     ".webm": "video/webm",
 }
+_DOC_MIME_MAP = {
+    ".pdf": "application/pdf",
+}
 
 DISPLAY_MAX_DIM = 1024
 THUMB_MAX_DIM = 256
@@ -94,6 +97,7 @@ def infer_mime_type(ext: str) -> str:
     return (
         _IMAGE_MIME_MAP.get(ext)
         or _VIDEO_MIME_MAP.get(ext)
+        or _DOC_MIME_MAP.get(ext)
         or "application/octet-stream"
     )
 

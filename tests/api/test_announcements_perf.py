@@ -236,10 +236,10 @@ def test_readers_endpoint_404_for_unknown(admin_client):
 
 
 def test_list_query_count_baseline(admin_client, db_engine, db_session, admin_emp):
-    """100 公告 x 50 已讀 fixture 下，list endpoint 應只發 <= 5 SELECT（含 2 條 auth overhead）。
+    """100 公告 x 50 已讀 fixture 下，list endpoint 應只發 <= 6 SELECT（含 2 條 auth overhead）。
 
-    防 N+1 regression：correlated COUNT subquery + batch preview query 設計確保
-    query 數固定不隨資料量退化。
+    防 N+1 regression：correlated COUNT subquery + selectinload(attachments) + batch preview
+    query 數固定不隨資料量退化（6 = auth×2 + COUNT + main + attachments_batch + preview_batch）。
     """
     from sqlalchemy import event
 
@@ -284,8 +284,8 @@ def test_list_query_count_baseline(admin_client, db_engine, db_session, admin_em
         event.remove(db_engine, "before_cursor_execute", _capture)
 
     selects = [q for q in queries if q.lstrip().upper().startswith("SELECT")]
-    # 5 fixed SELECTs: jwt_blocklist + users (auth) + COUNT + main + batch preview
-    assert len(selects) <= 5, (
+    # 6 fixed SELECTs: jwt_blocklist + users (auth) + COUNT + main + selectinload(attachments) + batch preview
+    assert len(selects) <= 6, (
         f"too many SELECT queries: {len(selects)}\n"
         + "\n---\n".join(selects)
     )

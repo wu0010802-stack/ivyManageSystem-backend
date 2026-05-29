@@ -20,6 +20,7 @@ class Rendered:
     title: str
     body: str
     deep_link: str | None
+    hero_url: str | None = None
 
 
 RENDERERS: dict[str, Callable[[dict], Rendered]] = {}
@@ -190,10 +191,30 @@ def _r_parent_message(ctx: dict) -> Rendered:
 
 @renderer("parent.announcement")
 def _r_parent_announcement(ctx: dict) -> Rendered:
+    attachments = ctx.get("attachments") or []
+    first_image = next(
+        (
+            a for a in attachments
+            if (a.get("mime_type") or "").startswith("image/")
+            and a.get("thumb_url")
+        ),
+        None,
+    )
+    hero_url: str | None = None
+    if first_image:
+        from urllib.parse import urljoin
+        try:
+            from config import get_settings
+            base = getattr(get_settings().misc, "ivy_api_base_url", None) or ""
+        except Exception:
+            base = ""
+        if base:
+            hero_url = urljoin(base, first_image["thumb_url"])
     return Rendered(
         title=f"📣 園所公告：{ctx['title']}",
         body=ctx.get("preview", "")[:80],
         deep_link=f"/parent/announcements/{ctx['announcement_id']}",
+        hero_url=hero_url,
     )
 
 
