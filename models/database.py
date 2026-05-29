@@ -31,7 +31,7 @@ from models.classroom import (
     StudentAssessment,
 )
 from models.guardian import Guardian
-from models.parent_binding import GuardianBindingCode
+from models.parent_binding import GuardianBindingCode, ParentDeviceSetupCode
 from models.parent_refresh_token import ParentRefreshToken  # noqa: F401
 from models.student_leave import StudentLeaveRequest
 from models.attendance import Attendance, AttendanceStatus
@@ -163,6 +163,7 @@ __all__ = [
     # guardian
     "Guardian",
     "GuardianBindingCode",
+    "ParentDeviceSetupCode",
     "StudentLeaveRequest",
     # attendance
     "Attendance",
