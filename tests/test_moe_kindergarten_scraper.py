@@ -316,3 +316,69 @@ class TestPerPageNoNPlus1:
             f"N+1 未修：對 competitor_school 執行了 {select_school_count} 次 SELECT，"
             "預期 ≤ 2 次"
         )
+
+
+# ── SSL 驗證 + 誠實 UA 回歸（audit P1 #15）────────────────────────────
+
+
+class TestMoeSessionSecurity:
+    """`_make_session()` 必須做完整 TLS 驗證、不得偽裝瀏覽器 UA。"""
+
+    def test_session_never_disables_ssl_verification(self):
+        sess = scraper._make_session()
+        # 修前：sess.verify = False（MITM 曝險）。修後必須維持驗證開啟。
+        assert sess.verify is not False
+        assert sess.verify is True
+
+    def test_moe_host_uses_strict_ssl_context(self):
+        import ssl
+
+        sess = scraper._make_session()
+        adapter = sess.get_adapter("https://ap.ece.moe.edu.tw/webecems/pubSearch.aspx")
+        assert isinstance(adapter, scraper._MoeSSLAdapter)
+        ctx = adapter._build_context()
+        assert ctx.check_hostname is True
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+
+    def test_github_host_uses_default_strict_adapter(self):
+        sess = scraper._make_session()
+        adapter = sess.get_adapter(
+            "https://kiang.github.io/ap.ece.moe.edu.tw/punish_all.json"
+        )
+        # github.io 憑證有效，不該套 MOE 專用 adapter，走預設嚴格驗證
+        assert not isinstance(adapter, scraper._MoeSSLAdapter)
+
+    def test_user_agent_is_honest_not_browser_spoof(self):
+        sess = scraper._make_session()
+        ua = sess.headers["User-Agent"]
+        assert "Mozilla" not in ua
+        assert "Chrome" not in ua
+        assert "ivyManageSystem" in ua
+
+
+class TestBundledIntermediateCert:
+    """bundled TWCA 中繼憑證必須存在、可解析、且離到期還有足夠 buffer。"""
+
+    def test_intermediate_cert_exists_and_is_twca_secure_ssl_ca(self):
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+
+        pem = scraper._TWCA_INTERMEDIATE_PEM
+        assert pem.exists(), f"中繼憑證遺失：{pem}"
+        cert = x509.load_pem_x509_certificate(pem.read_bytes())
+        cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        assert cn == "TWCA Secure SSL Certification Authority"
+
+    def test_intermediate_cert_not_near_expiry(self):
+        from datetime import datetime, timedelta, timezone
+
+        from cryptography import x509
+
+        cert = x509.load_pem_x509_certificate(
+            scraper._TWCA_INTERMEDIATE_PEM.read_bytes()
+        )
+        remaining = cert.not_valid_after_utc - datetime.now(timezone.utc)
+        assert remaining > timedelta(days=45), (
+            f"bundled MOE 中繼憑證將於 {cert.not_valid_after_utc} 到期"
+            f"（剩 {remaining.days} 天）；請從 {scraper._TWCA_AIA_URL} 重新下載更新"
+        )
