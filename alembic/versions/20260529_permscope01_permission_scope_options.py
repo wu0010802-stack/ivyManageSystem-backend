@@ -131,11 +131,12 @@ def downgrade() -> None:
     dialect = bind.dialect.name
 
     if dialect == "postgresql":
-        # 還原 teacher users permission_names（剝掉 scope suffix）
+        # 還原 teacher users permission_names（剝掉 scope suffix）+ bump token_version
         op.execute("""
             UPDATE users SET permission_names = ARRAY(
                 SELECT split_part(p, ':', 1) FROM unnest(permission_names) AS p
-            )
+            ),
+            token_version = COALESCE(token_version, 0) + 1
             WHERE role = 'teacher'
         """)
         # 還原 teacher role permissions
@@ -146,19 +147,35 @@ def downgrade() -> None:
             WHERE code = 'teacher' AND is_core = true
         """)
     else:
-        for table, col, where in (
-            ("users", "permission_names", "role='teacher'"),
-            ("roles", "permissions", "code='teacher' AND is_core=1"),
-        ):
-            rows = bind.execute(
-                sa.text(f"SELECT id, {col} FROM {table} WHERE {where}")
-            ).fetchall()
-            for rid, val in rows:
-                items = json.loads(val) if isinstance(val, str) else val
-                stripped = [p.split(":")[0] for p in items]
-                bind.execute(
-                    sa.text(f"UPDATE {table} SET {col}=:v WHERE id=:i"),
-                    {"v": json.dumps(stripped), "i": rid},
-                )
+        # SQLite：users 路徑需同時剝 suffix + bump token_version
+        rows = bind.execute(
+            sa.text(
+                "SELECT id, permission_names, token_version FROM users WHERE role='teacher'"
+            )
+        ).fetchall()
+        for uid, names_json, tv in rows:
+            items = (
+                json.loads(names_json) if isinstance(names_json, str) else names_json
+            )
+            stripped = [p.split(":")[0] for p in items]
+            bind.execute(
+                sa.text(
+                    "UPDATE users SET permission_names=:v, token_version=:t WHERE id=:i"
+                ),
+                {"v": json.dumps(stripped), "t": (tv or 0) + 1, "i": uid},
+            )
+        # roles 路徑：只剝 suffix，不碰 token_version（roles 表無此欄）
+        rows = bind.execute(
+            sa.text(
+                "SELECT id, permissions FROM roles WHERE code='teacher' AND is_core=1"
+            )
+        ).fetchall()
+        for rid, val in rows:
+            items = json.loads(val) if isinstance(val, str) else val
+            stripped = [p.split(":")[0] for p in items]
+            bind.execute(
+                sa.text("UPDATE roles SET permissions=:v WHERE id=:i"),
+                {"v": json.dumps(stripped), "i": rid},
+            )
 
     op.drop_column("permission_definitions", "scope_options")

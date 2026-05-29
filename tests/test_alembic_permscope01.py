@@ -372,3 +372,75 @@ def test_downgrade_restores_bare_codes(tmp_path):
         ), f"downgrade 後不應含 :own_class，實際: {names_after_down}"
 
     engine.dispose()
+
+
+def test_upgrade_skips_wildcard_teacher_user(tmp_path):
+    """Teacher user with wildcard '*' must not be backfilled (already has full access)."""
+    db_path = tmp_path / "permscope01_wildcard.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}")
+    module = _load_migration_module()
+
+    with engine.begin() as conn:
+        _create_prereq_tables(conn)
+        # seed wildcard teacher（額外插入，不依賴 _create_prereq_tables 的 admin_user）
+        conn.execute(
+            text(
+                "INSERT INTO users (username, password_hash, role, permission_names, token_version) "
+                "VALUES ('twild', 'x', 'teacher', :perms, 7)"
+            ),
+            {"perms": json.dumps(["*"])},
+        )
+
+        module.op = _AlembicOpStub(conn)
+        module.upgrade()
+
+        row = conn.execute(
+            text(
+                "SELECT permission_names, token_version FROM users WHERE username='twild'"
+            )
+        ).fetchone()
+
+    perms = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    assert perms == ["*"], f"wildcard teacher 不應被改動，實際: {perms}"
+    assert row[1] == 7, f"wildcard teacher token_version 不應被 bump，實際: {row[1]}"
+
+    engine.dispose()
+
+
+def test_downgrade_bumps_token_version_on_teacher_users(tmp_path):
+    """Downgrade must also bump token_version so post-upgrade JWTs are invalidated on rollback."""
+    db_path = tmp_path / "permscope01_downgrade_tv.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}")
+    module = _load_migration_module()
+
+    with engine.begin() as conn:
+        _create_prereq_tables(conn)
+        # 插入一個已含 scope suffix 的 teacher user（模擬 upgrade 後狀態）
+        conn.execute(
+            text(
+                "INSERT INTO users (username, password_hash, role, permission_names, token_version) "
+                "VALUES ('t3', 'x', 'teacher', :perms, 5)"
+            ),
+            {"perms": json.dumps(["STUDENTS_READ:own_class"])},
+        )
+
+        module.op = _AlembicOpStub(conn)
+        # 先 upgrade（新增 scope_options 欄位，downgrade 才能 drop）
+        module.upgrade()
+        # 再 downgrade
+        module.downgrade()
+
+        row = conn.execute(
+            text(
+                "SELECT permission_names, token_version FROM users WHERE username='t3'"
+            )
+        ).fetchone()
+
+    perms = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    assert perms == ["STUDENTS_READ"], f"downgrade 後 suffix 應被剝掉，實際: {perms}"
+    # upgrade 時 t3 的 token_version 從 5→6，downgrade 時再 bump 6→7
+    assert (
+        row[1] == 7
+    ), f"downgrade 應 bump token_version (5→6 upgrade, 6→7 downgrade)，實際: {row[1]}"
+
+    engine.dispose()
