@@ -236,7 +236,7 @@ def test_readers_endpoint_404_for_unknown(admin_client):
 
 
 def test_list_query_count_baseline(admin_client, db_engine, db_session, admin_emp):
-    """100 公告 x 50 已讀 fixture 下，list endpoint 應只發 <= 4 SELECT。
+    """100 公告 x 50 已讀 fixture 下，list endpoint 應只發 <= 5 SELECT（含 2 條 auth overhead）。
 
     防 N+1 regression：correlated COUNT subquery + batch preview query 設計確保
     query 數固定不隨資料量退化。
