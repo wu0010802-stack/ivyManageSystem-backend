@@ -786,14 +786,21 @@ def device_setup(
             session.rollback()
             raise HTTPException(status_code=400, detail="此設定碼對應的監護人已不存在")
 
+        # 解析 parent User：優先 guardian.user_id；否則以 username 復用既有 device
+        # User（防 CLAUDE.md #9 GC 把 guardian.user_id 抹 NULL 但 device User 仍在，
+        # 重發碼兌換時撞 username unique 而 500）；都沒有才新建。
+        user = None
         if guardian.user_id:
             user = session.query(User).filter(User.id == guardian.user_id).first()
-            if user is None:
-                user = _create_parent_user_for_device(session, guardian)
-                guardian.user_id = user.id
-        else:
+        if user is None:
+            user = (
+                session.query(User)
+                .filter(User.username == _username_for_device(guardian.id))
+                .first()
+            )
+        if user is None:
             user = _create_parent_user_for_device(session, guardian)
-            guardian.user_id = user.id
+        guardian.user_id = user.id
 
         binding.used_by_user_id = user.id
         user.last_login = _now()

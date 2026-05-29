@@ -271,3 +271,35 @@ class TestDeviceSetupEndpoint:
         assert n_users == 1
         assert n_tokens == 2
         s.close()
+
+    def test_guardian_deleted_after_claim_returns_400(self, pclient):
+        c, sf = pclient
+        gid = _seed_code(sf)
+        s = sf()
+        g = s.query(Guardian).filter(Guardian.id == gid).first()
+        g.deleted_at = now_taipei_naive()
+        s.commit()
+        s.close()
+        r = c.post("/api/parent/auth/device-setup", json={"code": "DEVCODE0001"})
+        assert r.status_code == 400
+        assert "監護人已不存在" in r.text
+
+    def test_lockout_after_repeated_failures(self, pclient):
+        c, sf = pclient
+        _seed_code(sf)
+        statuses = []
+        for _ in range(8):
+            statuses.append(
+                c.post(
+                    "/api/parent/auth/device-setup", json={"code": "BADCODE0000"}
+                ).status_code
+            )
+        # 達門檻後 IP lockout 觸發 429（lockout 先於 claim）
+        assert 429 in statuses
+        # 鎖定後即使拿正確碼也被擋
+        assert (
+            c.post(
+                "/api/parent/auth/device-setup", json={"code": "DEVCODE0001"}
+            ).status_code
+            == 429
+        )
