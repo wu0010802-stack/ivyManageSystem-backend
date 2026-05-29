@@ -25,6 +25,12 @@ from utils.salary_access import (
     enforce_self_or_full_salary as _enforce_self_or_full_salary,
     resolve_salary_viewer_employee_id as _resolve_salary_viewer_employee_id,
 )
+from schemas.salary_snapshots import (
+    SalarySnapshotCreateResultOut,
+    SalarySnapshotDetailOut,
+    SalarySnapshotDiffOut,
+    SalarySnapshotListOut,
+)
 
 router = APIRouter()
 
@@ -34,7 +40,7 @@ class ManualSnapshotRequest(BaseModel):
     employee_id: Optional[int] = Field(None, ge=1, description="空值表示整月快照")
 
 
-@router.get("/salaries/snapshots")
+@router.get("/salaries/snapshots", response_model=SalarySnapshotListOut)
 def list_salary_snapshots(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     year: int = Query(..., ge=2000, le=2100),
@@ -54,7 +60,7 @@ def list_salary_snapshots(
         }
 
 
-@router.get("/salaries/snapshots/{snapshot_id}")
+@router.get("/salaries/snapshots/{snapshot_id}", response_model=SalarySnapshotDetailOut)
 def get_salary_snapshot(
     snapshot_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
@@ -75,7 +81,7 @@ def get_salary_snapshot(
         return data
 
 
-@router.post("/salaries/snapshots")
+@router.post("/salaries/snapshots", response_model=SalarySnapshotCreateResultOut)
 def create_manual_salary_snapshot(
     data: ManualSnapshotRequest,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
@@ -105,7 +111,7 @@ def create_manual_salary_snapshot(
         }
 
 
-@router.get("/salaries/snapshots/{snapshot_id}/diff")
+@router.get("/salaries/snapshots/{snapshot_id}/diff", response_model=SalarySnapshotDiffOut)
 def get_salary_snapshot_diff(
     snapshot_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
