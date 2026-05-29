@@ -166,3 +166,56 @@ def test_create_limiter_factory_respects_env(monkeypatch, db):
         create_limiter(max_calls=1, window_seconds=1, name="d"),
         SlidingWindowLimiter,
     )
+
+
+def test_postgres_limiter_db_failure_calls_capture_fail_open(monkeypatch):
+    """PostgresLimiter.check DB raise 時應 capture_fail_open + 不擋（fail-open）。"""
+    calls = []
+
+    def fake_capture(operation, error, **extra):
+        calls.append((operation, type(error).__name__, extra))
+
+    monkeypatch.setattr("utils.rate_limit.capture_fail_open", fake_capture)
+
+    class BrokenEngine:
+        def begin(self):
+            raise RuntimeError("DB down")
+
+    # inline import `from models.base import get_engine` → patch source module
+    monkeypatch.setattr("models.base.get_engine", lambda: BrokenEngine())
+
+    from utils.rate_limit import PostgresLimiter
+
+    limiter = PostgresLimiter(max_calls=5, window_seconds=60, name="test")
+    limiter.check("ip:1.2.3.4")  # fail-open: 不拋 HTTPException(429) 即視為 pass
+
+    assert len(calls) == 1
+    assert calls[0][0] == "rate_limit.postgres_limiter"
+    assert calls[0][1] == "RuntimeError"
+    assert calls[0][2] == {"name": "test", "key": "ip:1.2.3.4"}
+
+
+def test_cleanup_rate_limit_buckets_db_failure_calls_capture_fail_open(monkeypatch):
+    """cleanup_rate_limit_buckets DB raise 時應 capture_fail_open + 回 0。"""
+    calls = []
+
+    def fake_capture(operation, error, **extra):
+        calls.append((operation, type(error).__name__, extra))
+
+    monkeypatch.setattr("utils.rate_limit.capture_fail_open", fake_capture)
+
+    class BrokenEngine:
+        def begin(self):
+            raise RuntimeError("DB down")
+
+    monkeypatch.setattr("models.base.get_engine", lambda: BrokenEngine())
+
+    from utils.rate_limit import cleanup_rate_limit_buckets
+
+    result = cleanup_rate_limit_buckets(retention_minutes=5)
+    assert result == 0
+
+    assert len(calls) == 1
+    assert calls[0][0] == "rate_limit.cleanup_buckets"
+    assert calls[0][1] == "RuntimeError"
+    assert calls[0][2] == {}

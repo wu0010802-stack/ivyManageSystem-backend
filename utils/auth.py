@@ -12,6 +12,7 @@ from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
 
 from config import settings
+from utils.fail_open import capture_fail_open
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,7 @@ def is_token_revoked(jti: str) -> bool:
             ).fetchone()
             return row is not None
     except Exception as e:
-        logger.warning("is_token_revoked 查詢失敗，fail-open: %s", e)
+        capture_fail_open("is_token_revoked", e, jti=jti)
         return False
 
 

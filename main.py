@@ -936,6 +936,10 @@ from utils.request_logging import RequestLoggingMiddleware
 
 app.add_middleware(RequestLoggingMiddleware)
 
+from middleware.csrf_origin import CSRFOriginCheckMiddleware
+
+app.add_middleware(CSRFOriginCheckMiddleware)
+
 # TrustedHost 必須最後 add（成為最外層），在所有處理前先驗證 Host header。
 # 防 Host header injection / 開放重新導向 / 快取毒化。
 from fastapi.middleware.trustedhost import TrustedHostMiddleware

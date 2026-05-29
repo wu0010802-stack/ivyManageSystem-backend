@@ -19,7 +19,7 @@ def test_defaults(monkeypatch):
     assert s.root is None  # env 沒設則 None，由 utils/storage.py 決定 fallback
     assert s.supabase_url is None
     assert s.supabase_service_role_key is None
-    assert s.supabase_signed_url_ttl == 3600
+    assert s.supabase_signed_url_ttl == 300
     assert s.growth_report_root == Path("./growth_reports")
     assert s.growth_report_max_bytes == 5_242_880
 
